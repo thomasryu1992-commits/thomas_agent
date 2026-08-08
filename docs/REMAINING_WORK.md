@@ -3500,6 +3500,52 @@ a worse property than a duplicated two-line helper.
 **So this one is a `scripts/lib` helper, not an import of `runtime/`** — the opposite conclusion
 from G4a, reached from the same table.
 
+##### Done 2026-08-08 for the timestamps. **The repo-root half is withdrawn, and the reason is the point.**
+
+`scripts/lib/utctime.py` is the timestamp authority now. **Thirteen copies existed, twelve
+collapsed into it, one is kept on purpose** — and the count above said *ten*, which is worth
+recording because of how it was wrong. `scripts/lib/gate_runner.py` and
+`scripts/lib/runtime_promotion_readiness.py` each carried their own *inside `scripts/lib` already*
+— the tell that what was missing was a home, not a helper — and `gate_runner`'s copy is invisible
+to the one-line grep in the block above, because it wraps the same four calls across five lines.
+A measurement written as a single-line pattern undercounts exactly the copies that were reformatted.
+
+Two of the twelve call sites went to `runtime.mvp_runtime.timeutil` instead, and the split is
+principled rather than pragmatic: `promote_memory_candidate.py` (8 runtime imports) and
+`activate_safety_flag.py` (5) are **runtime-adjacent CLIs, not gates**. The dependency-direction
+argument above is about gates importing what they gate; a script that already imports
+`runtime.mvp_runtime.store` has no such constraint, and giving it a *second* timestamp authority
+when the runtime's own is already in scope would be the reuse violation, not the fix.
+`tests/test_scripts_utctime.py` pins the two halves to the same output so the duplication cannot
+become two formats.
+
+**The 59 repo-root sites are not consolidatable, and "79 sites" above overstated the item.**
+Measured before touching anything:
+
+* **18 of the 59 use `ROOT` to bootstrap `sys.path`** (`sys.path.insert(0, str(ROOT))`) before their
+  other imports run. A helper cannot supply the value that makes importing the helper possible.
+* The remaining 41 could take an import, but **22 are standalone** — no `lib`, no `runtime`, no
+  `sys.path` patch — and adding `from lib.…` costs them the ability to run under
+  `python -m scripts.<name>`, which is the form CLAUDE.md mandates for state-writing CLIs. Verified,
+  not assumed: `python -m scripts.activate_core_release` exits 1 with
+  `ModuleNotFoundError: No module named 'lib'` while `python scripts/activate_core_release.py` exits 0,
+  because `scripts/` has no `__init__.py` and the flat `from lib.x` spelling needs `scripts/` on the
+  path. The repo runs scripts directly in 38 places and by module form in 5.
+* And `ROOT = Path(__file__).resolve().parents[1]` has **no silent failure mode**. All 59 are
+  `parents[1]`; a wrong depth fails immediately and loudly. The timestamp chain was worth removing
+  because dropping one call changes the *value*; this changes nothing.
+
+So the repo-root duplication stays. It is the case where the count is large and the risk is zero,
+and the fix would trade a self-evident one-liner for an import coupling plus a lost invocation mode.
+
+**One thing found on the way, not fixed here.** `scripts/lib/` modules are imported under **two
+spellings** — `from lib.x` (44 uses) and `from scripts.lib.x` (6) — and they are not
+interchangeable. `from scripts.lib.runtime_promotion_readiness import …` with only the repo root on
+`sys.path` fails on **unmodified `main`**, at that module's own `from lib.safe_io import …`; its
+three callers only work because they run in the direct form *and* insert `ROOT`, so both spellings
+resolve at once. The two `scripts/lib` modules touched here use a **relative** `from .utctime import`,
+which resolves under either spelling; the rest of `scripts/lib` still does not.
+
 #### G4c. The exit-code slot means three different things — recorded, not yet fixed
 
 | owner | code 2 | code 3 |

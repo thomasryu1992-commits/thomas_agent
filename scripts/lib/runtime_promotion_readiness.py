@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -15,6 +14,8 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from lib.safe_io import SafeIOError, git_directory
+
+from .utctime import utc_now
 
 REGISTRY_REL = "05_REGISTRIES/I0_5_READ_ONLY_RUNTIME_COMPONENTS_REVIEW_ONLY.yaml"
 WORKFLOW_REL = ".github/workflows/thomas-agent-runtime-validation.yml"
@@ -46,8 +47,6 @@ class ReadinessError(ValueError):
     pass
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_yaml(path: Path) -> dict[str, Any]:

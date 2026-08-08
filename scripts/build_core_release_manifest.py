@@ -7,12 +7,12 @@ import os
 import platform
 import shutil
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from lib.utctime import utc_now
 from lib.core_release_verifier import (
     bundle_payload,
     load_yaml,
@@ -51,8 +51,6 @@ TOOLCHAIN_FILES = [
 ]
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def installed_dependency_versions() -> dict[str, str]:
