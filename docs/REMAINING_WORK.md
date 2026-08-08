@@ -2919,6 +2919,23 @@ two — but it is a *time gradient*, which is the same finding in a worse form: 
 depends on when you look is not a rule the promotion door should take. OI coverage is not the
 explanation; the feed starts 2023-10-23 and spans every window here.
 
+**Those five were a SELECTED sample, and re-seeding removes the caveat rather than the finding —
+measured 2026-08-08.** They were the draws that confirmed on window 0, which is the very window
+the gradient starts from, so the pattern could have belonged to them rather than to the family.
+Two arms settle it: the same eight original seeds (including the three that did *not* confirm),
+and eight freshly seeded draws from the same space.
+
+| arm | CONFIRMED on w0 | w0−w3 slope | oldest window |
+|---|---|---|---|
+| original 8 | 5/8 | median **+0.854**, positive **8/8** | median −0.247, negative 7/8 |
+| fresh 8 | **7/8** | median **+0.869**, positive **8/8** | median −0.320, negative **8/8** |
+
+**16 of 16 draws slope the same way and 15 of 16 end negative**, and the fresh arm confirms at a
+*higher* rate than the batch did — so 5/8 was not a lucky draw either. The gradient is a property
+of the family over this cohort and period, not of the rows selected for confirming. What it is
+still not is evidence about any other cohort or period: both arms draw the same family from the
+same space, which is what this question needed and is all it answers.
+
 **So F9's conclusion stands, and now on evidence rather than on a citation.** Pooling *finds out
 faster* — it turned a family the rotation could never judge at 4h into one judged in an afternoon,
 and the judgement is that its confirmation is a property of the recent period. What is **not**
