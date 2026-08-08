@@ -11,6 +11,37 @@ Two files under the crypto state directory:
   tampered data rather than trade on whatever half-parses.
 - ``strategy_candidates.jsonl`` — append-only candidates (C7 import provenance now,
   C8 factory output later). Candidates never route; only the active pool does.
+
+**Some fields on a stored row are SNAPSHOTS, not answers.** Both stores are append-only —
+a candidate row's ``record_sha256`` covers the whole row, so correcting a label in place
+would not merely violate a convention, it would read as tampering. The consequence is that
+any judgment written at write time is frozen at the rule that produced it, and this runtime
+has changed those rules more than once. Measured 2026-08-08:
+
+- Stored ``robustness.verdict`` / ``robustness.holdout_status`` across 1,841 candidate rows
+  read ROBUST=83 and CONFIRMED=237. Recomputed under today's rule: **0 and 0.**
+- The 41 import rows carry ``status`` PAPER_ACTIVE=25 / SUSPENDED=16, snapshotted at import.
+  The pool — the authority on membership — has all 41 of those members SUSPENDED.
+- Of 94 pool entries, the 34 carrying ``robustness_verdict: ROBUST`` are import-lineage
+  (no ``candidate_id``) and every one is SUSPENDED, from a label two rule vintages old. The
+  53 factory-promoted entries — including all 5 that are PAPER_ACTIVE — carry **no**
+  robustness field at all.
+
+None of that is a live defect, and the reason is worth stating because it is the thing a
+future change can break: **no runtime decision reads those fields.**
+:func:`candidate_quality` recomputes the verdict and the holdout status from the stored
+COMPONENTS on every read, membership comes from the pool rather than from a candidate row's
+``status``, and the promotion door deliberately copies raw per-regime numbers onto a pool
+entry instead of a derived label — see the comment at the entry construction in
+``scripts/promote_strategy_candidates.py``, which names this exact defect as one
+`candidate_quality` already had to fix once.
+
+So the pool entries that carry no robustness fields are the CORRECT ones, and the 34 that do
+are the residue of a one-time import. Copying a verdict onto a routable entry would not fill
+a gap; it would reintroduce the defect. What was missing is that this held by accident —
+nothing checked it — which `test_stored_snapshot_fields_are_not_inputs` now does.
+
+:data:`STORED_SNAPSHOT_FIELDS` names them.
 """
 
 from __future__ import annotations
@@ -41,6 +72,24 @@ from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_poo
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
+
+# Pool-entry fields that are PROVENANCE — what a rule said when the row was written — which
+# no decision surface may read as an input. See the module docstring for what each currently
+# says and what it should say.
+#
+# Deliberately NOT here: ``robustness_score`` and ``trades_per_parameter``. Those are
+# MEASUREMENTS, and a measurement survives a rule change — :func:`candidate_quality` feeds
+# them back into `classify_verdict` on every read, which is the whole mechanism that makes
+# the labels disposable. Listing them would forbid the recompute it is protecting.
+#
+# The candidate-row equivalents live nested under ``backtest_evidence.robustness`` and are
+# reachable only through :func:`candidate_quality`, which recomputes rather than reads them
+# back. That is why it is a function and not a dictionary lookup at each call site, and
+# `test_stored_snapshot_fields_are_not_inputs` pins it as the sole reader of that block.
+STORED_SNAPSHOT_FIELDS = frozenset({
+    "robustness_verdict",
+    "robustness_warnings",
+})
 
 # The basis of every R in a candidate's quality view.
 #
