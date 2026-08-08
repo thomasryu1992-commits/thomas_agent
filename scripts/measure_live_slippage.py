@@ -207,9 +207,21 @@ def render(result: dict[str, Any]) -> str:
         stops = [r["adverse_bps"] for r in rows if r["close_reason"] == "stop_loss"]
         if stops:
             out.append("")
-            out.append(f"stop fills: n={len(stops)}  median {statistics.median(stops):.2f} bps  "
-                       f"worst {max(stops):.2f}  against {result['modelled_bps']} modelled "
-                       f"({max(stops)/result['modelled_bps']:.1f}x)")
+            # Each multiple sits against the figure it divides. It used to trail the whole line
+            # — `median 11.73 bps  worst 23.47  against 3.0 modelled (7.8x)` — where `(7.8x)`
+            # reads as the median's, and 7.8 is the WORST reading; the median's is 3.9. A reader
+            # who quotes the summary rather than the table gets a number twice too large.
+            #
+            # Deliberately not extended to the entry and canary lines below. Their slippage can
+            # be NEGATIVE (BTCUSDT's live entry filled 4.67 bps BETTER than intended), and a
+            # multiple of an assumption is meaningless once the sign flips — `-1.6x modelled`
+            # states nothing a reader can use, and pooling it into a median of multiples would
+            # be worse. The bps figure carries its own sign; a ratio does not.
+            modelled = result["modelled_bps"]
+            median = statistics.median(stops)
+            out.append(f"stop fills: n={len(stops)}  "
+                       f"median {median:.2f} bps ({median/modelled:.1f}x modelled {modelled})  "
+                       f"worst {max(stops):.2f} ({max(stops)/modelled:.1f}x)")
     out.append("")
     out.append(f"exits with no comparable pair: {result['unmeasurable']}")
     out.append("")

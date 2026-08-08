@@ -206,6 +206,11 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 # over ~6 passes with the loop free between them instead of one 11-minute block. Cheap kinds
 # (`ledger_rotate` at 0.2s, `crypto_report` at 2.2s) still batch normally — the budget only bites
 # where the cost is, which is why it is a time budget and not a per-pass count.
+#
+# Whether 60 is still right is a ledger question rather than a guess: every deferral writes an
+# `ACTION_DEFERRED` event carrying the pass spend and the budget then in effect, so
+# `read_scheduler_events()` filtered to that action is the evidence — how often it binds, and
+# whether the spend clusters at the boundary or far past it. See the deferral branch in `run_due`.
 MAINTENANCE_PASS_BUDGET_SECONDS = 60.0
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
@@ -1359,16 +1364,31 @@ def run_due(
         # `skipped` claims and drops, so it appears once per occurrence, while a deferral leaves
         # the schedule due — so a schedule behind a long burst is deferred again on each pass
         # until it runs, and N rows mean N passes it waited, not N occurrences it lost.
-        if (schedule.kind not in RISK_KINDS
-                and time.monotonic() - pass_started > MAINTENANCE_PASS_BUDGET_SECONDS):
-            deferred += 1
-            status = "deferred_pass_budget"
-            if ledger is not None:
-                ledger.append_scheduler_event(
-                    _scheduler_event(ACTION_DEFERRED, schedule, now=now, status=status))
-            results.append({"schedule_id": schedule.schedule_id, "action": ACTION_DEFERRED,
-                            "status": status})
-            continue
+        #
+        # The row carries what the pass had SPENT and the budget it was spending against,
+        # because the count alone does not settle the number it exists to tune. A pass that
+        # bound at 61s and one that bound at 600s produce the same row otherwise, and they
+        # argue opposite things: the first says 60 sits on the boundary and a larger value
+        # would stop binding, the second says one fire is longer than any budget worth setting
+        # and the number is not the lever. `pass_budget_ms` is recorded rather than assumed
+        # from the constant, so raising it later does not silently re-scale the rows written
+        # under the old one — the same reason `mutation_event` carries `previously_enabled`.
+        #
+        # Nested rather than one condition only so `elapsed` can be named: the clock is still
+        # read for the kinds the budget can act on and no others, as the short-circuit did.
+        if schedule.kind not in RISK_KINDS:
+            elapsed = time.monotonic() - pass_started
+            if elapsed > MAINTENANCE_PASS_BUDGET_SECONDS:
+                deferred += 1
+                status = "deferred_pass_budget"
+                if ledger is not None:
+                    ledger.append_scheduler_event(_scheduler_event(
+                        ACTION_DEFERRED, schedule, now=now, status=status,
+                        pass_elapsed_ms=int(elapsed * 1000),
+                        pass_budget_ms=int(MAINTENANCE_PASS_BUDGET_SECONDS * 1000)))
+                results.append({"schedule_id": schedule.schedule_id, "action": ACTION_DEFERRED,
+                                "status": status})
+                continue
 
         # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
         # occurrence, never doubles it). claim_due re-checks the current state under the

@@ -30,7 +30,11 @@ string (`analysis_task`) or a maintenance action (`memory_prune`) — **never a 
   control is a later increment.
 - The scheduler **grants no new authority** — each scheduled task passes the full pipeline gates.
 - Creating a schedule is `EXECUTE_AND_REPORT` (autonomous internal task creation, §4.2) and is
-  recorded to the ledger; every fire and every kill-skip is recorded too (`scheduler_events.jsonl`).
+  recorded to the ledger; every fire, every kill-skip and every occurrence the maintenance pass
+  budget declined to start is recorded too (`scheduler_events.jsonl`). An occurrence that ran, one
+  that was dropped, and one that slipped a tick are three different outcomes and each is a row.
+  A `deferred` row carries no `schedule_run_id` — it attempted nothing — and carries the pass
+  spend and the budget in effect, so the cadence the budget costs is measurable from the ledger.
 - **Interval cadence only** (min 60s) in v0.1; cron-style calendaring is future.
 
 ## State (local, per-machine, gitignored)
