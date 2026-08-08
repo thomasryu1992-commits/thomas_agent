@@ -177,17 +177,33 @@ def test_a_new_collected_series_forces_the_inventory_to_be_revisited(tmp_path):
 def test_an_accumulating_source_says_it_feeds_nothing_yet():
     """Collected and usable-by-a-template are different facts, and the reviewer needs both.
 
-    Listing `positioning` bare would read as "covered", suppressing the suggestion that
+    Listing an accumulator bare would read as "covered", suppressing the suggestion that
     matters most about it — that nothing reads it. Omitting it would invite a proposal to
-    collect what is already accumulating. Only the qualified entry is honest."""
+    collect what is already accumulating. Only the qualified entry is honest.
+
+    Asserted against the CODE rather than a list of names, because this claim is exactly the
+    one that goes stale: `positioning_store`'s own docstring said "it feeds nothing" long
+    after `_positioning_columns` started reading it, and that stale line is where this
+    module's first draft of the entry came from."""
+    from runtime.mvp_runtime.crypto import factory, features
     from runtime.mvp_runtime.crypto.data_review import CURRENT_SOURCES
 
     by_source = {s["source"]: s["content"] for s in CURRENT_SOURCES}
-    for source in ("coinalyze_open_interest_1h", "binance_futures_positioning",
-                   "dex_candle_archive"):
+    for source in ("coinalyze_open_interest_1h", "dex_candle_archive"):
         assert "Feeds no feature yet" in by_source[source], source
-    # And the inverse: a series a family actually reads must not carry the disclaimer.
+    # A series a family actually reads must not carry the disclaimer. Positioning belongs
+    # here and not above: `attach_positioning` puts the store's rows on the snapshot and
+    # `_positioning_columns` turns them into MINTABLE columns. What is gated is whether the
+    # two POSITIONING_FAMILIES are offered, which is a different sentence.
     assert "Feeds no feature yet" not in by_source["coinalyze_open_interest"]
+    assert "Feeds no feature yet" not in by_source["binance_futures_positioning"]
+    assert "positioning_*" in by_source["binance_futures_positioning"]
+    numeric, categorical = factory.known_features(market_data.BINANCE_FUTURES)
+    mintable = numeric | frozenset(categorical)
+    assert set(features.POSITIONING_NUMERIC_COLUMNS) <= mintable, (
+        "the entry claims the positioning columns are mintable — if they stop being, the "
+        "'feeds no feature yet' wording is the honest one again"
+    )
 
 
 # --- suggestion judgment ------------------------------------------------------

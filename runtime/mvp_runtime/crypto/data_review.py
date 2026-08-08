@@ -61,6 +61,12 @@ MAX_SUGGESTIONS_PER_RUN = 5
 # model is answering is what to collect, so omitting them would invite re-collection — but
 # "collected" and "usable by a template today" are different facts and the accumulators
 # exist precisely because the second is years of retention away from the first.
+#
+# `binance_futures_positioning` is the one to read carefully, because `positioning_store`'s
+# own docstring said "it feeds nothing" and that claim went stale under it: the columns ARE
+# computed onto every feature row and ARE mintable, and what is gated is whether the two
+# POSITIONING_FAMILIES are OFFERED (`positioning_eligible`, a coverage measurement). Saying
+# "feeds nothing" here would invite the one suggestion that is already built.
 CURRENT_SOURCES = (
     {"source": "binance_futures_klines",
      "content": "OHLCV candles + the taker aggressor split (taker_buy_base -> taker_*), "
@@ -79,7 +85,8 @@ CURRENT_SOURCES = (
     {"source": "binance_futures_positioning",
      "content": "the three /futures/data/ long-short ratio series (top_position, top_account, "
                 "global_account) accumulated into positioning_store, because the vendor keeps "
-                "30 days. Feeds no feature yet — accumulate now, decide later"},
+                "30 days. Feeds the positioning_* columns; the two families that read them stay "
+                "unminted until coverage covers the replay window"},
     {"source": "dex_candle_archive",
      "content": "15m/1h/4h/1d candles for every perp the xyz DEX lists, accumulated into "
                 "candle_archive because that venue serves a rolling 5,000-candle window and "
