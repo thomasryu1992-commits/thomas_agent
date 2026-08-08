@@ -141,13 +141,60 @@ def test_shadow_settles_on_the_plan_time_exit_not_the_table(tmp_path):
 
 
 def test_shadow_book_is_capped(tmp_path):
+    """One context per shadow now, so the cap can only be reached ACROSS contexts.
+
+    This used to pile `MAX_OPEN_COUNTERFACTUALS + 5` plans into BTCUSDT 1d under different
+    strategy ids — the exact shape the per-context rule exists to refuse, and one the runtime
+    cannot produce anyway, since `route_entries` picks ONE strategy per context. Rewritten to
+    the reachable scenario so it still tests the cap rather than testing the bug.
+
+    The real fan-out is 5 symbols x 4 timeframes = 20 contexts, so the cap is now unreachable
+    in production. It stays as the backstop it always was."""
     for i in range(counterfactual.MAX_OPEN_COUNTERFACTUALS + 5):
         counterfactual.run_counterfactual_update(
-            blocked_plan=_plan(entry=100.0 + i, strategy_id=f"S{i}"), block_reasons=["x"],
-            last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
+            blocked_plan={**_plan(), "symbol": f"SYM{i}USDT"}, block_reasons=["x"],
+            last_candle=None, last_close=None, symbol=f"SYM{i}USDT", timeframe="1d",
             now=f"2026-07-22T{i % 24:02d}:00:00Z", root=tmp_path,
         )
     assert len(counterfactual.load_open_counterfactuals(tmp_path)) == counterfactual.MAX_OPEN_COUNTERFACTUALS
+
+
+def test_a_second_shadow_in_one_context_is_refused_not_stacked(tmp_path):
+    """The book being shadowed holds ONE position per (symbol, timeframe). A shadow book that
+    can hold sixteen in a context where the real book holds at most one is not measuring the
+    real book's counterfactual.
+
+    Measured 2026-08-08: 16 of the 17 open shadows were ETHUSDT 1d LONG for strategy S1735,
+    opened one per 15-minute cycle from 07-25T06:08 to 07-26T13:05 while the block persisted,
+    all still holding 13-14 of 27 bars — the same trade sixteen times. `MAX_OPEN_COUNTERFACTUALS`
+    knows the mechanism and bounds the BOOK; the damage is in the calibration, where
+    `r_values_by_reason` counts each closed shadow as one observation and
+    `dashboard.sample_verdict` gates a gate's verdict on an interval built over them.
+    """
+    first = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["daily_loss_limit_breached"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        root=tmp_path,
+    )
+    again = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(entry=101.0, strategy_id="S2"),
+        block_reasons=["daily_loss_limit_breached"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
+        now="2026-07-22T12:15:00Z", root=tmp_path,
+    )
+    assert again["opened"] is None
+    # Named, not counted: "the gate is still blocking the trade we are already measuring" and
+    # "the gate stopped blocking" are opposite facts and `opened: None` says both.
+    assert again["duplicate_of"] == first["opened"]
+    assert again["open_count"] == 1
+
+    # A different context is a different position in the real book, so it still opens.
+    other = counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "symbol": "ETHUSDT"}, block_reasons=["x"],
+        last_candle=None, last_close=None, symbol="ETHUSDT", timeframe="1d",
+        now="2026-07-22T12:30:00Z", root=tmp_path,
+    )
+    assert other["opened"] is not None and other["duplicate_of"] is None
 
 
 def test_a_shadow_whose_clock_froze_expires_instead_of_holding_a_cap_slot(tmp_path):
