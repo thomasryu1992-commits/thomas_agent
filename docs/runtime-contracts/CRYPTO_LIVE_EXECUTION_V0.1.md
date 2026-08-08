@@ -135,9 +135,12 @@ Both guards **require** their `limits` argument (no `from_env()` fallback), so t
 **An unconfigured loss limit counts as breached.** `daily_loss_limit_breached(None)` and `(0)`
 both return `True`. This is the single most important line in `live_pnl.py`.
 
-**A cap above the absolute ceiling is refused, not clamped.** 200 USDT is the hard ceiling a
-configured cap can never exceed. Silently resizing an order would desync its size from the
-decision that approved it.
+**A cap above the absolute ceiling is refused, not clamped.** 500 USDT is the hard ceiling a
+configured cap can never exceed (200 until 2026-08-08; raised on Thomas's instruction once the
+live path had earned its 4 clean canaries and 2 completed round trips). Silently resizing an
+order would desync its size from the decision that approved it. The ceiling is the most a
+*registered budget* may declare, not a size and not a cap any order is judged against — raising
+it widens nothing until an operator registers a budget carrying the larger number.
 
 **A missing notional is never back-filled from the cap.** The cap is a ceiling, not a size.
 
@@ -276,13 +279,21 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       `MVP_LIVE_ORDER_API_KEY` / `MVP_LIVE_ORDER_API_SECRET`.
 - [ ] Register the budget — the caps come from the record, never from env. Approved starting
       values (Thomas, 2026-07-23): 60 USDT per order, 2 orders per day, 120 USDT open exposure,
-      20 USDT daily loss, against the 200 USDT absolute ceiling.
+      20 USDT daily loss, against a 200 USDT absolute ceiling. **These are still the values a
+      first bring-up registers**, and they remain this script's defaults; the *hard ceiling* a
+      budget may declare rose to 500 USDT on 2026-08-08, which raises the lid, not the caps.
 
       ```
       python -m scripts.register_live_trading_budget --registered-by thomas \
           --max-order-notional 60 --max-daily-order-count 2 \
           --max-open-notional 120 --daily-loss-limit 20 --absolute-max-notional 200
       ```
+
+      A re-run replaces the whole record rather than the flags you pass, so name every cap
+      **and** `--symbols` / `--min-clean-canary-orders` on each re-registration: the script's
+      defaults (BTCUSDT only, 3 canaries) are lower than what a machine past bring-up has
+      registered, and an omitted flag narrows the allowlist or lowers the promotion bar with no
+      warning. Read the result back off the readiness board rather than assuming it landed.
 - [ ] Set the confirmation phrase **for the capability you are about to use**. They are
       deliberately distinct, so pasting the wrong one authorizes nothing:
       `MVP_LIVE_CANARY_CONFIRMATION` for canaries, `MVP_LIVE_CONFIRMATION` for autonomous trading.
