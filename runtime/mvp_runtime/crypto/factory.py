@@ -3376,8 +3376,15 @@ _EXIT_LEGAL_RANGE = {
 def _fused_exit_param(name: str, first: float, second: float) -> float | int:
     """The parents' midpoint, held inside the space the factory currently explores.
 
-    Same clamp and same constants as :func:`mutate_params`, so a fused parameter and a
-    mutated one can never land in different places.
+    Same constants as :func:`mutate_params`, and since 2026-08-05 deliberately NOT the same
+    operation: that function FOLDS at the bound (:func:`_fold_into_bounds`) because a draw of
+    ``base +/- span`` systematically overshoots one, and stacking the overshoot on the edge is a
+    delta rather than a bound. A fused value is a MIDPOINT, and a midpoint of two in-space parents
+    is in-space by convexity — see
+    ``test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from`` — so this clamp fires
+    only when a parent was minted under an OLDER space. Pinning such a parent to the nearest legal
+    value is the right answer there; reflecting it would move it to an arbitrary interior point
+    the search never chose. The two paths differ because the inputs differ.
 
     **The clamp is a preference applied to legal inputs, and it must never rescue an illegal
     one.** ``_EXIT_PARAMS`` is strictly inside the validator's range — stop_atr [1.2, 2.0]

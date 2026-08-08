@@ -2360,12 +2360,41 @@ its worst. `_fold_into_bounds` reflects instead: **both halves to 0.0%**, median
 3.12 → 3.03 and 3.22 → 3.25, median R:R 2.14 → 2.08 and 2.13 → 2.18 — inside the 0.05R nothing
 in this store resolves.
 
-**What is owed.** A mint-time change is judged over generations, not days (the `#420` error), and
-this one is placed against a store whose 1,507 non-fade rows carry the old draw. The check is the
-next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
-fall from ~12% toward zero, and the elite centres those rows become should stop reproducing it.
-Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
-random entry loses 0.13R here. What this buys is that the search covers the space it is given.
+**What was owed.** A mint-time change is judged over generations, not days (the `#420` error), and
+this one was placed against a store whose 1,507 non-fade rows carried the old draw. The check was
+the next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
+fall from ~12% toward zero. Nothing about edge was claimed or expected — 0 of 1,140 candidates
+confirm out of sample and a random entry loses 0.13R here. What it buys is that the search covers
+the space it is given.
+
+#### Paid off — measured 2026-08-08, ~25 generations after the deploy
+
+Every stored row's exit triple checked against its own family's space (the fold shipped
+2026-08-05 and the containers restarted onto it at 15:54 UTC):
+
+| generation block | rows | on a bound | share |
+|---|---|---|---|
+| GEN 600–779 | 923 | 136 | **14.7%** |
+| GEN ≥ 780 | 199 | 6 | **3.0%** |
+
+**And the residual six are all explained, none of them a pin.** Four are seeded rows from
+GEN-781/782/783 — generations that fired *before* the containers restarted. One (GEN-804) is
+`max_holding_bars` landing on 12, an integer taking a value it may legitimately take rather than a
+pile-up; the test added with the fold allows integer parameters an 0.08 share for exactly this.
+One (GEN-793) is a **crossover**, and that one is the clamp doing its documented job.
+
+**From GEN-784 onward, zero seeded rows sit on a continuous bound** — 0 of ~190.
+
+**The fusion path was checked and is NOT the same defect, which is worth stating because it
+looks like it.** `_fused_exit_param` still clamps where `mutate_params` now folds — but a fused
+value is the MIDPOINT of two parents, and a midpoint of two in-space parents is in-space by
+convexity (the note on `test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from` says so
+directly). The clamp therefore fires only when a parent was minted under an OLDER space, which is
+the GEN-793 row, and pinning a stale parent to the nearest legal value is the right operation
+there — folding it would place it at an arbitrary interior point instead. **What is stale is the
+docstring**, which still says *"Same clamp and same constants as `mutate_params`, so a fused
+parameter and a mutated one can never land in different places"*; that stopped being true when the
+fold landed, and the sentence is corrected in the same change as this note.
 
 ### F6. The regime label folds volatility over trend, and one live family still pays for it — audited 2026-08-05
 
@@ -2416,7 +2445,8 @@ label excludes, is **37.9%**.
 rather than `mean_reversion`'s RSI — so "how a fade performs in HIGH_VOLATILITY" is measured on
 different entries than the one that would move.
 
-**The proposal, and it is not shipped.** Replace the label with the trend test it folds, at
+**The proposal that was tested — and rejected, see below.** Replace the label with the trend
+test it folds, at
 **identical `free_parameters`** — `count_free_parameters` charges one literal either way
 (verified: `literals = sum(1 for c in conditions if c.value is not None)`), and both `adx` and
 `atr_percentile` are already in `NUMERIC_FEATURES`:
@@ -2431,13 +2461,40 @@ This gives the search the 20.0 the label hard-codes and drops the volatility fol
 `volatility_squeeze_*` / #497 precedent it would REPLACE rather than add, since a family is
 +1 hypothesis charged to `selection_adjusted_z` for every other family in the store.
 
-**What is missing is the measurement that would justify it**, and it is the same one #497 ran:
-paired draws, exits from their own rng so the entry rule is the only difference between arms,
-`backtest_spec_pooled` across the cohort at 4h and 1h. **It needs venue frames this host does
-not hold** — `candle_archive` carries hyperliquid equity perps only and has "no consumer in the
-feature or backtest path" by design — so running it means adding fetch volume to the IP the live
-cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
-of a method.
+#### The replay was run 2026-08-05, and it says no
+
+Method as #497's: 12 paired draws × long/short × both arms at 4h and 1h, `backtest_spec_pooled`
+over the 5-symbol cohort, `rsi` and the exit triple each drawn from their own rng keyed by draw
+index so the second entry condition is the only difference between arms. 100 venue reads at
+`ARCHIVE_REQUEST_INTERVAL_SECONDS` pacing, 2m55s wall, no `TOOL_RATE_LIMITED`. Read-only, in a
+one-off container with every `MVP_LIVE_*` blanked; nothing appended to any store.
+
+| | A `== RANGE` judgeable | B `adx <= p` judgeable | A HO exp | B HO exp |
+|---|---|---|---|---|
+| 4h long | **1/12** | **7/12** | +0.1605 *(n=1)* | −0.0295 |
+| 4h short | **1/12** | **8/12** | −0.0521 *(n=1)* | +0.1913 |
+| 1h long | 12/12 | 9/12 | −0.0826 | **−0.2112** |
+| 1h short | 12/12 | 10/12 | +0.0784 | +0.0745 |
+
+**The judgeability claim is confirmed and the change still fails its own bar.** At 4h the current
+rule reaches `MIN_HOLDOUT_TRADES` in 1 draw of 12 — the store-based estimate (median 3.5 closed
+trades) was right, and the family genuinely cannot earn a verdict there. B reaches it in 7 and 8.
+The 4h expectancy columns are **not a comparison**: A's are single observations, which is the
+defect rather than a result.
+
+The pre-registered rule was *ship only if 4h judgeability rises AND 1h holdout expectancy does
+not fall by more than 0.05R*. **1h long falls 0.1286R** — above the floor this store resolves,
+so the rule stops it. 1h judgeability also drops (12/12 → 9/12 and 10/12): `adx <= p` draws
+below 20 are stricter than the label's own `adx < 20`, so B is not uniformly the wider gate.
+
+Nothing clears anything: best `t max` is +1.62 (4h short, arm B) against a selection-adjusted
+bar near 2.87 at this attempt count. No edge was expected and none appeared.
+
+**So `mean_reversion_*` keeps its gate, and this is the same answer F3 reached for the pullback
+half** — helps at 4h, hurts at 1h, do not ship. What the item becomes is the one thing both
+measurements agree on: the family is unjudgeable at 4h and 1d for a reason that is about SAMPLE,
+which makes it evidence for the pooled-mint experiment F2 defers rather than for another template
+edit. Re-open this only against a rule that does not cost the 1h leg, or once minting is pooled.
 
 ### F7. The hold is drawn in bars and the retiming only swaps the label — measured 2026-08-06, 86 rows
 
@@ -2671,11 +2728,165 @@ exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a s
 will see two different thresholds and the difference has to be written where they meet it, not
 only here.
 
-**What it does not buy, and this is the whole caveat.** Pooling makes rows judgeable; F2's own
-table says what the judgement was — CONFIRMED 0 → 0, CONTRADICTED 9 → 12. #566 sharpens it: after
-the selection correction the promotion gate can only confirm effects of **+0.48R or larger**
-against a real target near +0.05R, and of the 463 rows judgeable today **462 are CONTRADICTED**.
-So the honest claim for this lever is *"finds out faster"*, never *"earns more"*.
+**What it does not buy — and this paragraph cited the wrong experiment until 2026-08-07.** The
+table above is F2's **re-score**: existing single-symbol specs re-scoped to five symbols and
+replayed. Its CONFIRMED 0 → 0 is a fact about specs fitted on one symbol and then asked to
+transfer. F2 ran a second experiment for exactly this question — a pooled **mint** batch — and it
+did not read 0. Quoting only the re-score left a reader of this section concluding that pooled
+minting has never confirmed anything, which the record two subsections up contradicts.
+
+#566 still sharpens what a confirmation is worth: after the selection correction the promotion
+gate can only confirm effects of **+0.48R or larger** against a real target near +0.05R, and of
+the 463 rows judgeable today **462 are CONTRADICTED**.
+
+#### The pooled mint distribution, which F2 never published — re-run 2026-08-07
+
+F2 reported 11 CONFIRMED of 272 at 4h and 4 of 272 at 1h and said they "concentrate in the `oi_*`
+families" without giving the per-family split. That split is the whole question: 9 confirmations
+sprinkled over 34 families is noise, and 5 in one family is not. Re-run at 8 draws per family,
+pooled over the 5-symbol cohort, **all five legs attached** and post-`_fold_into_bounds` draws:
+
+| status over 272 pooled specs | 4h | 1h |
+|---|---|---|
+| CONTRADICTED | 222 | 260 |
+| INSUFFICIENT | 41 | 11 |
+| **CONFIRMED** | **9** | **1** |
+
+| family | 4h | 1h |
+|---|---|---|
+| `oi_unwind_short` | **5/8** | 1/8 |
+| `htf_pullback_short` | 3/8 | 0/8 |
+| `premium_fade_short` | 1/8 | 0/8 |
+
+**It concentrates, and that is not a chance pattern.** Under a null of 9 confirmations spread
+uniformly over 34 families, one family taking ≥5 has probability **8.5 × 10⁻⁵** — about 1 in
+11,700. The earlier reading of F2's summary (that ~1 family confirming at both timeframes is what
+chance predicts) was the right calculation on the wrong input; with the split in hand the
+concentration is real.
+
+**And four draws clear the selection-adjusted bar, which F2 said nothing did.** At 272 attempts
+the bar is z = 3.740. Four `oi_unwind_short` draws are above it — t = 5.16, 4.50, 4.28, 4.18 at
+holdout expectancies +0.44 to +0.70R over 33–141 trades. F2's best was 3.34 against the same bar.
+This is the first time anything in this record has cleared a corrected bar.
+
+**Three reasons to hold that at arm's length, in order of how much they could cost.**
+
+1. **The open-interest column is a DAILY series held constant across the day — measured
+   2026-08-08, and it is the one that matters.** The window was never the problem: coverage is
+   100% over all 6,000 4h rows and all 24,000 1h rows, on every cohort symbol, train and holdout
+   alike. What the coverage check found instead is the *resolution*. The feed returns **1,020
+   records stamped at midnight** (`2023-10-23T00:00:00Z`, `2023-10-24T00:00:00Z`, …), and
+   `build_feature_rows` carries each across the bars of its day:
+
+   | | values | distinct | run length |
+   |---|---|---|---|
+   | 4h `open_interest_zscore` | 6,000 | **1,000** (16.7%) | **6** (998 of 1,000 runs) |
+   | 1h `open_interest_zscore` | 24,000 | **1,000** (4.2%) | **24** (998 of 1,000 runs) |
+
+   The run length is exactly bars-per-day at each timeframe. **Three consequences, and they
+   compound:**
+
+   - The `oi_*` families mine a threshold on **~1,000 independent observations**, not 6,000 or
+     24,000. The other families in the same batch mine per-bar columns.
+   - The entry is a **STATE, not an event** — once the daily value crosses, the condition is true
+     for all six (or twenty-four) bars of that day. That is precisely the defect `macd_momentum` /
+     `_short` were RETIRED for on 2026-08-04: *"a state family re-fires on every bar of a move
+     rather than on the bar the relationship changed"*.
+   - The third consequence is the one everybody will reach for — that the trades inside a day are
+     near-duplicates, so `expectancy_t` divides by an inflated `sqrt(n)` and the clearance is an
+     artifact. **Measured 2026-08-08: it is false.** Recorded because it is the natural inference
+     and it does not survive contact.
+
+   **The trades are not clustered inside days.** Distinct `(symbol, UTC day)` pairs behind each
+   confirming draw, from trade stamps kept out of the same `_replay` the holdout uses and
+   cross-checked against `holdout.closed_count`:
+
+   | draw | n | symbol-days | market days | t | t·√(sym-days/n) | t·√(days/n) |
+   |---|---|---|---|---|---|---|
+   | 0 | 61 | 60 | 45 | +5.16 | **5.12** | **4.43** |
+   | 1 | 49 | 47 | 35 | +3.70 | 3.62 | 3.13 |
+   | 3 | 56 | 55 | 38 | +4.50 | **4.46** | 3.71 |
+   | 4 | 33 | 33 | 26 | +4.28 | **4.28** | **3.80** |
+   | 6 | 142 | 140 | 85 | +4.15 | **4.12** | 3.21 |
+
+   n ≈ symbol-days almost exactly — 61 trades on 60 symbol-days, 33 on 33. **The mechanism the
+   inference missed is that a position occupies the day it opens.** A fade holds 4–16 bars, so a
+   state condition that stays true cannot re-fire inside the day it is already trading in. The
+   `macd_momentum` analogy does not transfer, and the daily column does not inflate `n`.
+
+   **So that correction leaves the clearance standing, and the stricter one splits it.** Against
+   z = 3.740, 4 of 5 confirmed draws clear on the symbol-day unit. On the **market-day** unit —
+   cross-symbol trades on one day share a market period, which is the unit this record's own
+   effective-sample argument uses — only **2 of 5** clear (4.43 and 3.80), one is marginal at
+   3.71, and two fall to 3.21 and 3.13.
+
+   Where it stands: **not an artifact of the denominator, and not a clean clearance either.**
+   `htf_pullback_short` is unaffected on any unit — it clusters more (117 trades on 107
+   symbol-days, 65 market days) and its best t was 2.93, never near the bar.
+2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
+   leaned on is one draw here, not a second result.
+3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
+   and whose random-entry control loses 0.13R. An effect that large is more often an instrument
+   than an edge — and item 1 names the instrument.
+
+#### It does not reproduce — measured 2026-08-08, and this closes the question
+
+**The rotation cannot answer this and never will, which is worth stating before the measurement
+that can.** "Wait for generations and see if `oi_unwind_short` holds" is the obvious plan and it
+is void: `run_factory` mints single-symbol, so no store generation is ever the pooled hypothesis,
+and at 4h this family's stored rows close a **median 9** trades against a floor of 25. Nine of
+nine are unjudgeable. Rows do not pool across generations — each is its own hypothesis with its
+own tail — so accumulating more never makes one judgeable. Waiting buys nothing here.
+
+**What the store CAN judge says no.** Across the 18 stored `oi_unwind_short` rows:
+
+| timeframe | rows | judgeable | median judgeable HO exp | positive |
+|---|---|---|---|---|
+| 15m | 3 | 2 | −0.2832 | **0/2** |
+| 1h | 6 | 2 | −0.2184 | **0/2** |
+| 4h | 9 | **0** | — | — |
+
+Everywhere it can be judged it is judgeably negative, and that **agrees with the pooled 1h
+result** (1/8, t = 2.44, below the bar). The two methods only diverge at 4h, where one has
+evidence and the other structurally cannot.
+
+**So the question goes to F3's instrument**, which is the one available: truncate the series by
+0.7 each step so window *k+1*'s tail ends exactly where window *k*'s begins. Same five confirming
+draws, same cohort, adjacent and non-overlapping:
+
+| holdout window (4h) | draw 0 | draw 1 | draw 3 | draw 4 | draw 6 |
+|---|---|---|---|---|---|
+| `[4200,6000)` — the batch's own | **+0.62** (t 5.16) | +0.49 (3.70) | **+0.54** (4.50) | **+0.70** (4.28) | **+0.43** (4.15) |
+| `[2940,4200)` | **+0.53** (4.51) | +0.20 (1.49) | +0.42 (3.48) | +0.62 (3.55) | +0.31 (3.04) |
+| `[2058,2940)` | −0.03 | −0.06 | −0.06 | +0.00 | −0.02 |
+| `[1440,2058)` | −0.31 | −0.25 | −0.23 | −0.25 | −0.25 |
+
+**All five draws decay monotonically and cross zero in the same window.** The effect lives in the
+newest ~3,000 bars (~500 days) and reverses before them. That is not one strong window — it is
+two — but it is a *time gradient*, which is the same finding in a worse form: a rule whose sign
+depends on when you look is not a rule the promotion door should take. OI coverage is not the
+explanation; the feed starts 2023-10-23 and spans every window here.
+
+**So F9's conclusion stands, and now on evidence rather than on a citation.** Pooling *finds out
+faster* — it turned a family the rotation could never judge at 4h into one judged in an afternoon,
+and the judgement is that its confirmation is a property of the recent period. What is **not**
+established, and what nothing here supports, is that pooled minting earns more. The remaining
+honest use for the `oi_unwind_short` result is as a worked example of why the pooled door needs
+the window test wired beside it, not as a candidate.
+
+**One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
+`liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
+liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
+silently blanks all four `oi_*` families. The first run of this batch did exactly that and would
+have reported "0 confirmations at 1h, 4 at 4h, none in `oi_*`". `unsuppliable_features`, called
+per spec, named the four families instead of letting them fall into INSUFFICIENT. **That is the
+same failure F2's first pass published as a finding**, caught this time only because the guard was
+called; `backtest_spec_pooled` on its own walks around it.
+
+**And F2's closing cost is already spent at the timeframes that matter.** F2 warns that
+lengthening the replay window removes the `oi_*` families, citing `DERIVATIVE_HISTORY_DAYS = 520`.
+It is **1020** now, against `FACTORY_DEPTH_DAYS` 1000 — the two moved together on 2026-08-04 — so
+the gate binds at 1d only. `_oi_feed_reaches`'s own docstring still says 520 and is stale.
 
 **What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
 unknown effort:
