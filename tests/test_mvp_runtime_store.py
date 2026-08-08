@@ -250,6 +250,53 @@ def test_a_bad_line_fails_the_list_reader_wholesale_and_the_stream_where_it_sits
         next(stream)
 
 
+def test_the_numbered_reader_counts_file_lines_not_objects(tmp_path):
+    """Blank lines are skipped as rows and still consumed as lines, so an object counter and a
+    line counter diverge the moment a store has one. The crypto outcome readers quote this number
+    in their tamper and duplicate messages, which is what an operator greps for — counting yielded
+    objects instead would name a line that holds a different record."""
+    from runtime.mvp_runtime import jsonl
+
+    path = tmp_path / "s.jsonl"
+    path.write_text('{"a": 1}\n\n\n{"a": 2}\n', encoding="utf-8")
+
+    assert list(jsonl.iter_numbered(path, read_code="R", label="s")) == [(1, {"a": 1}), (4, {"a": 2})]
+    # iter_objects is the same generator with the number dropped — one reader, not two.
+    assert list(jsonl.iter_objects(path, read_code="R", label="s")) == [{"a": 1}, {"a": 2}]
+    assert list(jsonl.iter_numbered(tmp_path / "absent.jsonl", read_code="R", label="s")) == []
+
+
+def test_a_bad_line_names_its_line_number(tmp_path):
+    """The decoder's own "line 1 column 7" is relative to the single line it was handed, so on a
+    100k-line store it points at nothing. The failure names the file line instead."""
+    from runtime.mvp_runtime import jsonl
+
+    path = tmp_path / "s.jsonl"
+    path.write_text('{"a": 1}\n\n{not json\n', encoding="utf-8")
+
+    with pytest.raises(PersistenceError) as exc:
+        jsonl.read_objects(path, read_code="R", label="s")
+    assert "line 3" in str(exc.value)
+
+
+def test_a_caller_may_keep_its_own_error_class(tmp_path):
+    """``exc_type`` is not a style knob. The crypto outcome readers are reached through tool
+    chokepoints that catch ToolError; a reader that started raising PersistenceError would fail
+    *past* its caller rather than at it. Both carry ``reason_code``, so fail-closed is unchanged —
+    only which except-clause sees it. The default stays PersistenceError for every existing
+    caller, which the tests above pin."""
+    from runtime.mvp_runtime import jsonl
+    from runtime.mvp_runtime.errors import ToolError
+
+    path = tmp_path / "s.jsonl"
+    path.write_text('{not json\n', encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        jsonl.read_objects(path, read_code="CF_UNREADABLE", label="counterfactual outcomes", exc_type=ToolError)
+    assert exc.value.reason_code == "CF_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+
+
 def test_unwritable_ledger_fails_closed(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")  # a file where a directory parent is expected
