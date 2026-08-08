@@ -3372,7 +3372,31 @@ zero timestamp hand-rolls, zero lock hand-rolls, four JSONL sites. **The two tha
 `crypto/` and `scripts/`, and they want opposite fixes**, which is the reason this section splits
 them rather than filing one "reduce duplication" item.
 
-#### G4a. `crypto/` never adopted `jsonl` — 35 sites, 15 modules, **0 importers**
+#### G4a. `crypto/` never adopted `jsonl` — 35 sites, 15 modules, **0 importers** — **reads done 2026-08-08**
+
+> **Closed for the read half.** All five readers fold, one PR each in the order this section set:
+> `counterfactual` (#623), `pool` (#626), then `paper` / `live_pnl` / `live_promotion` together
+> once the decisions below were settled and the remaining three were the identical transformation.
+> `grep -rn 'for i, line in enumerate(lines):' runtime/mvp_runtime/crypto/` now returns **0**.
+> The write half stays hand-rolled on purpose — see the fsync paragraph below; a test in
+> `test_mvp_runtime_crypto_paper.py` now fails if any of the three loses its `os.fsync`, so the
+> "tidy-up" this section warns about cannot land quietly.
+>
+> **What the fold turned up, and it outlives this item.** Delegating a read moves the reason code
+> into a *parameter*, which `DIAGNOSTIC_CODE_INDEX.md` could not see — so #623 taught the
+> extractor to read `read_code=` / `write_code=` / `exc_type=`, and that surfaced **~30 codes
+> that had never been indexed**, `LEDGER_UNREADABLE` and `LEDGER_WRITE_FAILED` — the audit
+> ledger's own failures — among them.
+>
+> **What is still not indexed, and this is the residue worth picking up.** A code passed as a
+> *module-level constant* rather than a string literal is still skipped: `LIVE_HISTORY_TAMPERED`,
+> `LIVE_HISTORY_UNREADABLE` and `CANARY_HISTORY_UNREADABLE` are absent from the index and were
+> absent before this work too — they are part of the **191** sites the index reports as
+> "built at runtime". They are not built at runtime. `NAME = "LITERAL"` at module scope is
+> exactly resolvable, not a guess, and the three named above are the live P&L ledger's and the
+> canary registry's own tamper codes. Resolving them is a change to the extractor alone, and it
+> would move a large fraction of those 191 — which is why it was not folded into a PR about
+> reading five files.
 
 ```
 grep -rn 'json.loads(line)\|json.loads(row)\|json.loads(raw)' runtime/mvp_runtime/crypto/ | wc -l   # 21 reads

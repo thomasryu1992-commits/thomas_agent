@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **426** distinct codes across **707** raise sites
+- **426** distinct codes across **706** raise sites
 - **28** exception classes carry them
 - **61** codes are raised from more than one module (see below)
-- **196** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **192** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 
 ## Codes raised from more than one module
 
@@ -534,11 +534,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `OI_INTERVAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1938 | `open_interest_history` | `interval not in OI_INTERVALS` |
 | `OI_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/oi_store.py` | 201 | `append_rows` | `not name` |
 | `ORDER_HOST_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 584 | `__init__` | `host not in ALLOWED_ORDER_HOSTS` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1203 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1208 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
-| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1197 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1183 | `read_outcomes` | `—` |
-| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1190 | `read_outcomes` | `—` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1197 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1202 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
+| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1191 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1179 | `read_outcomes` | `—` |
 | `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 691 | `run_analysis_worker` | `—` |
 | `OUT_OF_MVP_SCOPE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 204 | `classify_task` | `_READ_ONLY_CONSTRAINT not in constraints` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 175 | `resolve_target` | `'..' in candidate.parts` |
