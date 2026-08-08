@@ -143,3 +143,49 @@ def test_the_scheduler_admits_the_kind():
     from runtime.mvp_runtime import scheduler
 
     assert scheduler.KIND_NULL_CONTROL in scheduler.KINDS
+
+
+def test_the_scheduled_fire_replays_the_frame_the_factory_MINED(tmp_path, monkeypatch):
+    """The fire must enrich its frame with all five legs, not just the price feeds.
+
+    The defect this pins: the fire attached `attach_feeds` alone, so every htf_*,
+    ref_*/rel_strength_*, xs_* and positioning_* column was None down the whole window and
+    `measure_spec` answered `unsuppliable` — for good, since the gap was in the collection
+    rather than in the spec. 65 of the 798 selected specs in the store read one of those
+    columns on 2026-08-08, and they are the non-price families the pool most needs judged.
+
+    Asserted on the frame rather than on a status because `too_young` is checked first and is
+    the answer for every cell until ~2026-08-23, which is precisely why this went unseen.
+
+    ETHUSDT because BTCUSDT *is* `REFERENCE_SYMBOL` and the reference leg correctly skips
+    itself; 4h because 1d has no higher timeframe to attach.
+    """
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import features
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import ScheduleStore, build_schedule, run_due
+
+    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+    seen: list[factory.ReplayFrame] = []
+    real_build = factory.build_replay_frame
+    monkeypatch.setattr(
+        factory, "build_replay_frame",
+        lambda snapshot, **kw: seen.append(real_build(snapshot, **kw)) or seen[-1],
+    )
+    schedule = build_schedule(kind=scheduler.KIND_NULL_CONTROL, request="ETHUSDT 4h",
+                              interval_seconds=86400, created_by="op", now="2026-07-22T10:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                      repo_root=tmp_path)
+
+    assert summary["fired"] == 1
+    assert seen, "the fire never built a replay frame"
+    rows = seen[0].rows
+    for column in ("htf_market_regime", "rel_strength_roc_4", "xs_rank_pct"):
+        assert any(row.get(column) is not None for row in rows), f"{column} never supplied"
+    # The whole vocabulary each leg owns, so a leg that lands half-attached is caught too.
+    for group in (features.HTF_COLUMNS, features.REFERENCE_COLUMNS, features.XS_NUMERIC_COLUMNS):
+        for column in group:
+            assert column in rows[0], f"{column} missing from the frame entirely"
