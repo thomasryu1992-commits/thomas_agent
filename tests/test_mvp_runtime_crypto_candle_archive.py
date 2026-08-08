@@ -855,3 +855,49 @@ def test_a_rate_limited_pass_reaches_the_operator(tmp_path, monkeypatch):
     assert exc.value.reason_code == "ARCHIVE_RATE_LIMITED"
     # The all-degraded check cannot be what caught it: only one book actually degraded.
     assert "not attempted" in str(exc.value)
+
+
+def test_the_sweep_bound_is_a_property_of_the_cadence_not_the_rotation(tmp_path):
+    """Evenly spaced passes tile; the scheduler does not space them evenly.
+
+    The offset is a function of the CLOCK, not of the pass count, so an irregular gap moves the
+    window by an irregular number of books: two hours between fires advances the offset 120
+    while the window is 100 wide, and the 20 in between wait a whole lap. `plan_pass`'s first
+    paragraph describes the tiling and is where a reader stops.
+
+    Measured over the 88 real fires 2026-08-04T14:59Z..2026-08-08T06:59Z, the spacing runs
+    49.1-120.0 minutes (median 60.1), and enumerating against the live store over those actual
+    times gives max 12.0h / p90 7.0h / median 6.0h against a tiling bound of 6 — coverage intact
+    (376 of 376), the bound twice what the arithmetic says.
+
+    Pinned synthetically because the live figure is a fact about the venue and the scheduler,
+    not about this function; what belongs in a test is that the two cadences differ at all.
+    """
+    symbols = [f"S{i:02d}" for i in range(25)]
+    timeframes = ("15m", "1h", "4h", "1d")            # 100 books
+    for timeframe in timeframes:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+    budget = 40
+
+    def worst_gap(spacings_minutes):
+        seen: dict[tuple[str, str], int] = {}
+        gap, minute = 0, 0
+        for index, step in enumerate(spacings_minutes):
+            minute += step
+            order = archive.plan_pass(symbols, timeframes, venue=VENUE,
+                                      now_ms=NOW_MS + minute * 60_000, root=tmp_path)
+            for book in order[:budget]:
+                if book in seen:
+                    gap = max(gap, index - seen[book])
+                seen[book] = index
+        return gap
+
+    even = worst_gap([60] * 40)
+    # The observed shape: mostly hourly with the 49- and 120-minute fires the ledger records.
+    uneven = worst_gap(([60, 60, 120, 49, 60, 60, 60, 120] * 5))
+    assert even <= 3, "evenly spaced passes should tile within the window's own arithmetic"
+    assert uneven > even, (
+        "the tiling bound only holds for evenly spaced passes — if this stops being true the "
+        "docstring's measured figure should be re-derived, not the other way round"
+    )
