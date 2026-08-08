@@ -97,7 +97,7 @@ def run_promotion(
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False, allow_oversized_pool: bool = False,
-    allow_quarantined_derivation: bool = False,
+    allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -258,6 +258,20 @@ def run_promotion(
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
+    # Beside the size cap because it is the other question about the ASSEMBLED pool rather
+    # than about a candidate — and the last one, because it is the only guard here that is
+    # about the entries this install would leave BEHIND rather than the ones it adds.
+    # Replace mode rebuilds every entry with a hardcoded PAPER_ACTIVE, so re-listing the
+    # incumbents to drop one brings back everything the lifecycle had terminated. Recorded
+    # either way below, and read `pool.assert_no_silent_reactivation` for why the approval
+    # cannot cover this and the operator therefore must.
+    reactivations = pool_store.silent_reactivations(entries, root=root)
+    if not allow_reactivation:
+        try:
+            pool_store.assert_no_silent_reactivation(entries, root=root)
+        except MvpRuntimeError as exc:
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+
     new_pool = {
         "pool_version": "active_strategy_pool.v1",
         "stage": "paper",
@@ -309,6 +323,34 @@ def run_promotion(
         # leaves no trace is indistinguishable, a month later, from a door that never refused.
         "derivations": [c.get("derivation_type") for c in candidates],
         "quarantined_derivation_escape": bool(allow_quarantined_derivation),
+        # Who came back from a terminal status, and from which. Recorded whether or not the
+        # escape fired, like the bases and depths above: the reactivation is the part of the
+        # effect the approval's content hash cannot name, so the ledger is the only place it
+        # is written down at all.
+        "reactivation_escape": bool(allow_reactivation),
+        "reactivated": reactivations,
+        # Every review this promotion did NOT get, in one field.
+        #
+        # Each escape above is already recorded on its own, and individually each is a
+        # defensible operator call. What no record answered is the question an auditor
+        # actually asks — *what survived* — because answering it meant knowing all eight
+        # flags exist and reading them together. The statistical judgment (verdict, holdout,
+        # selection tier, expectancy) is deliberately not a gate here at all: it is the
+        # operator reading the ranked `--list` surface plus Thomas's approval of the exact
+        # candidate ids. So with the approval escaped as well, a promotion can reach the pool
+        # having met nothing but pool structural validation — and read, in the ledger,
+        # exactly like one that cleared everything.
+        "reviews_skipped": [
+            name for name, skipped in (
+                ("thomas_approval", without_approval and approval_id is None),
+                ("cost_basis", allow_stale_cost_basis),
+                ("evidence_depth", allow_unrecorded_evidence_depth),
+                ("semantic_duplicates", allow_duplicates),
+                ("pool_size_cap", allow_oversized_pool),
+                ("quarantined_derivation", allow_quarantined_derivation),
+                ("silent_reactivation", allow_reactivation and bool(reactivations)),
+            ) if skipped
+        ],
         "created_at": now,
     }
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
@@ -349,6 +391,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: promote a candidate minted by a derivation the "
                              "live pool does not take (recorded as such). Refuses nothing on "
                              "today's store — every derivation minted so far is promotable.")
+    parser.add_argument("--allow-reactivation", action="store_true",
+                        help="explicit escape: let this install return terminally SUSPENDED / "
+                             "ARCHIVED members to trading (recorded, with who and from what). "
+                             "Replace mode rebuilds every entry as PAPER_ACTIVE, so re-listing "
+                             "the incumbents to drop one reactivates the rest; the approval's "
+                             "content hash cannot name that, which is why the operator must.")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -610,11 +658,25 @@ def main(argv: list[str] | None = None) -> int:
         allow_duplicates=args.allow_duplicates,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
+        allow_reactivation=args.allow_reactivation,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
           f"({summary['promoted_strategy_ids']}) -> active pool "
           f"({summary['pool_size']} strategies) [door: {door}]")
+    # The ledger has carried every escape separately for a while; what nobody could read off
+    # it was the total. Printed at the moment of the install rather than only recorded,
+    # because the operator holding the argv is the last reader who can still stop.
+    if summary["reactivated"]:
+        print(f"NOTE: returned {len(summary['reactivated'])} terminal member(s) to trading — "
+              + ", ".join(f"{r['strategy_id']} (was {r['from_status']})"
+                          for r in summary["reactivated"]))
+    if summary["reviews_skipped"]:
+        print(f"NOTE: this promotion skipped {len(summary['reviews_skipped'])} review(s): "
+              + ", ".join(summary["reviews_skipped"])
+              + ". Recorded on the ledger; the statistical judgment (verdict, holdout, "
+                "selection tier, expectancy) is never a gate here — it is the ranked --list "
+                "surface plus Thomas's approval of the exact candidate ids.")
     # Said here because this is the moment the pool's directional composition changes, and
     # because the consequence is invisible everywhere else until positions fail to open: with
     # one routable strategy per context, a spec's direction is fixed at promotion time, so a

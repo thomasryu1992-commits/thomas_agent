@@ -745,8 +745,15 @@ def _execute(
         # spec on the bars minted AFTER it against seeded null entries, and appends one record.
         # Touches no pool, no candidates, no orders.
         from .crypto import null_control
-        from .crypto.cycle import attach_feeds
+        from .crypto.cycle import (
+            attach_cross_section,
+            attach_feeds,
+            attach_htf,
+            attach_positioning,
+            attach_reference,
+        )
         from .crypto.market_data import (
+            HIGHER_TIMEFRAME,
             collect_market_data,
             factory_candle_target,
             select_liquidation_feed,
@@ -772,6 +779,30 @@ def _execute(
         attach_feeds(snapshot, collector=collector,
                      liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
                      now=now, root=repo_root, accumulate=False)
+        # The other four legs, for the reason this block opens with: the frame replayed here
+        # has to be the frame the spec was MINED on, and the factory enriches its own with all
+        # five. With `attach_feeds` alone every htf_*, ref_*/rel_strength_*, xs_* and
+        # positioning_* column is None down the entire window, so `measure_spec` reads that
+        # through `unsuppliable_features` and answers `unsuppliable` — permanently, because the
+        # gap is in the collection rather than in the spec, and no amount of accumulation moves
+        # it. Measured 2026-08-08 against the candidate store: 65 of the 798 selected specs
+        # (8.1%) read at least one such column, and they are the non-price families the pool
+        # most needs judged. It was invisible because `too_young` is checked first and is still
+        # the answer for every cell — the earliest measurable date is ~2026-08-23.
+        #
+        # Seven extra candle reads per fire (HTF, proxy, five peers) at a daily cadence, which
+        # is the bill the factory already pays per fire for the same frame; `attach_positioning`
+        # is a local store read and costs no request. All four degrade rather than raise — a leg
+        # that cannot be read leaves its columns None, which is exactly today's state and not a
+        # worse one.
+        higher = HIGHER_TIMEFRAME.get(timeframe)
+        attach_htf(snapshot, collector=collector, now=now,
+                   limit=factory_candle_target(higher) if higher else None)
+        attach_reference(snapshot, collector=collector, now=now,
+                         limit=factory_candle_target(timeframe))
+        attach_cross_section(snapshot, collector=collector, now=now,
+                             limit=factory_candle_target(timeframe))
+        attach_positioning(snapshot, root=repo_root)
         frame = crypto_factory.build_replay_frame(snapshot)
         # The seed is the window's own content hash, so a recorded fire replays identically —
         # the factory's rule, for the same reason.
@@ -1068,12 +1099,24 @@ def _execute(
         from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
+        # Archives included, because `BACKLOG_WINDOW_DAYS` is a SPAN and the active ledger's
+        # horizon is a ROW COUNT. `iter_records` sees only the active file, so rotation was
+        # silently deciding the window: measured 2026-08-08 on the live host, the documented
+        # 30 days could see nine, four in-window proposal records having already rotated out,
+        # and the backlog fell 15 -> 11 between 08-05 and 08-06 for that reason alone — a drop
+        # that reads as families being installed and was the ledger being tidied. The error
+        # direction is the bad one for a throttle: fewer counted, cap not reached, fires
+        # proceed that the design meant to skip.
+        window_start = timeutil.plus_minutes(
+            now, -abs(crypto_proposer.BACKLOG_WINDOW_DAYS) * 24 * 60)
         # A malformed ledger must not stop the scheduler: an unreadable record stream
         # degrades to "backlog unknown = 0" (the fire proceeds) rather than failing closed —
         # the backlog cap is a courtesy throttle, not a safety gate.
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.iter_records() if ledger is not None else [], installed, now=now,
+                ledger.iter_records_with_archive(appended_since=window_start)
+                if ledger is not None else [],
+                installed, now=now,
             )
         except MvpRuntimeError:
             backlog = 0
