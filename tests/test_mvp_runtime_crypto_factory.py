@@ -89,12 +89,20 @@ def _funding_series(candles, *, hours=8):
     return events
 
 
-def _trending_snapshot(n=200, *, funding=True):
+def _trending_snapshot(n=200, *, funding=True, taker_flow=True):
     """Rising closes with a mid-series dip: entries and both exit kinds occur.
 
     ``funding`` defaults ON because a production snapshot always carries it. Pass False for the
     tests that are ABOUT an unsourced carry — see :func:`_funding_series` for why the default
     had to move.
+
+    ``taker_flow`` defaults ON for the same reason and it is the stronger case: the aggressor
+    legs arrive in every klines response the collector makes, so a snapshot WITHOUT them is a
+    shape production never produces. It defaulted off only because nothing had needed it, and
+    what that cost was invisible until the rotation grew — a fire whose block lands on the flow
+    families mints nothing at all against a snapshot missing their columns
+    (``unsuppliable_features``), so the fixture silently decided which families these tests
+    could see. Pass False for a test that is about the absence itself.
     """
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
@@ -104,12 +112,25 @@ def _trending_snapshot(n=200, *, funding=True):
         drift = 1.0 if (i // 20) % 3 != 2 else -1.5  # two up-blocks, one down-block
         price = max(10.0, price + drift)
         close_time = last_close - (n - 1 - i) * step
-        candles.append({
+        volume = 10.0 + (i % 7)
+        candle = {
             "open_time": timeutil.format_iso(close_time - step),
             "open": price - drift, "high": price + 1.5, "low": price - 1.5,
-            "close": price, "volume": 10.0 + (i % 7),
+            "close": price, "volume": volume,
             "close_time": timeutil.format_iso(close_time),
-        })
+        }
+        if taker_flow:
+            # The aggressor split swings with the block's drift, so the flow columns carry
+            # signal rather than a constant — a constant would leave every flow family at
+            # zero trades, which is the same blindness by a different route.
+            buy_share = 0.62 if drift > 0 else 0.38
+            candle.update({
+                "taker_buy_base": volume * buy_share,
+                "taker_buy_quote": volume * buy_share * price,
+                "quote_volume": volume * price,
+                "trade_count": 40.0 + (i % 11),
+            })
+        candles.append(candle)
     snapshot = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles,
                 "is_synthetic": False}
     if funding:
@@ -2399,6 +2420,9 @@ def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
         "premium_fade_long", "premium_fade_short",
         "taker_absorption_long", "taker_absorption_short",
         "taker_flow_long", "taker_flow_short",
+        # Reads `taker_flow_imbalance`, so it drops on a venue with no aggressor split for the
+        # same reason the three flow families above it do.
+        "taker_flow_fade_long", "taker_flow_fade_short",
     }
     # Funding rides a real series here, so the funding families survive — the gate is about
     # the feed each family needs, not about which venue is the familiar one.
@@ -2536,6 +2560,11 @@ _FADE_FAMILIES = frozenset({
     "mean_reversion", "mean_reversion_short", "funding_fade_long", "funding_fade_short",
     "premium_fade_long", "premium_fade_short", "oi_unwind_long", "oi_unwind_short",
     "taker_absorption_long", "taker_absorption_short",
+    # 2026-08-08. Both are reversal claims — "the slow leg is stretched and the fast one has
+    # turned", "one-way aggression has spent the move" — so both are COMPLETE when the stretch
+    # unwinds, which is the whole rule this split encodes.
+    "htf_reversal_long", "htf_reversal_short",
+    "taker_flow_fade_long", "taker_flow_fade_short",
 })
 
 
