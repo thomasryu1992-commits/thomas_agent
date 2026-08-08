@@ -1261,20 +1261,28 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # rather than by a preference: a percentile floor above 0.9 selects a tenth of the bars,
     # which is how a family arrives FRAGILE for want of trades rather than for want of edge.
     # Three pairs added to widen the SEARCH SPACE rather than to back a hypothesis — measured
-    # 2026-08-08 over this file: of the 56 columns in `NUMERIC_FEATURES`, the 38 minted families
-    # between them read 24, and the rotation had never conditioned on the other 32. These read
-    # three of them (`htf_rsi`, `taker_flow_imbalance`) or read a read column at a sign the
-    # library holds no family at (`funding_zscore` above zero). Every one is already collected,
-    # already classified in `_FEATURE_FEED`, and already gated by an existing set — so what is
-    # new here is which questions get asked, not what gets fetched or what may route.
+    # 2026-08-08 over this file, across 60 parameter draws per template rather than the base
+    # params alone: of the 56 columns in `NUMERIC_FEATURES`, the 38 minted families between them
+    # read **21**, and the rotation had never conditioned on the other 35. Two of those are
+    # reached here (`htf_rsi`, `taker_flow_imbalance`); the third pair reads an already-read
+    # column at a sign the library holds no family at (`funding_zscore` above zero). Every one is
+    # already collected, already classified in `_FEATURE_FEED`, and already gated by an existing
+    # set — so what is new here is which questions get asked, not what gets fetched or what may
+    # route.
+    #
+    # (The count is of MINTABLE NUMERIC columns. The families reference 24 distinct feature
+    # names in total, which is the same measurement plus three categoricals — a number worth
+    # naming here because conflating the two is how this comment first read 24/56.)
     #
     # **The cost is dilution and it is real.** `DEFAULT_BATCH_SIZE` is 4 per fire whatever the
-    # library holds, so 38 -> 44 families is ~16% slower evidence accrual for every existing
-    # family, against an effective sample already measured in market periods rather than trades.
-    # That trade is worth taking only for premises the search cannot otherwise reach, which is
-    # why the squeeze/contraction proposals that arrived beside these were NOT ported: they
-    # re-propose `volatility_squeeze_*`, retired 2026-08-04 on a measurement, and re-listing
-    # that pair is a one-line reversal nobody needs a new family for.
+    # library holds, so a context's revisit interval stretches: measured per context,
+    # 34 -> 40 families at BTC 1h/4h (**+17.6%**), 36 -> 42 at the non-proxy symbols (+16.7%),
+    # and 22 -> 24 at 1d (+9.1%, where the htf and funding pairs are gated out). That is
+    # slower evidence accrual for every existing family, against an effective sample already
+    # measured in market periods rather than trades. Worth taking only for premises the search
+    # cannot otherwise reach, which is why the squeeze/contraction proposals that arrived beside
+    # these were NOT ported: they re-propose `volatility_squeeze_*`, retired 2026-08-04 on a
+    # measurement, and re-listing that pair is a one-line reversal nobody needs a new family for.
     StrategyTemplate("htf_reversal_long", "long", "1h",
                      {"htf_rsi_edge": ParamSpec(10.0, 30.0),
                       "rsi_edge": ParamSpec(2.0, 20.0), **_FADE_EXIT_PARAMS},
@@ -1300,6 +1308,19 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # signed form puts 0.10 at "one side took 55% of the bar" and 0.40 at 70%, and above 70% the
     # family selects a tail thin enough to arrive unjudgeable, which is the `vol_pct_min` ceiling
     # argument. Nothing has measured this distribution; the search moves the bound.
+    #
+    # **The risk that carries, named rather than hidden.** The one installed family whose entry
+    # is a RAW-SCALE flow threshold is the one that produces nothing: measured 2026-08-08 over
+    # the candidate store, `taker_flow_long` has a median `closed_count` of **0** with 14 of its
+    # 15 stored specs taking zero trades (`taker_flow_short` 7.5). The feed itself is not the
+    # problem — `taker_absorption_*`, reading the z-score of this same series, medians 40 and 43
+    # with no zero-trade spec at all — so the failure sits in thresholding a raw flow level. This
+    # pair thresholds a raw flow level. What argues the other way is only mechanical: the
+    # single-bar print has strictly wider dispersion than its own rolling mean, so the same
+    # numeric bound selects far more bars. That was NOT confirmed on data — no archived candle
+    # carries the aggressor split (`taker_buy_base` is null on every hyperliquid row), so the
+    # distribution could not be measured offline. If the pair arrives FRAGILE for want of trades,
+    # the bound is where to look first, and the z-score form is the sibling that works.
     StrategyTemplate("taker_flow_fade_long", "long", "1h",
                      {"flow_edge": ParamSpec(0.10, 0.40),
                       "rsi_max": ParamSpec(20.0, 40.0), **_FADE_EXIT_PARAMS},
