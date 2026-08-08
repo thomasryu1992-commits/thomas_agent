@@ -61,3 +61,45 @@ def test_an_entry_is_adverse_in_the_mirror_of_an_exit():
     """
     assert _adverse_bps(100.0, 100.5, "BUY", "entry") == pytest.approx(50.0)
     assert _adverse_bps(100.0, 99.5, "SELL", "entry") == pytest.approx(50.0)
+
+
+# --- the summary line has to survive being quoted on its own ---------------------
+
+
+def _summary(*stops: float) -> str:
+    """The `stop fills:` line for the given adverse readings, at the real modelled rate."""
+    from measure_live_slippage import render
+
+    rendered = render({
+        "modelled_bps": 3.0, "unmeasurable": 0,
+        "entries_without_intent": 0, "canaries_without_intent": 0,
+        "measured": [
+            {"symbol": "X", "close_reason": "stop_loss",
+             "intended": 100.0, "realized": 100.0, "adverse_bps": bps}
+            for bps in stops
+        ],
+    })
+    return next(line for line in rendered.splitlines() if line.startswith("stop fills:"))
+
+
+def test_each_multiple_names_the_figure_it_divides():
+    """The live readings on 2026-08-07, whose old rendering read
+    `median 11.73 bps  worst 23.47  against 3.0 modelled (7.8x)` — where the one multiple
+    trailed the whole line and 7.8 is the WORST's, not the median's (3.9)."""
+    line = _summary(0.0, 23.47)
+    assert "median 11.73 bps (3.9x modelled 3.0)" in line
+    assert "worst 23.47 (7.8x)" in line
+
+
+def test_the_multiples_differ_when_the_readings_do():
+    """The pin that matters: one number cannot stand for both unless they are equal."""
+    line = _summary(3.0, 30.0)
+    assert "median 16.50 bps (5.5x modelled 3.0)" in line
+    assert "worst 30.00 (10.0x)" in line
+
+
+def test_one_reading_makes_median_and_worst_agree():
+    """The case the old line was accidentally right for, and the reason it survived."""
+    line = _summary(23.47)
+    assert "median 23.47 bps (7.8x modelled 3.0)" in line
+    assert "worst 23.47 (7.8x)" in line
