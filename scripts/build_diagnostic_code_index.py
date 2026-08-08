@@ -31,7 +31,7 @@ import ast
 import pathlib
 import sys
 from collections import Counter, defaultdict
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Iterator, Mapping, NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "runtime"
@@ -51,19 +51,77 @@ class Site(NamedTuple):
     condition: str | None
 
 
-def _literal_code(call: ast.Call) -> str | None:
+def module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-scope ``NAME = "LITERAL"`` bindings that a raise site may name instead of inlining.
+
+    Resolving these is not the guessing this file refuses to do. ``LIVE_HISTORY_TAMPERED =
+    "LIVE_HISTORY_TAMPERED"`` at module scope has exactly one value, readable without executing
+    anything — and 79 raise sites were being reported as *"built at runtime"* on that basis alone,
+    including the live P&L ledger's and the canary registry's own tamper codes, which are the
+    codes an operator is most likely to be holding when they come here.
+
+    Two bindings are dropped rather than resolved, because either could make the index lie:
+
+    * a name assigned twice at module scope with different values — its value at the raise depends
+      on execution order, which is the thing this file does not model;
+    * a name also bound inside any function in the module (parameter or assignment) — the raise
+      may be reading the local one, and an index that silently picks the module value would name
+      the wrong code with full confidence.
+    """
+    constants: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            name = node.targets[0].id
+            if name in constants and constants[name] != node.value.value:
+                ambiguous.add(name)
+            constants[name] = node.value.value
+
+    shadowed: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                    args.vararg, args.kwarg):
+            if arg is not None:
+                shadowed.add(arg.arg)
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Assign):
+                for target in inner.targets:
+                    if isinstance(target, ast.Name):
+                        shadowed.add(target.id)
+            elif isinstance(inner, (ast.AugAssign, ast.AnnAssign)):
+                if isinstance(inner.target, ast.Name):
+                    shadowed.add(inner.target.id)
+
+    return {n: v for n, v in constants.items() if n not in ambiguous and n not in shadowed}
+
+
+def _string_value(node: ast.AST | None, constants: Mapping[str, str]) -> str | None:
+    """A string this node certainly evaluates to — a literal, or a resolved module constant."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    return None
+
+
+def _literal_code(call: ast.Call, constants: Mapping[str, str]) -> str | None:
     """The reason code, from the first positional argument or ``reason_code=``.
 
-    A non-literal (an f-string, a variable) is skipped rather than guessed at: an index that
-    invented a code would be worse than one that admits a gap, and the gap is countable.
+    A non-literal that is not a resolvable module constant (an f-string, a local, an attribute) is
+    skipped rather than guessed at: an index that invented a code would be worse than one that
+    admits a gap, and the gap is countable.
     """
     for keyword in call.keywords:
-        if keyword.arg == "reason_code" and isinstance(keyword.value, ast.Constant):
-            value = keyword.value.value
-            return value if isinstance(value, str) else None
-    if call.args and isinstance(call.args[0], ast.Constant):
-        value = call.args[0].value
-        return value if isinstance(value, str) else None
+        if keyword.arg == "reason_code":
+            return _string_value(keyword.value, constants)
+    if call.args:
+        return _string_value(call.args[0], constants)
     return None
 
 
@@ -78,7 +136,7 @@ DELEGATED_CODE_KEYWORDS = ("read_code", "write_code")
 DELEGATED_DEFAULT_CLASS = "PersistenceError"
 
 
-def _delegated_code(call: ast.Call) -> tuple[str, str] | None:
+def _delegated_code(call: ast.Call, constants: Mapping[str, str]) -> tuple[str, str] | None:
     """``(code, error class)`` for a call that hands a literal code to a primitive that raises.
 
     The class comes from ``exc_type=`` when the caller names one and from the primitive's default
@@ -87,10 +145,10 @@ def _delegated_code(call: ast.Call) -> tuple[str, str] | None:
     code: str | None = None
     error_class = DELEGATED_DEFAULT_CLASS
     for keyword in call.keywords:
-        if keyword.arg in DELEGATED_CODE_KEYWORDS and isinstance(keyword.value, ast.Constant):
-            value = keyword.value.value
-            if isinstance(value, str):
-                code = value
+        if keyword.arg in DELEGATED_CODE_KEYWORDS:
+            resolved = _string_value(keyword.value, constants)
+            if resolved is not None:
+                code = resolved
         elif keyword.arg == "exc_type":
             named = keyword.value
             if isinstance(named, ast.Name):
@@ -109,6 +167,7 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - a file that does not parse is not indexable
             continue
+        constants = module_string_constants(tree)
         parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -122,12 +181,12 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
             if not name:
                 continue
             if _is_error_class(name):
-                code = _literal_code(node)
+                code = _literal_code(node, constants)
                 if code is None:
                     skipped += 1
                     continue
             else:
-                delegated = _delegated_code(node)
+                delegated = _delegated_code(node, constants)
                 if delegated is None:
                     continue
                 code, name = delegated

@@ -19,7 +19,12 @@ from collections import defaultdict
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from build_diagnostic_code_index import OUTPUT_REL, build, collect_sites  # noqa: E402
+from build_diagnostic_code_index import (  # noqa: E402
+    OUTPUT_REL,
+    build,
+    collect_sites,
+    module_string_constants,
+)
 
 # Codes raised from more than one module as of 2026-08-06, when this check was introduced.
 #
@@ -73,6 +78,43 @@ def test_the_committed_index_matches_the_source():
     assert committed == build(), (
         f"{OUTPUT_REL} is stale — run `python scripts/build_diagnostic_code_index.py`"
     )
+
+
+def test_a_code_named_by_a_module_constant_is_resolved():
+    """`NAME = "LITERAL"` at module scope has exactly one value, readable without executing
+    anything — so a raise that names it is not "built at runtime", which is how the index used to
+    report 79 of them. The three below are the live P&L ledger's and the canary registry's own
+    tamper codes: the codes an operator is most likely to be holding when they come here."""
+    per_code = _modules_per_code()
+    for code, module in (
+        ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_pnl.py"),
+        ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_pnl.py"),
+        ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_promotion.py"),
+    ):
+        assert module in per_code.get(code, set()), f"{code} is raised from {module} but not indexed"
+
+
+def test_resolution_refuses_a_name_it_cannot_be_certain_of():
+    """The two ways resolving a name could make the index *lie*, both dropped rather than guessed.
+
+    A module constant reassigned to a different value depends on execution order, which this
+    extractor does not model. A module constant whose name is also bound inside some function may
+    be read as the local at the raise — and naming the wrong code with full confidence is worse
+    than admitting the gap, which is the rule the rest of this file already follows."""
+    import ast
+
+    reassigned = ast.parse('X = "one"\nX = "two"\nY = "kept"\n')
+    assert module_string_constants(reassigned) == {"Y": "kept"}
+
+    shadowed = ast.parse('CODE = "CODE"\nSAFE = "SAFE"\ndef f(CODE):\n    return CODE\n')
+    assert module_string_constants(shadowed) == {"SAFE": "SAFE"}
+
+    assigned_locally = ast.parse('CODE = "CODE"\ndef f():\n    CODE = "other"\n    return CODE\n')
+    assert module_string_constants(assigned_locally) == {}
+
+    # A same-valued repeat is not ambiguity — the value is the same either way.
+    repeated = ast.parse('X = "same"\nX = "same"\n')
+    assert module_string_constants(repeated) == {"X": "same"}
 
 
 def test_a_code_handed_to_a_shared_primitive_is_still_indexed():

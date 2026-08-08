@@ -3388,15 +3388,25 @@ them rather than filing one "reduce duplication" item.
 > that had never been indexed**, `LEDGER_UNREADABLE` and `LEDGER_WRITE_FAILED` — the audit
 > ledger's own failures — among them.
 >
-> **What is still not indexed, and this is the residue worth picking up.** A code passed as a
-> *module-level constant* rather than a string literal is still skipped: `LIVE_HISTORY_TAMPERED`,
-> `LIVE_HISTORY_UNREADABLE` and `CANARY_HISTORY_UNREADABLE` are absent from the index and were
-> absent before this work too — they are part of the **191** sites the index reports as
-> "built at runtime". They are not built at runtime. `NAME = "LITERAL"` at module scope is
-> exactly resolvable, not a guess, and the three named above are the live P&L ledger's and the
-> canary registry's own tamper codes. Resolving them is a change to the extractor alone, and it
-> would move a large fraction of those 191 — which is why it was not folded into a PR about
-> reading five files.
+> ~~**What is still not indexed, and this is the residue worth picking up.**~~ **Done 2026-08-08.**
+> A code passed as a *module-level constant* rather than a string literal was skipped:
+> `LIVE_HISTORY_TAMPERED`, `LIVE_HISTORY_UNREADABLE` and `CANARY_HISTORY_UNREADABLE` were absent
+> from the index and had been absent before this work too, counted among the sites the index
+> reported as "built at runtime". They are not built at runtime — `NAME = "LITERAL"` at module
+> scope has exactly one value, readable without executing anything, and those three are the live
+> P&L ledger's and the canary registry's own tamper codes.
+>
+> The extractor now resolves them: **456 codes across 787 sites, and the not-indexable count falls
+> 192 → 113.** Verified by running the old and new extractors over the same tree — **+81 rows, −0**,
+> and every added row traces to a module constant whose name is written at the call.
+>
+> **The 113 that remain are genuinely built at runtime** and stay uncounted rather than guessed:
+> 79 f-strings, 13 attribute references, 10 locals inside the delegating primitives (already
+> indexed at their call sites), 8 call results, 2 starred. Two resolutions are refused on purpose —
+> a name reassigned at module scope with a different value, and a name also bound inside some
+> function — because either could make the index name the wrong code with full confidence, which
+> is worse than the gap it replaces. Both refusals are pinned by
+> `test_resolution_refuses_a_name_it_cannot_be_certain_of`.
 
 ```
 grep -rn 'json.loads(line)\|json.loads(row)\|json.loads(raw)' runtime/mvp_runtime/crypto/ | wc -l   # 21 reads
