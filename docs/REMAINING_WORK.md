@@ -2671,11 +2671,74 @@ exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a s
 will see two different thresholds and the difference has to be written where they meet it, not
 only here.
 
-**What it does not buy, and this is the whole caveat.** Pooling makes rows judgeable; F2's own
-table says what the judgement was — CONFIRMED 0 → 0, CONTRADICTED 9 → 12. #566 sharpens it: after
-the selection correction the promotion gate can only confirm effects of **+0.48R or larger**
-against a real target near +0.05R, and of the 463 rows judgeable today **462 are CONTRADICTED**.
-So the honest claim for this lever is *"finds out faster"*, never *"earns more"*.
+**What it does not buy — and this paragraph cited the wrong experiment until 2026-08-07.** The
+table above is F2's **re-score**: existing single-symbol specs re-scoped to five symbols and
+replayed. Its CONFIRMED 0 → 0 is a fact about specs fitted on one symbol and then asked to
+transfer. F2 ran a second experiment for exactly this question — a pooled **mint** batch — and it
+did not read 0. Quoting only the re-score left a reader of this section concluding that pooled
+minting has never confirmed anything, which the record two subsections up contradicts.
+
+#566 still sharpens what a confirmation is worth: after the selection correction the promotion
+gate can only confirm effects of **+0.48R or larger** against a real target near +0.05R, and of
+the 463 rows judgeable today **462 are CONTRADICTED**.
+
+#### The pooled mint distribution, which F2 never published — re-run 2026-08-07
+
+F2 reported 11 CONFIRMED of 272 at 4h and 4 of 272 at 1h and said they "concentrate in the `oi_*`
+families" without giving the per-family split. That split is the whole question: 9 confirmations
+sprinkled over 34 families is noise, and 5 in one family is not. Re-run at 8 draws per family,
+pooled over the 5-symbol cohort, **all five legs attached** and post-`_fold_into_bounds` draws:
+
+| status over 272 pooled specs | 4h | 1h |
+|---|---|---|
+| CONTRADICTED | 222 | 260 |
+| INSUFFICIENT | 41 | 11 |
+| **CONFIRMED** | **9** | **1** |
+
+| family | 4h | 1h |
+|---|---|---|
+| `oi_unwind_short` | **5/8** | 1/8 |
+| `htf_pullback_short` | 3/8 | 0/8 |
+| `premium_fade_short` | 1/8 | 0/8 |
+
+**It concentrates, and that is not a chance pattern.** Under a null of 9 confirmations spread
+uniformly over 34 families, one family taking ≥5 has probability **8.5 × 10⁻⁵** — about 1 in
+11,700. The earlier reading of F2's summary (that ~1 family confirming at both timeframes is what
+chance predicts) was the right calculation on the wrong input; with the split in hand the
+concentration is real.
+
+**And four draws clear the selection-adjusted bar, which F2 said nothing did.** At 272 attempts
+the bar is z = 3.740. Four `oi_unwind_short` draws are above it — t = 5.16, 4.50, 4.28, 4.18 at
+holdout expectancies +0.44 to +0.70R over 33–141 trades. F2's best was 3.34 against the same bar.
+This is the first time anything in this record has cleared a corrected bar.
+
+**Three reasons to hold that at arm's length, in order of how much they could cost.**
+
+1. **The OI series' coverage of the 1,000-day replay is UNVERIFIED.** F2's correction note
+   measured `open_interest_zscore` at 3000/3000 — over a 3,000-bar replay, when
+   `FACTORY_DEPTH_DAYS` was 500. It is 1,000 now and the same claim over 6,000 bars has not been
+   re-checked. If the series is short, the `oi_*` holdout sits in a recent window, and F3 already
+   recorded the cost of reading one: the same rule at 1h produced +0.4052 at t = 3.91 in a window
+   surrounded by −0.33, −0.27 and −0.33. **Measure this before anything else.**
+2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
+   leaned on is one draw here, not a second result.
+3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
+   and whose random-entry control loses 0.13R. An effect that large is more often an instrument
+   than an edge.
+
+**One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
+`liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
+liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
+silently blanks all four `oi_*` families. The first run of this batch did exactly that and would
+have reported "0 confirmations at 1h, 4 at 4h, none in `oi_*`". `unsuppliable_features`, called
+per spec, named the four families instead of letting them fall into INSUFFICIENT. **That is the
+same failure F2's first pass published as a finding**, caught this time only because the guard was
+called; `backtest_spec_pooled` on its own walks around it.
+
+**And F2's closing cost is already spent at the timeframes that matter.** F2 warns that
+lengthening the replay window removes the `oi_*` families, citing `DERIVATIVE_HISTORY_DAYS = 520`.
+It is **1020** now, against `FACTORY_DEPTH_DAYS` 1000 — the two moved together on 2026-08-04 — so
+the gate binds at 1d only. `_oi_feed_reaches`'s own docstring still says 520 and is stale.
 
 **What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
 unknown effort:
