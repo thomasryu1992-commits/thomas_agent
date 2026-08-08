@@ -8,13 +8,19 @@ names *"enough live fills to measure realized slippage against intended price"* 
 it. This is the instrument for that, and it reports what it cannot measure as loudly as what it
 can.
 
-**The exit leg is measurable and the entry leg is not, and the asymmetry is a recording gap
-rather than a fact about the venue.** A protective stop is submitted at a price the runtime
-chose, so the fill can be compared to it. A MARKET entry records only ``fill.avg_price`` —
-nothing carries the price the decision was taken at, and the venue's own submit response returns
-``price: "0.00"`` for a market order. So entry slippage, which is the leg the cost model charges
-on *every* trade, cannot be computed from anything currently durable. That is the single change
-that would make this tool complete, and it is a recording change rather than an order-path one.
+**Both legs are measurable now; the entry became so on 2026-08-06 and only for rows opened
+after that.** The asymmetry this tool was written against was a recording gap rather than a
+fact about the venue: a protective stop is submitted at a price the runtime chose, so
+``bracket[].stop_price`` against the fill was always a measurement, while a MARKET entry
+recorded only ``fill.avg_price`` — the venue answers ``price: "0.00"`` for a market order, so
+the intent had to be kept on this side or not at all. It now is: ``live_execution`` records
+``intended_price`` on the entry (#585) and ``live_promotion`` on the canary (#589), both
+present-and-None when the plan carried no price rather than substituting the fill.
+
+**The gap closed forward, not backward.** Nothing backfills a row opened before that date, so
+the population splits by age and the split is reported rather than averaged over — see
+``_entries_by_position`` and the "no recorded intent" counts in the summary. Read a small
+entry-side n as "the instrument is young", not as "the venue rarely slips."
 
 A resting take-profit is included as a control: it fills AT its price by construction, so a
 non-zero figure there is a bug in this script or in the leg, not a market observation.
@@ -201,9 +207,21 @@ def render(result: dict[str, Any]) -> str:
         stops = [r["adverse_bps"] for r in rows if r["close_reason"] == "stop_loss"]
         if stops:
             out.append("")
-            out.append(f"stop fills: n={len(stops)}  median {statistics.median(stops):.2f} bps  "
-                       f"worst {max(stops):.2f}  against {result['modelled_bps']} modelled "
-                       f"({max(stops)/result['modelled_bps']:.1f}x)")
+            # Each multiple sits against the figure it divides. It used to trail the whole line
+            # — `median 11.73 bps  worst 23.47  against 3.0 modelled (7.8x)` — where `(7.8x)`
+            # reads as the median's, and 7.8 is the WORST reading; the median's is 3.9. A reader
+            # who quotes the summary rather than the table gets a number twice too large.
+            #
+            # Deliberately not extended to the entry and canary lines below. Their slippage can
+            # be NEGATIVE (BTCUSDT's live entry filled 4.67 bps BETTER than intended), and a
+            # multiple of an assumption is meaningless once the sign flips — `-1.6x modelled`
+            # states nothing a reader can use, and pooling it into a median of multiples would
+            # be worse. The bps figure carries its own sign; a ratio does not.
+            modelled = result["modelled_bps"]
+            median = statistics.median(stops)
+            out.append(f"stop fills: n={len(stops)}  "
+                       f"median {median:.2f} bps ({median/modelled:.1f}x modelled {modelled})  "
+                       f"worst {max(stops):.2f} ({max(stops)/modelled:.1f}x)")
     out.append("")
     out.append(f"exits with no comparable pair: {result['unmeasurable']}")
     out.append("")
