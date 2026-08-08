@@ -38,6 +38,7 @@ written — the records are already metadata-only and secret-scanned upstream.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -64,6 +65,15 @@ FEEDBACK_FILE = "feedback_events.jsonl"
 # effect between them), so `bridge_idempotency` takes `file_lock` and drives `jsonl` directly,
 # the way `retention` does.
 BRIDGE_REQUESTS_FILE = "bridge_requests.jsonl"
+
+# Where rotation puts the rows it moves out of the active files, and the shape of the stamp it
+# names them with (`utc_now_iso` with the colons removed, so the name sorts chronologically).
+# Here rather than in `retention` because a reader has to find those files too — `retention`
+# writes them, `LedgerStore.iter_records_with_archive` reads them, and one owner for the layout
+# is the difference between a reader that follows rotation and one that quietly stops at it.
+# `retention` imports both from here; the directory name is unchanged.
+ARCHIVE_DIR = "archive"
+_ARCHIVE_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
 
 # Non-audit records persisted per run, in pipeline order.
 _RECORD_KINDS = (
@@ -257,15 +267,76 @@ class LedgerStore:
         three remaining callers were doing the same thing to the same file for the same
         reason, so the shape now lives here rather than being solved a fourth time locally.
 
+        **Reads the ACTIVE file only**, so what it can see ends at
+        ``retention.DEFAULT_KEEP_ROWS`` — a row count, not a span. That is the right horizon
+        for the readers above (all of them want the recent tail) and the wrong one for
+        anything measuring a window of TIME; use :meth:`iter_records_with_archive` there.
+
         The lock is held for the whole iteration, exactly as ``read_records`` held it for the
         whole read — so **consume or close it**. A caller that abandons the generator keeps
         the record ledger locked until it is collected, which would stall the run trying to
         append to it. All present callers run the stream to exhaustion.
         """
-        with locked(self._root / (RECORDS_FILE + ".lock"),
-                    code="LEDGER_WRITE_FAILED", label="the record ledger"):
+        with self.file_lock(RECORDS_FILE, label="the record ledger"):
             yield from jsonl.iter_objects(self._root / RECORDS_FILE,
                                           read_code="LEDGER_UNREADABLE", label="the record ledger")
+
+    def iter_records_with_archive(
+        self, *, appended_since: str | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """Record rows one at a time, ARCHIVES INCLUDED, oldest first, under the same lock.
+
+        For the readers that measure a WINDOW OF TIME. :meth:`iter_records` answers those
+        wrongly and silently: rotation moves rows the window still covers out of the active
+        file, so the count shrinks with no error and no signal. Measured 2026-08-08 on the
+        live host — the proposer's documented 30-day backlog window could actually see nine
+        days, because four in-window proposal records had already rotated into the archive,
+        and the backlog it throttles on had dropped 15 -> 11 for that reason alone.
+
+        ``appended_since`` is an ISO timestamp that bounds which FILES are opened, never
+        which rows are yielded — the caller still filters, because only the caller knows
+        which timestamp on a record it means. An archive's name carries the rotation moment
+        and every row in it was appended before that, so an archive stamped earlier than
+        ``appended_since`` is skipped WITHOUT BEING OPENED. Without this the cost would be
+        the whole history on a reader that runs daily, against an archive that only grows.
+        The skip is safe exactly while a record's own timestamp is never NEWER than its
+        append, which holds for everything this runtime writes: ``created_at`` is stamped as
+        the record is built and the append is the same call.
+
+        A name that does not parse as a stamp is read rather than skipped. This method exists
+        because a count under-reported; the uncertain case must therefore add rows, never
+        drop them.
+
+        Order is archives by rotation stamp, active file last. Two rotations inside one
+        second sort by filename instead, which puts the collision-suffixed one first — no
+        consumer can observe it, since both hold rows older than the same second.
+
+        The lock is the appender's, held for the whole iteration exactly as
+        :meth:`iter_records` holds it, so **consume or close it**. Rotation takes that same
+        lock (see :meth:`file_lock`), so no archive can appear mid-scan and no row can be
+        yielded twice or missed.
+        """
+        with self.file_lock(RECORDS_FILE, label="the record ledger"):
+            for path in self._archived_record_files(appended_since):
+                yield from jsonl.iter_objects(
+                    path, read_code="LEDGER_UNREADABLE",
+                    label=f"the archived record ledger {path.name}")
+            yield from jsonl.iter_objects(self._root / RECORDS_FILE,
+                                          read_code="LEDGER_UNREADABLE", label="the record ledger")
+
+    def _archived_record_files(self, appended_since: str | None) -> list[Path]:
+        """Archived record ledgers oldest first, minus those wholly older than the bound."""
+        directory = self._root / ARCHIVE_DIR
+        if not directory.is_dir():
+            return []
+        stem = RECORDS_FILE.removesuffix(".jsonl")
+        cutoff = appended_since.replace(":", "") if appended_since else None
+        kept: list[Path] = []
+        for path in sorted(directory.glob(f"{stem}.*.jsonl")):
+            stamp = path.name[len(stem) + 1:].removesuffix(".jsonl").split(".", 1)[0]
+            if cutoff is None or not _ARCHIVE_STAMP.fullmatch(stamp) or stamp >= cutoff:
+                kept.append(path)
+        return kept
 
     def read_scheduler_events(self) -> list[dict[str, Any]]:
         """Every persisted scheduler event, in append order. Fails closed on a corrupt file.

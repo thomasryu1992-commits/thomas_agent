@@ -535,6 +535,27 @@ def test_candidate_store_stamps_and_verifies_self_hash(tmp_path):
     assert exc.value.reason_code == "CANDIDATES_TAMPERED"
 
 
+def test_a_corrupt_candidate_line_keeps_this_stores_error_class_and_line_number(tmp_path):
+    """`read_candidates` streams through ``jsonl.iter_numbered`` now; what must not move is which
+    class comes out. 47 sites in the runtime catch ToolError by name — five in ``promotion.py``,
+    which reads this very store — so adopting jsonl's PersistenceError would fail *past* those
+    handlers rather than at them. The line number is the operator's other handle, and it counts
+    file lines: a blank row must not shift it."""
+    import json
+
+    from runtime.mvp_runtime.errors import PersistenceError, ToolError
+
+    path = pool.candidates_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"strategy_id": "s1"}) + "\n\n{not json\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        pool.read_candidates(tmp_path)
+    assert exc.value.reason_code == "CANDIDATES_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
+
+
 def test_candidate_rows_without_hash_still_read(tmp_path):
     # Pre-stamping legacy rows have nothing to verify — they must keep resolving.
     import json
