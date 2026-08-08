@@ -2664,7 +2664,59 @@ and there are no open positions left to close. **The only path that fills this i
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
 
-### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **awaiting a Thomas decision**
+
+#### The ask, in one screen — everything below this subsection is the working
+
+`backtest_spec_pooled` is finished, carries eight tests, and **has no caller but the
+single-symbol path**. Whether the rotation moves onto it is the decision. It is not a code
+question — the effort is five items, all small (*What wiring it takes*, below) — it is a
+**portfolio-shape** question, and no further measurement narrows it.
+
+**What is settled, so it need not be re-litigated.** At 4h a single-symbol row closes a median
+**9** trades against a floor of 25, so those families are unjudgeable *permanently* — rows do not
+pool across generations and waiting adds nothing. Pooled, the same family was judged in an
+afternoon. **And the judgement was negative**: the one result that ever cleared a
+selection-adjusted bar (`oi_unwind_short`, t up to 5.16) decays to **−0.23…−0.31R** in earlier
+adjacent windows, in **16 of 16 draws** across two seed namespaces. So the honest expected value
+is *"finds out faster"*, never *"earns more"* — against a store whose holdout gross edge is
+~0.012R and whose random-entry control loses 0.13R.
+
+**Judgement 1 — what shape.** The live pool routes **5 strategies** (94 entries; the rest are in
+non-occupying statuses): 1 at 1h, 4 at 4h. A pooled spec occupies every symbol context of its
+timeframe in **one direction**, and `min(contexts, 2·min(long,short) + 4)` then decides the book:
+
+| | contexts | long / short | fillable |
+|---|---|---|---|
+| today | 5 | 1 / 4 | **5** (100%) |
+| 4h pooled **short** | 6 | 0 / 6 | **4** (67%) |
+| 4h pooled **long** | 6 | 5 / 1 | **6** (100%) |
+
+Direction is fixed at promotion and the pooled spec *is* the tier, so this cannot be tuned
+afterwards; directional control drops from one lever per context to one per timeframe.
+
+- **A — all timeframes pooled.** Reaches the lifecycle window ~5× sooner (the direct cause of
+  today's 89 inert entries), and pays the table above plus one demotion emptying a whole tier.
+- **B — 4h and 1d only.** Treats where the defect is; 1h already runs 12/12 judgeable
+  single-symbol. Half the directional exposure, and 1h keeps buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Portfolio shape unchanged entirely; pays in
+  bookkeeping instead (a row carrying pooled evidence under a single-symbol scope). **Not in the
+  original wiring list** — it is the option that separates judging from routing.
+
+**Judgement 2 — what the door does with a window-test sign flip.** Wiring the window test is
+*not* optional: without it the row described above is promotable on its face, and `period_r` does
+not substitute for it (it partitions the tail; the reversal is 2,000+ bars earlier, and all ten
+slices read positive). What is open is the response — **refuse**, **rank below a stable row**, or
+**record and surface**. The last is the cheapest honest start and matches
+`assert_promotable_evidence_depth`, which refuses only the unreadable case and ranks the rest.
+
+**Doing nothing is also a choice**, and its cost is the status quo: 4h and 1d families stay
+unjudgeable and the promotion door keeps yielding zero — F1's mechanism, unaddressed.
+
+*A reading, marked as one rather than derived: **B is the smaller default and C the real
+alternative**; A pays the whole directional lever for most of what B buys.*
+
+---
 
 F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
 is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
