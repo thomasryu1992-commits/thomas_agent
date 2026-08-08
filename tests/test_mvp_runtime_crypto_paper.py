@@ -342,6 +342,48 @@ def test_read_outcomes_tampered_native_record_raises(tmp_path):
     assert exc.value.reason_code == "OUTCOME_HISTORY_TAMPERED"
 
 
+def test_a_corrupt_outcome_line_keeps_this_stores_error_class_and_line_number(tmp_path):
+    """§G4a's last slice. Three money-path readers now stream through ``jsonl.iter_numbered``;
+    what must not move is which class comes out and which line it names. The breaker, the
+    lifecycle demoter and the C6 feedback report all read this store through handlers that catch
+    ToolError, so adopting jsonl's default PersistenceError would fail past them.
+
+    The **write** side is deliberately not folded: it flushes and fsyncs, which
+    ``jsonl.append_lines`` does not, and fsync has no observable behaviour except across a power
+    loss — so the swap would pass every test and silently downgrade durability."""
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "paper_outcomes.jsonl").write_text(
+        json.dumps({"outcome_id": "o1"}) + "\n\n{not json\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        read_outcomes(tmp_path)
+    assert exc.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
+
+
+def test_every_money_path_append_still_fsyncs():
+    """The durability guarantee the read fold must not have removed, pinned across all three
+    stores so a later 'tidy-up' to ``jsonl.append_lines`` fails here rather than on a power loss.
+    `paper.py`: 'leaving it in an OS buffer means a power loss can drop a trade that the position
+    file already says is closed.' `jsonl.append_lines` does not fsync and the audit ledger that
+    uses it has never needed to — which is exactly why the swap looks harmless."""
+    import inspect
+
+    from runtime.mvp_runtime.crypto import live_pnl, live_promotion
+
+    for owner, method in (
+        (paper.RealPaperStore, "append_outcome"),
+        (live_pnl.RealLiveLedger, "append_outcome"),
+        (live_promotion.RealCanaryRegistry, "append_canary_order"),
+    ):
+        source = inspect.getsource(getattr(owner, method))
+        assert "os.fsync" in source and "flush" in source, f"{owner.__name__}.{method} lost its fsync"
+
+
 def test_read_outcomes_native_roundtrip_verifies(tmp_path):
     path = paper.state_dir(tmp_path)
     path.mkdir(parents=True)

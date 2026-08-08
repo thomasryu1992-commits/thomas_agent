@@ -19,7 +19,12 @@ from collections import defaultdict
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from build_diagnostic_code_index import OUTPUT_REL, build, collect_sites  # noqa: E402
+from build_diagnostic_code_index import (  # noqa: E402
+    OUTPUT_REL,
+    build,
+    collect_sites,
+    module_string_constants,
+)
 
 # Codes raised from more than one module as of 2026-08-06, when this check was introduced.
 #
@@ -36,6 +41,13 @@ SHARED_ACROSS_MODULES = frozenset({
     "CONSUMPTION_DISABLED", "CONTENT_CHANGED", "ENTRY_NOT_FOUND",
     "FINGERPRINT_MISMATCH", "FINGERPRINT_UNCOMPUTABLE", "INVALID_CANDIDATE",
     "INVALID_ROLE", "INVALID_TIMESTAMP", "KILL_STATE_UNAVAILABLE",
+    # Added 2026-08-08, and they are not new collisions — they are newly *visible* ones. Both are
+    # handed to `jsonl`, which raises them on the caller's behalf, so the literal sits at the call
+    # and the extractor (walking only error-class calls) never saw either. `LEDGER_UNREADABLE`:
+    # store.py's readers and control.py's `_mode_from_ledger`, both "a ledger file would not
+    # read". `LEDGER_WRITE_FAILED`: store.py's audit append and bridge_idempotency.py's, which
+    # writes under the same LedgerStore root — both "a ledger append failed". Same meaning each.
+    "LEDGER_UNREADABLE", "LEDGER_WRITE_FAILED",
     "LIFECYCLE_DECISION_INVALID", "LIFECYCLE_TERMINAL_IMMUTABLE", "LIFECYCLE_UNKNOWN_STRATEGY",
     "MALFORMED_DIRECTION", "MALFORMED_REQUEST", "MALFORMED_RESULT",
     "MISSING_OPERATOR", "MISSING_REASON", "MISSING_SYMBOL",
@@ -66,6 +78,75 @@ def test_the_committed_index_matches_the_source():
     assert committed == build(), (
         f"{OUTPUT_REL} is stale — run `python scripts/build_diagnostic_code_index.py`"
     )
+
+
+def test_a_code_named_by_a_module_constant_is_resolved():
+    """`NAME = "LITERAL"` at module scope has exactly one value, readable without executing
+    anything — so a raise that names it is not "built at runtime", which is how the index used to
+    report 79 of them. The three below are the live P&L ledger's and the canary registry's own
+    tamper codes: the codes an operator is most likely to be holding when they come here."""
+    per_code = _modules_per_code()
+    for code, module in (
+        ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_pnl.py"),
+        ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_pnl.py"),
+        ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_promotion.py"),
+    ):
+        assert module in per_code.get(code, set()), f"{code} is raised from {module} but not indexed"
+
+
+def test_resolution_refuses_a_name_it_cannot_be_certain_of():
+    """The two ways resolving a name could make the index *lie*, both dropped rather than guessed.
+
+    A module constant reassigned to a different value depends on execution order, which this
+    extractor does not model. A module constant whose name is also bound inside some function may
+    be read as the local at the raise — and naming the wrong code with full confidence is worse
+    than admitting the gap, which is the rule the rest of this file already follows."""
+    import ast
+
+    reassigned = ast.parse('X = "one"\nX = "two"\nY = "kept"\n')
+    assert module_string_constants(reassigned) == {"Y": "kept"}
+
+    shadowed = ast.parse('CODE = "CODE"\nSAFE = "SAFE"\ndef f(CODE):\n    return CODE\n')
+    assert module_string_constants(shadowed) == {"SAFE": "SAFE"}
+
+    assigned_locally = ast.parse('CODE = "CODE"\ndef f():\n    CODE = "other"\n    return CODE\n')
+    assert module_string_constants(assigned_locally) == {}
+
+    # A same-valued repeat is not ambiguity — the value is the same either way.
+    repeated = ast.parse('X = "same"\nX = "same"\n')
+    assert module_string_constants(repeated) == {"X": "same"}
+
+
+def test_a_code_handed_to_a_shared_primitive_is_still_indexed():
+    """A primitive that raises on its caller's behalf takes the code as a *parameter*.
+
+    So the raise carries a variable and the literal sits one frame up, at the call. Walking only
+    error-class calls therefore misses the code entirely — which it did: every code handed to
+    ``jsonl`` was absent from this index, `LEDGER_UNREADABLE` and `LEDGER_WRITE_FAILED` among
+    them, the audit ledger's own failures. Pinned because the index is the operator's lookup path
+    and this is the shape that silently empties it.
+    """
+    per_code = _modules_per_code()
+    for code, module in (
+        ("LEDGER_UNREADABLE", "runtime/mvp_runtime/store.py"),
+        ("LEDGER_WRITE_FAILED", "runtime/mvp_runtime/store.py"),
+        ("APPROVAL_READ_FAILED", "runtime/mvp_runtime/approval_store.py"),
+        ("COUNTERFACTUAL_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/counterfactual.py"),
+    ):
+        assert module in per_code.get(code, set()), f"{code} is raised from {module} but not indexed"
+
+
+def test_a_delegated_code_is_indexed_under_the_class_that_actually_carries_it():
+    """``exc_type=`` decides which except-clause sees the failure, so the row must say so.
+
+    ``counterfactual`` keeps ``ToolError`` because the tool chokepoints above it catch that and
+    would not catch ``jsonl``'s default. An index that reported the primitive's default here would
+    send an operator to the wrong handler."""
+    sites, _ = collect_sites()
+    cf = [s for s in sites if s.code == "COUNTERFACTUAL_HISTORY_UNREADABLE"]
+    assert cf and all(s.error_class == "ToolError" for s in cf), cf
+    ledger = [s for s in sites if s.code == "LEDGER_UNREADABLE"]
+    assert ledger and all(s.error_class == "PersistenceError" for s in ledger), ledger
 
 
 def test_a_code_raised_from_a_new_module_is_declared_or_renamed():

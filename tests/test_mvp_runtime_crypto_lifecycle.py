@@ -294,6 +294,58 @@ def test_update_statuses_applies_and_guards(tmp_path):
     assert updated["S1"]["strategy_spec"] == _spec_dict("S1")  # spec untouched
 
 
+def test_update_statuses_stamps_the_header_pair(tmp_path):
+    """`updated_by` and `updated_at` describe ONE event, so writing only the first is worse
+    than writing neither: the reader gets a current writer against a timestamp from whenever
+    the promotion door last ran.
+
+    Measured on the live host 2026-08-08 — the pool file was rewritten at 11:29 by the
+    15-minute cycle while its `updated_at` still read 2026-07-31T10:04:33Z, earlier than the
+    last transition the same file had recorded (10:07:15Z). "Nothing since Jul 31" and "eight
+    days of cycles have run" were indistinguishable.
+    """
+    _install_pool(tmp_path, _entry("S1"))
+    # A promotion-era header is what goes stale, so start from one rather than from nothing.
+    promoted = pool.load_active_pool(tmp_path)
+    promoted["updated_by"], promoted["updated_at"] = "thomas", "2026-07-31T10:04:33Z"
+    pool.install_active_pool(promoted, root=tmp_path)
+
+    decisions = run_lifecycle(pool.load_active_pool(tmp_path), _outcomes([-0.1] * 30), now=NOW)
+    assert pool.update_statuses(decisions, root=tmp_path) == 1
+
+    header = pool.load_active_pool(tmp_path)
+    assert header["updated_by"] == "lifecycle_agent"
+    assert header["updated_at"] == NOW, "the header kept the promotion door's timestamp"
+    # The default is the newest decision timestamp, so the header agrees with the entry
+    # provenance this same call wrote instead of being independently sourced.
+    entry = header["active_strategies"][0]
+    assert entry["lifecycle_updated_at"] == header["updated_at"]
+
+
+def test_update_statuses_takes_an_explicit_stamp(tmp_path):
+    """A caller with its own clock overrides the derived one; both callers in the runtime
+    build their decisions from the same `now`, so the two agree in practice."""
+    _install_pool(tmp_path, _entry("S1"))
+    decisions = run_lifecycle(pool.load_active_pool(tmp_path), _outcomes([-0.1] * 30), now=NOW)
+    pool.update_statuses(decisions, root=tmp_path, updated_by="op", now="2026-08-08T00:00:00Z")
+
+    header = pool.load_active_pool(tmp_path)
+    assert (header["updated_by"], header["updated_at"]) == ("op", "2026-08-08T00:00:00Z")
+
+
+def test_update_statuses_never_blanks_a_good_stamp(tmp_path):
+    """An undatable write leaves the timestamp alone. Overwriting a true value with an empty
+    one is the only outcome worse than the staleness being fixed."""
+    _install_pool(tmp_path, _entry("S1"))
+    seeded = pool.load_active_pool(tmp_path)
+    seeded["updated_at"] = "2026-07-31T10:04:33Z"
+    pool.install_active_pool(seeded, root=tmp_path)
+
+    pool.update_statuses([{"strategy_id": "S1", "new_status": "WARNING",
+                           "consecutive_failures": 1}], root=tmp_path)
+    assert pool.load_active_pool(tmp_path)["updated_at"] == "2026-07-31T10:04:33Z"
+
+
 def test_update_statuses_terminal_immutable(tmp_path):
     _install_pool(tmp_path, _entry("S1", status="SUSPENDED"))
     with pytest.raises(ToolError) as exc:
