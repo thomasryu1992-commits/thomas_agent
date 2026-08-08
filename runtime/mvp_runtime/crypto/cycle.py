@@ -436,6 +436,72 @@ def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) ->
         snapshot["positioning"] = rows
 
 
+def attach_mining_legs(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    timeframe: str,
+    now: str,
+    root: Path | None = None,
+    liquidation_feed: Any | None = None,
+    candle_target: Any = None,
+) -> None:
+    """Every leg **the factory mines on**, in one place. Mutating, degrade-only, never raises.
+
+    The five attaches above are individually correct and were individually copied. That is the
+    defect this function exists to end rather than a tidiness preference: a caller that assembles
+    four of the five gets a frame where the fifth family's columns are None down the whole
+    window, and the failure is silent in the worst way — the spec does not error, it scores as a
+    no-trade spec and is judged for it. The same mistake has now been made twice on two different
+    call sites (the null control, and the family proposer), both times by writing `attach_feeds`
+    and stopping, and both times invisible until somebody counted the None columns.
+
+    So the rule is stated once here: **anything that BACKTESTS or REPLAYS a spec must build its
+    frame with this function.** ``run_crypto_cycle`` deliberately does not — the live cycle
+    attaches its own legs with ``accumulate=True`` and its own live-depth limits, because it is
+    routing rather than mining.
+
+    ``candle_target`` is ``market_data.factory_candle_target`` passed in rather than imported,
+    so this module keeps its current import surface and a caller mining at a different depth
+    stays able to say so. ``None`` means "live defaults", which is what a caller with no replay
+    span wants.
+
+    Every leg degrades rather than raises: a leg that cannot be read leaves its columns None,
+    which is the state a caller who never called it would have had anyway.
+
+    **Why each leg is here** — carried over from the factory block these lines were extracted
+    from, because it is the reasoning a future caller needs in order not to drop one:
+
+    - ``attach_feeds`` (C9): the factory backtests on the same feed-enriched frame the router
+      evaluates. One feature source for backtest and live — the source rule.
+    - ``attach_htf``: mining ``htf_*`` families over a frame with no higher timeframe scores
+      every one of them as a no-trade spec. The window must cover the replay span, so the
+      depth is the HIGHER timeframe's own target rather than this one's.
+    - ``attach_reference``: same rule for the cross-asset leg — a ``rel_strength_*`` family
+      mined over a frame with no reference series scores as a no-trade spec. Same timeframe as
+      the frame being mined, so the same depth.
+    - ``attach_cross_section``: same again, and **the most expensive of the four** — the cohort
+      is five peers at the replay span, so it pages roughly five times what the frame itself
+      did. Paid on the factory's own schedule rather than the 15-minute one. The alternative is
+      scoring ``xs_*`` families over a frame where every rank is None, which does not produce a
+      cheap verdict, it produces a WRONG one (no trades, FRAGILE, retired).
+    - ``attach_positioning``: a LOCAL read of what this runtime has accumulated — no request,
+      no grant. Attached unconditionally because the columns are honest at any coverage
+      (absent = None); whether a positioning family may be MINTED against them is the separate
+      ``positioning_store.coverage_summary`` question, which the CALLER measures and passes to
+      ``run_factory``. This function does not answer it and must not be read as doing so.
+    """
+    attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
+                 now=now, root=root, accumulate=False)
+    depth = candle_target(timeframe) if candle_target is not None else None
+    higher = HIGHER_TIMEFRAME.get(timeframe)
+    attach_htf(snapshot, collector=collector, now=now,
+               limit=candle_target(higher) if (candle_target is not None and higher) else None)
+    attach_reference(snapshot, collector=collector, now=now, limit=depth)
+    attach_cross_section(snapshot, collector=collector, now=now, limit=depth)
+    attach_positioning(snapshot, root=root)
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
