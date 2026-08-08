@@ -655,6 +655,79 @@ def assert_no_semantic_duplicates(
     )
 
 
+def silent_reactivations(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Members this install would move OUT of a terminal status, keyed by lineage.
+
+    Pure-ish (one pool read), returns ``[{candidate_id, strategy_id, from_status}]`` oldest
+    first. Empty is the ordinary answer; a non-empty list is the promotion door about to do
+    something its approval never named."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    current = {
+        e.get("candidate_id"): e for e in load_active_pool(root).get("active_strategies") or []
+        if e.get("candidate_id")
+    }
+    found = []
+    for entry in entries:
+        was = current.get(entry.get("candidate_id"))
+        if was is None:
+            continue
+        if str(was.get("status")) in TERMINAL_STATUSES and \
+                str(entry.get("status")) not in TERMINAL_STATUSES:
+            found.append({
+                "candidate_id": str(entry.get("candidate_id")),
+                "strategy_id": str(entry.get("strategy_id")),
+                "from_status": str(was.get("status")),
+            })
+    return found
+
+
+def assert_no_silent_reactivation(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> None:
+    """Refuse an install that un-suspends a member nobody asked to un-suspend.
+
+    **The promotion door's replace mode rebuilds every entry with a hardcoded
+    ``PAPER_ACTIVE``.** So an operator dropping one redundant strategy — by re-listing the
+    rest — brings back every terminally SUSPENDED member with them. `BUILD_HISTORY` records
+    this simulated against a copy of the real pool on 2026-07-29: **16 reactivated, 57
+    lifecycle counters reset.** The answer then was the narrow `retirement` verb, which
+    removed the REASON to reach for replace mode; it did not close the path.
+
+    What makes it worth a guard rather than a note is where the authority sits.
+    ``promotion_content_sha256`` is a function of candidate ids, rule hashes and
+    ``keep_active`` — nothing about lifecycle status — so the approval Thomas signs says
+    "install these lineages" and cannot say "and un-suspend sixteen of them". The signature
+    is honest about a smaller effect than the one it authorizes. And the lifecycle's own
+    rule is that this direction is never automatic: `evaluate_lifecycle` degrades only, and
+    a terminal entry refuses at `update_statuses` precisely so reactivation stays deliberate.
+    Coming back through a membership operation is that rule being routed around.
+
+    So the door fails closed and the operator has to name it, in the idiom the four evidence
+    escapes already use: refuse, list exactly who and from what, and let an explicit
+    ``--allow-reactivation`` through — recorded on the ledger, because an escape that leaves
+    no trace is indistinguishable later from a door that never refused.
+
+    This does not make the approval cover the reactivation; only the content hash could, and
+    changing what Thomas's signature binds is his decision, not this door's. It makes the
+    reactivation deliberate and legible, which is the half that can be fixed here.
+
+    Raises ``POOL_SILENT_REACTIVATION``.
+    """
+    found = silent_reactivations(entries, root=root)
+    if not found:
+        return
+    listed = "; ".join(f"{f['strategy_id']} [{f['candidate_id']}] {f['from_status']}" for f in found)
+    raise ToolError(
+        "POOL_SILENT_REACTIVATION",
+        f"this install returns {len(found)} terminal member(s) to trading, which the "
+        f"promotion approval does not name: {listed}. Retire-then-promote, or pass the "
+        f"explicit --allow-reactivation escape.",
+    )
+
+
 # --- pool sizing -------------------------------------------------------------------
 #
 # The caps the promotion door enforces, and why these numbers.
