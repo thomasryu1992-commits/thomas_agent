@@ -1143,7 +1143,8 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
 
 
 def update_statuses(
-    decisions: list[dict[str, Any]], *, root: Path | None = None, updated_by: str = "lifecycle_agent"
+    decisions: list[dict[str, Any]], *, root: Path | None = None,
+    updated_by: str = "lifecycle_agent", now: str | None = None,
 ) -> int:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
 
@@ -1160,7 +1161,24 @@ def update_statuses(
     transition that produced the status the entry is currently in. Entries transitioned
     before these fields existed carry none: absent means "written by an older runtime",
     which is a different answer from an empty list and is why the reader treats it as
-    unknown rather than as no reason."""
+    unknown rather than as no reason.
+
+    **The pool header is stamped as a PAIR.** This used to set ``updated_by`` and leave
+    ``updated_at`` alone, which is worse than setting neither: the two fields describe one
+    event, so a reader gets a current writer against a timestamp from whenever the
+    promotion door last ran. Measured on the live host 2026-08-08 — the file was rewritten
+    at 11:29 by the 15-minute pool cycle and its ``updated_at`` read ``2026-07-31T10:04:33Z``,
+    earlier even than the last transition it had itself recorded (10:07:15Z). "Nothing has
+    happened since Jul 31" and "eight days of cycles have run" are indistinguishable.
+
+    ``now`` is that stamp. It defaults to the newest ``created_at_utc`` among ``decisions``,
+    which is not a fallback but the better answer in the ordinary case: it is the moment this
+    write's transitions were DECIDED, so the header agrees with the ``lifecycle_updated_at``
+    the same call wrote onto the entries instead of being independently sourced. Every
+    decision shape this accepts carries one; a caller with its own clock may pass ``now`` and
+    override. The stamp lands on every write, like ``updated_by`` — "when was this file last
+    written, and by whom" is the question the pair answers, and per-entry
+    ``lifecycle_updated_at`` remains the one that says when a given strategy last moved."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
     if not decisions:
@@ -1209,6 +1227,15 @@ def update_statuses(
                     entry["lifecycle_retired_by"] = retired_by
                 changed += 1
         pool["updated_by"] = updated_by
+        # Never widen to `or ""`: an empty stamp would overwrite a true timestamp with a
+        # blank, which is the one outcome worse than the stale one being fixed here.
+        stamp = now or max(
+            (str(d.get("created_at_utc")) for d in decisions
+             if isinstance(d.get("created_at_utc"), str) and d.get("created_at_utc")),
+            default="",
+        )
+        if stamp:
+            pool["updated_at"] = stamp
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)
