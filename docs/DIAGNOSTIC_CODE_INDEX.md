@@ -578,8 +578,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POLICY_UNAVAILABLE` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 506 | `build_permission_decision` | `—` |
 | `POOL_CONTEXT_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 802 | `assert_pool_within_size_cap` | `over` |
 | `POOL_SIZE_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 785 | `assert_pool_within_size_cap` | `len(occupying) > MAX_ROUTABLE_STRATEGIES` |
-| `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 240 | `append_rows` | `series not in POSITIONING_SERIES` |
-| `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 238 | `append_rows` | `not name` |
+| `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 251 | `append_rows` | `series not in POSITIONING_SERIES` |
+| `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 249 | `append_rows` | `not name` |
 | `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1086 | `_read_position_file` | `—` |
 | `PROGRAMIZATION_RECORD_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 228 | `_validate` | `—` |
 | `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 115 | `read_observations` | `—` |
