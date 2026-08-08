@@ -2735,15 +2735,37 @@ This is the first time anything in this record has cleared a corrected bar.
      for all six (or twenty-four) bars of that day. That is precisely the defect `macd_momentum` /
      `_short` were RETIRED for on 2026-08-04: *"a state family re-fires on every bar of a move
      rather than on the bar the relationship changed"*.
-   - So the trades inside a day are near-duplicates of one draw, and `expectancy_t` is
-     `expectancy / (stdev_r / sqrt(n))` with **n counting them as independent**. The four draws
-     that clear z = 3.740 carry n = 33–141. Their effective n is smaller by an unmeasured factor
-     and `t` shrinks with its square root. **The clearance is not established; it rests on a
-     denominator that assumes independence the column cannot have.**
+   - The third consequence is the one everybody will reach for — that the trades inside a day are
+     near-duplicates, so `expectancy_t` divides by an inflated `sqrt(n)` and the clearance is an
+     artifact. **Measured 2026-08-08: it is false.** Recorded because it is the natural inference
+     and it does not survive contact.
 
-   What would settle it: the number of distinct DAYS those trades fall on, which needs the
-   backtest re-run with trade stamps retained. Until then no `oi_*` confirmation should be quoted
-   as clearing a corrected bar.
+   **The trades are not clustered inside days.** Distinct `(symbol, UTC day)` pairs behind each
+   confirming draw, from trade stamps kept out of the same `_replay` the holdout uses and
+   cross-checked against `holdout.closed_count`:
+
+   | draw | n | symbol-days | market days | t | t·√(sym-days/n) | t·√(days/n) |
+   |---|---|---|---|---|---|---|
+   | 0 | 61 | 60 | 45 | +5.16 | **5.12** | **4.43** |
+   | 1 | 49 | 47 | 35 | +3.70 | 3.62 | 3.13 |
+   | 3 | 56 | 55 | 38 | +4.50 | **4.46** | 3.71 |
+   | 4 | 33 | 33 | 26 | +4.28 | **4.28** | **3.80** |
+   | 6 | 142 | 140 | 85 | +4.15 | **4.12** | 3.21 |
+
+   n ≈ symbol-days almost exactly — 61 trades on 60 symbol-days, 33 on 33. **The mechanism the
+   inference missed is that a position occupies the day it opens.** A fade holds 4–16 bars, so a
+   state condition that stays true cannot re-fire inside the day it is already trading in. The
+   `macd_momentum` analogy does not transfer, and the daily column does not inflate `n`.
+
+   **So that correction leaves the clearance standing, and the stricter one splits it.** Against
+   z = 3.740, 4 of 5 confirmed draws clear on the symbol-day unit. On the **market-day** unit —
+   cross-symbol trades on one day share a market period, which is the unit this record's own
+   effective-sample argument uses — only **2 of 5** clear (4.43 and 3.80), one is marginal at
+   3.71, and two fall to 3.21 and 3.13.
+
+   Where it stands: **not an artifact of the denominator, and not a clean clearance either.**
+   `htf_pullback_short` is unaffected on any unit — it clusters more (117 trades on 107
+   symbol-days, 65 market days) and its best t was 2.93, never near the bar.
 2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
    leaned on is one draw here, not a second result.
 3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
