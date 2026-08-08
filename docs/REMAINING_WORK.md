@@ -2719,6 +2719,58 @@ now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h s
 them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
 decision, and it is the thing to decide rather than to derive.
 
+#### The decision in numbers — read off the live pool 2026-08-08
+
+Stated so the choice is made against arithmetic rather than against an impression. Nothing below
+changes what the code does; it is what the code already does, applied to the pool as it stands.
+
+**The live pool is five strategies, not ninety-four.** `OCCUPYING_STATUSES` is `PAPER_ACTIVE` /
+`PROBATION` / `WARNING`; 89 of the 94 entries are in none of them and occupy nothing.
+
+| id | tf | direction | symbol | family |
+|---|---|---|---|---|
+| S008 | 1h | short | BTCUSDT | `bollinger_breakdown_short+breakdown_short` |
+| S005-GEN-700 | 4h | short | ETHUSDT | `breakdown_short` |
+| S004-GEN-706 | 4h | short | SOLUSDT | `session_trend_short` |
+| S005-GEN-697 | 4h | **long** | BTCUSDT | `breakout+macd_momentum` |
+| S002-GEN-709 | 4h | short | DOGEUSDT | `xs_momentum_short` |
+
+BNBUSDT 4h is unoccupied, so a pooled 4h spec picks up a context nothing fills today.
+
+**The arithmetic that decides it** is `routable_directional_capacity`'s own:
+`reachable = min(contexts, 2·min(long, short) + MAX_DIRECTIONAL_SKEW)`, with the cap at 4.
+
+| configuration | contexts | long / short | reachable | utilisation |
+|---|---|---|---|---|
+| today | 5 | 1 / 4 | **5** | 100% |
+| pooled 4h **short**, 1h unchanged | 6 | 0 / 6 | **4** | **67%** |
+| pooled 4h **long**, 1h unchanged | 6 | 5 / 1 | **6** | 100% |
+
+**So the tier's direction becomes a portfolio-level choice worth a third of the book, and it
+cannot be adjusted afterwards** — `direction` is fixed at promotion and the pooled spec *is* the
+tier. The general form is the part that outlives these five rows: directional control drops from
+one lever per context (up to 15) to one per timeframe (3).
+
+**Three shapes, not two.**
+
+- **A — fully pooled per timeframe.** Buys judgeability: a pooled spec accrues trades ~5× faster
+  and reaches `lifecycle.DEFAULT_WINDOWS[0]` (20 trades) ~5× sooner, which is the direct cause of
+  today's 89 inert entries. Costs the directional arithmetic above, and one auto-demotion empties
+  a whole tier.
+- **B — pooled at 4h and 1d only, 1h left single-symbol.** Treats where the defect is: F2 measured
+  1h single-symbol at 12/12 judgeable already, and it is 4h and 1d whose tails are too thin. Halves
+  the directional exposure and keeps an opposite-direction 1h leg buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Mint pooled to get a judgeable holdout, then
+  promote the winning parameter set as one spec per symbol. **The portfolio shape does not change
+  at all** — same contexts, same directional arithmetic, same demotion granularity. The cost is
+  bookkeeping rather than shape: a row would carry pooled evidence under a single-symbol scope,
+  and `evidence_depth_of` / `symbols_replayed` have to say so, because the unit the door judges
+  and the unit it routes stop being the same. **This option is not in the four wiring items
+  above**, and it is the one that separates the two things pooling has been treated as one thing.
+
+**B is the smaller default and C is the real alternative; A pays the whole directional lever for
+what B buys most of.** That reading is a judgement, not a measurement, and it is recorded as one.
+
 **One statistical consequence that will read as a discount and is not.** `search_context_key` is
 `(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
 shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
@@ -2899,6 +2951,50 @@ unknown effort:
 4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
    mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
    exercise, not an afterthought.
+5. **A window test wired beside the door**, and this one is not optional — see below.
+
+#### Why item 5 exists, and why `period_r` is not it
+
+The pooled door's first real output was five `oi_unwind_short` draws clearing a selection-adjusted
+bar at 4h, and the window test above showed all five reversing sign two windows back. **A pooled
+door without that test promotes exactly that row.** The value of pooling is that it makes rows
+judgeable fast; wiring it without the instrument that judges *stability* turns a find-out-faster
+lever into a promote-recent-regimes-faster one.
+
+**The obvious reuse fails, measured 2026-08-08.** `period_r` / `period_trades` already split the
+holdout into `HOLDOUT_PERIODS` slices, which reads like the same instrument. It is not: it
+partitions the **tail**, and the reversal is 2,000+ bars before the tail begins. On the five
+confirming draws every slice is positive —
+
+| draw | per-trade R across the 10 holdout slices (oldest → newest) |
+|---|---|
+| 0 | +1.29 −0.05 +0.18 +1.05 +0.85 +0.52 +0.16 +0.94 +0.70 +1.33 |
+| 6 | +0.80 +0.34 +0.01 +1.35 +0.87 +0.29 +0.03 +1.04 +0.07 +0.75 |
+
+— so `period_r` hands a clean bill of health to a spec whose sign flips outside its window. The
+two answer different questions: *"was the tail uniform"* and *"does the tail's answer hold before
+it"*.
+
+**What the test is**, concretely, since the shape is already proven: truncate the series by
+`1 - HOLDOUT_FRACTION` each step so window *k+1*'s tail ends exactly where window *k*'s begins
+(F3's construction), and score the same spec on three earlier windows. Reach is ~4× the tail.
+
+**Where it belongs.** Computed at mint beside the holdout and stored on the candidate's evidence,
+the way `period_r` is — never inside `backtest_spec_pooled`, whose docstring is explicit that it
+decides nothing. The promotion door then reads a recorded fact instead of re-deriving one, the
+same separation `holdout` already has.
+
+**What it costs, and it is smaller than it looks.** The truncated frames are spec-INDEPENDENT, so
+a batch pays three extra `build_replay_frame` calls in total, not three per spec — the property
+that made the 272-spec batch affordable. Replay is ~1.5× the single-window cost (0.7 + 0.49 + 0.34
+of the series). **No extra venue reads at all**: every window is a prefix of candles already
+fetched.
+
+**What to do with the answer is a decision, not a derivation.** A sign flip across adjacent
+windows could refuse at the door, rank below a stable row, or only be recorded and surfaced.
+Recorded-and-surfaced is the cheapest honest start and matches how a shallow window is already
+handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
+rest.
 
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 
