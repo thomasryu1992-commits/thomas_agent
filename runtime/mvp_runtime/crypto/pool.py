@@ -21,6 +21,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
@@ -1251,20 +1252,16 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
     before stamping existed have no hash to check — documented gap, closed for
     every new row."""
     path = candidates_path(root)
-    if not path.is_file():
-        return []
     rows: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates line {i + 1} is not valid JSON") from exc
+    # Streams rather than materializing the store twice, and keeps ToolError: 47 sites in the
+    # runtime catch it by name — five of them in `promotion.py`, which reads this very store —
+    # so raising jsonl's PersistenceError here would fail past those handlers, not at them.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="CANDIDATES_UNREADABLE",
+        label="strategy candidates",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         stored = record.get("record_sha256")
@@ -1272,7 +1269,7 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
             body = {k: v for k, v in record.items() if k != "record_sha256"}
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
-                    "CANDIDATES_TAMPERED", f"strategy candidates line {i + 1} fails its self-hash"
+                    "CANDIDATES_TAMPERED", f"strategy candidates line {lineno} fails its self-hash"
                 )
         rows.append(record)
     return rows
