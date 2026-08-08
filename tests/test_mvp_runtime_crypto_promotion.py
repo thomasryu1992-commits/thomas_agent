@@ -824,3 +824,95 @@ def test_an_empty_pool_is_an_empty_set_not_a_failure():
     an empty set releases every exclusion, so the two must not be able to arrive as one value."""
     assert pool.routable_strategy_ids({"active_strategies": []}) == set()
     assert pool.routable_strategy_ids({}) == set()
+
+
+# --- the effect the approval cannot name --------------------------------------
+
+def _suspend(tmp_path, strategy_id="S1"):
+    pool.update_statuses(
+        [{"strategy_id": strategy_id, "new_status": "SUSPENDED", "consecutive_failures": 3,
+          "created_at_utc": NOW, "reasons": ["metric_suspension"]}],
+        root=tmp_path,
+    )
+
+
+def test_replace_mode_refuses_to_reactivate_a_terminal_member(tmp_path):
+    """Replace mode rebuilds every entry with a hardcoded PAPER_ACTIVE, so re-listing the
+    incumbents to drop one brings back everything the lifecycle terminated. `BUILD_HISTORY`
+    records it simulated against a copy of the real pool on 2026-07-29: 16 reactivated, 57
+    lifecycle counters reset. The retirement verb removed the REASON to reach for replace
+    mode; it did not close the path.
+
+    The authority is what makes it a refusal rather than a note. `promotion_content_sha256`
+    is a function of candidate ids, rule hashes and keep_active — nothing about status — so
+    the approval Thomas signs says "install these lineages" and cannot say "and un-suspend
+    these". The signature is honest about a smaller effect than the one it authorizes.
+    """
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                      root=tmp_path, now=NOW, without_approval=True)
+    assert "POOL_SILENT_REACTIVATION" in str(exc.value)
+    assert "SUSPENDED" in str(exc.value), "the refusal must name what it is coming back from"
+    # Refused means refused: the pool is untouched, so the member is still terminal.
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    assert entry["status"] == "SUSPENDED"
+
+
+def test_the_reactivation_escape_promotes_and_records_who_came_back(tmp_path):
+    """The escape exists because reactivation IS a legitimate operator act — `lifecycle`
+    calls it the manual re-validation path. What it may not be is a side effect."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            allow_reactivation=True)
+    assert summary["reactivation_escape"] is True
+    assert summary["reactivated"] == [
+        {"candidate_id": summary["promoted_candidate_ids"][0], "strategy_id": "S1",
+         "from_status": "SUSPENDED"}
+    ]
+    assert "silent_reactivation" in summary["reviews_skipped"]
+    assert pool.load_active_pool(tmp_path)["active_strategies"][0]["status"] == "PAPER_ACTIVE"
+
+
+def test_an_ordinary_promotion_records_no_reactivation(tmp_path):
+    """The inverse pin. `reactivated` is written whether or not the escape fired, so an empty
+    list is a statement rather than an absent key — and the escape reads as unused."""
+    _seed_candidates(tmp_path, _spec_dict())
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+    assert summary["reactivated"] == [] and summary["reactivation_escape"] is False
+    # Not empty: this promotion really did skip Thomas. That is the point of the field —
+    # every escape was already recorded separately, and no record answered "what survived".
+    assert summary["reviews_skipped"] == ["thomas_approval"]
+
+
+def test_reviews_skipped_names_every_review_stepped_around(tmp_path):
+    """The composition finding. Each escape is individually defensible and individually
+    recorded; what nobody could read off the ledger was the total. With the approval escaped
+    too, a promotion can reach the pool having met nothing but pool structural validation and
+    read exactly like one that cleared everything."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0),
+                     bars_replayed=None)
+    summary = run_promotion(
+        selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+        root=tmp_path, now=NOW, without_approval=True,
+        allow_stale_cost_basis=True, allow_unrecorded_evidence_depth=True,
+        allow_duplicates=True, allow_oversized_pool=True, allow_quarantined_derivation=True,
+    )
+    assert summary["reviews_skipped"] == [
+        "thomas_approval", "cost_basis", "evidence_depth", "semantic_duplicates",
+        "pool_size_cap", "quarantined_derivation",
+    ]
+    # `silent_reactivation` is absent because nothing was reactivated — an unused escape is
+    # not a skipped review, or every promotion would read as having skipped everything.
+    assert "silent_reactivation" not in summary["reviews_skipped"]
