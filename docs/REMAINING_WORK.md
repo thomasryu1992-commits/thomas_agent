@@ -2719,6 +2719,58 @@ now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h s
 them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
 decision, and it is the thing to decide rather than to derive.
 
+#### The decision in numbers — read off the live pool 2026-08-08
+
+Stated so the choice is made against arithmetic rather than against an impression. Nothing below
+changes what the code does; it is what the code already does, applied to the pool as it stands.
+
+**The live pool is five strategies, not ninety-four.** `OCCUPYING_STATUSES` is `PAPER_ACTIVE` /
+`PROBATION` / `WARNING`; 89 of the 94 entries are in none of them and occupy nothing.
+
+| id | tf | direction | symbol | family |
+|---|---|---|---|---|
+| S008 | 1h | short | BTCUSDT | `bollinger_breakdown_short+breakdown_short` |
+| S005-GEN-700 | 4h | short | ETHUSDT | `breakdown_short` |
+| S004-GEN-706 | 4h | short | SOLUSDT | `session_trend_short` |
+| S005-GEN-697 | 4h | **long** | BTCUSDT | `breakout+macd_momentum` |
+| S002-GEN-709 | 4h | short | DOGEUSDT | `xs_momentum_short` |
+
+BNBUSDT 4h is unoccupied, so a pooled 4h spec picks up a context nothing fills today.
+
+**The arithmetic that decides it** is `routable_directional_capacity`'s own:
+`reachable = min(contexts, 2·min(long, short) + MAX_DIRECTIONAL_SKEW)`, with the cap at 4.
+
+| configuration | contexts | long / short | reachable | utilisation |
+|---|---|---|---|---|
+| today | 5 | 1 / 4 | **5** | 100% |
+| pooled 4h **short**, 1h unchanged | 6 | 0 / 6 | **4** | **67%** |
+| pooled 4h **long**, 1h unchanged | 6 | 5 / 1 | **6** | 100% |
+
+**So the tier's direction becomes a portfolio-level choice worth a third of the book, and it
+cannot be adjusted afterwards** — `direction` is fixed at promotion and the pooled spec *is* the
+tier. The general form is the part that outlives these five rows: directional control drops from
+one lever per context (up to 15) to one per timeframe (3).
+
+**Three shapes, not two.**
+
+- **A — fully pooled per timeframe.** Buys judgeability: a pooled spec accrues trades ~5× faster
+  and reaches `lifecycle.DEFAULT_WINDOWS[0]` (20 trades) ~5× sooner, which is the direct cause of
+  today's 89 inert entries. Costs the directional arithmetic above, and one auto-demotion empties
+  a whole tier.
+- **B — pooled at 4h and 1d only, 1h left single-symbol.** Treats where the defect is: F2 measured
+  1h single-symbol at 12/12 judgeable already, and it is 4h and 1d whose tails are too thin. Halves
+  the directional exposure and keeps an opposite-direction 1h leg buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Mint pooled to get a judgeable holdout, then
+  promote the winning parameter set as one spec per symbol. **The portfolio shape does not change
+  at all** — same contexts, same directional arithmetic, same demotion granularity. The cost is
+  bookkeeping rather than shape: a row would carry pooled evidence under a single-symbol scope,
+  and `evidence_depth_of` / `symbols_replayed` have to say so, because the unit the door judges
+  and the unit it routes stop being the same. **This option is not in the four wiring items
+  above**, and it is the one that separates the two things pooling has been treated as one thing.
+
+**B is the smaller default and C is the real alternative; A pays the whole directional lever for
+what B buys most of.** That reading is a judgement, not a measurement, and it is recorded as one.
+
 **One statistical consequence that will read as a discount and is not.** `search_context_key` is
 `(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
 shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
