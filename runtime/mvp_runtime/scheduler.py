@@ -1099,12 +1099,24 @@ def _execute(
         from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
+        # Archives included, because `BACKLOG_WINDOW_DAYS` is a SPAN and the active ledger's
+        # horizon is a ROW COUNT. `iter_records` sees only the active file, so rotation was
+        # silently deciding the window: measured 2026-08-08 on the live host, the documented
+        # 30 days could see nine, four in-window proposal records having already rotated out,
+        # and the backlog fell 15 -> 11 between 08-05 and 08-06 for that reason alone — a drop
+        # that reads as families being installed and was the ledger being tidied. The error
+        # direction is the bad one for a throttle: fewer counted, cap not reached, fires
+        # proceed that the design meant to skip.
+        window_start = timeutil.plus_minutes(
+            now, -abs(crypto_proposer.BACKLOG_WINDOW_DAYS) * 24 * 60)
         # A malformed ledger must not stop the scheduler: an unreadable record stream
         # degrades to "backlog unknown = 0" (the fire proceeds) rather than failing closed —
         # the backlog cap is a courtesy throttle, not a safety gate.
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.iter_records() if ledger is not None else [], installed, now=now,
+                ledger.iter_records_with_archive(appended_since=window_start)
+                if ledger is not None else [],
+                installed, now=now,
             )
         except MvpRuntimeError:
             backlog = 0
