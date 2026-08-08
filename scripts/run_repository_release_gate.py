@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from gate_matrix import REPOSITORY_RELEASE_CHECKS
+from lib.utctime import utc_now
 from lib.release_gate_evidence import repository_source_fingerprint, write_gate_evidence
 
 # Deferred detailed validators are subordinate to scripts/validate_deferred_architecture.py.
@@ -26,8 +26,6 @@ EVIDENCE_REL = "generated/release_gate/RELEASE_GATE_EVIDENCE.yaml"
 GIT_EXECUTABLE = os.environ.get("THOMAS_GIT") or shutil.which("git") or "git"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def run(
