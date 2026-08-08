@@ -89,12 +89,20 @@ def _funding_series(candles, *, hours=8):
     return events
 
 
-def _trending_snapshot(n=200, *, funding=True):
+def _trending_snapshot(n=200, *, funding=True, taker_flow=True):
     """Rising closes with a mid-series dip: entries and both exit kinds occur.
 
     ``funding`` defaults ON because a production snapshot always carries it. Pass False for the
     tests that are ABOUT an unsourced carry — see :func:`_funding_series` for why the default
     had to move.
+
+    ``taker_flow`` defaults ON for the same reason and it is the stronger case: the aggressor
+    legs arrive in every klines response the collector makes, so a snapshot WITHOUT them is a
+    shape production never produces. It defaulted off only because nothing had needed it, and
+    what that cost was invisible until the rotation grew — a fire whose block lands on the flow
+    families mints nothing at all against a snapshot missing their columns
+    (``unsuppliable_features``), so the fixture silently decided which families these tests
+    could see. Pass False for a test that is about the absence itself.
     """
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
@@ -104,12 +112,25 @@ def _trending_snapshot(n=200, *, funding=True):
         drift = 1.0 if (i // 20) % 3 != 2 else -1.5  # two up-blocks, one down-block
         price = max(10.0, price + drift)
         close_time = last_close - (n - 1 - i) * step
-        candles.append({
+        volume = 10.0 + (i % 7)
+        candle = {
             "open_time": timeutil.format_iso(close_time - step),
             "open": price - drift, "high": price + 1.5, "low": price - 1.5,
-            "close": price, "volume": 10.0 + (i % 7),
+            "close": price, "volume": volume,
             "close_time": timeutil.format_iso(close_time),
-        })
+        }
+        if taker_flow:
+            # The aggressor split swings with the block's drift, so the flow columns carry
+            # signal rather than a constant — a constant would leave every flow family at
+            # zero trades, which is the same blindness by a different route.
+            buy_share = 0.62 if drift > 0 else 0.38
+            candle.update({
+                "taker_buy_base": volume * buy_share,
+                "taker_buy_quote": volume * buy_share * price,
+                "quote_volume": volume * price,
+                "trade_count": 40.0 + (i % 11),
+            })
+        candles.append(candle)
     snapshot = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles,
                 "is_synthetic": False}
     if funding:
@@ -2399,6 +2420,9 @@ def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
         "premium_fade_long", "premium_fade_short",
         "taker_absorption_long", "taker_absorption_short",
         "taker_flow_long", "taker_flow_short",
+        # Reads `taker_flow_imbalance`, so it drops on a venue with no aggressor split for the
+        # same reason the three flow families above it do.
+        "taker_flow_fade_long", "taker_flow_fade_short",
     }
     # Funding rides a real series here, so the funding families survive — the gate is about
     # the feed each family needs, not about which venue is the familiar one.
@@ -2536,6 +2560,11 @@ _FADE_FAMILIES = frozenset({
     "mean_reversion", "mean_reversion_short", "funding_fade_long", "funding_fade_short",
     "premium_fade_long", "premium_fade_short", "oi_unwind_long", "oi_unwind_short",
     "taker_absorption_long", "taker_absorption_short",
+    # 2026-08-08. Both are reversal claims — "the slow leg is stretched and the fast one has
+    # turned", "one-way aggression has spent the move" — so both are COMPLETE when the stretch
+    # unwinds, which is the whole rule this split encodes.
+    "htf_reversal_long", "htf_reversal_short",
+    "taker_flow_fade_long", "taker_flow_fade_short",
 })
 
 
@@ -2887,3 +2916,94 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     )
 
 
+
+
+# --- id numbering: reserved, not survived --------------------------------------
+
+def test_a_fused_child_starts_after_every_id_the_seeded_draw_RESERVED(monkeypatch):
+    """`generate_batch` numbers S001..S00count as it mints; `_score_draw` then drops the specs
+    whose features the frame never supplies. So survivors < ids issued the moment anything
+    starves, and a fusion cursor counted off survivors points back into the seeded block.
+
+    The first fused child is then minted under a name a stored seeded row already holds — two
+    different strategies sharing one `(generation_id, strategy_id)`. Promotions key on the
+    lineage-derived `candidate_id`, so nothing mis-promotes; `resolve_candidates` refuses the
+    pair as ambiguous and any display surface shows one name over two rules.
+
+    Asserted on the cursor rather than on a minted collision, because reaching one needs a
+    rotation slice that both starves a spec AND has durable fusable parents — a condition the
+    live store has not hit, which is exactly why this went unnoticed rather than why it is fine.
+    """
+    from runtime.mvp_runtime.crypto import factory
+
+    real_unsuppliable = factory.unsuppliable_features
+    starved_one: list[str] = []
+
+    def starve_the_first(spec, rows):
+        if not starved_one:
+            starved_one.append(spec.strategy_id)
+            return ["a_column_this_frame_never_supplies"]
+        return real_unsuppliable(spec, rows)
+
+    captured: dict[str, int] = {}
+    real_fuse = factory._fuse_batch
+
+    def spy(*args, **kwargs):
+        captured["start_index"] = kwargs["start_index"]
+        return real_fuse(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "unsuppliable_features", starve_the_first)
+    monkeypatch.setattr(factory, "_fuse_batch", spy)
+    factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+
+    assert starved_one, "the fixture must actually starve a spec"
+    assert captured["start_index"] == factory.DEFAULT_BATCH_SIZE + 1, (
+        "the fusion cursor counted survivors, so it points at an id the seeded draw already "
+        "issued"
+    )
+
+
+def test_the_shortfall_draw_starts_after_fusion_on_the_same_convention(monkeypatch):
+    """The inverse pin, and the reason `count` is the right cursor rather than
+    `len(batch["specs"])`: both draws reserve blocks, so a draw that accepted fewer than it
+    asked for leaves a GAP in the numbering instead of risking an overlap."""
+    from runtime.mvp_runtime.crypto import factory
+
+    captured: list[int] = []
+    real_generate = factory.generate_batch
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get("start_index", 1))
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "generate_batch", spy)
+    result = factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                                 existing_candidates=[], now=NOW, fusion_pairs=2)
+    # Seeded block first at 1; the shortfall draw, if it ran, after the seeded block AND
+    # whatever fusion minted.
+    assert captured[0] == 1
+    if len(captured) > 1:
+        assert captured[1] == factory.DEFAULT_BATCH_SIZE + result["fused_count"] + 1
+
+
+def test_fusion_reads_the_symbol_run_factory_resolved(monkeypatch):
+    """One fact, one default. `run_factory` falls back to BTCUSDT; the fusion call used to
+    re-read the snapshot with a `""` fallback, so a snapshot without a symbol would mint
+    BTCUSDT specs while `fusion_parent_buckets` filtered on `""` and dropped every parent —
+    no bucket, no children, no reason recorded. Unreachable through the scheduler, which
+    always sets it."""
+    from runtime.mvp_runtime.crypto import factory
+
+    seen: dict[str, str] = {}
+    real_buckets = factory.fusion_parent_buckets
+
+    def spy(records, *, symbol, timeframe):
+        seen["symbol"] = symbol
+        return real_buckets(records, symbol=symbol, timeframe=timeframe)
+
+    monkeypatch.setattr(factory, "fusion_parent_buckets", spy)
+    snapshot = {k: v for k, v in _trending_snapshot().items() if k != "symbol"}
+    factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+    assert seen["symbol"] == "BTCUSDT", "the two fallbacks for one fact disagree again"
