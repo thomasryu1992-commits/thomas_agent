@@ -1149,8 +1149,18 @@ def _execute(
             delivery = f" sheet_not_sent:{exc.reason_code}"
         except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
             delivery = f" sheet_not_sent:{type(exc).__name__}"
-        return (f"data_review={record['accepted_count']}/{record['suggested_count']} "
-                f"review={record['review_id']}{delivery}")
+        status = (f"data_review={record['accepted_count']}/{record['suggested_count']} "
+                  f"review={record['review_id']}{delivery}")
+        # After the ledger append and after the sheet, never before: the record is the
+        # evidence and the sheet is the operator's copy, and raising first would cost both to
+        # report the same failure less usefully.
+        if crypto_data_review.review_loop_is_stalled(record, schedule.last_status):
+            raise SchedulerBlocked(crypto_data_review.DATA_REVIEW_STALLED, (
+                f"the data-gap review has produced nothing for two consecutive fires; "
+                f"this one: {record.get('degraded_reason')}. Previous status: "
+                f"{schedule.last_status!r}. {status}"
+            ))
+        return status
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

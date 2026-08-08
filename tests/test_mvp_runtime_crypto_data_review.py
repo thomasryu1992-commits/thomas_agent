@@ -35,6 +35,17 @@ from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE, LedgerStore
 NOW = "2026-07-25T06:00:00Z"
 
 
+class _FailingProvider:
+    """A provider that fails the way the live one did: a shape error, not a transport one."""
+
+    network_egress = False
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        raise ProviderError("MALFORMED_RESPONSE",
+                            "hosted provider response missing required analysis fields")
+
+
+
 # --- inventory ----------------------------------------------------------------
 
 def test_inventory_reports_latest_feed_status_and_performance():
@@ -209,3 +220,74 @@ def test_scheduled_data_review_fire_ledgers_the_record(tmp_path, monkeypatch):
     reviews = [r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND]
     assert len(reviews) == 1
     assert reviews[0]["record"]["collection_effect"] == "NONE"
+
+
+# --- a stalled loop reaches the failure alert ---------------------------------
+
+def test_one_degraded_review_stays_quiet(tmp_path):
+    """Degrade-never-block is right for one bad fire. The sheet carries `DEGRADED: {reason}`
+    and the fire completes — the documented posture, unchanged."""
+    from runtime.mvp_runtime.crypto import data_review
+
+    record = review_data_gaps(build_data_inventory([], []),
+                              provider=_FailingProvider(), now=NOW)
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert data_review.review_loop_is_stalled(record, None) is False
+    assert data_review.review_loop_is_stalled(record, "data_review=3/5 review=x") is False
+
+
+def test_a_second_degraded_review_in_a_row_is_a_stall():
+    """`scheduler`'s candle-archive branch settled this shape: off on purpose is quiet, on and
+    not working RAISES, because a COMPLETED summary reaches nobody. At a weekly cadence two in
+    a row is already a fortnight of a review loop producing nothing."""
+    from runtime.mvp_runtime.crypto import data_review
+
+    record = review_data_gaps(build_data_inventory([], []),
+                              provider=_FailingProvider(), now=NOW)
+    assert data_review.review_loop_is_stalled(record, "data_review=0/0 review=abc") is True
+    # The raised status is recognised too, or raising would clear the marker the next fire
+    # reads and the alert would fire every OTHER week.
+    assert data_review.review_loop_is_stalled(
+        record, f"failed:{data_review.DATA_REVIEW_STALLED}") is True
+
+
+def test_a_healthy_review_is_never_a_stall():
+    """`0/0` is uniquely the degraded signature — `review_data_gaps` only ever produces
+    `suggested_count == 0` with `degraded` set — so a healthy run cannot be read as one."""
+    from runtime.mvp_runtime.crypto import data_review
+
+    healthy = review_data_gaps(build_data_inventory([], []),
+                               provider=MockDataReviewProvider(), now=NOW)
+    assert "degraded" not in healthy
+    assert data_review.review_loop_is_stalled(healthy, "data_review=0/0 review=abc") is False
+
+
+def test_the_scheduled_fire_raises_on_a_stalled_loop(tmp_path, monkeypatch):
+    """End to end: the second degraded fire lands as a FAILED scheduler event, which is an
+    alert surface, instead of a COMPLETED one, which is not."""
+    from runtime.mvp_runtime.crypto import data_review
+    from runtime.mvp_runtime import providers
+
+    monkeypatch.setattr(providers, "select_validator_provider",
+                        lambda **kwargs: _FailingProvider())
+    schedule = build_schedule(kind=KIND_DATA_REVIEW, request="", interval_seconds=86400,
+                              created_by="op", now="2026-07-24T06:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    ledger = LedgerStore(tmp_path / LEDGER_REL)
+
+    first = run_due(store, now=NOW, control_store=ControlStore(tmp_path),
+                    ledger=ledger, repo_root=tmp_path)
+    assert first["fired"] == 1 and first["failed"] == 0
+    assert first["results"][0]["status"].startswith("data_review=0/0")
+
+    second = run_due(store, now="2026-07-26T06:00:00Z", control_store=ControlStore(tmp_path),
+                     ledger=ledger, repo_root=tmp_path)
+    assert second["failed"] == 1
+    assert data_review.DATA_REVIEW_STALLED in second["results"][0]["status"]
+    # The evidence and the operator's copy are not the price of the alert: both fires
+    # ledgered their record before raising.
+    rows = [json.loads(line) for line in
+            (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+    assert len([r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND]) == 2
