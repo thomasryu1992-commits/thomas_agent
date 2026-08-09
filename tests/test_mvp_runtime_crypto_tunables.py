@@ -27,11 +27,19 @@ CRYPTO = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "mvp_runtime"
 # scorer's thresholds, the mint space and the live caps — §G1's own list. The rest of the package
 # is deliberately NOT swept yet, and naming the boundary here is what keeps that a decision
 # rather than an oversight.
-SWEPT_MODULES = (
-    "cost.py", "guards.py", "pool.py", "robustness.py", "feedback.py", "factory.py",
-    "paper.py", "live_sizing.py", "live_order.py", "live_position.py", "live_promotion.py",
-    "market_data.py",
-)
+# The first slice named twelve modules here and said the rest was deliberately not swept — the
+# list WAS the decision. The second slice (2026-08-08) closed the gap, so the boundary is now the
+# package and a hand-maintained list would only be a way to forget a module. It is derived, and
+# `UNSWEPT` is where an exclusion would have to be argued for rather than achieved by omission.
+#
+# Adding the remaining modules cost nothing to argue: 21 of the 31 had **zero** decision-shaped
+# constants and most had no module-level numeric constant at all.
+UNSWEPT: dict[str, str] = {}
+
+SWEPT_MODULES = tuple(sorted(
+    p.name for p in CRYPTO.glob("*.py")
+    if p.name not in {"__init__.py", "tunables.py"} and p.name not in UNSWEPT
+))
 
 # Names shaped like a decision — a threshold, a rate, a window, a multiple.
 _DECISION_SHAPED = re.compile(
@@ -54,6 +62,41 @@ MECHANICS: dict[str, str] = {
     # HAND-DECLARED notional, so it constrains an operator input rather than an order. If it
     # ever gates an order path it belongs in the index instead.
     "REFERENCE_PRICE_MAX_AGE_SECONDS": "staleness tolerance on a notional verification read",
+
+    # --- second slice, 2026-08-08 -------------------------------------------------------------
+    # Estimator warm-up floors: how many observations before a series will answer at all. Below
+    # one the column is None and no mined condition on it can fire, which is the honest state
+    # rather than a level estimated from three points. They decide nothing about a trade — the
+    # same class as MIN_CANDLE_COUNT above.
+    "FUNDING_Z_MIN_PERIODS": "estimator warm-up: observations before the funding z will answer",
+    "OI_Z_MIN_PERIODS": "estimator warm-up: observations before the OI z will answer",
+    "LIQ_MA_MIN_PERIODS": "estimator warm-up: observations before the liquidation MA will answer",
+    "TAKER_FLOW_MA_MIN_PERIODS": "estimator warm-up: observations before the taker-flow MA answers",
+    "TRADE_SIZE_Z_MIN_PERIODS": "estimator warm-up: observations before the trade-size z answers",
+    "PREMIUM_Z_MIN_PERIODS": "estimator warm-up: observations before the premium z will answer",
+    "POSITIONING_Z_MIN_PERIODS": "estimator warm-up: observations before the positioning z answers",
+    "REFERENCE_CORR_MIN_PERIODS": "estimator warm-up: observations before the correlation answers",
+    # Borderline, and recorded as such like the one above it. Its comment argues the trade-off
+    # (20 rather than 100, so a live sizing decision is not blocked for 100 bars) — but what it
+    # sets is still only when the reference exists, and below it the multiplier is an unscaled
+    # 1.0 rather than a guess. If it ever selects BETWEEN references it belongs in the index.
+    "ATR_REFERENCE_MIN_PERIODS": "estimator warm-up: observations before the ATR reference answers",
+
+    # Collection budgets — how much one call or one refresh asks for. Bounded by the vendor's
+    # retention and its page cap, not chosen against anything this runtime trades.
+    "USER_TRADES_PAGE_LIMIT": "venue cap per /fapi/v1/userTrades call",
+    "REFRESH_DAYS": "collection budget: how much history one OI refresh re-asks for",
+    "SEED_DAYS": "collection budget: a seed takes whatever the vendor's retention wall is",
+
+    # Reporting and display shapes. They change what a reader is shown, never what is traded.
+    "PNL_WINDOW_DAYS": "which realized-P&L windows a snapshot reports; one query, three buckets",
+    "GRANT_EXPIRY_WARNING_DAYS": "when the board starts showing a grant instead of hiding it",
+    "MIN_INTERVAL_SAMPLE": "below it the spread cannot be estimated, so no interval is produced",
+
+    # Output caps bounding one run's volume. Neither gates money: a counterfactual is
+    # observational by construction, and a suggestion is evidence for a human.
+    "MAX_OPEN_COUNTERFACTUALS": "bounds the shadow book so a stuck gate cannot grow it forever",
+    "MAX_SUGGESTIONS_PER_RUN": "output cap on a review aid; nothing acts on a suggestion",
 }
 
 
@@ -104,6 +147,21 @@ def test_every_decision_shaped_constant_in_a_swept_module_is_owned():
         "decision-shaped constants with no recorded provenance: " + ", ".join(sorted(unowned))
         + " — add a Tunable to crypto/tunables.py, or name it in MECHANICS with a reason"
     )
+
+
+def test_the_sweep_covers_every_crypto_module():
+    """The second slice's real deliverable: the boundary is the package, and stays there.
+
+    While the sweep was a subset, a decision-shaped constant could avoid the coverage test simply
+    by living in an unswept module. Deriving `SWEPT_MODULES` removes that route — a new module
+    arrives swept — and this test is what stops the derivation being quietly narrowed later: an
+    exclusion has to be written into `UNSWEPT` with a reason, where a reader will meet it.
+    """
+    present = {p.name for p in CRYPTO.glob("*.py")} - {"__init__.py", "tunables.py"}
+    assert set(SWEPT_MODULES) == present - set(UNSWEPT), "the sweep no longer derives from the package"
+    assert not set(UNSWEPT) - present, f"UNSWEPT names modules that do not exist: {sorted(set(UNSWEPT) - present)}"
+    for module, reason in UNSWEPT.items():
+        assert reason.strip(), f"{module} is excluded from the sweep with no reason given"
 
 
 def test_the_index_points_at_modules_that_exist_and_own_the_name():
