@@ -827,7 +827,64 @@ def run_crypto_cycle(
     # only reachable state was the override. `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`
     # has the measurement; `live_entry`'s docstring records the removal at the door itself.
 
-    # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
+    # 4c) the LIVE PERMISSION phase — the per-lineage allowance (#615 §5). It runs BEFORE the leg
+    # below, and the ordering is the control: a lineage whose allowance is already spent must not
+    # be able to open one more real position because the permission was recomputed too late.
+    #
+    # **What it judges is the history read at step 3**, which holds every outcome a PREVIOUS cycle
+    # settled. An outcome settled by THIS cycle's leg is not in it and does not need to be:
+    # `live_route` returns ROUTE_SETTLED before it reaches its entry block, so a cycle that closes
+    # a position never opens one, and the next cycle re-reads that file at step 3 with the new row
+    # in it. That short-circuit is what makes "settle, then re-read, then decide permission, then
+    # enter" hold across two cycles without splitting this leg in half.
+    #
+    # This block used to sit AFTER the leg, on the argument that a settlement made this cycle
+    # would then be visible to it. It was not: `live_readable` is read at step 3 either way, so
+    # the placement bought nothing it claimed and cost the one thing that mattered — the leg had
+    # already run, on the un-narrowed set, so a spent allowance still got one more live entry.
+    #
+    # It is not a verdict. At this sample size no test can say a strategy is bad; what this says
+    # is that the amount we were willing to risk on an unproven lineage is spent. The effect is a
+    # TIER move, so the lineage keeps its slot and keeps papering — and `disarm_live_tier` has no
+    # argument for a target tier, so this can only ever take permission away.
+    #
+    # Additive to the pool-wide breaker, never a replacement (#615 §5.3): a targeted stop that
+    # let the portfolio brake relax would leave more trading running than today, which is a
+    # money-door widening and a separate approval.
+    live_allowance: dict[str, Any] | None = None
+    if live_routable_ids:
+        live_allowance = evaluate_live_allowance(
+            # None when the history could not be read, which reports every armed lineage as
+            # breached — the conservative direction, and the one the docstring argues for.
+            live_readable if live_history_readable else None,
+            live_routable_strategy_ids=live_routable_ids,
+            pool=active_pool,
+        )
+        breached = sorted({b["strategy_id"] for b in live_allowance["breached"]})
+        if breached:
+            # **The refusal is in memory, and it does not wait for the write.** Narrowing the set
+            # handed to the leg is what actually stops the entry; persisting the tier move is a
+            # separate, best-effort step below. A breach detected but not persistable — a dry-run
+            # store, a locked pool, a raising writer — therefore still refuses this cycle. The
+            # money path must not need the disk to hold a limit it has already measured as spent,
+            # and "some other gate probably catches it" is not a property this door may rely on.
+            live_routable_ids = {sid for sid in live_routable_ids if sid not in breached}
+            live_allowance["blocked_from_live_this_cycle"] = breached
+            reason_codes.append(LIVE_ALLOWANCE_SPENT)
+            # `disarmed` is None when the durable move did not land: not attempted (dry-run
+            # store), or attempted and refused. The two are told apart by the reason code a
+            # refusal appends — the in-cycle block above is identical either way.
+            live_allowance["disarmed"] = None
+            if getattr(store, "filesystem_write", False):
+                try:
+                    live_allowance["disarmed"] = pool.disarm_live_tier(
+                        breached, root=root, now=now,
+                        reasons=sorted({r for b in live_allowance["breached"] for r in b["reasons"]}),
+                    )
+                except ToolError as exc:
+                    reason_codes.append(exc.reason_code)
+
+    # 4d) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
     # step so it can share that step's routing result rather than re-evaluating the pool.
@@ -873,39 +930,6 @@ def run_crypto_cycle(
         control_store=control_store,
     )
     reason_codes.extend(live["live_reason_codes"])
-
-    # 5a2) the per-lineage LIVE allowance (#615 §5). Evaluated AFTER the live leg so a settlement
-    # made this cycle is already in the history it judges — a lineage that spent its allowance on
-    # the trade that just closed should not get one more cycle of arming out of the ordering.
-    #
-    # It is not a verdict. At this sample size no test can say a strategy is bad; what this says
-    # is that the amount we were willing to risk on an unproven lineage is spent. The effect is a
-    # TIER move, so the lineage keeps its slot and keeps papering — and `disarm_live_tier` has no
-    # argument for a target tier, so this can only ever take permission away.
-    #
-    # Additive to the pool-wide breaker, never a replacement (#615 §5.3): a targeted stop that
-    # let the portfolio brake relax would leave more trading running than today, which is a
-    # money-door widening and a separate approval.
-    live_allowance: dict[str, Any] | None = None
-    if live_routable_ids:
-        live_allowance = evaluate_live_allowance(
-            # None when the history could not be read, which reports every armed lineage as
-            # breached — the conservative direction, and the one the docstring argues for.
-            live_readable if live_history_readable else None,
-            live_routable_strategy_ids=live_routable_ids,
-            pool=active_pool,
-        )
-        breached = [b["strategy_id"] for b in live_allowance["breached"]]
-        if breached and getattr(store, "filesystem_write", False):
-            try:
-                live_allowance["disarmed"] = pool.disarm_live_tier(
-                    breached, root=root, now=now,
-                    reasons=sorted({r for b in live_allowance["breached"] for r in b["reasons"]}),
-                )
-            except ToolError as exc:
-                reason_codes.append(exc.reason_code)
-        if breached:
-            reason_codes.append(LIVE_ALLOWANCE_SPENT)
 
     # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
     # Evaluated every cycle (pure); APPLIED only through the real gated store, the
