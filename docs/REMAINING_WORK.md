@@ -3141,7 +3141,11 @@ version of this test.
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
-## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done, G4 measured**
+## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**
+
+> G1 sliced twice, G2 removed, G3 indexed and twice corrected, G4a/b/c done. What is left is the
+> three rejections and a three-site residue, both stated exactly at the end of this section. Read
+> "The refactoring backlog is exhausted" before starting anything here.
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -3384,6 +3388,44 @@ drops entries that stop being shared, so the declaration cannot outlive its code
 
 Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
 registering there is a governance surface a reading aid does not need.
+
+#### The index was counting 27 English sentences as reason codes — fixed 2026-08-09
+
+Found while acting on §G4's note about `SpecParseError` and `FusionRefused`. That note said neither
+appeared here; both did, and how they appeared was the defect. Those classes take a **message** as
+their first positional argument, so the walk filed the message in the code column:
+
+```
+| `created_by must be a non-empty string` | `SpecParseError` | crypto/strategy.py | 373 | … |
+```
+
+**An entry whose key nobody can look up is worse than a missing one.** §G3 exists to answer "a code
+came out of the runtime — where is it raised", and no operator greps an English sentence. Each also
+counted as a distinct code, so the vocabulary was overstated by 27.
+
+**The rule is that a code has no spaces**, and it splits the surface with nothing left over —
+measured across every literal the walk finds: **751 `SCREAMING_CASE`, 9 `lower_snake`, 27
+sentences**, and no fourth shape. The nine lowercase ones stay: `too_many_conditions`,
+`holdout_unjudgeable` and seven `*_mismatch` names are `FusionRefused`'s mint-refusal vocabulary,
+which §F already tabulates by name. A rule keyed on `SCREAMING_CASE` would have dropped all nine.
+
+| | before | after |
+|---|---:|---:|
+| distinct codes | 456 | **429** |
+| indexed sites | 787 | 760 |
+| built at runtime, not indexable | 113 | 113 |
+| **carry a message where a code goes** | counted as codes | **27, counted apart** |
+
+The 27 are **counted, not dropped silently** — and counted *separately* from the 113, because they
+are different gaps: a site that builds its code can be given one, while a site that raises with a
+message has no code to find. Collapsing them would claim the index is missing 140 codes when 27 of
+those paths do not have a code at all. Six of the 27 are in `read_only_kernel/`, so the never-modify
+rule puts them permanently in that column.
+
+**Not fixed here: giving `SpecParseError` a code vocabulary.** Its 34 raise sites are spec-parse
+validation whose audience is the factory, not an operator diagnosing production — the same shape as
+the tunables index's `MECHANICS`, where something looking like a decision is not one. Deciding that
+is a separate item from making the index stop mislabelling it.
 
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
@@ -3680,7 +3722,11 @@ restating the values would just be a second copy of the thing that diverged.
   that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
   `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
   both plain `ValueError` — so *"every failure path raises a typed error with a stable
-  `reason_code`"* is not true of them, and neither appears in `DIAGNOSTIC_CODE_INDEX.md`.
+  `reason_code`"* is not true of them, and ~~neither appears in `DIAGNOSTIC_CODE_INDEX.md`~~ —
+  **wrong, and the truth was worse; corrected 2026-08-09.** Both appeared, 11 rows and 9. Because
+  they take a *message* as their first argument, the extractor filed the message in the code
+  column: `created_by must be a non-empty string`. Not a missing entry — an entry whose key
+  nobody can look up. See §G3.
 
 #### Two notes on the instrument, because both would have closed a question wrongly
 
@@ -3709,12 +3755,61 @@ locking implementations, neither hand-rolled, and no document saying which is fo
   or deferred capability). `ARCHITECTURE_REVIEW_RECORD.md` finding C parked exactly this and the
   reason still holds: the gates genuinely read it, so it is dormant-but-governed, not dead.
 
-### One number that changed and should not be misread
+### One number that changed and should not be misread — re-measured 2026-08-09
 
-`runtime/` is 53,806 LOC, of which `crypto/` is 24,642 and the read-only kernel — the
-"governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
-**1,938**. The description has not matched the shape for some time. That is an observation about
-the doc, not a proposal to restructure the code.
+| | 2026-08-02 | 2026-08-09 | |
+|---|---:|---:|---|
+| `runtime/` | 53,806 | **61,506** | +14% |
+| of which `crypto/` | 24,642 | **32,006** | +30% |
+| read-only kernel | 1,938 | **1,938** | unchanged |
+
+The "governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* has
+not moved by a line in a week while the runtime around it grew by 7,700. The description has not
+matched the shape for some time and now matches it less. Still an observation about the doc, not
+a proposal to restructure the code — but the direction is worth watching, because the gap widens
+on its own.
+
+### The refactoring backlog is exhausted — closed 2026-08-09
+
+Every item above is measured and dispositioned: **G1** sliced twice (the sweep is the whole
+package), **G2** removed, **G3** indexed and then corrected twice, **G4a/b/c** done. What remains
+is the three rejections below and a residue small enough to state exactly, so nobody re-derives it.
+
+**The residue, measured rather than estimated.** CLAUDE.md says every failure path raises a typed
+error with a stable `reason_code`. Twelve sites in `runtime/` raise a builtin directly:
+
+```
+ast walk over runtime/**/*.py for `raise ValueError|TypeError|RuntimeError|KeyError|OSError(...)`
+```
+
+| | n | |
+|---|---:|---|
+| in `read_only_kernel/` | 3 | never-modify rule |
+| a documented design decision | 1 | `timeutil.parse_iso` — its docstring says callers catch it and re-raise their own |
+| argument validation / programming error | 5 | a dataclass `__post_init__` invariant, `authority_invariant_holds`' P0–P6 check |
+| **genuine candidates** | **3** | `live_governance` ×2, `factory`'s cost-model-mismatch guard |
+
+**And the three are a diagnostics gap, not a safety one** — checked, not assumed: the live route
+already wraps these calls in `except Exception  # noqa: BLE001 — the order is at the venue;
+report, never raise`, so a bare `ValueError` does not escape a handler designed for
+`MvpRuntimeError`. What is lost is the named code in the record, not the containment.
+
+**What would re-open this section.** A new crypto module arriving unswept (the tunables test
+fails), a decision-shaped constant with no provenance (same test), a reason code that is really a
+message (the index test), a reader that hand-rolls a store read
+(`grep -rn 'read_text(encoding="utf-8").splitlines()' runtime/mvp_runtime/crypto/`), or a script
+minting its own `EXIT_*`. Each of those is a test now rather than a thing to remember, which is
+the actual output of this section — the greps that found them are in the subsections above and
+every one of them has since been kept true by a test instead.
+
+**The pattern worth carrying, because it cost the most to learn.** Three times the obvious
+consolidation was wrong and only measurement said so: the crypto **writes** must keep an `fsync`
+that `jsonl.append_lines` does not do; `scripts/`' 59 repo-root snippets are 18 bootstrap paradoxes
+and 22 lost invocation modes for a one-liner with no failure mode; and a code that vanished from
+the diagnostic index wanted the extractor fixed, not the index overwritten. Two of this section's
+own headline counts were also wrong by roughly four (§G1's constants, §G3's codes) — both because
+a grep over upper-case names measures naming convention rather than the thing being counted. **Do
+not act on a count in this file without re-running the command beside it.**
 
 ---
 ## H. Equity-perp lane (Hyperliquid HIP-3) — **S1 is running as of 2026-08-04**; next is S2
