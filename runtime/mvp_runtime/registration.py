@@ -56,12 +56,6 @@ DEFINITION_SCHEMA_VERSION = "program_definition.v0.1"
 _INPUT_LISTS = ("inputs", "outputs")
 
 
-def _require_operator_text(value: str, code: str, what: str) -> str:
-    if not (isinstance(value, str) and value.strip()):
-        raise ProgramizationBlocked(code, f"registration requires {what}")
-    return value.strip()
-
-
 def _lineage(store: ProgramizationStore, candidate_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """The ACCEPTED candidate and its program request — the chain evidence registration
     stands on. Fail-closed when either link is missing."""
