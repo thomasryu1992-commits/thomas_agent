@@ -1205,6 +1205,63 @@ def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
     }
 
 
+# --- the live tier (#610 Part 1) ---------------------------------------------------------
+#
+# Occupying a routing slot and being allowed to spend real money were **one fact** until now:
+# `OCCUPYING_STATUSES` answered both, so installing a strategy into the pool armed it for live
+# orders on the next 15-minute cycle. `live_entry`'s check order has no per-strategy question in
+# it at all — slot 2b was Gate 0 and it was removed 2026-08-03 for being unsatisfiable — so every
+# remaining live gate asks whether this RUNTIME may trade, never whether this STRATEGY may.
+#
+# **Why a field and not a status, which is what the proposal first said.** The lifecycle ladder
+# recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.py:292`). Had the observation
+# tier been a status, that recovery would move a strategy the operator deliberately kept off the
+# money path INTO it — an automatic promotion into real money, arriving through the one mechanism
+# this system says may only ever demote. `update_statuses` writes **only** `status`
+# (see its docstring), so a separate field cannot be reached by the ladder at all: the property
+# is structural rather than guarded, and there is no rank ordering anybody has to get right.
+#
+# Absence means OBSERVATION. Every entry promoted before this existed therefore stops being
+# live-routable the moment this ships, which is the intended migration and the fail-closed
+# direction: a pool that predates the distinction cannot assert the permissive half of it.
+LIVE_TIER_FIELD = "live_tier"
+LIVE_TIER_LIVE = "LIVE"
+LIVE_TIER_OBSERVATION = "OBSERVATION"
+LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
+
+
+def entry_live_tier(entry: Mapping[str, Any]) -> str:
+    """This entry's tier, defaulting to OBSERVATION — including for an unrecognised value.
+
+    A tier this code does not know is not a reason to allow real money; it is a reason to refuse
+    until somebody says what it means. Same direction as an absent field."""
+    value = entry.get(LIVE_TIER_FIELD)
+    return LIVE_TIER_LIVE if value == LIVE_TIER_LIVE else LIVE_TIER_OBSERVATION
+
+
+def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
+    """Every strategy id that may open a REAL position: occupying **and** in the live tier.
+
+    Strictly narrower than :func:`routable_strategy_ids`, and the two answer different
+    questions — that one is "could this trade again at all", which the drawdown baseline needs
+    and which an observation-tier strategy still answers YES to (it papers, and its live history
+    stays attributable). This one is "may this spend money", and nothing infers it: the entry
+    has to say so.
+
+    A pool that cannot be read must never arrive here as an empty dict. Empty means "no strategy
+    is live-routable", which refuses every entry — safe — but the caller still owes the
+    distinction, because the same shape reaching :func:`routable_strategy_ids` would release a
+    drawdown exclusion instead."""
+    return {
+        str(entry.get("strategy_id"))
+        for entry in (pool.get("active_strategies") or [])
+        if isinstance(entry, Mapping)
+        and entry.get("status") in OCCUPYING_STATUSES
+        and entry.get("strategy_id")
+        and entry_live_tier(entry) == LIVE_TIER_LIVE
+    }
+
+
 def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
 

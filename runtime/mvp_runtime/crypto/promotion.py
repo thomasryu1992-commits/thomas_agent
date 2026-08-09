@@ -31,19 +31,35 @@ from ..permission import build_strategy_promotion_permission_decision
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
-PROMOTION_HASH_VERSION = "strategy_promotion.v2"
+# v3 — the live tier joins the hash (#610 Part 1). It has to: installing a strategy that may
+# spend real money and installing one that may only paper are different asks, and an approval
+# granted for the second must not be spendable on the first. Leaving the tier out would let the
+# same APPROVED hash cover either, which is the material-field rule this hash exists to enforce.
+PROMOTION_HASH_VERSION = "strategy_promotion.v3"
 
 
-def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], keep_active: bool) -> str:
+def promotion_content_sha256(
+    candidate_ids: list[str], rule_hashes: list[str], keep_active: bool, live_tier: str,
+) -> str:
     """The material identity of one promotion: which candidate lineages, which exact
-    rules, add or replace. Any change mints a different hash — and therefore a
-    different approval (``invalidated_by_any_material_field_change``). v2: keyed by
-    globally unique ``candidate_id``, never the per-generation ``strategy_id``."""
+    rules, add or replace, **and into which tier**. Any change mints a different hash — and
+    therefore a different approval (``invalidated_by_any_material_field_change``). v2: keyed by
+    globally unique ``candidate_id``, never the per-generation ``strategy_id``. v3: the tier.
+
+    ``live_tier`` is required rather than defaulted. A default would be a decision about real
+    money made by an argument list, and the one direction a default could fail in silently is
+    the permissive one."""
+    if live_tier not in pool_store.LIVE_TIERS:
+        raise ApprovalBlocked(
+            "PROMOTION_TIER_INVALID",
+            f"live_tier {live_tier!r} is not one of {sorted(pool_store.LIVE_TIERS)}",
+        )
     return integrity.sha256_value({
         "hash_version": PROMOTION_HASH_VERSION,
         "candidate_ids": sorted(candidate_ids),
         "rule_hashes": sorted(rule_hashes),
         "keep_active": bool(keep_active),
+        "live_tier": live_tier,
     })
 
 
@@ -107,6 +123,11 @@ def request_promotion(
     selectors: list[str],
     *,
     keep_active: bool,
+    # #610 Part 1 — which tier this promotion installs into. No default: the whole point of the
+    # split is that arming a strategy for real money is a decision somebody makes, and a default
+    # would make it for them. OBSERVATION installs a strategy that occupies its slot and papers;
+    # LIVE additionally lets it open real positions.
+    live_tier: str,
     now: str | None = None,
     ttl_minutes: int | None = None,
     repo_root: Path | None = None,
@@ -151,7 +172,7 @@ def request_promotion(
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
-    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
+    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active, live_tier)
 
     display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
     task = build_task(
@@ -184,6 +205,7 @@ def verify_promotion_approval(
     *,
     selectors: list[str],
     keep_active: bool,
+    live_tier: str,
     root: Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -228,6 +250,7 @@ def verify_promotion_approval(
         [c["candidate_id"] for c in candidates],
         [c["strategy_rule_hash"] for c in candidates],
         keep_active,
+        live_tier,
     )
     if snapshot.get("content_sha256") != expected:
         raise ApprovalBlocked(
