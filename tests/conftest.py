@@ -105,6 +105,12 @@ _GATE_ENV_VARS = (
     # and, for anything that reaches egress, holding a genuine authorization. The operator's
     # own machine is exactly where both this variable and this suite get run.
     "MVP_LIVE_TRADING",
+    # Added 2026-08-09 for the same reason as MVP_LIVE_TRADING above: the Naver research lane
+    # is the second capability gated by the environment alone, so inheriting this var means
+    # the suite constructs the REAL adapters. Milder than the trading case — they are
+    # read-only and would still need credentials to reach egress — but "would still need"
+    # is not a property to rest a suite on when the operator's machine has both.
+    "MVP_NAVER_RESEARCH",
 )
 
 
