@@ -125,6 +125,16 @@ services:
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Naver keyword research for the blog content lane (optional). Here because the lane's
+      # weekly ideation runs as a schedule on this service. See the dispatch-bridge block for
+      # what these enable and why the operator service does not get them —
+      # MVP_NAVER_RESEARCH is the whole gate, with no grant behind it.
+      MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
+      NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
+      NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
+      NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` grant and the
       # same registered chat as the operator service — the scheduler never reads
@@ -328,6 +338,22 @@ services:
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Naver keyword research for the blog content lane (optional). This is the door that
+      # dispatches the `research` and `content` kinds, which is where the lane's ideation
+      # actually runs — so these belong here for the same reason the search tool does.
+      #
+      # Unlike every other gate in this block, MVP_NAVER_RESEARCH is the WHOLE gate: there is
+      # no mounted grant behind it (Thomas, 2026-08-09). Naming it here is therefore an
+      # enablement path, not merely a passthrough, and the credentials below are what it
+      # enables. The Search Ad secret signs against the AD ACCOUNT and reaches
+      # campaign-management endpoints — it is not the read-only key its read-only use makes it
+      # look like, which is why the operator service is not given these.
+      MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
+      NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
+      NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
+      NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
 
   # The knowledge door (K1). The assistant's fourth lane, and the first that ACCUMULATES:
   # switch-bridge stops and starts, read-bridge looks, dispatch-bridge starts bounded work

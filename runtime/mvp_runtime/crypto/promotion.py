@@ -31,47 +31,55 @@ from ..permission import build_strategy_promotion_permission_decision
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
-PROMOTION_HASH_VERSION = "strategy_promotion.v3"
+# v4, and the jump past v3 is deliberate. TWO material fields landed independently and both
+# called themselves v3: the reactivation set (#619, merged first) and the live tier (#610 Part 1,
+# this one). A hash version that means two different things is worse than either change, so the
+# merged shape takes the next number and carries both.
+#
+# The tier has to be in here for the same reason the reactivation set does: installing a strategy
+# that may spend real money and installing one that may only paper are different asks, and an
+# approval granted for the second must not be spendable on the first.
+PROMOTION_HASH_VERSION = "strategy_promotion.v4"
 
 
 def promotion_content_sha256(
-    candidate_ids: list[str], rule_hashes: list[str], keep_active: bool,
+    candidate_ids: list[str], rule_hashes: list[str], keep_active: bool, live_tier: str,
     reactivated_candidate_ids: Sequence[str] = (),
 ) -> str:
-    """The material identity of one promotion: which candidate lineages, which exact
-    rules, add or replace, and **who comes back from a terminal status**. Any change mints a
-    different hash — and therefore a different approval
-    (``invalidated_by_any_material_field_change``). v2: keyed by globally unique
-    ``candidate_id``, never the per-generation ``strategy_id``.
+    """The material identity of one promotion: which candidate lineages, which exact rules, add
+    or replace, **into which tier**, and **who comes back from a terminal status**. Any change
+    mints a different hash — and therefore a different approval
+    (``invalidated_by_any_material_field_change``).
 
-    **v3 adds the reactivation set, and the reason is that the signature was honest about a
-    smaller effect than the one it authorized.** Replace mode rebuilds every entry with a
-    hardcoded ``PAPER_ACTIVE``, so re-listing the incumbents to drop one returns everything
-    the lifecycle had terminated — `BUILD_HISTORY` records it simulated against a copy of the
-    real pool on 2026-07-29: 16 reactivated, 57 lifecycle counters reset. Until now the hash
-    was a function of ids, rules and mode alone, so what Thomas signed could say "install
-    these lineages" and could not say "and un-suspend sixteen of them". The door was made to
-    refuse it (`pool.assert_no_silent_reactivation`), which makes the act deliberate; only
-    this makes the approval NAME it.
+    v2: keyed by globally unique ``candidate_id``, never the per-generation ``strategy_id``.
 
-    Empty is the ordinary answer and costs nothing: in add mode it is empty by construction,
-    and in replace mode it is empty unless a promoted lineage is currently terminal. So the
-    hash is exactly as stable as v2 for every promotion that reactivates nothing — which,
-    measured over this machine's history, is all of them.
+    **The reactivation set, because the signature was honest about a smaller effect than the one
+    it authorized.** Replace mode rebuilds every entry with a hardcoded ``PAPER_ACTIVE``, so
+    re-listing the incumbents to drop one returns everything the lifecycle had terminated —
+    `BUILD_HISTORY` records it simulated against a copy of the real pool on 2026-07-29: 16
+    reactivated, 57 lifecycle counters reset. The door was made to refuse it
+    (`pool.assert_no_silent_reactivation`), which makes the act deliberate; this makes the
+    approval NAME it. Empty is the ordinary answer and costs nothing.
 
-    The set is a fact about the LIVE POOL, not about the selectors, so a lifecycle transition
-    between the ask and the execution changes it and invalidates the approval. That is the
-    intended behaviour rather than a cost: the effect being authorized really did change.
-    Measured 2026-08-09 before making the change — 0 status transitions across 15,157 cycle
-    records over 19 days (the lifecycle is evaluated every cycle and finds nothing to change;
-    `#615` is why), against an ask-to-approve window whose median is 1.9 minutes over the 8
-    promotion approvals that carry both stamps. The window is shorter than one pool cycle.
+    **The live tier, because arming a strategy for real money is a different ask.** Required
+    rather than defaulted: a default would be a decision about real money made by an argument
+    list, and the one direction it could fail in silently is the permissive one.
+
+    Both are facts about the LIVE POOL rather than about the selectors, so a change between the
+    ask and the execution invalidates the approval. That is intended — the effect being
+    authorized really did change.
     """
+    if live_tier not in pool_store.LIVE_TIERS:
+        raise ApprovalBlocked(
+            "PROMOTION_TIER_INVALID",
+            f"live_tier {live_tier!r} is not one of {sorted(pool_store.LIVE_TIERS)}",
+        )
     return integrity.sha256_value({
         "hash_version": PROMOTION_HASH_VERSION,
         "candidate_ids": sorted(candidate_ids),
         "rule_hashes": sorted(rule_hashes),
         "keep_active": bool(keep_active),
+        "live_tier": live_tier,
         "reactivated_candidate_ids": sorted(reactivated_candidate_ids),
     })
 
@@ -136,6 +144,11 @@ def request_promotion(
     selectors: list[str],
     *,
     keep_active: bool,
+    # #610 Part 1 — which tier this promotion installs into. No default: the whole point of the
+    # split is that arming a strategy for real money is a decision somebody makes, and a default
+    # would make it for them. OBSERVATION installs a strategy that occupies its slot and papers;
+    # LIVE additionally lets it open real positions.
+    live_tier: str,
     now: str | None = None,
     ttl_minutes: int | None = None,
     repo_root: Path | None = None,
@@ -186,7 +199,9 @@ def request_promotion(
     reactivated = pool_store.reactivated_candidate_ids(
         candidate_ids, keep_active=keep_active, root=root,
     )
-    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active, reactivated)
+    content = promotion_content_sha256(
+        candidate_ids, rule_hashes, keep_active, live_tier, reactivated,
+    )
 
     display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
     task = build_task(
@@ -219,6 +234,7 @@ def verify_promotion_approval(
     *,
     selectors: list[str],
     keep_active: bool,
+    live_tier: str,
     root: Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -268,6 +284,7 @@ def verify_promotion_approval(
         candidate_ids,
         [c["strategy_rule_hash"] for c in candidates],
         keep_active,
+        live_tier,
         pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
     )
     if snapshot.get("content_sha256") != expected:
