@@ -110,6 +110,7 @@ def build_live_outcome_record(
     candidate_id: str | None = None,
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
+    exit_source: str | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One closed live position, self-hashed.
@@ -140,6 +141,19 @@ def build_live_outcome_record(
     ``created_at_utc`` mirrors ``closed_at_utc`` because that is the field name every
     consumer reads for an outcome's time. Both are emitted rather than one renamed: the
     live record's own vocabulary stays intact, and the analytic key is present too.
+
+    ``exit_source`` says WHERE the exit price came from — the closing order this runtime
+    sent, a venue bracket leg, or the account's fill list. It was stamped on the settle
+    RESULT when the fill-history fallback shipped, which put it in the cycle record and not
+    on the row it describes: a consumer reading `live_outcomes.jsonl` alone had to infer the
+    provenance from ``close_reason``, and that inference is wrong in both directions — a
+    `venue_external_close` could in principle be priced by a leg, and a `stop_loss` priced
+    from the history is exactly what this runtime now produces.
+
+    Written on every path rather than only the fallback, so ABSENT means one thing: a row
+    from before this field existed. That is the ``lifecycle_*`` provenance rule — absent is
+    "an older runtime wrote this", which is a different answer from any of the values and
+    must not be collapsed into the most common one.
     """
     risk = float(risk_usdt) if isinstance(risk_usdt, (int, float)) and risk_usdt else 0.0
     realized = round(float(realized_pnl_usdt), 8)
@@ -162,6 +176,9 @@ def build_live_outcome_record(
         "strategy_generation_id": strategy_generation_id,
         "position_id": position_id,
         "close_reason": close_reason,
+        # Where the exit PRICE came from, beside the reason the position closed. The two
+        # answer different questions and neither implies the other.
+        "exit_source": exit_source,
         "opened_at_utc": opened_at_utc,
         "closed_at_utc": now,
         # The analytic time key. Same instant as closed_at_utc; named as the consumers read it.
