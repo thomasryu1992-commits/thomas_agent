@@ -29,6 +29,19 @@ approval turns it on.
   `authorize()` verifies a local integrity-checked grant (one per provider, gitignored,
   per-machine). An env var alone (`MVP_HOSTED_PROVIDER`) fails closed. A passing test is never
   an approval for the next capability. Mechanics: `runtime/mvp_runtime/safety_gate.py`.
+  **Three capabilities are exceptions and open on the environment alone** — `select_env_gated`,
+  not `select_gated`, with no grant record anywhere: live trading (`MVP_LIVE_TRADING=real`,
+  2026-07-28), the candle archive (2026-08-04) and the Naver research lane
+  (`MVP_NAVER_RESEARCH=enabled`, 2026-08-09). All three were moved off grants because
+  `activate_safety_flag.py` caps a grant at 30 days and expiry hurt more than it bought — for
+  trading, an expiry could block the CLOSE path and trap an open position; for the other two, a
+  renewal gap is a silent hole in a long-running collection. Egress still re-checks, but it
+  re-reads the **env var**, so revoking any of them means unsetting the var and restarting the
+  container — deleting a file revokes nothing here. Adding a fourth is a Thomas decision, not a
+  pattern to follow: every new capability starts on a grant, and
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` fails until the new call
+  site is listed with its reasoning. Any test that could inherit one of these vars from the
+  operator's machine is isolated in `tests/conftest.py` (`_GATE_ENV_VARS`).
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount

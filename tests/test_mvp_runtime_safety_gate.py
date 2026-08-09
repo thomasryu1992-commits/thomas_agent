@@ -579,8 +579,9 @@ def test_env_gated_authorization_is_still_bound_to_its_provider_and_flags(monkey
 
 def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
     """The containment test, and the reason this is a separate function rather than a flag on
-    `select_gated`. Thomas has relaxed the gate for TWO capabilities — live trading
-    (2026-07-28) and the candle archive (2026-08-04); a later change that quietly
+    `select_gated`. Thomas has relaxed the gate for THREE capabilities — live trading
+    (2026-07-28), the candle archive (2026-08-04) and the Naver research lane
+    (2026-08-09); a later change that quietly
     moves model_invocation or a search tool onto the same weaker door would be invisible in
     review. Every call site is listed here, so adding one is a decision someone has to make on
     purpose.
@@ -632,6 +633,18 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         # nothing, orders nothing, and feeds nothing. `select_candle_archive_collector` carries
         # the full reasoning.
         "runtime/mvp_runtime/crypto/market_data.py",      # the candle archive collector
+        # The Naver research lane (Thomas, 2026-08-09) — the third capability, and the second
+        # that is not trading. Added on purpose, which is what this test exists to force.
+        #
+        # Closest to the candle archive's argument, not live trading's: nothing here can be
+        # trapped open, so expiry is merely disruptive rather than dangerous. What the 30-day
+        # TTL breaks is a WEEKLY schedule — one renewal gap silently costs a week of content
+        # ideas, with no error anywhere, and the operator discovers it by noticing an absence.
+        # Unlike the candle archive this one does send credentials (Naver's keyword API is not
+        # public), which is the side of the ledger that argues the other way and was weighed:
+        # the capability is read-only, orders nothing, publishes nothing, and its worst failure
+        # is a missing draft. `naver_research`'s module docstring carries the full reasoning.
+        "runtime/mvp_runtime/naver_research.py",          # the blog content lane's research tools
     }, callers
 
 
