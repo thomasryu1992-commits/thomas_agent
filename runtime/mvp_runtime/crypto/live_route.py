@@ -75,7 +75,7 @@ from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
 from . import live_execution, live_governance, live_leg, live_promotion
-from .account import read_account
+from .account import read_account, select_account_feed
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
 from .live_order import (
@@ -525,9 +525,17 @@ def _settle_or_protect(
     reasons = list(book.get("reasons") or [])
 
     if DRIFT_MISSING_AT_VENUE in reasons:
-        # The venue's own bracket closed it. Nothing to send — read what it filled at.
+        # Something at the venue closed it. Nothing to send — read what it filled at.
+        #
+        # `account_feed` is the fallback for the case the bracket cannot answer: the position
+        # was flattened by something other than its own legs (an operator closing at the venue),
+        # so both legs EXPIRE unfilled and there is nothing to price. Resolved here rather than
+        # held on the route, because it is only ever needed on this branch and the gate returns
+        # an inert feed when live account reads are not authorized — which then reads as
+        # `LIVE_FILL_HISTORY_UNAVAILABLE`, the honest answer, rather than as a missing argument.
         settled = live_leg.settle_venue_closed_position(
             position, adapter=adapter, position_store=position_store, ledger=ledger,
+            account_feed=select_account_feed(now=now, root=root),
             now=now, timeout_seconds=timeout_seconds,
         )
         record["live_settled"] = settled

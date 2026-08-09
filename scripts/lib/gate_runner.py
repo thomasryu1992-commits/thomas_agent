@@ -5,20 +5,14 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 import yaml
 
+from .utctime import utc_now
 
-def utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+
 
 
 def run_check(

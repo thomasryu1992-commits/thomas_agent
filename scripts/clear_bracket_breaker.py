@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.cli_common import force_utf8_io
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
 from runtime.mvp_runtime.crypto.live_order import (
     bracket_breaker_status,
     select_live_bracket_breaker,
@@ -41,8 +41,6 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run
 
-EXIT_OK = 0
-EXIT_REFUSED = 2
 
 
 def _render(status: dict[str, object]) -> str:
@@ -89,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.cleared_by or not args.reason:
             print("--cleared-by and --reason are both required. Try --show first.", file=sys.stderr)
-            return EXIT_REFUSED
+            # USAGE, not BLOCKED: the operator mistyped the command; the runtime refused nothing.
+            return EXIT_USAGE
 
         assert_not_foreign_root_run(root)
 
@@ -105,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except MvpRuntimeError as exc:
         print(f"BLOCKED: {getattr(exc, 'reason_code', 'UNKNOWN')}: {exc}", file=sys.stderr)
-        return EXIT_REFUSED
+        return EXIT_BLOCKED
 
     print(_render(bracket_breaker_status(root)))
     print("cleared. The next live signal may open a position again.")

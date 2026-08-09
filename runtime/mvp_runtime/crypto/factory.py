@@ -4295,14 +4295,29 @@ def run_factory(
     # fusion and got none says so.
     if fusion_pairs > 0 and not pooled:
         fused, fusion_rejected = _fuse_batch(
-            fusion_parent_buckets(
-                existing_candidates,
-                symbol=str(snapshot.get("symbol") or ""),
-                timeframe=str(snapshot.get("timeframe") or ""),
-            ),
+            # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
+            # lines answered the same question and disagreed about the default — `run_factory`
+            # falls back to BTCUSDT, this fell back to "" — so a snapshot without a symbol
+            # would mint BTCUSDT specs while `fusion_parent_buckets` filtered on "" and dropped
+            # every parent (`symbol not in scope`), yielding no bucket and no children, in
+            # silence. Unreachable through the scheduler, which always sets it; one fact, one
+            # default, is the point.
+            fusion_parent_buckets(existing_candidates, symbol=symbol, timeframe=timeframe),
             snapshot,
             generation_id=generation_id,
-            start_index=len(candidates) + 1,
+            # Ids RESERVED by the seeded draw, never survivors of it. `generate_batch` numbers
+            # S001..S00count as it mints, and `_score_draw` then drops the specs whose features
+            # this frame never supplies — so with one starved spec `len(candidates) + 1` points
+            # at an id already issued, and the first fused child is minted under a name a stored
+            # seeded row already holds. Two different strategies, one `(generation_id,
+            # strategy_id)`: promotions key on the lineage-derived `candidate_id` so nothing
+            # mis-promotes, but `resolve_candidates` refuses the pair as ambiguous and any
+            # display surface shows one name over two rules.
+            #
+            # `count`, not `len(batch["specs"])`, so a draw that accepted fewer than it asked
+            # for leaves a GAP in the numbering rather than risking an overlap — and it is the
+            # same convention the shortfall draw below already uses.
+            start_index=count + 1,
             pairs=fusion_pairs,
             seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
             evidence_sha=candles_sha,

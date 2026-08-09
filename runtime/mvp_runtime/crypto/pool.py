@@ -11,6 +11,37 @@ Two files under the crypto state directory:
   tampered data rather than trade on whatever half-parses.
 - ``strategy_candidates.jsonl`` — append-only candidates (C7 import provenance now,
   C8 factory output later). Candidates never route; only the active pool does.
+
+**Some fields on a stored row are SNAPSHOTS, not answers.** Both stores are append-only —
+a candidate row's ``record_sha256`` covers the whole row, so correcting a label in place
+would not merely violate a convention, it would read as tampering. The consequence is that
+any judgment written at write time is frozen at the rule that produced it, and this runtime
+has changed those rules more than once. Measured 2026-08-08:
+
+- Stored ``robustness.verdict`` / ``robustness.holdout_status`` across 1,841 candidate rows
+  read ROBUST=83 and CONFIRMED=237. Recomputed under today's rule: **0 and 0.**
+- The 41 import rows carry ``status`` PAPER_ACTIVE=25 / SUSPENDED=16, snapshotted at import.
+  The pool — the authority on membership — has all 41 of those members SUSPENDED.
+- Of 94 pool entries, the 34 carrying ``robustness_verdict: ROBUST`` are import-lineage
+  (no ``candidate_id``) and every one is SUSPENDED, from a label two rule vintages old. The
+  53 factory-promoted entries — including all 5 that are PAPER_ACTIVE — carry **no**
+  robustness field at all.
+
+None of that is a live defect, and the reason is worth stating because it is the thing a
+future change can break: **no runtime decision reads those fields.**
+:func:`candidate_quality` recomputes the verdict and the holdout status from the stored
+COMPONENTS on every read, membership comes from the pool rather than from a candidate row's
+``status``, and the promotion door deliberately copies raw per-regime numbers onto a pool
+entry instead of a derived label — see the comment at the entry construction in
+``scripts/promote_strategy_candidates.py``, which names this exact defect as one
+`candidate_quality` already had to fix once.
+
+So the pool entries that carry no robustness fields are the CORRECT ones, and the 34 that do
+are the residue of a one-time import. Copying a verdict onto a routable entry would not fill
+a gap; it would reintroduce the defect. What was missing is that this held by accident —
+nothing checked it — which `test_stored_snapshot_fields_are_not_inputs` now does.
+
+:data:`STORED_SNAPSHOT_FIELDS` names them.
 """
 
 from __future__ import annotations
@@ -21,6 +52,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
@@ -41,6 +73,24 @@ from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_poo
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
+
+# Pool-entry fields that are PROVENANCE — what a rule said when the row was written — which
+# no decision surface may read as an input. See the module docstring for what each currently
+# says and what it should say.
+#
+# Deliberately NOT here: ``robustness_score`` and ``trades_per_parameter``. Those are
+# MEASUREMENTS, and a measurement survives a rule change — :func:`candidate_quality` feeds
+# them back into `classify_verdict` on every read, which is the whole mechanism that makes
+# the labels disposable. Listing them would forbid the recompute it is protecting.
+#
+# The candidate-row equivalents live nested under ``backtest_evidence.robustness`` and are
+# reachable only through :func:`candidate_quality`, which recomputes rather than reads them
+# back. That is why it is a function and not a dictionary lookup at each call site, and
+# `test_stored_snapshot_fields_are_not_inputs` pins it as the sole reader of that block.
+STORED_SNAPSHOT_FIELDS = frozenset({
+    "robustness_verdict",
+    "robustness_warnings",
+})
 
 # The basis of every R in a candidate's quality view.
 #
@@ -655,6 +705,79 @@ def assert_no_semantic_duplicates(
     )
 
 
+def silent_reactivations(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Members this install would move OUT of a terminal status, keyed by lineage.
+
+    Pure-ish (one pool read), returns ``[{candidate_id, strategy_id, from_status}]`` oldest
+    first. Empty is the ordinary answer; a non-empty list is the promotion door about to do
+    something its approval never named."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    current = {
+        e.get("candidate_id"): e for e in load_active_pool(root).get("active_strategies") or []
+        if e.get("candidate_id")
+    }
+    found = []
+    for entry in entries:
+        was = current.get(entry.get("candidate_id"))
+        if was is None:
+            continue
+        if str(was.get("status")) in TERMINAL_STATUSES and \
+                str(entry.get("status")) not in TERMINAL_STATUSES:
+            found.append({
+                "candidate_id": str(entry.get("candidate_id")),
+                "strategy_id": str(entry.get("strategy_id")),
+                "from_status": str(was.get("status")),
+            })
+    return found
+
+
+def assert_no_silent_reactivation(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> None:
+    """Refuse an install that un-suspends a member nobody asked to un-suspend.
+
+    **The promotion door's replace mode rebuilds every entry with a hardcoded
+    ``PAPER_ACTIVE``.** So an operator dropping one redundant strategy — by re-listing the
+    rest — brings back every terminally SUSPENDED member with them. `BUILD_HISTORY` records
+    this simulated against a copy of the real pool on 2026-07-29: **16 reactivated, 57
+    lifecycle counters reset.** The answer then was the narrow `retirement` verb, which
+    removed the REASON to reach for replace mode; it did not close the path.
+
+    What makes it worth a guard rather than a note is where the authority sits.
+    ``promotion_content_sha256`` is a function of candidate ids, rule hashes and
+    ``keep_active`` — nothing about lifecycle status — so the approval Thomas signs says
+    "install these lineages" and cannot say "and un-suspend sixteen of them". The signature
+    is honest about a smaller effect than the one it authorizes. And the lifecycle's own
+    rule is that this direction is never automatic: `evaluate_lifecycle` degrades only, and
+    a terminal entry refuses at `update_statuses` precisely so reactivation stays deliberate.
+    Coming back through a membership operation is that rule being routed around.
+
+    So the door fails closed and the operator has to name it, in the idiom the four evidence
+    escapes already use: refuse, list exactly who and from what, and let an explicit
+    ``--allow-reactivation`` through — recorded on the ledger, because an escape that leaves
+    no trace is indistinguishable later from a door that never refused.
+
+    This does not make the approval cover the reactivation; only the content hash could, and
+    changing what Thomas's signature binds is his decision, not this door's. It makes the
+    reactivation deliberate and legible, which is the half that can be fixed here.
+
+    Raises ``POOL_SILENT_REACTIVATION``.
+    """
+    found = silent_reactivations(entries, root=root)
+    if not found:
+        return
+    listed = "; ".join(f"{f['strategy_id']} [{f['candidate_id']}] {f['from_status']}" for f in found)
+    raise ToolError(
+        "POOL_SILENT_REACTIVATION",
+        f"this install returns {len(found)} terminal member(s) to trading, which the "
+        f"promotion approval does not name: {listed}. Retire-then-promote, or pass the "
+        f"explicit --allow-reactivation escape.",
+    )
+
+
 # --- pool sizing -------------------------------------------------------------------
 #
 # The caps the promotion door enforces, and why these numbers.
@@ -1142,7 +1265,8 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
 
 
 def update_statuses(
-    decisions: list[dict[str, Any]], *, root: Path | None = None, updated_by: str = "lifecycle_agent"
+    decisions: list[dict[str, Any]], *, root: Path | None = None,
+    updated_by: str = "lifecycle_agent", now: str | None = None,
 ) -> int:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
 
@@ -1159,7 +1283,24 @@ def update_statuses(
     transition that produced the status the entry is currently in. Entries transitioned
     before these fields existed carry none: absent means "written by an older runtime",
     which is a different answer from an empty list and is why the reader treats it as
-    unknown rather than as no reason."""
+    unknown rather than as no reason.
+
+    **The pool header is stamped as a PAIR.** This used to set ``updated_by`` and leave
+    ``updated_at`` alone, which is worse than setting neither: the two fields describe one
+    event, so a reader gets a current writer against a timestamp from whenever the
+    promotion door last ran. Measured on the live host 2026-08-08 — the file was rewritten
+    at 11:29 by the 15-minute pool cycle and its ``updated_at`` read ``2026-07-31T10:04:33Z``,
+    earlier even than the last transition it had itself recorded (10:07:15Z). "Nothing has
+    happened since Jul 31" and "eight days of cycles have run" are indistinguishable.
+
+    ``now`` is that stamp. It defaults to the newest ``created_at_utc`` among ``decisions``,
+    which is not a fallback but the better answer in the ordinary case: it is the moment this
+    write's transitions were DECIDED, so the header agrees with the ``lifecycle_updated_at``
+    the same call wrote onto the entries instead of being independently sourced. Every
+    decision shape this accepts carries one; a caller with its own clock may pass ``now`` and
+    override. The stamp lands on every write, like ``updated_by`` — "when was this file last
+    written, and by whom" is the question the pair answers, and per-entry
+    ``lifecycle_updated_at`` remains the one that says when a given strategy last moved."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
     if not decisions:
@@ -1208,6 +1349,15 @@ def update_statuses(
                     entry["lifecycle_retired_by"] = retired_by
                 changed += 1
         pool["updated_by"] = updated_by
+        # Never widen to `or ""`: an empty stamp would overwrite a true timestamp with a
+        # blank, which is the one outcome worse than the stale one being fixed here.
+        stamp = now or max(
+            (str(d.get("created_at_utc")) for d in decisions
+             if isinstance(d.get("created_at_utc"), str) and d.get("created_at_utc")),
+            default="",
+        )
+        if stamp:
+            pool["updated_at"] = stamp
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)
@@ -1224,20 +1374,16 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
     before stamping existed have no hash to check — documented gap, closed for
     every new row."""
     path = candidates_path(root)
-    if not path.is_file():
-        return []
     rows: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates line {i + 1} is not valid JSON") from exc
+    # Streams rather than materializing the store twice, and keeps ToolError: 47 sites in the
+    # runtime catch it by name — five of them in `promotion.py`, which reads this very store —
+    # so raising jsonl's PersistenceError here would fail past those handlers, not at them.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="CANDIDATES_UNREADABLE",
+        label="strategy candidates",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         stored = record.get("record_sha256")
@@ -1245,7 +1391,7 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
             body = {k: v for k, v in record.items() if k != "record_sha256"}
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
-                    "CANDIDATES_TAMPERED", f"strategy candidates line {i + 1} fails its self-hash"
+                    "CANDIDATES_TAMPERED", f"strategy candidates line {lineno} fails its self-hash"
                 )
         rows.append(record)
     return rows

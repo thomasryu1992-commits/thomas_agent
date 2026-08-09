@@ -30,7 +30,7 @@ from typing import Any, Iterable, Mapping, Protocol
 
 from runtime.read_only_kernel import integrity
 
-from .. import safety_gate, timeutil
+from .. import jsonl, safety_gate, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
@@ -198,28 +198,22 @@ def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     that cannot prove itself must not be allowed to argue that the breaker is clear.
     """
     path = state_dir(root) / LIVE_OUTCOMES_FILENAME
-    if not path.is_file():
-        return []
     outcomes: list[dict[str, Any]] = []
     seen_outcome_ids: set[str] = set()
     seen_settlement_ids: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError(LIVE_HISTORY_UNREADABLE, f"live outcomes unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError(LIVE_HISTORY_UNREADABLE, f"live outcomes line {i + 1} is not valid JSON") from exc
+    # Reads only. The append below keeps its own fsync, which append_lines does not do.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code=LIVE_HISTORY_UNREADABLE,
+        label="live outcomes",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
-            raise ToolError(LIVE_HISTORY_TAMPERED, f"live outcomes line {i + 1} fails its self-hash")
+            raise ToolError(LIVE_HISTORY_TAMPERED, f"live outcomes line {lineno} fails its self-hash")
         outcome_id = record.get("outcome_id")
         if isinstance(outcome_id, str) and outcome_id:
             if outcome_id in seen_outcome_ids:

@@ -30,7 +30,7 @@ from typing import Any, Mapping, Protocol
 
 from runtime.read_only_kernel import integrity
 
-from .. import safety_gate, timeutil
+from .. import jsonl, safety_gate, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from ..safety_gate import Authorization
@@ -174,27 +174,21 @@ def read_canary_orders(root: Path | None = None) -> list[dict[str, Any]]:
     trading, so a record that cannot prove itself must not be allowed to count.
     """
     path = state_dir(root) / CANARY_ORDERS_FILENAME
-    if not path.is_file():
-        return []
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError(CANARY_HISTORY_UNREADABLE, f"canary registry unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError(CANARY_HISTORY_UNREADABLE, f"canary registry line {i + 1} is not valid JSON") from exc
+    # Reads only. The append below keeps its own fsync, which append_lines does not do.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code=CANARY_HISTORY_UNREADABLE,
+        label="canary registry",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
-            raise ToolError(CANARY_HISTORY_TAMPERED, f"canary registry line {i + 1} fails its self-hash")
+            raise ToolError(CANARY_HISTORY_TAMPERED, f"canary registry line {lineno} fails its self-hash")
         order_id = record.get("canary_order_id")
         if isinstance(order_id, str) and order_id:
             if order_id in seen:
