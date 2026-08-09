@@ -58,6 +58,53 @@ approval turns it on.
   The fallback is `git checkout <commit> && docker compose build && docker compose up -d` —
   reproducible, and the reason this is a lost minute rather than a lost deploy, but it needs a
   clean tree and takes minutes where a tag takes seconds.
+- **Build to a candidate tag, verify it, then promote `latest`.** Everything above is about
+  surviving a build that overwrites `latest`; this avoids the overwrite. `docker compose build`
+  and a bare `docker build -t …:latest` both reassign the tag the running containers were
+  started from, which is what opens the window the rule above closes by hand. Building to a
+  name of its own does not:
+
+  ```
+  docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>   # still first
+  docker build -t thomas-agent-runtime:candidate-<PR#> <clean-worktree>
+  docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
+  docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
+  docker compose up -d
+  ```
+
+  `latest` keeps pointing at the running image for the whole build, the candidate is provable
+  before anything restarts, and promotion is one atomic retag. Used for every deploy on
+  2026-08-08/09. Assert the fix by name — `hasattr`, a constant's value, a substring of
+  `inspect.getsource` — not by the commit the worktree was on: what a build actually contains
+  is the question, and a `git log` that says the merge landed does not answer it.
+- **Build from a clean `origin/main` worktree, and never `compose up --build`.** The compose
+  build context is `/root/thomas_agent`, the primary checkout — which on a busy day is on
+  another session's branch with uncommitted work in it. `--build` ships that. Measured
+  repeatedly on 2026-08-08/09: the primary checkout sat on a foreign feature branch with
+  modified `live_leg.py` for most of the day. `git worktree add <tmp> origin/main --detach`,
+  build from there, remove it after. Cheap, and it is the only way to say what the image
+  contains.
+- **You are not the only session deploying. Re-read the host, never your own notes.** A
+  concurrent session redeploys everything, not just its own slice. Measured 2026-08-09: a deploy
+  finished at 07:56 and by 07:59 the containers had been recreated by someone else — a different
+  running image, and two `rollback-pre-*` tags this session had not created. A state recorded
+  minutes ago is not evidence. So the running-vs-`latest` check above is not a formality at the
+  start of a deploy — it is a **re-read immediately before the promote**, because the window
+  between build and promote is exactly where the other session lands. A `rollback-pre-<N>` tag
+  you did not create is the signal that it already has.
+- **A one-off script does not need a deploy.** To run newly merged code against live state
+  without restarting anything, build to a throwaway tag and run it with the scheduler's own
+  mounts and user — `latest` untouched, so no other session's `compose up -d` picks it up:
+
+  ```
+  docker run --rm --user thomas -w /app \
+    -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
+    --entrypoint python thomas-agent-runtime:tool-<PR#> -m scripts.<script> --list
+  ```
+
+  Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from
+  here, and back up any file the script rewrites first. Used 2026-08-09 to dedupe the shadow
+  book while the live window kept trading.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
 - **No direct `main` commits.** Branch → PR → gates → merge. Enforced by
