@@ -41,6 +41,7 @@ from typing import Any
 
 from . import (
     account,
+    candle_archive,
     cost,
     dashboard,
     digest,
@@ -50,6 +51,7 @@ from . import (
     guards,
     live_order,
     live_position,
+    live_budget,
     live_promotion,
     live_sizing,
     market_data,
@@ -332,6 +334,30 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("FEE_MEASUREMENT_DAYS", account.FEE_MEASUREMENT_DAYS, "crypto/account.py", DERIVED,
             "matches the longest window `PNL_WINDOW_DAYS` already reports; one query, same span",
             "a fee tier that changes inside the window, which is what the bound exists to exclude"),
+
+    # === third slice, 2026-08-09 — found by profiling, not by reading ===========================
+    #
+    # Profiling the scheduler put `candle_archive` at 64% of everything it does (p50 125s, ~49
+    # minutes a day), and all three constants that govern it were invisible to the coverage
+    # test's name pattern — as was the number that bounds live order size. A pattern that misses
+    # a ceiling and a pace misses the two shapes an operator most often reaches for.
+
+    Tunable("HARD_CEILING_USDT", live_budget.HARD_CEILING_USDT, "crypto/live_budget.py", OPERATOR,
+            "the largest per-order cap a registered budget may declare; 200 at bring-up, 500 since",
+            "Thomas raised it 2026-08-08 after 4 clean canaries and 2 round trips; the same evidence"),
+    Tunable("ARCHIVE_REQUEST_INTERVAL_SECONDS", candle_archive.ARCHIVE_REQUEST_INTERVAL_SECONDS,
+            "crypto/candle_archive.py", MEASURED,
+            "the venue's own wall, measured: 352 reads at speed answered ~70 and rate-limited 282",
+            "a venue that answers faster — nothing else; the number is a demonstrated limit"),
+    Tunable("ARCHIVE_BOOKS_PER_PASS", candle_archive.ARCHIVE_BOOKS_PER_PASS,
+            "crypto/candle_archive.py", OPERATOR,
+            "archive latency traded against tick latency: `run_due` is sequential and the live "
+            "leg's `_settle_or_protect` runs on the same tick",
+            "the scheduler ceasing to run due schedules sequentially, which is what forces the trade"),
+    Tunable("VENUE_CANDLE_CEILING", candle_archive.VENUE_CANDLE_CEILING,
+            "crypto/candle_archive.py", VENUE,
+            "Hyperliquid serves at most this many candles per request and nothing behind them",
+            "a venue that pages backwards — which is the whole reason this archive exists"),
 )
 
 
