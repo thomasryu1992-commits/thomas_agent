@@ -133,8 +133,8 @@ services:
       NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
       NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
       NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
-      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
-      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      NAVER_APIHUB_KEY_ID: ${NAVER_APIHUB_KEY_ID:-}
+      NAVER_APIHUB_KEY: ${NAVER_APIHUB_KEY:-}
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` grant and the
       # same registered chat as the operator service — the scheduler never reads
@@ -352,8 +352,8 @@ services:
       NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
       NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
       NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
-      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
-      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      NAVER_APIHUB_KEY_ID: ${NAVER_APIHUB_KEY_ID:-}
+      NAVER_APIHUB_KEY: ${NAVER_APIHUB_KEY:-}
 
   # The knowledge door (K1). The assistant's fourth lane, and the first that ACCUMULATES:
   # switch-bridge stops and starts, read-bridge looks, dispatch-bridge starts bounded work
