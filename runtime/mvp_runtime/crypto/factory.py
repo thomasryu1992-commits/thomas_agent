@@ -2910,6 +2910,95 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
     return missing
 
 
+# How many EARLIER tails a spec is scored on beside its own, each ending exactly where the
+# previous one begins. Three reaches back about four times the holdout's own depth.
+#
+# **Why this exists at all.** `REMAINING_WORK.md` §F9 records the first result the pooled door
+# ever produced: five `oi_unwind_short` draws clearing a selection-adjusted bar at 4h, t up to
+# 5.16, holdout expectancy +0.62R. Walked backwards into adjacent windows, **16 of 16 draws
+# across two seed namespaces** decayed to −0.23…−0.31R. The effect was a property of the newest
+# ~500 days, not of the rule. A promotion door reading only the newest tail takes that row on
+# its face.
+#
+# **And the field that looks like it already covers this does not.** `period_r` partitions the
+# holdout INTO slices, and the reversal is 2,000+ bars before the holdout begins; measured
+# 2026-08-08 on those same draws, all ten slices read positive. The two answer different
+# questions — *"was the tail uniform"* and *"does the tail's answer hold before it"*.
+#
+# **It is cheap, which is the reason it can sit on the mint path.** Every FEATURE is a
+# trailing-window computation (`rolling_percentile` over `PERCENTILE_WINDOW`, the z-scores over
+# their own), so a prefix of a built frame carries exactly the values those bars had in the full
+# series — verified column-by-column over 4,200 rows, not assumed. No `build_feature_rows` call,
+# no refetch; every earlier window is a prefix of candles already in hand, and only the replay
+# repeats, over 0.7 + 0.49 + 0.34 of the series.
+#
+# **The funding series is the one exception and it is one bar wide.** `funding_charges_per_bar`
+# spreads settlements across the bars they fall in, so the FINAL bar of a prefix was charged
+# knowing the series continued past it; rebuilding from clipped candles gives that bar a
+# different charge. Measured on a 200-bar fixture: identical at every index except the last.
+# It is left rather than repaired because repairing it needs the raw funding events, which a
+# `ReplayFrame` deliberately does not carry — and because the bar in question is the one a
+# position cannot settle on anyway, there being no bar after it to settle against. A/B against
+# the rebuild on the live 5-symbol cohort produced identical R and identical trade counts in
+# every window.
+PRIOR_WINDOWS = 3
+
+
+def _prefix_frame(frame: "ReplayFrame", keep: int) -> "ReplayFrame | None":
+    """The same frame over its first ``keep`` bars, or ``None`` if that leaves no holdout.
+
+    ``split`` is recomputed by :func:`holdout_split_index` rather than scaled, so the prefix is
+    split by the same rule the full frame was — which is what makes window *k+1*'s tail end
+    exactly where window *k*'s begins.
+
+    **Rows are exact; the last bar's funding charge is not** — see the note above
+    :data:`PRIOR_WINDOWS`. A test pins both halves of that, so the day it stops being one bar
+    wide is a red suite rather than a drift in the numbers.
+    """
+    if keep < MIN_BARS_FOR_HOLDOUT or keep > len(frame.rows):
+        return None
+    split = holdout_split_index(keep)
+    if split >= keep:                       # everything trains, nothing is held out
+        return None
+    return ReplayFrame(
+        rows=frame.rows[:keep], candles=frame.candles[:keep], funding=frame.funding[:keep],
+        funding_source=frame.funding_source, split=split, cost=frame.cost,
+    )
+
+
+def _prior_window_evidence(
+    spec: StrategySpec, frames: Sequence["ReplayFrame"], *, cost: CostModel,
+    windows: int = PRIOR_WINDOWS,
+) -> tuple[list[float], list[int]]:
+    """(R summed, trades) per earlier tail, newest first. Shorter lists mean the series ran out.
+
+    Reports rather than judges — like `period_r`, and for the same reason: what a sign flip
+    across these windows should DO at the promotion door is a decision, and a measurement that
+    pre-empts it is harder to argue with than one that states itself.
+    """
+    r_by_window: list[float] = []
+    n_by_window: list[int] = []
+    keep = min(len(f.rows) for f in frames) if frames else 0
+    for _ in range(windows):
+        keep = holdout_split_index(keep) if keep >= MIN_BARS_FOR_HOLDOUT else 0
+        prefixes = [p for p in (_prefix_frame(f, keep) for f in frames) if p is not None]
+        if len(prefixes) != len(frames) or not prefixes:
+            break                            # a leg ran out; a partial cohort is a different pool
+        total_r = 0.0
+        closed = 0
+        for prefix in prefixes:
+            part, *_ = _replay(spec, prefix.rows[prefix.split:], prefix.candles[prefix.split:],
+                               cost=cost, funding=prefix.funding[prefix.split:],
+                               offset=prefix.split)
+            for outcome in part:
+                if outcome.get("outcome_closed"):
+                    total_r += float(outcome.get("result_R") or 0.0)
+                    closed += 1
+        r_by_window.append(round(total_r, 8))
+        n_by_window.append(closed)
+    return r_by_window, n_by_window
+
+
 def _holdout_evidence(
     spec: StrategySpec, frames: Sequence["ReplayFrame"],
     *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
@@ -2963,6 +3052,7 @@ def _holdout_evidence(
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
+    prior_r, prior_n = _prior_window_evidence(spec, frames, cost=cost)
     return {
         "bars": min(bars) if bars else 0,
         # Absent on every block minted before pooling existed, and 1 is what those mean —
@@ -2995,6 +3085,12 @@ def _holdout_evidence(
         # See `HOLDOUT_PERIODS` for why the count is what it is.
         "period_r": [round(value, 8) for value in period_r],
         "period_trades": period_trades,
+        # The same spec on EARLIER tails, newest first — see `PRIOR_WINDOWS`. Sibling of the two
+        # fields above and deliberately not folded into them: `period_r` cuts the holdout up,
+        # this asks whether the holdout's answer survives before it. A shorter list than
+        # `PRIOR_WINDOWS` means the series ran out, which is information, not an error.
+        "prior_window_r": prior_r,
+        "prior_window_trades": prior_n,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,

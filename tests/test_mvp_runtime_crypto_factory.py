@@ -1076,6 +1076,89 @@ def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled(
     assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
 
 
+# --- prior windows: does the tail's answer hold before the tail? ----------------
+#
+# `REMAINING_WORK.md` §F9: the pooled door's first result was five `oi_unwind_short` draws
+# clearing a selection-adjusted bar at 4h, and 16 of 16 draws across two seed namespaces decayed
+# to −0.23…−0.31R in adjacent earlier windows. A door reading only the newest tail takes that row
+# on its face, and `period_r` does not catch it — it partitions the holdout, and the reversal is
+# thousands of bars before the holdout begins.
+
+def _spec_for_prior_windows():
+    return StrategySpec.from_dict(_spec_dict())
+
+
+def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding():
+    """**The claim `_prefix_frame` rests on**, and the reason the measurement is cheap enough to
+    sit on the mint path: every FEATURE is a trailing-window computation, so row *i* carries the
+    same values whether the series ran to the end or stopped after it.
+
+    The funding series is the exception and this pins how wide it is. `funding_charges_per_bar`
+    spreads settlements across the bars they fall in, so the final bar of a prefix was charged
+    knowing the series continued. One bar — and asserting *that*, rather than asserting equality
+    and deleting the check when it fails, is what keeps the exception from quietly growing."""
+    snapshot = _trending_snapshot(n=200)
+    full = factory.build_replay_frame(snapshot)
+    keep = factory.holdout_split_index(len(full.rows))
+    sliced = factory._prefix_frame(full, keep)
+    rebuilt = factory.build_replay_frame(
+        {**snapshot, "candles": list(snapshot["candles"])[:keep], "candle_count": keep})
+
+    assert sliced is not None
+    assert sliced.split == rebuilt.split
+    assert len(sliced.rows) == len(rebuilt.rows) == keep
+    assert sliced.rows == rebuilt.rows, "a feature stopped being trailing-window"
+    assert sliced.candles == rebuilt.candles
+    assert sliced.funding[:-1] == rebuilt.funding[:-1], (
+        "the funding difference has spread past the final bar"
+    )
+
+
+def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
+    """Window *k+1*'s tail must end exactly where window *k*'s begins — F3's construction. Any
+    overlap would score the same bars twice and read as agreement between windows."""
+    frame = factory.build_replay_frame(_trending_snapshot(n=200))
+    keep, bounds = len(frame.rows), [(frame.split, len(frame.rows))]
+    for _ in range(factory.PRIOR_WINDOWS):
+        keep = factory.holdout_split_index(keep)
+        prefix = factory._prefix_frame(frame, keep)
+        if prefix is None:
+            break
+        bounds.append((prefix.split, keep))
+    assert len(bounds) > 1, "the fixture is too short to exercise a single earlier window"
+    for newer, older in zip(bounds, bounds[1:]):
+        assert older[1] == newer[0], f"{older} does not end where {newer} begins"
+
+
+def test_the_holdout_block_carries_the_earlier_windows():
+    """Reported beside `period_r`, never folded into it: the two answer different questions."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) == len(holdout["prior_window_trades"])
+    assert len(holdout["prior_window_r"]) <= factory.PRIOR_WINDOWS
+    assert "period_r" in holdout, "the sibling field must still be there"
+
+
+def test_a_series_too_short_yields_fewer_windows_rather_than_an_error():
+    """Absence of an earlier window is information — the series ran out — and a caller reading a
+    short list learns that. Raising would make a shallow candidate unscoreable instead."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=70))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) < factory.PRIOR_WINDOWS
+
+
+def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_pool():
+    """A pooled figure over four legs where the others had five is a different pool, and
+    comparing it to the holdout would be comparing two populations."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200)),
+              factory.build_replay_frame(_shifted_snapshot(n=70))]
+    r, n = factory._prior_window_evidence(
+        _spec_for_prior_windows(), frames, cost=frames[0].cost)
+    assert len(r) == len(n) < factory.PRIOR_WINDOWS
+
+
 # --- run_factory --------------------------------------------------------------
 
 def test_run_factory_produces_evidence_backed_candidates():
