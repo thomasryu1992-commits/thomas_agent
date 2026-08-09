@@ -3203,6 +3203,38 @@ promotion door have each been re-measured more than once. That is not a bug and 
 obviously wrong; it is that the halt thresholds are the least-examined values in the package,
 and nothing said so before. A test pins the finding so it cannot stop being true silently.
 
+**Second slice done 2026-08-08 — the sweep is the whole package now, and the headline was wrong.**
+
+The first slice's boundary was twelve modules, named in the test so the rest was a decision rather
+than an oversight. Closing it turned out to be small: across the other **31** modules there were
+**29** decision-shaped constants with no owner, and **21 of those modules had none at all**. Twelve
+are decisions and are indexed with provenance (index: 55 → **67**); seventeen are estimator warm-up
+floors, collection budgets, display thresholds and output caps, and are named in `MECHANICS` with a
+reason apiece.
+
+`SWEPT_MODULES` is now **derived from the package** rather than hand-listed, with an `UNSWEPT` dict
+where an exclusion would have to be argued in writing. A hand-maintained list was the right shape
+while the answer was "some of them"; once the answer is "all of them" it is only a way to forget a
+module, and a new module now arrives swept.
+
+**And the item's own headline overstates it by a factor of four.** §G1's grep
+(`^[A-Z_]{4,} *[:=]`) counts every upper-case module-level assignment; it reads **681** today. By
+AST, **387 of those are strings** — reason codes, status labels, provenance markers, the package's
+vocabulary — and only **155 are numeric**. So "602 constants across 42 modules … the numbers that
+decide money" was mostly not numbers. Of the 155, the index now owns 67 and `MECHANICS` names the
+rest of the decision-shaped ones. This is the same correction §G3 made to its own count, from the
+same cause: a grep over upper-case names measures naming convention, not the thing being counted.
+
+```
+grep -rhcE '^[A-Z_]{4,} *[:=]' runtime/mvp_runtime/crypto/*.py | paste -sd+ | bc   # 681, of which
+                                                                                  # 155 are numeric
+```
+
+**What stays true.** No value moved, again. The four INHERITED breakers below are still the
+least-examined numbers in the package, and the second slice adds two more of the same shape to the
+list of things nobody here has re-decided: `ADX_TREND_THRESHOLD` (the cutoff every regime label
+turns on, carried from the source's `entry_policy`) and the digest's `±0.1R` trend band.
+
 **The teeth are a coverage test, not the index.** A decision-shaped constant appearing in a swept
 module must be indexed with its provenance or named in `MECHANICS` with a reason — so a new
 threshold on the money path cannot be added without recording where the number came from. It

@@ -40,8 +40,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    account,
     cost,
+    dashboard,
+    digest,
     factory,
+    features,
     feedback,
     guards,
     live_order,
@@ -49,9 +53,12 @@ from . import (
     live_promotion,
     live_sizing,
     market_data,
+    null_control,
     paper,
     pool,
+    proposer,
     robustness,
+    strategy,
 )
 
 # --- provenance: how this number came to be what it is ----------------------------------------
@@ -270,6 +277,61 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MIN_SAMPLE_SIZE", feedback.MIN_SAMPLE_SIZE, "crypto/feedback.py", INHERITED,
             "source default for the performance report; NOT what Gate 0 uses",
             "nothing on its own — `LIVE_CANDIDATE_MIN_SAMPLE` is the one that gates money"),
+
+    # === second slice, 2026-08-08 — the ten modules the first one left ==========================
+    #
+    # The first slice took the money path and named its boundary in the coverage test so the rest
+    # was a decision rather than an oversight. This finishes it: every crypto module is swept now.
+    # The count is the surprise — 29 decision-shaped constants had no owner across those ten, not
+    # the hundreds §G1's headline implies, because the headline counts every upper-case assignment
+    # and most of them are mechanics. Twelve are decisions and are indexed here; seventeen are
+    # estimator warm-up, page budgets and display thresholds, and are named in the test's
+    # `MECHANICS` with a reason apiece.
+
+    # --- what the regime label and the digest inherited, and nobody re-measured ---------------
+    Tunable("ADX_TREND_THRESHOLD", features.ADX_TREND_THRESHOLD, "crypto/features.py", INHERITED,
+            "source `entry_policy.adx_trend_threshold`; the cutoff every regime label turns on",
+            "§F6 already reads this runtime's regime/outcome record for a different question"),
+    Tunable("TREND_THRESHOLD_R", digest.TREND_THRESHOLD_R, "crypto/digest.py", INHERITED,
+            "source `performance_digest`'s ±0.1R band, ported whole with the bucketing",
+            "a digest verdict that disagrees with what the ledger says over the same window"),
+    Tunable("DEFAULT_MIN_BUCKET_SAMPLE", digest.DEFAULT_MIN_BUCKET_SAMPLE, "crypto/digest.py",
+            INHERITED, "the same port's floor for calling a bucket judgeable at all",
+            "the same evidence that moved `MIN_HOLDOUT_TRADES` off 3"),
+
+    # --- floors this runtime measured for itself ----------------------------------------------
+    Tunable("MIN_MEANINGFUL_SAMPLE", dashboard.MIN_MEANINGFUL_SAMPLE, "crypto/dashboard.py",
+            MEASURED,
+            "the board graduated here while +0.08R over 60 trades sat 0.4 standard errors from 0",
+            "nothing: it is a floor now, not the promoter — `MIN_INTERVAL_SAMPLE` and the interval are"),
+    Tunable("MIN_POST_MINT_DAYS", null_control.MIN_POST_MINT_DAYS, "crypto/null_control.py",
+            MEASURED, "a month is one market period, and the period is the unit of independence",
+            "the store accumulating — on the day it landed nothing cleared it, which was honest"),
+    Tunable("MIN_POST_MINT_TRADES", null_control.MIN_POST_MINT_TRADES, "crypto/null_control.py",
+            DERIVED, "the same independence argument on the other axis: a long window can be thin",
+            "moves with `MIN_POST_MINT_DAYS`; neither alone makes a window judgeable"),
+
+    # --- decided here, with the argument in the code beside each ------------------------------
+    Tunable("MAX_PROPOSALS_PER_RUN", proposer.MAX_PROPOSALS_PER_RUN, "crypto/proposer.py",
+            OPERATOR, "an unbounded list spends the whole allowance on quantity and none on thought",
+            "a review rate that empties the backlog faster than the cap fills it"),
+    Tunable("MAX_UNREVIEWED_BACKLOG", proposer.MAX_UNREVIEWED_BACKLOG, "crypto/proposer.py",
+            OPERATOR, "M4b's gate: it reverses the 2026-07-24 manual-CLI-only decision safely",
+            "installing families into `factory.TEMPLATES` faster than the proposer accepts them"),
+    Tunable("BACKLOG_WINDOW_DAYS", proposer.BACKLOG_WINDOW_DAYS, "crypto/proposer.py", OPERATOR,
+            "how far back the backlog counts, so the tap reopens without anyone installing anything",
+            "#607 already corrected what this measures — it is the rotation horizon, not 30 days of review"),
+    Tunable("MAX_CONDITION_LAG", strategy.MAX_CONDITION_LAG, "crypto/strategy.py", OPERATOR,
+            "one bar, because that is what a crossover needs and each depth copies the vocabulary",
+            "a hypothesis that needs persistence over n bars — which wants a rolling derivative instead"),
+    Tunable("MIN_CROSS_SECTION_MEMBERS", features.MIN_CROSS_SECTION_MEMBERS, "crypto/features.py",
+            OPERATOR, "below it `xs_rank_pct` has fewer distinct values than a coin flip has sides",
+            "a cohort that is reliably deeper — the floor is about determinacy, not about universe size"),
+
+    # --- a window that is really another window -----------------------------------------------
+    Tunable("FEE_MEASUREMENT_DAYS", account.FEE_MEASUREMENT_DAYS, "crypto/account.py", DERIVED,
+            "matches the longest window `PNL_WINDOW_DAYS` already reports; one query, same span",
+            "a fee tier that changes inside the window, which is what the bound exists to exclude"),
 )
 
 
