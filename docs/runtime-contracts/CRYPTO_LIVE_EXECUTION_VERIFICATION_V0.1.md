@@ -37,7 +37,7 @@ until LP4/LP5 are deliberately written; this is not a disabled flag, it is an ab
 | A non-numeric P&L amount **raises**, never read as zero (would understate a loss and clear the breaker) | `live_pnl.py:176` (`daily_realized_pnl`) | ✅ |
 | `live_risk_snapshot` **fails closed** — an unreadable history reports the breaker tripped | `live_pnl.py:208` | ✅ |
 | Final guard's checks **accumulate** — no short-circuit / early return; the operator sees every reason | `live_order.py:272-342` (`evaluate_live_order_guard`) | ✅ |
-| A cap of `0` **blocks** ("not configured"); a cap above the 200 USDT absolute ceiling is **refused, not clamped** | `live_order.py:310-316` | ✅ |
+| A cap of `0` **blocks** ("not configured"); a cap above the absolute ceiling (`live_budget.HARD_CEILING_USDT`, 500 USDT since 2026-08-08) is **refused, not clamped** | `live_order.py:310-316` | ✅ |
 | A missing notional is a **repair**, never back-filled from the cap | `live_order.py:317-318`, and `build_live_order_intent` → `MISSING_ORDER_NOTIONAL` | ✅ |
 | A **declared** notional is verified against `quantity x` the venue's price rather than trusted — understating it refuses (`ORDER_NOTIONAL_UNDERSTATED`), and an absent / synthetic / stale price refuses too (`ORDER_NOTIONAL_PRICE_UNKNOWN`) | `live_order.check_declared_notional` + `market_data.read_reference_price`, wired at `scripts/place_canary_order.py` — the only door where quantity and notional are independent inputs (added 2026-07-26, #268) | ✅ |
 | `approved` is `True` only when there are **no blocks and no repairs** | `live_order.py:344-347` | ✅ |

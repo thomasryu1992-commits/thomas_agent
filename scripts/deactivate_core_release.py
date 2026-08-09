@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
+from lib.utctime import utc_now
 from lib.core_release_verifier import sha256_file, verify_current_pointer
 from lib.git_provenance import head_commit, require_clean_worktree, require_file_tracked_at_head
 from lib.safe_io import atomic_write_text, exclusive_lock, immutable_write_text, repo_lock_dir, safe_repo_path
@@ -25,8 +25,6 @@ VERIFIED_STATUSES = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def main() -> int:

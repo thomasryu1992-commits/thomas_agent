@@ -100,6 +100,29 @@ KIND_TASK = "analysis_task"
 KIND_PRUNE = "memory_prune"
 KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
+
+
+def parse_factory_request(request: str) -> tuple[list[str], str]:
+    """``"<symbol>[,<symbol>...] [<timeframe>]"`` → (symbols, timeframe).
+
+    **A comma names a COHORT, and that is the whole of the pooled opt-in.**
+    `factory.run_factory` mints one hypothesis across every leg it is handed at a timeframe in
+    `factory.POOLED_TIMEFRAMES` (F9 shape B). What decides WHICH symbols is per-machine state
+    rather than a constant in this file, and it has to be: `CROSS_SECTION_UNIVERSE` names six
+    symbols and only five are mined, so a constant here would be a guess about the operator's
+    schedules. The schedule already carries the symbol; a list is the same field saying more.
+
+    **Nothing changes until `schedules.jsonl` does.** A request with no comma returns a
+    one-symbol list and takes exactly today's path, so the migration F9 describes — five
+    `(symbol, timeframe)` schedules becoming one per timeframe — is an edit to that file and is
+    reversible by editing it back.
+
+    Defaults match what the branch used before this existed, so an empty or malformed request
+    fires the same BTCUSDT 1d run it always did rather than raising inside a scheduled tick.
+    """
+    parts = request.split()
+    symbols = [s for s in (parts[0].split(",") if parts and parts[0] else []) if s]
+    return (symbols or ["BTCUSDT"], parts[1] if len(parts) >= 2 else "1d")
 KIND_REPORT = "crypto_report"
 KIND_PROPOSER = "crypto_propose"
 KIND_DATA_REVIEW = "crypto_data_review"
@@ -744,8 +767,8 @@ def _execute(
         # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
         # spec on the bars minted AFTER it against seeded null entries, and appends one record.
         # Touches no pool, no candidates, no orders.
+        from .crypto import cycle as crypto_cycle
         from .crypto import null_control
-        from .crypto.cycle import attach_feeds
         from .crypto.market_data import (
             collect_market_data,
             factory_candle_target,
@@ -769,9 +792,20 @@ def _execute(
             if exc.reason_code == "TOOL_ERROR":
                 return "skipped_market_data_degraded"
             raise
-        attach_feeds(snapshot, collector=collector,
-                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
-                     now=now, root=repo_root, accumulate=False)
+        # All five legs, because the frame replayed here has to be the frame the spec was MINED
+        # on. #601 established that inline; it now goes through `attach_mining_legs` with the
+        # factory and the proposer, so the next caller cannot get four of five by copying.
+        # What #601 measured, kept because it is the cost of NOT doing this: with `attach_feeds`
+        # alone every htf_*, ref_*/rel_strength_*, xs_* and positioning_* column is None down the
+        # whole window, so `measure_spec` answers `unsuppliable` permanently — 65 of the 798
+        # selected specs (8.1%) read at least one such column, and they are the non-price
+        # families the pool most needs judged. Invisible because `too_young` is checked first
+        # and is still the answer for every cell; earliest measurable date ~2026-08-23.
+        crypto_cycle.attach_mining_legs(
+            snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
+            liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
+            candle_target=factory_candle_target,
+        )
         frame = crypto_factory.build_replay_frame(snapshot)
         # The seed is the window's own content hash, so a recorded fire replays identically —
         # the factory's rule, for the same reason.
@@ -960,16 +994,9 @@ def _execute(
         # the factory can never touch the active pool (promotion is the operator
         # door). A degraded backend simply skips the run: candidates mined from no
         # data would be evidence-free noise.
-        from .crypto import market_data
+        from .crypto import cycle as crypto_cycle
         from .crypto import pool as crypto_pool
         from .crypto import positioning_store
-        from .crypto.cycle import (
-            attach_cross_section,
-            attach_feeds,
-            attach_htf,
-            attach_positioning,
-            attach_reference,
-        )
         from .crypto.factory import run_factory
         from .crypto.market_data import (
             collect_market_data,
@@ -978,55 +1005,52 @@ def _execute(
             select_market_data_collector,
         )
 
-        parts = schedule.request.split()
-        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
-        timeframe = parts[1] if len(parts) >= 2 else "1d"
+        # **A comma in the symbol field names a COHORT** — see `parse_factory_request`.
+        symbols, timeframe = parse_factory_request(schedule.request)
+        symbol = symbols[0]
         collector = select_market_data_collector(now=now, root=repo_root)
-        try:
-            snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now,
-                limit=factory_candle_target(timeframe),
+        liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+
+        def _mining_snapshot(for_symbol: str):
+            """One fully-attached leg. Returns None when the venue is degraded for it."""
+            try:
+                built, _ = collect_market_data(
+                    for_symbol, timeframe, collector=collector, now=now,
+                    limit=factory_candle_target(timeframe),
+                )
+            except ToolBlocked as exc:
+                if exc.reason_code == "TOOL_ERROR":
+                    return None
+                raise
+            # C9: the factory backtests on the same feed-enriched frame the router evaluates —
+            # one feature source for backtest and live (the source rule). All five legs go
+            # through `attach_mining_legs`, which is where that rule lives.
+            crypto_cycle.attach_mining_legs(
+                built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
+                liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
             )
-        except ToolBlocked as exc:
-            if exc.reason_code == "TOOL_ERROR":
-                return "skipped_market_data_degraded"
-            raise
-        # C9: the factory backtests on the same feed-enriched frame the router
-        # evaluates — one feature source for backtest and live (the source rule).
-        attach_feeds(snapshot, collector=collector,
-                     liquidation_feed=select_liquidation_feed(now=now, root=repo_root), now=now,
-                     root=repo_root)
-        # The same rule for the HTF leg: mining htf_* families over a frame with no
-        # higher timeframe would score every one of them as a no-trade spec. The
-        # window must cover the replay span, so the depth is the higher timeframe's
-        # own factory target, not the live default.
-        higher = market_data.HIGHER_TIMEFRAME.get(timeframe)
-        attach_htf(snapshot, collector=collector, now=now,
-                   limit=factory_candle_target(higher) if higher else None)
-        # The same rule once more for the cross-asset leg: a rel_strength_* family mined over
-        # a frame with no reference series would score as a no-trade spec, so the reference
-        # window has to cover the replay span rather than the live default. Same timeframe as
-        # the frame being mined, so the same depth.
-        attach_reference(snapshot, collector=collector, now=now,
-                         limit=factory_candle_target(timeframe))
-        # And once more for the cross-sectional leg, at the same depth and for the same
-        # reason. This is the most expensive of the four: the cohort is five peers at the
-        # replay span, so it pages roughly five times what the frame itself did. Paid on the
-        # factory's own schedule rather than the 15-minute one, and the alternative is
-        # scoring xs_* families over a frame where every rank is None — which does not
-        # produce a cheap verdict, it produces a wrong one (no trades, FRAGILE, retired).
-        attach_cross_section(snapshot, collector=collector, now=now,
-                             limit=factory_candle_target(timeframe))
-        # Positioning: a LOCAL read of what this runtime has accumulated — no request, no grant.
-        # Attached unconditionally because the columns are honest at any coverage (absent = None);
-        # the eligibility measured below is what decides whether a family may be MINTED against
-        # them, which is a different question and the one that can go wrong silently.
-        attach_positioning(snapshot, root=repo_root)
+            return built
+
+        snapshot = _mining_snapshot(symbol)
+        if snapshot is None:
+            return "skipped_market_data_degraded"
+        # **A leg that cannot be fetched cancels the pooled fire rather than shrinking it.** A
+        # four-leg pool reporting `symbols: 5` is the wrong-number failure this file's guards
+        # exist for, and a cohort that silently changes size between fires is not one context.
+        cohort = []
+        for other in symbols[1:]:
+            leg = _mining_snapshot(other)
+            if leg is None:
+                return f"skipped_cohort_leg_degraded:{other}"
+            cohort.append(leg)
         # The store's own answer to "can you cover the window the factory replays". Read here
         # rather than inside the factory because `run_factory` is pure. A store that cannot be
         # read at all reports not-eligible, which is the safe direction: no data, no family.
+        # Every mined leg, not just the primary: a family gated on positioning must be
+        # suppliable everywhere the pooled spec claims to trade, and `coverage_summary` already
+        # takes the list.
         positioning_eligible = bool(positioning_store.coverage_summary(
-            repo_root, symbols=[symbol],
+            repo_root, symbols=symbols or [symbol],
         )["eligible"])
         result = run_factory(
             snapshot,
@@ -1035,6 +1059,7 @@ def _execute(
             now=now,
             fusion_pairs=FACTORY_FUSION_PAIRS,
             positioning_eligible=positioning_eligible,
+            cohort_snapshots=cohort or None,
         )
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:
@@ -1062,18 +1087,35 @@ def _execute(
         # (MAX_PROPOSALS_PER_RUN) already bounds one fire. Two gated reads reuse existing
         # chokepoints (market data + the validator provider); a degraded backend skips the
         # fire rather than proposing over no candles. ALLOW-tier: the record installs nothing.
+        from .crypto import cycle as crypto_cycle
         from .crypto import factory as crypto_factory
         from .crypto import proposer as crypto_proposer
-        from .crypto.market_data import collect_market_data, select_market_data_collector
+        from .crypto.market_data import (
+            collect_market_data,
+            select_liquidation_feed,
+            select_market_data_collector,
+        )
         from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
+        # Archives included, because `BACKLOG_WINDOW_DAYS` is a SPAN and the active ledger's
+        # horizon is a ROW COUNT. `iter_records` sees only the active file, so rotation was
+        # silently deciding the window: measured 2026-08-08 on the live host, the documented
+        # 30 days could see nine, four in-window proposal records having already rotated out,
+        # and the backlog fell 15 -> 11 between 08-05 and 08-06 for that reason alone — a drop
+        # that reads as families being installed and was the ledger being tidied. The error
+        # direction is the bad one for a throttle: fewer counted, cap not reached, fires
+        # proceed that the design meant to skip.
+        window_start = timeutil.plus_minutes(
+            now, -abs(crypto_proposer.BACKLOG_WINDOW_DAYS) * 24 * 60)
         # A malformed ledger must not stop the scheduler: an unreadable record stream
         # degrades to "backlog unknown = 0" (the fire proceeds) rather than failing closed —
         # the backlog cap is a courtesy throttle, not a safety gate.
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.iter_records() if ledger is not None else [], installed, now=now,
+                ledger.iter_records_with_archive(appended_since=window_start)
+                if ledger is not None else [],
+                installed, now=now,
             )
         except MvpRuntimeError:
             backlog = 0
@@ -1091,6 +1133,35 @@ def _execute(
             if exc.reason_code == "TOOL_ERROR":
                 return "skipped_market_data_degraded"
             raise
+        # The frame a proposal is JUDGED on has to be the frame a minted spec would be judged
+        # on, and until now it was `collect_market_data` alone — OHLCV, nothing else. Measured
+        # 2026-08-08 on a bare snapshot of this exact shape: **31 of the 56 mintable numeric
+        # columns are None**, which is every funding, liquidation, open-interest, HTF, taker,
+        # premium, reference, cross-section and positioning column in the vocabulary.
+        #
+        # `proposer.py`'s own docstring states the invariant this broke — the validator's
+        # vocabulary "is a strict subset of the live feature row, so anything it accepts the row
+        # can supply." True of the row the FACTORY builds; false of the one this block was
+        # building. So the validator admitted a proposal naming `funding_zscore`, the backtest
+        # scored it over a window where that column was None on every bar, and the proposal was
+        # accepted with `closed_count: 0` and `expectancy: 0.0` — evidence that reads as "this
+        # premise does not trade" when the truth is "this runtime did not supply the column."
+        #
+        # It is not a small share of the record: of the 26 accepted-but-uninstalled families in
+        # the backlog, **22 score exactly zero trades, and every one of them names a column this
+        # block did not supply.** The four that traded read price columns only. That correlation
+        # is the measurement — the proposer has been rejecting the non-price half of its own
+        # search space for a reason that was never about the proposals.
+        # `candle_target` is left None — the LIVE depths — because this block's base frame is
+        # `collect_market_data`'s default window, not the factory's replay span. Legs pulled at
+        # factory depth over a 120-bar frame would page data that the bar alignment then throws
+        # away. That the proposal's backtest is therefore judged over a short window is a real
+        # and separate question about the proposer's evidence depth; it is not this fix, and
+        # widening it here would multiply the fire's request count for a reason nobody measured.
+        crypto_cycle.attach_mining_legs(
+            snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
+            liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
+        )
         provider = (select_validator_provider(now=now, root=repo_root)
                     or crypto_proposer.MockProposerProvider())
         record = crypto_proposer.propose_strategy_families(
@@ -1149,8 +1220,18 @@ def _execute(
             delivery = f" sheet_not_sent:{exc.reason_code}"
         except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
             delivery = f" sheet_not_sent:{type(exc).__name__}"
-        return (f"data_review={record['accepted_count']}/{record['suggested_count']} "
-                f"review={record['review_id']}{delivery}")
+        status = (f"data_review={record['accepted_count']}/{record['suggested_count']} "
+                  f"review={record['review_id']}{delivery}")
+        # After the ledger append and after the sheet, never before: the record is the
+        # evidence and the sheet is the operator's copy, and raising first would cost both to
+        # report the same failure less usefully.
+        if crypto_data_review.review_loop_is_stalled(record, schedule.last_status):
+            raise SchedulerBlocked(crypto_data_review.DATA_REVIEW_STALLED, (
+                f"the data-gap review has produced nothing for two consecutive fires; "
+                f"this one: {record.get('degraded_reason')}. Previous status: "
+                f"{schedule.last_status!r}. {status}"
+            ))
+        return status
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

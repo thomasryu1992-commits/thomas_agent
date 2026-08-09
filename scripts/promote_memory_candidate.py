@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,13 +46,12 @@ from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.memory import is_expired, promote_candidate  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root as _repo_root  # noqa: E402
+from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore, find_candidate, mark_promoted  # noqa: E402
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -103,7 +101,7 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
         print("ERROR: --candidate-id, --promoted-by and --reason are required to promote", file=sys.stderr)
         return 2
 
-    stamp = now or _utc_now_iso()
+    stamp = now or timeutil.utc_now_iso()
 
     # Kill-switch first (kill_allows is read-only only): promotion mutates VALIDATED
     # memory, so a PAUSED/KILLED runtime must refuse — exactly as the R10 consume does.

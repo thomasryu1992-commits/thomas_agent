@@ -38,6 +38,7 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.mvp_runtime import approval as approval_mod  # noqa: E402
 from runtime.mvp_runtime import registration as registration_mod  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
@@ -50,9 +51,6 @@ from runtime.mvp_runtime.programization import ProgramizationStore  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 
 def _load_definition_input(path_str: str) -> dict:
@@ -147,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not (args.candidate_id and args.definition_input):
-        print("BLOCKED: --candidate-id and --definition-input are required (or use --list)")
+        print("USAGE: --candidate-id and --definition-input are required (or use --list)")
         return EXIT_USAGE
     definition_input = _load_definition_input(args.definition_input)
 
@@ -169,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not (args.approval_id and args.registered_by and args.reason):
-        print("BLOCKED: --approval-id, --registered-by, and --reason are required to apply "
+        print("USAGE: --approval-id, --registered-by, and --reason are required to apply "
               "(there is no without-approval escape on this door)")
         return EXIT_USAGE
     if not args.confirm:

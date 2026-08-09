@@ -1,7 +1,7 @@
 """Step 6 tests — the registered live-trading budget (``live_trading_budget.v0.1``).
 
 Under test: a budget is self-hashed and schema-valid; every money-safety refusal the caps
-encode is enforced at build time (a cap above the 200 USDT ceiling is refused not clamped, a
+encode is enforced at build time (a cap above the hard ceiling is refused not clamped, a
 zero/negative cap is refused, the window must open before it closes); a read is verified (a
 tampered or unparseable budget raises); and registering one grants nothing.
 """
@@ -15,6 +15,7 @@ import pytest
 from runtime.mvp_runtime.crypto import live_budget as lb
 from runtime.mvp_runtime.crypto.live_pnl import state_dir
 from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.paths import repo_root
 
 NOW = "2026-07-25T00:00:00Z"
 FROM = "2026-07-25T00:00:00Z"
@@ -74,8 +75,32 @@ def test_per_order_cap_above_the_ceiling_is_refused_not_clamped():
 
 def test_absolute_ceiling_above_the_hard_ceiling_is_refused():
     with pytest.raises(ToolError) as exc:
-        _build(caps={"absolute_max_notional_usdt": 250.0})
+        _build(caps={"absolute_max_notional_usdt": lb.HARD_CEILING_USDT + 1})
     assert exc.value.reason_code == lb.BUDGET_INVALID
+
+
+def test_hard_ceiling_is_the_operator_approved_number():
+    """The single number a registered budget may never declare past, pinned literally.
+
+    The refusal test above is written against the constant, so it stays green whatever the
+    constant says. This one is the tripwire: moving the ceiling is a money decision, and it
+    must show up as a deliberate edit here rather than a one-character constant bump nobody
+    reviews. 200.0 at first bring-up (Thomas, 2026-07-23) → 500.0 (Thomas, 2026-08-08)."""
+    assert lb.HARD_CEILING_USDT == 500.0
+
+
+def test_schema_and_code_agree_on_the_hard_ceiling():
+    """Two authorities pin this number and they must not drift.
+
+    The builder refuses first so the error names the offending number; the schema is what
+    makes a hand-edited record invalid. If one were raised and the other not, the lower of
+    the two would silently become the real ceiling — and which one that is would depend on
+    whether a record arrived through the builder or through the file."""
+    schema = json.loads(
+        (repo_root() / "schemas" / lb.LIVE_BUDGET_SCHEMA_FILE).read_text(encoding="utf-8")
+    )
+    ceiling = schema["properties"]["caps"]["properties"]["absolute_max_notional_usdt"]["maximum"]
+    assert ceiling == lb.HARD_CEILING_USDT
 
 
 @pytest.mark.parametrize("cap", list(_CAPS))
