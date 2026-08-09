@@ -87,9 +87,26 @@ approval turns it on.
 
   `latest` keeps pointing at the running image for the whole build, the candidate is provable
   before anything restarts, and promotion is one atomic retag. Used for every deploy on
-  2026-08-08/09. Assert the fix by name — `hasattr`, a constant's value, a substring of
-  `inspect.getsource` — not by the commit the worktree was on: what a build actually contains
-  is the question, and a `git log` that says the merge landed does not answer it.
+  2026-08-08/09. Never assert by the commit the worktree was on: what a build actually
+  contains is the question, and a `git log` that says the merge landed does not answer it.
+- **Assert what the fix DOES, not how it is spelled — and a failed assertion is where the
+  investigation starts, never where it ends.** The obvious check is an identifier: `hasattr`,
+  a constant's value, a substring of `inspect.getsource`. Identifiers move. Measured twice in
+  one audit on 2026-08-09, both false alarms on merged-and-deployed work:
+
+  - a check for `attach_cross_section` in `scheduler.py` reported the #601 fix missing, after
+    #621 extracted the five legs into `cycle.attach_mining_legs`;
+  - `PROMOTION_HASH_VERSION == "strategy_promotion.v3"` reported #649 missing, after #648
+    bumped it to v4 while keeping #649's field.
+
+  Prefer calling the thing over matching a name — *"the reactivation set changes the hash"*,
+  *"this column is supplied on the frame"*, *"the helper attaches all five legs"* — because a
+  property survives the rename that breaks a grep. Where only a name will do, expect it to rot.
+
+  **The rule that matters is the second half.** Both checks above were wrong in the direction
+  that produces a confident false report, and reporting either as a regression would have been
+  the only damage done that day. Read the code before calling a deploy incomplete: a MISS means
+  *the check and the tree disagree*, and the check is the newer of the two.
 - **Build from a clean `origin/main` worktree, and never `compose up --build`.** The compose
   build context is `/root/thomas_agent`, the primary checkout — which on a busy day is on
   another session's branch with uncommitted work in it. `--build` ships that. Measured
