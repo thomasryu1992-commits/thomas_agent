@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  # noqa: E402
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
@@ -52,9 +53,6 @@ from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 RETIREMENT_EVENT_TYPE = "crypto_strategy_retirement_event.v0"
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 
 def run_request(*, strategy_ids: list[str], reason: str, root: Path | None = None,

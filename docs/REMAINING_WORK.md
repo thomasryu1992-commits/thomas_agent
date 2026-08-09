@@ -3500,7 +3500,53 @@ a worse property than a duplicated two-line helper.
 **So this one is a `scripts/lib` helper, not an import of `runtime/`** — the opposite conclusion
 from G4a, reached from the same table.
 
-#### G4c. The exit-code slot means three different things — recorded, not yet fixed
+##### Done 2026-08-08 for the timestamps. **The repo-root half is withdrawn, and the reason is the point.**
+
+`scripts/lib/utctime.py` is the timestamp authority now. **Thirteen copies existed, twelve
+collapsed into it, one is kept on purpose** — and the count above said *ten*, which is worth
+recording because of how it was wrong. `scripts/lib/gate_runner.py` and
+`scripts/lib/runtime_promotion_readiness.py` each carried their own *inside `scripts/lib` already*
+— the tell that what was missing was a home, not a helper — and `gate_runner`'s copy is invisible
+to the one-line grep in the block above, because it wraps the same four calls across five lines.
+A measurement written as a single-line pattern undercounts exactly the copies that were reformatted.
+
+Two of the twelve call sites went to `runtime.mvp_runtime.timeutil` instead, and the split is
+principled rather than pragmatic: `promote_memory_candidate.py` (8 runtime imports) and
+`activate_safety_flag.py` (5) are **runtime-adjacent CLIs, not gates**. The dependency-direction
+argument above is about gates importing what they gate; a script that already imports
+`runtime.mvp_runtime.store` has no such constraint, and giving it a *second* timestamp authority
+when the runtime's own is already in scope would be the reuse violation, not the fix.
+`tests/test_scripts_utctime.py` pins the two halves to the same output so the duplication cannot
+become two formats.
+
+**The 59 repo-root sites are not consolidatable, and "79 sites" above overstated the item.**
+Measured before touching anything:
+
+* **18 of the 59 use `ROOT` to bootstrap `sys.path`** (`sys.path.insert(0, str(ROOT))`) before their
+  other imports run. A helper cannot supply the value that makes importing the helper possible.
+* The remaining 41 could take an import, but **22 are standalone** — no `lib`, no `runtime`, no
+  `sys.path` patch — and adding `from lib.…` costs them the ability to run under
+  `python -m scripts.<name>`, which is the form CLAUDE.md mandates for state-writing CLIs. Verified,
+  not assumed: `python -m scripts.activate_core_release` exits 1 with
+  `ModuleNotFoundError: No module named 'lib'` while `python scripts/activate_core_release.py` exits 0,
+  because `scripts/` has no `__init__.py` and the flat `from lib.x` spelling needs `scripts/` on the
+  path. The repo runs scripts directly in 38 places and by module form in 5.
+* And `ROOT = Path(__file__).resolve().parents[1]` has **no silent failure mode**. All 59 are
+  `parents[1]`; a wrong depth fails immediately and loudly. The timestamp chain was worth removing
+  because dropping one call changes the *value*; this changes nothing.
+
+So the repo-root duplication stays. It is the case where the count is large and the risk is zero,
+and the fix would trade a self-evident one-liner for an import coupling plus a lost invocation mode.
+
+**One thing found on the way, not fixed here.** `scripts/lib/` modules are imported under **two
+spellings** — `from lib.x` (44 uses) and `from scripts.lib.x` (6) — and they are not
+interchangeable. `from scripts.lib.runtime_promotion_readiness import …` with only the repo root on
+`sys.path` fails on **unmodified `main`**, at that module's own `from lib.safe_io import …`; its
+three callers only work because they run in the direct form *and* insert `ROOT`, so both spellings
+resolve at once. The two `scripts/lib` modules touched here use a **relative** `from .utctime import`,
+which resolves under either spelling; the rest of `scripts/lib` still does not.
+
+#### G4c. The exit-code slot means three different things — **fixed 2026-08-08**
 
 | owner | code 2 | code 3 |
 |---|---|---|
@@ -3516,8 +3562,38 @@ CI assertions that hard-code an exit value (`.github/workflows/docker-image.yml:
 run a **runtime CLI**, where 2 is `EXIT_BLOCKED` — correct. `scripts/lib/gate_runner.py` only tests
 `!= 0`. So this is a hazard with no current victim: the day a script is wired into a check that reads
 2 as "blocked", it reports a usage error as a fail-closed block and both sides are individually
-right. Left as a record because changing seven scripts' exit codes is an operator-facing behavior
-change, and it is not urgent while nothing reads them.
+right.
+
+##### Fixed 2026-08-08 — and re-measuring first found it was worse than this table said
+
+Eight scripts, not seven. Slot **2** meant `EXIT_BLOCKED` (runtime), `EXIT_USAGE` (six scripts) and
+`EXIT_REFUSED` (one); slot **3** meant `EXIT_USAGE` (runtime), `EXIT_BLOCKED` (six) and
+`EXIT_REJECTED` (one); and `list_resting_orders.py` skipped 2 altogether, putting `EXIT_BLOCKED` on
+3 and a finding on 4.
+
+`cli_common` is the fixed point and the scripts moved, because two things outside them already
+depend on its numbers: `.github/workflows/docker-image.yml:86,97` asserts `-eq 2` for a fail-closed
+runtime CLI, and `tests/test_place_canary_order_audit_report.py` imports `EXIT_BLOCKED` by name. All
+eight already import `runtime.mvp_runtime.*`, so taking `EXIT_*` from `cli_common` costs them no new
+coupling — the §G4b dependency-direction argument is about *gates* importing what they gate, and
+none of these is one.
+
+**Script-specific codes stay, above the shared range.** `EXIT_REJECTED` and `EXIT_UNOWNED` are
+*findings* — the command ran and reports what it saw — which is a different claim from "refused to
+act". `EXIT_REJECTED` moved 3 → 4 so it cannot be read as a refusal; `EXIT_UNOWNED` was already 4.
+
+**`clear_bracket_breaker.py` was not just a naming problem.** Its single `EXIT_REFUSED` covered
+*both* a missing `--cleared-by`/`--reason` **and** a caught `MvpRuntimeError` — and the second
+branch literally prints `BLOCKED:` while the first is an operator typo. Those are now `EXIT_BLOCKED`
+and `EXIT_USAGE`, and the fail-closed branch has a test it never had.
+
+**Five operator messages said the wrong word too.** `print("BLOCKED: --candidate-ids is required")`
+on a branch returning a usage code is the same confusion one layer up; they say `USAGE:` now.
+Checked for consumers first — nothing greps them.
+
+`tests/test_scripts_exit_codes.py` keeps it: no script may redefine a `cli_common` name, and no
+script-specific code may land on a shared number. Structural rather than value assertions, because
+restating the values would just be a second copy of the thing that diverged.
 
 #### Measured and deliberately **excluded** from the actionable list
 
