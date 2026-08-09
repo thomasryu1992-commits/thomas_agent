@@ -157,8 +157,8 @@ NAVER_RESEARCH_SURFACE = {
     naver_research.SEARCHAD_CUSTOMER_ID_ENV: "the ad account's customer id",
     naver_research.SEARCHAD_API_KEY_ENV: "the Search Ad access licence",
     naver_research.SEARCHAD_SECRET_KEY_ENV: "the signing secret — account-wide, not read-only",
-    naver_research.OPENAPI_CLIENT_ID_ENV: "the Developers-center client id (Datalab + blog search)",
-    naver_research.OPENAPI_CLIENT_SECRET_ENV: "the Developers-center client secret",
+    naver_research.APIHUB_KEY_ID_ENV: "the API HUB key id (search trend + blog search)",
+    naver_research.APIHUB_KEY_ENV: "the API HUB key",
 }
 
 
