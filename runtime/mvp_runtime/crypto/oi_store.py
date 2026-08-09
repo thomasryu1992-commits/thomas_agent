@@ -157,24 +157,27 @@ def read_rows(root: Path | None = None, *, symbol: str | None = None) -> list[di
     path = oi_1h_path(root)
     if not path.is_file():
         return []
+    # Streams the handle rather than `read_text().splitlines()` — see `positioning_store` for the
+    # measurement; this store is 2.8 MB and the shape was identical. Deliberately NOT
+    # `jsonl.iter_objects`: that fails closed on a bad line and this reader must DEGRADE.
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                key = _row_key(row)
+                if not key[0] or not key[1]:
+                    continue
+                latest[key] = row
     except OSError:
         return []
-    latest: dict[tuple[str, str], dict[str, Any]] = {}
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        key = _row_key(row)
-        if not key[0] or not key[1]:
-            continue
-        latest[key] = row
     if symbol is not None:
         wanted = str(symbol).strip().upper()
         return sorted(
