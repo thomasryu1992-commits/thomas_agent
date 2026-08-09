@@ -2222,8 +2222,38 @@ def holdout_permits_centring(record: Mapping[str, Any]) -> bool:
     return expectancy >= 0
 
 
+def _matches_context(
+    spec: Mapping[str, Any], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
+) -> bool:
+    """Is this stored row a prior fire of the context being mined?
+
+    **Membership when mining one symbol, exact equality when mining a cohort**, and the
+    difference is a decision rather than a detail. A pooled hypothesis fitted across five
+    symbols and a single-symbol one are not the same search: F2 measured that transferring a
+    single-symbol fit to five is strictly harder than searching for parameters that hold across
+    five from the start, so a single-symbol elite is the wrong centre to hand a pooled draw, and
+    a single-symbol fire is not a step of the pooled rotation. `pool.search_context_key` already
+    keys the selection correction the same way — `(symbol_scope tuple, timeframe)`.
+
+    The cost is stated rather than discovered: a pooled context starts with NO centre and no
+    rotation history, so its first fires draw from the template base. That is what
+    `elite_base_params`'s fallback already does for any new context, and F2's own pooled batch
+    was unsteered anyway.
+    """
+    if spec.get("timeframe") != timeframe:
+        return False
+    row_scope = spec.get("symbol_scope")
+    if not isinstance(row_scope, (list, tuple)):
+        return False
+    if scope is not None:
+        return tuple(str(s) for s in row_scope) == tuple(str(s) for s in scope)
+    return symbol in row_scope
+
+
 def _best_mint_params(
     candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The most ROBUST prior candidate's ``mint_params``, per family, in ONE pass.
 
@@ -2247,9 +2277,7 @@ def _best_mint_params(
         family = spec.get("strategy_family")
         if not isinstance(family, str) or not family:
             continue
-        if spec.get("timeframe") != timeframe:
-            continue
-        if symbol not in (spec.get("symbol_scope") or []):
+        if not _matches_context(spec, symbol=symbol, timeframe=timeframe, scope=scope):
             continue
         params = record.get("mint_params")
         if not isinstance(params, Mapping) or not params:
@@ -2286,7 +2314,7 @@ def _project(best: Mapping[str, Any] | None, fallback: Mapping[str, float]) -> d
 
 def elite_base_params(
     candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
-    fallback: dict[str, float],
+    fallback: dict[str, float], scope: Sequence[str] | None = None,
 ) -> dict[str, float]:
     """The params of the most ROBUST prior candidate for this family and context.
 
@@ -2301,13 +2329,13 @@ def elite_base_params(
     :func:`elite_centres`, which answers the same question for every family at once and reads
     the store once to do it.
     """
-    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe, scope=scope)
     return _project(best.get(family), fallback)
 
 
 def elite_centres(
     candidates: list[Mapping[str, Any]], templates: Sequence[StrategyTemplate], *,
-    symbol: str, timeframe: str,
+    symbol: str, timeframe: str, scope: Sequence[str] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Every template's search centre, keyed by family, from ONE pass over the store.
 
@@ -2321,7 +2349,7 @@ def elite_centres(
     build its centres from an unnarrowed `templates_for_timeframe`, which returned families
     `generate_batch` would never reach for that symbol.
     """
-    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe, scope=scope)
     return {t.family: _project(best.get(t.family), t.base_params) for t in templates}
 
 
@@ -2385,6 +2413,7 @@ def build_spec_dict(
 
 def context_rotation_index(
     existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
 ) -> int:
     """How many times THIS ``(symbol, timeframe)`` has already been mined.
 
@@ -2413,8 +2442,7 @@ def context_rotation_index(
             continue
         if str(spec.get("timeframe")) != str(timeframe):
             continue
-        scope = spec.get("symbol_scope")
-        if not isinstance(scope, (list, tuple)) or symbol not in scope:
+        if not _matches_context(spec, symbol=symbol, timeframe=timeframe, scope=scope):
             continue
         for value in (record.get("generation_id"), spec.get("generation_id")):
             if isinstance(value, str) and value:
@@ -2514,8 +2542,14 @@ def generate_batch(
     rotation_index: int | None = None,
     elite_params: Mapping[str, Mapping[str, float]] | None = None,
     venue: str = market_data.BINANCE_FUTURES,
+    symbol_scope: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
+
+    ``symbol_scope`` widens the minted specs from ``[symbol]`` to a cohort — one hypothesis at
+    N symbols' data rather than N hypotheses at one symbol's each. ``symbol`` still selects the
+    rotation slice and the templates (`templates_for_timeframe` narrows for the market proxy),
+    so it stays the cohort's first member rather than becoming meaningless.
 
     ``known_rule_hashes`` extends the duplicate guard across the existing pool and
     candidate store, so a batch never re-mints a strategy that already exists.
@@ -2605,7 +2639,8 @@ def generate_batch(
         params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
-                                    generation_id=generation_id, symbol=symbol, venue=venue)
+                                    generation_id=generation_id, symbol=symbol, venue=venue,
+                                    symbol_scope=list(symbol_scope) if symbol_scope else None)
         try:
             spec = StrategySpec.from_dict(spec_dict)
         except SpecParseError as exc:
@@ -2910,6 +2945,95 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
     return missing
 
 
+# How many EARLIER tails a spec is scored on beside its own, each ending exactly where the
+# previous one begins. Three reaches back about four times the holdout's own depth.
+#
+# **Why this exists at all.** `REMAINING_WORK.md` §F9 records the first result the pooled door
+# ever produced: five `oi_unwind_short` draws clearing a selection-adjusted bar at 4h, t up to
+# 5.16, holdout expectancy +0.62R. Walked backwards into adjacent windows, **16 of 16 draws
+# across two seed namespaces** decayed to −0.23…−0.31R. The effect was a property of the newest
+# ~500 days, not of the rule. A promotion door reading only the newest tail takes that row on
+# its face.
+#
+# **And the field that looks like it already covers this does not.** `period_r` partitions the
+# holdout INTO slices, and the reversal is 2,000+ bars before the holdout begins; measured
+# 2026-08-08 on those same draws, all ten slices read positive. The two answer different
+# questions — *"was the tail uniform"* and *"does the tail's answer hold before it"*.
+#
+# **It is cheap, which is the reason it can sit on the mint path.** Every FEATURE is a
+# trailing-window computation (`rolling_percentile` over `PERCENTILE_WINDOW`, the z-scores over
+# their own), so a prefix of a built frame carries exactly the values those bars had in the full
+# series — verified column-by-column over 4,200 rows, not assumed. No `build_feature_rows` call,
+# no refetch; every earlier window is a prefix of candles already in hand, and only the replay
+# repeats, over 0.7 + 0.49 + 0.34 of the series.
+#
+# **The funding series is the one exception and it is one bar wide.** `funding_charges_per_bar`
+# spreads settlements across the bars they fall in, so the FINAL bar of a prefix was charged
+# knowing the series continued past it; rebuilding from clipped candles gives that bar a
+# different charge. Measured on a 200-bar fixture: identical at every index except the last.
+# It is left rather than repaired because repairing it needs the raw funding events, which a
+# `ReplayFrame` deliberately does not carry — and because the bar in question is the one a
+# position cannot settle on anyway, there being no bar after it to settle against. A/B against
+# the rebuild on the live 5-symbol cohort produced identical R and identical trade counts in
+# every window.
+PRIOR_WINDOWS = 3
+
+
+def _prefix_frame(frame: "ReplayFrame", keep: int) -> "ReplayFrame | None":
+    """The same frame over its first ``keep`` bars, or ``None`` if that leaves no holdout.
+
+    ``split`` is recomputed by :func:`holdout_split_index` rather than scaled, so the prefix is
+    split by the same rule the full frame was — which is what makes window *k+1*'s tail end
+    exactly where window *k*'s begins.
+
+    **Rows are exact; the last bar's funding charge is not** — see the note above
+    :data:`PRIOR_WINDOWS`. A test pins both halves of that, so the day it stops being one bar
+    wide is a red suite rather than a drift in the numbers.
+    """
+    if keep < MIN_BARS_FOR_HOLDOUT or keep > len(frame.rows):
+        return None
+    split = holdout_split_index(keep)
+    if split >= keep:                       # everything trains, nothing is held out
+        return None
+    return ReplayFrame(
+        rows=frame.rows[:keep], candles=frame.candles[:keep], funding=frame.funding[:keep],
+        funding_source=frame.funding_source, split=split, cost=frame.cost,
+    )
+
+
+def _prior_window_evidence(
+    spec: StrategySpec, frames: Sequence["ReplayFrame"], *, cost: CostModel,
+    windows: int = PRIOR_WINDOWS,
+) -> tuple[list[float], list[int]]:
+    """(R summed, trades) per earlier tail, newest first. Shorter lists mean the series ran out.
+
+    Reports rather than judges — like `period_r`, and for the same reason: what a sign flip
+    across these windows should DO at the promotion door is a decision, and a measurement that
+    pre-empts it is harder to argue with than one that states itself.
+    """
+    r_by_window: list[float] = []
+    n_by_window: list[int] = []
+    keep = min(len(f.rows) for f in frames) if frames else 0
+    for _ in range(windows):
+        keep = holdout_split_index(keep) if keep >= MIN_BARS_FOR_HOLDOUT else 0
+        prefixes = [p for p in (_prefix_frame(f, keep) for f in frames) if p is not None]
+        if len(prefixes) != len(frames) or not prefixes:
+            break                            # a leg ran out; a partial cohort is a different pool
+        total_r = 0.0
+        closed = 0
+        for prefix in prefixes:
+            part, *_ = _replay(spec, prefix.rows[prefix.split:], prefix.candles[prefix.split:],
+                               cost=cost, funding=prefix.funding[prefix.split:],
+                               offset=prefix.split)
+            for outcome in part:
+                if outcome.get("outcome_closed"):
+                    total_r += float(outcome.get("result_R") or 0.0)
+                    closed += 1
+        r_by_window.append(round(total_r, 8))
+        n_by_window.append(closed)
+    return r_by_window, n_by_window
+
+
 def _holdout_evidence(
     spec: StrategySpec, frames: Sequence["ReplayFrame"],
     *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
@@ -2963,6 +3087,7 @@ def _holdout_evidence(
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
+    prior_r, prior_n = _prior_window_evidence(spec, frames, cost=cost)
     return {
         "bars": min(bars) if bars else 0,
         # Absent on every block minted before pooling existed, and 1 is what those mean —
@@ -2995,6 +3120,12 @@ def _holdout_evidence(
         # See `HOLDOUT_PERIODS` for why the count is what it is.
         "period_r": [round(value, 8) for value in period_r],
         "period_trades": period_trades,
+        # The same spec on EARLIER tails, newest first — see `PRIOR_WINDOWS`. Sibling of the two
+        # fields above and deliberately not folded into them: `period_r` cuts the holdout up,
+        # this asks whether the holdout's answer survives before it. A shorter list than
+        # `PRIOR_WINDOWS` means the series ran out, which is information, not an error.
+        "prior_window_r": prior_r,
+        "prior_window_trades": prior_n,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
@@ -3971,6 +4102,20 @@ def next_generation_id(existing: list[Mapping[str, Any]]) -> str:
     return f"GEN-{highest + 1:03d}"
 
 
+# Which timeframes mint POOLED, once a caller supplies a cohort. `REMAINING_WORK.md` §F9 lays
+# out three shapes; this is B, and the reason it is not A is measured rather than preferred:
+# F2 found 1h single-symbol already 12/12 judgeable, while 4h closes a median 9 trades against a
+# floor of 25 and 1d is floored at bars rather than days. Pooling where the tails are thin buys
+# the judgeability; pooling 1h as well would spend the directional lever for nothing — a pooled
+# spec occupies every context of its timeframe in ONE direction, and `routable_directional_
+# capacity` then caps the book at 4 of 6 rather than 6 of 6 (F9 has the arithmetic).
+#
+# Naming the timeframes here rather than in the scheduler keeps the policy where the reasoning
+# is; the caller still decides whether to hand over a cohort at all, and a caller that does not
+# gets exactly today's behaviour.
+POOLED_TIMEFRAMES = frozenset({"4h", "1d"})
+
+
 def run_factory(
     snapshot: Mapping[str, Any],
     *,
@@ -3980,6 +4125,7 @@ def run_factory(
     count: int = DEFAULT_BATCH_SIZE,
     fusion_pairs: int = 0,
     positioning_eligible: bool = False,
+    cohort_snapshots: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
@@ -4000,7 +4146,12 @@ def run_factory(
 
     Whatever fusion does NOT mint of that allocation is drawn again as seeded specs from this
     fire's own rotation slice, so a dry parent pool costs the fire nothing — see the comment
-    over the shortfall draw for the measurement and for why it takes nothing from fusion."""
+    over the shortfall draw for the measurement and for why it takes nothing from fusion.
+
+    ``cohort_snapshots`` are the OTHER legs of a pooled mint — one spec scored across all of
+    them, ``symbol_scope`` set to the whole cohort. Ignored unless ``snapshot``'s timeframe is in
+    :data:`POOLED_TIMEFRAMES`, so a caller cannot pool 1h by accident. Absent (the default) is
+    exactly today's single-symbol behaviour, down to the seed."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -4009,11 +4160,26 @@ def run_factory(
         ) if isinstance(h, str) and h
     )
     generation_id = next_generation_id([*pool_entries, *existing_candidates])
-    candles_sha = integrity.sha256_record({"candles": snapshot.get("candles") or []})
+    timeframe = str(snapshot.get("timeframe") or "1d")
+    # Pooling is opt-in per fire AND fenced by the policy above, so neither half alone turns it
+    # on. `legs` is every snapshot the spec will be scored across, primary first.
+    legs: list[Mapping[str, Any]] = [snapshot]
+    if cohort_snapshots and timeframe in POOLED_TIMEFRAMES:
+        legs.extend(s for s in cohort_snapshots if s is not snapshot)
+    pooled = len(legs) > 1
+    # The seed reads EVERY leg, not just the primary. Two cohorts sharing a first symbol would
+    # otherwise draw the same parameters, which is the reproducibility rule (`same seed, same
+    # batch`) quietly meaning something narrower than it says.
+    candles_sha = integrity.sha256_record(
+        {"candles": [leg.get("candles") or [] for leg in legs]} if pooled
+        else {"candles": snapshot.get("candles") or []}
+    )
     seed = int(candles_sha.split(":", 1)[1][:8], 16)
 
     symbol = str(snapshot.get("symbol") or "BTCUSDT")
-    timeframe = str(snapshot.get("timeframe") or "1d")
+    # Sorted so the cohort is one context however the caller ordered its fetches — this tuple is
+    # what `_matches_context` and `pool.search_context_key` compare on.
+    scope = sorted({str(leg.get("symbol") or "") for leg in legs} - {""}) if pooled else None
     # Read off the snapshot for the same reason as the two above: it is a property of the
     # data this run is mining, not a claim by whoever called. It was briefly a parameter,
     # which meant the venue an env var selected at collection and the venue the factory
@@ -4038,13 +4204,14 @@ def run_factory(
         ),
         symbol=symbol,
         timeframe=timeframe,
+        scope=scope,
     )
     # Counted from the store this function was already given — the rotation steps on
     # THIS context's fire count, not on the global generation number. Hoisted out of the call
     # below because the shortfall draw after fusion has to pass the SAME cursor: see there for
     # why it re-draws this fire's slice rather than stepping to the next one.
     rotation_index = context_rotation_index(
-        existing_candidates, symbol=symbol, timeframe=timeframe,
+        existing_candidates, symbol=symbol, timeframe=timeframe, scope=scope,
     )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
@@ -4055,12 +4222,14 @@ def run_factory(
         positioning_eligible=positioning_eligible,
         venue=venue,
         rotation_index=rotation_index,
+        symbol_scope=scope,
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
     # the calendar, not of any spec, and `build_feature_rows` alone is 6.0s at the 48,000-bar 15m
     # window — so rebuilding it per candidate cost ~30s a fire on a sequential scheduler.
     frame = build_replay_frame(snapshot)
+    frames = [frame, *(build_replay_frame(leg) for leg in legs[1:])] if pooled else [frame]
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
@@ -4076,12 +4245,17 @@ def run_factory(
             # Before scoring, because scoring it is the waste: a spec naming a feature these
             # rows never supply cannot enter here, and evidence saying otherwise would be
             # evidence for a trade this runtime cannot reproduce. See `unsuppliable_features`.
-            starved = unsuppliable_features(spec, frame.rows)
+            # Every leg, not just the primary. A pooled figure whose fourth symbol supplied
+            # none of the columns the rule names is a four-leg pool wearing a five-leg label,
+            # and `_holdout_evidence` would report `symbols: 5` over it. Fail closed on ANY leg
+            # — the guard F2's first pass walked around cost that batch its whole finding.
+            starved = sorted({f for fr in frames for f in unsuppliable_features(spec, fr.rows)})
             if starved:
                 starved_specs.append({"strategy_family": spec.strategy_family,
                                       "reason": UNSUPPLIABLE_FEATURE, "features": starved})
                 continue
-            evidence = backtest_spec(spec, snapshot, frame=frame)
+            evidence = (backtest_spec_pooled(spec, [], frames=frames) if pooled
+                        else backtest_spec(spec, snapshot, frame=frame))
             record = {
                 "strategy_id": spec.strategy_id,
                 "strategy_rule_hash": spec.strategy_rule_hash,
@@ -4112,7 +4286,14 @@ def run_factory(
 
     fused: list[dict[str, Any]] = []
     fusion_rejected: list[dict[str, Any]] = []
-    if fusion_pairs > 0:
+    # **A pooled fire does not fuse, and that is a boundary rather than an oversight.**
+    # `_fuse_batch` re-scores each parent on THIS window through `backtest_spec`, which takes one
+    # frame; handing it a cohort is a second increment. `fuse_specs` would pair pooled parents
+    # happily (their scopes match, so `symbol_scope_mismatch` never fires), so the child would be
+    # minted and scored on one leg while claiming five — the exact shape of wrong number this
+    # file spends most of its guards preventing. Recorded in the result so a fire that wanted
+    # fusion and got none says so.
+    if fusion_pairs > 0 and not pooled:
         fused, fusion_rejected = _fuse_batch(
             # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
             # lines answered the same question and disagreed about the default — `run_factory`
@@ -4222,6 +4403,12 @@ def run_factory(
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
         "seed": seed,
+        # What this fire actually mined, so a reader of the result never has to infer it from the
+        # rows. `symbol_scope` on a candidate says what the spec covers; these say what the FIRE
+        # was, which is the thing a scheduler log and a later audit ask about — and a pooled fire
+        # that fused nothing looks identical to a dry parent pool without it.
+        "pooled": pooled,
+        "pooled_symbols": list(scope) if pooled else [],
         # Both counts describe the FIRE rather than the first draw, which is what they already
         # claimed to mean and what the scheduler's `generated=N/M` reads: a fire that asked for
         # eight and minted eight is complete, and one that asked for four is a fire fusion
