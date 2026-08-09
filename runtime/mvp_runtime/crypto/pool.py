@@ -705,6 +705,39 @@ def assert_no_semantic_duplicates(
     )
 
 
+def reactivated_candidate_ids(
+    candidate_ids: Sequence[str], *, keep_active: bool, root: Path | None = None,
+) -> list[str]:
+    """Lineages this promotion would return to trading, sorted. One pool read.
+
+    The id-keyed form of :func:`silent_reactivations`, and the one the promotion CONTENT HASH
+    is a function of — the hash is computed from selectors at the ask, long before entries are
+    assembled, so it cannot use the entry-keyed view.
+
+    Sorted, so the hash does not depend on selector order, for the same reason
+    ``candidate_ids`` and ``rule_hashes`` are sorted beside it.
+
+    ``keep_active`` decides it entirely in one direction: in ADD mode the incumbents keep the
+    status they had and the door refuses a candidate already in the pool, so nothing can come
+    back — the answer is empty without reading anything. Only REPLACE rebuilds every entry,
+    and that is where a terminal member re-listed alongside the rest returns as PAPER_ACTIVE.
+    """
+    if keep_active:
+        return []
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    current = {
+        str(e.get("candidate_id")): e
+        for e in load_active_pool(root).get("active_strategies") or []
+        if e.get("candidate_id")
+    }
+    wanted = {str(c) for c in candidate_ids if c}
+    return sorted(
+        cid for cid in wanted
+        if cid in current and str(current[cid].get("status")) in TERMINAL_STATUSES
+    )
+
+
 def silent_reactivations(
     entries: list[Mapping[str, Any]], *, root: Path | None = None,
 ) -> list[dict[str, Any]]:
