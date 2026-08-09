@@ -100,6 +100,29 @@ KIND_TASK = "analysis_task"
 KIND_PRUNE = "memory_prune"
 KIND_CRYPTO = "crypto_pipeline"
 KIND_FACTORY = "crypto_factory"
+
+
+def parse_factory_request(request: str) -> tuple[list[str], str]:
+    """``"<symbol>[,<symbol>...] [<timeframe>]"`` → (symbols, timeframe).
+
+    **A comma names a COHORT, and that is the whole of the pooled opt-in.**
+    `factory.run_factory` mints one hypothesis across every leg it is handed at a timeframe in
+    `factory.POOLED_TIMEFRAMES` (F9 shape B). What decides WHICH symbols is per-machine state
+    rather than a constant in this file, and it has to be: `CROSS_SECTION_UNIVERSE` names six
+    symbols and only five are mined, so a constant here would be a guess about the operator's
+    schedules. The schedule already carries the symbol; a list is the same field saying more.
+
+    **Nothing changes until `schedules.jsonl` does.** A request with no comma returns a
+    one-symbol list and takes exactly today's path, so the migration F9 describes — five
+    `(symbol, timeframe)` schedules becoming one per timeframe — is an edit to that file and is
+    reversible by editing it back.
+
+    Defaults match what the branch used before this existed, so an empty or malformed request
+    fires the same BTCUSDT 1d run it always did rather than raising inside a scheduled tick.
+    """
+    parts = request.split()
+    symbols = [s for s in (parts[0].split(",") if parts and parts[0] else []) if s]
+    return (symbols or ["BTCUSDT"], parts[1] if len(parts) >= 2 else "1d")
 KIND_REPORT = "crypto_report"
 KIND_PROPOSER = "crypto_propose"
 KIND_DATA_REVIEW = "crypto_data_review"
@@ -1010,34 +1033,52 @@ def _execute(
             select_market_data_collector,
         )
 
-        parts = schedule.request.split()
-        symbol = parts[0] if parts and parts[0] else "BTCUSDT"
-        timeframe = parts[1] if len(parts) >= 2 else "1d"
+        # **A comma in the symbol field names a COHORT** — see `parse_factory_request`.
+        symbols, timeframe = parse_factory_request(schedule.request)
+        symbol = symbols[0]
         collector = select_market_data_collector(now=now, root=repo_root)
-        try:
-            snapshot, _ = collect_market_data(
-                symbol, timeframe, collector=collector, now=now,
-                limit=factory_candle_target(timeframe),
+        liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+
+        def _mining_snapshot(for_symbol: str):
+            """One fully-attached leg. Returns None when the venue is degraded for it."""
+            try:
+                built, _ = collect_market_data(
+                    for_symbol, timeframe, collector=collector, now=now,
+                    limit=factory_candle_target(timeframe),
+                )
+            except ToolBlocked as exc:
+                if exc.reason_code == "TOOL_ERROR":
+                    return None
+                raise
+            # C9: the factory backtests on the same feed-enriched frame the router evaluates —
+            # one feature source for backtest and live (the source rule). All five legs go
+            # through `attach_mining_legs`, which is where that rule lives.
+            crypto_cycle.attach_mining_legs(
+                built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
+                liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
             )
-        except ToolBlocked as exc:
-            if exc.reason_code == "TOOL_ERROR":
-                return "skipped_market_data_degraded"
-            raise
-        # C9: the factory backtests on the same feed-enriched frame the router evaluates — one
-        # feature source for backtest and live (the source rule). All five legs now go through
-        # `attach_mining_legs`, which is where that rule lives; the per-leg reasoning that used
-        # to sit inline here moved into its docstring and the notes below it, because two other
-        # call sites got the sequence wrong by copying part of it.
-        crypto_cycle.attach_mining_legs(
-            snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
-            liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
-            candle_target=factory_candle_target,
-        )
+            return built
+
+        snapshot = _mining_snapshot(symbol)
+        if snapshot is None:
+            return "skipped_market_data_degraded"
+        # **A leg that cannot be fetched cancels the pooled fire rather than shrinking it.** A
+        # four-leg pool reporting `symbols: 5` is the wrong-number failure this file's guards
+        # exist for, and a cohort that silently changes size between fires is not one context.
+        cohort = []
+        for other in symbols[1:]:
+            leg = _mining_snapshot(other)
+            if leg is None:
+                return f"skipped_cohort_leg_degraded:{other}"
+            cohort.append(leg)
         # The store's own answer to "can you cover the window the factory replays". Read here
         # rather than inside the factory because `run_factory` is pure. A store that cannot be
         # read at all reports not-eligible, which is the safe direction: no data, no family.
+        # Every mined leg, not just the primary: a family gated on positioning must be
+        # suppliable everywhere the pooled spec claims to trade, and `coverage_summary` already
+        # takes the list.
         positioning_eligible = bool(positioning_store.coverage_summary(
-            repo_root, symbols=[symbol],
+            repo_root, symbols=symbols or [symbol],
         )["eligible"])
         result = run_factory(
             snapshot,
@@ -1046,6 +1087,7 @@ def _execute(
             now=now,
             fusion_pairs=FACTORY_FUSION_PAIRS,
             positioning_eligible=positioning_eligible,
+            cohort_snapshots=cohort or None,
         )
         crypto_pool.append_candidates(result["candidates"], root=repo_root)
         if ledger is not None:

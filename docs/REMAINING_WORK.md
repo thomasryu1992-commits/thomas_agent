@@ -3141,7 +3141,12 @@ version of this test.
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
-## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done, G4 measured**
+## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**, G5 profiled
+
+> G1 sliced twice, G2 removed, G3 indexed and twice corrected, G4a/b/c done. What is left is the
+> three rejections and a three-site residue, both stated exactly at the end of this section, plus
+> G5 (the scheduler profile). Read
+> "The refactoring backlog is exhausted" before starting anything here.
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -3384,6 +3389,44 @@ drops entries that stop being shared, so the declaration cannot outlive its code
 
 Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
 registering there is a governance surface a reading aid does not need.
+
+#### The index was counting 27 English sentences as reason codes — fixed 2026-08-09
+
+Found while acting on §G4's note about `SpecParseError` and `FusionRefused`. That note said neither
+appeared here; both did, and how they appeared was the defect. Those classes take a **message** as
+their first positional argument, so the walk filed the message in the code column:
+
+```
+| `created_by must be a non-empty string` | `SpecParseError` | crypto/strategy.py | 373 | … |
+```
+
+**An entry whose key nobody can look up is worse than a missing one.** §G3 exists to answer "a code
+came out of the runtime — where is it raised", and no operator greps an English sentence. Each also
+counted as a distinct code, so the vocabulary was overstated by 27.
+
+**The rule is that a code has no spaces**, and it splits the surface with nothing left over —
+measured across every literal the walk finds: **751 `SCREAMING_CASE`, 9 `lower_snake`, 27
+sentences**, and no fourth shape. The nine lowercase ones stay: `too_many_conditions`,
+`holdout_unjudgeable` and seven `*_mismatch` names are `FusionRefused`'s mint-refusal vocabulary,
+which §F already tabulates by name. A rule keyed on `SCREAMING_CASE` would have dropped all nine.
+
+| | before | after |
+|---|---:|---:|
+| distinct codes | 456 | **429** |
+| indexed sites | 787 | 760 |
+| built at runtime, not indexable | 113 | 113 |
+| **carry a message where a code goes** | counted as codes | **27, counted apart** |
+
+The 27 are **counted, not dropped silently** — and counted *separately* from the 113, because they
+are different gaps: a site that builds its code can be given one, while a site that raises with a
+message has no code to find. Collapsing them would claim the index is missing 140 codes when 27 of
+those paths do not have a code at all. Six of the 27 are in `read_only_kernel/`, so the never-modify
+rule puts them permanently in that column.
+
+**Not fixed here: giving `SpecParseError` a code vocabulary.** Its 34 raise sites are spec-parse
+validation whose audience is the factory, not an operator diagnosing production — the same shape as
+the tunables index's `MECHANICS`, where something looking like a decision is not one. Deciding that
+is a separate item from making the index stop mislabelling it.
 
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
@@ -3680,7 +3723,11 @@ restating the values would just be a second copy of the thing that diverged.
   that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
   `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
   both plain `ValueError` — so *"every failure path raises a typed error with a stable
-  `reason_code`"* is not true of them, and neither appears in `DIAGNOSTIC_CODE_INDEX.md`.
+  `reason_code`"* is not true of them, and ~~neither appears in `DIAGNOSTIC_CODE_INDEX.md`~~ —
+  **wrong, and the truth was worse; corrected 2026-08-09.** Both appeared, 11 rows and 9. Because
+  they take a *message* as their first argument, the extractor filed the message in the code
+  column: `created_by must be a non-empty string`. Not a missing entry — an entry whose key
+  nobody can look up. See §G3.
 
 #### Two notes on the instrument, because both would have closed a question wrongly
 
@@ -3709,12 +3756,110 @@ locking implementations, neither hand-rolled, and no document saying which is fo
   or deferred capability). `ARCHITECTURE_REVIEW_RECORD.md` finding C parked exactly this and the
   reason still holds: the gates genuinely read it, so it is dormant-but-governed, not dead.
 
-### One number that changed and should not be misread
+### One number that changed and should not be misread — re-measured 2026-08-09
 
-`runtime/` is 53,806 LOC, of which `crypto/` is 24,642 and the read-only kernel — the
-"governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
-**1,938**. The description has not matched the shape for some time. That is an observation about
-the doc, not a proposal to restructure the code.
+| | 2026-08-02 | 2026-08-09 | |
+|---|---:|---:|---|
+| `runtime/` | 53,806 | **61,506** | +14% |
+| of which `crypto/` | 24,642 | **32,006** | +30% |
+| read-only kernel | 1,938 | **1,938** | unchanged |
+
+The "governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* has
+not moved by a line in a week while the runtime around it grew by 7,700. The description has not
+matched the shape for some time and now matches it less. Still an observation about the doc, not
+a proposal to restructure the code — but the direction is worth watching, because the gap widens
+on its own.
+
+### G5. The scheduler was profiled, and its hot path must not be optimised — measured 2026-08-09
+
+Read off the production record rather than a benchmark: `scheduler_events.jsonl` carries
+`duration_ms` on every `fired` event. ~2,490 completed fires over 2026-08-01 → 08-09, read at
+08-09T08:1x. **The ledger is live, so re-running this moves the counts** — the shares and the p50s
+are what matter and they are stable.
+
+**Current window (from 08-05, after the PM lane's removal stopped `pm_scan`):**
+
+| kind | fires | p50 | p95 | per day | share |
+|---|---:|---:|---:|---:|---:|
+| `candle_archive` | 103 | **125.1s** | 129.1s | **~49 min** | **~64%** |
+| `crypto_pipeline` | 416 | 14.9s | 22.3s | ~21 min | ~28% |
+| `crypto_factory` | 50 | 12.6s | 47.4s | ~3 min | ~4% |
+| `crypto_null_control` | 45 | 7.3s | 49.2s | ~3 min | ~3% |
+| everything else | ~400 | ≤3.1s | — | <1 min | <1% |
+
+The scheduler works about **76 minutes a day**, and one job is two thirds of it.
+
+Re-measure with the walk in this section's commit message, or just:
+`jq -s 'map(select(.action=="fired" and .duration_ms))' scheduler_events.jsonl` — except jq is not
+on this host, so use Python. **`pm_scan` at 40% of the whole 8-day record is not a finding**: that
+lane was removed 2026-08-02 and its last fire is 08-02T15:35Z. Windowing matters here.
+
+**Do not optimise it.** `ARCHIVE_BOOKS_PER_PASS` (100) × `ARCHIVE_REQUEST_INTERVAL_SECONDS`
+(1.1) = **110 of those 125 seconds are deliberate sleeping**, and both numbers are load-bearing:
+
+* The pace is **the venue's own wall, measured**. On the first real pass (2026-08-04) the loop
+  issued 352 reads as fast as it could; roughly 70 answered and **282 came back
+  `TOOL_RATE_LIMITED`**. Going faster does not archive more, it archives less.
+* The per-pass cap exists to **protect the live position path**. `run_due` runs due schedules
+  sequentially, so a full 352-book pass would hold the tick — the same tick the live leg's
+  `_settle_or_protect` runs on — for ~6.5 minutes. The cap trades archive latency (hours,
+  against a window that rolls at 52 days) for tick latency (minutes, against an open position).
+
+Both trades are already argued in the code beside each constant. This section records only that
+someone went looking for the runtime's biggest cost, found it, and confirmed the cost is the
+point. Same disposition as §G's audit-chain tip scan: **investigated, not a problem, do not fix.**
+
+**What the profiling did find is a governance gap, and it is the reason this subsection exists.**
+None of the three constants governing 64% of the scheduler's work appeared in the tunables index,
+because the coverage test's name pattern had no `_CEILING`, `_INTERVAL_SECONDS` or `_PER_PASS`.
+Neither did **`live_budget.HARD_CEILING_USDT`** — the number bounding what a registered budget may
+declare on the live money path, which Thomas set to 200 at bring-up and raised to 500 on
+2026-08-08. A pattern that misses a ceiling and a pace misses the two shapes an operator most
+often reaches for. Pattern extended, four constants indexed (67 → **71**), four page budgets named
+in `MECHANICS`. **`HARD_CEILING_USDT` is the find worth naming**: the tunables index exists so a
+number that decides money carries its provenance, and the one bounding live order size did not.
+
+### The refactoring backlog is exhausted — closed 2026-08-09
+
+Every item above is measured and dispositioned: **G1** sliced twice (the sweep is the whole
+package), **G2** removed, **G3** indexed and then corrected twice, **G4a/b/c** done. What remains
+is the three rejections below and a residue small enough to state exactly, so nobody re-derives it.
+
+**The residue, measured rather than estimated.** CLAUDE.md says every failure path raises a typed
+error with a stable `reason_code`. Twelve sites in `runtime/` raise a builtin directly:
+
+```
+ast walk over runtime/**/*.py for `raise ValueError|TypeError|RuntimeError|KeyError|OSError(...)`
+```
+
+| | n | |
+|---|---:|---|
+| in `read_only_kernel/` | 3 | never-modify rule |
+| a documented design decision | 1 | `timeutil.parse_iso` — its docstring says callers catch it and re-raise their own |
+| argument validation / programming error | 5 | a dataclass `__post_init__` invariant, `authority_invariant_holds`' P0–P6 check |
+| **genuine candidates** | **3** | `live_governance` ×2, `factory`'s cost-model-mismatch guard |
+
+**And the three are a diagnostics gap, not a safety one** — checked, not assumed: the live route
+already wraps these calls in `except Exception  # noqa: BLE001 — the order is at the venue;
+report, never raise`, so a bare `ValueError` does not escape a handler designed for
+`MvpRuntimeError`. What is lost is the named code in the record, not the containment.
+
+**What would re-open this section.** A new crypto module arriving unswept (the tunables test
+fails), a decision-shaped constant with no provenance (same test), a reason code that is really a
+message (the index test), a reader that hand-rolls a store read
+(`grep -rn 'read_text(encoding="utf-8").splitlines()' runtime/mvp_runtime/crypto/`), or a script
+minting its own `EXIT_*`. Each of those is a test now rather than a thing to remember, which is
+the actual output of this section — the greps that found them are in the subsections above and
+every one of them has since been kept true by a test instead.
+
+**The pattern worth carrying, because it cost the most to learn.** Three times the obvious
+consolidation was wrong and only measurement said so: the crypto **writes** must keep an `fsync`
+that `jsonl.append_lines` does not do; `scripts/`' 59 repo-root snippets are 18 bootstrap paradoxes
+and 22 lost invocation modes for a one-liner with no failure mode; and a code that vanished from
+the diagnostic index wanted the extractor fixed, not the index overwritten. Two of this section's
+own headline counts were also wrong by roughly four (§G1's constants, §G3's codes) — both because
+a grep over upper-case names measures naming convention rather than the thing being counted. **Do
+not act on a count in this file without re-running the command beside it.**
 
 ---
 ## H. Equity-perp lane (Hyperliquid HIP-3) — **S1 is running as of 2026-08-04**; next is S2
@@ -3855,10 +4000,9 @@ rather than by anything in this lane; that mechanism is unchanged and described 
 **S2 splits into a part that is buildable and a part that is a clock, and the split matters
 more than the label.** §8b is the authority; the measured state as of 2026-08-08:
 
-**(a) cost re-derivation — two of three legs now measured, one cannot be.** Funding and the
-order book were measured off the venue; the HIP-3 deployer fee share cannot be derived from
-code or a public endpoint and needs a published schedule. **(a) is therefore still open**, and
-"two legs measured" is not "done".
+**(a) cost re-derivation — measured on 2026-08-08/09, and what is left is one published table.**
+Funding and the order book were measured off the venue, and so was the deployer's fee
+configuration. **(a) is still open**, but on a narrower item than this file claimed a day ago.
 
 | | Binance USD-M (the model today) | Hyperliquid HIP-3 (measured) |
 |---|---|---|
@@ -3874,6 +4018,23 @@ by settlement count overstates it fivefold; the daily carry is what binds. Const
 deliberately NOT changed — `cost.py` is Binance-scoped, the budget schema blocks any equity
 order, so there is no consumer, and editing them now would only disturb the basis crypto
 evidence was scored under.
+
+> **Two corrections to the paragraph above, both made 2026-08-09, and the second matters more.**
+>
+> **The deployer fee share is NOT unobtainable.** This file said it "cannot be derived from code
+> or a public endpoint". `perpDexs` — which `live_symbols` already calls — carries the whole
+> configuration: `deployerFeeScale` (1.0), `feeRecipient`, `deployer`,
+> `assetToFundingMultiplier`, `assetToFundingInterestRate`. The claim was made without looking
+> at the response's keys; looking cost one call. What genuinely remains outside is only the base
+> schedule that `deployerFeeScale` multiplies, which needs Hyperliquid's published fee table.
+>
+> **The 1.8x is a setting, not a property of the venue.** `assetToFundingMultiplier` is **0.5**
+> on 107 of `xyz`'s 108 assets, and the measured carry already has that 0.5 in it. If the
+> deployer raises it to 1.0 the carry doubles and the ratio becomes **3.6x, not 1.8x**. These
+> are levers the deployer holds and uses: `xyz`'s scale changed at **2026-08-06T15:08:37** —
+> two days after this archive started — `para`'s on 2026-08-07, and `hyna` runs a scale of
+> 0.1111. Same axis as §6's counterparty items. Every number in the table above is a reading
+> with a timestamp, not a constant, and S3 must re-read rather than inherit them.
 
 **(b) the reproducibility gate — unevaluable, and not by a margin that code can close.**
 

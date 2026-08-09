@@ -597,13 +597,22 @@ def run_crypto_cycle(
     # Empty would say "every retired lineage is confirmed retired" and release the entire
     # exclusion; None says "I cannot tell" and keeps every loss in the window. The one failure
     # that could clear a breaker is the one that must not.
+    #
+    # `live_routable_ids` takes the same None-on-failure shape for the mirror-image reason
+    # (#610 Part 1). Both the empty set and None refuse every live entry, so the money path is
+    # safe either way — but they are different operator problems, and the reason code has to
+    # say which: "no strategy is armed for live" is the expected state after this shipped,
+    # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
+    live_routable_ids: set[str] | None
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
+        live_routable_ids = pool.live_routable_strategy_ids(active_pool)
     except ToolError as exc:
         active_pool = {"active_strategies": []}
         routable_ids = None
+        live_routable_ids = None
         reason_codes.append(exc.reason_code)
 
     # The breaker limits themselves: the registered per-machine record when one is registered
@@ -836,6 +845,11 @@ def run_crypto_cycle(
     # from "no live activity".
     live = run_live_leg(
         route=shared_route,
+        # #610 Part 1 — read from the SAME pool object the ladder just ran on, so the live door
+        # and the lifecycle cannot disagree about which strategies exist. Occupying a slot is no
+        # longer the same fact as being allowed to spend money; `live_routable_strategy_ids` is
+        # the narrower of the two and an entry has to say so explicitly to be in it.
+        live_routable_strategy_ids=live_routable_ids,
         feature_row=feature_row,
         verdict=live_verdict,
         symbol=symbol,

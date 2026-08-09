@@ -80,9 +80,10 @@ def _plan(**kw):
     The verdict is supplied explicitly, like every other fact. It used to be omitted, which made
     the *unguarded* path the tested happy path — the review finding that closed this fail-open.
     """
+    plan = kw.pop("plan", PLAN)
     args = dict(
         verdict=kw.pop("verdict", ALLOWING_VERDICT),
-        plan=kw.pop("plan", PLAN),
+        plan=plan,
         symbol=kw.pop("symbol", "BTCUSDT"),
         reconciliation=kw.pop("reconciliation", reconcile_positions([], FLAT, now=NOW)),
         local_positions=kw.pop("local_positions", []),
@@ -99,6 +100,12 @@ def _plan(**kw):
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         now=kw.pop("now", NOW),
+        # #610 Part 1. Defaulted to "this plan's strategy is armed for live" so the existing
+        # cases keep testing the doors they were written for; the tier door has its own tests.
+        live_routable_strategy_ids=kw.pop(
+            "live_routable_strategy_ids",
+            {str((plan or {}).get("strategy_id") or "")},
+        ),
         **kw,
     )
     return le.plan_live_entry(**args)

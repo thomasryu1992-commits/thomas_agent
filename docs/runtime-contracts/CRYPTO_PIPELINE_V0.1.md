@@ -84,6 +84,34 @@ auto-promotion (`auto_promotion_allowed: false` in the source data becomes struc
 here); the active pool is a single pointer changed only through the approval door
 (the Core Release pointer precedent).
 
+### The live tier (#610 Part 1, 2026-08-09)
+
+Pool membership and permission to spend real money are **two facts, not one**. Every entry
+carries `live_tier`:
+
+| tier | occupies a slot | papers / counterfactual | may open a REAL position |
+|---|---|---|---|
+| `OBSERVATION` (default, and the value of an absent or unrecognised field) | yes | yes | **no** |
+| `LIVE` | yes | yes | yes |
+
+- `pool.live_routable_strategy_ids` is the set `live_entry` refuses against, and it is strictly
+  narrower than `routable_strategy_ids` — the wider one still answers "could this trade again
+  at all", which the drawdown baseline needs and which an observation-tier lineage answers YES
+  to. Conflating them would release a drawdown exclusion.
+- **Only the operator promotion door writes the tier.** It is a field rather than a status
+  precisely because the lifecycle ladder recovers `WARNING → PAPER_ACTIVE`: a tier carried in
+  `status` would be re-granted by a demotion path. `update_statuses` writes only `status`, so
+  the ladder structurally cannot arm a strategy, and a test asserts it never names the field.
+- The tier is part of `promotion_content_sha256` (`strategy_promotion.v3`). An approval granted
+  for an observation-tier install is not spendable on a live one.
+- Absence means OBSERVATION, so every entry promoted before this shipped stopped being
+  live-routable the moment it did. That is the intended migration and the fail-closed direction.
+- Closes are unaffected: the tier door sits in the entry block, after settle and protect, so a
+  position can always be closed by the strategy that opened it.
+
+This does **not** weaken the rule above it: entry to the `LIVE` tier is still an explicit,
+approval-bound operator action, and nothing automatic may grant it.
+
 **Deferred decision (explicit, Thomas-only):** R10 consumption is currently scoped to
 `SENSITIVE_MEMORY_GOVERNANCE`. Strategy promotion would be the **second consumption
 scope**. Until that decision, promotion candidates + approval requests can exist

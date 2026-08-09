@@ -262,7 +262,7 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False,
+        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
     )
     entry = installed["active_strategies"][0]
@@ -293,7 +293,7 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False,
+        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
     )
     entry = installed["active_strategies"][0]

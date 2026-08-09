@@ -1090,6 +1090,43 @@ def test_a_deferral_records_the_pass_spend_and_the_budget_it_was_measured_agains
     assert row["pass_elapsed_ms"] > row["pass_budget_ms"]
 
 
+# --- a factory schedule can name a cohort (F9 shape B, step 3) ------------------
+
+def test_a_request_without_a_comma_is_exactly_todays_single_symbol_fire():
+    """The migration is an edit to `schedules.jsonl`, so the code must change nothing until
+    that file does — including the defaults an empty or partial request falls back to."""
+    assert scheduler.parse_factory_request("BTCUSDT 4h") == (["BTCUSDT"], "4h")
+    assert scheduler.parse_factory_request("DOGEUSDT") == (["DOGEUSDT"], "1d")
+    assert scheduler.parse_factory_request("") == (["BTCUSDT"], "1d")
+    assert scheduler.parse_factory_request("   ") == (["BTCUSDT"], "1d")
+
+
+def test_a_comma_names_the_cohort_in_the_order_the_operator_wrote_it():
+    """The first symbol stays the primary — it selects the rotation slice and the templates
+    (`templates_for_timeframe` narrows for the market proxy), so it is not interchangeable."""
+    symbols, timeframe = scheduler.parse_factory_request(
+        "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT 4h")
+    assert symbols == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"]
+    assert timeframe == "4h"
+
+
+def test_empty_members_in_a_cohort_are_dropped_rather_than_mined_as_a_blank_symbol():
+    """A trailing comma is the likeliest hand-edit of `schedules.jsonl`, and a blank leg would
+    reach `collect_market_data` as an unnamed symbol."""
+    assert scheduler.parse_factory_request("BTCUSDT,,ETHUSDT, 4h")[0] == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_the_cohort_form_only_pools_where_the_factory_policy_allows_it():
+    """Parsing is not permission. 1h is 12/12 judgeable single-symbol (F2), so a cohort written
+    against it is parsed and then ignored by `run_factory` — the fence lives with the reasoning,
+    not in the request."""
+    from runtime.mvp_runtime.crypto import factory as crypto_factory
+
+    assert "4h" in crypto_factory.POOLED_TIMEFRAMES
+    assert "1d" in crypto_factory.POOLED_TIMEFRAMES
+    assert "1h" not in crypto_factory.POOLED_TIMEFRAMES
+
+
 # === every kind is classified, and the default is the recoverable one ==============
 # The budget used to read `kind not in RISK_KINDS`, which made "deferrable" what a new kind got
 # for free. Adding one to KINDS and forgetting the risk set was silent, and if the kind touched
