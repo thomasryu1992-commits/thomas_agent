@@ -231,6 +231,12 @@ def live_position_contexts(
 def run_live_leg(
     *,
     route: Mapping[str, Any] | None,
+    # #610 Part 1 — which strategies the pool says may open a REAL position. Threaded from the
+    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and a
+    # second read is a second chance for the two to disagree about the same fact. `None` refuses
+    # every entry (see `live_entry`'s door 2a); closes are decided above the entry block and are
+    # never affected by it.
+    live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
     symbol: str,
@@ -276,6 +282,7 @@ def run_live_leg(
             record,
             adapter=adapter,
             route=route,
+            live_routable_strategy_ids=live_routable_strategy_ids,
             feature_row=feature_row,
             verdict=verdict,
             symbol=symbol,
@@ -309,6 +316,7 @@ def _run_gated_live_leg(
     *,
     adapter: Any,
     route: Mapping[str, Any] | None,
+    live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
     symbol: str,
@@ -423,6 +431,7 @@ def _run_gated_live_leg(
     decision = plan_live_entry(
         plan,
         symbol=symbol,
+        live_routable_strategy_ids=live_routable_strategy_ids,
         reconciliation=reconciliation,
         # The book as read at the top of this leg, not a second read. Every path that could
         # have changed it returned above (anything that settled, or failed to), so a re-read

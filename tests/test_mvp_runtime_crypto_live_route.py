@@ -145,6 +145,7 @@ def test_without_a_grant_the_live_leg_reads_nothing_and_sends_nothing(tmp_path, 
         lambda **kw: pytest.fail("the gated leg read the account with no grant"),
     )
     record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
         route=None, feature_row={}, verdict={"allow_new_position": True},
         symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
     )
@@ -172,6 +173,7 @@ def test_the_env_var_alone_now_opens_the_gate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(live_route, "read_account", _account)
     record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
         route=None, feature_row={}, verdict={"allow_new_position": True},
         symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
     )

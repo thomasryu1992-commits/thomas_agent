@@ -61,7 +61,7 @@ PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
 
 
 
-def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
+def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
                 allow_duplicates: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
@@ -69,7 +69,7 @@ def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = 
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
-        selectors, keep_active=keep_active, now=now, repo_root=root,
+        selectors, keep_active=keep_active, live_tier=live_tier, now=now, repo_root=root,
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
         allow_duplicates=allow_duplicates,
@@ -91,7 +91,7 @@ def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = 
 
 def run_promotion(
     *, selectors: list[str], promoted_by: str, reason: str,
-    keep_active: bool, root: Path | None = None, now: str | None = None,
+    keep_active: bool, live_tier: str, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False, allow_oversized_pool: bool = False,
@@ -147,7 +147,7 @@ def run_promotion(
         try:
             verified_approval = promotion_mod.verify_promotion_approval(
                 approval_store.get(approval_id),
-                selectors=selectors, keep_active=keep_active, root=root, now=now,
+                selectors=selectors, keep_active=keep_active, live_tier=live_tier, root=root, now=now,
             )
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
@@ -224,6 +224,11 @@ def run_promotion(
             "strategy_id": display_sid,
             "candidate_id": c["candidate_id"],
             "status": "PAPER_ACTIVE",
+            # #610 Part 1. `status` says how healthy the strategy is and the lifecycle ladder
+            # owns it; this says whether it may spend real money and ONLY the operator door
+            # writes it. Two fields because the ladder recovers WARNING back to PAPER_ACTIVE,
+            # so a tier carried in `status` would be re-granted by a demotion path.
+            pool_store.LIVE_TIER_FIELD: live_tier,
             "champion_score": c.get("champion_score"),
             "strategy_rule_hash": c.get("strategy_rule_hash"),
             "generation_id": c.get("generation_id"),
@@ -366,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
                              "unambiguous strategy ids — an id shared by several "
                              "generations is refused, never resolved newest-wins")
     parser.add_argument("--keep-active", action="store_true", help="keep current pool members (add, not replace)")
+    # #610 Part 1. OBSERVATION is the default because arming a strategy for real money is the
+    # decision, and a decision is something an operator types. A default of LIVE would arm every
+    # promotion by omission — which is precisely the state this flag exists to end.
+    parser.add_argument("--live-tier", choices=("OBSERVATION", "LIVE"), default="OBSERVATION",
+                        help="OBSERVATION (default): occupies a slot and papers, cannot open real "
+                             "positions. LIVE: may open real positions. Part of the approval hash.")
     parser.add_argument("--promoted-by", help="operator identity")
     parser.add_argument("--reason", help="operator reason (the report)")
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
@@ -624,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.request:
         try:
             prepared = run_request(
-                selectors=selectors, keep_active=args.keep_active,
+                selectors=selectors, keep_active=args.keep_active, live_tier=args.live_tier,
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
                 allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
                 allow_duplicates=args.allow_duplicates,
@@ -650,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = run_promotion(
         selectors=selectors,
         promoted_by=args.promoted_by, reason=args.reason, keep_active=args.keep_active,
+        live_tier=args.live_tier,
         approval_id=args.approval_id, without_approval=args.without_approval,
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
