@@ -1088,3 +1088,60 @@ def test_a_deferral_records_the_pass_spend_and_the_budget_it_was_measured_agains
     # The pair is what makes a row self-describing: the excess is readable from the row alone,
     # without knowing which value of the constant was live when it was written.
     assert row["pass_elapsed_ms"] > row["pass_budget_ms"]
+
+
+# === every kind is classified, and the default is the recoverable one ==============
+# The budget used to read `kind not in RISK_KINDS`, which made "deferrable" what a new kind got
+# for free. Adding one to KINDS and forgetting the risk set was silent, and if the kind touched
+# the money path its lateness became the cost the budget exists to prevent. Found 2026-08-09
+# when `crypto_null_control` (#557) landed on the non-risk side by default — correctly, but
+# undecided.
+
+def test_every_kind_is_classified_as_risk_or_maintenance():
+    """The forcing function. A kind added to `KINDS` without a side fails here rather than
+    picking one silently — which is the whole point, because the silent pick used to be
+    'deferrable' and that is the direction that costs money."""
+    unclassified = scheduler.KINDS - scheduler.RISK_KINDS - scheduler.MAINTENANCE_KINDS
+    assert not unclassified, (
+        f"{sorted(unclassified)} is in KINDS but neither RISK_KINDS nor MAINTENANCE_KINDS. "
+        f"Decide: does its lateness cost money (RISK_KINDS) or freshness (MAINTENANCE_KINDS)?"
+    )
+
+
+def test_no_kind_is_both_risk_and_maintenance():
+    """Both-ness would make the answer depend on which set a reader checked first."""
+    assert not (scheduler.RISK_KINDS & scheduler.MAINTENANCE_KINDS)
+
+
+def test_neither_set_names_a_kind_that_does_not_exist():
+    """A classification for a removed kind reads as coverage and is not — the `pm_scan` removal
+    is the precedent for a kind leaving while its mentions stayed."""
+    assert scheduler.RISK_KINDS <= scheduler.KINDS
+    assert scheduler.MAINTENANCE_KINDS <= scheduler.KINDS
+
+
+def test_an_unclassified_kind_is_never_deferred(tmp_path, monkeypatch):
+    """The safe default, pinned. If the partition test above is ever silenced, this is what an
+    unclassified kind falls back to: not deferred. The budget under-applies — recoverable — and
+    can never delay a risk kind *because* somebody forgot to classify it."""
+    store = ScheduleStore(tmp_path)
+    _kind_schedule(store, scheduler.KIND_FACTORY)
+    stray = _kind_schedule(store, scheduler.KIND_FACTORY)
+    # Make the second schedule's kind unclassified without touching either set.
+    monkeypatch.setattr(
+        scheduler, "MAINTENANCE_KINDS",
+        scheduler.MAINTENANCE_KINDS - {scheduler.KIND_FACTORY},
+    )
+    clock = _Clock()
+    monkeypatch.setattr(scheduler.time, "monotonic", clock)
+    order = []
+    _record_order(monkeypatch, order, clock=clock,
+                  cost=scheduler.MAINTENANCE_PASS_BUDGET_SECONDS + 1)
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path))
+
+    # Both ran: over budget, but the kind is no longer declared deferrable.
+    assert summary["deferred"] == 0
+    assert summary["fired"] == 2
+    assert stray.schedule_id in {s.schedule_id for s in store.list()}

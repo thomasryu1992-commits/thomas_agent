@@ -193,6 +193,34 @@ KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT
 # delayed behind an archive pass is a report about a state that has already lasted longer.
 RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_ROUTE_WATCH})
 
+# The other half, named rather than inferred — and naming it is the point.
+#
+# **The gap this closes.** The budget used to ask `kind not in RISK_KINDS`, so a kind was
+# deferrable by *default*: adding one to `KINDS` and forgetting this line made it deferrable
+# silently, and if that kind touched the money path its lateness was the cost the budget exists
+# to prevent, now caused by it. Nothing failed, nothing warned — a whitelist with a permissive
+# complement asks a question only of the person who remembers there is one. Found 2026-08-09
+# after `crypto_null_control` (#557) arrived and landed on the non-risk side by default. It
+# belongs there — it is a backtest measurement, "no candidates, no orders", and 11 of its
+# occurrences were deferred through the 04:36Z pass while `crypto_pipeline` held its cadence at
+# 900/906/900/903/900 — but nobody decided that, which is the defect even when the default is
+# right.
+#
+# **Why membership here rather than absence there.** The runtime test is now
+# `kind in MAINTENANCE_KINDS`, which flips what an unclassified kind gets. It used to be
+# "deferrable", the direction that costs money if the kind was a money kind. It is now "never
+# deferred" — the budget under-applies, which costs a risk kind some latency and can never
+# delay one *because of* the omission. Under-applying a latency bound is recoverable; deferring
+# a settlement pass is not.
+#
+# A test asserts these two sets partition `KINDS` exactly, so an unclassified kind is a red
+# suite rather than a silent default in either direction. That is where the judgement is
+# forced; this constant is only where the answer is written down.
+MAINTENANCE_KINDS: frozenset[str] = frozenset({
+    KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
+    KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
+})
+
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
 #
 # Not a timeout, and that difference is the whole design: a fire already running is never
@@ -1415,7 +1443,9 @@ def run_due(
         #
         # Nested rather than one condition only so `elapsed` can be named: the clock is still
         # read for the kinds the budget can act on and no others, as the short-circuit did.
-        if schedule.kind not in RISK_KINDS:
+        # Membership, not absence: an unclassified kind is never deferred rather than always
+        # deferrable. See `MAINTENANCE_KINDS` for why that direction is the recoverable one.
+        if schedule.kind in MAINTENANCE_KINDS:
             elapsed = time.monotonic() - pass_started
             if elapsed > MAINTENANCE_PASS_BUDGET_SECONDS:
                 deferred += 1
