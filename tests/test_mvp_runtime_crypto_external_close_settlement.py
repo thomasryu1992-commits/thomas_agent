@@ -235,3 +235,36 @@ def test_a_filled_bracket_leg_still_wins_and_never_reads_the_history():
     assert feed.calls == 0, "the history was read despite a filled leg"
     assert ledger.outcomes[0]["close_reason"] == live_leg.CLOSE_REASON_STOP
     assert "exit_source" not in result
+
+
+def test_a_filled_leg_that_will_not_price_keeps_the_strategys_close_reason():
+    """The fallback runs on two different facts and only one of them is an external close.
+
+    `pnl is None` covers "no leg filled" AND "a leg filled but its payload will not price" —
+    the second is still the strategy's exit. Overwriting the reason there would take a real
+    `stop_loss` OUT of the population the R statistics judge the strategy on, which is this
+    label's own purpose inverted. A leg whose QUERY merely failed lands on the same branch, so
+    the test is "did a leg say it filled", never "did the bracket answer".
+
+    Not hypothetical at this venue: the live ledger's stop leg for the halted position reads
+    `{"avg_price": 0.0, "cum_quote": null, "executed_qty": null}` on 2026-08-08, so a null
+    payload on a leg that did fill is a shape this venue produces.
+    """
+    legs = {"status": live_leg.UNPROTECTED, "legs": [
+        {"leg": "stop_client_order_id", "close_reason": live_leg.CLOSE_REASON_STOP,
+         "filled": True, "resting": False, "status": "FILLED", "exchange_order_id": 42,
+         # Filled, and unpriceable: no cum_quote to divide.
+         "fill": {"avg_price": 0.0, "cum_quote": None, "executed_qty": 0.001}},
+    ]}
+    feed = _Feed([_fill(quote=63.5738)])
+    ledger, store = _Ledger(), _Store()
+    result = live_leg.settle_venue_closed_position(
+        _position(), adapter=_Adapter(), position_store=store, ledger=ledger,
+        legs=legs, account_feed=feed, now="2026-08-08T10:00:00Z",
+    )
+
+    assert result["status"] == live_leg.EXIT_CLOSED
+    assert feed.calls == 1, "the history is what priced this one"
+    assert result["exit_source"] == live_leg.EXIT_SOURCE_FILL_HISTORY
+    # The history supplied the PRICE; the leg still supplies the REASON.
+    assert ledger.outcomes[0]["close_reason"] == live_leg.CLOSE_REASON_STOP

@@ -1376,7 +1376,15 @@ def settle_venue_closed_position(
                 if pnl is not None:
                     exit_fill = history_fill
                     exit_order_id = history_order_id
-                    close_reason = CLOSE_REASON_VENUE_EXTERNAL
+                    # Only when NO leg filled. The fallback runs on two different facts —
+                    # "the bracket did not close this" and "a leg closed it but its payload
+                    # will not price" — and the second is still a strategy exit. Overwriting
+                    # the reason there would take a real `stop_loss` OUT of the population the
+                    # R statistics judge the strategy on, which is this label's own purpose
+                    # inverted. A leg query that merely FAILED lands here too, so the test is
+                    # "did a leg say it filled", never "did the bracket answer".
+                    if filled is None:
+                        close_reason = CLOSE_REASON_VENUE_EXTERNAL
                     result["exit_source"] = EXIT_SOURCE_FILL_HISTORY
 
     result["pnl_detail"] = pnl_detail
