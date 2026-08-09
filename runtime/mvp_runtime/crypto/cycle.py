@@ -66,6 +66,7 @@ from .market_data import (
 )
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
+from .live_allowance import evaluate_live_allowance
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .live_route import (
     DEFAULT_TIMING_CONTEXT,
@@ -101,6 +102,10 @@ HTF_DEGRADED = "HTF_DEGRADED"
 # it. Surfaced rather than silent: the money is still in the daily-loss breaker, but a row the
 # streak logic never saw is something an operator should know about.
 LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
+# #615 §5 — at least one live-armed lineage spent its allowance this cycle and left the live
+# tier. Not a failure and not a verdict on the strategy: the amount we were willing to risk on
+# an unproven lineage is gone, and it keeps papering.
+LIVE_ALLOWANCE_SPENT = "LIVE_ALLOWANCE_SPENT"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
 #
@@ -605,6 +610,10 @@ def run_crypto_cycle(
     # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
     live_routable_ids: set[str] | None
+    # #615 §5. Read alongside the breaker's own read below; `readable` stays False on any path
+    # that did not produce a trustworthy history, and the allowance treats that as a breach.
+    live_readable: list[dict[str, Any]] = []
+    live_history_readable = False
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
@@ -670,6 +679,7 @@ def run_crypto_cycle(
             # closed on that store — through the check that actually reads it, rather than through
             # a breaker that no longer does.
             live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+            live_history_readable = True
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
             risk = run_risk_guard(
@@ -864,6 +874,39 @@ def run_crypto_cycle(
     )
     reason_codes.extend(live["live_reason_codes"])
 
+    # 5a2) the per-lineage LIVE allowance (#615 §5). Evaluated AFTER the live leg so a settlement
+    # made this cycle is already in the history it judges — a lineage that spent its allowance on
+    # the trade that just closed should not get one more cycle of arming out of the ordering.
+    #
+    # It is not a verdict. At this sample size no test can say a strategy is bad; what this says
+    # is that the amount we were willing to risk on an unproven lineage is spent. The effect is a
+    # TIER move, so the lineage keeps its slot and keeps papering — and `disarm_live_tier` has no
+    # argument for a target tier, so this can only ever take permission away.
+    #
+    # Additive to the pool-wide breaker, never a replacement (#615 §5.3): a targeted stop that
+    # let the portfolio brake relax would leave more trading running than today, which is a
+    # money-door widening and a separate approval.
+    live_allowance: dict[str, Any] | None = None
+    if live_routable_ids:
+        live_allowance = evaluate_live_allowance(
+            # None when the history could not be read, which reports every armed lineage as
+            # breached — the conservative direction, and the one the docstring argues for.
+            live_readable if live_history_readable else None,
+            live_routable_strategy_ids=live_routable_ids,
+            pool=active_pool,
+        )
+        breached = [b["strategy_id"] for b in live_allowance["breached"]]
+        if breached and getattr(store, "filesystem_write", False):
+            try:
+                live_allowance["disarmed"] = pool.disarm_live_tier(
+                    breached, root=root, now=now,
+                    reasons=sorted({r for b in live_allowance["breached"] for r in b["reasons"]}),
+                )
+            except ToolError as exc:
+                reason_codes.append(exc.reason_code)
+        if breached:
+            reason_codes.append(LIVE_ALLOWANCE_SPENT)
+
     # 5b) lifecycle (C10) — auto-demote decaying strategies, never auto-promote.
     # Evaluated every cycle (pure); APPLIED only through the real gated store, the
     # same effect discipline as every other paper mutation. An unreadable outcome
@@ -956,6 +999,9 @@ def run_crypto_cycle(
         # count below says how many were evaluated in total, so nothing is unaccounted for.
         "lifecycle_decisions": lifecycle_noteworthy,
         "lifecycle_unchanged": lifecycle_unchanged,
+        # #615 §5. Present even when nothing breached, so a reader can tell "evaluated, nothing
+        # spent" from "never evaluated" — the distinction `lifecycle_evaluated` exists for.
+        "live_allowance": live_allowance,
         "lifecycle_evaluated": len(lifecycle_decisions),
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,

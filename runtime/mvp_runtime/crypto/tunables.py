@@ -49,6 +49,7 @@ from . import (
     features,
     feedback,
     guards,
+    live_allowance,
     live_order,
     live_position,
     live_budget,
@@ -123,6 +124,26 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MAX_CONSECUTIVE_LOSSES", guards.MAX_CONSECUTIVE_LOSSES, "crypto/guards.py", INHERITED,
             "source `config/settings.py`; three in a row halts",
             "a measured run-length distribution; three is a plausible number nobody checked here"),
+    # #615 §5 — the per-lineage allowance. DERIVED because both are the pool-wide breaker's own
+    # numbers narrowed to one lineage's share; when those move, these should be reconsidered
+    # together. The proposal states their weakness rather than hiding it (§8-A): the live sample
+    # is 3 outcomes, so there is nothing to calibrate against and will not be for months.
+    #
+    # An allowance does not need a calibrated threshold the way a verdict does — it encodes how
+    # much we were willing to risk before pausing to look. What would falsify the choice is the
+    # opposite failure: lineages leaving the live tier before they can produce any evidence at
+    # all. If that happens, the honest reading is "there is nothing worth proving live right
+    # now", not "the numbers are wrong".
+    Tunable("MAX_CONSECUTIVE_LIVE_LOSSES", live_allowance.MAX_CONSECUTIVE_LIVE_LOSSES,
+            "crypto/live_allowance.py", DERIVED,
+            "`guards.MAX_CONSECUTIVE_LOSSES` (3) narrowed to one lineage; deliberately tighter",
+            "a per-lineage run-length distribution, which needs live outcomes this pool has not "
+            "produced — 3 live settlements exist in total as of 2026-08-09"),
+    Tunable("MAX_CUMULATIVE_LIVE_LOSS_R", live_allowance.MAX_CUMULATIVE_LIVE_LOSS_R,
+            "crypto/live_allowance.py", DERIVED,
+            "`guards.WEEKLY_MAX_LOSS_R` (-5.0) narrowed to one lineage's share of the portfolio",
+            "the same measurement, and the -1.108R live stop-out of 2026-08-04 first: if realized "
+            "R runs past planned R systematically, every R-denominated limit here is optimistic"),
     Tunable("MAX_DRAWDOWN_PCT", guards.MAX_DRAWDOWN_PCT, "crypto/guards.py", INHERITED,
             "source `config/settings.py`",
             "the same"),
