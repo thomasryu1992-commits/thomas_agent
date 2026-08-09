@@ -3782,9 +3782,51 @@ were "minutes" was right about the keystrokes and wrong about the work: the two 
 minutes and the three defects they exposed took a day (H0).
 
 **What is left in this lane is S2, not S1.** S1 — the venue seam and the read-only collector —
-is running. S2 is the reproducibility gate (`EQUITY_PERP_LANE_V0.1.md` §8b), and nothing in it
-is built. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
+is running. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
 rather than by anything in this lane; that mechanism is unchanged and described below.
+
+**S2 splits into a part that is buildable and a part that is a clock, and the split matters
+more than the label.** §8b is the authority; the measured state as of 2026-08-08:
+
+**(a) cost re-derivation — two of three legs now measured, one cannot be.** Funding and the
+order book were measured off the venue; the HIP-3 deployer fee share cannot be derived from
+code or a public endpoint and needs a published schedule. **(a) is therefore still open**, and
+"two legs measured" is not "done".
+
+| | Binance USD-M (the model today) | Hyperliquid HIP-3 (measured) |
+|---|---|---|
+| funding settlements | 3/day | **24.1/day** |
+| rate per settlement, \|r\| | 0.37 – 0.58 bp | **0.088 – 0.124 bp** |
+| **daily carry** | **1.1 – 1.7 bp/day** | **2.1 – 3.0 bp/day (~1.8x)** |
+| spread | — | **0.26 – 0.91 bp** |
+| depth within 5 bp | — | **$8.6k – $268k** |
+
+The headline is a correction: **§8b's "24 settlements a day" is right and the 8x it implies is
+not.** Eight times the settlements at a fifth of the rate is ~1.8x the carry. Costing this venue
+by settlement count overstates it fivefold; the daily carry is what binds. Constants are
+deliberately NOT changed — `cost.py` is Binance-scoped, the budget schema blocks any equity
+order, so there is no consumer, and editing them now would only disturb the basis crypto
+evidence was scored under.
+
+**(b) the reproducibility gate — unevaluable, and not by a margin that code can close.**
+
+| tf | deepest book | median | vs the 500-day gate | reaches 500 |
+|---|---|---|---|---|
+| 15m | 56d | 56d | 11% | ~2027-10 |
+| 1h | **212d** | 121d | 42% | ~2027-05 |
+| 4h | 298d | 121d | 60% | ~2027-02 |
+| 1d | 299d | 120d | 60% | ~2027-02 |
+
+**1h has passed the venue's 208-day ceiling** — the first hard evidence that archiving earns
+what §2 claimed for it, four days in. But what holds the gate shut is **symbol age, not the
+archive**: history that never existed cannot be collected, and depth grows one day per day. The
+dates above are for the single deepest symbol; on the median they are late 2027.
+
+**Do not shorten it by minting on shallow data.** The coverage-gate comment in `factory.py`
+spells out the mechanism: a shallow window puts every trade in the newest walk-forward slice,
+`temporal_consistency` is 0 by construction, and the family retires as FRAGILE — blamed for a
+window that had no data in it. Early evaluation does not produce a weak answer, it produces a
+wrong one.
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
