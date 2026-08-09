@@ -4,10 +4,11 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **456** distinct codes across **787** raise sites
-- **28** exception classes carry them
+- **429** distinct codes across **760** raise sites
+- **21** exception classes carry them
 - **61** codes are raised from more than one module (see below)
 - **113** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **27** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
 
@@ -729,9 +730,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ROLE_REGISTRY_MISMATCH` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | 404 | `run_preflight` | `—` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/router.py` | 13 | `select_route` | `routing.get('selected_route') != 'ROLE'` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/worker_port.py` | 18 | `invoke_worker` | `route.selected_route != 'ROLE'` |
-| `Role Registry snapshot entry is missing definition_path` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 308 | `resolve_role_registry_snapshot` | `not definition_path` |
-| `Role Registry snapshot must contain exactly one Task-bound Role entry` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 270 | `resolve_role_registry_snapshot` | `not isinstance(raw_entries, list) or len(raw_entries) != 1` |
-| `Role Registry snapshot must use schema_version role_registry.v0.3` | `RegistryResolutionError` | `runtime/registry_resolution.py` | 264 | `resolve_role_registry_snapshot` | `source.get('schema_version') != 'role_registry.v0.3'` |
 | `SCHEDULER_EVENT_INVALID` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 677 | `mutation_event` | `action not in MUTATION_ACTIONS` |
 | `SCHEDULES_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/scheduler.py` | 432 | `list` | `—` |
 | `SCHEDULES_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/scheduler.py` | 440 | `_save` | `—` |
@@ -835,35 +833,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
 | `WRONG_APPROVER` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 249 | `record_decision` | `verification.approved_by != REQUIRED_APPROVER` |
-| `a pooled backtest needs at least one snapshot or frame` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3261 | `backtest_spec_pooled` | `not snapshots and (not frames)` |
-| `an unordered ParamSpec must be integer` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 344 | `__post_init__` | `not self.ordered and (not self.integer)` |
-| `created_by must be a non-empty string` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 373 | `from_dict` | `not isinstance(created_by, str) or not created_by` |
 | `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3616 | `fuse_specs` | `first.direction != second.direction` |
-| `entry_rules must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 176 | `from_dict` | `not isinstance(raw, dict)` |
-| `entry_rules.conditions must be a non-empty list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 182 | `from_dict` | `not isinstance(raw_conditions, list) or not raw_conditions` |
-| `exit_rules must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 227 | `from_dict` | `not isinstance(raw, dict)` |
-| `filesystem read count increment must be a non-negative integer` | `ValueError` | `runtime/read_only_kernel/types.py` | 13 | `add` | `not isinstance(count, int) or count < 0` |
-| `frame too large` | `OSError` | `runtime/mvp_runtime/socket_door.py` | 251 | `_read_frame` | `size > ceiling` |
-| `generation_id must be a string or null` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 370 | `from_dict` | `generation_id is not None and (not isinstance(generation_id, str))` |
 | `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3638 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
-| `input bundle must be located inside repo root` | `ReadBoundaryError` | `runtime/read_only_kernel/loader.py` | 26 | `load_runtime_inputs` | `—` |
-| `input bundle requires refs and sha256 objects` | `ReadBoundaryError` | `runtime/read_only_kernel/io.py` | 87 | `load_bundle` | `not isinstance(refs, dict) or not isinstance(hashes, dict)` |
-| `live order intent has no idempotency key to fingerprint` | `ValueError` | `runtime/mvp_runtime/crypto/live_governance.py` | 73 | `order_fingerprint` | `not (isinstance(key, str) and key)` |
 | `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3624 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
-| `now must be an RFC3339 timestamp` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 32 | `__init__` | `—` |
-| `now must include an RFC3339 timezone` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 34 | `__init__` | `parsed_now.tzinfo is None` |
-| `pdftotext is not on PATH` | `FileNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 274 | `_extract_with_pdftotext` | `binary is None` |
-| `pypdf is not installed` | `ModuleNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 334 | `_extract_with_pypdf` | `pypdf is None` |
-| `record reference must be a non-empty relative path` | `ReadBoundaryError` | `runtime/read_only_kernel/io.py` | 17 | `resolve_read_only_path` | `not isinstance(relative_ref, str) or not relative_ref.strip()` |
-| `replay frame was built under a different cost model than this backtest charges; the carry series would price trades at rates they never faced` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3271 | `backtest_spec_pooled` | `frame.cost != cost` |
-| `risk_constraints must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 300 | `from_dict` | `not isinstance(raw, dict)` |
 | `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3605 | `fuse_specs` | `first.schema_version != second.schema_version` |
 | `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3622 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
-| `strategy pool must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 591 | `load_strategy_pool` | `not isinstance(raw, dict)` |
-| `strategy pool must have an 'active_strategies' list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 594 | `load_strategy_pool` | `not isinstance(entries, list)` |
-| `strategy_rule_hash does not match the spec's rules (tampered or stale)` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 398 | `from_dict` | `provided is not None and provided != '' and (provided != computed)` |
-| `symbol_scope entries must be non-empty strings` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 366 | `from_dict` | `not all((isinstance(s, str) and s for s in symbol_scope_raw))` |
-| `symbol_scope must be a non-empty list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 364 | `from_dict` | `not isinstance(symbol_scope_raw, list) or not symbol_scope_raw` |
 | `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3620 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
 | `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3618 | `fuse_specs` | `first.timeframe != second.timeframe` |
 | `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3632 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
