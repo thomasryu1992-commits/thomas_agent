@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **433** distinct codes across **774** raise sites
+- **434** distinct codes across **775** raise sites
 - **21** exception classes carry them
 - **61** codes are raised from more than one module (see below)
 - **113** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -266,7 +266,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `EMPTY_PATH` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 162 | `resolve_target` | `not isinstance(relative_path, str) or not relative_path.strip()` |
 | `EMPTY_QUERY` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | 96 | `_require_query` | `not isinstance(query, str) or not query.strip()` |
 | `EMPTY_REQUEST` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 240 | `build_entry` | `not text` |
-| `EMPTY_SEED` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 225 | `_require_seed` | `not isinstance(seed, str) or not seed.strip()` |
+| `EMPTY_SEED` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 250 | `_require_seed` | `not isinstance(seed, str) or not seed.strip()` |
 | `EMPTY_SYMBOL` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 725 | `_require_symbol` | `not isinstance(symbol, str) or not symbol.strip()` |
 | `ENTRY_NOT_FOUND` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 372 | `_require_entry` | `entry is None` |
 | `ENTRY_NOT_FOUND` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 453 | `_current_locked` | `latest is None` |
@@ -518,11 +518,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1976 | `_parse_open_interest` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1980 | `_parse_open_interest` | `not isinstance(payload, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2003 | `_parse_open_interest` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 510 | `_parse` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 512 | `_parse` | `not isinstance(rows, list)` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 650 | `trend` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 686 | `competition` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 688 | `competition` | `not isinstance(items, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 546 | `_parse` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 548 | `_parse` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 688 | `trend` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 724 | `competition` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 726 | `competition` | `not isinstance(items, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 299 | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 301 | `_parse` | `not isinstance(results, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 389 | `_parse` | `—` |
@@ -582,8 +582,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 298 | `_signed_get` | `not api_key or not api_secret` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1865 | `liquidation_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1948 | `open_interest_history` | `not api_key` |
-| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 457 | `_headers` | `missing` |
-| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 577 | `_headers` | `missing` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 482 | `_headers` | `missing` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 613 | `_headers` | `missing` |
 | `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 576 | `generate` | `not api_key` |
 | `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 705 | `generate` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/tools.py` | 271 | `search` | `not api_key` |
@@ -760,7 +760,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SECRET_IN_DEFINITION` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 128 | `build_program_definition` | `—` |
 | `SECRET_IN_REQUEST` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 339 | `create_program_request` | `—` |
 | `SECRET_IN_VALIDATED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 633 | `promote_candidate` | `—` |
-| `SEED_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 227 | `_require_seed` | `len(seed) > MAX_SEED_CHARS` |
+| `SEED_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 252 | `_require_seed` | `len(seed) > MAX_SEED_CHARS` |
 | `SETTLEMENT_RACE_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1377 | `settle_position` | `current is None or current.get('position_id') != expected_id` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 624 | `record_shadow_result` | `not (isinstance(comparison_ref, str) and comparison_ref.strip())` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 626 | `record_shadow_result` | `not (isinstance(result, str) and result.strip())` |
@@ -785,15 +785,16 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 241 | `run_validation_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 632 | `run_analysis_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 776 | `collect_market_data` | `—` |
-| `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 299 | `run_keyword_research` | `—` |
+| `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 324 | `run_keyword_research` | `—` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | 121 | `run_search` | `—` |
 | `TOOL_RATE_LIMITED` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 174 | `classify_transport_error` | `isinstance(status, int) and status in _RATE_LIMIT_STATUSES` |
+| `TOOL_REQUEST_REJECTED` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 151 | `_rejected` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 321 | `_signed_get` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 178 | `classify_transport_error` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1287 | `derivative_price_klines` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1383 | `positioning_history` | `—` |
-| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 501 | `keywords` | `—` |
-| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 602 | `_fetch` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 537 | `keywords` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 640 | `_fetch` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 289 | `search` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 379 | `search` | `—` |
 | `TOO_LONG` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 89 | `_require_text` | `len(value) > max_len` |
@@ -842,7 +843,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 121 | `apply_knowledge` | `command not in _COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 105 | `apply_read` | `command not in _READS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 588 | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
-| `WINDOW_TOO_EARLY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 633 | `trend` | `start_date < self.EARLIEST_PERIOD` |
+| `WINDOW_TOO_EARLY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 671 | `trend` | `start_date < self.EARLIEST_PERIOD` |
 | `WORKING_MEMORY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/working_memory.py` | 99 | `prune_expired` | `removed` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |

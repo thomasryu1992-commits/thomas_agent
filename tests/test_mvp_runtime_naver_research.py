@@ -18,8 +18,10 @@ No test opens a socket: urlopen is replaced in the module namespace.
 
 from __future__ import annotations
 
+import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -434,6 +436,90 @@ def test_a_developers_center_credential_is_not_accepted(monkeypatch, gate_open):
         BlogCompetitionTool(authorization=_apihub_auth()).competition("AI 회계", display=10, timeout_seconds=1)
     assert excinfo.value.reason_code == "NO_API_KEY"
     assert "NAVER_APIHUB_KEY_ID" in str(excinfo.value)
+
+
+def test_hint_keywords_are_sent_without_internal_whitespace(monkeypatch, gate_open):
+    """Measured against the live API 2026-08-09: `AI 회계` is HTTP 400 (code 11001), `AI회계`
+    returns rows. Naver stores keywords space-free, so stripping loses nothing."""
+    for name, value in _CREDS.items():
+        monkeypatch.setenv(name, value)
+    sent = _capture_urlopen(monkeypatch, json.dumps({"keywordList": []}))
+
+    SearchAdKeywordTool(authorization=_searchad_auth()).keywords(
+        "소상공인 AI, AI 회계", max_results=5, timeout_seconds=1
+    )
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(sent[0].full_url).query)
+    assert query["hintKeywords"] == ["소상공인AI,AI회계"]
+
+
+def test_blog_search_keeps_the_space(monkeypatch, gate_open):
+    """The counterpart: API HUB's blog search accepts the phrase intact (verified, HTTP 200),
+    so the Search-Ad stripping must not leak into shared plumbing."""
+    for name, value in _APIHUB_CREDS.items():
+        monkeypatch.setenv(name, value)
+    sent = _capture_urlopen(monkeypatch, json.dumps({"total": 1, "items": []}))
+
+    BlogCompetitionTool(authorization=_apihub_auth()).competition(
+        "소상공인 AI", display=3, timeout_seconds=1
+    )
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(sent[0].full_url).query)
+    assert query["query"] == ["소상공인 AI"]
+
+
+def _http_error(code: int, body: str):
+    return urllib.error.HTTPError(
+        "https://api.searchad.naver.com/keywordstool", code, "Bad Request", {}, io.BytesIO(body.encode())
+    )
+
+
+def test_a_4xx_says_the_request_was_rejected_not_that_the_network_failed(monkeypatch, gate_open):
+    """The bug this test exists for: HTTPError subclasses URLError, so a 400 was caught by the
+    transport arm and reported as "failed or timed out" — sending the reader after a network
+    ghost while the status code sat unread."""
+    for name, value in _CREDS.items():
+        monkeypatch.setenv(name, value)
+
+    def _boom(request, timeout=None):
+        raise _http_error(400, '{"code":11001,"message":"hintKeywords 파라미터가 유효하지 않습니다.","status":"BAD_REQUEST"}')
+
+    monkeypatch.setattr(naver_research.urllib.request, "urlopen", _boom)
+    with pytest.raises(ToolError) as excinfo:
+        SearchAdKeywordTool(authorization=_searchad_auth()).keywords("AI 회계", max_results=5, timeout_seconds=1)
+
+    assert excinfo.value.reason_code == "TOOL_REQUEST_REJECTED"
+    message = str(excinfo.value)
+    assert "400" in message and "11001" in message
+    assert SECRET not in message  # the status is surfaced; the key still is not
+
+
+def test_a_5xx_stays_a_transport_failure(monkeypatch, gate_open):
+    """The split is 'retrying will not help' vs 'try again later', not 'any HTTP error'."""
+    for name, value in _CREDS.items():
+        monkeypatch.setenv(name, value)
+
+    def _boom(request, timeout=None):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(naver_research.urllib.request, "urlopen", _boom)
+    with pytest.raises(ToolError) as excinfo:
+        SearchAdKeywordTool(authorization=_searchad_auth()).keywords("AI회계", max_results=5, timeout_seconds=1)
+    assert excinfo.value.reason_code == "TOOL_TRANSPORT"
+
+
+def test_an_unparseable_error_body_still_surfaces_the_status(monkeypatch, gate_open):
+    for name, value in _CREDS.items():
+        monkeypatch.setenv(name, value)
+
+    def _boom(request, timeout=None):
+        raise _http_error(403, "<html>forbidden</html>")
+
+    monkeypatch.setattr(naver_research.urllib.request, "urlopen", _boom)
+    with pytest.raises(ToolError) as excinfo:
+        SearchAdKeywordTool(authorization=_searchad_auth()).keywords("AI회계", max_results=5, timeout_seconds=1)
+    assert excinfo.value.reason_code == "TOOL_REQUEST_REJECTED"
+    assert "403" in str(excinfo.value)
 
 
 def test_a_window_before_the_trend_data_begins_fails_closed(monkeypatch, gate_open):

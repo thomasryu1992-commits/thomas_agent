@@ -126,6 +126,31 @@ _LOW_VOLUME_VALUE = 5  # midpoint of [0, 10) — deliberately not 0, which would
 _COMPETITION_LEVELS = frozenset({"높음", "중간", "낮음"})
 
 
+def _rejected(exc: urllib.error.HTTPError, what: str) -> ToolError:
+    """Turn a 4xx into an error that says what was wrong with the REQUEST.
+
+    Written after a live 400 spent a debugging session looking like a network fault: a bad
+    `hintKeywords` value raised ``TOOL_TRANSPORT`` — "request failed or timed out" — because
+    ``HTTPError`` subclasses ``URLError`` and the transport handler caught it first. The
+    status code was the one fact that would have ended it immediately, and it was the one
+    fact being discarded.
+
+    So 4xx gets its own reason code and carries the status plus the API's own error fields.
+    Everything else (5xx, DNS, TLS, timeout) stays ``TOOL_TRANSPORT``: the split that matters
+    is "retrying will not help" versus "try again later". 429 sits on the wrong side of that
+    line and is accepted — it is rare here, and a rate-limit message reads clearly either way.
+
+    Still no URL, no header, no key: only the status and the provider's own ``code``/``message``,
+    which are diagnostic text Naver generates and never an echo of what was sent.
+    """
+    try:
+        payload = json.loads(exc.read().decode("utf-8"))
+        detail = f"code={payload.get('code')} message={str(payload.get('message'))[:120]}"
+    except Exception:  # noqa: BLE001 — a body we cannot parse must not replace the status
+        detail = "no parseable error body"
+    return ToolError("TOOL_REQUEST_REJECTED", f"{what} rejected with HTTP {exc.code}: {detail}")
+
+
 @dataclass
 class KeywordMetric:
     """One keyword with its measured demand. ``monthly_total`` is the ranking number."""
@@ -477,15 +502,22 @@ class SearchAdKeywordTool:
             provider_id=self.provider_id,
             now=timeutil.utc_now_iso(),
         )
-        # The API takes up to 5 hint keywords, comma-joined.
+        # The API takes up to 5 hint keywords, comma-joined, and **rejects internal
+        # whitespace**: `hintKeywords=AI 회계` is HTTP 400 `code 11001, hintKeywords 파라미터가
+        # 유효하지 않습니다`, while `AI회계` returns 46 rows. Measured against the live API
+        # 2026-08-09, which settled a question the reference does not answer.
         #
-        # OPEN, verify at first real call (Phase 1b): Naver's keyword tool normalises keywords
-        # by removing spaces, and several working integrations strip internal whitespace before
-        # sending. That is not stated in the reference, so this passes the caller's phrase
-        # through trimmed-but-intact rather than guessing. If real calls come back empty for
-        # multi-word seeds, stripping internal spaces here is the first thing to try — the
-        # failure is loud (no rows), not a silently wrong number.
-        hints = ",".join(part.strip() for part in seed.split(",")[:MAX_HINT_KEYWORDS] if part.strip())
+        # Stripping is therefore not a normalisation nicety, it is the difference between a
+        # working call and a 400 — and it costs nothing, because Naver's keyword tool stores
+        # keywords space-free anyway, so `relKeyword` comes back without spaces regardless.
+        #
+        # Search-Ad-specific: API HUB's blog search accepts the same phrase WITH its space
+        # (verified, HTTP 200), so this does not belong in shared plumbing.
+        hints = ",".join(
+            "".join(part.split())
+            for part in seed.split(",")[:MAX_HINT_KEYWORDS]
+            if part.strip()
+        )
         params = urllib.parse.urlencode({"hintKeywords": hints, "showDetail": "1"})
         request = urllib.request.Request(
             f"{self._BASE}{self._PATH}?{params}",
@@ -496,6 +528,10 @@ class SearchAdKeywordTool:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # BEFORE the URLError arm — HTTPError subclasses it, and catching the parent first
+            # is exactly what turned a 400 into "failed or timed out".
+            raise _rejected(exc, "keyword request") from None
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL, the signature, or the key.
             raise ToolError("TOOL_TRANSPORT", "keyword request failed or timed out") from None
@@ -598,6 +634,8 @@ class _ApiHubTool:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raise _rejected(exc, "api hub request") from None
         except (TimeoutError, urllib.error.URLError):
             raise ToolError("TOOL_TRANSPORT", "naver api hub request failed or timed out") from None
         return raw, int((time.monotonic() - started) * 1000)
