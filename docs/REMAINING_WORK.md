@@ -4000,9 +4000,46 @@ rather than by anything in this lane; that mechanism is unchanged and described 
 **S2 splits into a part that is buildable and a part that is a clock, and the split matters
 more than the label.** §8b is the authority; the measured state as of 2026-08-08:
 
-**(a) cost re-derivation — measured on 2026-08-08/09, and what is left is one published table.**
-Funding and the order book were measured off the venue, and so was the deployer's fee
-configuration. **(a) is still open**, but on a narrower item than this file claimed a day ago.
+**(a) cost re-derivation — DONE 2026-08-09.** All three legs are measured: funding and the order
+book off the venue, the deployer configuration off `perpDexs`, and the base fee table from
+Hyperliquid's published schedule. What (a) produced is not a pass mark — see the floor check
+below.
+
+**Fees, and the multiplier that decides them.** Published Tier 0 is **taker `0.045%` / maker
+`0.015%`** (4.5 / 1.5 bp). The HIP-3 scaling is in the docs' own formula:
+
+```
+scaleIfHip3 = deployerFeeScale < 1 ? deployerFeeScale + 1 : deployerFeeScale * 2
+```
+
+`xyz` runs `deployerFeeScale = 1.0`, so the scale is **exactly 2** and the effective rates a
+trader pays are **taker 9.0 bp / maker 3.0 bp**. Costing this venue at the base table halves it.
+
+**The tight spread does not make this venue cheap — the multiplier dominates it:**
+
+| | TP exit (maker) | stop exit (taker both legs) |
+|---|---|---|
+| HIP-3 effective | **12.1 – 12.5 bp** | **18.3 – 18.9 bp** |
+| Binance model today | 10.0 bp | 16.0 bp |
+
+**Floor check against `MAX_ENTRY_COST_R = 0.25`**, with R = `stop_atr` 1.45 × the archive's
+measured median ATR (1h 47 bp / 4h 128 bp / 1d 463 bp):
+
+| `max_holding_bars` | 1h | 4h | 1d |
+|---|---|---|---|
+| 12 | 0.193 – 0.205 | 0.088 – 0.099 | 0.056 – 0.072 |
+| **24 (base)** | **0.209 – 0.227** | 0.111 – 0.132 | 0.093 – 0.126 |
+| 48 (the space's ceiling) | **0.240 – 0.271 ⚠︎** | 0.156 – 0.196 | 0.168 – 0.233 |
+
+**The floor check passes** — §8b stops the lane only if *every* timeframe fails it, and 4h and
+1d clear it with room even at the ceiling. **But 1h has no margin and breaches under two
+conditions that are both real:** `max_holding_bars = 48`, which `_EXIT_PARAMS` actually permits
+and the search can select; and `assetToFundingMultiplier` going 0.5 → 1.0, which doubles carry
+and breaches at the *base* holding period (0.271) — a setting of exactly the kind the deployer
+changed on 2026-08-06.
+
+So (a)'s output is a constraint rather than a verdict: **on this venue 1h cannot use the top of
+its own parameter space, and what pins that is deployer configuration, not the strategy.**
 
 | | Binance USD-M (the model today) | Hyperliquid HIP-3 (measured) |
 |---|---|---|
