@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime import safety_gate  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, SafetyGateBlocked  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
@@ -61,8 +62,6 @@ EVIDENCE_DIR_REL = f"{GOV_STATE_REL}/safety_flag_evidence"
 MAX_TTL_MINUTES = 30 * 24 * 60
 
 
-def _fmt(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -105,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     now = datetime.now(timezone.utc)
-    activated_at = _fmt(now)
-    expires_at = _fmt(now + timedelta(minutes=args.ttl_minutes))
+    activated_at = timeutil.format_iso(now)
+    expires_at = timeutil.format_iso(now + timedelta(minutes=args.ttl_minutes))
 
     # 1) Record the operator-decision evidence the activation references (a real file the
     #    gate verifies exists). Filename is content-derived so re-runs are stable per reason.

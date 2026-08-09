@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.read_only_kernel import integrity  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
@@ -50,9 +51,6 @@ from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 IMPORT_EVENT_TYPE = "crypto_import_event.v0"
 PROVENANCE = "crypto_ai_system_import"
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 OUTCOME_REGISTRY_REL = "storage/registries/outcome_feedback_registry.jsonl"
 COUNTERFACTUAL_REGISTRY_REL = "storage/registries/counterfactual_outcome_registry.jsonl"
@@ -212,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.activate_pool and not args.confirm:
-        print("BLOCKED: --activate-pool requires --confirm")
+        print("USAGE: --activate-pool requires --confirm")
         return EXIT_USAGE
 
     # Only the confirmed run writes; the default is a dry-run report, which must stay runnable
