@@ -44,6 +44,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE
 from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.errors import ToolBlocked
 from runtime.mvp_runtime.paths import repo_root as _repo_root
@@ -63,9 +64,6 @@ from runtime.mvp_runtime.crypto.factory import (
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.read_only_kernel import integrity
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 RESCORE_PROVENANCE = "mvp_rescore"
 RESCORE_REASON = (

@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  # noqa: E402
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
@@ -58,9 +59,6 @@ from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 
 def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
@@ -610,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not args.strategy_ids:
-        print("BLOCKED: --candidate-ids is required (or use --list)")
+        print("USAGE: --candidate-ids is required (or use --list)")
         return EXIT_USAGE
     selectors = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
 
@@ -643,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not (args.promoted_by and args.reason):
-        print("BLOCKED: --promoted-by and --reason are required to execute a promotion")
+        print("USAGE: --promoted-by and --reason are required to execute a promotion")
         return EXIT_USAGE
     if not args.confirm:
         print("BLOCKED: promotion requires --confirm (a good backtest is never auto-promotion)")
