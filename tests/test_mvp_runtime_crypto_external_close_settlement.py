@@ -234,7 +234,13 @@ def test_a_filled_bracket_leg_still_wins_and_never_reads_the_history():
     assert result["status"] == live_leg.EXIT_CLOSED
     assert feed.calls == 0, "the history was read despite a filled leg"
     assert ledger.outcomes[0]["close_reason"] == live_leg.CLOSE_REASON_STOP
-    assert "exit_source" not in result
+    # Was `"exit_source" not in result`, back when the field was stamped only on the fallback.
+    # Absence said "a leg priced this" by implication; now every path names itself, so the
+    # positive assertion says the same thing and absence is reserved for one meaning — a row
+    # written before the field existed. `feed.calls == 0` above is what actually pins "the
+    # history was not read"; this pins what the row will tell a later reader.
+    assert result["exit_source"] == live_leg.EXIT_SOURCE_BRACKET_LEG
+    assert ledger.outcomes[0]["exit_source"] == live_leg.EXIT_SOURCE_BRACKET_LEG
 
 
 def test_a_filled_leg_that_will_not_price_keeps_the_strategys_close_reason():
@@ -268,3 +274,45 @@ def test_a_filled_leg_that_will_not_price_keeps_the_strategys_close_reason():
     assert result["exit_source"] == live_leg.EXIT_SOURCE_FILL_HISTORY
     # The history supplied the PRICE; the leg still supplies the REASON.
     assert ledger.outcomes[0]["close_reason"] == live_leg.CLOSE_REASON_STOP
+
+
+def test_the_outcome_row_carries_where_its_price_came_from():
+    """`live_outcomes.jsonl` is what the breakers and every R-denominated limit read, and a
+    consumer holding only that row could otherwise infer provenance from `close_reason`.
+
+    That inference is wrong in both directions: a `venue_external_close` could in principle be
+    priced by a leg, and a `stop_loss` priced from the fill history is exactly what this module
+    now produces (the test above). So the row says it outright.
+    """
+    ledger, store = _Ledger(), _Store()
+    live_leg.settle_venue_closed_position(
+        _position(), adapter=_Adapter(), position_store=store, ledger=ledger,
+        legs=_legs_unfilled(), account_feed=_Feed([_fill(quote=65.0)]),
+        now="2026-08-08T10:00:00Z",
+    )
+    outcome = ledger.outcomes[0]
+    assert outcome["exit_source"] == live_leg.EXIT_SOURCE_FILL_HISTORY
+    assert outcome["close_reason"] == live_leg.CLOSE_REASON_VENUE_EXTERNAL
+    # Two questions, two fields: where the PRICE came from, and why the position closed.
+    # Neither implies the other, which is the whole reason both are recorded.
+    assert outcome["exit_source"] != outcome["close_reason"]
+
+
+def test_a_price_that_never_resolved_names_no_source():
+    """Nothing priced the exit, so naming a source would assert a provenance for a number that
+    does not exist. The row is not written at all; the result carries no `exit_source`."""
+    ledger, store = _Ledger(), _Store()
+    result = live_leg.settle_venue_closed_position(
+        _position(), adapter=_Adapter(), position_store=store, ledger=ledger,
+        legs=_legs_unfilled(), account_feed=None, now="2026-08-08T10:00:00Z",
+    )
+    assert result["status"] == live_leg.EXIT_UNSETTLEABLE
+    assert "exit_source" not in result
+    assert ledger.outcomes == []
+
+
+def test_every_source_is_a_distinct_name():
+    """Three paths, three names. Collapsing any two would make the field unable to answer the
+    question it exists for."""
+    assert len({live_leg.EXIT_SOURCE_RUNTIME_CLOSE, live_leg.EXIT_SOURCE_BRACKET_LEG,
+                live_leg.EXIT_SOURCE_FILL_HISTORY}) == 3

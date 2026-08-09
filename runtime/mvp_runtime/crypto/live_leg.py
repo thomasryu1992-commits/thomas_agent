@@ -123,10 +123,19 @@ VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 FILL_HISTORY_UNAVAILABLE = "LIVE_FILL_HISTORY_UNAVAILABLE"
 FILL_HISTORY_INCONCLUSIVE = "LIVE_FILL_HISTORY_INCONCLUSIVE"
 
-# Stamped on the result when the exit was priced from the account's fill list rather than from
-# a bracket leg. Present so the provenance of a settled outcome is legible without re-deriving
-# it from `close_reason`: these are the records whose exit this runtime did not perform.
-EXIT_SOURCE_FILL_HISTORY = "fill_history"
+# Where an exit PRICE came from. On the settle result AND on the outcome record it produced —
+# the second is the one that matters, because `live_outcomes.jsonl` is what the breakers and
+# every R-denominated limit read, and a consumer holding only that row could otherwise infer
+# the provenance solely from `close_reason`. That inference is wrong in both directions: a
+# `venue_external_close` could in principle be priced by a leg, and a `stop_loss` priced from
+# the fill history is exactly what this module now produces.
+#
+# All three paths name themselves, so ABSENT on a row means one thing — written before this
+# field existed. That is the `lifecycle_*` provenance rule: absent is "an older runtime wrote
+# this", a different answer from any value, never folded into the commonest one.
+EXIT_SOURCE_RUNTIME_CLOSE = "runtime_close"    # this runtime sent the closing order
+EXIT_SOURCE_BRACKET_LEG = "bracket_leg"        # a resting bracket leg triggered and filled
+EXIT_SOURCE_FILL_HISTORY = "fill_history"      # rebuilt from the account's own fill list
 
 # A conditional order rests at the venue until its trigger price is reached. Only that resting
 # state counts as "the bracket is in place": anything else (a rejection, an instant trigger, an
@@ -909,6 +918,7 @@ def _record_naked_outcome(
         # from it, and a None collides across two naked closes on one symbol in one cycle.
         position_id=identity.get("position_id"),
         close_reason=CLOSE_REASON_NAKED,
+        exit_source=EXIT_SOURCE_RUNTIME_CLOSE,
         opened_at_utc=now,
         risk_usdt=identity.get("risk_usdt"),
         candidate_id=identity.get("candidate_id"),
@@ -1070,6 +1080,7 @@ def execute_live_exit(
         strategy_id=position.get("strategy_id"),
         position_id=position.get("position_id"),
         close_reason=close_reason,
+        exit_source=EXIT_SOURCE_RUNTIME_CLOSE,
         opened_at_utc=position.get("opened_at_utc"),
         # LP5.4's bridge: without the recorded risk there is no honest R, and the bridge
         # excludes an R-less row rather than letting it read as a breakeven.
@@ -1346,6 +1357,7 @@ def settle_venue_closed_position(
     exit_order_id = filled.get("exchange_order_id") if filled is not None else None
     close_reason = str(filled["close_reason"]) if filled is not None else CLOSE_REASON_VENUE_EXTERNAL
     exit_fill = filled["fill"] if filled is not None else None
+    exit_source = EXIT_SOURCE_BRACKET_LEG
 
     pnl, pnl_detail = realized_pnl_usdt(position, exit_fill) if exit_fill else (None, {})
     if pnl is None:
@@ -1385,7 +1397,7 @@ def settle_venue_closed_position(
                     # "did a leg say it filled", never "did the bracket answer".
                     if filled is None:
                         close_reason = CLOSE_REASON_VENUE_EXTERNAL
-                    result["exit_source"] = EXIT_SOURCE_FILL_HISTORY
+                    exit_source = EXIT_SOURCE_FILL_HISTORY
 
     result["pnl_detail"] = pnl_detail
     result["exit"] = filled if filled is not None else (
@@ -1395,7 +1407,10 @@ def settle_venue_closed_position(
         if exit_fill is not None:
             result["reason_codes"].append(FILL_FACTS_MISSING)
         result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
+        # Deliberately no `exit_source` on this return: nothing priced the exit, so naming a
+        # source would assert a provenance for a number that does not exist.
         return result
+    result["exit_source"] = exit_source
     # Rule 3 again: the leg that did NOT trigger is still resting against a position that no
     # longer exists. `cancel_bracket_legs` treats an already-gone order as a success, so the
     # triggered leg costs nothing here.
@@ -1415,6 +1430,7 @@ def settle_venue_closed_position(
         strategy_id=position.get("strategy_id"),
         position_id=position.get("position_id"),
         close_reason=close_reason,
+        exit_source=exit_source,
         opened_at_utc=position.get("opened_at_utc"),
         risk_usdt=_f(position.get("risk")),
         candidate_id=position.get("candidate_id"),
@@ -1495,7 +1511,9 @@ __all__ = [
     "place_bracket_leg",
     "read_bracket_legs",
     "CLOSE_REASON_VENUE_EXTERNAL",
+    "EXIT_SOURCE_BRACKET_LEG",
     "EXIT_SOURCE_FILL_HISTORY",
+    "EXIT_SOURCE_RUNTIME_CLOSE",
     "FILL_HISTORY_INCONCLUSIVE",
     "FILL_HISTORY_UNAVAILABLE",
     "realized_pnl_usdt",
