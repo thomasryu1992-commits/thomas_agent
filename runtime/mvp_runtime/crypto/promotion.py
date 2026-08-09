@@ -17,7 +17,7 @@ grant. Widening R10 consumption to this scope stays a separate explicit decision
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -31,19 +31,48 @@ from ..permission import build_strategy_promotion_permission_decision
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
-PROMOTION_HASH_VERSION = "strategy_promotion.v2"
+PROMOTION_HASH_VERSION = "strategy_promotion.v3"
 
 
-def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], keep_active: bool) -> str:
+def promotion_content_sha256(
+    candidate_ids: list[str], rule_hashes: list[str], keep_active: bool,
+    reactivated_candidate_ids: Sequence[str] = (),
+) -> str:
     """The material identity of one promotion: which candidate lineages, which exact
-    rules, add or replace. Any change mints a different hash — and therefore a
-    different approval (``invalidated_by_any_material_field_change``). v2: keyed by
-    globally unique ``candidate_id``, never the per-generation ``strategy_id``."""
+    rules, add or replace, and **who comes back from a terminal status**. Any change mints a
+    different hash — and therefore a different approval
+    (``invalidated_by_any_material_field_change``). v2: keyed by globally unique
+    ``candidate_id``, never the per-generation ``strategy_id``.
+
+    **v3 adds the reactivation set, and the reason is that the signature was honest about a
+    smaller effect than the one it authorized.** Replace mode rebuilds every entry with a
+    hardcoded ``PAPER_ACTIVE``, so re-listing the incumbents to drop one returns everything
+    the lifecycle had terminated — `BUILD_HISTORY` records it simulated against a copy of the
+    real pool on 2026-07-29: 16 reactivated, 57 lifecycle counters reset. Until now the hash
+    was a function of ids, rules and mode alone, so what Thomas signed could say "install
+    these lineages" and could not say "and un-suspend sixteen of them". The door was made to
+    refuse it (`pool.assert_no_silent_reactivation`), which makes the act deliberate; only
+    this makes the approval NAME it.
+
+    Empty is the ordinary answer and costs nothing: in add mode it is empty by construction,
+    and in replace mode it is empty unless a promoted lineage is currently terminal. So the
+    hash is exactly as stable as v2 for every promotion that reactivates nothing — which,
+    measured over this machine's history, is all of them.
+
+    The set is a fact about the LIVE POOL, not about the selectors, so a lifecycle transition
+    between the ask and the execution changes it and invalidates the approval. That is the
+    intended behaviour rather than a cost: the effect being authorized really did change.
+    Measured 2026-08-09 before making the change — 0 status transitions across 15,157 cycle
+    records over 19 days (the lifecycle is evaluated every cycle and finds nothing to change;
+    `#615` is why), against an ask-to-approve window whose median is 1.9 minutes over the 8
+    promotion approvals that carry both stamps. The window is shorter than one pool cycle.
+    """
     return integrity.sha256_value({
         "hash_version": PROMOTION_HASH_VERSION,
         "candidate_ids": sorted(candidate_ids),
         "rule_hashes": sorted(rule_hashes),
         "keep_active": bool(keep_active),
+        "reactivated_candidate_ids": sorted(reactivated_candidate_ids),
     })
 
 
@@ -151,7 +180,13 @@ def request_promotion(
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
-    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
+    # Read here rather than passed in: the set is a fact about the pool as it stands, which is
+    # exactly what the approval must bind. `store_root` is the candidates root, so the pool
+    # comes from `root` — the same place the install door will read it from.
+    reactivated = pool_store.reactivated_candidate_ids(
+        candidate_ids, keep_active=keep_active, root=root,
+    )
+    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active, reactivated)
 
     display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
     task = build_task(
@@ -224,14 +259,21 @@ def verify_promotion_approval(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a promotion"
         )
     candidates = _resolve_identity(selectors, root)
+    candidate_ids = [c["candidate_id"] for c in candidates]
+    # Recomputed from the pool as it stands NOW, deliberately not read back off the snapshot:
+    # a set carried over from the ask would let the reactivation change between the two and
+    # still verify, which is the whole gap this field closes. A lifecycle transition in
+    # between is therefore a refusal, and the right one — the effect being authorized changed.
     expected = promotion_content_sha256(
-        [c["candidate_id"] for c in candidates],
+        candidate_ids,
         [c["strategy_rule_hash"] for c in candidates],
         keep_active,
+        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
     )
     if snapshot.get("content_sha256") != expected:
         raise ApprovalBlocked(
             "APPROVAL_CONTENT_MISMATCH",
-            "the approval binds a different promotion (ids, rules, or add/replace mode changed)",
+            "the approval binds a different promotion (ids, rules, add/replace mode, or which "
+            "terminal members it returns to trading changed)",
         )
     return dict(approval)

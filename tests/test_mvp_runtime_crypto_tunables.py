@@ -45,6 +45,13 @@ SWEPT_MODULES = tuple(sorted(
 _DECISION_SHAPED = re.compile(
     r"MAX_|MIN_|_THRESHOLD|_FLOOR|_CAP\b|_BPS|_FEE|_ATR|_RATIO|_FRACTION|_PCT|_DAYS|_R$"
     r"|CONFIDENCE|ALPHA|_TRADES|CRITICAL|HEALTHY"
+    # Added 2026-08-09 after profiling the scheduler. `candle_archive` is 64% of everything the
+    # scheduler does, and all three constants that govern it — the venue ceiling, the measured
+    # rate-limit pace, the per-pass cap that keeps it off the tick position protection runs on —
+    # were invisible to the pattern above. So was `live_budget.HARD_CEILING_USDT`, the number
+    # that bounds what a registered budget may declare on the live money path. A pattern that
+    # misses a ceiling and a pace misses the two shapes an operator most often reaches for.
+    r"|_CEILING|_INTERVAL_SECONDS|_PER_PASS|_PAGE_LIMIT"
 )
 # ...and the ones that only look like it. Every entry needs a reason, so this cannot quietly
 # become the place difficult constants go to avoid being explained.
@@ -97,6 +104,14 @@ MECHANICS: dict[str, str] = {
     # observational by construction, and a suggestion is evidence for a human.
     "MAX_OPEN_COUNTERFACTUALS": "bounds the shadow book so a stuck gate cannot grow it forever",
     "MAX_SUGGESTIONS_PER_RUN": "output cap on a review aid; nothing acts on a suggestion",
+
+    # --- added with the pacing/ceiling shapes, 2026-08-09 --------------------------------------
+    # Page budgets, exactly like the three above them: how many rows one request asks for,
+    # bounded by what the endpoint returns rather than chosen against anything traded.
+    "INCOME_PAGE_LIMIT": "page budget bounding one income query",
+    "POSITIONING_PAGE_LIMIT": "page budget bounding one positioning read",
+    "DERIVATIVE_PAGE_LIMIT": "page budget bounding one derivative read",
+    "FUNDING_PAGE_LIMIT": "page budget bounding one funding read",
 }
 
 
