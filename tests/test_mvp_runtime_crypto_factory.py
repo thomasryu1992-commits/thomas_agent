@@ -1159,6 +1159,87 @@ def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_po
     assert len(r) == len(n) < factory.PRIOR_WINDOWS
 
 
+# --- pooled minting (F9 shape B: 4h and 1d, 1h left single-symbol) --------------
+
+def _pooled_run(snapshot, cohort, **kwargs):
+    return run_factory(snapshot, active_pool={"active_strategies": []},
+                       existing_candidates=[], now=NOW, cohort_snapshots=cohort, **kwargs)
+
+
+def test_no_cohort_is_exactly_todays_behaviour():
+    """The default has to be unchanged down to the seed, or every stored row's lineage moves."""
+    snapshot = _trending_snapshot()
+    plain = run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW)
+    empty = _pooled_run(snapshot, None)
+    assert plain["seed"] == empty["seed"]
+    assert plain["pooled"] is False and empty["pooled"] is False
+    assert [c["strategy_rule_hash"] for c in plain["candidates"]] == \
+           [c["strategy_rule_hash"] for c in empty["candidates"]]
+
+
+def test_a_cohort_mints_one_hypothesis_over_every_leg():
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is True
+    assert result["pooled_symbols"] == ["BTCUSDT", "ETHUSDT"]
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
+        # `symbols` is what `_holdout_evidence` counted, so it proves the legs were replayed
+        # rather than merely named on the spec.
+        assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
+
+
+def test_the_policy_fences_a_timeframe_it_does_not_pool():
+    """1h is 12/12 judgeable single-symbol (F2); pooling it would spend the directional lever
+    for nothing. A caller handing over a cohort anyway gets the single-symbol fire."""
+    snapshot = {**_trending_snapshot(), "timeframe": "1h"}
+    result = _pooled_run(snapshot, [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is False
+    assert all(c["strategy_spec"]["symbol_scope"] == ["BTCUSDT"] for c in result["candidates"])
+
+
+def test_two_cohorts_sharing_a_first_leg_do_not_draw_the_same_batch():
+    """The seed reads every leg. Sharing the primary used to be enough to reproduce a batch,
+    which made "same seed, same batch" mean something narrower than it says."""
+    primary = _trending_snapshot()
+    a = _pooled_run(primary, [_shifted_snapshot(symbol="ETHUSDT", scale=2.0)])
+    b = _pooled_run(primary, [_shifted_snapshot(symbol="SOLUSDT", scale=3.0)])
+    assert a["seed"] != b["seed"]
+
+
+def test_a_pooled_fire_does_not_fuse():
+    """`_fuse_batch` re-scores parents through the one-frame `backtest_spec`; a fused child of a
+    pooled fire would be scored on one leg while claiming the cohort."""
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
+                         fusion_pairs=4)
+    assert all((c.get("derivation_type") or "seeded_template") == "seeded_template"
+               for c in result["candidates"])
+
+
+def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
+    """Fail closed on ANY leg: a pooled figure whose fourth symbol supplied none of the columns
+    the rule names is a four-leg pool reporting five."""
+    bare = _shifted_snapshot(symbol="ETHUSDT")
+    bare["candles"] = [{k: v for k, v in c.items() if k != "taker_buy_base"}
+                       for c in bare["candles"]]
+    result = _pooled_run(_trending_snapshot(), [bare])
+    starved = [r for r in result["rejected"] if r.get("reason") == factory.UNSUPPLIABLE_FEATURE]
+    assert starved or result["candidates"], "the fire produced neither candidates nor a reason"
+
+
+def test_a_pooled_context_does_not_inherit_a_single_symbol_centre():
+    """Membership when mining one symbol, exact equality when mining a cohort. A single-symbol
+    elite is a centre fitted on one symbol, and F2 measured transferring one as strictly harder
+    than searching the cohort from the start."""
+    single = {"strategy_spec": {"symbol_scope": ["BTCUSDT"], "timeframe": "4h"}}
+    assert factory._matches_context(single["strategy_spec"], symbol="BTCUSDT", timeframe="4h")
+    assert not factory._matches_context(
+        single["strategy_spec"], symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+    cohort = {"symbol_scope": ["BTCUSDT", "ETHUSDT"], "timeframe": "4h"}
+    assert factory._matches_context(
+        cohort, symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+
+
 # --- run_factory --------------------------------------------------------------
 
 def test_run_factory_produces_evidence_backed_candidates():
