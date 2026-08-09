@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blog_content_package.v0.1.schema.json",
+  "title": "Blog Content Package v0.1",
+  "description": "One draft blog post, ready for a human to publish. The lane's terminal artifact: the runtime never publishes, so this record is where automation stops and the operator takes over. It carries the draft AND the evidence the topic was chosen on, because a package whose numbers cannot be traced is indistinguishable from a guess. `published_url` is written back by the operator after publishing — without it the lane cannot track ranking and the feedback loop is open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "created_at_utc",
+    "target_keyword",
+    "keyword_evidence",
+    "title_candidates",
+    "body_paste",
+    "body_blocks",
+    "tags",
+    "image_shots",
+    "fact_checks",
+    "publish_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "blog_content_package.v0.1"
+    },
+    "package_id": {
+      "type": "string",
+      "pattern": "^bcp_[0-9a-f]{20}$"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "target_keyword": {
+      "description": "The one keyword this post is written to rank for. Exactly one, deliberately: a draft targeting three keywords ranks for none, and the ranking tracker needs a single subject.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "keyword_evidence": {
+      "description": "Why this keyword. Required even when empty-because-degraded, so a package built without live research says so rather than looking researched.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["as_of", "degraded", "metrics"],
+      "properties": {
+        "as_of": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "degraded": {
+          "description": "True when the research backend failed and this package carries no measured demand. A consumer must not present a degraded package as evidence-backed.",
+          "type": "boolean"
+        },
+        "degraded_reason_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "metrics": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["keyword", "monthly_pc", "monthly_mobile", "monthly_total", "competition", "low_volume", "source"],
+            "properties": {
+              "keyword": {"type": "string", "minLength": 1, "maxLength": 200},
+              "monthly_pc": {"type": "integer", "minimum": 0},
+              "monthly_mobile": {"type": "integer", "minimum": 0},
+              "monthly_total": {"type": "integer", "minimum": 0},
+              "competition": {"enum": ["높음", "중간", "낮음", "unknown"]},
+              "low_volume": {
+                "description": "The source returned the '< 10' sentinel rather than a number, so these counts are an estimate.",
+                "type": "boolean"
+              },
+              "source": {"type": "string", "minLength": 1, "maxLength": 80}
+            }
+          }
+        },
+        "total_competing_posts": {
+          "description": "Naver's own count of blog documents already matching the target keyword.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "trend_points": {
+          "description": "Relative search interest, normalised to the peak of the requested window. Comparable within this array only — never across packages.",
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["period", "ratio"],
+            "properties": {
+              "period": {"type": "string", "minLength": 1, "maxLength": 20},
+              "ratio": {"type": "number", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "title_candidates": {
+      "description": "Alternatives for the operator to choose from, not a ranking. Each should carry the target keyword near the front.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {"type": "string", "minLength": 1, "maxLength": 100}
+    },
+    "body_paste": {
+      "description": "The body exactly as it should be pasted into the Naver SmartEditor: plain text, paragraphs separated by newlines, NO markdown. SmartEditor has no HTML mode and does not interpret markdown, so '##' and '**' would land in the published post as literal characters. All formatting intent lives in `body_blocks` instead.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "body_blocks": {
+      "description": "What to do to the pasted text in the editor, addressed by paragraph index. The split between this and `body_paste` is the whole point of the two-file output.",
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paragraph_index", "action"],
+        "properties": {
+          "paragraph_index": {"type": "integer", "minimum": 0},
+          "action": {"enum": ["heading", "quote", "divider", "bold", "image"]},
+          "note": {"type": "string", "maxLength": 500}
+        }
+      }
+    },
+    "tags": {
+      "description": "Naver caps a post at 30 tags.",
+      "type": "array",
+      "maxItems": 30,
+      "items": {"type": "string", "minLength": 1, "maxLength": 50}
+    },
+    "image_shots": {
+      "description": "Screens for the operator to capture — not generated images. Posts about using an AI tool need the tool's actual screen; a generated illustration reduces trust and, repeated across posts, becomes a tell.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["after_paragraph", "what_to_capture"],
+        "properties": {
+          "after_paragraph": {"type": "integer", "minimum": 0},
+          "what_to_capture": {"type": "string", "minLength": 1, "maxLength": 500},
+          "tool_name": {"type": "string", "maxLength": 100}
+        }
+      }
+    },
+    "fact_checks": {
+      "description": "Statements the operator must verify before publishing — prices, free-tier limits, feature availability. These change without notice, and a wrong one in a small-business how-to costs the reader money.",
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "why"],
+        "properties": {
+          "claim": {"type": "string", "minLength": 1, "maxLength": 500},
+          "why": {"type": "string", "minLength": 1, "maxLength": 300}
+        }
+      }
+    },
+    "publish_state": {
+      "description": "`draft` until the operator publishes and returns the URL. The runtime never sets this to `published` on its own — it has no way to observe a publish it did not perform.",
+      "enum": ["draft", "published"]
+    },
+    "published_url": {
+      "type": "string",
+      "pattern": "^https://blog\\.naver\\.com/.+",
+      "maxLength": 500
+    },
+    "published_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  },
+  "if": {
+    "properties": {"publish_state": {"const": "published"}},
+    "required": ["publish_state"]
+  },
+  "then": {
+    "description": "A package cannot claim to be published without the URL — that URL is the only input the ranking tracker has, and a `published` state without one silently ends the feedback loop.",
+    "required": ["published_url"]
+  }
+}

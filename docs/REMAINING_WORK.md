@@ -3141,10 +3141,11 @@ version of this test.
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
-## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**
+## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**, G5 profiled
 
 > G1 sliced twice, G2 removed, G3 indexed and twice corrected, G4a/b/c done. What is left is the
-> three rejections and a three-site residue, both stated exactly at the end of this section. Read
+> three rejections and a three-site residue, both stated exactly at the end of this section, plus
+> G5 (the scheduler profile). Read
 > "The refactoring backlog is exhausted" before starting anything here.
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
@@ -3768,6 +3769,55 @@ not moved by a line in a week while the runtime around it grew by 7,700. The des
 matched the shape for some time and now matches it less. Still an observation about the doc, not
 a proposal to restructure the code — but the direction is worth watching, because the gap widens
 on its own.
+
+### G5. The scheduler was profiled, and its hot path must not be optimised — measured 2026-08-09
+
+Read off the production record rather than a benchmark: `scheduler_events.jsonl` carries
+`duration_ms` on every `fired` event. ~2,490 completed fires over 2026-08-01 → 08-09, read at
+08-09T08:1x. **The ledger is live, so re-running this moves the counts** — the shares and the p50s
+are what matter and they are stable.
+
+**Current window (from 08-05, after the PM lane's removal stopped `pm_scan`):**
+
+| kind | fires | p50 | p95 | per day | share |
+|---|---:|---:|---:|---:|---:|
+| `candle_archive` | 103 | **125.1s** | 129.1s | **~49 min** | **~64%** |
+| `crypto_pipeline` | 416 | 14.9s | 22.3s | ~21 min | ~28% |
+| `crypto_factory` | 50 | 12.6s | 47.4s | ~3 min | ~4% |
+| `crypto_null_control` | 45 | 7.3s | 49.2s | ~3 min | ~3% |
+| everything else | ~400 | ≤3.1s | — | <1 min | <1% |
+
+The scheduler works about **76 minutes a day**, and one job is two thirds of it.
+
+Re-measure with the walk in this section's commit message, or just:
+`jq -s 'map(select(.action=="fired" and .duration_ms))' scheduler_events.jsonl` — except jq is not
+on this host, so use Python. **`pm_scan` at 40% of the whole 8-day record is not a finding**: that
+lane was removed 2026-08-02 and its last fire is 08-02T15:35Z. Windowing matters here.
+
+**Do not optimise it.** `ARCHIVE_BOOKS_PER_PASS` (100) × `ARCHIVE_REQUEST_INTERVAL_SECONDS`
+(1.1) = **110 of those 125 seconds are deliberate sleeping**, and both numbers are load-bearing:
+
+* The pace is **the venue's own wall, measured**. On the first real pass (2026-08-04) the loop
+  issued 352 reads as fast as it could; roughly 70 answered and **282 came back
+  `TOOL_RATE_LIMITED`**. Going faster does not archive more, it archives less.
+* The per-pass cap exists to **protect the live position path**. `run_due` runs due schedules
+  sequentially, so a full 352-book pass would hold the tick — the same tick the live leg's
+  `_settle_or_protect` runs on — for ~6.5 minutes. The cap trades archive latency (hours,
+  against a window that rolls at 52 days) for tick latency (minutes, against an open position).
+
+Both trades are already argued in the code beside each constant. This section records only that
+someone went looking for the runtime's biggest cost, found it, and confirmed the cost is the
+point. Same disposition as §G's audit-chain tip scan: **investigated, not a problem, do not fix.**
+
+**What the profiling did find is a governance gap, and it is the reason this subsection exists.**
+None of the three constants governing 64% of the scheduler's work appeared in the tunables index,
+because the coverage test's name pattern had no `_CEILING`, `_INTERVAL_SECONDS` or `_PER_PASS`.
+Neither did **`live_budget.HARD_CEILING_USDT`** — the number bounding what a registered budget may
+declare on the live money path, which Thomas set to 200 at bring-up and raised to 500 on
+2026-08-08. A pattern that misses a ceiling and a pace misses the two shapes an operator most
+often reaches for. Pattern extended, four constants indexed (67 → **71**), four page budgets named
+in `MECHANICS`. **`HARD_CEILING_USDT` is the find worth naming**: the tunables index exists so a
+number that decides money carries its provenance, and the one bounding live order size did not.
 
 ### The refactoring backlog is exhausted — closed 2026-08-09
 
