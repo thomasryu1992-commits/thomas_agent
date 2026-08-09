@@ -3855,10 +3855,9 @@ rather than by anything in this lane; that mechanism is unchanged and described 
 **S2 splits into a part that is buildable and a part that is a clock, and the split matters
 more than the label.** §8b is the authority; the measured state as of 2026-08-08:
 
-**(a) cost re-derivation — two of three legs now measured, one cannot be.** Funding and the
-order book were measured off the venue; the HIP-3 deployer fee share cannot be derived from
-code or a public endpoint and needs a published schedule. **(a) is therefore still open**, and
-"two legs measured" is not "done".
+**(a) cost re-derivation — measured on 2026-08-08/09, and what is left is one published table.**
+Funding and the order book were measured off the venue, and so was the deployer's fee
+configuration. **(a) is still open**, but on a narrower item than this file claimed a day ago.
 
 | | Binance USD-M (the model today) | Hyperliquid HIP-3 (measured) |
 |---|---|---|
@@ -3874,6 +3873,23 @@ by settlement count overstates it fivefold; the daily carry is what binds. Const
 deliberately NOT changed — `cost.py` is Binance-scoped, the budget schema blocks any equity
 order, so there is no consumer, and editing them now would only disturb the basis crypto
 evidence was scored under.
+
+> **Two corrections to the paragraph above, both made 2026-08-09, and the second matters more.**
+>
+> **The deployer fee share is NOT unobtainable.** This file said it "cannot be derived from code
+> or a public endpoint". `perpDexs` — which `live_symbols` already calls — carries the whole
+> configuration: `deployerFeeScale` (1.0), `feeRecipient`, `deployer`,
+> `assetToFundingMultiplier`, `assetToFundingInterestRate`. The claim was made without looking
+> at the response's keys; looking cost one call. What genuinely remains outside is only the base
+> schedule that `deployerFeeScale` multiplies, which needs Hyperliquid's published fee table.
+>
+> **The 1.8x is a setting, not a property of the venue.** `assetToFundingMultiplier` is **0.5**
+> on 107 of `xyz`'s 108 assets, and the measured carry already has that 0.5 in it. If the
+> deployer raises it to 1.0 the carry doubles and the ratio becomes **3.6x, not 1.8x**. These
+> are levers the deployer holds and uses: `xyz`'s scale changed at **2026-08-06T15:08:37** —
+> two days after this archive started — `para`'s on 2026-08-07, and `hyna` runs a scale of
+> 0.1111. Same axis as §6's counterparty items. Every number in the table above is a reading
+> with a timestamp, not a constant, and S3 must re-read rather than inherit them.
 
 **(b) the reproducibility gate — unevaluable, and not by a margin that code can close.**
 
