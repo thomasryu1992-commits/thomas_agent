@@ -37,7 +37,6 @@ from .store import LedgerStore
 from .working_memory import WorkingMemoryStore
 
 
-READ_ONLY_COMMANDS = ("status", "core-list")
 COMMANDS = ("status", "prune", "core-list", "core-propose", "core-accept", "core-reject")
 
 
