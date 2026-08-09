@@ -143,14 +143,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 223 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 231 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
-| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1242 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
+| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1228 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
 | `ARCHIVE_NAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 134 | `archive_path` | `not all((part and _SAFE_NAME.fullmatch(part) for part in parts))` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 961 | `collect` | `—` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 967 | `live_symbols` | `—` |
-| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1254 | `_execute` | `summary.get('rate_limited')` |
+| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1240 | `_execute` | `summary.get('rate_limited')` |
 | `ARCHIVE_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 291 | `append_candles` | `not str(symbol).strip()` |
 | `ARCHIVE_TIMEFRAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 143 | `_require_timeframe` | `timeframe not in TIMEFRAMES` |
-| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1235 | `_execute` | `summary['blocked']` |
+| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1221 | `_execute` | `summary['blocked']` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 136 | `apply_dispatch` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 128 | `apply_knowledge` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 114 | `apply_read` | `argument is not None and command not in _TAKES_ARGUMENT` |
@@ -437,11 +437,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 663 | `count_today` | `not isinstance(data, dict)` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 667 | `count_today` | `—` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 706 | `record_submission` | `path.is_file()` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 220 | `read_live_outcomes` | `outcome_id in seen_outcome_ids` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 225 | `read_live_outcomes` | `settlement_id in seen_settlement_ids` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 216 | `read_live_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 327 | `daily_realized_pnl` | `—` |
-| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 205 | `read_live_outcomes` | `—` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 237 | `read_live_outcomes` | `outcome_id in seen_outcome_ids` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 242 | `read_live_outcomes` | `settlement_id in seen_settlement_ids` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 233 | `read_live_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 344 | `daily_realized_pnl` | `—` |
+| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 222 | `read_live_outcomes` | `—` |
 | `LIVE_ORDER_PERMDEC_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 1151 | `build_live_order_audit` | `not (isinstance(permdec_id, str) and permdec_id)` |
 | `LIVE_POSITION_STAGE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 302 | `_read_position_file` | `data.get('stage') != LIVE_STAGE` |
 | `LIVE_POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 294 | `_read_position_file` | `—` |
@@ -452,7 +452,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 460 | `_require_analysis` | `missing` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 463 | `_require_analysis` | `not isinstance(summary, str) or not summary.strip()` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 466 | `_require_analysis` | `not isinstance(facts, list)` |
-| `MALFORMED_BRACKET_LEG` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 278 | `build_bracket_intent` | `leg not in ('SL', 'TP')` |
+| `MALFORMED_BRACKET_LEG` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 287 | `build_bracket_intent` | `leg not in ('SL', 'TP')` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 223 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 180 | `build_live_position` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_LIVE_ORDER_INTENT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 262 | `build_order_request` | `not (isinstance(symbol, str) and symbol)` |
@@ -522,7 +522,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 391 | `_parse` | `not isinstance(results, list)` |
 | `MEMORY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 144 | `apply_memory_command` | `working_memory is None` |
 | `MEMORY_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 175 | `apply_memory_command` | `ledger is None` |
-| `MISSING_BRACKET_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 299 | `build_bracket_intent` | `not (isinstance(quantity, (int, float)) and quantity > 0)` |
+| `MISSING_BRACKET_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 308 | `build_bracket_intent` | `not (isinstance(quantity, (int, float)) and quantity > 0)` |
 | `MISSING_CORE_RULES` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 190 | `build_task` | `not rule_ids` |
 | `MISSING_CREATOR` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 377 | `build_schedule` | `not (isinstance(created_by, str) and created_by.strip())` |
 | `MISSING_ENTRY_PRICE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 188 | `build_live_position` | `entry_price <= 0` |
@@ -809,7 +809,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_FLAG` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 217 | `build_activation_record` | `bad` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 253 | `build_entry` | `unknown` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 370 | `build_schedule` | `kind not in KINDS` |
-| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1272 | `_execute` | `schedule.kind != KIND_TASK` |
+| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1258 | `_execute` | `schedule.kind != KIND_TASK` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 242 | `build_entry` | `origin not in ORIGINS` |
 | `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1047 | `validate_candidate_lineage` | `unknown` |
 | `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 586 | `select_gated_chain` | `unknown` |
@@ -835,36 +835,36 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
 | `WRONG_APPROVER` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 249 | `record_decision` | `verification.approved_by != REQUIRED_APPROVER` |
-| `a pooled backtest needs at least one snapshot or frame` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3130 | `backtest_spec_pooled` | `not snapshots and (not frames)` |
+| `a pooled backtest needs at least one snapshot or frame` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3261 | `backtest_spec_pooled` | `not snapshots and (not frames)` |
 | `an unordered ParamSpec must be integer` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 344 | `__post_init__` | `not self.ordered and (not self.integer)` |
 | `created_by must be a non-empty string` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 373 | `from_dict` | `not isinstance(created_by, str) or not created_by` |
-| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3485 | `fuse_specs` | `first.direction != second.direction` |
+| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3616 | `fuse_specs` | `first.direction != second.direction` |
 | `entry_rules must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 176 | `from_dict` | `not isinstance(raw, dict)` |
 | `entry_rules.conditions must be a non-empty list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 182 | `from_dict` | `not isinstance(raw_conditions, list) or not raw_conditions` |
 | `exit_rules must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 227 | `from_dict` | `not isinstance(raw, dict)` |
 | `filesystem read count increment must be a non-negative integer` | `ValueError` | `runtime/read_only_kernel/types.py` | 13 | `add` | `not isinstance(count, int) or count < 0` |
 | `frame too large` | `OSError` | `runtime/mvp_runtime/socket_door.py` | 251 | `_read_frame` | `size > ceiling` |
 | `generation_id must be a string or null` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 370 | `from_dict` | `generation_id is not None and (not isinstance(generation_id, str))` |
-| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3507 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
+| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3638 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
 | `input bundle must be located inside repo root` | `ReadBoundaryError` | `runtime/read_only_kernel/loader.py` | 26 | `load_runtime_inputs` | `—` |
 | `input bundle requires refs and sha256 objects` | `ReadBoundaryError` | `runtime/read_only_kernel/io.py` | 87 | `load_bundle` | `not isinstance(refs, dict) or not isinstance(hashes, dict)` |
 | `live order intent has no idempotency key to fingerprint` | `ValueError` | `runtime/mvp_runtime/crypto/live_governance.py` | 73 | `order_fingerprint` | `not (isinstance(key, str) and key)` |
-| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3493 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
+| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3624 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
 | `now must be an RFC3339 timestamp` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 32 | `__init__` | `—` |
 | `now must include an RFC3339 timezone` | `ValueError` | `runtime/read_only_kernel/kernel.py` | 34 | `__init__` | `parsed_now.tzinfo is None` |
 | `pdftotext is not on PATH` | `FileNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 274 | `_extract_with_pdftotext` | `binary is None` |
 | `pypdf is not installed` | `ModuleNotFoundError` | `runtime/mvp_runtime/knowledge/pdf_text.py` | 334 | `_extract_with_pypdf` | `pypdf is None` |
 | `record reference must be a non-empty relative path` | `ReadBoundaryError` | `runtime/read_only_kernel/io.py` | 17 | `resolve_read_only_path` | `not isinstance(relative_ref, str) or not relative_ref.strip()` |
-| `replay frame was built under a different cost model than this backtest charges; the carry series would price trades at rates they never faced` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3140 | `backtest_spec_pooled` | `frame.cost != cost` |
+| `replay frame was built under a different cost model than this backtest charges; the carry series would price trades at rates they never faced` | `ValueError` | `runtime/mvp_runtime/crypto/factory.py` | 3271 | `backtest_spec_pooled` | `frame.cost != cost` |
 | `risk_constraints must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 300 | `from_dict` | `not isinstance(raw, dict)` |
-| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3474 | `fuse_specs` | `first.schema_version != second.schema_version` |
-| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3491 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
+| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3605 | `fuse_specs` | `first.schema_version != second.schema_version` |
+| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3622 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
 | `strategy pool must be an object` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 591 | `load_strategy_pool` | `not isinstance(raw, dict)` |
 | `strategy pool must have an 'active_strategies' list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 594 | `load_strategy_pool` | `not isinstance(entries, list)` |
 | `strategy_rule_hash does not match the spec's rules (tampered or stale)` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 398 | `from_dict` | `provided is not None and provided != '' and (provided != computed)` |
 | `symbol_scope entries must be non-empty strings` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 366 | `from_dict` | `not all((isinstance(s, str) and s for s in symbol_scope_raw))` |
 | `symbol_scope must be a non-empty list` | `SpecParseError` | `runtime/mvp_runtime/crypto/strategy.py` | 364 | `from_dict` | `not isinstance(symbol_scope_raw, list) or not symbol_scope_raw` |
-| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3489 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
-| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3487 | `fuse_specs` | `first.timeframe != second.timeframe` |
-| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3501 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
-| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3483 | `fuse_specs` | `first.venue != second.venue` |
+| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3620 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
+| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3618 | `fuse_specs` | `first.timeframe != second.timeframe` |
+| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3632 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
+| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3614 | `fuse_specs` | `first.venue != second.venue` |

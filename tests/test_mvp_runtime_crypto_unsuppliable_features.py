@@ -97,6 +97,12 @@ def test_the_check_runs_before_the_backtest(monkeypatch):
     from runtime.mvp_runtime.crypto import factory
 
     source = inspect.getsource(factory.run_factory)
-    check = source.index("unsuppliable_features(spec, frame.rows)")
-    score = source.index("backtest_spec(spec, snapshot, frame=frame)")
+    # Anchored on the call rather than on its exact arguments: the guard now runs over EVERY
+    # leg of a pooled fire (`for fr in frames`), and a test that pinned the single-frame
+    # spelling would have read as "the check was removed" when it had only been widened.
+    check = source.index("unsuppliable_features(spec,")
+    score = source.index("evidence = (backtest_spec_pooled")
     assert check < score, "the refusal must come before the scoring it exists to avoid"
+    assert "for fr in frames" in source[check - 120:check + 120], (
+        "the guard stopped covering every leg — a pooled figure would report a leg it never read"
+    )

@@ -1076,6 +1076,170 @@ def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled(
     assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
 
 
+# --- prior windows: does the tail's answer hold before the tail? ----------------
+#
+# `REMAINING_WORK.md` §F9: the pooled door's first result was five `oi_unwind_short` draws
+# clearing a selection-adjusted bar at 4h, and 16 of 16 draws across two seed namespaces decayed
+# to −0.23…−0.31R in adjacent earlier windows. A door reading only the newest tail takes that row
+# on its face, and `period_r` does not catch it — it partitions the holdout, and the reversal is
+# thousands of bars before the holdout begins.
+
+def _spec_for_prior_windows():
+    return StrategySpec.from_dict(_spec_dict())
+
+
+def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding():
+    """**The claim `_prefix_frame` rests on**, and the reason the measurement is cheap enough to
+    sit on the mint path: every FEATURE is a trailing-window computation, so row *i* carries the
+    same values whether the series ran to the end or stopped after it.
+
+    The funding series is the exception and this pins how wide it is. `funding_charges_per_bar`
+    spreads settlements across the bars they fall in, so the final bar of a prefix was charged
+    knowing the series continued. One bar — and asserting *that*, rather than asserting equality
+    and deleting the check when it fails, is what keeps the exception from quietly growing."""
+    snapshot = _trending_snapshot(n=200)
+    full = factory.build_replay_frame(snapshot)
+    keep = factory.holdout_split_index(len(full.rows))
+    sliced = factory._prefix_frame(full, keep)
+    rebuilt = factory.build_replay_frame(
+        {**snapshot, "candles": list(snapshot["candles"])[:keep], "candle_count": keep})
+
+    assert sliced is not None
+    assert sliced.split == rebuilt.split
+    assert len(sliced.rows) == len(rebuilt.rows) == keep
+    assert sliced.rows == rebuilt.rows, "a feature stopped being trailing-window"
+    assert sliced.candles == rebuilt.candles
+    assert sliced.funding[:-1] == rebuilt.funding[:-1], (
+        "the funding difference has spread past the final bar"
+    )
+
+
+def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
+    """Window *k+1*'s tail must end exactly where window *k*'s begins — F3's construction. Any
+    overlap would score the same bars twice and read as agreement between windows."""
+    frame = factory.build_replay_frame(_trending_snapshot(n=200))
+    keep, bounds = len(frame.rows), [(frame.split, len(frame.rows))]
+    for _ in range(factory.PRIOR_WINDOWS):
+        keep = factory.holdout_split_index(keep)
+        prefix = factory._prefix_frame(frame, keep)
+        if prefix is None:
+            break
+        bounds.append((prefix.split, keep))
+    assert len(bounds) > 1, "the fixture is too short to exercise a single earlier window"
+    for newer, older in zip(bounds, bounds[1:]):
+        assert older[1] == newer[0], f"{older} does not end where {newer} begins"
+
+
+def test_the_holdout_block_carries_the_earlier_windows():
+    """Reported beside `period_r`, never folded into it: the two answer different questions."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) == len(holdout["prior_window_trades"])
+    assert len(holdout["prior_window_r"]) <= factory.PRIOR_WINDOWS
+    assert "period_r" in holdout, "the sibling field must still be there"
+
+
+def test_a_series_too_short_yields_fewer_windows_rather_than_an_error():
+    """Absence of an earlier window is information — the series ran out — and a caller reading a
+    short list learns that. Raising would make a shallow candidate unscoreable instead."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=70))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) < factory.PRIOR_WINDOWS
+
+
+def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_pool():
+    """A pooled figure over four legs where the others had five is a different pool, and
+    comparing it to the holdout would be comparing two populations."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200)),
+              factory.build_replay_frame(_shifted_snapshot(n=70))]
+    r, n = factory._prior_window_evidence(
+        _spec_for_prior_windows(), frames, cost=frames[0].cost)
+    assert len(r) == len(n) < factory.PRIOR_WINDOWS
+
+
+# --- pooled minting (F9 shape B: 4h and 1d, 1h left single-symbol) --------------
+
+def _pooled_run(snapshot, cohort, **kwargs):
+    return run_factory(snapshot, active_pool={"active_strategies": []},
+                       existing_candidates=[], now=NOW, cohort_snapshots=cohort, **kwargs)
+
+
+def test_no_cohort_is_exactly_todays_behaviour():
+    """The default has to be unchanged down to the seed, or every stored row's lineage moves."""
+    snapshot = _trending_snapshot()
+    plain = run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW)
+    empty = _pooled_run(snapshot, None)
+    assert plain["seed"] == empty["seed"]
+    assert plain["pooled"] is False and empty["pooled"] is False
+    assert [c["strategy_rule_hash"] for c in plain["candidates"]] == \
+           [c["strategy_rule_hash"] for c in empty["candidates"]]
+
+
+def test_a_cohort_mints_one_hypothesis_over_every_leg():
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is True
+    assert result["pooled_symbols"] == ["BTCUSDT", "ETHUSDT"]
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
+        # `symbols` is what `_holdout_evidence` counted, so it proves the legs were replayed
+        # rather than merely named on the spec.
+        assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
+
+
+def test_the_policy_fences_a_timeframe_it_does_not_pool():
+    """1h is 12/12 judgeable single-symbol (F2); pooling it would spend the directional lever
+    for nothing. A caller handing over a cohort anyway gets the single-symbol fire."""
+    snapshot = {**_trending_snapshot(), "timeframe": "1h"}
+    result = _pooled_run(snapshot, [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is False
+    assert all(c["strategy_spec"]["symbol_scope"] == ["BTCUSDT"] for c in result["candidates"])
+
+
+def test_two_cohorts_sharing_a_first_leg_do_not_draw_the_same_batch():
+    """The seed reads every leg. Sharing the primary used to be enough to reproduce a batch,
+    which made "same seed, same batch" mean something narrower than it says."""
+    primary = _trending_snapshot()
+    a = _pooled_run(primary, [_shifted_snapshot(symbol="ETHUSDT", scale=2.0)])
+    b = _pooled_run(primary, [_shifted_snapshot(symbol="SOLUSDT", scale=3.0)])
+    assert a["seed"] != b["seed"]
+
+
+def test_a_pooled_fire_does_not_fuse():
+    """`_fuse_batch` re-scores parents through the one-frame `backtest_spec`; a fused child of a
+    pooled fire would be scored on one leg while claiming the cohort."""
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
+                         fusion_pairs=4)
+    assert all((c.get("derivation_type") or "seeded_template") == "seeded_template"
+               for c in result["candidates"])
+
+
+def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
+    """Fail closed on ANY leg: a pooled figure whose fourth symbol supplied none of the columns
+    the rule names is a four-leg pool reporting five."""
+    bare = _shifted_snapshot(symbol="ETHUSDT")
+    bare["candles"] = [{k: v for k, v in c.items() if k != "taker_buy_base"}
+                       for c in bare["candles"]]
+    result = _pooled_run(_trending_snapshot(), [bare])
+    starved = [r for r in result["rejected"] if r.get("reason") == factory.UNSUPPLIABLE_FEATURE]
+    assert starved or result["candidates"], "the fire produced neither candidates nor a reason"
+
+
+def test_a_pooled_context_does_not_inherit_a_single_symbol_centre():
+    """Membership when mining one symbol, exact equality when mining a cohort. A single-symbol
+    elite is a centre fitted on one symbol, and F2 measured transferring one as strictly harder
+    than searching the cohort from the start."""
+    single = {"strategy_spec": {"symbol_scope": ["BTCUSDT"], "timeframe": "4h"}}
+    assert factory._matches_context(single["strategy_spec"], symbol="BTCUSDT", timeframe="4h")
+    assert not factory._matches_context(
+        single["strategy_spec"], symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+    cohort = {"symbol_scope": ["BTCUSDT", "ETHUSDT"], "timeframe": "4h"}
+    assert factory._matches_context(
+        cohort, symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+
+
 # --- run_factory --------------------------------------------------------------
 
 def test_run_factory_produces_evidence_backed_candidates():
