@@ -51,13 +51,33 @@ def test_show_reports_the_state_and_writes_nothing(tripped, capsys):
 
 
 def test_clearing_requires_a_reason_and_an_operator(tripped, capsys):
-    assert cbb.main(["--root", str(tripped)]) == cbb.EXIT_REFUSED
-    assert cbb.main(["--cleared-by", "thomas", "--root", str(tripped)]) == cbb.EXIT_REFUSED
-    assert cbb.main(["--reason", "looked at it", "--root", str(tripped)]) == cbb.EXIT_REFUSED
+    # EXIT_USAGE, not EXIT_BLOCKED: the operator gave the wrong arguments, the runtime refused
+    # nothing. `EXIT_REFUSED` used to cover both, so a missing flag and a fail-closed block were
+    # one number — §G4c.
+    assert cbb.main(["--root", str(tripped)]) == cbb.EXIT_USAGE
+    assert cbb.main(["--cleared-by", "thomas", "--root", str(tripped)]) == cbb.EXIT_USAGE
+    assert cbb.main(["--reason", "looked at it", "--root", str(tripped)]) == cbb.EXIT_USAGE
     # And none of those refusals cleared anything.
     capsys.readouterr()
     cbb.main(["--show", "--root", str(tripped)])
     assert "TRIPPED" in capsys.readouterr().out
+
+
+def test_a_fail_closed_refusal_is_blocked_not_usage(tripped, capsys, monkeypatch):
+    """The other half of §G4c's split. The runtime refusing the clear and the operator mistyping
+    the command used to return the same number under one name, `EXIT_REFUSED` — while this branch
+    prints the word BLOCKED. Now the code says it too, and the two are distinguishable from
+    outside, which is the whole point of an exit code."""
+    from runtime.mvp_runtime.errors import ToolBlocked
+
+    def refuse(**_kw):
+        raise ToolBlocked("BRACKET_BREAKER_LOCKED", "another process holds the breaker")
+
+    monkeypatch.setattr(cbb, "select_live_bracket_breaker", refuse)
+    code = cbb.main(["--cleared-by", "thomas", "--reason", "venue fixed", "--root", str(tripped)])
+    assert code == cbb.EXIT_BLOCKED
+    assert code != cbb.EXIT_USAGE
+    assert "BLOCKED: BRACKET_BREAKER_LOCKED" in capsys.readouterr().err
 
 
 def test_a_reasoned_clear_reopens_the_door(tripped, capsys):
