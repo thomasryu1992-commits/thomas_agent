@@ -3385,6 +3385,44 @@ drops entries that stop being shared, so the declaration cannot outlive its code
 Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
 registering there is a governance surface a reading aid does not need.
 
+#### The index was counting 27 English sentences as reason codes — fixed 2026-08-09
+
+Found while acting on §G4's note about `SpecParseError` and `FusionRefused`. That note said neither
+appeared here; both did, and how they appeared was the defect. Those classes take a **message** as
+their first positional argument, so the walk filed the message in the code column:
+
+```
+| `created_by must be a non-empty string` | `SpecParseError` | crypto/strategy.py | 373 | … |
+```
+
+**An entry whose key nobody can look up is worse than a missing one.** §G3 exists to answer "a code
+came out of the runtime — where is it raised", and no operator greps an English sentence. Each also
+counted as a distinct code, so the vocabulary was overstated by 27.
+
+**The rule is that a code has no spaces**, and it splits the surface with nothing left over —
+measured across every literal the walk finds: **751 `SCREAMING_CASE`, 9 `lower_snake`, 27
+sentences**, and no fourth shape. The nine lowercase ones stay: `too_many_conditions`,
+`holdout_unjudgeable` and seven `*_mismatch` names are `FusionRefused`'s mint-refusal vocabulary,
+which §F already tabulates by name. A rule keyed on `SCREAMING_CASE` would have dropped all nine.
+
+| | before | after |
+|---|---:|---:|
+| distinct codes | 456 | **429** |
+| indexed sites | 787 | 760 |
+| built at runtime, not indexable | 113 | 113 |
+| **carry a message where a code goes** | counted as codes | **27, counted apart** |
+
+The 27 are **counted, not dropped silently** — and counted *separately* from the 113, because they
+are different gaps: a site that builds its code can be given one, while a site that raises with a
+message has no code to find. Collapsing them would claim the index is missing 140 codes when 27 of
+those paths do not have a code at all. Six of the 27 are in `read_only_kernel/`, so the never-modify
+rule puts them permanently in that column.
+
+**Not fixed here: giving `SpecParseError` a code vocabulary.** Its 34 raise sites are spec-parse
+validation whose audience is the factory, not an operator diagnosing production — the same shape as
+the tunables index's `MECHANICS`, where something looking like a decision is not one. Deciding that
+is a separate item from making the index stop mislabelling it.
+
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
 close, which is a different item from the exact-collision check landed here.
@@ -3680,7 +3718,11 @@ restating the values would just be a second copy of the thing that diverged.
   that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
   `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
   both plain `ValueError` — so *"every failure path raises a typed error with a stable
-  `reason_code`"* is not true of them, and neither appears in `DIAGNOSTIC_CODE_INDEX.md`.
+  `reason_code`"* is not true of them, and ~~neither appears in `DIAGNOSTIC_CODE_INDEX.md`~~ —
+  **wrong, and the truth was worse; corrected 2026-08-09.** Both appeared, 11 rows and 9. Because
+  they take a *message* as their first argument, the extractor filed the message in the code
+  column: `created_by must be a non-empty string`. Not a missing entry — an entry whose key
+  nobody can look up. See §G3.
 
 #### Two notes on the instrument, because both would have closed a question wrongly
 
