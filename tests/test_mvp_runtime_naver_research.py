@@ -28,10 +28,10 @@ from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime.naver_research import (
     NAVER_RESEARCH_ENV,
     NAVER_RESEARCH_ON,
-    OPENAPI_PROVIDER,
+    APIHUB_PROVIDER,
     SEARCHAD_PROVIDER,
     BlogCompetitionTool,
-    DatalabTrendTool,
+    SearchTrendTool,
     MockKeywordTool,
     SearchAdKeywordTool,
     _coerce_count,
@@ -50,7 +50,7 @@ _CREDS = {
     "NAVER_SEARCHAD_API_KEY": "0100000000aaaa",
     "NAVER_SEARCHAD_SECRET_KEY": SECRET,
 }
-_OPENAPI_CREDS = {"NAVER_CLIENT_ID": "client-abc", "NAVER_CLIENT_SECRET": "client-secret-xyz"}
+_APIHUB_CREDS = {"NAVER_APIHUB_KEY_ID": "ncp-key-id-abc", "NAVER_APIHUB_KEY": "ncp-key-secret-xyz"}
 
 
 @pytest.fixture
@@ -74,10 +74,10 @@ def _searchad_auth():
     )
 
 
-def _openapi_auth():
+def _apihub_auth():
     return safety_gate.env_only_authorization(
         flags=(NETWORK_ACCESS,),
-        provider_id=OPENAPI_PROVIDER,
+        provider_id=APIHUB_PROVIDER,
         env_var=NAVER_RESEARCH_ENV,
         opt_in_value=NAVER_RESEARCH_ON,
     )
@@ -342,7 +342,7 @@ def test_an_unparseable_response_fails_closed(monkeypatch, gate_open):
 
 def test_blog_titles_lose_their_markup(monkeypatch, gate_open):
     """The Search API wraps matched terms in <b>; a title carrying them is markup, not text."""
-    for name, value in _OPENAPI_CREDS.items():
+    for name, value in _APIHUB_CREDS.items():
         monkeypatch.setenv(name, value)
     payload = json.dumps({"total": 48213, "items": [
         {"title": "<b>AI</b> 회계 자동화 후기"},
@@ -350,7 +350,7 @@ def test_blog_titles_lose_their_markup(monkeypatch, gate_open):
     ]})
     _capture_urlopen(monkeypatch, payload)
 
-    result = BlogCompetitionTool(authorization=_openapi_auth()).competition(
+    result = BlogCompetitionTool(authorization=_apihub_auth()).competition(
         "AI 회계", display=10, timeout_seconds=1
     )
     assert result.total_posts == 48213
@@ -358,7 +358,7 @@ def test_blog_titles_lose_their_markup(monkeypatch, gate_open):
 
 
 def test_a_trend_series_maps_onto_points(monkeypatch, gate_open):
-    for name, value in _OPENAPI_CREDS.items():
+    for name, value in _APIHUB_CREDS.items():
         monkeypatch.setenv(name, value)
     payload = json.dumps({"results": [{"title": "AI 회계", "data": [
         {"period": "2026-06-01", "ratio": 61.2},
@@ -366,14 +366,83 @@ def test_a_trend_series_maps_onto_points(monkeypatch, gate_open):
     ]}]})
     sent = _capture_urlopen(monkeypatch, payload)
 
-    result = DatalabTrendTool(authorization=_openapi_auth()).trend(
+    result = SearchTrendTool(authorization=_apihub_auth()).trend(
         "AI 회계", start_date="2026-06-01", end_date="2026-07-31", timeout_seconds=1
     )
     assert [p.ratio for p in result.points] == [61.2, 100.0]
     assert sent[0].method == "POST"  # datalab is a POST with a JSON body
 
 
-def test_the_openapi_adapters_are_gated_too(monkeypatch):
+def test_the_apihub_adapters_are_gated_too(monkeypatch):
     monkeypatch.delenv(NAVER_RESEARCH_ENV, raising=False)
     with pytest.raises(SafetyGateBlocked):
         BlogCompetitionTool().competition("AI 회계", display=10, timeout_seconds=1)
+
+
+# --- the API HUB migration ----------------------------------------------------------
+#
+# Four things changed at once when Naver moved these off the Developers-center surface: the
+# host, the path shape, the header names, and the credential. Each is pinned, because getting
+# any of them wrong produces an auth-shaped failure that sends you looking at the key.
+
+@pytest.mark.parametrize("tool_cls, verb, kwargs, expected_path", [
+    (BlogCompetitionTool, "competition", {"display": 10}, "/search/v1/blog"),
+    (SearchTrendTool, "trend", {"start_date": "2026-06-01", "end_date": "2026-07-31"}, "/search-trend/v1/search"),
+])
+def test_calls_go_to_the_api_hub_gateway(monkeypatch, gate_open, tool_cls, verb, kwargs, expected_path):
+    for name, value in _APIHUB_CREDS.items():
+        monkeypatch.setenv(name, value)
+    payload = json.dumps({"total": 1, "items": [], "results": [{"data": []}]})
+    sent = _capture_urlopen(monkeypatch, payload)
+
+    getattr(tool_cls(authorization=_apihub_auth()), verb)("AI 회계", timeout_seconds=1, **kwargs)
+
+    url = sent[0].full_url
+    assert url.startswith("https://naverapihub.apigw.ntruss.com")
+    assert expected_path in url
+    # The old surface suffixed the vertical with `.json`; a ported URL keeping it 404s.
+    assert ".json" not in url
+    assert "openapi.naver.com" not in url
+
+
+def test_the_api_hub_headers_replace_the_developers_center_ones(monkeypatch, gate_open):
+    for name, value in _APIHUB_CREDS.items():
+        monkeypatch.setenv(name, value)
+    sent = _capture_urlopen(monkeypatch, json.dumps({"total": 0, "items": []}))
+
+    BlogCompetitionTool(authorization=_apihub_auth()).competition("AI 회계", display=10, timeout_seconds=1)
+
+    headers = {k.lower(): v for k, v in sent[0].headers.items()}
+    assert headers["X-Ncp-Apigw-Api-Key-Id".lower()] == _APIHUB_CREDS["NAVER_APIHUB_KEY_ID"]
+    assert headers["X-Ncp-Apigw-Api-Key".lower()] == _APIHUB_CREDS["NAVER_APIHUB_KEY"]
+    # The legacy headers must be gone, not merely supplemented — API HUB ignores them, so
+    # sending both would look like it worked right up until the old ones were removed.
+    assert "x-naver-client-id" not in headers
+    assert "x-naver-client-secret" not in headers
+
+
+def test_a_developers_center_credential_is_not_accepted(monkeypatch, gate_open):
+    """The migration guide's sharpest line: existing Developers-center credentials cannot be
+    used against API HUB. Setting only those must fail closed on the NAME of what is missing,
+    rather than sending a request that comes back 401."""
+    for name in _APIHUB_CREDS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NAVER_CLIENT_ID", "legacy-id")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "legacy-secret")
+
+    with pytest.raises(ToolError) as excinfo:
+        BlogCompetitionTool(authorization=_apihub_auth()).competition("AI 회계", display=10, timeout_seconds=1)
+    assert excinfo.value.reason_code == "NO_API_KEY"
+    assert "NAVER_APIHUB_KEY_ID" in str(excinfo.value)
+
+
+def test_a_window_before_the_trend_data_begins_fails_closed(monkeypatch, gate_open):
+    """Truncation would read as flat early demand — a wrong answer, not a missing one."""
+    for name, value in _APIHUB_CREDS.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ToolError) as excinfo:
+        SearchTrendTool(authorization=_apihub_auth()).trend(
+            "AI 회계", start_date="2014-01-01", end_date="2026-07-31", timeout_seconds=1
+        )
+    assert excinfo.value.reason_code == "WINDOW_TOO_EARLY"
+    assert SearchTrendTool.EARLIEST_PERIOD in str(excinfo.value)
