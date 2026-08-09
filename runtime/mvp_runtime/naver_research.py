@@ -5,10 +5,28 @@ to answer before it is worth writing:
 
 - :class:`SearchAdKeywordTool` — how many people search this, monthly, on PC and mobile
   (Naver Search Ad ``/keywordstool``). The only official source of **absolute** volume.
-- :class:`DatalabTrendTool` — is that demand rising, flat, or seasonal (Datalab search
+- :class:`SearchTrendTool` — is that demand rising, flat, or seasonal (API HUB search
   trend). Relative ratios only; Naver does not publish absolute numbers here.
 - :class:`BlogCompetitionTool` — how many posts already target it, and what they look
-  like (Search API, blog vertical).
+  like (API HUB blog search).
+
+**Two Naver surfaces, not one, and they are unrelated.** Search Ad
+(``api.searchad.naver.com``, HMAC-signed, an advertiser account) is a different product from
+API HUB (``naverapihub.apigw.ntruss.com``, header keys, a NAVER Cloud Platform account). They
+have separate consoles, separate credentials and separate failure modes; nothing about
+obtaining or losing one says anything about the other. The absolute volume the lane ranks on
+comes only from the first.
+
+**API HUB is where Naver is consolidating the old Developers-center open APIs**
+(``openapi.naver.com``), which is why the second and third tools target it rather than the
+surface this module was first written against. Two consequences worth stating:
+
+- A Developers-center Client ID does **not** work here — API HUB issues its own credential.
+- API HUB is documented as *temporarily* free with paid pricing to follow on notice. When that
+  happens, using it becomes autonomous spend, and
+  ``governance/GOVERNANCE_POLICY.yaml`` sets ``autonomous_spend_without_registered_budget: '0'``
+  — so it will need a registered budget or a Thomas decision, not a quiet continuation. The
+  Search Ad half is unaffected by that transition.
 
 Same shape as ``tools.py``: a Protocol, a deterministic network-free Mock, a real
 network adapter that re-verifies its authorization at the moment of egress, a
@@ -74,7 +92,10 @@ NAVER_RESEARCH_ON = "enabled"
 # should still say which of Naver's two API families a given call went to — they have
 # different credentials, different quotas, and different failure modes.
 SEARCHAD_PROVIDER = "naver_searchad"
-OPENAPI_PROVIDER = "naver_openapi"
+# Was `naver_openapi` while this targeted `openapi.naver.com`. Renamed with the migration
+# rather than left alone: the id lands in audit records, and a record naming the surface a
+# call did NOT go to is worse than no id at all.
+APIHUB_PROVIDER = "naver_apihub"
 
 # The credential env var NAMES, as module constants rather than only as default arguments.
 # The deployment drift gate (`tests/test_deployment_env_passthrough.py`) names them from here,
@@ -88,8 +109,10 @@ OPENAPI_PROVIDER = "naver_openapi"
 SEARCHAD_CUSTOMER_ID_ENV = "NAVER_SEARCHAD_CUSTOMER_ID"
 SEARCHAD_API_KEY_ENV = "NAVER_SEARCHAD_API_KEY"
 SEARCHAD_SECRET_KEY_ENV = "NAVER_SEARCHAD_SECRET_KEY"
-OPENAPI_CLIENT_ID_ENV = "NAVER_CLIENT_ID"
-OPENAPI_CLIENT_SECRET_ENV = "NAVER_CLIENT_SECRET"
+# API HUB is a NAVER Cloud Platform credential, not a Developers-center one, and the names say
+# so: `NAVER_CLIENT_ID` would read as the Developers-center "Client ID" that does NOT work here.
+APIHUB_KEY_ID_ENV = "NAVER_APIHUB_KEY_ID"
+APIHUB_KEY_ENV = "NAVER_APIHUB_KEY"
 
 # Read-only lookups cross the network but never invoke a model.
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
@@ -368,15 +391,15 @@ def select_keyword_tool() -> KeywordTool:
 
 def select_trend_tool() -> TrendTool:
     return _select(
-        OPENAPI_PROVIDER,
-        lambda authorization: DatalabTrendTool(authorization=authorization),
+        APIHUB_PROVIDER,
+        lambda authorization: SearchTrendTool(authorization=authorization),
         MockTrendTool,
     )
 
 
 def select_competition_tool() -> CompetitionTool:
     return _select(
-        OPENAPI_PROVIDER,
+        APIHUB_PROVIDER,
         lambda authorization: BlogCompetitionTool(authorization=authorization),
         MockCompetitionTool,
     )
@@ -511,39 +534,50 @@ class SearchAdKeywordTool:
         return KeywordResult(seed=seed, metrics=metrics, tool_version=self.tool_version, latency_ms=latency_ms)
 
 
-class _OpenApiTool:
-    """Shared plumbing for the two Developers-center APIs (Client ID + Secret headers)."""
+class _ApiHubTool:
+    """Shared plumbing for the two NAVER API HUB endpoints.
 
-    provider_id = OPENAPI_PROVIDER
+    **Not** the Developers-center (`openapi.naver.com`) API this originally targeted. Naver is
+    consolidating search / search-trend / shopping-insight onto API HUB, a NAVER Cloud Platform
+    gateway, and the move changes four things at once: the host, the path shape, the auth header
+    names, and the credential itself — an existing Developers-center Client ID does not work
+    here. Written against API HUB directly rather than migrated later, because no credential for
+    the old surface exists yet: there is nothing to preserve, so a compatibility layer would be
+    pure speculation.
+
+    What did NOT change is the response shape — `total`/`items` for search, `results[].data[]`
+    for the trend — so the parsers below are the same ones that were written for the old
+    surface. That is the reason this migration is a header-and-URL change and not a rewrite.
+    """
+
+    provider_id = APIHUB_PROVIDER
     network_egress = True
+    BASE = "https://naverapihub.apigw.ntruss.com"
 
     def __init__(
         self,
         *,
-        client_id_env: str = OPENAPI_CLIENT_ID_ENV,
-        client_secret_env: str = OPENAPI_CLIENT_SECRET_ENV,
+        key_id_env: str = APIHUB_KEY_ID_ENV,
+        key_env: str = APIHUB_KEY_ENV,
         authorization: Authorization | None = None,
     ):
-        self._client_id_env = client_id_env  # NAMES, never values
-        self._client_secret_env = client_secret_env
+        self._key_id_env = key_id_env  # NAMES, never values
+        self._key_env = key_env
         self._authorization = authorization
 
     def _headers(self) -> dict[str, str]:
-        client_id = os.environ.get(self._client_id_env)
-        client_secret = os.environ.get(self._client_secret_env)
+        key_id = os.environ.get(self._key_id_env)
+        key = os.environ.get(self._key_env)
         missing = [
             name
-            for name, value in (
-                (self._client_id_env, client_id),
-                (self._client_secret_env, client_secret),
-            )
+            for name, value in ((self._key_id_env, key_id), (self._key_env, key))
             if not value
         ]
         if missing:
             raise ToolError("NO_API_KEY", f"environment variables not set: {', '.join(missing)}")
         return {
-            "X-Naver-Client-Id": client_id,
-            "X-Naver-Client-Secret": client_secret,
+            "X-NCP-APIGW-API-KEY-ID": key_id,
+            "X-NCP-APIGW-API-KEY": key,
             "Content-Type": "application/json",
         }
 
@@ -565,36 +599,55 @@ class _OpenApiTool:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
         except (TimeoutError, urllib.error.URLError):
-            raise ToolError("TOOL_TRANSPORT", "naver openapi request failed or timed out") from None
+            raise ToolError("TOOL_TRANSPORT", "naver api hub request failed or timed out") from None
         return raw, int((time.monotonic() - started) * 1000)
 
 
-class DatalabTrendTool(_OpenApiTool):
-    """Relative search-interest trend via the Datalab search API (read-only).
+class SearchTrendTool(_ApiHubTool):
+    """Relative search-interest trend via API HUB's Search Trend endpoint (read-only).
 
-    Datalab returns **ratios normalised to the peak period in the requested window**, never
-    absolute counts. So a trend is only comparable within one call — two separate calls
-    produce two independent 0..100 scales. The lane uses this to answer "rising or fading",
-    and takes absolute demand from :class:`SearchAdKeywordTool` alone.
+    Named for what API HUB calls it. On the Developers-center surface this was "Datalab", and
+    keeping that name would have pointed a reader at a console that no longer serves it.
+
+    It returns **ratios normalised so the peak period in the requested window is 100**, never
+    absolute counts. So a trend is comparable only within one call — two separate calls produce
+    two independent scales, and a ratio must never be carried between packages as if it were a
+    volume. The lane uses this for "rising or fading" and takes absolute demand from
+    :class:`SearchAdKeywordTool` alone.
     """
 
     tool_id = TREND_TOOL_ID
-    tool_version = f"{TOOL_VERSION}-datalab"
-    _ENDPOINT = "https://openapi.naver.com/v1/datalab/search"
+    tool_version = f"{TOOL_VERSION}-apihub"
+    _PATH = "/search-trend/v1/search"
+    # Documented API HUB limits. Encoded because exceeding them is a 4xx that reads like an
+    # auth failure, and because `EARLIEST_PERIOD` is the kind of bound a caller discovers by
+    # getting an empty series back rather than an error.
+    MAX_KEYWORD_GROUPS = 5
+    MAX_KEYWORDS_PER_GROUP = 20
+    EARLIEST_PERIOD = "2016-01-01"
 
     def trend(self, keyword: str, *, start_date: str, end_date: str, timeout_seconds: int) -> TrendResult:
+        if start_date < self.EARLIEST_PERIOD:
+            # Fail closed rather than silently returning a window that starts later than asked:
+            # a caller charting "since 2014" would read the truncation as flat early demand.
+            raise ToolError(
+                "WINDOW_TOO_EARLY",
+                f"search trend data begins {self.EARLIEST_PERIOD}; asked for {start_date}",
+            )
         body = json.dumps({
             "startDate": start_date,
             "endDate": end_date,
             "timeUnit": "month",
             "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
         }).encode("utf-8")
-        raw, latency_ms = self._fetch(self._ENDPOINT, timeout_seconds=timeout_seconds, data=body)
+        raw, latency_ms = self._fetch(
+            f"{self.BASE}{self._PATH}", timeout_seconds=timeout_seconds, data=body
+        )
         try:
             data: dict[str, Any] = json.loads(raw)
             series = data["results"][0]["data"]
         except (KeyError, IndexError, ValueError, TypeError):
-            raise ToolError("MALFORMED_RESULT", "datalab returned an unparseable response") from None
+            raise ToolError("MALFORMED_RESULT", "search trend returned an unparseable response") from None
 
         points = [
             TrendPoint(period=str(p["period"]), ratio=float(p["ratio"]))
@@ -604,23 +657,27 @@ class DatalabTrendTool(_OpenApiTool):
         return TrendResult(keyword=keyword, points=points, tool_version=self.tool_version, latency_ms=latency_ms)
 
 
-class BlogCompetitionTool(_OpenApiTool):
-    """How crowded a keyword already is, via the Search API's blog vertical (read-only).
+class BlogCompetitionTool(_ApiHubTool):
+    """How crowded a keyword already is, via API HUB's blog search (read-only).
 
     ``total`` is Naver's own count of matching blog documents — the competition proxy the
     lane ranks on. The titles are returned alongside it because "how many" and "what do they
     look like" are the same question when deciding whether a post can differentiate.
+
+    Path shape differs from the old surface in a way worth noting: `/search/v1/blog` with no
+    `.json` suffix, format chosen by a `format` parameter that defaults to json. A ported URL
+    keeping `blog.json` 404s.
     """
 
     tool_id = COMPETITION_TOOL_ID
-    tool_version = f"{TOOL_VERSION}-blogsearch"
-    _ENDPOINT = "https://openapi.naver.com/v1/search/blog.json"
-    _MAX_DISPLAY = 100  # Search API per-request cap
+    tool_version = f"{TOOL_VERSION}-apihub"
+    _PATH = "/search/v1/blog"
+    _MAX_DISPLAY = 100  # documented per-request cap
 
     def competition(self, keyword: str, *, display: int, timeout_seconds: int) -> CompetitionResult:
         count = max(1, min(int(display), self._MAX_DISPLAY))
         params = urllib.parse.urlencode({"query": keyword, "display": count, "sort": "sim"})
-        raw, latency_ms = self._fetch(f"{self._ENDPOINT}?{params}", timeout_seconds=timeout_seconds)
+        raw, latency_ms = self._fetch(f"{self.BASE}{self._PATH}?{params}", timeout_seconds=timeout_seconds)
         try:
             data: dict[str, Any] = json.loads(raw)
             total = int(data["total"])
