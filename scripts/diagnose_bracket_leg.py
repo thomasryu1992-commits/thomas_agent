@@ -62,9 +62,11 @@ from runtime.mvp_runtime.crypto.live_execution import (  # noqa: E402
 from runtime.mvp_runtime.crypto.live_leg import build_bracket_intent  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_REJECTED = 3
+from runtime.mvp_runtime.cli_common import EXIT_OK, EXIT_USAGE  # noqa: E402
+
+# A *finding*, not a refusal: the command ran and the leg was rejected by the venue. Findings
+# start above the shared codes so they can never be read as a block.
+EXIT_REJECTED = 4
 
 # The 2026-08-02 incident, exactly as the cycle records hold it. Defaults rather than a separate
 # code path so the reproduction is one flag, and so the numbers cannot drift from the record

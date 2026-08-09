@@ -38,19 +38,61 @@ DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v1"
 DATA_REVIEW_RECORD_TYPE = "crypto_data_review.v0"
 DATA_REVIEW_LEDGER_KIND = "crypto_data_review"
 DATA_REVIEW_DEGRADED = "DATA_REVIEW_DEGRADED"
+# Raised when the fire AFTER a degraded one degrades too. See `review_loop_is_stalled`.
+DATA_REVIEW_STALLED = "DATA_REVIEW_PERSISTENTLY_DEGRADED"
 
 DATA_REVIEW_TOKEN_ALLOWANCE = 4000
 DATA_REVIEW_TIMEOUT_SECONDS = TRIAGE_TIMEOUT_SECONDS
 MAX_SUGGESTIONS_PER_RUN = 5
 
 # The sources the runtime collects today — stated deterministically so the model is
-# told, not asked, what exists. Kept in one place; a new gated feed joins this list
-# in the same PR that wires it.
+# told, not asked, what exists. Kept in one place; a new source joins this list in the
+# same PR that wires it.
+#
+# **The rule used to say "a new gated feed", and that wording is what let this list go
+# stale for two weeks.** Four sources shipped after 2026-07-25 and none of them read as a
+# new gated feed: daily open interest rides the liquidation feed's existing grant and
+# object, and `oi_store` / `positioning_store` / `candle_archive` are local accumulators.
+# So the list said the runtime collects four series while it collects eight, and the model
+# is asked what to collect NEXT — an inventory that under-reports is the one input that
+# turns this review into a re-proposal of work already done. `evaluate_suggestion` reads
+# the same list for its `already_collected` check, so a stale entry silently disarms the
+# only deterministic filter the review has. The rule is now about SOURCES, not grants.
+#
+# Entries that feed no feature yet say so. They are still collected — the question the
+# model is answering is what to collect, so omitting them would invite re-collection — but
+# "collected" and "usable by a template today" are different facts and the accumulators
+# exist precisely because the second is years of retention away from the first.
+#
+# `binance_futures_positioning` is the one to read carefully, because `positioning_store`'s
+# own docstring said "it feeds nothing" and that claim went stale under it: the columns ARE
+# computed onto every feature row and ARE mintable, and what is gated is whether the two
+# POSITIONING_FAMILIES are OFFERED (`positioning_eligible`, a coverage measurement). Saying
+# "feeds nothing" here would invite the one suggestion that is already built.
 CURRENT_SOURCES = (
-    {"source": "binance_futures_klines", "content": "OHLCV candles, 15m/1h/4h/1d, 5 symbols"},
+    {"source": "binance_futures_klines",
+     "content": "OHLCV candles + the taker aggressor split (taker_buy_base -> taker_*), "
+                "15m/1h/4h/1d, over the CROSS_SECTION_UNIVERSE cohort"},
     {"source": "binance_futures_funding", "content": "funding-rate history (funding_rate, funding_zscore)"},
     {"source": "coinalyze_liquidations", "content": "liquidation history (spike ratio + long/short/total)"},
-    {"source": "binance_futures_mark_index", "content": "mark/index price and basis (mark_index_basis_bps)"},
+    {"source": "binance_futures_mark_index",
+     "content": "mark / index / premium-index price series (mark_index_basis_bps, premium_*)"},
+    {"source": "coinalyze_open_interest",
+     "content": "daily open-interest history (open_interest, _change_pct, _zscore) — "
+                "what every oi_* family reads"},
+    {"source": "coinalyze_open_interest_1h",
+     "content": "hourly open interest accumulated into oi_store, because the vendor keeps "
+                "~84 days and the factory replays 500. Feeds no feature yet: this is depth "
+                "for the series above, not a second signal"},
+    {"source": "binance_futures_positioning",
+     "content": "the three /futures/data/ long-short ratio series (top_position, top_account, "
+                "global_account) accumulated into positioning_store, because the vendor keeps "
+                "30 days. Feeds the positioning_* columns; the two families that read them stay "
+                "unminted until coverage covers the replay window"},
+    {"source": "dex_candle_archive",
+     "content": "15m/1h/4h/1d candles for every perp the xyz DEX lists, accumulated into "
+                "candle_archive because that venue serves a rolling 5,000-candle window and "
+                "nothing behind it. Feeds no feature yet"},
 )
 
 _REQUIRED_FIELDS = ("name", "data_kind", "rationale", "expected_use")
@@ -159,7 +201,17 @@ def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGES
 class MockDataReviewProvider:
     """Deterministic reviewer: no network, no real model (the ``MockProposerProvider``
     precedent). Returns one well-formed suggestion and one missing a required field,
-    so the mock path exercises acceptance AND shape rejection, never only degradation."""
+    so the mock path exercises acceptance AND shape rejection, never only degradation.
+
+    The usable one must name something genuinely NOT in :data:`CURRENT_SOURCES`, or it
+    exercises ``already_collected`` instead of acceptance — which is a different test's
+    job. It used to suggest open-interest history and assert in its own rationale that OI
+    "is not" collected; that became false when the daily series shipped, and nothing
+    caught it because ``already_collected`` matches the source NAME and the two spellings
+    differ. So the fixture went on stating a fact about the inventory that the inventory
+    contradicted. Resting liquidity is the replacement because no collected series
+    describes it: every one is a trade or a position, none is an order that is still
+    waiting."""
 
     model_id = "mock.data_gap_reviewer"
     model_version = "0.1.0"
@@ -173,11 +225,13 @@ class MockDataReviewProvider:
         "summary": "one usable suggestion, one malformed",
         "suggestions": [
             {
-                "name": "open_interest_history",
-                "data_kind": "positioning",
-                "rationale": "Funding and liquidations are collected but open interest — the "
-                             "third leg of the positioning picture — is not.",
-                "expected_use": "oi_squeeze family: enter when OI builds while price ranges.",
+                "name": "orderbook_depth_imbalance",
+                "data_kind": "market_microstructure",
+                "rationale": "Every collected series is a trade that happened or a position "
+                             "outstanding; none is resting liquidity, so nothing separates a "
+                             "move into a thin book from the same move into a deep one.",
+                "expected_use": "liquidity_vacuum family: take breakouts only when the book "
+                                "ahead of price is thin.",
             },
             {
                 "name": "malformed_suggestion",
@@ -326,6 +380,39 @@ def review_data_gaps(
     record["review_id"] = integrity.short_id("data_review", {"at": now})
     record["record_sha256"] = integrity.sha256_record(record)
     return record
+
+
+def review_loop_is_stalled(record: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether THIS degraded review follows one that also degraded — a stalled loop.
+
+    Degrade-never-block is the right posture for one bad fire and the wrong one for every
+    fire. This review runs weekly; its only run on the live host degraded on a provider shape
+    error (``MALFORMED_RESPONSE``), and a recurring version of that produces nothing,
+    indefinitely, while every fire reports COMPLETED. `scheduler`'s candle-archive branch
+    already settled the principle for exactly this shape — *"off on purpose is quiet; on and
+    not working RAISES"* — because a COMPLETED summary string reaches nobody, and the alert
+    surfaces are FAILED fires and the operator sheet.
+
+    So: the first degrade stays quiet (it is delivered on the sheet, with its reason), and the
+    second in a row raises onto the existing failure alert. Two, matching the lifecycle's own
+    "one bad window is noise" bar, and at a weekly cadence two is already a fortnight of a
+    review loop producing nothing.
+
+    **The signal is the schedule's own ``last_status``, not the ledger.** A weekly record has
+    almost certainly rotated out of the active file by the next fire, so counting ledger rows
+    would answer "not degraded" for the very gap this exists to catch. ``last_status`` is
+    per-schedule and never rotates.
+
+    Reading it is safe because ``0/0`` is uniquely the degraded signature — `review_data_gaps`
+    only ever produces ``suggested_count == 0`` with ``degraded`` set (provider failure,
+    unknown vocabulary, unparseable answer), so no healthy zero-suggestion run exists to
+    confuse it with. The raised status is recognised too: without that, raising would clear
+    the very marker the next fire reads and the alert would fire every OTHER week.
+    """
+    if not record.get("degraded"):
+        return False
+    previous = str(previous_status or "")
+    return previous.startswith("data_review=0/0") or DATA_REVIEW_STALLED in previous
 
 
 def format_review_report(record: Mapping[str, Any]) -> str:

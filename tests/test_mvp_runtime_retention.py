@@ -323,3 +323,110 @@ def test_a_fire_without_a_ledger_skips_rather_than_crashing(tmp_path):
     schedules = _rotate_schedule(tmp_path)
     summary = scheduler.run_due(schedules, now=_due(NOW), ledger=None, repo_root=tmp_path)
     assert summary["results"][0]["status"] == "skipped_no_ledger"
+
+
+# --- readers follow rotation -------------------------------------------------
+#
+# Nothing is destroyed, and until now that was where the property stopped. A reader that
+# stops at the active file makes an archived row invisible all the same, and the evidence
+# is still on disk to prove it should not have been — which is the shape this section
+# tests: not "was it kept" but "can the reader that needs it still see it".
+
+def _proposal_line(family: str, *, created_at: str) -> str:
+    from runtime.mvp_runtime.crypto import proposer
+
+    return json.dumps({
+        "kind": proposer.PROPOSAL_LEDGER_KIND, "trace_id": "t",
+        "record": {"record_type": proposer.PROPOSAL_RECORD_TYPE, "created_at": created_at,
+                   "proposals": [{"family": family, "accepted": True}]},
+    }, sort_keys=True)
+
+
+def _write_records(store: LedgerStore, lines: list[str]) -> None:
+    """Append rows to the active record ledger, as a run would."""
+    path = store.root / RECORDS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def test_the_archive_reader_sees_what_rotation_moved_and_iter_records_does_not(tmp_path):
+    """The active file's horizon is a ROW COUNT; a window is a SPAN. Rotation decided which."""
+    ledger = _store(tmp_path)
+    _write_records(ledger, [_proposal_line(f"fam_{i}", created_at="2026-07-30T00:00:00Z")
+                            for i in range(6)])
+    retention.rotate_file(ledger, RECORDS_FILE, keep_rows=2, now="2026-08-06T00:00:00Z")
+
+    assert len(list(ledger.iter_records())) == 2
+    everything = list(ledger.iter_records_with_archive())
+    assert len(everything) == 6
+    # Oldest first, archives ahead of the active file — the append order rotation split up.
+    assert [r["record"]["proposals"][0]["family"] for r in everything] == [
+        f"fam_{i}" for i in range(6)]
+
+
+def test_the_bound_skips_only_archives_wholly_before_it(tmp_path):
+    """`appended_since` bounds which FILES are opened, never which rows are yielded — the
+    archive grows forever and a daily reader must not grow with it."""
+    ledger = _store(tmp_path)
+    _write_records(ledger, [_proposal_line(f"old_{i}", created_at="2026-06-01T00:00:00Z")
+                            for i in range(4)])
+    retention.rotate_file(ledger, RECORDS_FILE, keep_rows=1, now="2026-06-02T00:00:00Z")
+    _write_records(ledger, [_proposal_line(f"new_{i}", created_at="2026-07-30T00:00:00Z")
+                            for i in range(4)])
+    retention.rotate_file(ledger, RECORDS_FILE, keep_rows=1, now="2026-08-06T00:00:00Z")
+
+    families = [r["record"]["proposals"][0]["family"]
+                for r in ledger.iter_records_with_archive(appended_since="2026-07-09T00:00:00Z")]
+    # old_0..old_2 went into the JUNE archive, stamped before the bound — never opened.
+    assert not {"old_0", "old_1", "old_2"} & set(families), "the June archive was opened"
+    # old_3 survived that rotation and was still in the active file when the AUGUST one
+    # archived it, so it arrives in a file the bound must open. That is the contract: the
+    # bound drops whole FILES that cannot hold an in-window row, and the caller's own
+    # window is what refuses this row.
+    assert sorted(families) == ["new_0", "new_1", "new_2", "new_3", "old_3"]
+    # And with no bound the same call still reaches everything ever written.
+    assert len(list(ledger.iter_records_with_archive())) == 8
+
+
+def test_an_unreadable_archive_name_is_read_rather_than_skipped(tmp_path):
+    """This method exists because a count under-reported, so the uncertain case must ADD
+    rows. A name that does not parse as a rotation stamp is a name we cannot date, not a
+    file we may drop."""
+    ledger = _store(tmp_path)
+    _write_records(ledger, [_proposal_line("kept", created_at="2026-07-30T00:00:00Z")])
+    archive = ledger.root / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "records.hand-copied.jsonl").write_text(
+        _proposal_line("undated", created_at="2026-07-30T00:00:00Z") + "\n", encoding="utf-8")
+
+    families = {r["record"]["proposals"][0]["family"]
+                for r in ledger.iter_records_with_archive(appended_since="2026-07-09T00:00:00Z")}
+    assert families == {"undated", "kept"}
+
+
+def test_the_proposer_backlog_counts_across_a_rotation(tmp_path):
+    """The live defect, end to end.
+
+    Measured 2026-08-08: `BACKLOG_WINDOW_DAYS = 30` and the proposer could see nine days,
+    because four in-window proposal records had rotated out of the active file. The backlog
+    it throttles on fell 15 -> 11 between 08-05 and 08-06 for that reason alone — a drop that
+    reads as families being installed and was the ledger being tidied.
+
+    The error direction is the bad one for a throttle: fewer counted, cap not reached, fires
+    proceed that the design meant to skip.
+    """
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto import proposer
+
+    now = "2026-08-08T06:00:00Z"
+    ledger = _store(tmp_path)
+    _write_records(ledger, [_proposal_line(f"fam_{i}", created_at="2026-07-30T00:00:00Z")
+                            for i in range(6)])
+    retention.rotate_file(ledger, RECORDS_FILE, keep_rows=2, now="2026-08-06T00:00:00Z")
+    window_start = timeutil.plus_minutes(now, -proposer.BACKLOG_WINDOW_DAYS * 24 * 60)
+
+    # Every one of the six is inside the 30-day window; only two survived rotation.
+    assert proposer.count_unreviewed_backlog(ledger.iter_records(), [], now=now) == 2
+    assert proposer.count_unreviewed_backlog(
+        ledger.iter_records_with_archive(appended_since=window_start), [], now=now) == 6

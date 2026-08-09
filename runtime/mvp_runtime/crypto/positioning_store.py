@@ -8,20 +8,31 @@ the account bias of that same cohort, and the account bias of everyone counted o
 information is in the **disagreement** between them: large capital leaning one way while account
 headcount leans the other is a situation no existing column can distinguish from agreement.
 
-**What it does NOT do, and this is the whole shape of the increment: it feeds nothing.** No
-feature reads it, no family mints against it, `snapshot` is never touched. That is the
-``oi_store`` posture applied for a stronger reason than depth-parity — here there is no history
-to backtest *at all*. The endpoints keep 30 days; the factory replays
-``FACTORY_DEPTH_DAYS`` = 500. Wiring a feature to a series that is 94% indeterminate over every
-replay window would mint families that cannot close enough trades to earn a verdict, and the
-robustness scorer would then be judging the retention wall rather than the strategy.
+**What holds it back — and this paragraph used to say something stronger that has stopped being
+true.** It read "it feeds nothing: no feature reads it, no family mints against it, ``snapshot``
+is never touched", which was the whole shape of the increment at ship time. Two thirds of that
+is now false: :func:`cycle.attach_positioning` reads :func:`read_rows` onto ``snapshot``, and
+:func:`features._positioning_columns` computes ``POSITIONING_NUMERIC_COLUMNS`` from it — columns
+that are in the mintable vocabulary. What survives is the **minting** half, and only that:
+:data:`~.factory.POSITIONING_FAMILIES` stay unoffered until
+:func:`coverage_summary` says the window is covered, which `factory` passes as
+``positioning_eligible``.
 
-So the honest sequence is: accumulate now, decide later. The reason to start today rather than
-when a family wants the data is that **retroactive collection is impossible** — a day not
-recorded is gone, and 500 days of depth is 500 days away whenever it starts. Waiting costs
-exactly the thing that is scarce. :func:`coverage` is what reports progress toward eligibility;
-the flip to actually reading the store stays an explicit change, because re-basing a feature
-source under live-capable strategies is not something a threshold should do unattended.
+The distinction is the point rather than a technicality. Attaching is safe at any coverage — an
+absent reading is ``None`` and a spec reading it simply does not trade. MINTING against it is
+not: the endpoints keep 30 days while the factory replays ``FACTORY_DEPTH_DAYS`` = 500, so a
+family minted today would be scored over a window that is 94% indeterminate, close too few
+trades to earn a verdict, and have the robustness scorer judging the retention wall rather than
+the strategy. That is the gate, and it is a coverage measurement rather than a wiring decision.
+
+CLAUDE.md sends readers to the docs before "fixing something odd", so a stale claim here does
+not sit still: it tells a reader the source-flip has not happened when half of it has. The
+sequence is still accumulate now, decide later — the reason to start before a family wants the
+data is that **retroactive collection is impossible**: a day not recorded is gone, and 500 days
+of depth is 500 days away whenever it starts. :func:`coverage` reports progress toward
+eligibility, and the flip that matters — a family actually minting against this — stays an
+explicit change, because re-basing a feature source under live-capable strategies is not
+something a threshold should do unattended.
 
 Shape and its reasons, all inherited from ``oi_store`` because the problem is the same one:
 
@@ -186,24 +197,31 @@ def read_rows(
     path = positioning_path(root)
     if not path.is_file():
         return []
+    # Streams the handle rather than `read_text().splitlines()`, which held the whole file as one
+    # string AND as a list of lines while the rows were being built. Measured on the live store
+    # (4.5 MB, 2026-08-09): peak 9.71 MB -> 0.16 MB, and 0.150s -> 0.107s. Deliberately NOT
+    # `jsonl.iter_objects`: that fails closed on a bad line and this reader must DEGRADE — see the
+    # docstring above, and `except ValueError: continue` below, which is the whole point of it.
+    # An OSError anywhere still yields [], including mid-iteration, so a partial read is discarded
+    # rather than returned as if it were the store.
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                key = _row_key(row)
+                if not all(key):
+                    continue
+                latest[key] = row
     except OSError:
         return []
-    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        key = _row_key(row)
-        if not all(key):
-            continue
-        latest[key] = row
 
     wanted_symbol = str(symbol).strip().upper() if symbol is not None else None
     wanted_series = str(series) if series is not None else None

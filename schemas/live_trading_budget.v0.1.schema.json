@@ -58,10 +58,10 @@
           "exclusiveMinimum": 0
         },
         "absolute_max_notional_usdt": {
-          "description": "The hard ceiling a per-order cap can never exceed. Capped at 200 USDT: a configured cap above the ceiling is refused, never clamped.",
+          "description": "The hard ceiling a per-order cap can never exceed. Capped at 500 USDT (200 until 2026-08-08; raised on Thomas's instruction after the live path earned its canary evidence): a configured cap above the ceiling is refused, never clamped. Kept in step with live_budget.HARD_CEILING_USDT, which refuses first so the error names the offending number.",
           "type": "number",
           "exclusiveMinimum": 0,
-          "maximum": 200
+          "maximum": 500
         },
         "max_daily_order_count": {
           "type": "integer",

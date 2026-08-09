@@ -7,14 +7,22 @@ record, not a permission. The `MVP_LIVE_TRADING=real` opt-in, the confirmation p
 order (see LIVE_EXECUTION_GOVERNANCE_V0.1.md).
 
 Approved starting caps (Thomas, 2026-07-23): 60 USDT/order, 2 orders/day, 120 USDT open
-exposure, 20 USDT daily loss, against the 200 USDT absolute ceiling; >= 3 clean canary orders.
+exposure, 20 USDT daily loss, >= 3 clean canary orders. Those are still this script's
+**defaults**, deliberately, including `--absolute-max-notional 200`: the hard ceiling a budget
+may declare rose to 500 on 2026-08-08 (`live_budget.HARD_CEILING_USDT`), but a default is what
+an omitted flag registers, and an omitted flag must never be the thing that widens a limit.
+Every cap above the starting values is typed out by the operator, on purpose.
 
     python -m scripts.register_live_trading_budget --registered-by thomas --symbols BTCUSDT
     python -m scripts.register_live_trading_budget --registered-by thomas --symbols BTCUSDT,ETHUSDT \
         --max-order-notional 60 --daily-loss-limit 20 --valid-days 30
 
 Changing a limit is a re-run: the id and self-hash derive from the caps, so a new cap is a new
-record, never a silent edit.
+record, never a silent edit. **A re-run replaces the whole record, not the flags you passed** —
+every cap, the symbol allowlist and the validity window come out of this one invocation, so an
+omitted `--symbols` narrows the allowlist and an omitted `--min-clean-canary-orders` lowers the
+promotion bar, both silently. Read the registered caps back off the readiness board afterwards
+(`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than assuming the delta landed.
 """
 
 from __future__ import annotations

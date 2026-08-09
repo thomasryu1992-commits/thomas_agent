@@ -40,6 +40,7 @@ from . import timeutil
 from .errors import PersistenceError
 from .events import stamped_event
 from .store import (
+    ARCHIVE_DIR,
     AUDIT_FILE,
     BLOCKS_FILE,
     BRIDGE_REQUESTS_FILE,
@@ -51,7 +52,6 @@ from .store import (
     SCHEDULER_FILE,
 )
 
-ARCHIVE_DIR = "archive"
 RETENTION_EVENT_TYPE = "ledger_retention.v0"
 
 # How many rows stay in the active file. The point is a bounded file, not a small one: the

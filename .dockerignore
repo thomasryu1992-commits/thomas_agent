@@ -8,10 +8,21 @@ THOMAS_CORE/activations/
 THOMAS_CORE/deactivations/
 THOMAS_CORE/revocations/
 THOMAS_CORE/CURRENT_CORE_RELEASE.yaml
-**/.env
-**/*.pem
-**/*.key
-**/*.p12
+# `.env*`, not `.env`. The exact-name pattern matched the live file and nothing beside it, so a
+# BACKUP of it — `.env.bak-pre-605`, left in the repo root on 2026-08-08 by a session about to
+# edit the real one — sat in the build context fully readable. That file is a copy of the venue
+# API key, the model provider keys and the bot token. Nothing had baked it in yet only because
+# the builds that ran happened to come from a clean worktree; a `docker compose build` from the
+# repo root would have shipped it. Same widening for the credential extensions, which had the
+# same hole: `key.bak` was not `*.key`.
+#
+# Deliberately wider than the observed miss. The failure mode here is that a secret file gets a
+# suffix — an editor's `~`, a `.bak`, a dated copy — and the pattern that named the original
+# stops matching it. No tracked file matches any of these, so widening costs nothing.
+**/.env*
+**/*.pem*
+**/*.key*
+**/*.p12*
 
 # Dev cruft and anything the runtime service does not read.
 .git/
