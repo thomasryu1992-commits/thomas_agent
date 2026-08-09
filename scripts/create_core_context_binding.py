@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
+from lib.utctime import utc_now
 from lib.core_release_verifier import sha256_file, verify_activation_record, verify_current_pointer
 from lib.safe_io import atomic_write_text, exclusive_lock, immutable_write_text, safe_repo_path
 
@@ -16,8 +16,6 @@ DEFAULT_POINTER = "THOMAS_CORE/CURRENT_CORE_RELEASE.yaml"
 LOCK_PATH = ROOT / ".runtime_locks/core_context_binding.lock"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_task(path: Path) -> dict:

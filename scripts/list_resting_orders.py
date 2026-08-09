@@ -44,8 +44,9 @@ from runtime.mvp_runtime.crypto.live_execution import select_order_adapter  # no
 from runtime.mvp_runtime.crypto.live_position import list_open_live_positions  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 
-EXIT_OK = 0
-EXIT_BLOCKED = 3
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
+
+# A *finding*, not a refusal: the command ran and found orders nothing owns.
 EXIT_UNOWNED = 4
 
 # The bracket id fields a live position carries. Named here rather than imported from the leg
