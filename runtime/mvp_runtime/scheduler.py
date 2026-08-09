@@ -1135,9 +1135,18 @@ def _execute(
             raise
         # The frame a proposal is JUDGED on has to be the frame a minted spec would be judged
         # on, and until now it was `collect_market_data` alone — OHLCV, nothing else. Measured
-        # 2026-08-08 on a bare snapshot of this exact shape: **31 of the 56 mintable numeric
-        # columns are None**, which is every funding, liquidation, open-interest, HTF, taker,
-        # premium, reference, cross-section and positioning column in the vocabulary.
+        # 2026-08-08 on a bare snapshot of this exact shape: **25 of the 56 mintable numeric
+        # columns are None**, which is every funding, liquidation, open-interest, HTF, premium,
+        # reference, cross-section and positioning column in the vocabulary.
+        #
+        # **NOT the taker columns**, and the exception is worth carrying because getting it
+        # wrong is the easy mistake: `taker_buy_base` rides the same klines call as the candles,
+        # so `taker_buy_ratio` / `taker_flow_*` are supplied on a bare frame. #621's first draft
+        # measured a candle-archive snapshot, where that field is null because the DEX does not
+        # send it, and concluded the taker families were starved. They are not —
+        # `test_mvp_runtime_crypto_mining_frame` asserts it so the premise cannot be re-derived
+        # from the wrong venue. Re-measured 2026-08-09 on the live collector: 0 of the 4 taker
+        # columns are None on a bare Binance frame.
         #
         # `proposer.py`'s own docstring states the invariant this broke — the validator's
         # vocabulary "is a strict subset of the live feature row, so anything it accepts the row
@@ -1148,10 +1157,14 @@ def _execute(
         # premise does not trade" when the truth is "this runtime did not supply the column."
         #
         # It is not a small share of the record: of the 26 accepted-but-uninstalled families in
-        # the backlog, **22 score exactly zero trades, and every one of them names a column this
-        # block did not supply.** The four that traded read price columns only. That correlation
-        # is the measurement — the proposer has been rejecting the non-price half of its own
-        # search space for a reason that was never about the proposals.
+        # the backlog, **22 score exactly zero trades, and 18 of those 22 name a column this
+        # block did not supply.** The four that traded read price columns only. The four
+        # zero-trade families starved by nothing — `macd_divergence_short`,
+        # `taker_flow_mean_reversion`, `taker_flow_momentum`,
+        # `volatility_expansion_breakout_long` — simply have tight or malformed conditions, and
+        # two of them are taker families, which is the same draft error as above showing up in
+        # the count. 18 of 22 is the correlation; 22 of 22 was never measured.
+        #
         # `candle_target` is left None — the LIVE depths — because this block's base frame is
         # `collect_market_data`'s default window, not the factory's replay span. Legs pulled at
         # factory depth over a 120-bar frame would page data that the bar alignment then throws
