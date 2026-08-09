@@ -916,3 +916,81 @@ def test_reviews_skipped_names_every_review_stepped_around(tmp_path):
     # `silent_reactivation` is absent because nothing was reactivated — an unused escape is
     # not a skipped review, or every promotion would read as having skipped everything.
     assert "silent_reactivation" not in summary["reviews_skipped"]
+
+
+# --- v3: the hash names who comes back ----------------------------------------
+
+def test_the_reactivation_set_is_material_to_the_hash():
+    """The gap v3 closes: the signature was honest about a smaller effect than the one it
+    authorized. `BUILD_HISTORY` records replace mode simulated against a copy of the real pool
+    on 2026-07-29 — 16 reactivated, 57 lifecycle counters reset — while the hash was a function
+    of ids, rules and mode alone."""
+    base = promotion_content_sha256(["c1"], ["aaa"], keep_active=False)
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, reactivated_candidate_ids=[]) == base
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, reactivated_candidate_ids=["c1"]) != base
+    # Order-insensitive, like the two lists beside it.
+    assert promotion_content_sha256(["c1"], ["aaa"], False, ["c2", "c1"]) == \
+        promotion_content_sha256(["c1"], ["aaa"], False, ["c1", "c2"])
+
+
+def test_a_promotion_that_reactivates_nothing_hashes_as_stably_as_before():
+    """The cost of v3 is zero for every promotion that returns nobody: an empty set is the
+    default, so a fresh install's hash does not move with the pool underneath it."""
+    empty = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, reactivated_candidate_ids=[])
+    assert empty == promotion_content_sha256(["c1"], ["aaa"], keep_active=False)
+
+
+def test_add_mode_reactivates_nothing_by_construction(tmp_path):
+    """Add mode keeps the incumbents' own status and the door refuses a candidate already in
+    the pool, so nothing can come back — answered without reading the pool at all."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
+    assert pool.reactivated_candidate_ids([cid], keep_active=True, root=tmp_path) == []
+    assert pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path) == [cid]
+
+
+def test_the_hash_input_and_the_door_guard_cannot_drift(tmp_path):
+    """Two views of one fact — the hash reads it by candidate id at the ask, the door reads it
+    off assembled entries at the install. They must name the same lineages or the approval
+    binds one thing and the guard refuses another."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    cid = entry["candidate_id"]
+
+    by_id = pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path)
+    by_entry = pool.silent_reactivations(
+        [{**entry, "status": "PAPER_ACTIVE"}], root=tmp_path,
+    )
+    assert by_id == sorted(r["candidate_id"] for r in by_entry) == [cid]
+
+
+def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval(tmp_path):
+    """The brittleness, asserted as the intended behaviour rather than avoided.
+
+    Measured 2026-08-09 before making this change: 0 lifecycle status transitions across
+    15,157 cycle records over 19 days, against an ask-to-approve window with a median of 1.9
+    minutes. So this refusal is rare — and when it fires, the set of members being returned to
+    trading really did change, which is exactly what the approval is supposed to bind.
+    """
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  root=tmp_path, now=NOW, without_approval=True)
+    cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
+
+    # Asked while the member is live: nothing is being reactivated.
+    asked = promotion_content_sha256(
+        [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
+        False, pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+    )
+    _suspend(tmp_path)          # the lifecycle moves underneath the pending approval
+    now_hash = promotion_content_sha256(
+        [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
+        False, pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+    )
+    assert asked != now_hash, "the approval would still verify against a changed effect"
