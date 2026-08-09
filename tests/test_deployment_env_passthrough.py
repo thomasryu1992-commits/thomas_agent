@@ -37,7 +37,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from runtime.mvp_runtime import consumption, frontdesk, operator, providers, tools, workspace
+from runtime.mvp_runtime import (
+    consumption,
+    frontdesk,
+    naver_research,
+    operator,
+    providers,
+    tools,
+    workspace,
+)
 from runtime.mvp_runtime.crypto import account, live_execution, live_order, live_pnl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +136,32 @@ LIVE_TRADING_SURFACE = {
 }
 
 
+# The Naver research lane (2026-08-09). Forwarded to the SCHEDULER (its weekly ideation runs
+# there as a schedule) and the DISPATCH-BRIDGE (the one door that runs the pipeline, and where
+# the `research`/`content` kinds land), and withheld from the OPERATOR.
+#
+# Withheld rather than merely unneeded, and the reason is the credential, not the capability.
+# The lane's USE is read-only — keyword volumes, a trend series, a competition count. The KEY
+# is not: `NAVER_SEARCHAD_SECRET_KEY` signs against the ad account and the same signature
+# reaches campaign-management endpoints that can change spend. So "it only reads" is a
+# property of this code, not of the credential — the same shape as the live-trading note
+# above, where `account.py` is read-only by construction while its key carries futures
+# permission at the venue.
+#
+# And forwarding is a capability here, not a cost: `MVP_NAVER_RESEARCH` is the WHOLE gate
+# (no mounted grant), so naming it in a service's block plus a value in `.env` is the entire
+# difference between that service reading mocks and reaching Naver with the operator's ad
+# credential. Adding a fourth service is that decision, made here.
+NAVER_RESEARCH_SURFACE = {
+    naver_research.NAVER_RESEARCH_ENV: "the whole gate — no grant behind it",
+    naver_research.SEARCHAD_CUSTOMER_ID_ENV: "the ad account's customer id",
+    naver_research.SEARCHAD_API_KEY_ENV: "the Search Ad access licence",
+    naver_research.SEARCHAD_SECRET_KEY_ENV: "the signing secret — account-wide, not read-only",
+    naver_research.OPENAPI_CLIENT_ID_ENV: "the Developers-center client id (Datalab + blog search)",
+    naver_research.OPENAPI_CLIENT_SECRET_ENV: "the Developers-center client secret",
+}
+
+
 def _service_environment(service: str) -> dict:
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
     return compose["services"][service].get("environment") or {}
@@ -171,6 +205,33 @@ def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
     either way, so only a test says which state the deployment is in."""
     assert env_var not in _service_environment(service), \
         f"{service} is still handed {env_var}; the prediction-market lane was removed"
+
+
+@pytest.mark.parametrize("env_var, what", sorted(NAVER_RESEARCH_SURFACE.items()))
+@pytest.mark.parametrize("service", ["scheduler", "dispatch-bridge"])
+def test_the_naver_lane_reaches_the_services_that_run_it(service, env_var, what):
+    """Without this the lane is unreachable on the server however correct `.env` is — and
+    nothing errors, it just keeps returning mock keyword volumes."""
+    environment = _service_environment(service)
+    assert env_var in environment, (
+        f"{env_var} ({what}) is not in the {service} service's compose environment, so a "
+        f"value in .env never reaches the container and the lane stays silently on mocks"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
+@pytest.mark.parametrize("env_var", sorted(NAVER_RESEARCH_SURFACE))
+def test_the_operator_is_not_handed_the_naver_ad_credential(env_var):
+    """The withholding, pinned so it is a decision to reverse rather than a drift.
+
+    The operator loop is not a lane consumer — the weekly ideation is a scheduler job and
+    orchestrator-initiated research arrives at the dispatch door. Handing it the Search Ad
+    secret would put an account-wide, spend-capable credential on a third service for no
+    consumer, which is the trade the live-trading block above declines for the same reason."""
+    assert env_var not in _service_environment("operator"), (
+        f"operator is handed {env_var}; the Naver lane does not run there and the Search Ad "
+        f"secret is account-wide, not the read-only key its read-only use suggests"
+    )
 
 
 # --- the live-trading surface must reach neither service --------------------------------
