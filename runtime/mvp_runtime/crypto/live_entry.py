@@ -84,6 +84,11 @@ BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
+# #610 Part 1. Two codes, not one, because they are different operator problems: the strategy is
+# deliberately not armed for live (expected, and cleared at the promotion door), versus the
+# runtime could not read which strategies are armed (a fault, and the pool read is where to look).
+NOT_LIVE_ROUTABLE = "LIVE_ENTRY_STRATEGY_NOT_LIVE_ROUTABLE"
+LIVE_TIER_UNKNOWN = "LIVE_ENTRY_LIVE_TIER_UNKNOWN"
 BRACKET_UNPRICEABLE = "LIVE_ENTRY_BRACKET_UNPRICEABLE"
 COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # A plan whose stop MOVES after entry, which this leg cannot execute.
@@ -184,6 +189,9 @@ def plan_live_entry(
     # closed, and it was worse in one way: the test helper omitted it too, so the untested
     # branch was the *guarded* one. A missing or malformed verdict now refuses.
     verdict: Mapping[str, Any],
+    # #610 Part 1 — the ids the pool says may open a REAL position. No default, and `None`
+    # refuses: see the door at 2a.
+    live_routable_strategy_ids: set[str] | None,
     # How many live entries in a row filled and could not be protected. No default, for the two
     # reasons above and one of its own: this door exists because the runtime placed two live
     # entries whose protective stop was refused and re-entered on the next signal regardless.
@@ -225,6 +233,29 @@ def plan_live_entry(
         "timeframe": plan.get("timeframe"),
         "max_holding_bars": plan.get("max_holding_bars"),
     }
+
+    # 2a. **May THIS strategy spend money?** The question slot 2b used to ask, asked in a form
+    # that can be satisfied. Gate 0 was a pool-wide aggregate and was unsatisfiable; this is a
+    # per-strategy permission the operator grants at the promotion door and nothing else can
+    # move — see `pool.live_routable_strategy_ids` for why it is a field rather than a status.
+    #
+    # `None` refuses. A caller that could not determine the live-routable set is a caller that
+    # does not know whether this strategy may trade, and the parameter has no default for the
+    # same reason `verdict` has none: the last time a door here was skippable-when-absent, the
+    # test helper omitted it too and the untested branch was the guarded one.
+    #
+    # Placed with the accumulating doors rather than before them so an operator reading a
+    # refusal sees every closed door at once, and placed AFTER the plan exists so a strategy
+    # with no route is still reported as NO_ROUTE rather than as a permission problem.
+    strategy_id = str(plan.get("strategy_id") or "")
+    if live_routable_strategy_ids is None:
+        reasons.append(LIVE_TIER_UNKNOWN)
+    elif strategy_id not in live_routable_strategy_ids:
+        reasons.append(NOT_LIVE_ROUTABLE)
+        detail["live_tier"] = {
+            "strategy_id": strategy_id or None,
+            "live_routable_count": len(live_routable_strategy_ids),
+        }
 
     # 2-4. The cheap doors, accumulated so a refusal names every closed one at once.
     if not isinstance(verdict, Mapping) or not bool(verdict.get("allow_new_position")):

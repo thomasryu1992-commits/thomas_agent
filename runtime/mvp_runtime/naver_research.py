@@ -76,6 +76,21 @@ NAVER_RESEARCH_ON = "enabled"
 SEARCHAD_PROVIDER = "naver_searchad"
 OPENAPI_PROVIDER = "naver_openapi"
 
+# The credential env var NAMES, as module constants rather than only as default arguments.
+# The deployment drift gate (`tests/test_deployment_env_passthrough.py`) names them from here,
+# so renaming one cannot silently empty that list and leave the capability unreachable on the
+# deployed service — the exact failure that gate exists for.
+#
+# The Search Ad credential is **account-wide, not scoped to the keyword tool**: the same
+# signing secret reaches campaign-management endpoints that can change ad spend. That is why
+# the passthrough list is deliberately narrow (scheduler + dispatch-bridge, not operator) —
+# read-only USE does not make a read-only KEY.
+SEARCHAD_CUSTOMER_ID_ENV = "NAVER_SEARCHAD_CUSTOMER_ID"
+SEARCHAD_API_KEY_ENV = "NAVER_SEARCHAD_API_KEY"
+SEARCHAD_SECRET_KEY_ENV = "NAVER_SEARCHAD_SECRET_KEY"
+OPENAPI_CLIENT_ID_ENV = "NAVER_CLIENT_ID"
+OPENAPI_CLIENT_SECRET_ENV = "NAVER_CLIENT_SECRET"
+
 # Read-only lookups cross the network but never invoke a model.
 _NETWORK_FLAGS = (NETWORK_ACCESS,)
 
@@ -390,9 +405,9 @@ class SearchAdKeywordTool:
     def __init__(
         self,
         *,
-        customer_id_env: str = "NAVER_SEARCHAD_CUSTOMER_ID",
-        api_key_env: str = "NAVER_SEARCHAD_API_KEY",
-        secret_key_env: str = "NAVER_SEARCHAD_SECRET_KEY",
+        customer_id_env: str = SEARCHAD_CUSTOMER_ID_ENV,
+        api_key_env: str = SEARCHAD_API_KEY_ENV,
+        secret_key_env: str = SEARCHAD_SECRET_KEY_ENV,
         authorization: Authorization | None = None,
     ):
         # NAMES of env vars, never values.
@@ -505,8 +520,8 @@ class _OpenApiTool:
     def __init__(
         self,
         *,
-        client_id_env: str = "NAVER_CLIENT_ID",
-        client_secret_env: str = "NAVER_CLIENT_SECRET",
+        client_id_env: str = OPENAPI_CLIENT_ID_ENV,
+        client_secret_env: str = OPENAPI_CLIENT_SECRET_ENV,
         authorization: Authorization | None = None,
     ):
         self._client_id_env = client_id_env  # NAMES, never values

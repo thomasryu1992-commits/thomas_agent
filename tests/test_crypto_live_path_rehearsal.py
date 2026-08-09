@@ -227,6 +227,9 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
     return live_entry.plan_live_entry(
         plan,
         symbol=SYMBOL,
+        # #610 Part 1 — the rehearsal walks the ARMED path end to end, so the strategy this plan
+        # names is in the live tier. The refusal side has its own tests.
+        live_routable_strategy_ids={str((plan or {}).get("strategy_id") or "")},
         reconciliation=reconcile_positions(local, snapshot, now=NOW),
         local_positions=local,
         snapshot=snapshot,
