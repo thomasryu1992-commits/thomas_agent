@@ -1380,16 +1380,73 @@ same answer.
       | crypto fan-out interval (target 900s), n=727 | median **+4s**, p99 **+44s** |
       | over 2 minutes late | **3 / 727 (0.4%)**, worst +438s |
       | scheduler events | 12,554 |
-      | abandoned runs (process died mid-fire) | **0** |
+      | abandoned runs (process died mid-fire) | **0** — reads unpaired-right-now, not ever; see below |
       | fire failures, all kinds, all time | **1** (`RemoteDisconnected`) |
 
-      **One number is deliberately absent and its absence is the finding.** How often the
-      maintenance budget actually bit cannot be answered: a deferral does not claim its
-      occurrence, so no event is written, and the count lives only in `run_due`'s return value.
-      The mechanism that bounds risk-kind latency leaves no durable trace of having acted, so
-      "the budget works" above is *inferred from the latency distribution*, not observed. If
-      this box is ever reopened, recording the deferral is the first cheap step — it converts
-      the main claim here from an inference into a measurement.
+      **The number that was absent is now on the ledger, and it says the budget bound five
+      times.** When the above was written a deferral wrote nothing durable — it claims no
+      occurrence, so the count lived in `run_due`'s return value and the container log, and
+      neither outlives a recreation. #596 gave the deferral its own action; #598 put the pass
+      **spend** and the budget it was spending against on the row, because a count alone cannot
+      tell a budget sitting on its boundary from one that is not the lever. Re-read 2026-08-09
+      across the whole ledger (12 files, 14,319 events, 2026-07-22 → 2026-08-09; deferral rows
+      begin 08-08, the event being younger than the budget):
+
+      | | |
+      |---|---|
+      | deferral rows / occurrences / passes that bound | **27 / 13 / 5** |
+      | occurrences lost | **0** — each ran on a later pass |
+      | by kind | `crypto_null_control` **25**, `crypto_factory` **2** |
+      | pass spend where it bound (budget 60s) | min **62.6s**, median **70.1s**, max **98.8s** |
+      | first deferral → serving fire | min **71s**, median **161s**, max **231s** |
+
+      **Two of those rows change how the number should be read.** The dominant consumer is
+      `crypto_null_control`, not the factory the budget was sized against: fifteen of its
+      schedules fall due within seconds of each other and clear over three consecutive passes.
+      And the largest bind is **1.65× the budget** — the "one group is longer than any budget
+      worth setting" shape rather than a boundary case, so raising 60 would not stop it binding.
+      The per-pass guarantee holds either way; what a deferred occurrence gets is not a one-tick
+      slip but up to ~4 minutes.
+
+      **Rows are not occurrences, and the difference is 2×.** A deferral leaves the schedule due,
+      so an occurrence behind a burst is deferred again on every pass it waits: 27 rows are 13
+      occurrences (five waited three passes, four waited two, four a single pass).
+      `tests/test_mvp_runtime_scheduler.py` pins this, and a row count read as occurrences
+      overstates what the budget cost.
+
+      **And "the budget works" is observed now rather than inferred.** Counting a
+      `crypto_pipeline` fire — a `RISK_KINDS` member, i.e. the thing the budget exists to protect
+      — late when the gap to the previous one exceeded 960s against its 900s cadence, over 2,006
+      gaps, with gaps beyond three cadences excluded as outages rather than lateness: **8 of the
+      13 days before the budget had a late fire; the five days since have none, worst 923s**,
+      which is tick jitter.
+
+      **Three of the eleven late gaps are not lateness, and the first reading of this said they
+      were.** The three largest — 1,854s / 1,830s / 1,806s — each *contain* an `abandoned`
+      recovery row, so each spans a scheduler restart rather than a slow pass. Drop them and the
+      worst genuine gap is **1,338s**, while the eight that remain cluster at 07:55–08:20Z, which
+      is the factory morning burst the budget was built for. The mechanism reads *better* after
+      the correction than before it, which is the reason to make it rather than leave the larger
+      number standing: quoting 1,854s credits the budget with having fixed a container restart.
+
+      **It stays observational, and the confound is real:** the factory rotation was cut in the
+      same week (15m dropped 08-04, 1h frozen 08-06), which shortens passes on its own, and 08-04
+      was already clean one day *before* the budget went live. The two changes are not separable
+      from this data.
+
+      **The `0` in the table above answers a different question than its label.** The ledger
+      holds **15** `abandoned` rows inside that window (2026-07-25 → 08-06): 10 `pm_scan` from the
+      since-deleted predmarket lane, 3 `crypto_pipeline`, 1 `crypto_propose`, 1 `candle_archive`.
+      A live `find_abandoned_runs()` call returns 0 anyway, and correctly — `abandoned` is itself
+      a terminal action, so recovery *pairs* the run it recovers and the helper reports only what
+      is still unpaired **right now**. "Nothing is currently unrecovered" is not "no process ever
+      died mid-fire", and the row's label promises the second. **Consequence for the condition
+      below: the reopen test must read `action == "abandoned"` rows, not the helper**, which by
+      construction cannot ever satisfy it. What the ledger cannot say is *why* a run died — the
+      row is rebuilt from the orphaned `started` and carries no cause — and on a host that
+      recreates containers several times a day a deploy is the likelier reading than the OOM the
+      condition is aimed at. Likelier is not established, so this is written down rather than
+      dismissed.
 
       **The one exposure the in-process design cannot close**, stated so the deferral is not
       read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
@@ -1399,10 +1456,17 @@ same answer.
       +438s — but no in-process change can make it impossible.
 
       **What reopens this:** one fire that hangs rather than merely running long; one abandoned
-      run (the process dying mid-fire, which OOM would cause and `except Exception` cannot
-      catch); or the p99 above moving from seconds into minutes. Any of the three makes the
-      separation a fix rather than an investment, and the measurement above is the thing to
-      re-run first.
+      run **that no container restart explains** (the process dying mid-fire, which OOM would
+      cause and `except Exception` cannot catch — read the `abandoned` rows, not
+      `find_abandoned_runs()`, and check each against a restart before counting it); the p99 above
+      moving from seconds into minutes; or **a day that shows late risk-kind fires and deferrals
+      together** — the deferral rows now make that a query
+      (`read_scheduler_events()` filtered to `action == "deferred"`, grouped by `created_at` for
+      passes) rather than a judgement. Deferrals alone do not qualify and that is the point of
+      recording them: the clustering above cost maintenance up to four minutes while
+      `crypto_pipeline` held its cadence, so it is cosmetic, and the schedules should be left
+      alone until the two appear on the same day. Any of the four makes the separation a fix
+      rather than an investment, and the measurements above are the thing to re-run first.
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
