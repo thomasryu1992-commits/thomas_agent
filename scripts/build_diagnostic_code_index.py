@@ -110,12 +110,36 @@ def _string_value(node: ast.AST | None, constants: Mapping[str, str]) -> str | N
     return None
 
 
+def is_reason_code(value: str) -> bool:
+    """Whether a literal is a reason **code** rather than a human-readable **message**.
+
+    A code has no spaces. That one rule splits the whole surface cleanly — measured over every
+    literal the walk finds: 751 ``SCREAMING_CASE``, 9 ``lower_snake``, 27 sentences, and nothing
+    that is none of those.
+
+    The distinction is the point of the file. `SpecParseError` and the bare `ValueError`s take a
+    *message* as their first argument, so the walk was recording rows like
+    ``created_by must be a non-empty string`` in the code column — inflating the vocabulary by 27
+    and, worse, putting an un-greppable key where an operator looks a code up. That is a worse
+    failure than the gap it replaced: §G3 built this to answer "a code came out of the runtime —
+    where is it raised", and no operator greps an English sentence.
+
+    ``lower_snake`` stays a code, deliberately. The nine are `FusionRefused`'s mint-refusal
+    vocabulary — ``duplicate_rule_hash``, ``too_many_conditions``, ``holdout_unjudgeable`` — which
+    `REMAINING_WORK.md` §F already tabulates by name. They are codes in another case convention,
+    not prose, and the space rule keeps them without needing to know that.
+    """
+    return " " not in value
+
+
 def _literal_code(call: ast.Call, constants: Mapping[str, str]) -> str | None:
     """The reason code, from the first positional argument or ``reason_code=``.
 
     A non-literal that is not a resolvable module constant (an f-string, a local, an attribute) is
     skipped rather than guessed at: an index that invented a code would be worse than one that
-    admits a gap, and the gap is countable.
+    admits a gap, and the gap is countable. A literal that is a *message* rather than a code is
+    likewise not returned — see :func:`is_reason_code` — and is counted under its own heading so
+    the two gaps are not conflated.
     """
     for keyword in call.keywords:
         if keyword.arg == "reason_code":
@@ -158,10 +182,17 @@ def _delegated_code(call: ast.Call, constants: Mapping[str, str]) -> tuple[str, 
     return (code, error_class) if code is not None else None
 
 
-def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], int]:
-    """Every raise site carrying a literal code, plus how many were skipped as non-literal."""
+def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], int, int]:
+    """``(indexed sites, non-literal count, message count)``.
+
+    The two counts are separate gaps and are reported separately: a site that *builds* its code
+    can be given one, while a site that raises with a **message** has no code to find in the first
+    place. Collapsing them into one number would say the index is missing 140 codes when 27 of
+    those failure paths do not have a code at all.
+    """
     sites: list[Site] = []
     skipped = 0
+    messages = 0
     for path in sorted(source_dir.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -185,11 +216,17 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
                 if code is None:
                     skipped += 1
                     continue
+                if not is_reason_code(code):
+                    messages += 1
+                    continue
             else:
                 delegated = _delegated_code(node, constants)
                 if delegated is None:
                     continue
                 code, name = delegated
+                if not is_reason_code(code):
+                    messages += 1
+                    continue
             enclosing_function: str | None = None
             condition: str | None = None
             walker: ast.AST = node
@@ -210,7 +247,7 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
             # module path is normalised here rather than at each of the places that read it.
             sites.append(Site(code, path.relative_to(ROOT).as_posix(), node.lineno, name,
                               enclosing_function, condition))
-    return sites, skipped
+    return sites, skipped, messages
 
 
 def _cell(value: Any, limit: int = 96) -> str:
@@ -221,7 +258,7 @@ def _cell(value: Any, limit: int = 96) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def render(sites: list[Site], skipped: int) -> str:
+def render(sites: list[Site], skipped: int, messages: int) -> str:
     by_code: dict[str, list[Site]] = defaultdict(list)
     for site in sites:
         by_code[site.code].append(site)
@@ -246,6 +283,9 @@ def render(sites: list[Site], skipped: int) -> str:
     out.append(f"- **{len(shared)}** codes are raised from more than one module (see below)")
     out.append(f"- **{skipped}** raise sites build their code at runtime rather than from a "
                "literal and are not indexable; they are counted rather than guessed at")
+    out.append(f"- **{messages}** raise sites carry a human-readable **message** where a code "
+               "would go, so there is nothing to look up — a different gap from the line above, "
+               "and counted apart from it")
     out.append("")
     out.append("## Codes raised from more than one module")
     out.append("")
@@ -276,8 +316,8 @@ def render(sites: list[Site], skipped: int) -> str:
 
 
 def build() -> str:
-    sites, skipped = collect_sites()
-    return render(sites, skipped)
+    sites, skipped, messages = collect_sites()
+    return render(sites, skipped, messages)
 
 
 def main(argv: list[str] | None = None) -> int:

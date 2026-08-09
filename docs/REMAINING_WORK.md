@@ -3159,7 +3159,17 @@ Three of the review's findings are already closed and are named so they are not 
   events / 2.7 MB / ~20 ms and grows ~20 events a day. Do not "fix" this; it would take years to
   matter and the no-rotation rule is load-bearing.
 
-### G1. Crypto tunables have no owner — 602 constants across 42 modules ⚠️ highest value
+### G1. Crypto tunables have no owner — ~~602 constants across 42 modules~~ ⚠️ highest value
+
+> **The struck-through count was this item's own headline and it was wrong by about four**, which
+> the second slice found and which is worth more than the number that replaced it. The grep below
+> counts every upper-case module-level assignment; **most of them are strings** — reason codes,
+> status labels, provenance markers, the package's vocabulary — not numbers that decide anything.
+>
+> No corrected figure is pinned here on purpose. The population moves (§G1 already records it
+> growing by 54 in four days), so a precise count in a header is a claim that rots, which is
+> exactly how the original got here. "Second slice done 2026-08-08" carries the measurement with
+> the date it was taken, and the coverage test is what stays true between measurements.
 
 ```
 grep -rhcE '^[A-Z_]{4,} *[:=]' runtime/mvp_runtime/crypto/*.py | paste -sd+ | bc
@@ -3375,6 +3385,44 @@ drops entries that stop being shared, so the declaration cannot outlive its code
 Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
 registering there is a governance surface a reading aid does not need.
 
+#### The index was counting 27 English sentences as reason codes — fixed 2026-08-09
+
+Found while acting on §G4's note about `SpecParseError` and `FusionRefused`. That note said neither
+appeared here; both did, and how they appeared was the defect. Those classes take a **message** as
+their first positional argument, so the walk filed the message in the code column:
+
+```
+| `created_by must be a non-empty string` | `SpecParseError` | crypto/strategy.py | 373 | … |
+```
+
+**An entry whose key nobody can look up is worse than a missing one.** §G3 exists to answer "a code
+came out of the runtime — where is it raised", and no operator greps an English sentence. Each also
+counted as a distinct code, so the vocabulary was overstated by 27.
+
+**The rule is that a code has no spaces**, and it splits the surface with nothing left over —
+measured across every literal the walk finds: **751 `SCREAMING_CASE`, 9 `lower_snake`, 27
+sentences**, and no fourth shape. The nine lowercase ones stay: `too_many_conditions`,
+`holdout_unjudgeable` and seven `*_mismatch` names are `FusionRefused`'s mint-refusal vocabulary,
+which §F already tabulates by name. A rule keyed on `SCREAMING_CASE` would have dropped all nine.
+
+| | before | after |
+|---|---:|---:|
+| distinct codes | 456 | **429** |
+| indexed sites | 787 | 760 |
+| built at runtime, not indexable | 113 | 113 |
+| **carry a message where a code goes** | counted as codes | **27, counted apart** |
+
+The 27 are **counted, not dropped silently** — and counted *separately* from the 113, because they
+are different gaps: a site that builds its code can be given one, while a site that raises with a
+message has no code to find. Collapsing them would claim the index is missing 140 codes when 27 of
+those paths do not have a code at all. Six of the 27 are in `read_only_kernel/`, so the never-modify
+rule puts them permanently in that column.
+
+**Not fixed here: giving `SpecParseError` a code vocabulary.** Its 34 raise sites are spec-parse
+validation whose audience is the factory, not an operator diagnosing production — the same shape as
+the tunables index's `MECHANICS`, where something looking like a decision is not one. Deciding that
+is a separate item from making the index stop mislabelling it.
+
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
 close, which is a different item from the exact-collision check landed here.
@@ -3413,6 +3461,31 @@ them rather than filing one "reduce duplication" item.
 > The write half stays hand-rolled on purpose — see the fsync paragraph below; a test in
 > `test_mvp_runtime_crypto_paper.py` now fails if any of the three loses its `os.fsync`, so the
 > "tidy-up" this section warns about cannot land quietly.
+>
+> **That grep was too narrow, and two readers hid behind it — corrected 2026-08-09.** It matches
+> only the `enumerate` form. `oi_store.py` and `positioning_store.py` iterate `for line in lines:`
+> over the same `read_text().splitlines()`, so they read as "0 hand-rolled readers" while being
+> exactly the shape this item is about. **A claim checked with one spelling of a pattern is a claim
+> about the spelling** — the reliable check is
+> `grep -rn 'read_text(encoding="utf-8").splitlines()' runtime/mvp_runtime/crypto/`, which names
+> the defect rather than one way of writing the loop after it.
+>
+> **They are fixed, and they are still not `jsonl` adoptions.** Both must **degrade** — the
+> docstring says the reader answers with less rather than refusing, and `except ValueError:
+> continue` is how — while `jsonl.iter_objects` fails closed on a bad line, correctly, for the
+> outcome stores the breaker reads. So the fix is the streaming half alone, with the per-line
+> tolerance untouched, and two tests pin the degrade contract because that is the property which
+> stops the next reader of this section from "finishing the job" by folding them.
+>
+> **The win is real and modest, and the first measurement of it was wrong.** A micro-benchmark
+> that discarded rows reported peak 9.71 MB → 0.16 MB; the real `read_rows` keeps all 16,899, and
+> that dict is ~18 MB whatever the reader does. Measured on the live 4.5 MB store through the
+> actual function: **peak 24.80 MB → 20.88 MB (−3.91 MB, 16%)**, 0.307s → 0.295s. The saving is
+> the file's two transient copies and scales with the file; the floor is the rows the caller asked
+> for. Row set and row content are identical across 16,899 and 13,356 real rows.
+>
+> These are the **second and third** largest crypto stores, not the largest — `strategy_candidates.jsonl`
+> is 6.8 MB and `pool.read_candidates` was folded in #626.
 >
 > **What the fold turned up, and it outlives this item.** Delegating a read moves the reason code
 > into a *parameter*, which `DIAGNOSTIC_CODE_INDEX.md` could not see — so #623 taught the
@@ -3645,7 +3718,11 @@ restating the values would just be a second copy of the thing that diverged.
   that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
   `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
   both plain `ValueError` — so *"every failure path raises a typed error with a stable
-  `reason_code`"* is not true of them, and neither appears in `DIAGNOSTIC_CODE_INDEX.md`.
+  `reason_code`"* is not true of them, and ~~neither appears in `DIAGNOSTIC_CODE_INDEX.md`~~ —
+  **wrong, and the truth was worse; corrected 2026-08-09.** Both appeared, 11 rows and 9. Because
+  they take a *message* as their first argument, the extractor filed the message in the code
+  column: `created_by must be a non-empty string`. Not a missing entry — an entry whose key
+  nobody can look up. See §G3.
 
 #### Two notes on the instrument, because both would have closed a question wrongly
 

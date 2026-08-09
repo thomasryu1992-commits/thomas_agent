@@ -23,6 +23,7 @@ from build_diagnostic_code_index import (  # noqa: E402
     OUTPUT_REL,
     build,
     collect_sites,
+    is_reason_code,
     module_string_constants,
 )
 
@@ -65,7 +66,7 @@ SHARED_ACROSS_MODULES = frozenset({
 
 
 def _modules_per_code() -> dict[str, set[str]]:
-    sites, _ = collect_sites()
+    sites, *_ = collect_sites()
     per_code: dict[str, set[str]] = defaultdict(set)
     for site in sites:
         per_code[site.code].add(site.module)
@@ -142,11 +143,40 @@ def test_a_delegated_code_is_indexed_under_the_class_that_actually_carries_it():
     ``counterfactual`` keeps ``ToolError`` because the tool chokepoints above it catch that and
     would not catch ``jsonl``'s default. An index that reported the primitive's default here would
     send an operator to the wrong handler."""
-    sites, _ = collect_sites()
+    sites, *_ = collect_sites()
     cf = [s for s in sites if s.code == "COUNTERFACTUAL_HISTORY_UNREADABLE"]
     assert cf and all(s.error_class == "ToolError" for s in cf), cf
     ledger = [s for s in sites if s.code == "LEDGER_UNREADABLE"]
     assert ledger and all(s.error_class == "PersistenceError" for s in ledger), ledger
+
+
+def test_a_message_is_not_indexed_as_a_code():
+    """An index whose key cannot be looked up is worse than one that admits a gap.
+
+    `SpecParseError` and the bare `ValueError`s take a *message* as their first argument, so the
+    walk was filing rows like `created_by must be a non-empty string` in the code column — 27 of
+    them, each inflating the vocabulary and none of them greppable. §G3 built this to answer "a
+    code came out of the runtime, where is it raised", and no operator greps an English sentence.
+    """
+    sites, _skipped, messages = collect_sites()
+    assert messages, "the message count should be reported, not silently zero"
+    offenders = sorted({s.code for s in sites if " " in s.code})
+    assert not offenders, f"these are messages, not codes, and must not be indexed: {offenders}"
+
+
+def test_a_lowercase_code_is_still_a_code():
+    """The space rule keeps `FusionRefused`'s mint-refusal vocabulary without special-casing it.
+
+    `too_many_conditions`, `holdout_unjudgeable` and the seven `*_mismatch` names are codes in a
+    different case convention — `REMAINING_WORK.md` §F tabulates them by name — not prose. A rule
+    keyed on SCREAMING_CASE would have silently dropped all nine.
+    """
+    assert is_reason_code("too_many_conditions") and is_reason_code("MAX_CANDLES")
+    assert not is_reason_code("created_by must be a non-empty string")
+
+    per_code = _modules_per_code()
+    for code in ("too_many_conditions", "holdout_unjudgeable", "venue_mismatch"):
+        assert code in per_code, f"{code} is a code and dropped out of the index"
 
 
 def test_a_code_raised_from_a_new_module_is_declared_or_renamed():
@@ -192,14 +222,14 @@ def test_module_paths_are_platform_independent():
     nothing to do with the code changing. CI caught it after the merge; this pins the fix, since
     the failure is invisible to anyone developing on one platform.
     """
-    sites, _ = collect_sites()
+    sites, *_ = collect_sites()
     offenders = sorted({site.module for site in sites if "\\" in site.module})
     assert not offenders, f"module paths must be POSIX-style: {offenders[:5]}"
 
 
 def test_every_indexed_site_names_a_real_file_and_line():
     """The index is a lookup an operator follows. A row pointing nowhere is worse than no row."""
-    sites, _ = collect_sites()
+    sites, *_ = collect_sites()
     assert sites, "no raise sites found at all — the extractor is broken, not the runtime clean"
     for site in sites:
         path = ROOT / site.module
