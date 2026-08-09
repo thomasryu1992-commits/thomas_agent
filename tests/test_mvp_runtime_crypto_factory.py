@@ -1365,7 +1365,7 @@ def test_promotion_installs_selected_candidates(tmp_path):
     # that the door installs what was selected, and the escape keeps it that.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                             allow_oversized_pool=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
@@ -1379,9 +1379,9 @@ def test_promotion_installs_selected_candidates(tmp_path):
 def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
-                  keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, root=tmp_path, now=NOW, without_approval=True,
+                  keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                   allow_oversized_pool=True)   # same context as the incumbent; see above
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
@@ -1397,7 +1397,7 @@ def test_promotion_refused_while_killed(tmp_path):
     )
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert "BLOCKED" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
@@ -1406,7 +1406,7 @@ def test_promotion_refuses_unknown_candidate(tmp_path):
     _seed_candidates(tmp_path)
     with pytest.raises(SystemExit):
         run_promotion(selectors=["S_NOPE"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
 
 
 # --- candidate lineage (fusion groundwork) ------------------------------------
