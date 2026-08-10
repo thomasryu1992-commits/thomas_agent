@@ -4,7 +4,21 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-06** — **the live round trip is complete.** The stop refusal that headed
+Last updated: **2026-08-10** — **three sections moved and none of them said so here.** F9's
+decision was taken and shipped (#638 + #651, 2026-08-09): the rotation runs cohort schedules and
+F9 is now the working rather than an open ask — its first fire had not landed at 02:55Z
+(`scripts.pooled_mint_check`: 0 pooled rows). Section **G is exhausted** (2026-08-09) and states
+what would re-open it. Section **H's (a) cost re-derivation is done** (2026-08-09), leaving (b)
+waiting on symbol age rather than on code.
+
+**Read this before picking work: nothing in this file is currently an unblocked build item.**
+Surveyed 2026-08-10 — A closed, B code-complete (two operator actions), C blocked on live
+evidence that is not being produced (3 live outcomes total; nothing in the live tier), D's
+PROGRAM route explicitly not recommended yet, F's remainder a direction plus a deferred lever,
+G exhausted, H(b) a clock into 2027, I awaiting Thomas. That is a real state, not an oversight —
+but it means the next build item comes from a decision or from new evidence, not from this list.
+
+Earlier — **2026-08-06, the live round trip is complete.** The stop refusal that headed
 section C since 2026-08-02 was resolved on 08-04 (#460, the confirm race), and on 08-06T04:44Z
 the first two live trades **closed and recorded**: `live_outcomes.jsonl` exists, two rows, both
 stops, **−1.1078R** (ETHUSDT, held 52.5h) and **−1.0000R** (DOGEUSDT). The exit path is
@@ -2728,7 +2742,32 @@ and there are no open positions left to close. **The only path that fills this i
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
 
-### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **awaiting a Thomas decision**
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **decided and shipped 2026-08-09**
+
+> **Status 2026-08-10 — the decision this section asks for was taken. Everything below is now
+> the working, not an open ask.** Shape B shipped on 2026-08-09: **#638** let a factory schedule
+> name a cohort (a comma is the whole opt-in) and **#651** gave the pooled-mint check its own
+> pre-registration. `run_factory` has a pooled caller, so the premise line below — *"has no
+> caller but the single-symbol path"* — is history. It is corrected here rather than deleted,
+> because the reasoning under it is still the authority for **why** the shape is what it is.
+>
+> **What is open now is the first fire and its reading, not the decision.** The reading is
+> pre-registered, which is the whole point of #651 — read it with the script rather than by
+> eye, and do not re-derive the bar afterwards:
+>
+> ```
+> docker exec thomas-scheduler python -m scripts.pooled_mint_check
+> ```
+>
+> Run 2026-08-10T02:55Z: `store rows: 1961   pooled rows: 0` — *"the cohort schedules have not
+> fired, or were reverted."* Both readings are live at that moment; the script cannot tell them
+> apart and does not pretend to.
+>
+> **Which schedules are enabled is a per-machine fact this file cannot hold**, the same rule the
+> deployed image gets at the top: `schedules.jsonl` is gitignored, so there is no repo trace and
+> no amount of reading this file answers it. On the Docker host at that same timestamp the five
+> single-symbol schedules were `enabled=False` and two cohort schedules (4h and 1d) were
+> `enabled=True`. Reverting is those `enable` calls, not a code change.
 
 #### The ask, in one screen — everything below this subsection is the working
 
