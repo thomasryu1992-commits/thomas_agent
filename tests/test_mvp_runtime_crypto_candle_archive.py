@@ -768,7 +768,7 @@ def _fire(schedule_kind, tmp_path, monkeypatch):
     )
     return scheduler._execute(
         schedule, now="2026-08-04T00:00:00Z", ledger=None, working_memory=None,
-        programization=None, registry=None, provider=None, search_tool=None,
+        programization=None, registry=None,
         repo_root=tmp_path, executor=None,
     )
 

@@ -307,6 +307,50 @@ def test_the_pipeline_worker_socket_peers_are_the_runtime_itself():
     assert environment["MVP_BRIDGE_CLIENT_UID"] == "10001"
 
 
+# The analysis chain and the search tool, removed from the SCHEDULER by PR-C of the plane
+# separation Phase 2 and pinned absent here. Their only consumer on that service was an
+# `analysis_task` fire, which now runs in the pipeline-worker; what stays is
+# `MVP_VALIDATOR_PROVIDER` + `GROQ_API_KEY`, which `crypto_propose` and `crypto_data_review`
+# still read in-process (`select_validator_provider` never falls back to the chain below,
+# which is what let these two lists separate at all).
+#
+# Named as literals rather than from `providers`/`tools` constants on purpose: this is a
+# prohibition, and a constant that got renamed would empty the list it guards — the same
+# reason the removed prediction-market block above spells its five out.
+SCHEDULER_WITHHELD_ENGINE_SURFACE = {
+    "MVP_HOSTED_PROVIDER": "the analysis provider chain",
+    "OPENROUTER_API_KEY": "the OpenRouter key — the assistant's own container spends from it",
+    "GOOGLE_AI_STUDIO_API_KEY": "the Google AI Studio key",
+    "MVP_OPENROUTER_MODEL": "the OpenRouter model slug",
+    "MVP_SEARCH_TOOL": "the read-only search tool selector",
+    "TAVILY_API_KEY": "the search key",
+}
+
+
+@pytest.mark.parametrize("env_var, what", sorted(SCHEDULER_WITHHELD_ENGINE_SURFACE.items()))
+def test_the_scheduler_is_not_handed_the_analysis_chain_or_the_search_tool(env_var, what):
+    """The service that holds the Binance account and order keys must not also hold a model
+    credential it does not use. Checked per variable because per-service drift is the failure
+    this file exists for, and because re-adding one is a decision that belongs here."""
+    assert env_var not in _service_environment("scheduler"), (
+        f"the scheduler is handed {env_var} ({what}); an analysis_task fire runs in the "
+        f"pipeline-worker now, so this is blast radius with no consumer"
+    )
+
+
+@pytest.mark.parametrize("env_var", ["MVP_VALIDATOR_PROVIDER", "GROQ_API_KEY"])
+def test_the_scheduler_keeps_what_its_crypto_llm_kinds_still_read(env_var):
+    """The half that did NOT move, asserted so the removal above cannot quietly grow into it:
+    `crypto_propose` and `crypto_data_review` call a model from the scheduler process, and
+    taking these would leave both firing against a Mock while reading as configured."""
+    environment = _service_environment("scheduler")
+    assert env_var in environment, (
+        f"the scheduler no longer receives {env_var}; its two crypto LLM kinds run in-process "
+        f"and would silently degrade to the deterministic mock"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
 # --- the live-trading surface must reach neither service --------------------------------
 
 @pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))

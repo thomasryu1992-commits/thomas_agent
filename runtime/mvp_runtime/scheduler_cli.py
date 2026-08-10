@@ -11,8 +11,11 @@
     # Run the tick loop (respects the kill switch; one tick by default):
     python -m runtime.mvp_runtime.scheduler_cli tick --max-ticks 0 --interval-seconds 60
 
-The tick loop selects a provider/search tool through the Safety-Flag Gate exactly like the
-operator loop, and it will not run a scheduled task while the runtime is PAUSED/KILLED.
+The tick loop runs a scheduled `analysis_task` in the `pipeline-worker` service rather than
+in this process, so it selects no model provider and no search tool — that service holds
+those keys and passes them through the same Safety-Flag Gate
+(`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`). It will not run a scheduled
+task while the runtime is PAUSED/KILLED.
 
 It also NOTIFIES the registered operator about scheduling that went wrong: a schedule that
 starts failing, one that recovers, and — on startup — schedules left overdue while the loop
@@ -37,12 +40,10 @@ from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, repo
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .programization import ProgramizationStore
-from .providers import select_provider
 from .scheduler import ScheduleStore
 from .state_guard import assert_state_writable
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
-from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
 LOCAL_ACTOR = "local_scheduler_cli"
@@ -224,8 +225,6 @@ def main(
     ledger: LedgerStore | None = None,
     control_store: ControlStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
-    provider: Any | None = None,
-    search_tool: Any | None = None,
     repo_root: Path | None = None,
     now: str | None = None,
     sleep: Any = time.sleep,
@@ -305,9 +304,14 @@ def main(
         control_store = control_store if control_store is not None else ControlStore.default(repo_root)
         working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
         programization = ProgramizationStore.default(repo_root)
-        provider = provider if provider is not None else select_provider()
-        search_tool = search_tool if search_tool is not None else select_search_tool()
-        gate_banners(analysis_provider=provider, search_tool=search_tool)
+        # No analysis provider or search tool is selected here any more, and the absence is
+        # the change rather than an omission: an `analysis_task` fire runs in the
+        # `pipeline-worker` service, which holds those keys and selects both through the same
+        # Safety-Flag Gate (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`).
+        # Selecting them here would print a gate banner describing a capability this process
+        # no longer uses — and after the compose change it would print the MOCK banner while
+        # delegated fires ran real analyses, which is worse than saying nothing.
+        gate_banners()
         sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
         if alerter is None:
             alerter = build_alerter(repo_root=repo_root, now=now)
@@ -359,7 +363,7 @@ def main(
                 summary = scheduler.run_due(
                     store, now=now or timeutil.utc_now_iso(), control_store=control_store, ledger=ledger,
                     working_memory=working_memory, programization=programization,
-                    provider=provider, search_tool=search_tool, repo_root=repo_root,
+                    repo_root=repo_root,
                     notifier=alerter,
                     # F1: scheduled analysis runs join the same coordination view the
                     # operator's own requests appear in — otherwise /tasks would show
