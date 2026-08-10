@@ -107,6 +107,24 @@ def test_a_dead_volume_leg_is_recorded_but_does_not_block_the_run(monkeypatch):
                for e in result["records"]["agent_output"]["evidence"])
 
 
+@requires_local_core
+def test_the_record_survives_the_ledger_not_just_the_return_value(tmp_path):
+    """The gap the first three run_task tests left, found by the first real CLI run: they
+    called run_task WITHOUT a store, so the ledger's closed record-kind list was never
+    exercised, and the deployed CLI blocked with LEDGER_UNKNOWN_RECORD_KIND on the very
+    record this file is about. Persisting is part of the wiring, so a test drives it."""
+    from runtime.mvp_runtime.store import LedgerStore
+
+    store = LedgerStore(tmp_path / "ledger")
+    result = run_task(REQUEST, provider=MockProvider(), now=NOW,
+                      keyword_seeds="포스터 만들기", store=store)
+    assert result["status"] == "COMPLETED"
+
+    persisted = [row for row in store.iter_records() if row["kind"] == "keyword_research"]
+    assert len(persisted) == 1
+    assert persisted[0]["record"]["operation"] == "keyword_brief"
+
+
 # --- the CLI flag -------------------------------------------------------------------
 
 def test_the_flag_extracts_its_value_and_leaves_the_request_alone():
