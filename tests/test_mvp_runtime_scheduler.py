@@ -13,7 +13,7 @@ import pytest
 
 from runtime.mvp_runtime import control, scheduler
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.errors import PersistenceError, SchedulerBlocked
+from runtime.mvp_runtime.errors import MvpRuntimeError, PersistenceError, SchedulerBlocked
 from runtime.mvp_runtime.scheduler import (
 
     KIND_PROPOSER,
@@ -1182,3 +1182,108 @@ def test_an_unclassified_kind_is_never_deferred(tmp_path, monkeypatch):
     assert summary["deferred"] == 0
     assert summary["fired"] == 2
     assert stray.schedule_id in {s.schedule_id for s in store.list()}
+
+
+# --- the analysis_task delegation (plane separation Phase 2) ------------------
+
+def test_the_default_executor_delegates_rather_than_running_the_pipeline():
+    """The change in one line: this service no longer holds the keys a scheduled analysis
+    needs, so its default executor is the forwarder, not `run_task`. A default that drifted
+    back would silently reintroduce the credential this deployment removed."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    default = inspect.signature(sched.run_due).parameters["executor"].default
+    assert default is sched.delegate_analysis_task
+
+
+def test_the_scheduler_selects_no_analysis_provider_or_search_tool():
+    """Both parameters are gone from the fire path, and their absence is the point: a
+    parameter that still existed would invite someone to wire a provider back in without
+    noticing that the compose block no longer carries one."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    for fn in (sched.run_due, sched._execute):
+        params = set(inspect.signature(fn).parameters)
+        assert "provider" not in params, f"{fn.__name__} still takes a provider"
+        assert "search_tool" not in params, f"{fn.__name__} still takes a search_tool"
+
+
+def test_a_delegated_fire_states_the_scheduler_profile_and_its_own_source_ref(monkeypatch):
+    """Attribution has to survive the hop: the worker records what this call declares, and a
+    scheduled run must stay `mvp.scheduler` with `scheduler:<schedule_id>` — not the
+    assistant, whose identity the worker would otherwise apply by default."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    def _fake_call(path, frame, **kwargs):
+        sent.append(frame)
+        return {"ok": True, "kind": "analysis", "task_id": "task-9", "trace_id": "trace-9"}
+
+    monkeypatch.setattr(sched.socket_door, "call_door", _fake_call)
+    out = sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+
+    assert sent[0]["actor_profile"] == pipeline_worker.SCHEDULER_PROFILE
+    assert sent[0]["reason"] == "scheduler:sched_abc"
+    assert sent[0]["kind"] == sched.DELEGATED_REQUEST_KIND == "analysis"
+    # Answered in the shape the KIND_TASK branch reads, ids included — the registry entry
+    # closes with them, and a None here would leave every scheduled run unreferenced.
+    assert out["status"] == "COMPLETED"
+    identity = out["records"]["received_task"]["identity"]
+    assert identity == {"task_id": "task-9", "trace_id": "trace-9"}
+
+
+def test_the_delegated_kind_routes_exactly_as_an_unkinded_run_did():
+    """Naming the kind is what lets the request cross a socket with a closed kind set; it
+    must not also change the Role. `classify_task` answers the analysis capabilities for both
+    None and "analysis", so the delegation is routing-neutral."""
+    from runtime.mvp_runtime import planner, scheduler as sched
+
+    assert (planner.capabilities_for_request_kind(None)
+            == planner.capabilities_for_request_kind(sched.DELEGATED_REQUEST_KIND))
+
+
+def test_an_unreachable_worker_fails_the_fire_and_never_runs_a_local_mock(monkeypatch, tmp_path):
+    """No fallback, by design. With no provider key on this service, an in-process fallback
+    would run the deterministic mock and report COMPLETED — the "reads as configured, does
+    nothing" failure (#512, #650). A raised fire is recorded failed and stays visible."""
+    from runtime.mvp_runtime import scheduler as sched
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    def _dead(path, frame, **kwargs):
+        raise ControlBlocked("DOOR_UNREACHABLE", "nothing is listening")
+
+    monkeypatch.setattr(sched.socket_door, "call_door", _dead)
+    with pytest.raises(MvpRuntimeError):
+        sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+
+
+def test_a_worker_refusal_is_a_failed_fire_not_a_blocked_result(monkeypatch):
+    """A refusal envelope carries no `kind`: nothing ran. Reporting it as BLOCKED would file
+    "the work never started" as "the runtime considered it and refused"."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: {"ok": False, "reason_code": "BRIDGE_BUSY", "reason": "later"},
+    )
+    with pytest.raises(SchedulerBlocked) as exc:
+        sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+    assert exc.value.reason_code == "BRIDGE_BUSY"
+
+
+def test_a_pipeline_block_survives_the_hop_as_a_blocked_result(monkeypatch):
+    """The other side of that line: a reply naming its kind DID run, so its refusal is the
+    run's answer and the fire records BLOCKED with the pipeline's own reason code."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: {"ok": False, "kind": "analysis", "task_id": "t1",
+                                   "trace_id": "tr1", "reason_code": "NO_ROUTABLE_ROLE",
+                                   "reason": "none"},
+    )
+    out = sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+    assert out["status"] == "BLOCKED"
+    assert out["block"]["reason_code"] == "NO_ROUTABLE_ROLE"

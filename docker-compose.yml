@@ -113,18 +113,28 @@ services:
       - --interval-seconds
       - "30"
     environment:
-      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
-      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
-      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
-      # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
-      # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
+      # The ANALYSIS provider chain and the search tool are deliberately absent
+      # (MVP_HOSTED_PROVIDER, OPENROUTER_API_KEY, GOOGLE_AI_STUDIO_API_KEY,
+      # MVP_OPENROUTER_MODEL, MVP_SEARCH_TOOL, TAVILY_API_KEY — removed by PR-C of
+      # docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md). Their only consumer here
+      # was an `analysis_task` fire, and that now runs in `pipeline-worker`, which holds them.
+      # This is the service that also holds the Binance account and order keys, so a model
+      # credential it does not use is pure blast radius — the OpenRouter key most of all,
+      # since the assistant's own container spends from that same key.
+      #
+      # The removal is safe only BECAUSE the delegation landed with it: an env-less scheduler
+      # that still ran the pipeline in-process would silently produce mock analyses and report
+      # them COMPLETED. `scheduler.delegate_analysis_task` has no such fallback — an
+      # unreachable worker is a recorded failed fire.
+      #
+      # `MVP_VALIDATOR_PROVIDER` + `GROQ_API_KEY` STAY, and the reason is worth knowing before
+      # anyone "finishes the job": `crypto_propose` and `crypto_data_review` call a model from
+      # this process through `select_validator_provider`, which reads MVP_VALIDATOR_PROVIDER
+      # alone and never falls back to the chain above. Delegating those two needs either a
+      # second market-data collection path (against C9's one-feature-source rule) or a
+      # serialized live frame — deferred with its re-open condition in §6 of that proposal.
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
-      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
       # The six Naver variables (MVP_NAVER_RESEARCH + the Search Ad and API HUB credentials)
       # were forwarded here from #650 until the plane separation's PR-B
       # (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md) removed them: `pipeline-worker`
