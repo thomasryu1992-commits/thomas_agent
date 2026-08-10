@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness
+from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -269,8 +270,8 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
-        "manual_kill_switch", "runtime_active", "trading_armed", "daily_loss_breaker",
-        "bracket_breaker", "canary_evidence",
+        "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
+        "daily_loss_breaker", "bracket_breaker", "canary_evidence",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired",
     }
@@ -754,6 +755,136 @@ def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
     assert status["size_unproven"] == 0
     assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
     assert status["ready"] is True          # surfaced, not judged
+
+
+# === the armed set (#648: occupying and allowed-to-spend are two facts) =============
+# `live_tier` absent reads as OBSERVATION, so #648's migration disarmed every pre-existing
+# entry on purpose — and the board kept answering READY: on 2026-08-10 every row was green
+# while `pool.live_routable_strategy_ids` was empty, no strategy could open a position, and
+# the operator found out from the positions that never appeared. These pin the row that says
+# it, and the split it inherits from the entry door: zero armed is the expected steady state
+# (informational), an unreadable pool is a fault (FAIL, reported UNREADABLE — never 0).
+
+def _strategy_spec(sid):
+    """The minimum the pool file's fail-closed loader accepts."""
+    return {
+        "schema_version": "strategy_spec.v1",
+        "strategy_id": sid, "strategy_version": "1.0", "strategy_family": "breakout",
+        "symbol_scope": ["BTCUSDT"], "timeframe": "1d", "direction": "long",
+        "entry_rules": {"operator": "AND",
+                        "conditions": [{"feature": "close", "comparison": ">", "value": 0.0}]},
+        "exit_rules": {"stop_model": "atr", "stop_atr": 1.5, "target_atr": 2.0,
+                       "max_holding_bars": 10},
+        "risk_constraints": {"max_risk_per_trade_R": 1.0},
+    }
+
+
+def _pool_entry(sid, *, live_tier=None, status="PAPER_ACTIVE"):
+    entry = {"strategy_id": sid, "candidate_id": f"c_{sid}", "status": status,
+             "strategy_spec": _strategy_spec(sid)}
+    if live_tier is not None:
+        entry[pool_store.LIVE_TIER_FIELD] = live_tier
+    return entry
+
+
+def _write_pool(root, *entries):
+    path = pool_store.pool_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"active_strategies": list(entries)}), encoding="utf-8")
+    return path
+
+
+def _armed_row(status):
+    return next(c for c in status["checks"] if c["check"] == "live_armed_strategies")
+
+
+def test_the_armed_set_is_a_row(tmp_path, clean_env):
+    _write_pool(tmp_path,
+                _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE),
+                _pool_entry("S2"))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "1 armed of 2 occupying" in row["detail"]
+    # As data too: the render's WIRED note reads the count, and a JSON consumer must not have
+    # to parse prose.
+    assert status["live_armed_strategies"] == {
+        "known": True, "armed": 1, "occupying": 2, "error": None,
+    }
+
+
+def test_zero_armed_is_said_loudly_but_cannot_move_the_ready_verdict(tmp_path, clean_env):
+    """Zero armed is the deliberate steady state (#648's migration default), not a runtime
+    fault: `ready` keeps meaning "may this RUNTIME trade". But the detail must say what zero
+    means, because READY above an empty armed set is exactly the 2026-08-10 misread."""
+    _write_pool(tmp_path, _pool_entry("S1"), _pool_entry("S2", status="WARNING"))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "0 armed of 2 occupying" in row["detail"]
+    assert "NO strategy may open a real position" in row["detail"]
+    # Arming one strategy is a strategy-level change; the runtime-level verdict must not move
+    # in either direction.
+    _write_pool(tmp_path,
+                _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE),
+                _pool_entry("S2", status="WARNING"))
+    rearmed = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert rearmed["ready"] == status["ready"]
+
+
+def test_a_missing_pool_is_an_empty_pool_not_a_fault(tmp_path, clean_env):
+    """`load_active_pool` documents missing = empty: a fresh machine honestly has zero of
+    zero, and must not read as UNREADABLE."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "0 armed of 0 occupying" in row["detail"]
+
+
+@pytest.mark.parametrize("content, code", [
+    ("not json{", "STRATEGY_POOL_UNREADABLE"),
+    (json.dumps({"active_strategies": [{"strategy_id": "S1"}]}), "STRATEGY_POOL_INVALID"),
+])
+def test_an_unreadable_pool_fails_the_row_and_never_reads_as_zero(
+    tmp_path, clean_env, content, code
+):
+    """The entry door keeps "no strategy is armed" and "the pool could not be read" apart with
+    two reason codes, and the board must not collapse them into a comfortable 0: an unreadable
+    pool refuses every live entry at the door, which is a fault with a repair — a FAIL row."""
+    path = pool_store.pool_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is False
+    assert "UNREADABLE" in row["detail"] and code in row["detail"]
+    assert "0 armed" not in row["detail"]
+    assert status["live_armed_strategies"] == {
+        "known": False, "armed": None, "occupying": None, "error": code,
+    }
+    assert status["ready"] is False
+
+
+def test_the_render_qualifies_the_wired_note_when_nothing_is_armed(tmp_path, clean_env):
+    """The WIRED note promises "REAL positions once every FAIL clears" — the sentence a reader
+    believed on 2026-08-10 while the armed set was empty. The qualification must appear where
+    the promise is made, not only in a PASS row further up."""
+    _write_pool(tmp_path, _pool_entry("S1"))
+    text = live_readiness.render_readiness_text(
+        live_readiness.build_readiness(root=tmp_path, now=NOW))
+    text.encode("ascii")
+    if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        assert "0 strategies are armed" in text
+        assert "no autonomous entry will OPEN" in text
+        assert "--live-tier LIVE" in text
+
+
+def test_the_render_does_not_cry_zero_when_a_strategy_is_armed(tmp_path, clean_env):
+    _write_pool(tmp_path, _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE))
+    text = live_readiness.render_readiness_text(
+        live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert "1 armed of 1 occupying" in text
+    assert "0 strategies are armed" not in text
 
 
 # === whose environment is this board describing? (#382) ==============================
