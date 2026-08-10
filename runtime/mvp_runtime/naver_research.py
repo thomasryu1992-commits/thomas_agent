@@ -361,6 +361,110 @@ def run_keyword_research(
     return metrics, record
 
 
+BRIEF_TOOL_ID = "naver.keyword_brief"
+# How many top-volume rows get a competition count. Each count is its own API HUB call, so
+# this bounds the fan-out of one brief at a number a weekly cadence never notices.
+BRIEF_COMPETITION_TOP = 3
+
+
+def run_keyword_brief(
+    seeds: str,
+    *,
+    now: str,
+    keyword_tool: KeywordTool | None = None,
+    trend_tool: TrendTool | None = None,
+    competition_tool: CompetitionTool | None = None,
+    max_keywords: int = 10,
+    timeout_seconds: int = 15,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One evidence bundle for a research/content run: volume, competition, trend.
+
+    Returns ``(rows, record)`` — rows are what the specialist prompt cites ([K#]), the
+    record is what the ledger keeps. Tools default to the gated selectors, so with the
+    gate closed a brief still runs (deterministic Mocks) and with it open the same call
+    reaches Naver — the caller does not choose.
+
+    Failure is per-leg, and the legs are not equal:
+
+    - **volume** (Search Ad) failing degrades the whole brief to zero rows — measured
+      demand IS the brief, and rows without it would present a guess as research;
+    - **competition** (API HUB) failing leaves ``competing_posts`` absent on that row —
+      the row is still real, it just lacks one column, and the record says which legs
+      failed rather than averaging the failure away;
+    - **trend** failing drops the trend series the same way.
+
+    The brief asks for competition counts only on the top ``BRIEF_COMPETITION_TOP`` rows
+    by volume: each count is a separate API HUB call, and a weekly brief has no business
+    fanning out further.
+    """
+    keyword_tool = keyword_tool if keyword_tool is not None else select_keyword_tool()
+    trend_tool = trend_tool if trend_tool is not None else select_trend_tool()
+    competition_tool = competition_tool if competition_tool is not None else select_competition_tool()
+
+    degraded_legs: dict[str, str] = {}
+    try:
+        rows, volume_record = run_keyword_research(
+            seeds, tool=keyword_tool, now=now,
+            max_results=max_keywords, timeout_seconds=timeout_seconds,
+        )
+    except ToolBlocked as exc:
+        rows = []
+        volume_record = degraded_keyword_record(keyword_tool, seeds, exc.reason_code, now=now)
+        degraded_legs["volume"] = exc.reason_code
+
+    for row in rows[:BRIEF_COMPETITION_TOP]:
+        try:
+            competition = competition_tool.competition(
+                row["keyword"], display=1, timeout_seconds=timeout_seconds
+            )
+            row["competing_posts"] = competition.total_posts
+        except (ToolError, ToolBlocked) as exc:
+            # Column absent, not zero: 0 competing posts is a CLAIM (an empty niche), and
+            # a failed lookup must not accidentally make it.
+            degraded_legs["competition"] = getattr(exc, "reason_code", "TOOL_ERROR")
+
+    trend_points: list[dict[str, Any]] = []
+    primary = seeds.split(",")[0].strip()
+    if rows and primary:
+        try:
+            start = f"{int(now[:4]) - 1}{now[4:10]}"  # twelve months back, same day
+            trend = trend_tool.trend(
+                primary, start_date=start, end_date=now[:10], timeout_seconds=timeout_seconds
+            )
+            trend_points = [{"period": p.period, "ratio": p.ratio} for p in trend.points]
+        except (ToolError, ToolBlocked) as exc:
+            degraded_legs["trend"] = getattr(exc, "reason_code", "TOOL_ERROR")
+
+    record = {
+        "tool_id": BRIEF_TOOL_ID,
+        "tool_version": TOOL_VERSION,
+        "tool_class": TOOL_CLASS,
+        "operation": "keyword_brief",
+        "query": seeds,
+        "input_sha256": integrity.sha256_record({"tool_id": BRIEF_TOOL_ID, "seeds": seeds}),
+        "result_count": len(rows),
+        # Volume sources plus, when at least one competition count landed, the surface it
+        # came from — two Naver products fed this record and the audit trail should say so.
+        "sources": sorted(
+            set(volume_record["sources"])
+            | ({getattr(competition_tool, "provider_id", "mock.naver_apihub")}
+               if any("competing_posts" in r for r in rows) else set())
+        ),
+        "metrics": rows,
+        "trend_keyword": primary,
+        "trend_points": trend_points,
+        "output_sha256": integrity.sha256_record({"metrics": rows, "trend_points": trend_points}),
+        "latency_ms": int(volume_record["latency_ms"]),
+        "read_only": True,
+        "external_action": False,
+        "network_egress": bool(getattr(keyword_tool, "network_egress", False)),
+        "degraded": bool(degraded_legs),
+        "degraded_legs": degraded_legs,
+        "created_at": now,
+    }
+    return rows, record
+
+
 def degraded_keyword_record(tool: KeywordTool, seed: str, reason_code: str, *, now: str) -> dict[str, Any]:
     """The record for a keyword lookup whose backend failed — recorded, never silent.
 

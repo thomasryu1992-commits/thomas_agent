@@ -48,6 +48,7 @@ from .memory import (
 from .prime import plan_task
 from .programization import ProgramizationStore, observe_completed_run
 from .store import LedgerStore
+from . import naver_research
 from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
 from .validation import validate_agent_output
@@ -673,6 +674,7 @@ def _revise_once(
     search_hits: list[dict[str, Any]],
     memory_entries: list[dict[str, Any]],
     validated_entries: list[dict[str, Any]],
+    keyword_rows: list[dict[str, Any]],
     working_memory: WorkingMemoryStore | None,
     now: str,
     repo_root: Path | None,
@@ -699,11 +701,12 @@ def _revise_once(
 
     role_prompt, role_output_keys = _role_execution(
         plan, search_hits=search_hits, memory_entries=memory_entries,
-        validated_entries=validated_entries, revision_requests=revision_requests)
+        validated_entries=validated_entries, revision_requests=revision_requests,
+        keyword_rows=keyword_rows)
     agent_output, invocation = run_analysis_worker(
         plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
         search_hits=search_hits, memory_entries=memory_entries,
-        validated_entries=validated_entries, repo_root=repo_root,
+        validated_entries=validated_entries, keyword_rows=keyword_rows, repo_root=repo_root,
         revision_requests=revision_requests,
         prompt_override=role_prompt, role_output_keys=role_output_keys,
     )
@@ -755,6 +758,7 @@ def run_task(
     *,
     provider: Provider | None = None,
     search_tool: SearchTool | None = None,
+    keyword_seeds: str | None = None,
     working_memory: WorkingMemoryStore | None = None,
     programization: ProgramizationStore | None = None,
     now: str | None = None,
@@ -785,6 +789,16 @@ def run_task(
     ``search_tool`` runs a read-only web search whose hits become source-attributed
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
     network tool is chosen via the Safety-Flag Gate by the caller).
+
+    ``keyword_seeds`` (opt-in) runs one Naver keyword brief — measured monthly demand,
+    competition counts, and a trend series for the given comma-separated seeds — whose rows
+    become ``[K#]`` evidence the same way search hits become ``[S#]``. Explicit rather than
+    derived from the request text: the Search Ad API wants short keyword seeds, and a
+    sentence-shaped goal fed to it would measure garbage while looking like research. Same
+    enrichment posture as search — the brief's tools come from the env-only gate
+    (deterministic Mocks until ``MVP_NAVER_RESEARCH=enabled``), a backend failure degrades
+    the run rather than blocking it, and the use is recorded (``keyword_research``) either
+    way. Omitted (None) = no brief, byte-identical to before the lane existed.
 
     ``working_memory`` (opt-in) makes prior working-memory candidates and operator-promoted
     VALIDATED memory available as context and accumulates this run's candidates for later
@@ -932,6 +946,19 @@ def run_task(
             tool_use = degraded_search_record(search_tool, query, exc.reason_code, now=now)
         records["tool_use"] = tool_use
 
+        # The Naver keyword brief (opt-in, blog content lane): measured demand as [K#]
+        # evidence, exactly the search tool's posture — enrichment that degrades, never
+        # blocks, and is recorded either way. Unlike run_search it does NOT raise on
+        # failure: every leg (including an unusable seed) degrades internally and the
+        # record's `degraded_legs` says which failed and why, so there is no except arm
+        # here on purpose — one would be dead code guarding a contract the brief already
+        # keeps.
+        keyword_rows: list[dict[str, Any]] = []
+        if keyword_seeds is not None:
+            keyword_rows, keyword_record = naver_research.run_keyword_brief(
+                keyword_seeds, now=now)
+            records["keyword_research"] = keyword_record
+
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
         # A corrupt store fails closed here (BLOCK), like the ledger.
         memory_entries = (
@@ -950,12 +977,12 @@ def run_task(
 
         role_prompt, role_output_keys = _role_execution(
             plan, search_hits=search_hits, memory_entries=memory_entries,
-            validated_entries=validated_entries)
+            validated_entries=validated_entries, keyword_rows=keyword_rows)
         _progress(on_progress, STEP_ANALYSIS_WORKER)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
-            validated_entries=validated_entries, repo_root=repo_root,
+            validated_entries=validated_entries, keyword_rows=keyword_rows, repo_root=repo_root,
             prompt_override=role_prompt, role_output_keys=role_output_keys,
         )
         records["agent_output"] = agent_output
@@ -1016,7 +1043,8 @@ def run_task(
                 validate_run=validate_run,
                 specialist_provider=specialist_provider, validator_provider=validator_provider,
                 search_hits=search_hits, memory_entries=memory_entries,
-                validated_entries=validated_entries, working_memory=working_memory,
+                validated_entries=validated_entries, keyword_rows=keyword_rows,
+                working_memory=working_memory,
                 now=now, repo_root=repo_root,
             )
             # A revision REPLACES the first attempt's output, validation and review.

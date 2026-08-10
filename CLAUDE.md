@@ -166,7 +166,8 @@ above; `pytest` cannot, because the image carries no `tests/` and no pytest.
 
 Intake flags: `--independent-validation[=auto]`, `--important` (priority HIGH; under `auto`
 adds the independent reviewer), `--revise` (one governed regeneration on a validation REVISE,
-then deliver or BLOCK), `--write-output PATH`. Any unknown `--flag` → `EXIT_USAGE`, never
+then deliver or BLOCK), `--write-output PATH`, `--naver-keywords "SEED[, SEED...]"` (runs the
+gated Naver keyword brief; rows become [K#] evidence). Any unknown `--flag` → `EXIT_USAGE`, never
 folded into the request text. The CLI takes **no** pointer argument — it reads
 `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` by default.
 
