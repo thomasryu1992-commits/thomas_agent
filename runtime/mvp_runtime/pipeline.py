@@ -194,6 +194,16 @@ def render_response(
     evidence actually was."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
+    # The content role's deliverable IS the draft. This renderer special-cases the analysis
+    # keys (key_findings, perspectives) and dropped every other role's own product — so a
+    # content.general run wrote a complete draft into the ledger while the delivered reply
+    # showed only the meta-analysis around it, and the caller reasonably concluded the run
+    # "produced an analysis instead of a draft" (measured 2026-08-10, the lane's first
+    # draft_content dispatch). Rendered FIRST because it is what was asked for; the analysis
+    # sections that follow are the review of it.
+    draft = rso.get("content_draft")
+    if isinstance(draft, str) and draft.strip():
+        lines += ["## Draft", "", draft.strip(), ""]
     findings = rso.get("key_findings", [])
     if findings:
         lines.append("## Key findings")

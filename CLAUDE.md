@@ -5,10 +5,26 @@ the authority table below.
 
 ## What this project is
 
-A governance-first autonomous agent. **Strong governance core, thin deterministic runtime**:
-behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime only
-executes validated inputs in order. Nothing is active until an explicit, versioned, audited
-approval turns it on.
+A governance-first autonomous agent. **Strong governance core, policy-thin deterministic
+runtime**: behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime
+only executes validated inputs in order. Nothing is active until an explicit, versioned,
+audited approval turns it on.
+
+"Thin" is a claim about **policy, not size**. The domain packages have outgrown the core and
+keep growing while the kernel does not move (§G of `docs/REMAINING_WORK.md` re-measures this —
+and has already priced and declined restructuring, so do not "fix" the growth). What keeps the
+core thin while lanes grow, stated as rules:
+
+- A domain package (`crypto/`, `knowledge/`) is an **application of the core's chokepoints**
+  (PermissionDecision, Safety-Flag Gate, audit chain — `docs/ACTIVE_ARCHITECTURE.md`), never a
+  parallel runtime.
+- The core import graph loads **zero** domain modules. A domain package appears at module
+  level only in its own door modules (today `knowledge_bridge*.py`); everywhere else the core
+  dispatches into a lane with function-local imports at the dispatch sites (`scheduler.py`,
+  `domain_console.py`). `tests/test_mvp_runtime_domain_isolation.py` pins both properties;
+  widening the door list is a decision to record there, not a convenience.
+- A lane earns its size with evidence or is removed **whole** (`predmarket/`, 2026-08-02, is
+  the precedent). Lanes are removable units, never core accretion.
 
 ## Guardrails (do not violate without explicit Thomas approval)
 
