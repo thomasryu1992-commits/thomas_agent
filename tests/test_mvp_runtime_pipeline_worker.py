@@ -438,7 +438,7 @@ def test_a_job_never_runs_the_pipeline(tmp_path, captured_run_task):
     assert captured_run_task == []
 
 
-@pytest.mark.parametrize("bogus", ["crypto_propose", "anything", "", 42, ["x"]])
+@pytest.mark.parametrize("bogus", ["crypto_backtest", "anything", "", 42, ["x"]])
 def test_an_unnamed_job_is_refused(tmp_path, bogus):
     with pytest.raises(ControlBlocked) as exc:
         pipeline_worker.apply_work(
@@ -507,3 +507,57 @@ def test_the_worker_states_a_frame_ceiling_the_inventory_fits_in():
     assert pipeline_worker.MAX_FRAME_BYTES > socket_door.MAX_FRAME_BYTES
     frame = json.dumps({"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()})
     assert len(frame.encode()) < pipeline_worker.MAX_FRAME_BYTES
+
+
+# --- the proposer job (D6): the model half only ------------------------------
+
+def test_the_proposer_job_returns_the_model_half_and_never_a_verdict(tmp_path):
+    """What crosses back is the generation, not a record: the verdicts need the market frame,
+    which this worker never sees. A worker that judged would need the frame and would put a
+    second feature source beside the one the router reads."""
+    out = pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+         "proposal_inputs": {"existing_families": ["trend_break"], "focus": None}},
+        control_store=ControlStore(tmp_path),
+    )
+    assert out["ok"] is True
+    assert set(out["generation"]) == {"raw", "invocation", "degraded"}
+    assert "proposals" not in out and "record" not in out
+
+
+def test_the_proposer_job_needs_no_market_frame(tmp_path):
+    """The finding that unblocked D6, pinned: the prompt is built from scalars, so the job
+    input carries no snapshot and the frame stays in the caller."""
+    frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+             "proposal_inputs": {"existing_families": [], "focus": "mean reversion"}}
+    out = pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert out["ok"] is True
+    assert "snapshot" not in str(frame)
+
+
+@pytest.mark.parametrize("inputs", [
+    None, "not an object", {"existing_families": "trend_break"},
+    {"existing_families": [1, 2]}, {"existing_families": ["x"] * 201},
+    {"existing_families": [], "focus": 42},
+])
+def test_malformed_proposal_inputs_are_refused(tmp_path, inputs):
+    frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE}
+    if inputs is not None:
+        frame["proposal_inputs"] = inputs
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "PROPOSAL_INPUTS_REQUIRED"
+
+
+def test_the_two_jobs_do_not_accept_each_others_input(tmp_path):
+    """A frame carrying the other job's input is a caller that believed it would be used."""
+    for job, wrong in ((pipeline_worker.JOB_CRYPTO_PROPOSE, {"inventory": {"a": 1}}),
+                       (pipeline_worker.JOB_DATA_REVIEW, {"proposal_inputs": {"a": 1}})):
+        frame = {"job": job, **wrong}
+        if job == pipeline_worker.JOB_CRYPTO_PROPOSE:
+            frame["proposal_inputs"] = {"existing_families": []}
+        else:
+            frame["inventory"] = {"venue": "binance"}
+        with pytest.raises(ControlBlocked) as exc:
+            pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+        assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
