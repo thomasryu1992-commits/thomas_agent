@@ -1,6 +1,9 @@
 # 제안: 평면 분리 Phase ② — 스케줄러의 모델 소비자
 
-상태: 제안 (Thomas 검토 전). 작성 2026-08-10, 기준 `main` = `fe1f11a`.
+상태: **D4 채택** (Thomas, 2026-08-10 — "D4 승인, PR-C 진행해줘"). D5·D6은 미결이며, PR-C는
+둘 중 어느 것도 건드리지 않는다 — `crypto_propose`와 `crypto_data_review`는 이 증분 뒤에도
+스케줄러 안에서 그대로 돌고, `MVP_VALIDATOR_PROVIDER`+`GROQ_API_KEY`도 그대로 남는다.
+작성 2026-08-10, 기준 `main` = `fe1f11a`.
 선행: `CREDENTIAL_PLANE_SEPARATION_V0.1.md` §7 (D3 "나머지를 옮긴다" 방향 승인, 2026-08-10).
 그 문서가 "상세는 별도 상신에서"로 미룬 세 질문(위임 작업의 귀속, pass budget과의 상호작용,
 `content_ideation`의 실행 위치)에 답한다.
