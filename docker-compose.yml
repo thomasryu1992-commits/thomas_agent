@@ -125,16 +125,16 @@ services:
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Naver keyword research for the blog content lane (optional). Here because the lane's
-      # weekly ideation runs as a schedule on this service. See the dispatch-bridge block for
-      # what these enable and why the operator service does not get them —
-      # MVP_NAVER_RESEARCH is the whole gate, with no grant behind it.
-      MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
-      NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
-      NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
-      NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
-      NAVER_APIHUB_KEY_ID: ${NAVER_APIHUB_KEY_ID:-}
-      NAVER_APIHUB_KEY: ${NAVER_APIHUB_KEY:-}
+      # The six Naver variables (MVP_NAVER_RESEARCH + the Search Ad and API HUB credentials)
+      # were forwarded here from #650 until the plane separation's PR-B
+      # (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md) removed them: `pipeline-worker`
+      # is the lane's only holder now. Deliberately absent rather than left "harmlessly" —
+      # Compose forwards only what this block names, and MVP_NAVER_RESEARCH is the WHOLE gate
+      # (no grant behind it), so a name here plus a value in `.env` would put the ad account's
+      # spend-capable signing secret back on the service that also holds the Binance keys.
+      # Consequence for the CLI: a `--naver-keywords` run must exec in thomas-pipeline-worker,
+      # not here — in this container the brief silently degrades to Mock rows.
+      # The weekly ideation schedule (blog lane Phase 3, unbuilt) executes via the worker.
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` grant and the
       # same registered chat as the operator service — the scheduler never reads

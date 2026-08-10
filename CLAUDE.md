@@ -170,6 +170,10 @@ then deliver or BLOCK), `--write-output PATH`, `--naver-keywords "SEED[, SEED...
 gated Naver keyword brief; rows become [K#] evidence). Any unknown `--flag` → `EXIT_USAGE`, never
 folded into the request text. The CLI takes **no** pointer argument — it reads
 `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` by default.
+**A `--naver-keywords` run execs in `thomas-pipeline-worker`, not the scheduler** — since the
+plane separation that container is the only one holding the Naver env, and in any other the
+brief silently degrades to Mock rows (`docker exec thomas-pipeline-worker python -m
+runtime.mvp_runtime.cli "…" --naver-keywords "…"`). Keyword-less CLI runs are unaffected.
 
 First-time setup, local Core activation, and end-to-end verification: use the `verify` skill.
 

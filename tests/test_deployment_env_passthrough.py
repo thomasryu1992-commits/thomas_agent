@@ -136,12 +136,12 @@ LIVE_TRADING_SURFACE = {
 }
 
 
-# The Naver research lane (2026-08-09; placement revised 2026-08-10 by the plane separation,
-# docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). Forwarded to the PIPELINE-WORKER (the
-# engine that actually runs the `research`/`content` kinds) and — until PR-B of that proposal
-# lands — still to the SCHEDULER (the placement #650 made for the weekly ideation; nothing
-# consumes it there yet). Withheld from the OPERATOR and, since the split, from the
-# DISPATCH-BRIDGE: the door that parses the assistant's frames holds no credential at all.
+# The Naver research lane (2026-08-09; placement settled 2026-08-10 by the plane separation,
+# docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). Forwarded to the PIPELINE-WORKER only —
+# the engine that runs the `research`/`content` kinds and the container a `--naver-keywords`
+# CLI run must exec in. Withheld from the OPERATOR, from the SCHEDULER (PR-B removed #650's
+# transitional copy), and from the DISPATCH-BRIDGE: the door that parses the assistant's
+# frames holds no credential at all.
 #
 # Withheld rather than merely unneeded, and the reason is the credential, not the capability.
 # The lane's USE is read-only — keyword volumes, a trend series, a competition count. The KEY
@@ -211,33 +211,35 @@ def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
 
 
 @pytest.mark.parametrize("env_var, what", sorted(NAVER_RESEARCH_SURFACE.items()))
-@pytest.mark.parametrize("service", ["scheduler", "pipeline-worker"])
-def test_the_naver_lane_reaches_the_services_that_run_it(service, env_var, what):
+def test_the_naver_lane_reaches_the_one_service_that_runs_it(env_var, what):
     """Without this the lane is unreachable on the server however correct `.env` is — and
     nothing errors, it just keeps returning mock keyword volumes.
 
-    The scheduler row is transitional: PR-B of the plane separation removes it, leaving the
-    pipeline-worker as the lane's only holder before the Search Ad licence ever mints a
-    value."""
-    environment = _service_environment(service)
+    One service, by decision (plane separation PR-B): the pipeline-worker is the lane's only
+    holder, settled before the Search Ad licence ever mints a value."""
+    environment = _service_environment("pipeline-worker")
     assert env_var in environment, (
-        f"{env_var} ({what}) is not in the {service} service's compose environment, so a "
-        f"value in .env never reaches the container and the lane stays silently on mocks"
+        f"{env_var} ({what}) is not in the pipeline-worker service's compose environment, so "
+        f"a value in .env never reaches the container and the lane stays silently on mocks"
     )
     assert environment[env_var] == "${%s:-}" % env_var
 
 
 @pytest.mark.parametrize("env_var", sorted(NAVER_RESEARCH_SURFACE))
-def test_the_operator_is_not_handed_the_naver_ad_credential(env_var):
+@pytest.mark.parametrize("service", ["operator", "scheduler"])
+def test_no_other_service_is_handed_the_naver_ad_credential(service, env_var):
     """The withholding, pinned so it is a decision to reverse rather than a drift.
 
-    The operator loop is not a lane consumer — the weekly ideation is a scheduler job and
-    orchestrator-initiated research arrives at the dispatch door. Handing it the Search Ad
-    secret would put an account-wide, spend-capable credential on a third service for no
-    consumer, which is the trade the live-trading block above declines for the same reason."""
-    assert env_var not in _service_environment("operator"), (
-        f"operator is handed {env_var}; the Naver lane does not run there and the Search Ad "
-        f"secret is account-wide, not the read-only key its read-only use suggests"
+    The operator loop is not a lane consumer, and the scheduler stopped being its holder in
+    the plane separation's PR-B: #666's keyword brief is CLI-opt-in (`--naver-keywords`), and
+    that run belongs in the worker container, which holds the env — in this pair it degrades
+    to Mock rows by design. Putting the Search Ad secret back on either service would put an
+    account-wide, spend-capable credential beside the operator's channel or the Binance keys,
+    which is the trade the live-trading block above declines for the same reason.
+    (dispatch-bridge is covered by its exact-shape test above.)"""
+    assert env_var not in _service_environment(service), (
+        f"{service} is handed {env_var}; the Naver lane runs in pipeline-worker only and the "
+        f"Search Ad secret is account-wide, not the read-only key its read-only use suggests"
     )
 
 
