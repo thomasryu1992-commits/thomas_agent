@@ -396,20 +396,20 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LEDGER_ROTATION_FAILED` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 185 | `rotate_file` | `—` |
 | `LEDGER_UNAVAILABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 475 | `run_trial` | `—` |
 | `LEDGER_UNKNOWN_FILE` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 136 | `rotate_file` | `filename not in ROTATABLE_FILES` |
-| `LEDGER_UNKNOWN_RECORD_KIND` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 143 | `append_records` | `unknown` |
+| `LEDGER_UNKNOWN_RECORD_KIND` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 149 | `append_records` | `unknown` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/control.py` | 466 | `_mode_from_ledger` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 230 | `_tip` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 239 | `_tip` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 247 | `read_blocks` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 281 | `iter_records` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 321 | `iter_records_with_archive` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 324 | `iter_records_with_archive` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 348 | `read_scheduler_events` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 359 | `read_audit_events` | `—` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 383 | `health` | `not entry['present']` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 236 | `_tip` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 245 | `_tip` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 253 | `read_blocks` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 287 | `iter_records` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 327 | `iter_records_with_archive` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 330 | `iter_records_with_archive` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 354 | `read_scheduler_events` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 365 | `read_audit_events` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 389 | `health` | `not entry['present']` |
 | `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/bridge_idempotency.py` | 254 | `_append` | `—` |
-| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 135 | `append_audit_events` | `—` |
-| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 189 | `_append_locked` | `—` |
+| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 141 | `append_audit_events` | `—` |
+| `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 195 | `_append_locked` | `—` |
 | `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 349 | `operator_retirement_decision` | `not (isinstance(strategy_id, str) and strategy_id)` |
 | `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1457 | `update_statuses` | `not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str))` |
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 354 | `operator_retirement_decision` | `current in TERMINAL_STATUSES` |
@@ -450,10 +450,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_POSITION_SYMBOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 269 | `live_position_path` | `not symbol or not symbol.replace('_', '').replace('-', '').isalnum()` |
 | `LIVE_POSITION_SYMBOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 275 | `live_position_path` | `path.parent != resolved_base` |
 | `LIVE_POSITION_UNATTRIBUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 249 | `position_symbol` | `not symbol` |
-| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 457 | `_require_analysis` | `not isinstance(analysis, Mapping)` |
-| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 460 | `_require_analysis` | `missing` |
-| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 463 | `_require_analysis` | `not isinstance(summary, str) or not summary.strip()` |
-| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 466 | `_require_analysis` | `not isinstance(facts, list)` |
+| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 498 | `_require_analysis` | `not isinstance(analysis, Mapping)` |
+| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 501 | `_require_analysis` | `missing` |
+| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 504 | `_require_analysis` | `not isinstance(summary, str) or not summary.strip()` |
+| `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 507 | `_require_analysis` | `not isinstance(facts, list)` |
 | `MALFORMED_BRACKET_LEG` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 287 | `build_bracket_intent` | `leg not in ('SL', 'TP')` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 223 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 176 | `build_live_position` | `direction not in {'LONG', 'SHORT'}` |
@@ -518,11 +518,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1975 | `_parse_open_interest` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1979 | `_parse_open_interest` | `not isinstance(payload, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2002 | `_parse_open_interest` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 546 | `_parse` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 548 | `_parse` | `not isinstance(rows, list)` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 688 | `trend` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 724 | `competition` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 726 | `competition` | `not isinstance(items, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 650 | `_parse` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 652 | `_parse` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 792 | `trend` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 828 | `competition` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 830 | `competition` | `not isinstance(items, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 299 | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 301 | `_parse` | `not isinstance(results, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 389 | `_parse` | `—` |
@@ -571,7 +571,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NOT_BOUND` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 66 | `build_role_assignment` | `not (isinstance(ccb, str) and ccb.startswith('ccb-'))` |
 | `NOT_BOUND` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 497 | `build_permission_decision` | `not (isinstance(ccb, str) and ccb.startswith('ccb-'))` |
 | `NOT_BOUND` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 208 | `run_validation_worker` | `not (isinstance(ccb, str) and ccb.startswith('ccb-'))` |
-| `NOT_BOUND` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 596 | `run_analysis_worker` | `not (isinstance(ccb, str) and ccb.startswith('ccb-'))` |
+| `NOT_BOUND` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 638 | `run_analysis_worker` | `not (isinstance(ccb, str) and ccb.startswith('ccb-'))` |
 | `NOT_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 289 | `expire` | `not is_expired(approval, now=now)` |
 | `NOT_INDEPENDENT` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 210 | `run_validation_worker` | `validator_assignment.get('role_id') == agent_output.get('role_id')` |
 | `NOT_PENDING` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 92 | `_require_pending` | `status != STATUS_PENDING` |
@@ -582,8 +582,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 298 | `_signed_get` | `not api_key or not api_secret` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1864 | `liquidation_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1947 | `open_interest_history` | `not api_key` |
-| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 482 | `_headers` | `missing` |
-| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 613 | `_headers` | `missing` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 586 | `_headers` | `missing` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 717 | `_headers` | `missing` |
 | `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 576 | `generate` | `not api_key` |
 | `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 705 | `generate` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/tools.py` | 271 | `search` | `not api_key` |
@@ -596,7 +596,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_DELIVERABLE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 288 | `apply_registry_command` | `entry.status != task_registry.DELIVERED` |
 | `NO_FEEDBACK_TARGET` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 237 | `apply_feedback` | `target is None` |
 | `NO_MODEL_BUDGET` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 217 | `run_validation_worker` | `not isinstance(max_model_calls, int) or max_model_calls < 1` |
-| `NO_MODEL_BUDGET` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 603 | `run_analysis_worker` | `not isinstance(max_model_calls, int) or max_model_calls < 1` |
+| `NO_MODEL_BUDGET` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 645 | `run_analysis_worker` | `not isinstance(max_model_calls, int) or max_model_calls < 1` |
 | `NO_ORDER_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 610 | `_signed_request` | `not api_key or not api_secret` |
 | `NO_ROLE_OUTPUT_CONTRACT` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 129 | `role_output_spec` | `not isinstance(contract, Mapping) or not contract` |
 | `NO_ROUTABLE_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 327 | `select_role` | `not candidates` |
@@ -621,7 +621,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1202 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
 | `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1191 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1179 | `read_outcomes` | `—` |
-| `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 691 | `run_analysis_worker` | `—` |
+| `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 734 | `run_analysis_worker` | `—` |
 | `OUT_OF_MVP_SCOPE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 204 | `classify_task` | `_READ_ONLY_CONSTRAINT not in constraints` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 175 | `resolve_target` | `'..' in candidate.parts` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 203 | `resolve_target` | `target != base_real and base_real not in target.parents` |
@@ -689,7 +689,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROMOTION_SUBJECT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 609 | `build_promotion_audit` | `not (isinstance(candidate_id, str) and candidate_id and isinstance(validated_id, str) and valid…` |
 | `PROMOTION_TIER_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 73 | `promotion_content_sha256` | `live_tier not in pool_store.LIVE_TIERS` |
 | `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 229 | `run_validation_worker` | `—` |
-| `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 618 | `run_analysis_worker` | `—` |
+| `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 661 | `run_analysis_worker` | `—` |
 | `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 288 | `authorize` | `record['provider_id'] != provider_id` |
 | `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 353 | `assert_authorization` | `authorization.provider_id != provider_id` |
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 325 | `_post_json_with_retry` | `—` |
@@ -724,7 +724,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REQUEST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 143 | `apply_dispatch` | `not isinstance(text, str) or not text.strip()` |
 | `REQUEST_REQUIRES_ACCEPTED` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 148 | `create_program_request` | `candidate.get('status') != 'ACCEPTED'` |
 | `RESPONSE_TRUNCATED` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 234 | `run_validation_worker` | `response_was_truncated(result.finish_reason)` |
-| `RESPONSE_TRUNCATED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 624 | `run_analysis_worker` | `response_was_truncated(result.finish_reason)` |
+| `RESPONSE_TRUNCATED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 667 | `run_analysis_worker` | `response_was_truncated(result.finish_reason)` |
 | `RESULT_UNAVAILABLE` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 297 | `apply_registry_command` | `rendered is None` |
 | `RETIREMENT_DUPLICATE_SELECTOR` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 70 | `resolve_pool_entries` | `duplicates` |
 | `RETIREMENT_EMPTY` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 67 | `resolve_pool_entries` | `not strategy_ids` |
@@ -735,7 +735,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 104 | `build_role_assignment` | `—` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 120 | `load_role_definition` | `—` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 256 | `load_resolved_roles` | `—` |
-| `ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER` | `WorkerBlocked` | `runtime/mvp_runtime/pipeline.py` | 166 | `_provider_for_role` | `getattr(provider, 'network_egress', False)` |
+| `ROLE_OUTPUT_CONTRACT_UNSUPPORTED_BY_PROVIDER` | `WorkerBlocked` | `runtime/mvp_runtime/pipeline.py` | 167 | `_provider_for_role` | `getattr(provider, 'network_egress', False)` |
 | `ROLE_REGISTRY_MISMATCH` | `KernelBlocked` | `runtime/read_only_kernel/preflight.py` | 404 | `run_preflight` | `—` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/router.py` | 13 | `select_route` | `routing.get('selected_route') != 'ROLE'` |
 | `ROUTE_NOT_SUPPORTED` | `KernelBlocked` | `runtime/read_only_kernel/worker_port.py` | 18 | `invoke_worker` | `route.selected_route != 'ROLE'` |
@@ -783,7 +783,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TARGET_NOT_SWITCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 445 | `_spend` | `prefix is None` |
 | `TASK_NOT_FINISHED` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 281 | `apply_registry_command` | `not entry.is_terminal` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 241 | `run_validation_worker` | `token_budget and tokens_used > int(token_budget)` |
-| `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 632 | `run_analysis_worker` | `token_budget and tokens_used > int(token_budget)` |
+| `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 675 | `run_analysis_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 775 | `collect_market_data` | `—` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 324 | `run_keyword_research` | `—` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | 121 | `run_search` | `—` |
@@ -793,8 +793,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 178 | `classify_transport_error` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1286 | `derivative_price_klines` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1382 | `positioning_history` | `—` |
-| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 537 | `keywords` | `—` |
-| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 640 | `_fetch` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 641 | `keywords` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 744 | `_fetch` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 289 | `search` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/tools.py` | 379 | `search` | `—` |
 | `TOO_LONG` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 89 | `_require_text` | `len(value) > max_len` |
@@ -843,7 +843,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 121 | `apply_knowledge` | `command not in _COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 105 | `apply_read` | `command not in _READS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 588 | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
-| `WINDOW_TOO_EARLY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 671 | `trend` | `start_date < self.EARLIEST_PERIOD` |
+| `WINDOW_TOO_EARLY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 775 | `trend` | `start_date < self.EARLIEST_PERIOD` |
 | `WORKING_MEMORY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/working_memory.py` | 99 | `prune_expired` | `removed` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |

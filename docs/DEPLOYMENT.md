@@ -99,7 +99,8 @@ TELEGRAM_BOT_TOKEN=...
 # calls getUpdates — never set this on the operator service, which does poll, or the two
 # pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
 SCHEDULER_TELEGRAM_BOT_TOKEN=...
-MVP_HOSTED_PROVIDER=google_ai_studio,groq
+MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq
+OPENROUTER_API_KEY=...
 GOOGLE_AI_STUDIO_API_KEY=...
 GROQ_API_KEY=...
 MVP_VALIDATOR_PROVIDER=groq
@@ -166,8 +167,8 @@ The compose operator runs with `--independent-validation auto` (review only
 important/high-risk requests — the R7.1 policy). To change that, edit the operator
 service's `command:` in `docker-compose.yml` — not a `docker run` flag.
 
-`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`google_ai_studio,groq` —
-put `GROQ_API_KEY` in the `.env` too). Every member needs its own safety-flag activation
+`MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`openrouter,google_ai_studio,groq`
+— put every member's API key in the `.env` too). Every member needs its own safety-flag activation
 on the mounted state volume; a chain with an unknown or unauthorized member fails closed
 at startup rather than silently shrinking. The next member is tried only when the previous
 one answers 503/429 even after its own retry. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
