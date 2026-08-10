@@ -61,8 +61,30 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
 # fail-closed means not trusting the peer to have checked, even when the peer is our own door.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"request", "kind", "reason", "naver_keywords", "actor_profile"}
+    {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory"}
 )
+
+# The second thing this process does, and the reason it is a *set* rather than a second
+# entrypoint: after the plane separation this is where the model credentials live, so anything
+# that needs a model has to happen here — not only the P3 pipeline the dispatch door forwards.
+#
+# `crypto_data_review` is the first such caller (Phase 2 D5). Its fire stays the scheduler's:
+# the scheduler builds the inventory (pure state reads, no model), appends the record to the
+# ledger, sends the operator's sheet, and judges the stall. Only the **model call** crosses,
+# which is the smallest cut that takes an LLM response out of the process holding the Binance
+# keys. The worker imports `crypto.data_review` for its prompt and parser and nothing else —
+# it collects no market data and touches no pool.
+#
+# A job is NOT a request kind and deliberately does not share that set: `_ALLOWED_KINDS` is the
+# assistant-facing permission surface, and folding a scheduler-only job into it would widen
+# what the dispatch door can express. The door cannot express `job` at all — its own
+# `_ALLOWED_KEYS` does not name it, so a frame carrying one is refused before it forwards.
+JOB_DATA_REVIEW = "crypto_data_review"
+_ALLOWED_JOBS: frozenset[str] = frozenset({JOB_DATA_REVIEW})
+
+# What a job frame may carry beside `job` itself. Pipeline keys are refused on a job frame
+# rather than ignored: a caller that sent both believed both would be used.
+_JOB_KEYS: frozenset[str] = frozenset({"job", "inventory", "reason"})
 
 # Who a run is recorded as. Two callers reach this socket — the dispatch door and (since the
 # scheduler's analysis_task delegation) the scheduler — and the ledger must keep telling them
@@ -111,6 +133,15 @@ _MAX_REASON_ON_SOURCE = 180
 # the backstop that holds if a second caller ever reaches this socket.
 MAX_CONCURRENT_REQUESTS = 2
 
+# This door's own frame ceiling, stated because a job frame carries an INPUT rather than a
+# sentence. The shared default is 8 KiB, sized for console verbs; the crypto data-review
+# inventory measured 3,298 bytes on the live host (2026-08-10) and grows with the venue's
+# mintable vocabulary and the timeframe ladder. Sitting at 40% of a ceiling that fails as a
+# dropped connection — which reads as the worker being down — is not a margin worth keeping.
+# Deliberately far short of the knowledge door's document ceiling: this carries a summary,
+# never a corpus.
+MAX_FRAME_BYTES = 64 * 1024
+
 # Selecting the analysis/validator/search providers is a side-effecting, gated step (the
 # Safety-Flag Gate reads a per-machine grant). It is injected so `apply_work` stays pure with
 # respect to it and testable without a grant: the default (no selector) runs the deterministic
@@ -150,6 +181,11 @@ def apply_work(
             "ARGUMENT_NOT_ACCEPTED",
             f"this worker accepts only {sorted(_ALLOWED_KEYS)}; it will not act on "
             f"{sorted(unexpected)}",
+        )
+
+    if request.get("job") is not None:
+        return _apply_job(
+            request, control_store=control_store, providers=providers, now=now,
         )
 
     text = request.get("request")
@@ -264,6 +300,68 @@ def apply_work(
     }
 
 
+def _apply_job(
+    request: dict[str, Any],
+    *,
+    control_store: ControlStore,
+    providers: dict[str, Any] | None,
+    now: str | None,
+) -> dict[str, Any]:
+    """Run one named job — a bounded model call on a caller-supplied input.
+
+    Separate from the pipeline path above because it *is* separate: no Task is bound, no Role
+    is assigned, no P3 ceiling applies, because nothing here is a task — it is one model call
+    whose prompt and parser belong to the caller's own module. What it shares with the
+    pipeline path is the thing that matters: the credentials, and the kill switch.
+    """
+    job = request.get("job")
+    if not isinstance(job, str) or job.strip() not in _ALLOWED_JOBS:
+        raise ControlBlocked(
+            "JOB_NOT_PERMITTED",
+            f"{job!r} is not a job this worker runs; it carries {sorted(_ALLOWED_JOBS)} only",
+        )
+    job = job.strip()
+
+    unexpected = set(request) - _JOB_KEYS
+    if unexpected:
+        # In particular `request`/`kind`: a frame carrying both a job and a dispatch is two
+        # requests, and guessing which one was meant is how a caller gets the other.
+        raise ControlBlocked(
+            "ARGUMENT_NOT_ACCEPTED",
+            f"a {job!r} frame accepts only {sorted(_JOB_KEYS)}; it will not act on "
+            f"{sorted(unexpected)}",
+        )
+
+    inventory = request.get("inventory")
+    if not isinstance(inventory, dict) or not inventory:
+        raise ControlBlocked(
+            "INVENTORY_REQUIRED",
+            f"{job!r} needs a non-empty 'inventory' object; the caller builds it, this worker "
+            f"does not collect one",
+        )
+
+    # Same halt binding as a dispatch: this process is an execution door too, and a job that
+    # spends model quota is new work.
+    state = control_store.load()
+    if not state.execution_allowed:
+        raise ControlBlocked(
+            state.refusal_reason_code(),
+            f"runtime is {state.mode}; new work is blocked until an authenticated resume",
+        )
+
+    from .crypto import data_review as crypto_data_review
+
+    resolved = providers or {}
+    provider = (
+        resolved.get("validator_provider") or crypto_data_review.MockDataReviewProvider()
+    )
+    record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
+    # The record travels whole: the caller appends it to the ledger, renders the operator's
+    # sheet from it, and judges the stall on it. Summarising here would make this worker the
+    # authority on a record it does not own.
+    return {"ok": True, "job": job, "record": record}
+
+
 def _identity(result: Any) -> dict[str, Any]:
     """The run's ids, from where the pipeline actually puts them.
 
@@ -346,4 +444,5 @@ def open_door(
 
     return socket_door.SocketDoor(
         path, _apply, max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
+        max_frame_bytes=MAX_FRAME_BYTES,
     )

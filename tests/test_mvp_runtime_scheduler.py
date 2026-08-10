@@ -1287,3 +1287,71 @@ def test_a_pipeline_block_survives_the_hop_as_a_blocked_result(monkeypatch):
     out = sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
     assert out["status"] == "BLOCKED"
     assert out["block"]["reason_code"] == "NO_ROUTABLE_ROLE"
+
+
+# --- the data-review delegation (plane separation Phase 2, D5) ----------------
+
+def test_a_data_review_delegates_only_the_model_call(monkeypatch):
+    """The narrow cut: the inventory the scheduler built crosses, and the record comes back.
+    Everything else about the fire — the ledger append, the operator sheet, the stall judgement
+    — stays on this side, so the frame is one input and one record and nothing more."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"], "record": {"review_id": "rev_1"}},
+    )
+    out = sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+    assert sent[0]["job"] == pipeline_worker.JOB_DATA_REVIEW
+    assert sent[0]["inventory"] == {"venue": "binance"}
+    assert "request" not in sent[0] and "kind" not in sent[0]
+    assert out == {"review_id": "rev_1"}
+
+
+def test_an_unreachable_worker_fails_the_data_review_fire(monkeypatch):
+    """No fallback. The in-process Mock that used to stand in when no provider was authorized
+    now lives in the worker, so a degraded review is still a real record and an absent worker
+    is still a visible failure — the two must not collapse into each other."""
+    from runtime.mvp_runtime import scheduler as sched
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: (_ for _ in ()).throw(
+            ControlBlocked("DOOR_UNREACHABLE", "nothing is listening")),
+    )
+    with pytest.raises(MvpRuntimeError):
+        sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": False, "reason_code": "KILLED", "reason": "halted"},
+    {"ok": True, "job": "crypto_data_review", "record": {}},
+    {"ok": True, "job": "crypto_data_review"},
+    "not an object",
+])
+def test_a_reply_without_a_usable_record_is_never_ledgered(monkeypatch, reply):
+    """An `ok` reply carrying no review_id would otherwise be appended as evidence of a
+    review that did not happen."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(sched.socket_door, "call_door", lambda path, frame, **kw: reply)
+    with pytest.raises(SchedulerBlocked):
+        sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+
+def test_the_scheduler_no_longer_selects_a_provider_for_the_data_review():
+    """The point of D5, asserted on the code rather than the comment: the branch that used to
+    build a validator provider for the review no longer mentions one. `crypto_propose` still
+    does, which is why MVP_VALIDATOR_PROVIDER stays on this service."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    src = inspect.getsource(sched._execute)
+    review = src[src.index("KIND_DATA_REVIEW"):src.index("KIND_CANDLE_ARCHIVE")]
+    assert "select_validator_provider" not in review
+    assert "delegate_data_review" in review
+    assert "select_validator_provider" in src  # the proposer branch still selects one
