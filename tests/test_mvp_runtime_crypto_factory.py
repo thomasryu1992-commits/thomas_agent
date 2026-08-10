@@ -1288,8 +1288,7 @@ def test_generation_number_advances_past_pool_and_candidates():
 
 # --- scheduler template -------------------------------------------------------
 
-def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path, monkeypatch):
-    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-22T10:00:00Z")
     store = ScheduleStore(tmp_path)
@@ -1320,7 +1319,6 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     fused child was ever minted. Deterministic either way it lands: the recorded
     factory result carries fused children (parent lineage attached) or explicit
     ``fusion_rejected`` reasons — dormant fusion produced neither."""
-    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
     # This test is about the WIRING — does a scheduled fire reach the fusion path at all.
     # `holdout_permits_parenting` is a separate rule with its own tests, and no first-fire
     # candidate on this synthetic history survives it (they close too few holdout trades, and

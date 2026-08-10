@@ -381,6 +381,89 @@ def test_the_apihub_adapters_are_gated_too(monkeypatch):
         BlogCompetitionTool().competition("AI 회계", display=10, timeout_seconds=1)
 
 
+# --- the keyword brief (the pipeline's evidence bundle) -----------------------------
+
+def test_a_brief_bundles_volume_competition_and_trend():
+    rows, record = naver_research.run_keyword_brief(
+        "AI 회계", now=NOW,
+        keyword_tool=MockKeywordTool(),
+        trend_tool=naver_research.MockTrendTool(),
+        competition_tool=naver_research.MockCompetitionTool(),
+    )
+    assert rows and record["degraded"] is False and record["degraded_legs"] == {}
+    # Competition counts land on the top rows only — each is its own API HUB call.
+    assert all("competing_posts" in r for r in rows[: naver_research.BRIEF_COMPETITION_TOP])
+    assert all("competing_posts" not in r for r in rows[naver_research.BRIEF_COMPETITION_TOP:])
+    assert record["trend_points"] and record["operation"] == "keyword_brief"
+    assert record["read_only"] is True and record["external_action"] is False
+
+
+def test_a_dead_volume_leg_degrades_the_whole_brief():
+    """Measured demand IS the brief — rows without it would present a guess as research."""
+    class _Boom:
+        tool_id, tool_version, network_egress = naver_research.KEYWORD_TOOL_ID, "0.1.0", False
+
+        def keywords(self, seed, *, max_results, timeout_seconds):
+            raise ToolError("BOOM", "backend unavailable")
+
+    rows, record = naver_research.run_keyword_brief(
+        "AI 회계", now=NOW,
+        keyword_tool=_Boom(),
+        trend_tool=naver_research.MockTrendTool(),
+        competition_tool=naver_research.MockCompetitionTool(),
+    )
+    assert rows == []
+    assert record["degraded"] is True
+    assert record["degraded_legs"]["volume"] == "TOOL_ERROR"
+    assert record["trend_points"] == []  # no rows -> no trend call either
+
+
+def test_a_dead_competition_leg_leaves_the_column_absent_not_zero():
+    """0 competing posts is a CLAIM (an empty niche); a failed lookup must not make it."""
+    class _Boom:
+        tool_id, tool_version = naver_research.COMPETITION_TOOL_ID, "0.1.0"
+
+        def competition(self, keyword, *, display, timeout_seconds):
+            raise ToolError("TOOL_TRANSPORT", "api hub unreachable")
+
+    rows, record = naver_research.run_keyword_brief(
+        "AI 회계", now=NOW,
+        keyword_tool=MockKeywordTool(),
+        trend_tool=naver_research.MockTrendTool(),
+        competition_tool=_Boom(),
+    )
+    assert rows and all("competing_posts" not in r for r in rows)
+    assert record["degraded"] is True
+    assert record["degraded_legs"]["competition"] == "TOOL_TRANSPORT"
+    assert record["metrics"] == rows  # the record carries exactly what the prompt cites
+
+
+def test_the_brief_names_both_surfaces_it_read_from():
+    rows, record = naver_research.run_keyword_brief(
+        "AI 회계", now=NOW,
+        keyword_tool=MockKeywordTool(),
+        trend_tool=naver_research.MockTrendTool(),
+        competition_tool=naver_research.MockCompetitionTool(),
+    )
+    assert "mock.naver_searchad" in record["sources"]
+    assert len(record["sources"]) == 2  # volume surface + competition surface
+
+
+def test_an_unusable_seed_degrades_the_brief_with_its_reason():
+    """The brief never raises: it is enrichment, and its caller (run_task) must not lose a
+    run to a bad seed string. The record carries EMPTY_SEED so the ledger says whose fault
+    the missing evidence was — the caller's, not a backend's."""
+    rows, record = naver_research.run_keyword_brief(
+        "", now=NOW,
+        keyword_tool=MockKeywordTool(),
+        trend_tool=naver_research.MockTrendTool(),
+        competition_tool=naver_research.MockCompetitionTool(),
+    )
+    assert rows == []
+    assert record["degraded"] is True
+    assert record["degraded_legs"]["volume"] == "EMPTY_SEED"
+
+
 # --- the API HUB migration ----------------------------------------------------------
 #
 # Four things changed at once when Naver moved these off the Developers-center surface: the
