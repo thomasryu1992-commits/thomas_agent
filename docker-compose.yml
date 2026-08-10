@@ -279,14 +279,15 @@ services:
   # asserts the kind set stays those four and that none of them reaches the money path.
   #
   # Unlike switch-bridge and read-bridge this service RUNS the pipeline, so it is the one door
-  # that *could* invoke a model. It deliberately carries no provider key here: with none, the
-  # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
-  # pipeline. Enabling real model execution means forwarding the model provider env
-  # (GOOGLE_AI_STUDIO_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / MVP_HOSTED_PROVIDER) — a
-  # deliberate step, because it stands up a second model-key-bearing container and OPENROUTER
-  # is shared with the operator's assistant. Absent regardless of that choice: every money
-  # variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key. The kinds it runs never
-  # touch them.
+  # that *could* invoke a model — and that step has been taken: the model provider env
+  # (MVP_HOSTED_PROVIDER and the per-provider keys) IS forwarded in the environment block
+  # below, so a dispatched analysis returns a real model result instead of the deterministic
+  # mock. It was a deliberate step, because it puts model keys in one more container and
+  # OPENROUTER is shared with the operator's assistant — the spend alert noted on that block
+  # is what watches it. The env is not the whole gate: each chain member still needs its own
+  # mounted safety-flag grant via the state volume, and the env var alone fails closed.
+  # Absent regardless of that choice: every money variable — no BINANCE_*, no MVP_LIVE_*, no
+  # venue or order key. The kinds it runs never touch them.
   dispatch-bridge:
     image: thomas-agent-runtime
     build: .
@@ -427,7 +428,8 @@ services:
   # NOT change, so the signature above still greps. What changed is that the assistant — which
   # reads untrusted text — no longer gets the runtime's file layout in an error string.
   #
-  # Same absent env as the read and dispatch doors: no provider keys, no venue keys, no MVP_LIVE_*.
+  # Same absent env as the read door: no provider keys, no venue keys, no MVP_LIVE_* (the
+  # dispatch door carries the model provider env now; this one still does not).
   # Flipping the control switch reads and writes control state; it reaches no venue and no
   # model. The live gate (MVP_LIVE_TRADING) is a DEPLOY action and this door never touches it —
   # clearing it needs a restart and shuts the close path, stranding open positions.
