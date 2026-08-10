@@ -232,8 +232,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 495 | `save` | `—` |
 | `CORE_CANDIDATE_ALREADY_DECIDED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 483 | `decide_core_candidate` | `candidate.get('status') != CORE_CANDIDATE_STATUS` |
 | `CORE_NOT_ACTIVATED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | 46 | `bind_task_to_core` | `not pointer.is_file()` |
-| `COST_MODEL_UNMEASURED` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 624 | `cost_model_for` | `missing` |
-| `COST_MODEL_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 618 | `cost_model_for` | `declaration is None` |
+| `COST_MODEL_UNMEASURED` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 674 | `cost_model_for` | `missing` |
+| `COST_MODEL_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 668 | `cost_model_for` | `declaration is None` |
 | `COUNTERFACTUAL_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 111 | `load_open_counterfactuals` | `—` |
 | `COUNTERFACTUAL_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 117 | `load_open_counterfactuals` | `rows is None and (not isinstance(book, dict))` |
 | `COUNTERFACTUAL_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 412 | `read_counterfactual_outcomes` | `settlement_id in seen_settlements` |
@@ -453,11 +453,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 663 | `count_today` | `not isinstance(data, dict)` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 667 | `count_today` | `—` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 706 | `record_submission` | `path.is_file()` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 237 | `read_live_outcomes` | `outcome_id in seen_outcome_ids` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 242 | `read_live_outcomes` | `settlement_id in seen_settlement_ids` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 233 | `read_live_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 344 | `daily_realized_pnl` | `—` |
-| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 222 | `read_live_outcomes` | `—` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 334 | `read_live_outcomes` | `outcome_id in seen_outcome_ids` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 339 | `read_live_outcomes` | `settlement_id in seen_settlement_ids` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 330 | `read_live_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 441 | `daily_realized_pnl` | `—` |
+| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 319 | `read_live_outcomes` | `—` |
 | `LIVE_ORDER_PERMDEC_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 1151 | `build_live_order_audit` | `not (isinstance(permdec_id, str) and permdec_id)` |
 | `LIVE_POSITION_STAGE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 298 | `_read_position_file` | `data.get('stage') != LIVE_STAGE` |
 | `LIVE_POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 290 | `_read_position_file` | `—` |

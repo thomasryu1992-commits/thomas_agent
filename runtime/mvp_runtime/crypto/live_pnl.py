@@ -83,6 +83,19 @@ R_BASIS_FILLED = "filled"
 # slippage but not fees, so it is neither of the two paper bases and must not be read as one.
 R_BASES_NET_OF_COSTS = frozenset({R_BASIS_INTENT_NET})
 
+# The close reasons that leave through a triggered STOP — the leg whose market order races the
+# move that fired it, which is not the microstructure any other exit has. `cost.apply_cost_model`
+# prices this leg with its own slippage rate, and `build_live_outcome_record` measures the
+# realized figure against the trigger on exactly these rows.
+#
+# It lives HERE and not beside `cost.MAKER_EXIT_REASONS`, where symmetry says it belongs, because
+# the import can only run one way: `cost` already imports this module's R-basis labels (their
+# owner), and this module must not import `cost` back. Same ownership rule as those labels —
+# the outcome row's vocabulary is defined where the rows are built. A new close reason that
+# exits at market has to decide whether it is stop-shaped (a trigger chased through a moving
+# book) or merely immediate, and membership here is that decision.
+STOP_EXIT_REASONS = frozenset({"stop_loss"})
+
 LIVE_HISTORY_UNREADABLE = "LIVE_HISTORY_UNREADABLE"
 LIVE_HISTORY_TAMPERED = "LIVE_HISTORY_TAMPERED"
 LIVE_HISTORY_DUPLICATE = "LIVE_HISTORY_DUPLICATE"
@@ -90,6 +103,71 @@ LIVE_HISTORY_DUPLICATE = "LIVE_HISTORY_DUPLICATE"
 
 def state_dir(root: Path | None = None) -> Path:
     return (root if root is not None else _repo_root()) / STATE_REL
+
+
+def realized_stop_slippage_bps(
+    side: Any, stop_price: Any, exit_price: Any
+) -> float | None:
+    """How far past its trigger a stop actually filled, in bps of the trigger. Signed.
+
+    Positive is ADVERSE — the fill was worse than the price the stop named — and negative is a
+    fill better than the trigger, which a fast reversal can produce and which is information,
+    not an error, so it is recorded rather than floored. ``side`` is the CLOSE order's side,
+    exactly as the outcome row carries it: SELL closes a LONG (adverse is below the trigger),
+    BUY closes a SHORT (adverse is above it).
+
+    This is the measurement `cost.DEFAULT_STOP_SLIPPAGE_BPS` is waiting for. That constant is
+    inherited and unmeasured; the first two live observations (23.5 and 0.0 bps, 2026-08-06,
+    REMAINING_WORK §C) were reconstructed by hand from the resting order because nothing stamped
+    the trigger onto the outcome. This function is that stamp's arithmetic — pure, so the row
+    builder and any re-derivation agree to the digit.
+
+    ``None`` whenever the figure cannot be computed honestly: a missing or non-positive trigger,
+    a missing exit, an unrecognised side. Never 0.0, which is a measurement ("filled exactly at
+    the trigger"), not an absence.
+    """
+    if side not in ("SELL", "BUY"):
+        return None
+    if (
+        not isinstance(stop_price, (int, float)) or isinstance(stop_price, bool)
+        or not isinstance(exit_price, (int, float)) or isinstance(exit_price, bool)
+        or stop_price <= 0 or exit_price <= 0
+    ):
+        return None
+    adverse = (stop_price - exit_price) if side == "SELL" else (exit_price - stop_price)
+    return round(adverse / stop_price * 10000.0, 4)
+
+
+def stop_slippage_observations(
+    outcomes: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The recorded stop-slippage sample, oldest first — what re-deciding the constant reads.
+
+    One row per stop close that carries a computable ``stop_slippage_bps``. Rows from before the
+    field existed are absent, not zero: the two 2026-08-06 stops can never appear here because
+    their triggers were not stamped, and their hand-measured figures (23.5 / 0.0 bps) stay in
+    REMAINING_WORK §C. So this list UNDER-counts the true sample by exactly those rows, and a
+    reader averaging it should say so.
+    """
+    sample: list[dict[str, Any]] = []
+    for record in outcomes:
+        if not isinstance(record, Mapping):
+            continue
+        if record.get("close_reason") not in STOP_EXIT_REASONS:
+            continue
+        bps = record.get("stop_slippage_bps")
+        if isinstance(bps, bool) or not isinstance(bps, (int, float)):
+            continue
+        sample.append({
+            "closed_at_utc": record.get("closed_at_utc"),
+            "symbol": record.get("symbol"),
+            "side": record.get("side"),
+            "stop_price": record.get("stop_price"),
+            "exit_price": record.get("exit_price"),
+            "stop_slippage_bps": float(bps),
+            "outcome_id": record.get("outcome_id"),
+        })
+    return sample
 
 
 def build_live_outcome_record(
@@ -111,6 +189,7 @@ def build_live_outcome_record(
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
     exit_source: str | None = None,
+    stop_price: float | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One closed live position, self-hashed.
@@ -154,6 +233,15 @@ def build_live_outcome_record(
     from before this field existed. That is the ``lifecycle_*`` provenance rule — absent is
     "an older runtime wrote this", which is a different answer from any of the values and
     must not be collapsed into the most common one.
+
+    ``stop_price`` is the position's resting trigger at close, stamped so the row can carry
+    its own ``stop_slippage_bps`` (:func:`realized_stop_slippage_bps`) — the measurement
+    `cost.DEFAULT_STOP_SLIPPAGE_BPS` has been waiting for since the 2026-08-06 stops had to be
+    reconstructed by hand. Stamped on EVERY row that has one, but the slippage figure is
+    computed only for :data:`STOP_EXIT_REASONS`: a time exit's distance from a trigger it never
+    touched is not slippage, and recording it as such would pollute the one sample this exists
+    to accumulate. ``None`` on both fields means what absence means everywhere in this record —
+    not measured — never "measured at zero".
     """
     risk = float(risk_usdt) if isinstance(risk_usdt, (int, float)) and risk_usdt else 0.0
     realized = round(float(realized_pnl_usdt), 8)
@@ -179,6 +267,15 @@ def build_live_outcome_record(
         # Where the exit PRICE came from, beside the reason the position closed. The two
         # answer different questions and neither implies the other.
         "exit_source": exit_source,
+        # The resting trigger and how far past it the stop actually filled (adverse-positive
+        # bps). Slippage only on a stop close — see the docstring for why a time exit must not
+        # contribute to this sample.
+        "stop_price": float(stop_price) if isinstance(stop_price, (int, float))
+                      and not isinstance(stop_price, bool) and stop_price > 0 else None,
+        "stop_slippage_bps": (
+            realized_stop_slippage_bps(side, stop_price, exit_price)
+            if close_reason in STOP_EXIT_REASONS else None
+        ),
         "opened_at_utc": opened_at_utc,
         "closed_at_utc": now,
         # The analytic time key. Same instant as closed_at_utc; named as the consumers read it.

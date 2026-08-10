@@ -1082,6 +1082,9 @@ def execute_live_exit(
         close_reason=close_reason,
         exit_source=EXIT_SOURCE_RUNTIME_CLOSE,
         opened_at_utc=position.get("opened_at_utc"),
+        # The resting trigger, so a stop close measures its own fill against it
+        # (`stop_slippage_bps`) instead of the figure being reconstructed by hand later.
+        stop_price=_f(position.get("stop_loss")),
         # LP5.4's bridge: without the recorded risk there is no honest R, and the bridge
         # excludes an R-less row rather than letting it read as a breakeven.
         risk_usdt=_f(position.get("risk")),
@@ -1432,6 +1435,10 @@ def settle_venue_closed_position(
         close_reason=close_reason,
         exit_source=exit_source,
         opened_at_utc=position.get("opened_at_utc"),
+        # This is the path the first two real stops settled through (a leg fill, or the fill
+        # history), and the path whose slippage had to be reconstructed by hand in §C — the
+        # trigger rides on the row from here on so `stop_slippage_bps` is measured at source.
+        stop_price=_f(position.get("stop_loss")),
         risk_usdt=_f(position.get("risk")),
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),

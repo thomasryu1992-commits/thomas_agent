@@ -73,7 +73,7 @@ from typing import Any, Mapping
 # `R_BASIS_INTENT` from there.
 from ..errors import ToolError
 from . import market_data
-from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED
+from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -96,6 +96,29 @@ DEFAULT_TAKER_FEE_BPS = 5.0
 # nothing here has measured it — a canary is a single market order, not a sample.
 DEFAULT_SLIPPAGE_BPS = 3.0
 
+# The slippage the STOP leg pays, split from the general figure — same value, separate decision.
+#
+# A stop-market is not the same execution as an entry: the entry crosses a book that was not
+# moving against it in particular, while a triggered stop chases the exact move that fired it.
+# The first two live stops are the whole measured sample, and they are why this seam exists
+# (2026-08-06, REMAINING_WORK §C): ETHUSDT filled **23.5 bps past its trigger** against the
+# 3.0 modelled here, DOGEUSDT filled exactly at its trigger. Two fills are not a distribution,
+# so this deliberately KEEPS the inherited value rather than averaging n=2 — changing it is a
+# re-decision that waits for the sample `live_pnl.stop_slippage_observations` now accumulates
+# (every stop close stamps `stop_slippage_bps` on its outcome row).
+#
+# What the split buys today is the seam, not a number: the stop leg can be re-priced without
+# touching the entry and time-exit legs that no observation has impeached, and
+# `pool.cost_basis_of`-style history stays honest because candidates scored before the split
+# were scored at an identical rate. When the sample is worth averaging, the direction is known:
+# raising this makes every judgement stricter (fail-closed), and `MAX_ENTRY_COST_R` prices the
+# taker exit, so a stop-heavy plan pays the honest figure at the door.
+#
+# A literal rather than `= DEFAULT_SLIPPAGE_BPS`, so the tunables sweep can see it; the
+# equality is pinned by `test_the_split_is_a_seam_not_a_repricing`, which is where a future
+# divergence has to announce itself.
+DEFAULT_STOP_SLIPPAGE_BPS = 3.0
+
 # The maker rate, for the one leg that can earn it: the take-profit exit.
 #
 # From 2026-07-28 `live_leg` places the target as a resting `reduceOnly` LIMIT instead of a
@@ -114,6 +137,11 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # manual exit is a market order by definition; only the target rests. Keeping this as a named
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
+#
+# Its stop-side counterpart is `live_pnl.STOP_EXIT_REASONS`, imported above rather than defined
+# beside this one: the outcome rows own that vocabulary and this module already imports their
+# labels, while an import the other way would be a cycle. A market exit that is in NEITHER set
+# pays taker plus the GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
 # How much of one R a round trip may cost before the entry is refused (`round_trip_cost_r`).
@@ -207,6 +235,9 @@ class CostModel:
     taker_fee_bps: float = DEFAULT_TAKER_FEE_BPS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
     maker_fee_bps: float = DEFAULT_MAKER_FEE_BPS
+    # The stop leg's own rate (see DEFAULT_STOP_SLIPPAGE_BPS for why it is a separate field at
+    # the same value). Every constructed model before the split behaves byte-identically.
+    stop_slippage_bps: float = DEFAULT_STOP_SLIPPAGE_BPS
     funding_bps_per_interval: float = DEFAULT_FUNDING_BPS_PER_INTERVAL
     # Settlements per day, carried on the MODEL rather than read from the module constant.
     #
@@ -217,13 +248,18 @@ class CostModel:
     # caller is byte-identical and the only way to get a different number is to say so.
     funding_intervals_per_day: int = FUNDING_INTERVALS_PER_DAY
 
-    def fill_price(self, mid: float, direction: str, action: str) -> float:
+    def fill_price(self, mid: float, direction: str, action: str, *, bps: float | None = None) -> float:
         """Adverse-slippage fill: a taker buys above and sells below the mid.
 
         ``direction`` is "LONG"/"SHORT" (this port's field name); ``action`` is
-        "entry"/"exit" — the source's exact adverse-direction truth table."""
+        "entry"/"exit" — the source's exact adverse-direction truth table.
+
+        ``bps`` selects WHICH slippage this fill pays and defaults to the general rate, so
+        every caller that predates the stop split gets the number it always got. The only
+        caller that passes it is ``apply_cost_model`` pricing a triggered stop."""
+        rate = self.slippage_bps if bps is None else bps
         adverse_up = (direction == "LONG" and action == "entry") or (direction == "SHORT" and action == "exit")
-        factor = 1.0 + self.slippage_bps / 10000.0 if adverse_up else 1.0 - self.slippage_bps / 10000.0
+        factor = 1.0 + rate / 10000.0 if adverse_up else 1.0 - rate / 10000.0
         return mid * factor
 
 
@@ -291,7 +327,10 @@ def apply_cost_model(
       pays the maker rate. No adverse slippage: a resting limit order does not cross the spread,
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
-    - anything else leaves at market: taker rate plus adverse slippage, unchanged.
+    - a stop exit (``live_pnl.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
+      STOP leg's own slippage (``stop_slippage_bps``) — today the same number as the general
+      rate, so nothing is re-priced by the split itself; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
+    - anything else leaves at market: taker rate plus general adverse slippage, unchanged.
 
     ``close_reason=None`` charges the taker branch. That keeps every existing caller's numbers
     identical and makes the pessimistic case the default — a cost model that got optimistic
@@ -311,9 +350,13 @@ def apply_cost_model(
     sign = 1.0 if direction == "LONG" else -1.0
     gross_r = sign * (exit_price - entry_price) / risk
     maker_exit = close_reason in MAKER_EXIT_REASONS
+    stop_exit = close_reason in STOP_EXIT_REASONS
 
     entry_fill = cost.fill_price(entry_price, direction, "entry")
-    exit_fill = exit_price if maker_exit else cost.fill_price(exit_price, direction, "exit")
+    exit_fill = exit_price if maker_exit else cost.fill_price(
+        exit_price, direction, "exit",
+        bps=cost.stop_slippage_bps if stop_exit else None,
+    )
     on_fill_r = sign * (exit_fill - entry_fill) / risk
     slippage_cost_r = gross_r - on_fill_r
     exit_rate = cost.maker_fee_bps if maker_exit else cost.taker_fee_bps
@@ -550,6 +593,13 @@ class VenueCostDeclaration:
     funding_intervals_per_day: int | None
     funding_multiplier: float | None = None
     deployer_fee_scale: float | None = None
+    # The stop leg's slippage where a venue has measured it separately. ``None`` here does NOT
+    # mean unmeasured-refuse (it is deliberately absent from ``_REQUIRED``): it means "no
+    # separate figure — the stop pays this venue's own general slippage", which is what every
+    # venue did before the split and keeps a declared venue's stop leg denominated in ITS
+    # number rather than inheriting Binance's default. A venue whose GENERAL slippage is
+    # unmeasured still refuses on that field as before.
+    stop_slippage_bps: float | None = None
     note: str = ""
 
     _REQUIRED = ("taker_fee_bps", "slippage_bps", "maker_fee_bps",
@@ -630,6 +680,12 @@ def cost_model_for(venue: str) -> CostModel:
         taker_fee_bps=float(declaration.taker_fee_bps),
         slippage_bps=float(declaration.slippage_bps),
         maker_fee_bps=float(declaration.maker_fee_bps),
+        # The venue's own separate stop figure when one is declared, else ITS general slippage —
+        # never the module default, which is Binance's number (see the field's comment above).
+        stop_slippage_bps=float(
+            declaration.slippage_bps if declaration.stop_slippage_bps is None
+            else declaration.stop_slippage_bps
+        ),
         funding_bps_per_interval=float(declaration.funding_bps_per_interval),
         funding_intervals_per_day=int(declaration.funding_intervals_per_day),
     )
