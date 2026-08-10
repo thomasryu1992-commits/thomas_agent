@@ -90,7 +90,6 @@ PROPOSAL_LEDGER_KIND = "crypto_strategy_proposal"
 # out so the tap reopens on its own even if none are ever installed (no permanent block).
 MAX_UNREVIEWED_BACKLOG = 12       # ~3 full fires' worth of accepted families
 BACKLOG_WINDOW_DAYS = 30
-PROPOSER_BACKLOG_FULL = "PROPOSER_BACKLOG_FULL"
 
 
 def count_unreviewed_backlog(
