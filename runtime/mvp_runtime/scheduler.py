@@ -38,7 +38,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -890,6 +890,48 @@ def delegate_data_review(
     return record
 
 
+def delegate_proposal_generation(
+    *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
+) -> dict[str, Any]:
+    """Run the family proposer's model call in the pipeline worker and return its output.
+
+    The last model call this service made. With it delegated, nothing here selects a provider
+    any more — which is what lets the scheduler drop `MVP_VALIDATOR_PROVIDER` and its key and
+    hold no model credential at all beside the Binance ones.
+
+    Only the model half crosses. The proposals are judged here by `assemble_proposal_record`,
+    against the market snapshot this process collected, so the "one feature source" rule is
+    untouched: the frame never leaves, and no second collector exists to disagree with it.
+
+    Fail-closed with no fallback, like the other two delegations: the `MockProposerProvider`
+    that used to stand in when no provider was authorized now lives in the worker, so a
+    degraded proposal is still a real record while an unreachable worker is a failed fire.
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus},
+         "reason": "scheduler:crypto_propose"},
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise SchedulerBlocked(
+            str(reply.get("reason_code") or "WORKER_UNAVAILABLE")
+            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
+            str(reply.get("reason") or "the pipeline worker did not run the proposer")
+            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
+        )
+    generation = reply.get("generation")
+    if not isinstance(generation, dict) or "raw" not in generation:
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE",
+            "the pipeline worker returned no proposer output; nothing was judged",
+        )
+    return generation
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     repo_root: Path | None, executor: Callable[..., dict[str, Any]],
@@ -1260,7 +1302,6 @@ def _execute(
             select_liquidation_feed,
             select_market_data_collector,
         )
-        from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
         # Archives included, because `BACKLOG_WINDOW_DAYS` is a SPAN and the active ledger's
@@ -1340,10 +1381,15 @@ def _execute(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
         )
-        provider = (select_validator_provider(now=now, root=repo_root)
-                    or crypto_proposer.MockProposerProvider())
-        record = crypto_proposer.propose_strategy_families(
-            snapshot, provider=provider, now=now, existing_families=installed, focus=focus,
+        # The model call runs in `pipeline-worker` (Phase 2 D6); the verdicts stay here,
+        # beside the market frame they are computed from. What crosses is the family list and
+        # the focus — `build_proposal_prompt` never read the snapshot, which is why this
+        # needed neither a second market-data path nor a serialized frame.
+        generation = delegate_proposal_generation(
+            existing_families=installed, focus=focus, repo_root=repo_root,
+        )
+        record = crypto_proposer.assemble_proposal_record(
+            snapshot, generation=generation, focus=focus, now=now,
         )
         if ledger is not None:
             ledger.append_records(record["proposal_id"], {crypto_proposer.PROPOSAL_LEDGER_KIND: record})

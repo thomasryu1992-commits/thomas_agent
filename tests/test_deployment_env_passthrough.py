@@ -339,16 +339,37 @@ def test_the_scheduler_is_not_handed_the_analysis_chain_or_the_search_tool(env_v
 
 
 @pytest.mark.parametrize("env_var", ["MVP_VALIDATOR_PROVIDER", "GROQ_API_KEY"])
-def test_the_scheduler_keeps_what_its_crypto_llm_kinds_still_read(env_var):
-    """The half that did NOT move, asserted so the removal above cannot quietly grow into it:
-    `crypto_propose` and `crypto_data_review` call a model from the scheduler process, and
-    taking these would leave both firing against a Mock while reading as configured."""
-    environment = _service_environment("scheduler")
-    assert env_var in environment, (
-        f"the scheduler no longer receives {env_var}; its two crypto LLM kinds run in-process "
-        f"and would silently degrade to the deterministic mock"
+def test_the_scheduler_holds_no_model_credential_at_all(env_var):
+    """D6 finished what D4 started. These two were the last model credentials on the service
+    that also holds the Binance account and order keys; their consumers — `crypto_propose`
+    and `crypto_data_review` — now delegate their model call to the pipeline worker.
+
+    Kept as its own test rather than folded into the list above because the reason differs:
+    those six were never used here, these two were, and re-adding either would be a decision
+    about where model responses get parsed rather than a passthrough oversight."""
+    assert env_var not in _service_environment("scheduler"), (
+        f"the scheduler is handed {env_var}; both of its model callers delegate now, so a "
+        f"provider credential here is blast radius beside the venue keys with no consumer"
     )
-    assert environment[env_var] == "${%s:-}" % env_var
+
+
+def test_no_service_but_the_worker_holds_a_model_credential():
+    """The end state of the plane separation, as one assertion over the whole file: exactly
+    one service selects a model provider, and it is the one that holds no money variable.
+    The operator is the deliberate exception — it runs the conversational front desk and its
+    own analyses, which is a different plane from either of these."""
+    import yaml as _yaml
+
+    compose = _yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    model_vars = {"MVP_HOSTED_PROVIDER", "MVP_VALIDATOR_PROVIDER", "MVP_FRONTDESK_PROVIDER"}
+    holders = {
+        name for name, spec in compose["services"].items()
+        if model_vars & set(spec.get("environment") or {})
+    }
+    assert holders == {"pipeline-worker", "operator"}, (
+        f"services selecting a model provider are {sorted(holders)}; expected the worker and "
+        f"the operator only — the scheduler holds the venue keys and must hold no model key"
+    )
 
 
 # --- the live-trading surface must reach neither service --------------------------------
