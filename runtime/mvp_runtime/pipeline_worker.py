@@ -38,6 +38,7 @@ from typing import Any, Callable
 from . import socket_door
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
+from .naver_research import MAX_SEED_CHARS
 from .pipeline import run_task
 from .programization import ProgramizationStore
 from .socket_door import ASSISTANT_ACTOR
@@ -54,10 +55,12 @@ from .dispatch_bridge import _ALLOWED_KINDS
 SOCKET_REL = ".runtime_governance_state/internal/pipeline.sock"
 SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 
-# What the door forwards: the three fields it validated, nothing else. `request_id` is
+# What the door forwards: the fields it validated, nothing else. `request_id` is
 # deliberately absent — idempotency is claimed at the door, and a frame carrying one here did
-# not come from the door.
-_ALLOWED_KEYS: frozenset[str] = frozenset({"request", "kind", "reason"})
+# not come from the door. `naver_keywords` is optional and travels only when the caller sent
+# it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
+# fail-closed means not trusting the peer to have checked, even when the peer is our own door.
+_ALLOWED_KEYS: frozenset[str] = frozenset({"request", "kind", "reason", "naver_keywords"})
 
 # Bound on the recorded reason: long enough to attribute, short enough that a reason cannot
 # bloat the source record. The assistant keeps the full text; this is the audit stub.
@@ -132,6 +135,20 @@ def apply_work(
         raise ControlBlocked("REASON_REQUIRED", "a dispatch must state its reason; it is recorded")
     reason = reason.strip()
 
+    raw_seeds = request.get("naver_keywords")
+    if raw_seeds is None:
+        naver_keywords = None
+    elif not isinstance(raw_seeds, str) or not raw_seeds.strip() or len(raw_seeds) > MAX_SEED_CHARS:
+        # The door already refused these shapes; a frame failing here did not come from the
+        # door, and this worker does not guess at what it meant.
+        raise ControlBlocked(
+            "MALFORMED_REQUEST",
+            f"'naver_keywords' must be a non-empty string of at most {MAX_SEED_CHARS} "
+            "characters when given",
+        )
+    else:
+        naver_keywords = raw_seeds.strip()
+
     # The door checked this before forwarding; checked again so a halt that lands mid-flight
     # still stops the run, and so this engine refuses on its own even if a frame ever arrives
     # by a path that is not the door.
@@ -148,6 +165,7 @@ def apply_work(
     result = run_task(
         text.strip(),
         request_kind=kind,
+        keyword_seeds=naver_keywords,
         provider=resolved.get("provider"),
         validator_provider=resolved.get("validator_provider"),
         search_tool=resolved.get("search_tool"),
