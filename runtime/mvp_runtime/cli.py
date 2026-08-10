@@ -56,6 +56,25 @@ def _extract_write_path(argv: list[str]) -> tuple[str | None, list[str], str | N
     return path, argv[:index] + argv[index + 2:], None
 
 
+def _extract_keyword_seeds(argv: list[str]) -> tuple[str | None, list[str], str | None]:
+    """Pull ``--naver-keywords "SEED[, SEED...]"`` out of argv (blog content lane).
+
+    The seeds are explicit rather than derived from the request text, because the Search Ad
+    API wants short keyword seeds and a sentence-shaped goal would measure garbage while
+    looking like research. Quoting keeps multi-seed lists one token; a bare next token is
+    accepted too (a single seed needs no quotes).
+    """
+    if "--naver-keywords" not in argv:
+        return None, argv, None
+    index = argv.index("--naver-keywords")
+    if index + 1 >= len(argv):
+        return None, argv, "--naver-keywords requires a comma-separated seed list"
+    seeds = argv[index + 1]
+    if seeds.startswith("-"):
+        return None, argv, f"--naver-keywords requires seeds, got the flag {seeds!r}"
+    return seeds, argv[:index] + argv[index + 2:], None
+
+
 def _extract_request_kind(argv: list[str]) -> tuple[str | None, list[str], str | None]:
     """Pull ``--kind KIND`` out of argv. Returns ``(kind, rest, usage_error)``.
 
@@ -120,6 +139,10 @@ def main(
     if usage_error is not None:
         sys.stderr.write(f"BLOCKED USAGE: {usage_error}\n")
         return EXIT_USAGE
+    keyword_seeds, argv, seeds_error = _extract_keyword_seeds(argv)
+    if seeds_error is not None:
+        sys.stderr.write(f"BLOCKED USAGE: {seeds_error}\n")
+        return EXIT_USAGE
     # Everything left is free-form request text. Reject leftover option-shaped tokens
     # rather than silently folding them into the prompt: a mistyped or non-existent flag
     # (e.g. -i, or --current-pointer, which this CLI never had) would otherwise be
@@ -132,7 +155,7 @@ def main(
         sys.stderr.write(
             f"BLOCKED USAGE: unrecognized option {unknown[0]!r} "
             "(known options: --independent-validation[=auto], --important, --revise, "
-            "--kind KIND, --write-output PATH); "
+            "--kind KIND, --write-output PATH, --naver-keywords SEEDS); "
             "pipe the request on stdin if it must start with '-'\n"
         )
         return EXIT_USAGE
@@ -194,6 +217,7 @@ def main(
         lambda difficulty: select_tiered_provider(difficulty, base_provider=provider)
     )
     result = run_task(raw_request, provider=provider, search_tool=search_tool,
+                      keyword_seeds=keyword_seeds,
                       working_memory=working_memory, programization=programization,
                       channel="manual", store=store,
                       independent_validation=independent_validation,
