@@ -112,6 +112,18 @@ services:
       - "0"
       - --interval-seconds
       - "30"
+    # DEPLOY ORDER: `pipeline-worker` must never be OLDER than this service. Since the Phase 2
+    # delegation an `analysis_task` fire forwards a frame carrying `actor_profile`, and a
+    # worker built before that key existed refuses the whole frame (ARGUMENT_NOT_ACCEPTED,
+    # its key set is closed) — so a scheduler recreated onto a new image while the worker
+    # still runs an old one fails every delegated fire. The reverse lags safely: the key is
+    # optional, so a new worker serves an old scheduler unchanged.
+    #
+    # A whole-project `compose up -d` satisfies this by construction. A PARTIAL deploy does
+    # not, and partial deploys happen here — sparing the money path while updating the doors
+    # is a reasonable thing to want, and it is exactly the shape that breaks this. Verified
+    # 2026-08-10 against the running containers: the pre-Phase-2 worker refused an
+    # `actor_profile` frame with ARGUMENT_NOT_ACCEPTED.
     environment:
       # The ANALYSIS provider chain and the search tool are deliberately absent
       # (MVP_HOSTED_PROVIDER, OPENROUTER_API_KEY, GOOGLE_AI_STUDIO_API_KEY,
