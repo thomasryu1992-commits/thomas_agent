@@ -766,7 +766,25 @@ def test_proposer_schedule_needs_no_request():
                        created_by="op", now=T0)
     assert s.kind == KIND_PROPOSER
 
-def test_proposer_schedule_fires_and_records_a_proposal(tmp_path):
+def _worker_in_process(monkeypatch, tmp_path):
+    """Route a scheduler delegation to the worker's own job handler.
+
+    Since Phase 2 the model calls run in `pipeline-worker`, so a fire crosses a socket. The
+    fires keep being exercised whole — this replaces only the transport, so the worker's job
+    path (where the model call now lives) stays covered by the same tests.
+    """
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    from runtime.mvp_runtime.control import ControlStore as _CS
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: pipeline_worker.apply_work(
+            frame, control_store=_CS(tmp_path)),
+    )
+
+
+def test_proposer_schedule_fires_and_records_a_proposal(tmp_path, monkeypatch):
+    _worker_in_process(monkeypatch, tmp_path)
     # repo_root=tmp_path forces the mock market-data + mock proposer paths (no grants there),
     # so the fire is deterministic and never reaches the network.
     store = ScheduleStore(tmp_path / "sched")
@@ -1343,15 +1361,60 @@ def test_a_reply_without_a_usable_record_is_never_ledgered(monkeypatch, reply):
         sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
 
 
-def test_the_scheduler_no_longer_selects_a_provider_for_the_data_review():
-    """The point of D5, asserted on the code rather than the comment: the branch that used to
-    build a validator provider for the review no longer mentions one. `crypto_propose` still
-    does, which is why MVP_VALIDATOR_PROVIDER stays on this service."""
+def test_the_scheduler_selects_no_model_provider_at_all():
+    """D6 completes what D4 and D5 started: with both crypto model calls delegated, nothing
+    in this module selects a provider, which is what lets the service drop
+    MVP_VALIDATOR_PROVIDER and its key. Asserted on the module, not on one branch — a new
+    consumer added anywhere here would put a model credential back beside the Binance ones."""
     import inspect
 
     from runtime.mvp_runtime import scheduler as sched
-    src = inspect.getsource(sched._execute)
-    review = src[src.index("KIND_DATA_REVIEW"):src.index("KIND_CANDLE_ARCHIVE")]
-    assert "select_validator_provider" not in review
+    src = inspect.getsource(sched)
+    assert "select_validator_provider" not in src
+    assert "select_provider" not in src
+    body = inspect.getsource(sched._execute)
+    review = body[body.index("KIND_DATA_REVIEW"):body.index("KIND_CANDLE_ARCHIVE")]
     assert "delegate_data_review" in review
-    assert "select_validator_provider" in src  # the proposer branch still selects one
+    propose = body[body.index("KIND_PROPOSER"):body.index("KIND_DATA_REVIEW")]
+    assert "delegate_proposal_generation" in propose
+
+
+def test_a_proposer_fire_sends_the_family_list_and_never_the_frame(monkeypatch):
+    """The whole reason D6 turned out to be cheap: `build_proposal_prompt` never read the
+    snapshot, so what crosses is the installed-family list and a focus string. A frame on
+    this wire would mean a second feature source, which C9's source rule forbids."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"],
+            "generation": {"raw": [], "invocation": None, "degraded": None}},
+    )
+    out = sched.delegate_proposal_generation(
+        existing_families=["trend_break", "vol_expansion"], focus=None, repo_root=None,
+    )
+    assert sent[0]["job"] == pipeline_worker.JOB_CRYPTO_PROPOSE
+    assert sent[0]["proposal_inputs"]["existing_families"] == ["trend_break", "vol_expansion"]
+    for forbidden in ("snapshot", "candles", "inventory", "ohlcv"):
+        assert forbidden not in str(sent[0]).lower()
+    assert out == {"raw": [], "invocation": None, "degraded": None}
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": False, "reason_code": "KILLED", "reason": "halted"},
+    {"ok": True, "job": "crypto_propose"},
+    {"ok": True, "job": "crypto_propose", "generation": {"invocation": None}},
+    "not an object",
+])
+def test_a_proposer_reply_without_a_generation_is_never_judged(monkeypatch, reply):
+    """An `ok` reply with no `raw` would be assembled into a record reporting zero proposals
+    — indistinguishable from a model that answered and suggested nothing."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(sched.socket_door, "call_door", lambda path, frame, **kw: reply)
+    with pytest.raises(SchedulerBlocked):
+        sched.delegate_proposal_generation(
+            existing_families=[], focus=None, repo_root=None,
+        )

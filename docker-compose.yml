@@ -139,14 +139,24 @@ services:
       # them COMPLETED. `scheduler.delegate_analysis_task` has no such fallback — an
       # unreachable worker is a recorded failed fire.
       #
-      # `MVP_VALIDATOR_PROVIDER` + `GROQ_API_KEY` STAY, and the reason is worth knowing before
-      # anyone "finishes the job": `crypto_propose` and `crypto_data_review` call a model from
-      # this process through `select_validator_provider`, which reads MVP_VALIDATOR_PROVIDER
-      # alone and never falls back to the chain above. Delegating those two needs either a
-      # second market-data collection path (against C9's one-feature-source rule) or a
-      # serialized live frame — deferred with its re-open condition in §6 of that proposal.
-      MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # `MVP_VALIDATOR_PROVIDER` and `GROQ_API_KEY` are gone too, as of D6 — **this service
+      # now holds no model credential of any kind.** Its last two consumers were
+      # `crypto_data_review` (D5) and `crypto_propose` (D6), and both delegate their model
+      # call to `pipeline-worker` now.
+      #
+      # The D6 deferral this block used to describe rested on a mistake worth recording, since
+      # it is the kind that repeats: the proposer's signature is
+      # `propose_strategy_families(snapshot, provider=…)`, from which the proposal concluded
+      # that delegating it needed the market frame on the far side — either a second collector
+      # (against C9's one-feature-source rule) or a serialized 5-leg snapshot. Reading the body
+      # rather than the signature showed `build_proposal_prompt` never touches the snapshot;
+      # the frame is used only by the judging half, which invokes no model. So the split needed
+      # neither: the family list crosses, the frame stays here, and the verdicts are still
+      # computed beside the market data they came from.
+      #
+      # `test_the_scheduler_selects_no_model_provider_at_all` is what keeps it that way — it
+      # reads the whole module, not one branch, so a new model consumer anywhere here fails
+      # rather than quietly putting a credential back beside the Binance keys.
       # The six Naver variables (MVP_NAVER_RESEARCH + the Search Ad and API HUB credentials)
       # were forwarded here from #650 until the plane separation's PR-B
       # (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md) removed them: `pipeline-worker`

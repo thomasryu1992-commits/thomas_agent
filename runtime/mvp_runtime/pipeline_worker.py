@@ -61,7 +61,8 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
 # fail-closed means not trusting the peer to have checked, even when the peer is our own door.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory"}
+    {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
+     "proposal_inputs"}
 )
 
 # The second thing this process does, and the reason it is a *set* rather than a second
@@ -80,11 +81,21 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 # what the dispatch door can express. The door cannot express `job` at all — its own
 # `_ALLOWED_KEYS` does not name it, so a frame carrying one is refused before it forwards.
 JOB_DATA_REVIEW = "crypto_data_review"
-_ALLOWED_JOBS: frozenset[str] = frozenset({JOB_DATA_REVIEW})
+# The second job (D6). Its input is a handful of scalars, not a market frame, and that is a
+# property of the prompt rather than a concession: `build_proposal_prompt` takes family names,
+# a focus, a count and a venue and has never read the snapshot. The frame is used only by the
+# judging half, which invokes no model and therefore stays beside the market data.
+JOB_CRYPTO_PROPOSE = "crypto_propose"
+_ALLOWED_JOBS: frozenset[str] = frozenset({JOB_DATA_REVIEW, JOB_CRYPTO_PROPOSE})
 
 # What a job frame may carry beside `job` itself. Pipeline keys are refused on a job frame
-# rather than ignored: a caller that sent both believed both would be used.
-_JOB_KEYS: frozenset[str] = frozenset({"job", "inventory", "reason"})
+# rather than ignored: a caller that sent both believed both would be used. Each job then
+# requires its own input below, so a frame carrying the other job's input is refused too.
+_JOB_KEYS: frozenset[str] = frozenset({"job", "inventory", "proposal_inputs", "reason"})
+
+# Bounds on the one job input that is a list. A prompt naming every family ever proposed would
+# spend the allowance on recitation; the live table is twelve.
+_MAX_EXISTING_FAMILIES = 200
 
 # Who a run is recorded as. Two callers reach this socket — the dispatch door and (since the
 # scheduler's analysis_task delegation) the scheduler — and the ledger must keep telling them
@@ -332,14 +343,6 @@ def _apply_job(
             f"{sorted(unexpected)}",
         )
 
-    inventory = request.get("inventory")
-    if not isinstance(inventory, dict) or not inventory:
-        raise ControlBlocked(
-            "INVENTORY_REQUIRED",
-            f"{job!r} needs a non-empty 'inventory' object; the caller builds it, this worker "
-            f"does not collect one",
-        )
-
     # Same halt binding as a dispatch: this process is an execution door too, and a job that
     # spends model quota is new work.
     state = control_store.load()
@@ -349,17 +352,62 @@ def _apply_job(
             f"runtime is {state.mode}; new work is blocked until an authenticated resume",
         )
 
-    from .crypto import data_review as crypto_data_review
-
     resolved = providers or {}
+    if job == JOB_DATA_REVIEW:
+        inventory = request.get("inventory")
+        if not isinstance(inventory, dict) or not inventory:
+            raise ControlBlocked(
+                "INVENTORY_REQUIRED",
+                f"{job!r} needs a non-empty 'inventory' object; the caller builds it, this "
+                f"worker does not collect one",
+            )
+        if "proposal_inputs" in request:
+            raise ControlBlocked(
+                "ARGUMENT_NOT_ACCEPTED",
+                f"{job!r} does not take 'proposal_inputs'",
+            )
+        from .crypto import data_review as crypto_data_review
+
+        provider = (
+            resolved.get("validator_provider") or crypto_data_review.MockDataReviewProvider()
+        )
+        record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
+        # The record travels whole: the caller appends it to the ledger, renders the operator's
+        # sheet from it, and judges the stall on it. Summarising here would make this worker the
+        # authority on a record it does not own.
+        return {"ok": True, "job": job, "record": record}
+
+    inputs = request.get("proposal_inputs")
+    if not isinstance(inputs, dict):
+        raise ControlBlocked(
+            "PROPOSAL_INPUTS_REQUIRED",
+            f"{job!r} needs a 'proposal_inputs' object naming the families already installed",
+        )
+    if "inventory" in request:
+        raise ControlBlocked("ARGUMENT_NOT_ACCEPTED", f"{job!r} does not take 'inventory'")
+    families = inputs.get("existing_families")
+    if (not isinstance(families, list)
+            or not all(isinstance(f, str) for f in families)
+            or len(families) > _MAX_EXISTING_FAMILIES):
+        raise ControlBlocked(
+            "PROPOSAL_INPUTS_REQUIRED",
+            f"'existing_families' must be a list of at most {_MAX_EXISTING_FAMILIES} strings",
+        )
+    focus = inputs.get("focus")
+    if focus is not None and not isinstance(focus, str):
+        raise ControlBlocked("PROPOSAL_INPUTS_REQUIRED", "'focus' must be a string when given")
+
+    from .crypto import proposer as crypto_proposer
+
     provider = (
-        resolved.get("validator_provider") or crypto_data_review.MockDataReviewProvider()
+        resolved.get("validator_provider") or crypto_proposer.MockProposerProvider()
     )
-    record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
-    # The record travels whole: the caller appends it to the ledger, renders the operator's
-    # sheet from it, and judges the stall on it. Summarising here would make this worker the
-    # authority on a record it does not own.
-    return {"ok": True, "job": job, "record": record}
+    # Only the model half runs here. The verdicts — which need the market frame — are the
+    # caller's, and this worker never sees one.
+    generation = crypto_proposer.generate_proposals(
+        provider=provider, existing_families=families, focus=focus,
+    )
+    return {"ok": True, "job": job, "generation": generation}
 
 
 def _identity(result: Any) -> dict[str, Any]:
