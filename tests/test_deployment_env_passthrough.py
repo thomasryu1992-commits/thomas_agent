@@ -136,9 +136,12 @@ LIVE_TRADING_SURFACE = {
 }
 
 
-# The Naver research lane (2026-08-09). Forwarded to the SCHEDULER (its weekly ideation runs
-# there as a schedule) and the DISPATCH-BRIDGE (the one door that runs the pipeline, and where
-# the `research`/`content` kinds land), and withheld from the OPERATOR.
+# The Naver research lane (2026-08-09; placement revised 2026-08-10 by the plane separation,
+# docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). Forwarded to the PIPELINE-WORKER (the
+# engine that actually runs the `research`/`content` kinds) and — until PR-B of that proposal
+# lands — still to the SCHEDULER (the placement #650 made for the weekly ideation; nothing
+# consumes it there yet). Withheld from the OPERATOR and, since the split, from the
+# DISPATCH-BRIDGE: the door that parses the assistant's frames holds no credential at all.
 #
 # Withheld rather than merely unneeded, and the reason is the credential, not the capability.
 # The lane's USE is read-only — keyword volumes, a trend series, a competition count. The KEY
@@ -151,7 +154,7 @@ LIVE_TRADING_SURFACE = {
 # And forwarding is a capability here, not a cost: `MVP_NAVER_RESEARCH` is the WHOLE gate
 # (no mounted grant), so naming it in a service's block plus a value in `.env` is the entire
 # difference between that service reading mocks and reaching Naver with the operator's ad
-# credential. Adding a fourth service is that decision, made here.
+# credential. Adding a service to the list is that decision, made here.
 NAVER_RESEARCH_SURFACE = {
     naver_research.NAVER_RESEARCH_ENV: "the whole gate — no grant behind it",
     naver_research.SEARCHAD_CUSTOMER_ID_ENV: "the ad account's customer id",
@@ -195,7 +198,7 @@ def test_the_front_desk_is_operator_only():
 
 
 @pytest.mark.parametrize("env_var", REMOVED_PREDMARKET_SELECTORS)
-@pytest.mark.parametrize("service", ["scheduler", "operator"])
+@pytest.mark.parametrize("service", ["scheduler", "operator", "pipeline-worker"])
 def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
     """The lane was removed 2026-08-02 (Korean domestic regulation) and must not come back
     by accident. Compose forwards only what its `environment:` block names, so a name here
@@ -208,10 +211,14 @@ def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
 
 
 @pytest.mark.parametrize("env_var, what", sorted(NAVER_RESEARCH_SURFACE.items()))
-@pytest.mark.parametrize("service", ["scheduler", "dispatch-bridge"])
+@pytest.mark.parametrize("service", ["scheduler", "pipeline-worker"])
 def test_the_naver_lane_reaches_the_services_that_run_it(service, env_var, what):
     """Without this the lane is unreachable on the server however correct `.env` is — and
-    nothing errors, it just keeps returning mock keyword volumes."""
+    nothing errors, it just keeps returning mock keyword volumes.
+
+    The scheduler row is transitional: PR-B of the plane separation removes it, leaving the
+    pipeline-worker as the lane's only holder before the Search Ad licence ever mints a
+    value."""
     environment = _service_environment(service)
     assert env_var in environment, (
         f"{env_var} ({what}) is not in the {service} service's compose environment, so a "
@@ -232,6 +239,70 @@ def test_the_operator_is_not_handed_the_naver_ad_credential(env_var):
         f"operator is handed {env_var}; the Naver lane does not run there and the Search Ad "
         f"secret is account-wide, not the read-only key its read-only use suggests"
     )
+
+
+# --- the plane separation: the door holds nothing, the worker holds the engine env ------
+
+# The engine surface the plane separation moved out of dispatch-bridge verbatim. Selector
+# names come from the code's own constants; the API-key names are literals for the same
+# reason the removed-predmarket block's are — the modules keep them private, and the point
+# here is the compose block, not the code.
+PIPELINE_WORKER_ENGINE_SURFACE = {
+    providers.HOSTED_PROVIDER_ENV: "the specialist's model provider chain",
+    providers.VALIDATOR_PROVIDER_ENV: "the independent validator's own provider",
+    providers.OPENROUTER_MODEL_ENV: "the exact OpenRouter model slug",
+    "GOOGLE_AI_STUDIO_API_KEY": "the Google AI Studio key",
+    "GROQ_API_KEY": "the Groq key",
+    "OPENROUTER_API_KEY": "the OpenRouter key — shared with the operator's assistant",
+    tools.SEARCH_TOOL_ENV: "the read-only search tool",
+    "TAVILY_API_KEY": "the search key",
+}
+
+
+@pytest.mark.parametrize("env_var, what", sorted(PIPELINE_WORKER_ENGINE_SURFACE.items()))
+def test_the_pipeline_worker_receives_the_engine_surface(env_var, what):
+    """The other half of stripping the door: the worker must actually receive what execution
+    needs, or every dispatch silently degrades to the mock pipeline with no error anywhere —
+    this file's founding failure, on a brand-new service."""
+    environment = _service_environment("pipeline-worker")
+    assert env_var in environment, (
+        f"{env_var} ({what}) is not in the pipeline-worker service's compose environment, so "
+        f"a value in .env never reaches the engine and every dispatch runs the mock"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
+def test_the_dispatch_door_carries_only_the_peer_variables():
+    """The point of the split, pinned as an exact shape rather than a denial list: the door
+    that parses the assistant's frames holds the two socket-peer variables and NOTHING else —
+    the same silhouette as the read and switch doors. A denial list would go quiet the day a
+    new credential is invented; an exact allowlist refuses it by construction."""
+    environment = _service_environment("dispatch-bridge")
+    assert set(environment) == {"MVP_BRIDGE_CLIENT_GID", "MVP_BRIDGE_CLIENT_UID"}, (
+        f"dispatch-bridge's environment is {sorted(environment)}; the door must carry the two "
+        f"peer variables only — execution env belongs to pipeline-worker"
+    )
+
+
+@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+def test_the_pipeline_worker_receives_none_of_the_live_surface(env_var, what):
+    """The worker holds model, search, and Naver env by design — and must never hold money.
+    A compromised worker can spend quota and reach research APIs; it must not be able to
+    place an order. Same reasoning, same per-variable pin, as the operator's denial below."""
+    assert env_var not in _service_environment("pipeline-worker"), (
+        f"the pipeline-worker service would receive {env_var} ({what}); the engine runs "
+        f"non-trading P3 kinds only and the money path stays scheduler-only"
+    )
+
+
+def test_the_pipeline_worker_socket_peers_are_the_runtime_itself():
+    """Literals, not `${...}` interpolations, and pinned as such: a host `.env` that points
+    the doors' gid at the assistant must not be able to point the engine's peers anywhere.
+    10001 is the image's fixed runtime user; the dispatch door is this socket's only
+    legitimate client and SO_PEERCRED enforces it."""
+    environment = _service_environment("pipeline-worker")
+    assert environment["MVP_BRIDGE_CLIENT_GID"] == "10001"
+    assert environment["MVP_BRIDGE_CLIENT_UID"] == "10001"
 
 
 # --- the live-trading surface must reach neither service --------------------------------
@@ -260,7 +331,7 @@ def test_the_operator_receives_none_of_it(env_var, what):
     )
 
 
-@pytest.mark.parametrize("service", ("operator", "scheduler"))
+@pytest.mark.parametrize("service", ("operator", "scheduler", "pipeline-worker"))
 def test_no_service_bulk_forwards_the_environment(service):
     """The bypass the list above cannot see.
 

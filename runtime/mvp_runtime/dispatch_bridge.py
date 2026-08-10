@@ -7,10 +7,16 @@ autonomous path, and the assistant on the other end reads untrusted text and can
 a tool call — which is why that door requires an approval Thomas signs). Admitting a start here
 without one is safe only because of what it is bounded to — not trust, but **effect class**.
 
-Every task dispatched here runs the ordinary intake pipeline (:func:`pipeline.run_task`) as
-one of a fixed, non-trading, REVIEW_ONLY role set, capped at permission P3. The guarantee is
-not "the assistant will only ask for safe work" — a prompt injection is exactly what defeats
-that — it is that this door **cannot express** unsafe work:
+**This door validates and forwards; it does not run the pipeline.** It used to, and that
+implementation convenience made it the one assistant-facing process that had to hold model and
+search keys — and, once the Naver lane landed, an ad-account credential — in the same address
+space that parses the assistant's frames. The split
+(``docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md``, Thomas 2026-08-10) moves execution to
+``pipeline_worker``, a separate service holding that env, reached over an internal socket the
+assistant's container cannot traverse to. This process carries no credential env at all, like
+the read and switch doors.
+
+What the door still is — every guarantee below is enforced HERE, before anything is forwarded:
 
 - ``_ALLOWED_KINDS`` is a closed set of request kinds, each of which resolves (via
   ``planner.REQUEST_KIND_CAPABILITIES``) to a P3-ceiling specialist: analysis ->
@@ -18,24 +24,27 @@ that — it is that this door **cannot express** unsafe work:
   ``translation.general``, content -> ``content.general``. ``development`` (also P3) is left
   out on purpose, every trading kind is absent because none exists, and
   ``execution.live_trader`` is non-routable so no kind here can select it. A kind outside the
-  set is refused, never defaulted, and a test asserts the set stays exactly these four.
+  set is refused, never defaulted, and a test asserts the set stays exactly these four. The
+  worker re-checks the same set on arrival — defence in depth, not a second authority.
 - The door never passes ``write_path``/``writer`` — the only inputs that lift a run to a P3
   workspace write — and refuses any request key it does not name, so a caller cannot smuggle
-  one in. A dispatched run's largest effect is a rendered, validated report in the ledger.
-  The permission invariant (``authority.authority_invariant_holds``, enforced in
-  ``permission`` and ``assignment``) is the deeper net beneath the kind allowlist.
+  one in. What crosses to the worker is exactly the three validated fields (request, kind,
+  reason); a dispatched run's largest effect is a rendered, validated report in the ledger.
 - Nothing here reaches the money path. There is no crypto/trading kind, no venue, no order;
-  the live-trading stack is a different container and this door carries no verb into it.
+  the live-trading stack is a different container, this door carries no verb into it, and the
+  worker's own environment carries no money variable either (pinned per-service by
+  ``test_deployment_env_passthrough``).
 
 **The kill switch is checked here, not downstream.** ``run_task`` does not read control state
 — the CLI, the operator loop, and the crypto cycle each check it at their own door. This is
 one of those doors, so it refuses while the runtime is PAUSED/KILLED: a halt must stop new
-work arriving over a socket exactly as it stops work arriving over Telegram.
+work arriving over a socket exactly as it stops work arriving over Telegram. (The worker
+re-checks before running, so a halt that lands mid-flight still refuses the run.)
 
 **Attribution.** Every dispatched task is stamped ``requester_id = assistant_bridge``,
-``requester_type = "agent"`` (honestly not Thomas), so the ledger can tell assistant-initiated
-work from the operator's own. The stated reason rides the task's source reference and is
-recorded with it.
+``requester_type = "agent"`` (honestly not Thomas) — by the worker, whose reply this door
+relays unchanged, so the contract the assistant sees is byte-for-byte what it was before the
+split.
 
 Failure directions, each chosen once:
 
@@ -48,24 +57,25 @@ Failure directions, each chosen once:
 - missing reason -> ``REASON_REQUIRED``. An unattributed start on a shared budget is not worth
   the convenience of omitting it.
 - runtime PAUSED/KILLED -> the control state's own refusal ``reason_code``.
+- worker unreachable / not answering -> ``WORKER_UNAVAILABLE``, and **never** a fallback to
+  in-door execution: a fallback would need the keys back in this process, which quietly undoes
+  the separation at the first hiccup. The transport detail goes to this service's log, not to
+  the assistant.
+- worker refusal (its kill-switch re-check, its kind re-check, ``BRIDGE_BUSY``) -> relayed as
+  this door's own typed refusal under the worker's ``reason_code``. Nothing ran, so an
+  idempotency id the frame carried is released, exactly as an in-process refusal would have.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
 from . import bridge_idempotency, socket_door, timeutil
 from .control import ControlStore
-from .errors import ControlBlocked, MvpRuntimeError
-from .pipeline import run_task
-from .programization import ProgramizationStore
+from .errors import ControlBlocked
 from .store import LedgerStore
-from .working_memory import WorkingMemoryStore
-
-# The assistant's name on every dispatched task, shared with the other doors so a rename in
-# one place cannot desync attribution.
-from .socket_door import ASSISTANT_ACTOR
 
 # Its own subdirectory sibling of the other doors' sockets, so the assistant's container
 # reaches it through the same group-owned `bridge/` mount.
@@ -77,6 +87,7 @@ SOCKET_ENV = "MVP_DISPATCH_BRIDGE_SOCKET"
 # excluded on purpose — the MVP use case is analysis, and widening this is a governance
 # decision, not a default. A test asserts the set stays exactly these four and that
 # `development` is a real kind left out rather than one that silently disappeared.
+# `pipeline_worker` imports this set for its arrival re-check; the authority stays here.
 _ALLOWED_KINDS: frozenset[str] = frozenset({"analysis", "research", "translation", "content"})
 
 # The kind a request omitting one gets. Analysis is the MVP's core use case and its role
@@ -95,15 +106,16 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 # door and this one are two different requests — which they are.
 _DOOR = "dispatch"
 
-# Bound on the recorded reason: long enough to attribute, short enough that a reason cannot
-# bloat the source record. The assistant keeps the full text; this is the audit stub.
-_MAX_REASON_ON_SOURCE = 180
+# What the door hands to the engine: the three validated fields, nothing else. In production
+# this is `open_door`'s forward over the worker socket; in tests it is a capture. Injected so
+# `apply_dispatch` stays pure with respect to the transport and testable without a listener.
+Executor = Callable[[str, str, str], dict[str, Any]]
 
-# Selecting the analysis/validator/search providers is a side-effecting, gated step (the
-# Safety-Flag Gate reads a per-machine grant). It is injected so `apply_dispatch` stays pure
-# with respect to it and testable without a grant: the default (no selector) runs the
-# deterministic mock pipeline, and the CLI supplies a selector that fails closed.
-ProviderSelector = Callable[[], dict[str, Any]]
+# How long the door waits for the worker's answer. A real run on the free-tier chain is
+# minute-plus; the assistant's own client gives up at 180s, but the run must be allowed to
+# finish and land in the ledger regardless (the read door's `result <task_id>` fetches it).
+# The wait holds one of this door's slots, which is what MAX_CONCURRENT_REQUESTS bounds.
+WORKER_DEADLINE_SECONDS = 600.0
 
 
 def socket_path(root: Path | None = None) -> Path:
@@ -116,17 +128,14 @@ def apply_dispatch(
     *,
     control_store: ControlStore,
     ledger: LedgerStore | None = None,
-    working_memory: WorkingMemoryStore | None = None,
-    programization: ProgramizationStore | None = None,
-    providers: dict[str, Any] | None = None,
+    execute: Executor | None = None,
     now: str | None = None,
-    repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Validate one dispatch request and run it, or raise a typed ``ControlBlocked``.
+    """Validate one dispatch request and forward it, or raise a typed ``ControlBlocked``.
 
-    Pure with respect to the transport and the provider gate — a decoded object in (plus
-    already-resolved providers), a reply out — which is what makes the permission surface
-    testable without a listener or a grant.
+    Pure with respect to the transport on both sides — a decoded object in (plus an injected
+    executor), a reply out — which is what makes the permission surface testable without a
+    listener or a worker.
     """
     if not isinstance(request, dict):
         raise ControlBlocked("MALFORMED_REQUEST", "request must be a JSON object")
@@ -171,13 +180,23 @@ def apply_dispatch(
             f"without; refusing rather than dispatching without at-most-once",
         )
 
-    # Kill-switch binding: this is an execution door and `run_task` does not read control
+    # Kill-switch binding: this is an execution door and the pipeline does not read control
     # state. A PAUSED/KILLED runtime refuses new work here exactly as on every other door.
     state = control_store.load()
     if not state.execution_allowed:
         raise ControlBlocked(
             state.refusal_reason_code(),
             f"runtime is {state.mode}; new dispatches are blocked until an authenticated resume",
+        )
+
+    # A door with nowhere to send validated work refuses it — before the claim, so the id is
+    # never burned on a misconfiguration, and NEVER by running the pipeline itself: the keys
+    # that would take are exactly what this process no longer holds.
+    if execute is None:
+        raise ControlBlocked(
+            "WORKER_UNAVAILABLE",
+            "this door was opened without a forwarder to the pipeline worker; nothing was "
+            "dispatched",
         )
 
     # Last, so a frame that was going to be refused anyway never burns its id — and first
@@ -192,27 +211,25 @@ def apply_dispatch(
         if prior is not None:
             return bridge_idempotency.replay_reply(prior)
 
-    resolved = providers or {}
-    # No `write_path`/`writer` is passed — the door has no key that lifts a run above P3, and
-    # the run is attributed to the assistant, never to Thomas.
     try:
-        result = run_task(
-            text.strip(),
-            request_kind=kind,
-            provider=resolved.get("provider"),
-            validator_provider=resolved.get("validator_provider"),
-            search_tool=resolved.get("search_tool"),
-            working_memory=working_memory,
-            programization=programization,
-            store=ledger,
-            repo_root=repo_root,
-            now=now,
-            requester_id=ASSISTANT_ACTOR,
-            requester_type="agent",
-            channel="agent",
-            source_ref=_source_ref(reason),
-            authenticated=True,
-        )
+        reply = execute(text.strip(), kind, reason)
+        if not isinstance(reply, dict):
+            raise ControlBlocked(
+                "WORKER_UNAVAILABLE",
+                "the pipeline worker's reply was not an object; nothing usable came back",
+            )
+        if "kind" not in reply and not reply.get("ok"):
+            # A refusal envelope, not a run. The discriminator is deliberate: the worker's two
+            # run-reply shapes always echo the `kind` they ran (a BLOCK is a run — it may even
+            # lack a task_id when it blocked before a task existed), while a bare typed
+            # envelope (`socket_door`'s refusal/BUSY/ERROR shape) never carries one. Nothing
+            # ran, so surface it as this door's typed refusal — the handler below releases the
+            # claim, exactly as an in-process refusal used to, and the same id stays retriable
+            # once the cause clears.
+            raise ControlBlocked(
+                str(reply.get("reason_code") or "WORKER_REFUSED"),
+                str(reply.get("reason") or "the pipeline worker refused this dispatch"),
+            )
     except BaseException:
         # The run did not reach an outcome, so the id names nothing. Holding it would make the
         # caller wait out the claim TTL to retry something that never happened.
@@ -223,27 +240,6 @@ def apply_dispatch(
             )
         raise
 
-    if result.get("status") == "COMPLETED":
-        reply = {
-            "ok": True,
-            "kind": kind,
-            "task_id": result.get("task_id"),
-            "final_response": result.get("final_response", ""),
-            "actor": ASSISTANT_ACTOR,
-        }
-    else:
-        # A pipeline BLOCK is a real answer, not a bridge error: surface its reason_code so the
-        # assistant reports "the runtime refused this" rather than "the door broke".
-        block = result.get("block") or {}
-        reply = {
-            "ok": False,
-            "kind": kind,
-            "task_id": result.get("task_id"),
-            "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
-            "reason": block.get("message", "the runtime blocked this dispatch"),
-            "actor": ASSISTANT_ACTOR,
-        }
-
     # A BLOCK completes the id as surely as a COMPLETED does: both ran the pipeline, both left
     # a task in the ledger, and re-running one on a retry is the duplicate work this prevents.
     # The recorded outcome is the task's identity, never its text — the report is already in the
@@ -251,7 +247,7 @@ def apply_dispatch(
     if request_id is not None:
         bridge_idempotency.complete(
             ledger, door=_DOOR, request_id=request_id, request_fingerprint=fingerprint,
-            outcome={"kind": kind, "task_id": result.get("task_id"), "ok": reply["ok"]},
+            outcome={"kind": kind, "task_id": reply.get("task_id"), "ok": bool(reply.get("ok"))},
             now=stamp,
         )
         # Named on the fresh reply as well as the replayed one, so `replayed` is the only thing
@@ -260,17 +256,12 @@ def apply_dispatch(
     return reply
 
 
-def _source_ref(reason: str) -> str:
-    """The reason, recorded on the task's source. Bounded so a long reason cannot bloat the
-    record."""
-    return f"{ASSISTANT_ACTOR}:dispatch: {reason}"[:_MAX_REASON_ON_SOURCE]
-
-
-# The narrowest ceiling of the three doors, and the only one where the ceiling is about cost
-# rather than only about liveness. This is the door that RUNS the pipeline: a slot is held for
-# the length of a full analysis, not the length of a store read, and each one can invoke a model
-# on a quota shared with the operator's own assistant (see the OPENROUTER note in
-# `docker-compose.yml`). Two concurrent runs is a bound on both the thread count and the spend.
+# The narrowest ceiling of the doors, and the only one where the ceiling is about cost rather
+# than only about liveness. A slot is held for the length of a full analysis (the door waits on
+# the worker's answer), and each forwarded run can invoke a model on a quota shared with the
+# operator's own assistant (see the OPENROUTER note in `docker-compose.yml`). Two concurrent
+# forwards is a bound on both the thread count and the spend; the worker states the same
+# ceiling on its own socket as the backstop.
 MAX_CONCURRENT_REQUESTS = 2
 
 
@@ -279,33 +270,41 @@ def open_door(
     *,
     control_store: ControlStore,
     ledger: LedgerStore,
-    working_memory: WorkingMemoryStore | None = None,
-    programization: ProgramizationStore | None = None,
-    resolve_providers: ProviderSelector | None = None,
+    worker_socket: Path,
+    worker_deadline_seconds: float = WORKER_DEADLINE_SECONDS,
 ) -> socket_door.SocketDoor:
-    """Listen on ``path`` and dispatch from it.
+    """Listen on ``path``, validate, and forward to the worker at ``worker_socket``.
 
-    ``resolve_providers`` is called once per request so a grant that changes between requests
-    is re-read; a gate failure becomes a typed refusal rather than a dropped connection.
     Framing, deadline, size cap, peer check, concurrency ceiling and error envelope come from
     ``socket_door``, shared with the other doors so a malformed frame cannot be answered two
-    different ways.
+    different ways. The transport detail of a failed forward goes to this service's log; the
+    assistant gets ``WORKER_UNAVAILABLE`` and no path — the same redaction rule as
+    ``BRIDGE_ERROR``.
     """
 
+    def _forward(text: str, kind: str, reason: str) -> dict[str, Any]:
+        try:
+            return socket_door.call_door(
+                worker_socket,
+                {"request": text, "kind": kind, "reason": reason},
+                deadline_seconds=worker_deadline_seconds,
+            )
+        except ControlBlocked as exc:
+            if exc.reason_code in {"DOOR_UNREACHABLE", "DOOR_REPLY_MALFORMED"}:
+                sys.stderr.write(f"DISPATCH_FORWARD[{exc.reason_code}]: {exc}\n")
+                sys.stderr.flush()
+                raise ControlBlocked(
+                    "WORKER_UNAVAILABLE",
+                    "the pipeline worker is not answering; nothing was dispatched — the "
+                    "failure is recorded in this service's log",
+                ) from exc
+            raise
+
     def _apply(request: Any) -> dict[str, Any]:
-        providers: dict[str, Any] = {}
-        if resolve_providers is not None:
-            try:
-                providers = resolve_providers()
-            except MvpRuntimeError as exc:
-                raise ControlBlocked(exc.reason_code, str(exc)) from exc
         return apply_dispatch(
-            request,
-            control_store=control_store,
-            ledger=ledger,
-            working_memory=working_memory,
-            programization=programization,
-            providers=providers,
+            request, control_store=control_store, ledger=ledger, execute=_forward,
         )
 
-    return socket_door.SocketDoor(path, _apply)
+    return socket_door.SocketDoor(
+        path, _apply, max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
+    )

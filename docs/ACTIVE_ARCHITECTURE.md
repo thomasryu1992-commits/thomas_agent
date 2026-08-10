@@ -131,7 +131,8 @@ The live executor. Same authority chain, one process, no kernel modification.
 Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
                      socket_door.py (shared unix-socket transport for the bridge doors)
                      read_bridge.py (read-only door; console renders, never a mutating verb)
-                     dispatch_bridge.py (dispatch door; bounded P3 analysis kinds, never the money path)
+                     dispatch_bridge.py (dispatch door; validates + forwards bounded P3 kinds, never the money path)
+                     pipeline_worker.py (the dispatch door's engine; holds the model/search/Naver env the door does not, internal socket, runtime-uid peers only)
                      switch_bridge.py (trading switch; disable free, enable only on a single-use Thomas grant)
                      knowledge_bridge.py (knowledge door; append + two reads, no delete verb exists)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
