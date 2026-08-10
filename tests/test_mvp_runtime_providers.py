@@ -53,12 +53,13 @@ def test_select_provider_defaults_to_mock(monkeypatch):
     assert isinstance(select_provider(), MockProvider)
 
 
-def test_select_provider_hosted_without_activation_fails_closed(monkeypatch, tmp_path):
-    # Opting in via the env var alone must NOT open a network path — no activation record.
+def test_select_provider_hosted_env_alone_returns_hosted(monkeypatch, tmp_path):
+    # The environment is the gate (Thomas 2026-08-10): naming a known provider selects
+    # it. The fail-closed directions that remain: unset -> Mock, unknown single value ->
+    # Mock, unknown chain member -> the whole selection refused (tests below).
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(provider, GoogleAIStudioProvider)
 
 
 def test_select_provider_hosted_with_activation_returns_hosted(monkeypatch, tmp_path):
@@ -132,9 +133,12 @@ def test_tiered_provider_unmapped_difficulty_degrades(tmp_path):
     assert provider is base and selection["degraded"] is True and selection["tier"] is None
 
 
-def test_tiered_provider_builds_the_tier_when_granted(tmp_path):
-    # Its own grant (per tier id) opens the gate; the tier provider serves the specialist.
-    _grant(tmp_path, OPENROUTER_HEAVY)
+def test_tiered_provider_builds_the_tier_when_named(monkeypatch, tmp_path):
+    # The tier opens only when MVP_OPENROUTER_TIERS names its id (env-only since
+    # 2026-08-10, replacing the per-tier grants); the tier provider serves the specialist.
+    from runtime.mvp_runtime.providers import OPENROUTER_TIERS_ENV
+
+    monkeypatch.setenv(OPENROUTER_TIERS_ENV, OPENROUTER_HEAVY)
     base = GoogleAIStudioProvider(authorization=_AUTH)
     provider, selection = select_tiered_provider("HIGH", base_provider=base, now=_TIER_NOW, root=tmp_path)
     assert isinstance(provider, OpenRouterHeavyProvider)
@@ -142,9 +146,12 @@ def test_tiered_provider_builds_the_tier_when_granted(tmp_path):
     assert selection["model_id"] == OPENROUTER_HEAVY
 
 
-def test_light_grant_does_not_authorize_the_heavy_tier(tmp_path):
-    # Per-tier grants: a light grant cannot open the heavy tier — it degrades to base.
-    _grant(tmp_path, "openrouter_light")
+def test_naming_the_light_tier_does_not_open_the_heavy_tier(monkeypatch, tmp_path):
+    # The per-tier scope the per-tier grants used to carry lives in the list VALUES now:
+    # a list that spells only the light tier cannot open the heavy one — it degrades.
+    from runtime.mvp_runtime.providers import OPENROUTER_TIERS_ENV
+
+    monkeypatch.setenv(OPENROUTER_TIERS_ENV, "openrouter_light")
     base = GoogleAIStudioProvider(authorization=_AUTH)
     provider, selection = select_tiered_provider("HIGH", base_provider=base, now=_TIER_NOW, root=tmp_path)
     assert provider is base and selection["degraded"] is True
@@ -163,14 +170,28 @@ def test_chain_with_both_grants_builds_ordered_failover(monkeypatch, tmp_path):
     assert provider.model_id == "google_ai_studio+groq"
 
 
-def test_chain_member_without_its_own_grant_fails_the_whole_selection(monkeypatch, tmp_path):
-    """A chain never silently shrinks: a fallback whose gate does not open must surface
-    at startup, not at 3am when the primary goes down and the chain quietly has one link."""
-    _grant(tmp_path, "google_ai_studio")          # groq grant deliberately absent
+def test_editing_the_chain_revokes_every_member_at_egress(monkeypatch):
+    """A chain never silently shrinks — including at run time. Every member's env-only
+    authorization pins the FULL chain string, so an operator EDITING the list (not just
+    emptying it) trips each member's egress re-check until a re-selection reads the new
+    composition. This is what replaced 'deleting one member's grant file' as the way to
+    take a member out of a long-lived process."""
+    from runtime.mvp_runtime import safety_gate as gate
+
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,groq")
+    chain = gate.select_env_gated_chain(
+        env_var=HOSTED_PROVIDER_ENV,
+        factories={"google_ai_studio": lambda a: a, "groq": lambda a: a},
+        flags=(NETWORK_ACCESS,),
+        default_factory=lambda: None,
+    )
+    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio")   # operator removed groq
     with pytest.raises(SafetyGateBlocked) as exc:
-        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+        gate.assert_authorization(
+            chain[0], required_flags=(NETWORK_ACCESS,),
+            provider_id="google_ai_studio", now="2026-08-10T00:00:00Z",
+        )
+    assert exc.value.reason_code == "ENV_OPT_IN_WITHDRAWN"
 
 
 def test_chain_with_a_typo_fails_closed_not_shrunk(monkeypatch, tmp_path):
@@ -197,11 +218,14 @@ def test_select_validator_provider_unset_returns_none(monkeypatch):
     assert select_validator_provider() is None
 
 
-def test_select_validator_provider_env_alone_fails_closed(monkeypatch, tmp_path):
-    """Same gate as the specialist: the env var without a local grant opens nothing."""
+def test_select_validator_provider_env_alone_returns_hosted(monkeypatch, tmp_path):
+    """Same gate as the specialist (env-only since 2026-08-10): the opt-in alone selects
+    the validator's own provider."""
+    from runtime.mvp_runtime.providers import GroqProvider
+
     monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
-    with pytest.raises(SafetyGateBlocked):
-        select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    validator = select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(validator, GroqProvider)
 
 
 def test_select_validator_provider_with_grant_returns_hosted(monkeypatch, tmp_path):
@@ -476,17 +500,13 @@ def _openrouter_auth():
     )
 
 
-def test_openrouter_needs_its_own_grant_like_every_other_provider(monkeypatch, tmp_path):
-    """A gateway is not a shortcut through the gate: opting in by env var alone fails
-    closed, and the grant is keyed on the ``openrouter`` provider id like any vendor's."""
+def test_openrouter_opens_by_being_named_like_every_other_provider(monkeypatch, tmp_path):
+    """A gateway is not a special door: ``openrouter`` opens by being NAMED in the chain
+    env exactly like a vendor id (env-only since 2026-08-10), and an unknown name still
+    fails a multi-member selection closed rather than shrinking it."""
     from runtime.mvp_runtime.providers import OpenRouterProvider
 
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "openrouter")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
-
-    _grant(tmp_path, "openrouter")
     provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
     assert isinstance(provider, OpenRouterProvider)
 

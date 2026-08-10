@@ -156,40 +156,35 @@ def select_search_tool(*, now: str | None = None, root: Path | None = None) -> S
     """Choose the read-only search tool — the enforced Safety-Flag Gate chokepoint.
 
     Defaults to the deterministic, network-free ``MockSearchTool`` (no gate needed; it
-    performs no network I/O). A real network-backed tool is returned ONLY when both (a)
-    the caller opts in via ``MVP_SEARCH_TOOL=brave_search`` or ``MVP_SEARCH_TOOL=
-    tavily_search`` AND (b) the Safety-Flag Gate authorizes ``network_access`` against
-    that backend's own local, integrity-checked activation record. The env var alone is
-    NOT sufficient: with no valid activation this fails closed
-    (:class:`SafetyGateBlocked`) rather than silently opening a network path.
+    performs no network I/O). A real network-backed tool is returned ONLY behind
+    ``MVP_SEARCH_TOOL=brave_search`` or ``MVP_SEARCH_TOOL=tavily_search`` — the
+    environment is the gate (Thomas 2026-08-10; no per-machine grant record backs it),
+    and an unset or unrecognized value selects the Mock, never a network path.
 
     This is the search analog of ``providers.select_provider``, and both CLIs select
     their search tool through it (``cli.py``, ``operator_cli.py``). The shared
-    ``safety_gate.select_gated`` enforces the ordering: no network-capable tool is
+    ``safety_gate.select_env_gated`` enforces the ordering: no network-capable tool is
     constructed until the gate has opened. One backend at a time — a search failover
     chain was considered and deliberately not built (search degrades instead; see
     ``degraded_search_record``).
     """
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
     if os.environ.get(SEARCH_TOOL_ENV, "").strip().lower() == TAVILY_SEARCH:
-        return safety_gate.select_gated(
+        return safety_gate.select_env_gated(
             env_var=SEARCH_TOOL_ENV,
             opt_in_value=TAVILY_SEARCH,
             flags=_NETWORK_FLAGS,
             provider_id=TAVILY_SEARCH,
             default_factory=MockSearchTool,
             gated_factory=lambda authorization: TavilySearchTool(authorization=authorization),
-            now=now,
-            root=root,
         )
-    return safety_gate.select_gated(
+    return safety_gate.select_env_gated(
         env_var=SEARCH_TOOL_ENV,
         opt_in_value=BRAVE_SEARCH,
         flags=_NETWORK_FLAGS,
         provider_id=BRAVE_SEARCH,
         default_factory=MockSearchTool,
         gated_factory=lambda authorization: WebSearchTool(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

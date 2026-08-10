@@ -4292,11 +4292,16 @@ A fresh machine has the code but not the local runtime state (gitignored, per CL
 *run* the agent there, re-do the local activation once:
 
 - Core activation pointer: `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml`
-- Safety-flag grants: `.runtime_governance_state/safety_flag_activations/*.json`
+- Capability opt-ins in the deploy `.env` — since 2026-08-10 the environment is the gate
+  (grants retired); see the `_GATE_ENV_VARS` roster in `tests/conftest.py` for the full list
 - Control state + ledger + schedules under `.runtime_governance_state/`
 
 None of this is "planned work" — it is per-machine state you re-establish with the CLAUDE.md
-"Core activation" steps + `scripts/activate_safety_flag.py`.
+"Core activation" steps + the `.env`. One piece of planned work does follow from 2026-08-10:
+the retired grant machinery (`safety_gate.authorize` / `select_gated*` /
+`build_activation_record`, `scripts/activate_safety_flag.py`, and the unit tests that mint
+activation records) has zero runtime callers — the containment test enforces that — and
+awaits deletion as its own reviewed change.
 
 **What the 2026-08-02 live incident leaves on the Docker host and nowhere else.** A fresh machine
 cannot investigate it — it has the code but none of the evidence, and it is not armed to reproduce
@@ -4323,15 +4328,15 @@ So: **do the live-order investigation on the Docker host, and use another machin
 docs and factory work.** Section F and the promotion/economics questions travel fine; this one
 does not.
 
-**What the current deployment machine has, as of 2026-08-03** — so a new machine knows what it is
-missing rather than discovering it one fail-closed error at a time. Twelve grants:
-`google_ai_studio`, `groq`, `openrouter` (the provider chain), `tavily_search`, `telegram`,
-`binance_futures`, `binance_futures_account`, `coinalyze_market_data`, `paper_trading`,
-`live_trading`, `approval_consumption`, `workspace.writer`. **A grant is per-machine and
-per-provider, and an env var alone fails closed** — so a new machine reads mocks until each one it
-needs is minted locally, and nothing errors to tell you that. Three prediction-venue grants
-(`kalshi_market_data`, `polymarket_market_data`, `binance_prediction`) were **deleted** 2026-08-02
-with section A's lane and must not be re-minted.
+**What the current deployment machine has** — so a new machine knows what it is missing rather
+than discovering it one inert mock at a time. Until 2026-08-10 this meant twelve per-machine
+grants; since then (Thomas) **the environment is the gate**: a new machine reads mocks until
+each opt-in var it needs is set in the deploy `.env`, and nothing errors to tell you that — an
+unset opt-in is indistinguishable from a deliberate mock by design. Copy the `MVP_*` opt-ins
+(and their key vars) off the running machine's `.env`, not from memory. Leftover
+`safety_flag_activations/*.json` files are inert either way. The three prediction-venue
+capabilities (`kalshi_market_data`, `polymarket_market_data`, `binance_prediction`) were
+**deleted** 2026-08-02 with section A's lane and must not be re-enabled.
 
 Twenty-two schedules are registered here: `crypto_pipeline` (15 min), sixteen `crypto_factory`
 (daily — fifteen are one per symbol × timeframe over BTC/ETH/BNB/SOL/DOGE × 15m/1h/4h, and the

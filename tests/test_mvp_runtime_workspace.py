@@ -198,11 +198,14 @@ def test_select_writer_defaults_to_dry_run(monkeypatch, root):
     assert writer.filesystem_write is False
 
 
-def test_select_writer_fails_closed_without_an_activation_record(monkeypatch, root):
-    """The env var alone must never open a write path."""
+def test_select_writer_env_alone_returns_the_real_writer(monkeypatch, root):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
+    writer. The refusal that remains is the egress re-check the next test pins — a writer
+    whose opt-in is withdrawn refuses at the moment of the write."""
+    from runtime.mvp_runtime.workspace import RealWorkspaceWriter
+
     monkeypatch.setenv(WRITER_ENV, "real")
-    with pytest.raises(SafetyGateBlocked):
-        select_writer(now=NOW, root=root)
+    assert isinstance(select_writer(now=NOW, root=root), RealWorkspaceWriter)
 
 
 def test_real_writer_refuses_to_touch_disk_without_authorization(root):

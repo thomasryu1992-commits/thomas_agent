@@ -1,21 +1,30 @@
 """Safety-Flag Gate — the enforced chokepoint for model/network capabilities.
 
-CLAUDE.md requires that turning on real model invocation + network egress needs an
-explicit, versioned, audited approval — not a good test result and not a bare
-environment variable. This module is where that requirement becomes a *mechanism*
-instead of a description.
+Since 2026-08-10 (Thomas), **every gated capability opens on its environment opt-in
+alone**: the operator names the capability in the process environment, the capable
+implementation is built only behind that opt-in (never before — the construction-order
+property below is unchanged), and every egress re-check re-reads the environment. The
+per-machine grant records and their 30-day renewal are retired. The path here was
+incremental and each step is still documented at its call site: live trading left
+grants on 2026-07-28 (an expiry that traps an open position), the candle archive on
+2026-08-04 and the Naver lane on 2026-08-09 (a renewal gap is a silent hole in a
+rolling collection) — and on 2026-08-10 Thomas retired the renewal for the rest on the
+gap-vs-benefit ledger those three had already priced.
 
-The gate reads a **local, per-machine activation record** (gitignored, under
-``.runtime_governance_state/``, mirroring Core activation) and fails closed unless the
-record is present, integrity-consistent (a self-hash the operator computed, so tampering
-is detectable), unexpired, references a real approval-evidence file, and explicitly
-enables the requested capability flags for the requested provider. A caller that cannot
-obtain an :class:`Authorization` here cannot open a network socket: the hosted provider
-verifies the same authorization again at egress time (defense in depth), so a stray
-env var, a container image, or a CI job cannot silently enable outbound model calls.
+Stated so a future reader restoring grants knows what they are restoring: a grant was
+a second factor (a record only the operator could mint, integrity-hashed, expiring,
+carrying scope and authority level, whose deletion was a live mid-flight revocation),
+and none of that exists in the env-only world. Revocation is now: unset the variable
+and restart the process — a running process's environment does not change under it,
+which `assert_authorization` below is honest about.
 
-Nothing here performs a network call or stores a secret. The activation record is
-metadata only (flags, provider id, timestamps, evidence ref, self-hash) — never a key.
+The grant machinery that remains in this module (`authorize`,
+`build_activation_record`, `select_gated`, `select_gated_optional`,
+`select_gated_chain`) has **zero runtime callers** — the containment test in
+`tests/test_mvp_runtime_safety_gate.py` enforces that — and is retained only until
+its removal lands as its own reviewed change.
+
+Nothing here performs a network call or stores a secret.
 """
 
 from __future__ import annotations
@@ -102,9 +111,9 @@ class Authorization:
     expires_at: str
     evidence_ref: str
     activation_path: str | None = None
-    # Set ONLY by `env_only_authorization` — `(env_var, opt_in_value)` for the one capability
-    # Thomas moved onto the environment opt-in alone (2026-07-28). `assert_authorization` keys
-    # its re-check on this field.
+    # Set ONLY by `env_only_authorization` — `(env_var, opt_in_value)` for a capability gated
+    # by the environment opt-in alone (live trading first, 2026-07-28; every capability since
+    # 2026-08-10). `assert_authorization` keys its re-check on this field.
     #
     # It is a field rather than a marker inside `evidence_ref`, and that is load-bearing:
     # `evidence_ref` on a grant-backed authorization is copied verbatim out of the operator's
@@ -357,13 +366,14 @@ def assert_authorization(
     if now >= authorization.expires_at:
         raise SafetyGateBlocked("ACTIVATION_EXPIRED", "authorization has expired since it was granted")
     if authorization.env_gate is not None:
-        # The live-trading exception (2026-07-28): there is no grant record to re-read, so the
-        # egress re-check re-reads the ENV. Be honest about how much weaker that is — a running
-        # process's environment does not change under it, so unlike deleting a grant file this
-        # is NOT a mid-flight revocation, and stopping a live scheduler means restarting it (see
-        # the halt note the readiness board prints). Kept anyway, because the alternative is an
-        # egress path with no re-check at all and this still fails closed for every caller that
-        # builds its authorization once and uses it later.
+        # The env-only gate (live trading 2026-07-28; every capability 2026-08-10): there is no
+        # grant record to re-read, so the egress re-check re-reads the ENV. Be honest about how
+        # much weaker that is — a running process's environment does not change under it, so
+        # unlike deleting a grant file this is NOT a mid-flight revocation, and stopping a live
+        # scheduler means restarting it (see the halt note the readiness board prints). Kept
+        # anyway, because the alternative is an egress path with no re-check at all and this
+        # still fails closed for every caller that builds its authorization once and uses it
+        # later.
         #
         # Keyed on `env_gate`, which only `env_only_authorization` sets. Not on
         # `activation_path is None` — that is the documented hand-built-test seam, and reusing it
@@ -438,28 +448,33 @@ def select_gated(
     return gated_factory(authorization)
 
 
-# --- the live-trading exception -------------------------------------------------------------
+# --- the environment-only gate --------------------------------------------------------------
 #
-# Thomas decision, 2026-07-28: `live_trading` is gated by its environment opt-in ALONE, with no
-# per-machine grant. Every other gated capability keeps `select_gated` above.
+# Thomas decision, 2026-07-28 (live trading): gated by its environment opt-in ALONE, with no
+# per-machine grant — and, since Thomas 2026-08-10, the same is true of EVERY gated capability;
+# `select_gated` above has no runtime caller left.
 #
-# This is a second function rather than a parameter on the first, and that is the load-bearing
-# part: a `require_grant=False` keyword on `select_gated` would put "no grant needed" one token
-# away from the model provider, the search tool, the operator channel and the workspace writer.
-# A separate function can only be reached by a caller that names it.
+# The separate-function shape predates that and is kept: while both worlds existed, a
+# `require_grant=False` keyword on `select_gated` would have put "no grant needed" one token
+# away from the model provider, the search tool, the operator channel and the workspace writer;
+# a separate function can only be reached by a caller that names it. It is also what keeps the
+# containment test's AST sweep meaningful — env-only call sites are enumerable BY NAME.
 #
-# Why: the grant is TTL-capped at 30 days and this system is meant to run unattended for months.
-# The sharper reason is that a grant expiring while a position is OPEN blocks the CLOSE path too
-# — `evaluate_live_close_guard` exempts a reduceOnly close from the loss breaker, the daily
-# count, the exposure cap, the promotion gate and both kill switches, and then requires the gate.
-# A halt that traps an open position is what those exemptions exist to prevent.
+# Why live trading left grants first: the grant was TTL-capped at 30 days and this system is
+# meant to run unattended for months. The sharper reason is that a grant expiring while a
+# position is OPEN blocks the CLOSE path too — `evaluate_live_close_guard` exempts a reduceOnly
+# close from the loss breaker, the daily count, the exposure cap, the promotion gate and both
+# kill switches, and then requires the gate. A halt that traps an open position is what those
+# exemptions exist to prevent. The candle archive (2026-08-04) and the Naver lane (2026-08-09)
+# followed on the renewal-gap argument, and 2026-08-10 retired the renewal for the rest.
 #
 # What is given up, stated so a future reader restoring the grant knows what they are restoring:
 # a second factor, an expiry, and an audited per-machine record of scope and authority level.
 #
-# What is NOT given up: revocation. `console_cli kill` is file-based, instant, checked by the
-# order guard, and deliberately exempted by the close path — it stops new entries without
-# trapping a position, which is precisely what grant expiry could not do.
+# What is NOT given up: revocation. For live trading, `console_cli kill` is file-based, instant,
+# checked by the order guard, and deliberately exempted by the close path — it stops new entries
+# without trapping a position, which is precisely what grant expiry could not do. For everything
+# else, revocation is the environment: unset the variable and restart the process.
 ENV_ONLY_EVIDENCE_PREFIX = "env_only:"
 
 
@@ -520,6 +535,87 @@ def select_env_gated(
         )
     )
 
+
+def select_env_gated_optional(
+    *,
+    env_var: str,
+    flags: Sequence[str],
+    provider_id: str,
+    gated_factory: Callable[[Authorization], T],
+) -> tuple[T | None, str | None]:
+    """:func:`select_gated_optional`'s shape — a capability that DEGRADES rather than fails
+    closed — with the environment as the only gate: ``(impl, None)`` when ``env_var``'s
+    comma-separated list names ``provider_id``, ``(None, reason_code)`` otherwise.
+
+    The member must be NAMED; the variable merely being set is not an opt-in. That keeps
+    the per-provider scope the per-provider grants used to carry: a list that spells the
+    light tier's id still cannot open the heavy tier's gate. Same use rule as
+    :func:`select_gated_optional`, unchanged: ONLY where the fallback is itself already
+    authorized and inert-or-narrower; a capability with no safe fallback fails closed."""
+    choice = os.environ.get(env_var, "").strip().lower()
+    names = [part.strip() for part in choice.split(",") if part.strip()]
+    if provider_id not in names:
+        return None, "ENV_OPT_IN_MISSING"
+    return gated_factory(
+        env_only_authorization(
+            flags=flags, provider_id=provider_id, env_var=env_var, opt_in_value=choice
+        )
+    ), None
+
+
+def select_env_gated_chain(
+    *,
+    env_var: str,
+    factories: dict[str, Callable[[Authorization], T]],
+    flags: Sequence[str],
+    default_factory: Callable[[], T],
+) -> list[T]:
+    """:func:`select_gated_chain`'s shape and rules, with the environment as the only gate.
+
+    The single-value semantics match :func:`select_env_gated` (unset or a single
+    unrecognized value -> the inert default, never any capable path), and the plural rule
+    is unchanged: **a chain never silently shrinks.** The moment the operator writes a
+    comma they are being explicit, so ANY unknown name or ANY duplicate fails the WHOLE
+    selection closed at startup — never at 3am when the primary goes down and the chain
+    quietly has one link.
+
+    Every member's :class:`Authorization` carries the FULL normalised chain string as its
+    ``env_gate`` expectation, so EDITING the chain — not only emptying it — trips every
+    member's egress re-check: the composition is the opt-in, and a member the operator
+    removed from the list cannot keep serving out of a long-lived process."""
+    choice = os.environ.get(env_var, "").strip().lower()
+    if not choice:
+        return [default_factory()]
+    names = [part.strip() for part in choice.split(",") if part.strip()]
+    if len(names) == 1 and names[0] not in factories:
+        # Single unrecognized opt-in falls back to inert, exactly like select_env_gated.
+        return [default_factory()]
+    unknown = [name for name in names if name not in factories]
+    if unknown:
+        raise SafetyGateBlocked(
+            "UNKNOWN_PROVIDER",
+            f"failover chain names unknown provider(s) {unknown}; "
+            f"known: {sorted(factories)} (fail-closed — a chain never silently shrinks)",
+        )
+    if len(set(names)) != len(names):
+        raise SafetyGateBlocked(
+            "DUPLICATE_PROVIDER", f"failover chain names a provider twice: {names}"
+        )
+    return [
+        factories[name](
+            env_only_authorization(
+                flags=flags, provider_id=name, env_var=env_var, opt_in_value=choice
+            )
+        )
+        for name in names
+    ]
+
+
+# --- RETIRED grant-backed selectors (Thomas 2026-08-10) -------------------------------------
+#
+# `select_gated_optional` and `select_gated_chain` below, like `select_gated` and `authorize`
+# above, have no runtime caller left — the containment test enforces zero — and are retained
+# only until their removal lands as its own reviewed change.
 
 def select_gated_optional(
     *,

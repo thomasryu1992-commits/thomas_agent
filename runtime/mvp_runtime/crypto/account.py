@@ -523,17 +523,17 @@ def select_account_feed(
     """Return the live account feed if the gate is open for it, else the inert one.
 
     The capable feed is constructed **by** the gate, so it cannot exist before the
-    authorization does. Setting the env var without a valid local grant fails closed.
+    authorization does. The environment is the gate (Thomas 2026-08-10): an unset or
+    different ``MVP_ACCOUNT_FEED`` selects the inert feed, never a network path.
     """
-    return safety_gate.select_gated(
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=ACCOUNT_FEED_ENV,
         opt_in_value=BINANCE_ACCOUNT,
         flags=_NETWORK_FLAGS,
         provider_id=BINANCE_ACCOUNT,
         default_factory=NoAccountFeed,
         gated_factory=lambda authorization: BinanceFuturesAccountFeed(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 
