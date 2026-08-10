@@ -33,7 +33,11 @@ from . import factory, market_data
 
 DATA_REVIEW_WORKER_ID = "mvp.crypto.data_gap_reviewer.llm"
 DATA_REVIEW_WORKER_VERSION = "0.1.0"
-DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v1"
+# v2 (2026-08-10) asks for the suggestions INSIDE the shared analysis envelope. Bumped
+# rather than edited in place because the two degraded records already in the ledger were
+# produced by v1, and which prompt produced a record is the first question anyone rereading
+# them asks. See `build_review_prompt`.
+DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v2"
 
 DATA_REVIEW_RECORD_TYPE = "crypto_data_review.v0"
 DATA_REVIEW_LEDGER_KIND = "crypto_data_review"
@@ -181,7 +185,37 @@ def build_data_inventory(
 
 
 def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGESTIONS_PER_RUN) -> str:
-    """One self-contained prompt: the inventory as data, the ask as JSON-only."""
+    """One self-contained prompt: the inventory as data, the ask as JSON-only.
+
+    **The suggestions ride INSIDE the shared analysis envelope**, as an extra key beside
+    ``summary``/``key_findings``/``facts`` — the same shape ``build_proposal_prompt`` asks
+    for, and the shape ``_extract_suggestions`` was already written to read.
+
+    v1 asked for a bare ``{"suggestions": [...]}`` object and that is why this review had
+    never once worked on the live host. Every hosted provider parses its answer through
+    ``providers._parse_hosted_response``, which rejects anything missing the three required
+    analysis keys — so a well-formed, on-topic answer died as ``MALFORMED_RESPONSE`` at the
+    provider, before this module saw a single character of it. Both recorded fires
+    (2026-08-01, 2026-08-08) degraded on exactly that string. Measured 2026-08-10 by sending
+    the two prompts to the live Groq endpoint over the same real inventory: v1 took
+    ``MALFORMED_RESPONSE`` on 4 of 6 attempts, v2 on 0 of 11.
+
+    The one v1 attempt that got through is the tell, and it is why this was never a
+    model-quality problem: Groq is asked for ``json_object``, which constrains no keys, and
+    the providers append ``_RESPONSE_INSTRUCTION`` — "Return ONLY a single JSON object with
+    these keys: summary, key_findings, facts, …" — to every prompt. v1 then said "Answer with ONLY a
+    JSON object: {"suggestions": …}". Two mutually exclusive ONLYs, resolved per call by
+    whichever the model weighted, which is the coin-flip the fire rate measured. The
+    proposer never had this because it never contradicts the envelope; it asks to be inside
+    it. Stating one shape that satisfies both instructions is the whole fix.
+
+    Not a schema change: the vendors that ENFORCE the analysis shape (OpenRouter's strict
+    ``json_schema``, Google's ``responseSchema``) are closed over their key set and will not
+    emit ``suggestions`` at the top level at all. That is the proposer's existing situation
+    too, and ``_extract_suggestions`` covers it by digging an embedded object out of
+    ``summary``. Widening the shared schema for one lane's key would put a crypto concern in
+    the core's provider contract, which is the trade this deliberately does not make.
+    """
     return (
         "You review the DATA INPUTS of a governed crypto paper-trading pipeline.\n"
         "Below is the full inventory of what it already collects and how its paper\n"
@@ -189,8 +223,11 @@ def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGES
         "better strategy templates. Do not suggest sources already collected. Prefer\n"
         "data orthogonal to price-derived indicators (positioning, flow, regime).\n\n"
         f"INVENTORY:\n{json.dumps(dict(inventory), ensure_ascii=False, indent=1, sort_keys=True)}\n\n"
-        f"Answer with ONLY a JSON object: {{\"suggestions\": [up to {count} items]}}.\n"
-        "Each item must have exactly these string fields:\n"
+        f"Reply with ONLY a JSON object of this shape, with at most {count} suggestions:\n"
+        '{"summary": "<one line>", "key_findings": [], "facts": [], '
+        '"suggestions": [{"name": "...", "data_kind": "...", "rationale": "...", '
+        '"expected_use": "..."}]}\n'
+        "Every suggestion field is a string:\n"
         "- name: short snake_case identifier for the data series\n"
         "- data_kind: one of market_microstructure | positioning | cross_sectional | onchain | macro | other\n"
         "- rationale: why this data plausibly carries edge HERE, referencing the inventory\n"
