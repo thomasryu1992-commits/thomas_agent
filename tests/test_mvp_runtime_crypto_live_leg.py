@@ -693,6 +693,27 @@ def test_a_loss_is_negative_and_reaches_the_outcome_record():
     assert outcome["result_R"] == -1.0
 
 
+def test_a_stop_close_measures_its_fill_against_the_position_trigger():
+    """The executing leg stamps the resting trigger onto the outcome, so a stop's realized
+    slippage (`stop_slippage_bps`, adverse-positive) is measured at source rather than
+    reconstructed by hand — the §C gap. A time exit carries the trigger but never the figure."""
+    ledger = FakeLedger()
+    adapter = FakeAdapter(fills={"CLOSE": {"cumQuote": 58.99, "avgPrice": 58990.0, "executedQty": 0.001}})
+    _exit(position={**POSITION, "stop_loss": 59000.0}, close_reason="stop_loss",
+          adapter=adapter, ledger=ledger)
+    outcome = ledger.appended[0]
+    assert outcome["stop_price"] == 59000.0
+    # LONG closed by a SELL 10 under its 59000 trigger: 10/59000 in bps.
+    assert outcome["stop_slippage_bps"] == pytest.approx(10.0 / 59000.0 * 10000.0, abs=1e-3)
+
+    ledger = FakeLedger()
+    _exit(position={**POSITION, "stop_loss": 59000.0}, close_reason="time_exit",
+          adapter=FakeAdapter(fills={"CLOSE": {"cumQuote": 58.99, "avgPrice": 58990.0,
+                                               "executedQty": 0.001}}), ledger=ledger)
+    assert ledger.appended[0]["stop_price"] == 59000.0
+    assert ledger.appended[0]["stop_slippage_bps"] is None
+
+
 def test_pnl_falls_back_to_price_times_quantity_when_quote_is_absent():
     pnl, _ = ll.realized_pnl_usdt(POSITION, {"cum_quote": None, "executed_qty": 0.001,
                                              "avg_price": 61000.0})
