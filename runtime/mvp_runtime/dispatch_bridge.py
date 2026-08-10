@@ -28,8 +28,9 @@ What the door still is — every guarantee below is enforced HERE, before anythi
   worker re-checks the same set on arrival — defence in depth, not a second authority.
 - The door never passes ``write_path``/``writer`` — the only inputs that lift a run to a P3
   workspace write — and refuses any request key it does not name, so a caller cannot smuggle
-  one in. What crosses to the worker is exactly the three validated fields (request, kind,
-  reason); a dispatched run's largest effect is a rendered, validated report in the ledger.
+  one in. What crosses to the worker is exactly the validated fields (request, kind, reason,
+  and optionally ``naver_keywords``, which adds read-only [K#] evidence and lifts nothing);
+  a dispatched run's largest effect is a rendered, validated report in the ledger.
 - Nothing here reaches the money path. There is no crypto/trading kind, no venue, no order;
   the live-trading stack is a different container, this door carries no verb into it, and the
   worker's own environment carries no money variable either (pinned per-service by
@@ -75,6 +76,7 @@ from typing import Any, Callable
 from . import bridge_idempotency, socket_door, timeutil
 from .control import ControlStore
 from .errors import ControlBlocked
+from .naver_research import MAX_SEED_CHARS
 from .store import LedgerStore
 
 # Its own subdirectory sibling of the other doors' sockets, so the assistant's container
@@ -99,8 +101,18 @@ _DEFAULT_KIND = "analysis"
 # `request_id` is optional and carries no authority: it names the request so a retry after a
 # client-side timeout is the same request rather than a second one (`bridge_idempotency`).
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"request", "kind", "reason", bridge_idempotency.REQUEST_ID_KEY}
+    {"request", "kind", "reason", "naver_keywords", bridge_idempotency.REQUEST_ID_KEY}
 )
+
+# `naver_keywords` (optional): comma-separated seeds for the Naver keyword brief, forwarded
+# so the worker's run carries measured demand as [K#] evidence. Admitted on every kind this
+# door dispatches, deliberately: this door's refusals mean EFFECT — what a request cannot do —
+# and the brief is read-only evidence collection that lifts no permission and changes no role.
+# Refusing it on, say, translation would encode an editorial judgment as a security boundary,
+# and the next reader could no longer trust that a refusal here means effect. The length cap
+# is the lane's own (`naver_research.MAX_SEED_CHARS`): a longer string would not fail the run
+# downstream, it would DEGRADE the brief (SEED_TOO_LONG in the record) — honest there, but a
+# caller at this door asked for evidence and deserves the refusal where it can still fix it.
 
 # This door's name in the request ledger. Ids are scoped per door, so the same id at the switch
 # door and this one are two different requests — which they are.
@@ -109,7 +121,7 @@ _DOOR = "dispatch"
 # What the door hands to the engine: the three validated fields, nothing else. In production
 # this is `open_door`'s forward over the worker socket; in tests it is a capture. Injected so
 # `apply_dispatch` stays pure with respect to the transport and testable without a listener.
-Executor = Callable[[str, str, str], dict[str, Any]]
+Executor = Callable[[str, str, str, "str | None"], dict[str, Any]]
 
 # How long the door waits for the worker's answer. A real run on the free-tier chain is
 # minute-plus; the assistant's own client gives up at 180s, but the run must be allowed to
@@ -169,6 +181,22 @@ def apply_dispatch(
         raise ControlBlocked("REASON_REQUIRED", "a dispatch must state its reason; it is recorded")
     reason = reason.strip()
 
+    raw_seeds = request.get("naver_keywords")
+    if raw_seeds is None:
+        naver_keywords = None
+    elif not isinstance(raw_seeds, str) or not raw_seeds.strip():
+        raise ControlBlocked(
+            "MALFORMED_REQUEST", "'naver_keywords' must be a non-empty string when given",
+        )
+    elif len(raw_seeds) > MAX_SEED_CHARS:
+        raise ControlBlocked(
+            "MALFORMED_REQUEST",
+            f"'naver_keywords' exceeds {MAX_SEED_CHARS} characters; a longer list would only "
+            "degrade the brief downstream — trim the seeds instead",
+        )
+    else:
+        naver_keywords = raw_seeds.strip()
+
     request_id = bridge_idempotency.request_id_of(request)
     if request_id is not None and ledger is None:
         # Fail closed rather than running unprotected: a caller that sent an id asked for
@@ -212,7 +240,7 @@ def apply_dispatch(
             return bridge_idempotency.replay_reply(prior)
 
     try:
-        reply = execute(text.strip(), kind, reason)
+        reply = execute(text.strip(), kind, reason, naver_keywords)
         if not isinstance(reply, dict):
             raise ControlBlocked(
                 "WORKER_UNAVAILABLE",
@@ -282,11 +310,18 @@ def open_door(
     ``BRIDGE_ERROR``.
     """
 
-    def _forward(text: str, kind: str, reason: str) -> dict[str, Any]:
+    def _forward(
+        text: str, kind: str, reason: str, naver_keywords: str | None
+    ) -> dict[str, Any]:
+        # The seeds key travels only when present, so a frame without it stays byte-identical
+        # to the pre-lane contract and the worker's closed key set never sees a null.
+        frame: dict[str, Any] = {"request": text, "kind": kind, "reason": reason}
+        if naver_keywords is not None:
+            frame["naver_keywords"] = naver_keywords
         try:
             return socket_door.call_door(
                 worker_socket,
-                {"request": text, "kind": kind, "reason": reason},
+                frame,
                 deadline_seconds=worker_deadline_seconds,
             )
         except ControlBlocked as exc:
