@@ -191,7 +191,8 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 MVP use case = "analyze this business idea"; MVP role = `general.specialist`; the MVP runtime
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
-(`MVP_HOSTED_PROVIDER=google_ai_studio,groq`; Thomas 2026-07-20): each member needs its own
+(`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
+prepended Thomas 2026-07-24 with its own P4 grant — 8bde1f9, 4da8118): each member needs its own
 per-machine grant, a chain with an unknown/unauthorized member fails closed **entirely**
 (never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
 member's own retry) — never on timeout or 4xx.
