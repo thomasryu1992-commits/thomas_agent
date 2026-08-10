@@ -690,3 +690,47 @@ def test_a_held_cycle_with_no_entry_still_says_nothing(monkeypatch):
     """The edge trigger survives: this must not become a message every fifteen minutes."""
     quiet = {"live_route_status": live_route.ROUTE_HELD, "live_reason_codes": [], "symbol": "ETHUSDT"}
     assert _notified(quiet, monkeypatch) == []
+
+
+# --- settle and enter are mutually exclusive within one cycle -------------------------------
+
+def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):
+    """The short-circuit at the top of the entry block, pinned as a property rather than as a
+    status string — the `if record["live_settled"] is not None: return` above step 3.
+
+    It is load-bearing well outside this module. `cycle.py` evaluates the per-lineage live
+    allowance (#615 §5) against the outcome history as read at the START of the cycle, and the
+    honesty of that ordering rests entirely on this: an outcome settled by THIS leg cannot
+    influence THIS leg's entry, because there is no entry after a settlement. The next cycle
+    re-reads the history with the new row in it and decides permission before running the leg
+    again. Break this and a lineage gets to close a losing trade and open another on the same
+    pass, with its allowance judged on the state before either.
+
+    Asserted by making the entry planner explode. If the branch is ever removed or inverted,
+    this fails loudly instead of passing on a leg that quietly re-entered."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(
+        live_route, "list_open_live_positions",
+        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}],
+    )
+
+    def _settled(record, position, **kw):
+        record["live_settled"] = {
+            "status": "SETTLED", "outcome": {"result_R": -1.0}, "reason_codes": [],
+        }
+
+    monkeypatch.setattr(live_route, "_settle_or_protect", _settled)
+    monkeypatch.setattr(
+        live_route, "plan_live_entry",
+        lambda *a, **kw: pytest.fail("the leg planned an entry on the same pass it settled"),
+    )
+
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
+        route={"strategy_id": "S1"}, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True},
+        symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
+    )
+    assert record["live_settled"] is not None
+    assert record["live_opened"] is None, "a settling cycle opened a position"
