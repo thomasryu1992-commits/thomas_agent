@@ -6,20 +6,27 @@ claim is that every request this door can express stays at permission P3 on a no
 role, and that ``write_path`` — the one input that would lift a run above that — cannot be
 smuggled in.
 
-These do not run the pipeline (that needs a local Core). They check the door's contract by
-capturing the ``run_task`` call it makes and by exercising every refusal that precedes it.
+Since the plane separation the door validates and FORWARDS rather than running the pipeline
+itself, so these capture the ``execute`` call it makes — exactly the three validated fields —
+and exercise every refusal that precedes it. The engine's own contract (attribution, provider
+caps, the reply shape) is tested in ``test_mvp_runtime_pipeline_worker``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime import control, dispatch_bridge, planner
+from runtime.mvp_runtime import control, dispatch_bridge, planner, socket_door
 from runtime.mvp_runtime.control import ACTIVE, ControlStore
 from runtime.mvp_runtime.errors import ControlBlocked
 from runtime.mvp_runtime.socket_door import ASSISTANT_ACTOR
+from runtime.mvp_runtime.store import LedgerStore
 
 NOW = "2026-07-30T09:00:00Z"
+
+unix_only = pytest.mark.skipif(
+    not socket_door.UNIX_SOCKETS_AVAILABLE, reason="bridge doors listen on AF_UNIX only",
+)
 
 
 class FakeLedger:
@@ -38,17 +45,18 @@ class FakeLedger:
 
 
 @pytest.fixture
-def captured_run_task(monkeypatch):
-    """Replace the pipeline call with a capture so the door's contract is tested without a
-    Core or a model. Returns the list the door's one call lands in."""
+def captured_execute():
+    """The forward to the pipeline worker, captured. The door's whole output is this one call
+    plus the relayed reply, so the capture list is the assertion and not scaffolding."""
     calls: list[dict] = []
 
-    def _fake(raw_request, **kwargs):
-        calls.append({"raw_request": raw_request, **kwargs})
-        return {"status": "COMPLETED", "final_response": "ok", "task_id": "task-1"}
+    def _execute(text, kind, reason):
+        calls.append({"request": text, "kind": kind, "reason": reason})
+        return {"ok": True, "kind": kind, "task_id": "task-1",
+                "final_response": "ok", "actor": ASSISTANT_ACTOR}
 
-    monkeypatch.setattr(dispatch_bridge, "run_task", _fake)
-    return calls
+    _execute.calls = calls
+    return _execute
 
 
 def _valid(**over):
@@ -80,42 +88,51 @@ def test_every_allowed_kind_is_routable_and_development_is_excluded_not_missing(
 
 
 @pytest.mark.parametrize("kind", ["development", "trade", "crypto", "live_trader", "admin", ""])
-def test_a_kind_outside_the_set_is_refused(tmp_path, kind, captured_run_task):
+def test_a_kind_outside_the_set_is_refused(tmp_path, kind, captured_execute):
     store = ControlStore(tmp_path)
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(_valid(kind=kind), control_store=store)
+        dispatch_bridge.apply_dispatch(
+            _valid(kind=kind), control_store=store, execute=captured_execute,
+        )
     assert exc.value.reason_code in {"KIND_NOT_PERMITTED", "MALFORMED_REQUEST"}
-    assert not captured_run_task  # never reached the pipeline
+    assert not captured_execute.calls  # never reached the worker
 
 
-# --- malformed / incomplete requests refuse before running --------------------
+# --- malformed / incomplete requests refuse before forwarding -----------------
 
-def test_a_non_object_is_refused(tmp_path, captured_run_task):
+def test_a_non_object_is_refused(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(["not", "a", "dict"], control_store=store)
+        dispatch_bridge.apply_dispatch(
+            ["not", "a", "dict"], control_store=store, execute=captured_execute,
+        )
     assert exc.value.reason_code == "MALFORMED_REQUEST"
-    assert not captured_run_task
+    assert not captured_execute.calls
 
 
-def test_empty_request_text_is_refused(tmp_path, captured_run_task):
+def test_empty_request_text_is_refused(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(_valid(request="   "), control_store=store)
+        dispatch_bridge.apply_dispatch(
+            _valid(request="   "), control_store=store, execute=captured_execute,
+        )
     assert exc.value.reason_code == "REQUEST_REQUIRED"
-    assert not captured_run_task
+    assert not captured_execute.calls
 
 
-def test_a_missing_reason_is_refused(tmp_path, captured_run_task):
+def test_a_missing_reason_is_refused(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch({"request": "analyze this", "kind": "analysis"}, control_store=store)
+        dispatch_bridge.apply_dispatch(
+            {"request": "analyze this", "kind": "analysis"},
+            control_store=store, execute=captured_execute,
+        )
     assert exc.value.reason_code == "REASON_REQUIRED"
-    assert not captured_run_task
+    assert not captured_execute.calls
 
 
 @pytest.mark.parametrize("sneaky", ["write_path", "writer", "priority", "requester_type", "provider"])
-def test_an_unnamed_key_is_refused_so_write_path_cannot_be_smuggled(tmp_path, sneaky, captured_run_task):
+def test_an_unnamed_key_is_refused_so_write_path_cannot_be_smuggled(tmp_path, sneaky, captured_execute):
     """The security-relevant one. ``write_path`` is the only input that lifts a run to a P3
     workspace write; the door refuses any key it does not name rather than silently dropping
     it, so an injected request cannot reach a write by adding a field."""
@@ -123,57 +140,113 @@ def test_an_unnamed_key_is_refused_so_write_path_cannot_be_smuggled(tmp_path, sn
     req = _valid()
     req[sneaky] = "x"
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(req, control_store=store)
+        dispatch_bridge.apply_dispatch(req, control_store=store, execute=captured_execute)
     assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
-    assert not captured_run_task
+    assert not captured_execute.calls
 
 
 # --- kill switch --------------------------------------------------------------
 
-def test_a_dispatch_is_refused_while_killed(tmp_path, captured_run_task):
+def test_a_dispatch_is_refused_while_killed(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     control.apply_command(store, control.CMD_KILL, actor="test", now=NOW,
                           reason="test halt", ledger=FakeLedger())
     with pytest.raises(ControlBlocked) as exc:
-        dispatch_bridge.apply_dispatch(_valid(), control_store=store)
+        dispatch_bridge.apply_dispatch(_valid(), control_store=store, execute=captured_execute)
     # the control state's own refusal code, not a dispatch-specific one
     assert exc.value.reason_code == store.load().refusal_reason_code()
-    assert not captured_run_task  # a halt stops new work before it starts
+    assert not captured_execute.calls  # a halt stops new work before it starts
 
 
-# --- the happy path calls run_task with capped, attributed arguments ----------
+# --- the happy path forwards exactly the validated fields and relays the reply
 
-def test_a_valid_dispatch_runs_capped_and_attributed(tmp_path, captured_run_task):
+def test_a_valid_dispatch_forwards_validated_fields_and_relays_the_reply(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     assert store.load().mode == ACTIVE
     out = dispatch_bridge.apply_dispatch(
-        _valid(reason="operator asked for a market read"), control_store=store
+        _valid(reason="operator asked for a market read"),
+        control_store=store, execute=captured_execute,
     )
     assert out["ok"] is True
     assert out["final_response"] == "ok"
+    assert out["task_id"] == "task-1"
     assert out["actor"] == ASSISTANT_ACTOR
 
-    assert len(captured_run_task) == 1
-    call = captured_run_task[0]
-    assert call["request_kind"] == "analysis"
-    assert call["requester_id"] == ASSISTANT_ACTOR
-    assert call["requester_type"] == "agent"
-    assert call["channel"] == "agent"
-    assert call["authenticated"] is True
-    assert "operator asked for a market read" in call["source_ref"]
-    # the escalation inputs are never passed
-    assert "write_path" not in call
-    assert "writer" not in call
+    # Exactly the three validated fields cross the boundary — no write_path, no writer, no
+    # requester override, nothing the frame carried that the door did not validate.
+    assert captured_execute.calls == [{
+        "request": "analyze this idea", "kind": "analysis",
+        "reason": "operator asked for a market read",
+    }]
 
 
-def test_a_pipeline_block_is_surfaced_not_swallowed(tmp_path, monkeypatch):
+def test_a_pipeline_block_is_relayed_not_swallowed(tmp_path):
+    """A BLOCK ran the pipeline and carries its task_id — a real answer, relayed as-is."""
     store = ControlStore(tmp_path)
 
-    def _blocked(raw_request, **kwargs):
-        return {"status": "BLOCKED", "block": {"reason_code": "NO_ROUTABLE_ROLE", "message": "none"}}
+    def _blocked(text, kind, reason):
+        return {"ok": False, "kind": kind, "task_id": "task-9",
+                "reason_code": "NO_ROUTABLE_ROLE", "reason": "none", "actor": ASSISTANT_ACTOR}
 
-    monkeypatch.setattr(dispatch_bridge, "run_task", _blocked)
-    out = dispatch_bridge.apply_dispatch(_valid(), control_store=store)
+    out = dispatch_bridge.apply_dispatch(_valid(), control_store=store, execute=_blocked)
     assert out["ok"] is False
     assert out["reason_code"] == "NO_ROUTABLE_ROLE"
+    assert out["task_id"] == "task-9"
     assert out["actor"] == ASSISTANT_ACTOR
+
+
+def test_a_worker_refusal_surfaces_under_the_workers_own_reason_code(tmp_path):
+    """A refusal envelope has no task_id: nothing ran. The door re-raises it as its own typed
+    refusal so the assistant sees the worker's reason, not a generic failure."""
+    store = ControlStore(tmp_path)
+
+    def _refused(text, kind, reason):
+        return {"ok": False, "reason_code": "KILLED",
+                "reason": "runtime is KILLED; new work is blocked"}
+
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(_valid(), control_store=store, execute=_refused)
+    assert exc.value.reason_code == "KILLED"
+
+
+def test_a_door_without_a_forwarder_fails_closed_never_running_in_process(tmp_path):
+    """The fallback that must not exist: a door that cannot reach the worker refuses — it does
+    not run the pipeline itself, because the keys that would take are exactly what this
+    process no longer holds."""
+    store = ControlStore(tmp_path)
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(_valid(), control_store=store)
+    assert exc.value.reason_code == "WORKER_UNAVAILABLE"
+
+
+def test_a_transport_failure_from_the_forward_propagates_typed(tmp_path):
+    store = ControlStore(tmp_path)
+
+    def _down(text, kind, reason):
+        raise ControlBlocked("WORKER_UNAVAILABLE", "the pipeline worker is not answering")
+
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(_valid(), control_store=store, execute=_down)
+    assert exc.value.reason_code == "WORKER_UNAVAILABLE"
+
+
+# --- the door's own socket wires its stated ceiling ---------------------------
+
+@unix_only
+def test_the_door_wires_its_stated_ceiling(tmp_path, monkeypatch):
+    """`MAX_CONCURRENT_REQUESTS = 2` existed but was never passed to the listener, so the door
+    served the shared default of 4 while its own constant and `docs/BUILD_HISTORY.md` said 2.
+    Wired with the split; pinned here so the constant and the listener cannot drift apart
+    again."""
+    monkeypatch.delenv(socket_door.CLIENT_GID_ENV, raising=False)
+    monkeypatch.delenv(socket_door.CLIENT_UID_ENV, raising=False)
+    server = dispatch_bridge.open_door(
+        tmp_path / "dispatch.sock",
+        control_store=ControlStore(tmp_path),
+        ledger=LedgerStore(tmp_path),
+        worker_socket=tmp_path / "absent-pipeline.sock",
+    )
+    try:
+        assert server.max_concurrent_requests == dispatch_bridge.MAX_CONCURRENT_REQUESTS == 2
+    finally:
+        server.server_close()

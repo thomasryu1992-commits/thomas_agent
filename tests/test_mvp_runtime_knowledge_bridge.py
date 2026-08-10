@@ -255,12 +255,12 @@ def test_this_door_carries_a_document_sized_frame_and_the_others_do_not():
 
 
 @unix_only
-def test_the_four_doors_do_not_share_a_socket_path(tmp_path):
-    from runtime.mvp_runtime import dispatch_bridge, read_bridge, switch_bridge
+def test_the_four_doors_and_the_worker_do_not_share_a_socket_path(tmp_path):
+    from runtime.mvp_runtime import dispatch_bridge, pipeline_worker, read_bridge, switch_bridge
 
-    modules = (read_bridge, switch_bridge, dispatch_bridge, knowledge_bridge)
-    assert len({m.SOCKET_REL for m in modules}) == 4
-    assert len({m.socket_path(tmp_path) for m in modules}) == 4
+    modules = (read_bridge, switch_bridge, dispatch_bridge, knowledge_bridge, pipeline_worker)
+    assert len({m.SOCKET_REL for m in modules}) == 5
+    assert len({m.socket_path(tmp_path) for m in modules}) == 5
 
 
 @unix_only

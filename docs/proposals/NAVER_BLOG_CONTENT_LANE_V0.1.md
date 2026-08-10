@@ -89,6 +89,10 @@
 효과는 없다. `runtime_effect.mode: REVIEW_ONLY`와 `external_execution_allowed: false`를
 건드리지 않는다.
 
+> 2026-08-10 갱신 (자격증명 평면 분리, `CREDENTIAL_PLANE_SEPARATION_V0.1.md`): 위
+> 다이어그램의 `dispatch_bridge`는 이제 검증·전달만 한다. `research`/`content` kind의
+> 실행과 Naver 자격증명은 `pipeline-worker` 서비스에 있고, 흐름은 그 외 동일하다.
+
 ---
 
 ## 4. 발행 경로 — 3안 비교

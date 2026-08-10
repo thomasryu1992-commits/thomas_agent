@@ -42,6 +42,13 @@ SHARED_ACROSS_MODULES = frozenset({
     "CONSUMPTION_DISABLED", "CONTENT_CHANGED", "ENTRY_NOT_FOUND",
     "FINGERPRINT_MISMATCH", "FINGERPRINT_UNCOMPUTABLE", "INVALID_CANDIDATE",
     "INVALID_ROLE", "INVALID_TIMESTAMP", "KILL_STATE_UNAVAILABLE",
+    # Added 2026-08-10 with the plane separation: the dispatch door validates and forwards, and
+    # `pipeline_worker` re-checks the same closed surface on arrival (defence in depth — the
+    # engine does not trust its peer to have checked, even though the peer is our own door).
+    # Same kind set BY IDENTITY (the worker imports the door's frozenset), same meaning, so the
+    # shared name is the point: an operator reading either code back is looking at one contract
+    # enforced at two depths.
+    "KIND_NOT_PERMITTED", "REQUEST_REQUIRED",
     # Added 2026-08-08, and they are not new collisions — they are newly *visible* ones. Both are
     # handed to `jsonl`, which raises them on the caller's behalf, so the literal sits at the call
     # and the extractor (walking only error-class calls) never saw either. `LEDGER_UNREADABLE`:

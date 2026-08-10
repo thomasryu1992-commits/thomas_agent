@@ -275,18 +275,20 @@ services:
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
   # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`
   # caps this in code: a closed set of non-trading request kinds, no `write_path`, the kill
-  # switch checked before every run, every task attributed to `assistant_bridge`. A test
+  # switch checked before every dispatch, every task attributed to `assistant_bridge`. A test
   # asserts the kind set stays those four and that none of them reaches the money path.
   #
-  # Unlike switch-bridge and read-bridge this service RUNS the pipeline, so it is the one door
-  # that *could* invoke a model. It deliberately carries no provider key here: with none, the
-  # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
-  # pipeline. Enabling real model execution means forwarding the model provider env
-  # (GOOGLE_AI_STUDIO_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / MVP_HOSTED_PROVIDER) — a
-  # deliberate step, because it stands up a second model-key-bearing container and OPENROUTER
-  # is shared with the operator's assistant. Absent regardless of that choice: every money
-  # variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key. The kinds it runs never
-  # touch them.
+  # Since the plane separation (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md, Thomas
+  # 2026-08-10) this door VALIDATES AND FORWARDS; execution lives in `pipeline-worker` below,
+  # reached over an internal socket the assistant's container cannot traverse to. So this
+  # service carries the same environment as the read and switch doors — the two peer variables
+  # and nothing else. No provider key, no search key, no Naver variable: the process that
+  # parses the assistant's frames holds no credential, which is the point of the split. And as
+  # always no money variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key.
+  #
+  # No Core mounts either: binding a Task needs them and binding happens in the worker now,
+  # so the #380 failure signature (BRIDGE_ERROR on a missing THOMAS_CORE path) moved with it —
+  # if a dispatch fails that way, look at thomas-pipeline-worker's mounts, not this service's.
   dispatch-bridge:
     image: thomas-agent-runtime
     build: .
@@ -300,11 +302,6 @@ services:
         max-file: "3"
     volumes:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
-      # Unlike switch/read-bridge this door RUNS the pipeline, which will not bind a task
-      # without an active approved Core — so it needs the Core activation/approval records
-      # read-only, exactly as the operator and scheduler do.
-      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
-      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
       interval: 60s
@@ -322,13 +319,62 @@ services:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
       # See read-bridge for the uid gate this leaves unset by default.
       MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
-      # Model providers ONLY. This is the one door that runs the pipeline, so it needs the
-      # provider chain to return a real analysis instead of the mock. Each member still needs
-      # its own mounted safety-flag grant (via the state volume) — the env var alone fails
-      # closed. NOTHING from the money path is here: no BINANCE_*, no MVP_LIVE_*, no venue or
-      # order key. The kinds this door dispatches never reach it. NB: OPENROUTER_API_KEY is
-      # shared with the operator's assistant, so assistant-dispatched spend rides the same
-      # free-tier quota — the assistant_dispatch spend alert ($50/day) is what watches it.
+
+  # The dispatch door's engine (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). This is
+  # the process that runs `pipeline.run_task` for the four P3 kinds, so it is where the
+  # credential env lives: the model provider chain, the search key, and the Naver lane's
+  # variables. Each provider still needs its mounted safety-flag grant (via the state volume) —
+  # the env var alone fails closed. Deliberately absent: everything from the money path — no
+  # BINANCE_*, no MVP_LIVE_*, no venue or order key; the kinds this worker runs never reach it,
+  # and `test_deployment_env_passthrough` pins that per variable. NB: OPENROUTER_API_KEY is
+  # shared with the operator's assistant, so assistant-dispatched spend rides the same
+  # free-tier quota — the assistant_dispatch spend alert ($50/day) is what watches it.
+  #
+  # This is NOT an assistant door, and its socket is deliberately not in `bridge/`: that
+  # directory is group-owned by the assistant's gid and mounted into the assistant's
+  # container, and an engine socket there would be reachable past every cap the door
+  # enforces. It lives under `internal/` instead, and the two literals below pin its peers to
+  # the runtime's own uid/gid (10001, the image's fixed user) — the dispatch door is this
+  # socket's only legitimate client, and SO_PEERCRED is what refuses everything else. The
+  # worker refuses to listen at all without a uid allowlist. Literals, not ${...}
+  # interpolations, so a host `.env` that points the doors' gid at the assistant cannot also
+  # point the engine's peers anywhere.
+  pipeline-worker:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-pipeline-worker
+    restart: unless-stopped
+    # A model run in flight deserves the operator/scheduler grace, not the doors' 10s: a
+    # SIGTERM mid-analysis should let the task settle into the ledger where it can.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      # The pipeline will not bind a task without an active approved Core — the Core mounts
+      # moved here from dispatch-bridge with the execution itself (#380's gotcha, relocated:
+      # a BRIDGE_ERROR naming a THOMAS_CORE path means THESE mounts were dropped).
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.pipeline_worker_cli
+    environment:
+      # The engine's peers are the runtime itself — see the header comment for why these are
+      # literals. No group_add: the socket's group is the process's own.
+      MVP_BRIDGE_CLIENT_GID: "10001"
+      MVP_BRIDGE_CLIENT_UID: "10001"
+      # Model providers and search, moved verbatim from dispatch-bridge with the execution.
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
@@ -338,16 +384,16 @@ services:
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Naver keyword research for the blog content lane (optional). This is the door that
-      # dispatches the `research` and `content` kinds, which is where the lane's ideation
-      # actually runs — so these belong here for the same reason the search tool does.
+      # Naver keyword research for the blog content lane (optional). The `research`/`content`
+      # kinds run HERE now, so this service is where the lane's credentials belong — and after
+      # PR-B removes the scheduler's copy, the only place they exist at all.
       #
       # Unlike every other gate in this block, MVP_NAVER_RESEARCH is the WHOLE gate: there is
       # no mounted grant behind it (Thomas, 2026-08-09). Naming it here is therefore an
       # enablement path, not merely a passthrough, and the credentials below are what it
       # enables. The Search Ad secret signs against the AD ACCOUNT and reaches
       # campaign-management endpoints — it is not the read-only key its read-only use makes it
-      # look like, which is why the operator service is not given these.
+      # look like, which is why no assistant-facing service is given these.
       MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
       NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
       NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
