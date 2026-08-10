@@ -672,6 +672,104 @@ def test_the_containment_sweep_sees_a_bare_name_call(tmp_path):
     assert hits, "a `from ... import select_env_gated` caller must not be invisible to the sweep"
 
 
+def test_the_suite_isolates_every_gate_opt_in_env_var():
+    """`tests/conftest.py`'s `_GATE_ENV_VARS` is the suite's whole defense against inheriting
+    the operator's gate opt-ins, and it was maintained by hand — one entry per remembered
+    capability. A verified probe (2026-08-09) showed what that is worth: with the operator's
+    opt-ins exported, every listed var read as None while MVP_CANDLE_ARCHIVE='hyperliquid'
+    and MVP_MARKET_DATA='binance_futures' leaked straight through. The archive is env-only,
+    so the leak hands any test that reaches its selector a REAL egress-capable collector
+    holding a genuine authorization; the grant-gated vars contain nothing on the machine
+    that matters either, because the operator's machine is exactly where the grants exist.
+
+    So the list's floor is derived from the selector call sites themselves: every
+    ``env_var=`` handed to ``select_gated`` / ``select_env_gated`` / ``select_gated_chain``
+    anywhere in ``runtime/`` must appear in ``_GATE_ENV_VARS``. A new gated capability whose
+    author forgets the conftest entry fails here instead of shipping the same hole again.
+
+    Subset, not equality, on purpose: a conftest entry for a retired capability is a
+    harmless no-op delenv, and requiring equality would couple removing a capability to a
+    test that exists for the opposite direction.
+
+    Same fail-closed posture as the callers sweep above: an ``env_var=`` this sweep cannot
+    resolve to a string is an assertion failure, never a silent skip."""
+    import ast
+    import pathlib
+
+    from tests import conftest as suite_conftest
+
+    selectors = {"select_gated", "select_env_gated", "select_gated_chain"}
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    modules = {
+        path: ast.parse(path.read_text(encoding="utf-8"))
+        for path in (repo / "runtime").rglob("*.py")
+    }
+
+    def own_constants(tree: ast.Module) -> dict[str, str]:
+        # Module-level `NAME = "literal"` — the repo's idiom for env var names.
+        return {
+            target.id: node.value.value
+            for node in tree.body if isinstance(node, ast.Assign)
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+            for target in node.targets if isinstance(target, ast.Name)
+        }
+
+    constants = {path: own_constants(tree) for path, tree in modules.items()}
+
+    def imported_constants(path: pathlib.Path, tree: ast.Module) -> dict[str, str]:
+        # One `from <module> import NAME` hop — `trial.py` borrows consumption's ENV_VAR and
+        # the live surface shares `live_pnl`'s LIVE_TRADING_ENV this way.
+        resolved: dict[str, str] = {}
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom) or node.module is None:
+                continue
+            base = path.parents[node.level - 1] if node.level else repo
+            source = base.joinpath(*node.module.split(".")).with_suffix(".py")
+            source_constants = constants.get(source, {})
+            for alias in node.names:
+                if alias.name in source_constants:
+                    resolved[alias.asname or alias.name] = source_constants[alias.name]
+        return resolved
+
+    opt_ins: dict[str, str] = {}
+    for path, tree in modules.items():
+        if path.name == "safety_gate.py":
+            continue  # the selectors' own bodies pass env_var through; they are not opt-ins
+        names = {**imported_constants(path, tree), **constants[path]}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not ((isinstance(func, ast.Attribute) and func.attr in selectors)
+                    or (isinstance(func, ast.Name) and func.id in selectors)):
+                continue
+            site = f"{path.relative_to(repo).as_posix()}:{node.lineno}"
+            for keyword in node.keywords:
+                if keyword.arg != "env_var":
+                    continue
+                value = keyword.value
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    opt_ins.setdefault(value.value, site)
+                elif isinstance(value, ast.Name) and value.id in names:
+                    opt_ins.setdefault(names[value.id], site)
+                else:
+                    raise AssertionError(
+                        f"{site} passes env_var= in a form this sweep cannot resolve to a "
+                        "string; use a literal or a module-level constant so the isolation "
+                        "check can see the opt-in"
+                    )
+
+    for known in ("MVP_LIVE_TRADING", "MVP_CANDLE_ARCHIVE", "MVP_NAVER_RESEARCH",
+                  "MVP_MARKET_DATA"):
+        assert known in opt_ins, f"the sweep stopped seeing {known} — its matcher went blind"
+    missing = {var: site for var, site in sorted(opt_ins.items())
+               if var not in suite_conftest._GATE_ENV_VARS}
+    assert not missing, (
+        "gate opt-in env var(s) missing from tests/conftest.py _GATE_ENV_VARS — the suite "
+        f"would inherit these from the operator's shell: {missing}"
+    )
+
+
 # --- the env-only gate cannot be reached from a grant record ----------------------
 
 def test_a_grant_record_cannot_smuggle_itself_onto_the_env_gate(tmp_path):

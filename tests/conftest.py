@@ -111,6 +111,26 @@ _GATE_ENV_VARS = (
     # read-only and would still need credentials to reach egress — but "would still need"
     # is not a property to rest a suite on when the operator's machine has both.
     "MVP_NAVER_RESEARCH",
+    # Added 2026-08-10 after a verified probe showed the first two INHERITED: with the
+    # operator's opt-ins exported, every var above read as None while
+    # MVP_CANDLE_ARCHIVE='hyperliquid' and MVP_MARKET_DATA='binance_futures' came through.
+    # The archive is the third env-only capability, so inheriting it hands any test that
+    # reaches `select_candle_archive_collector` a REAL egress-capable collector holding a
+    # genuine authorization. The rest open only through a per-machine grant, which contains
+    # nothing here: the operator's machine is exactly where the grants exist, so an
+    # inherited opt-in selects the capable implementation there — or fails closed where CI
+    # would have returned the inert default. Either way, not the same suite.
+    #
+    # The last four were not in the probe; they are the same class, found by sweeping every
+    # selector call site. `test_the_suite_isolates_every_gate_opt_in_env_var` now derives
+    # this list's floor from those call sites, so the next gated capability cannot ship
+    # without its entry.
+    "MVP_CANDLE_ARCHIVE",
+    "MVP_MARKET_DATA",
+    "MVP_VALIDATOR_PROVIDER",
+    "MVP_PAPER_TRADING",
+    "MVP_LIQUIDATION_FEED",
+    "MVP_ACCOUNT_FEED",
 )
 
 
