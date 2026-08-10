@@ -3834,6 +3834,14 @@ matched the shape for some time and now matches it less. Still an observation ab
 a proposal to restructure the code — but the direction is worth watching, because the gap widens
 on its own.
 
+**The description was aligned 2026-08-10 (#677), Thomas-approved.** CLAUDE.md now says
+"policy-thin" and states what keeps the *core* thin while lanes grow — application-of-chokepoints,
+zero domain modules in the core import graph (module-level domain imports only in a lane's own
+door, `knowledge_bridge*.py`), lanes removable whole. The import property was measured before it
+was written down and is pinned both ways by `tests/test_mvp_runtime_domain_isolation.py`, so this
+paragraph's successor is a red suite rather than another stale sentence. The number above stays
+worth watching; what no longer drifts with it is the doc.
+
 ### G5. The scheduler was profiled, and its hot path must not be optimised — measured 2026-08-09
 
 Read off the production record rather than a benchmark: `scheduler_events.jsonl` carries
