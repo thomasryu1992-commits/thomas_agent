@@ -165,7 +165,6 @@ def test_the_scheduled_fire_replays_the_frame_the_factory_MINED(tmp_path, monkey
     from runtime.mvp_runtime.control import ControlStore
     from runtime.mvp_runtime.scheduler import ScheduleStore, build_schedule, run_due
 
-    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
     seen: list[factory.ReplayFrame] = []
     real_build = factory.build_replay_frame
     monkeypatch.setattr(
