@@ -123,12 +123,14 @@ def test_env_unset_returns_inert_feed(tmp_path, monkeypatch):
     assert feed.account_snapshot(timeout_seconds=1) is None
 
 
-def test_env_alone_fails_closed(tmp_path, monkeypatch):
-    """Opting in without a local grant must refuse, not open a socket."""
+def test_env_alone_opens_the_feed(tmp_path, monkeypatch):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the
+    capable feed — no grant record backs it, and revocation is unsetting the variable.
+    The fail-closed direction that remains is the test below: anything that is not the
+    opt-in reaches only the inert feed."""
     monkeypatch.setenv(ACCOUNT_FEED_ENV, BINANCE_ACCOUNT)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_account_feed(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    feed = select_account_feed(now=NOW, root=tmp_path)
+    assert isinstance(feed, account_mod.BinanceFuturesAccountFeed)
 
 
 def test_unrelated_env_value_stays_inert(tmp_path, monkeypatch):

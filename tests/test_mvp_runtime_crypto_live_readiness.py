@@ -492,17 +492,23 @@ def test_market_data_is_reported_as_a_canary_precondition(tmp_path, clean_env):
     assert "canary" in row["detail"], "say what the operator loses without it"
 
 
-def test_market_data_env_alone_does_not_pass_the_row(tmp_path, clean_env, monkeypatch):
-    """The env var alone selects the MOCK, whose synthesised price the check rejects.
+def test_market_data_env_alone_passes_the_row(tmp_path, clean_env, monkeypatch):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone passes the row.
 
-    Reporting green here would tell an operator the canary can run when it cannot — the same
-    env-var-is-not-a-grant confusion the safety gate exists to prevent.
-    """
+    The safety the old grant check bought is not lost, just relocated: without the opt-in
+    the selector returns the MOCK, whose synthesised price `place_canary_order`'s own
+    declared-notional check rejects — the test below pins that failing direction."""
     monkeypatch.setenv("MVP_MARKET_DATA", "binance_futures")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
+    assert row["ok"] is True
+
+
+def test_market_data_row_fails_when_the_opt_in_is_absent(tmp_path, clean_env):
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
     assert row["ok"] is False
-    assert "grant" in row["detail"]
+    assert "MVP_MARKET_DATA" in row["detail"]
 
 
 # === the daily-loss breaker has a source ==========================================

@@ -231,13 +231,13 @@ OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
 # from many vendors. Two consequences worth stating rather than discovering:
 #
 # 1. Scope. Every other provider id names one vendor whose model range is narrow, so the
-#    grant and the capability line up. Here they do not — a single ``openrouter`` grant
+#    opt-in and the capability line up. Here they do not — a single ``openrouter`` opt-in
 #    authorizes whatever slug the env var happens to name, and the model is the thing that
 #    actually decides cost and quality. That is acceptable while one pinned free model is
 #    configured on a machine only Thomas operates; it stops being acceptable the moment
 #    tiers and money are involved, at which point the answer is separate provider ids per
-#    tier with the allowed models pinned INTO each grant. Recorded here so the next change
-#    starts from the limit rather than rediscovering it.
+#    tier with the allowed models pinned into each tier's own configuration. Recorded here
+#    so the next change starts from the limit rather than rediscovering it.
 # 2. Rate limits. Free models allow ~20 req/min and ~200 req/day and answer 429 when
 #    exhausted — which ``_post_json_with_retry`` already classifies as PROVIDER_UNAVAILABLE,
 #    so a failover chain switches members instead of failing the run.
@@ -248,13 +248,21 @@ OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # M2: difficulty-driven model tiers over the same OpenRouter gateway. Each tier is its
-# OWN provider id — its own Safety-Flag grant and its own model-slug env — so a light
-# grant can never authorize the heavy model; the scope limit DEFAULT_OPENROUTER_MODEL
+# OWN provider id — its own opt-in name and its own model-slug env — so opting in the
+# light tier can never open the heavy model's gate; the scope limit DEFAULT_OPENROUTER_MODEL
 # names is closed one tier at a time. The M1 difficulty (LOW/MEDIUM/HIGH) picks the tier;
-# an absent tier grant degrades to the base MVP_HOSTED_PROVIDER chain (TIER_DEGRADED),
-# never blocks. Slug defaults are fallbacks only — the OpenRouter catalogue changes, so
-# verify per machine and override with the envs below (the DEFAULT_OPENROUTER_MODEL caveat
-# applies per tier). Grants are minted locally with activate_safety_flag.py, per tier id.
+# a tier NOT named in ``MVP_OPENROUTER_TIERS`` degrades to the base MVP_HOSTED_PROVIDER
+# chain (TIER_DEGRADED), never blocks. Slug defaults are fallbacks only — the OpenRouter
+# catalogue changes, so verify per machine and override with the envs below (the
+# DEFAULT_OPENROUTER_MODEL caveat applies per tier).
+#
+# Since 2026-08-10 the opt-in is the environment alone: ``MVP_OPENROUTER_TIERS`` is a
+# comma list of the tier ids the operator enables. It replaced the per-tier grants when
+# grants were retired, and it must stay an EXPLICIT list because the tiers' fallback is
+# fail-open by construction (degrade-to-base) — with no opt-in of their own, retiring the
+# grants would have silently armed all three tiers. Unset on the live machine today, so
+# every tier degrades: the same behavior the absent per-tier grants produced.
+OPENROUTER_TIERS_ENV = "MVP_OPENROUTER_TIERS"
 OPENROUTER_LIGHT = "openrouter_light"
 OPENROUTER_STANDARD = "openrouter_standard"
 OPENROUTER_HEAVY = "openrouter_heavy"
@@ -335,29 +343,29 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     """Choose the worker's provider — the enforced Safety-Flag Gate chokepoint.
 
     Defaults to the deterministic, network-free ``MockProvider`` (no gate needed; it
-    performs no network I/O). A real hosted provider is returned ONLY when both (a) the
-    caller opts in via ``MVP_HOSTED_PROVIDER=google_ai_studio`` AND (b) the Safety-Flag
-    Gate authorizes it against a local, integrity-checked activation record. The env var
-    alone is NOT sufficient: with no valid activation this fails closed
-    (:class:`SafetyGateBlocked`) rather than silently opening a network path.
+    performs no network I/O). A real hosted provider is returned ONLY when the caller
+    opts in via ``MVP_HOSTED_PROVIDER=google_ai_studio`` — since 2026-08-10 (Thomas) the
+    environment IS the gate: no per-machine grant record backs it, and revoking means
+    unsetting the variable and restarting the process. An unset or unrecognized value
+    still selects the inert Mock, never any capable path.
 
     The env var also accepts an ordered, comma-separated **failover chain**
-    (``MVP_HOSTED_PROVIDER=google_ai_studio,groq``): each member needs its OWN grant, a
-    chain with an unknown or unauthorized member fails closed entirely (it never silently
-    shrinks), and at run time the next member is tried only when the previous one is
-    UNAVAILABLE (503/429 even after its own retry) — never on a timeout or a 4xx.
+    (``MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq``): a chain with an unknown
+    or duplicate member fails closed entirely (it never silently shrinks), and at run
+    time the next member is tried only when the previous one is UNAVAILABLE (503/429
+    even after its own retry) — never on a timeout or a 4xx.
 
-    The gate ordering lives in ``safety_gate.select_gated_chain``, shared semantics with
-    the search tool, operator channel, and workspace writer. Model names are read inside
-    the gated factories — they only matter once the gate has already opened.
+    The gate ordering lives in ``safety_gate.select_env_gated_chain``, shared semantics
+    with the validator and frontdesk chains. Model names are read inside the gated
+    factories — they only matter once the gate has already opened. ``now``/``root`` are
+    retained for interface stability; the env gate needs neither.
     """
-    chain = safety_gate.select_gated_chain(
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    chain = safety_gate.select_env_gated_chain(
         env_var=HOSTED_PROVIDER_ENV,
         factories=_hosted_factories(),
         flags=_NETWORK_FLAGS,
         default_factory=MockProvider,
-        now=now,
-        root=root,
     )
     return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 
@@ -409,11 +417,12 @@ def select_tiered_provider(
     Returns ``(provider, selection)``. ``selection`` records the difficulty, the chosen
     tier, whether it degraded, and why — persisted by the caller as run evidence. The base
     provider serves unchanged when either (a) it is inert/mock: a network-free run has
-    nothing to upgrade, or (b) the chosen tier has no local grant, in which case the run
-    degrades to the already-authorized base chain and records ``TIER_DEGRADED`` (the
-    SEARCH_DEGRADED precedent — the tier benefit is lost, the run is not). Only when the
-    tier gate opens is the tier provider built, from its own grant's Authorization, and it
-    serves in place of the base for the specialist call."""
+    nothing to upgrade, or (b) the chosen tier is not named in ``MVP_OPENROUTER_TIERS``
+    (the environment is the gate since 2026-08-10), in which case the run degrades to the
+    already-authorized base chain and records ``TIER_DEGRADED`` (the SEARCH_DEGRADED
+    precedent — the tier benefit is lost, the run is not). Only when the tier gate opens
+    is the tier provider built, from its own Authorization, and it serves in place of the
+    base for the specialist call."""
     selection: dict[str, Any] = {
         "difficulty": str(difficulty), "tier": None, "degraded": False, "reason_code": None,
     }
@@ -425,9 +434,10 @@ def select_tiered_provider(
                          detail=f"no tier for difficulty {difficulty!r}")
         return base_provider, selection
     selection["tier"] = tier_id
-    provider, blocked_reason = safety_gate.select_gated_optional(
-        flags=_NETWORK_FLAGS, provider_id=tier_id,
-        gated_factory=_tier_factories()[tier_id], now=now, root=root,
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    provider, blocked_reason = safety_gate.select_env_gated_optional(
+        env_var=OPENROUTER_TIERS_ENV, flags=_NETWORK_FLAGS, provider_id=tier_id,
+        gated_factory=_tier_factories()[tier_id],
     )
     if provider is None:
         selection.update(degraded=True, reason_code=TIER_DEGRADED, detail=blocked_reason)
@@ -443,19 +453,18 @@ def select_validator_provider(*, now: str | None = None, root: Path | None = Non
 
     Opt-in via ``MVP_VALIDATOR_PROVIDER`` (e.g. ``groq``, or a comma-separated failover
     chain), so the review can run on a different free quota than the analysis. Exactly the
-    same Safety-Flag Gate chokepoint and grant requirements as ``MVP_HOSTED_PROVIDER``:
-    every named member needs its own local activation, an unknown/unauthorized member
-    fails the whole selection closed, and the env var alone never opens a network path.
+    same chokepoint and rules as ``MVP_HOSTED_PROVIDER``: the environment is the gate
+    (Thomas 2026-08-10), an unknown or duplicate member fails the whole selection closed,
+    and an unrecognized single value selects the inert Mock, never any capable path.
     """
     if not os.environ.get(VALIDATOR_PROVIDER_ENV, "").strip():
         return None
-    chain = safety_gate.select_gated_chain(
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    chain = safety_gate.select_env_gated_chain(
         env_var=VALIDATOR_PROVIDER_ENV,
         factories=_hosted_factories(),
         flags=_NETWORK_FLAGS,
         default_factory=MockProvider,
-        now=now,
-        root=root,
     )
     return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 
@@ -556,7 +565,7 @@ class GoogleAIStudioProvider:
 
         A copy rather than a mutation: the provider is selected once per process and a run
         binding a Role must not change what the next run asks for. Carries the same
-        ``Authorization`` object, so binding grants nothing and cannot outlive the grant —
+        ``Authorization`` object, so binding grants nothing and cannot outlive the authorization —
         the egress check still runs against it at call time."""
         bound = GoogleAIStudioProvider(model=self._model, api_key_env=self._api_key_env,
                                        authorization=self._authorization)
@@ -636,9 +645,9 @@ class _OpenAICompatibleProvider:
     that must not drift between vendors, and a third OpenAI-compatible backend should
     inherit them rather than restate them and get one subtly wrong.
 
-    Same guarantees as :class:`GoogleAIStudioProvider`: gate-authorized per its own grant
-    (``model_id`` IS the provider id the Safety-Flag Gate authorizes against — one grant
-    per id), key read from ``api_key_env`` **by name** at call time and sent in the
+    Same guarantees as :class:`GoogleAIStudioProvider`: gate-authorized per its own opt-in
+    (``model_id`` IS the provider id the Safety-Flag Gate authorizes against — one opt-in
+    name per id), key read from ``api_key_env`` **by name** at call time and sent in the
     Authorization header (never stored, logged, or echoed), egress re-verified at the
     moment of the call, and the shared retry/latency/typed-failure HTTP path.
     """
@@ -661,7 +670,7 @@ class _OpenAICompatibleProvider:
 
         A copy rather than a mutation: the provider is selected once per process and a run
         binding a Role must not change what the next run asks for. Carries the same
-        ``Authorization`` object, so binding grants nothing and cannot outlive the grant —
+        ``Authorization`` object, so binding grants nothing and cannot outlive the authorization —
         the egress check still runs against it at call time."""
         bound = type(self)(model=self._model, api_key_env=self._api_key_env,
                            authorization=self._authorization)
@@ -757,7 +766,7 @@ class OpenRouterProvider(_OpenAICompatibleProvider):
     Selecting a different model is an env var (``MVP_OPENROUTER_MODEL``) rather than a new
     adapter, which is the whole point of adding it: the runtime gains model choice without
     gaining a code path per vendor. See ``DEFAULT_OPENROUTER_MODEL`` for what that costs in
-    grant scope — one grant here covers whatever slug is configured, unlike every other
+    opt-in scope — one opt-in here covers whatever slug is configured, unlike every other
     provider id.
 
     Unlike Groq, this gateway is asked to ENFORCE the analysis shape server-side via a
@@ -792,21 +801,22 @@ class OpenRouterProvider(_OpenAICompatibleProvider):
 
 class OpenRouterLightProvider(OpenRouterProvider):
     """M2 LOW-difficulty tier. Same OpenRouter gateway/key; its OWN ``model_id`` so the
-    Safety-Flag Gate authorizes it against its own grant, and its own default slug."""
+    Safety-Flag Gate authorizes it against its own ``MVP_OPENROUTER_TIERS`` entry, and
+    its own default slug."""
 
     model_id = OPENROUTER_LIGHT
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_LIGHT
 
 
 class OpenRouterStandardProvider(OpenRouterProvider):
-    """M2 MEDIUM-difficulty tier — its own grant + slug, OpenRouter gateway shared."""
+    """M2 MEDIUM-difficulty tier — its own opt-in + slug, OpenRouter gateway shared."""
 
     model_id = OPENROUTER_STANDARD
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_STANDARD
 
 
 class OpenRouterHeavyProvider(OpenRouterProvider):
-    """M2 HIGH-difficulty tier — its own grant + slug, OpenRouter gateway shared."""
+    """M2 HIGH-difficulty tier — its own opt-in + slug, OpenRouter gateway shared."""
 
     model_id = OPENROUTER_HEAVY
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_HEAVY

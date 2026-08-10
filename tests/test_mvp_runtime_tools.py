@@ -116,12 +116,12 @@ def test_select_search_tool_defaults_to_mock(monkeypatch):
     assert isinstance(select_search_tool(), MockSearchTool)
 
 
-def test_select_real_tool_without_activation_fails_closed(monkeypatch, tmp_path):
-    # Opting in via the env var alone must NOT open a network path — no activation record.
+def test_select_real_tool_env_alone_returns_web_tool(monkeypatch, tmp_path):
+    # The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
+    # tool; the unset/typo direction still reaches only the Mock.
     monkeypatch.setenv(SEARCH_TOOL_ENV, "brave_search")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(tool, WebSearchTool)
 
 
 def test_select_real_tool_with_activation_returns_web_tool(monkeypatch, tmp_path):
@@ -289,11 +289,12 @@ def test_tavily_malformed_response_fails_closed(monkeypatch):
     assert exc.value.reason_code == "MALFORMED_RESULT"
 
 
-def test_select_tavily_without_activation_fails_closed(monkeypatch, tmp_path):
+def test_select_tavily_env_alone_returns_tavily_tool(monkeypatch, tmp_path):
+    # Same decision as above (Thomas 2026-08-10): the value picks the backend, the
+    # backend arrives capable, and only the named one.
     monkeypatch.setenv(SEARCH_TOOL_ENV, "tavily_search")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
+    assert isinstance(tool, TavilySearchTool)
 
 
 def test_select_tavily_with_activation_returns_tavily_tool(monkeypatch, tmp_path):

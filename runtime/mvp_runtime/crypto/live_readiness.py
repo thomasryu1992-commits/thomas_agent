@@ -52,7 +52,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .. import safety_gate, timeutil
+from .. import timeutil
 from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
@@ -408,30 +408,21 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # 8b. Market data — a canary PRECONDITION since the declared-notional check landed, not a
     #     nicety. `place_canary_order` verifies `--notional` against the venue's own last close
     #     and refuses when there is no usable price, so a machine without this feed cannot place
-    #     the canaries that row 7 is counting. Checked as env AND grant — this feed KEPT its
-    #     per-machine grant when live trading lost one (2026-07-28), so the two rows above and
-    #     here now legitimately differ, and the difference is not drift. The env var alone
-    #     selects the mock, whose synthesised price the check rejects.
+    #     the canaries that row 7 is counting. Checked as the env opt-in alone since 2026-08-10
+    #     — this feed kept its per-machine grant longer than live trading did (2026-07-28), and
+    #     the grant went when Thomas retired grant renewal outright; the env var selects, and
+    #     without it the mock's synthesised price is what the check rejects.
     #     Stated here because #201's lesson was that a precondition only a document knows about
     #     is discovered by an operator standing at a terminal with real keys.
-    market_data_opted_in = (
+    market_data_ready = (
         os.environ.get(MARKET_DATA_ENV, "").strip().lower() == BINANCE_FUTURES
     )
-    market_data_grant_error: str | None = None
-    try:
-        safety_gate.authorize(
-            (safety_gate.NETWORK_ACCESS,), provider_id=BINANCE_FUTURES, now=now, root=root
-        )
-    except MvpRuntimeError as exc:
-        market_data_grant_error = exc.reason_code
-    market_data_ready = market_data_opted_in and market_data_grant_error is None
     checks.append(_check(
         "market_data_visibility",
         market_data_ready,
         "live market data configured (the declared-notional check has a real price)"
         if market_data_ready
-        else (f"grant: {market_data_grant_error or 'ok'}; "
-              f"{MARKET_DATA_ENV}={'set' if market_data_opted_in else 'unset'} "
+        else (f"{MARKET_DATA_ENV} unset "
               f"- without it a canary is refused, so no canary evidence can be earned"),
     ))
 

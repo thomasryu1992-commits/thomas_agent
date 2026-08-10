@@ -1399,19 +1399,17 @@ class RealPaperStore:
 def select_paper_store(*, now: str | None = None, root: Path | None = None) -> PaperStore:
     """Choose the paper store — the enforced Safety-Flag Gate chokepoint.
 
-    Defaults to :class:`DryRunPaperStore`. The durable store is returned ONLY when
-    both (a) the caller opts in via ``MVP_PAPER_TRADING=real`` AND (b) the gate
-    authorizes ``filesystem_write`` for the ``paper_trading`` provider against a
-    local, integrity-checked activation record. The env var alone fails closed."""
-    return safety_gate.select_gated(
+    Defaults to :class:`DryRunPaperStore`. The durable store is returned ONLY behind
+    the caller's opt-in ``MVP_PAPER_TRADING=real`` — the environment is the gate
+    (Thomas 2026-08-10); anything else selects the dry-run store, never a write path."""
+    del now  # the environment is the gate (Thomas 2026-08-10); root still feeds the store
+    return safety_gate.select_env_gated(
         env_var=PAPER_ENV,
         opt_in_value=REAL_PAPER,
         flags=_WRITE_FLAGS,
         provider_id=PAPER_PROVIDER_ID,
         default_factory=DryRunPaperStore,
         gated_factory=lambda authorization: RealPaperStore(root=root, authorization=authorization),
-        now=now,
-        root=root,
     )
 
 

@@ -164,11 +164,11 @@ def test_select_liquidation_feed_defaults_to_none(monkeypatch):
     assert isinstance(select_liquidation_feed(), NoLiquidationFeed)
 
 
-def test_select_coinalyze_env_alone_fails_closed(monkeypatch, tmp_path):
+def test_select_coinalyze_env_alone_opens_the_feed(monkeypatch, tmp_path):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
+    feed — no grant record backs it; revocation is unsetting the variable."""
     monkeypatch.setenv(LIQUIDATION_FEED_ENV, COINALYZE)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_liquidation_feed(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    assert isinstance(select_liquidation_feed(now=NOW, root=tmp_path), CoinalyzeLiquidationFeed)
 
 
 def test_select_coinalyze_with_activation(monkeypatch, tmp_path):

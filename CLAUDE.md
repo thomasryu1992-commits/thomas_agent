@@ -23,25 +23,30 @@ approval turns it on.
   record you produce; the schema is authoritative.
 - **Secrets are metadata-only.** Never store/log/audit secret values.
   `execution_budget.cost_currency` is a 3-letter code, never null.
-- **Safety flags are OFF, enforced in code.** `model_invocation` / `network_access` need Thomas
-  approval + a versioned governance update + audit before enabling. Selection goes through
-  `safety_gate.select_gated(...)`, which constructs the capable implementation only after
-  `authorize()` verifies a local integrity-checked grant (one per provider, gitignored,
-  per-machine). An env var alone (`MVP_HOSTED_PROVIDER`) fails closed. A passing test is never
-  an approval for the next capability. Mechanics: `runtime/mvp_runtime/safety_gate.py`.
-  **Three capabilities are exceptions and open on the environment alone** — `select_env_gated`,
-  not `select_gated`, with no grant record anywhere: live trading (`MVP_LIVE_TRADING=real`,
-  2026-07-28), the candle archive (2026-08-04) and the Naver research lane
-  (`MVP_NAVER_RESEARCH=enabled`, 2026-08-09). All three were moved off grants because
-  `activate_safety_flag.py` caps a grant at 30 days and expiry hurt more than it bought — for
-  trading, an expiry could block the CLOSE path and trap an open position; for the other two, a
-  renewal gap is a silent hole in a long-running collection. Egress still re-checks, but it
-  re-reads the **env var**, so revoking any of them means unsetting the var and restarting the
-  container — deleting a file revokes nothing here. Adding a fourth is a Thomas decision, not a
-  pattern to follow: every new capability starts on a grant, and
-  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` fails until the new call
-  site is listed with its reasoning. Any test that could inherit one of these vars from the
-  operator's machine is isolated in `tests/conftest.py` (`_GATE_ENV_VARS`).
+- **Safety flags are OFF, enforced in code — and the environment is the gate.** Enabling a
+  `model_invocation` / `network_access` capability needs Thomas approval + a versioned
+  governance update + audit; a passing test is never an approval for the next capability.
+  Since **Thomas 2026-08-10**, every gated capability opens on its **environment opt-in
+  alone**: selection goes through `safety_gate.select_env_gated(...)` (or its `_chain` /
+  `_optional` variants), which constructs the capable implementation only behind the opt-in
+  and hands it its `Authorization`; every egress re-check re-reads the env var. The
+  per-machine grant records and their 30-day renewal are **retired** — on capabilities meant
+  to run indefinitely the renewal bought too little: live trading left grants first
+  (2026-07-28; an expiry could block the CLOSE path and trap an open position), the candle
+  archive (2026-08-04) and the Naver lane (2026-08-09) followed (a renewal gap is a silent
+  hole in a long-running collection), and 2026-08-10 retired the rest on the same ledger.
+  **What that gives up, on the record:** the second factor, the expiry, the per-machine
+  audited scope/authority record, and file-deletion revocation — revoking a capability now
+  means unsetting the var and **restarting the container**. What it does not give up: an
+  unset/unknown value still selects the inert default, and an unknown or duplicate chain
+  member still fails the whole chain closed.
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` enforces both
+  directions — zero callers of the retired grant selectors, and an exact enumeration of the
+  env-gated call sites, so a new capability still cannot ship ungoverned. Every opt-in var is
+  stripped per-test in `tests/conftest.py` (`_GATE_ENV_VARS`), floor-checked by
+  `test_the_suite_isolates_every_gate_opt_in_env_var`. Leftover
+  `safety_flag_activations/*.json` files are inert (delete freely, as uid 10001). Mechanics:
+  `runtime/mvp_runtime/safety_gate.py`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
@@ -197,8 +202,8 @@ MVP use case = "analyze this business idea"; MVP role = `general.specialist`; th
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
 (`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
-prepended Thomas 2026-07-24 with its own P4 grant — 8bde1f9, 4da8118): each member needs its own
-per-machine grant, a chain with an unknown/unauthorized member fails closed **entirely**
+prepended Thomas 2026-07-24 — 8bde1f9, 4da8118; grants retired Thomas 2026-08-10, the env
+names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
 member's own retry) — never on timeout or 4xx.
 

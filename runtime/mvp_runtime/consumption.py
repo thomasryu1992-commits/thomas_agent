@@ -76,8 +76,8 @@ class _DryRunConsumer:
         raise ApprovalBlocked(
             "CONSUMPTION_DISABLED",
             "approval consumption is OFF on this machine; set "
-            f"{ENV_VAR}={OPT_IN_VALUE} and activate the {PROVIDER_ID!r} safety flag "
-            "(scripts/activate_safety_flag.py) to spend an approval",
+            f"{ENV_VAR}={OPT_IN_VALUE} in the process environment to spend an approval "
+            "(the environment is the gate — Thomas 2026-08-10)",
         )
 
 
@@ -105,13 +105,14 @@ class _CapableConsumer:
 
 def select_consumer(*, now: str, root: Path) -> Any:
     """The gate chokepoint: return the capable consumer only behind the ``approval_consumption``
-    safety flag, else the inert one. Split out (like ``workspace.select_writer``) so the
-    production path always routes through the gate while tests can inject a consumer directly."""
-    return safety_gate.select_gated(
+    env opt-in (the environment is the gate — Thomas 2026-08-10), else the inert one. Split out
+    (like ``workspace.select_writer``) so the production path always routes through the gate
+    while tests can inject a consumer directly."""
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=ENV_VAR, opt_in_value=OPT_IN_VALUE,
         flags=[APPROVAL_CONSUMPTION], provider_id=PROVIDER_ID,
         default_factory=_DryRunConsumer, gated_factory=_CapableConsumer,
-        now=now, root=root,
     )
 
 

@@ -101,15 +101,15 @@ class _DryRunTrialRunner:
         raise ApprovalBlocked(
             "CONSUMPTION_DISABLED",
             "approval consumption is OFF on this machine; set "
-            f"{ENV_VAR}={OPT_IN_VALUE} and activate the {PROVIDER_ID!r} safety flag "
-            "(scripts/activate_safety_flag.py) to run an approved trial",
+            f"{ENV_VAR}={OPT_IN_VALUE} in the process environment to run an approved trial "
+            "(the environment is the gate — Thomas 2026-08-10)",
         )
 
 
 class _CapableTrialRunner:
     """Built only behind the Safety-Flag Gate (it is handed the ``Authorization``, so it
-    cannot exist before the gate opened). It re-verifies the grant at the moment of the
-    spend — deleting the activation record is a live revocation here as everywhere."""
+    cannot exist before the gate opened). It re-verifies the authorization at the moment
+    of the spend — the egress re-check re-reads the environment opt-in."""
 
     def __init__(self, authorization: safety_gate.Authorization):
         self._authorization = authorization
@@ -123,11 +123,11 @@ class _CapableTrialRunner:
 
 def select_trial_runner(*, now: str, root: Path) -> Any:
     """The gate chokepoint for the trial spend (mirrors ``consumption.select_consumer``)."""
-    return safety_gate.select_gated(
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=ENV_VAR, opt_in_value=OPT_IN_VALUE,
         flags=[APPROVAL_CONSUMPTION], provider_id=PROVIDER_ID,
         default_factory=_DryRunTrialRunner, gated_factory=_CapableTrialRunner,
-        now=now, root=root,
     )
 
 

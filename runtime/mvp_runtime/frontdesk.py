@@ -20,8 +20,9 @@ Reuse over invention, per the contract (`03_ROLE_CONTRACTS/CONVERSATION_FRONTDES
 
 - **Provider**: the R7.2 triage precedent — the turn rides in the shared analysis JSON the
   gated providers already parse (``recommendation.turn``), so no new provider surface, no
-  new parse layer, and the exact ``select_gated_chain`` semantics ``MVP_VALIDATOR_PROVIDER``
-  has (per-member grants, a chain never silently shrinks, env var alone opens nothing).
+  new parse layer, and the exact ``select_env_gated_chain`` semantics
+  ``MVP_VALIDATOR_PROVIDER`` has (the environment is the gate since 2026-08-10; a chain
+  never silently shrinks).
 - **Dispatch**: the QUERY_*/CANCEL turns call the same ``registry_console`` appliers the
   deterministic verbs use — the conversational door can never answer differently from
   ``/tasks``, because it *is* ``/tasks``. Deterministic data beats model narration: for
@@ -119,7 +120,8 @@ def select_frontdesk_provider(*, now: str | None = None, root: Path | None = Non
     - the registry must carry ``conversation.frontdesk`` as ACTIVE and non-routable, with
       a matching definition hash (the D2 activation flip is what this checks — a candidate
       role's provider env is a request the governance has not granted);
-    - every chain member needs its own local grant (``select_gated_chain`` semantics).
+    - unknown/duplicate chain members fail the whole selection closed
+      (``select_env_gated_chain`` semantics; the environment is the gate since 2026-08-10).
     """
     if not os.environ.get(FRONTDESK_PROVIDER_ENV, "").strip():
         return None
@@ -129,13 +131,12 @@ def select_frontdesk_provider(*, now: str | None = None, root: Path | None = Non
     # not pay for it.
     from .providers import FailoverProvider, MockProvider, _hosted_factories
 
-    chain = safety_gate.select_gated_chain(
+    del now  # the environment is the gate (Thomas 2026-08-10)
+    chain = safety_gate.select_env_gated_chain(
         env_var=FRONTDESK_PROVIDER_ENV,
         factories=_hosted_factories(),
         flags=("model_invocation", "network_access"),
         default_factory=MockProvider,
-        now=now,
-        root=root,
     )
     return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 

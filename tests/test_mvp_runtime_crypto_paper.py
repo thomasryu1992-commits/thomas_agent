@@ -436,11 +436,11 @@ def test_select_store_defaults_to_dry_run(monkeypatch):
     assert isinstance(select_paper_store(), DryRunPaperStore)
 
 
-def test_env_alone_fails_closed(monkeypatch, tmp_path):
+def test_env_alone_opens_the_real_store(monkeypatch, tmp_path):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the
+    durable store — no grant record backs it; revocation is unsetting the variable."""
     monkeypatch.setenv(PAPER_ENV, "real")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_paper_store(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    assert isinstance(select_paper_store(now=NOW, root=tmp_path), paper.RealPaperStore)
 
 
 def test_activation_enables_real_store(monkeypatch, tmp_path):

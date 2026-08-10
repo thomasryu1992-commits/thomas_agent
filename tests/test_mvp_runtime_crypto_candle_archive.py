@@ -405,14 +405,12 @@ def test_nothing_in_the_feature_or_routing_path_reads_the_archive():
 def test_the_archive_axis_does_not_move_the_pipeline_venue(monkeypatch):
     # The property this whole axis exists for. `MVP_MARKET_DATA` names the ONE venue the
     # pipeline collects from, and the crypto pipeline's leg can place a real order — so
-    # enabling the archive must not take it off Binance.
+    # enabling the archive must not take it off Binance. (Env-only since 2026-08-10, so
+    # the assertion is on the venue actually CHOSEN, not on a missing grant.)
     monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
     monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
-    # The pipeline still asks for Binance (and fails closed here only for want of a grant,
-    # which is the Binance path being chosen, not the Hyperliquid one).
-    with pytest.raises(Exception) as exc:
-        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z")
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    collector = market_data.select_market_data_collector(now="2026-08-04T00:00:00Z")
+    assert isinstance(collector, market_data.BinanceFuturesCollector)
 
 
 def test_archiving_is_off_unless_its_own_env_names_the_venue(monkeypatch):
@@ -446,13 +444,14 @@ def test_opting_in_needs_no_grant_but_still_carries_an_authorization(monkeypatch
     assert isinstance(collector._authorization, Authorization)
 
 
-def test_the_pipeline_still_needs_its_grant(monkeypatch, tmp_path):
-    # The exception is scoped to the archive. Nothing about it may loosen the gate that
-    # governs the venue the money path collects from.
-    monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
-    with pytest.raises(Exception) as exc:
-        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+def test_the_archive_env_does_not_open_the_pipeline_venue(monkeypatch, tmp_path):
+    # The archive axis is scoped to the archive. The venue the money path collects from
+    # is chosen by MVP_MARKET_DATA alone (env-only since 2026-08-10) — the archive's own
+    # opt-in must neither open nor move it.
+    monkeypatch.delenv(market_data.MARKET_DATA_ENV, raising=False)
+    monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
+    collector = market_data.select_market_data_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
+    assert isinstance(collector, market_data.MockMarketDataCollector)
 
 
 def _no_sleep(_seconds):

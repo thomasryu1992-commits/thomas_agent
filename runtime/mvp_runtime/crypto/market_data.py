@@ -893,49 +893,47 @@ def select_market_data_collector(
 
     Defaults to the deterministic, network-free ``MockMarketDataCollector`` (no gate
     needed; it performs no network I/O). The real Binance collector is returned ONLY
-    when both (a) the caller opts in via ``MVP_MARKET_DATA=binance_futures`` AND (b) the
-    Safety-Flag Gate authorizes ``network_access`` against that provider's own local,
-    integrity-checked activation record. The env var alone fails closed
-    (``SafetyGateBlocked``) — a public endpoint needs no key, so the gate is the ONLY
-    thing standing between a config typo and an outbound socket.
+    behind the caller's opt-in ``MVP_MARKET_DATA=binance_futures`` — the environment is
+    the gate (Thomas 2026-08-10; no per-machine grant record backs it), and an unset or
+    unrecognized value selects the Mock: a public endpoint needs no key, so the opt-in is
+    the ONLY thing standing between a config typo and an outbound socket, which is why a
+    typo must reach the Mock and nothing else.
 
-    ``safety_gate.select_gated`` enforces the ordering: no network-capable collector is
-    constructed until the gate has opened. One backend — collection degrades instead of
-    failing over (see ``degraded_market_data_record``).
+    ``safety_gate.select_env_gated`` enforces the ordering: no network-capable collector
+    is constructed until the gate has opened. One backend — collection degrades instead
+    of failing over (see ``degraded_market_data_record``).
 
     **Two venues now, and this is a CHOICE, not a chain.** ``MVP_MARKET_DATA`` names
-    exactly one backend; whichever it names goes through ``select_gated`` and so through
-    its OWN provider grant. The model provider's ordered failover chain
-    (``select_gated_chain``) is deliberately not reused: that exists so a second provider
-    can answer the same question when the first is unavailable, and these two answer
-    *different* questions — a Binance symbol has no meaning on Hyperliquid, and silently
-    substituting one venue's candles for another's is the failure this shape prevents.
-    A backend that is down degrades (above); it does not hand the symbol to a stranger.
+    exactly one backend; whichever it names goes through ``select_env_gated`` under its
+    OWN provider id. The model provider's ordered failover chain
+    (``select_env_gated_chain``) is deliberately not reused: that exists so a second
+    provider can answer the same question when the first is unavailable, and these two
+    answer *different* questions — a Binance symbol has no meaning on Hyperliquid, and
+    silently substituting one venue's candles for another's is the failure this shape
+    prevents. A backend that is down degrades (above); it does not hand the symbol to a
+    stranger.
 
     An unrecognised value is not an error here: it matches neither opt-in, so the inert
     Mock is returned. That is the same fail-closed direction the single-venue form had —
     a typo reaches nothing.
     """
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
     if os.environ.get(MARKET_DATA_ENV, "").strip().lower() == HYPERLIQUID:
-        return safety_gate.select_gated(
+        return safety_gate.select_env_gated(
             env_var=MARKET_DATA_ENV,
             opt_in_value=HYPERLIQUID,
             flags=_NETWORK_FLAGS,
             provider_id=HYPERLIQUID,
             default_factory=MockMarketDataCollector,
             gated_factory=lambda authorization: HyperliquidCollector(authorization=authorization),
-            now=now,
-            root=root,
         )
-    return safety_gate.select_gated(
+    return safety_gate.select_env_gated(
         env_var=MARKET_DATA_ENV,
         opt_in_value=BINANCE_FUTURES,
         flags=_NETWORK_FLAGS,
         provider_id=BINANCE_FUTURES,
         default_factory=MockMarketDataCollector,
         gated_factory=lambda authorization: BinanceFuturesCollector(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 
@@ -2010,19 +2008,17 @@ def select_liquidation_feed(*, now: str | None = None, root: Path | None = None)
     """Choose the liquidation feed — the enforced Safety-Flag Gate chokepoint.
 
     Defaults to :class:`NoLiquidationFeed` (feed absent → the features keep the
-    source's legacy constants). The real Coinalyze feed is returned ONLY when both
-    (a) the caller opts in via ``MVP_LIQUIDATION_FEED=coinalyze_market_data`` AND
-    (b) the gate authorizes ``network_access`` for that provider's own local
-    activation record. The env var alone fails closed."""
-    return safety_gate.select_gated(
+    source's legacy constants). The real Coinalyze feed is returned ONLY behind the
+    caller's opt-in ``MVP_LIQUIDATION_FEED=coinalyze_market_data`` — the environment
+    is the gate (Thomas 2026-08-10); anything else selects the inert feed."""
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=LIQUIDATION_FEED_ENV,
         opt_in_value=COINALYZE,
         flags=_NETWORK_FLAGS,
         provider_id=COINALYZE,
         default_factory=NoLiquidationFeed,
         gated_factory=lambda authorization: CoinalyzeLiquidationFeed(authorization=authorization),
-        now=now,
-        root=root,
     )
 
 
