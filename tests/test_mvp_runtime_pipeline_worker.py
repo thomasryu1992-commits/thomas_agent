@@ -137,10 +137,34 @@ def test_a_valid_dispatch_runs_capped_and_attributed(tmp_path, captured_run_task
     assert call["requester_type"] == "agent"
     assert call["channel"] == "agent"
     assert call["authenticated"] is True
+    assert call["keyword_seeds"] is None  # no seeds sent -> the run carries none
     assert "operator asked for a market read" in call["source_ref"]
     # the escalation inputs are never passed
     assert "write_path" not in call
     assert "writer" not in call
+
+
+# --- the naver_keywords key (the lane, through the worker) --------------------
+
+def test_forwarded_seeds_reach_run_task_as_keyword_seeds(tmp_path, captured_run_task):
+    out = pipeline_worker.apply_work(
+        _valid(kind="research", naver_keywords=" 미리캔버스, 포스터제작 "),
+        control_store=ControlStore(tmp_path),
+    )
+    assert out["ok"] is True
+    assert captured_run_task[0]["keyword_seeds"] == "미리캔버스, 포스터제작"
+
+
+@pytest.mark.parametrize("bad", [42, "", "   ", ["미리캔버스"], "x" * 201])
+def test_seeds_the_door_would_have_refused_are_refused_here_too(bad, tmp_path, captured_run_task):
+    """Defence in depth, same rule as the door: a frame failing this did not come from the
+    door, and the worker does not guess at what it meant."""
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            _valid(naver_keywords=bad), control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "MALFORMED_REQUEST"
+    assert captured_run_task == []
 
 
 def test_a_pipeline_block_is_shaped_as_an_answer_with_its_kind(tmp_path, monkeypatch):
