@@ -1147,3 +1147,158 @@ def test_the_live_leg_is_handed_gate_0(tmp_path, monkeypatch):
     assert "live_candidate" not in seen, "the live leg was handed a gate that no longer exists"
     assert record["report_status"] is not None
     assert "live_candidate_eligible" in record
+
+
+# --- the LIVE PERMISSION phase runs before the entry (#615 §5) ------------------------------
+
+def _install_live_armed_pool(root, spec, *, candidate_id="cand-1"):
+    """The pool `_install_pool` builds, plus the one field that lets a strategy spend money."""
+    pool.install_active_pool(
+        {"active_strategies": [{
+            "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
+            "strategy_spec": spec, "candidate_id": candidate_id,
+            "strategy_rule_hash": "h1", "generation_id": "GEN-1",
+            pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
+        }]},
+        root=root,
+    )
+
+
+def _seed_live_losses(root, *, candidate_id="cand-1", count=2, risk=10.0):
+    """`count` consecutive live losses on one lineage — enough to spend the allowance.
+
+    Written through `build_live_outcome_record` so each row is self-hashed and shaped exactly as
+    the exit path writes it: a hand-made row fails the verified read, which is also a refusal but
+    never the one these tests mean."""
+    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+
+    target = live_state_dir(root)
+    target.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for i in range(count):
+        record = build_live_outcome_record(
+            realized_pnl_usdt=-1.5 * risk, symbol="BTCUSDT", side="SELL", quantity=0.001,
+            position_id=f"live_p{i}", risk_usdt=risk, candidate_id=candidate_id,
+            strategy_rule_hash="h1", strategy_generation_id="GEN-1",
+            now=NOW,
+        )
+        lines.append(json.dumps(record, ensure_ascii=False) + "\n")
+    (target / "live_outcomes.jsonl").write_text("".join(lines), encoding="utf-8")
+
+
+def _leg_recorder(monkeypatch):
+    """Capture what the live leg was handed, and let it do nothing."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    return seen
+
+
+def test_a_spent_allowance_is_taken_away_before_the_leg_can_spend_it(tmp_path, monkeypatch):
+    """The ordering, asserted where it has an effect: on the set the leg is HANDED.
+
+    This block used to run after the leg, which meant a lineage whose allowance was already
+    spent still got one more real entry — the leg had run on the un-narrowed set, and the
+    disarm only bound the cycle after. Pinned as "the leg cannot see the breached id" rather
+    than as a line number, because the property is what must survive a reshuffle."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen, "the live leg never ran"
+    assert seen["live_routable_strategy_ids"] == set(), (
+        "the leg was handed a lineage whose allowance was already spent"
+    )
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    assert record["live_allowance"]["blocked_from_live_this_cycle"] == [spec["strategy_id"]]
+    # ...and the durable tier move landed too, on a store that can write.
+    assert record["live_allowance"]["disarmed"] == 1
+    assert pool.live_routable_strategy_ids(pool.load_active_pool(tmp_path)) == set()
+
+
+def test_an_unspent_allowance_leaves_the_leg_armed(tmp_path, monkeypatch):
+    """The control for the test above: without it, a block that narrowed the set unconditionally
+    would pass just as well and no lineage could ever trade live."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen["live_routable_strategy_ids"] == {spec["strategy_id"]}
+    assert "LIVE_ALLOWANCE_SPENT" not in record["reason_codes"]
+    assert record["live_allowance"]["breached"] == []
+
+
+def test_a_breach_that_cannot_be_persisted_still_refuses_the_entry(tmp_path, monkeypatch):
+    """A dry-run store cannot write the tier move. The refusal must not depend on that write.
+
+    The tempting shape — `if breached and store.filesystem_write: disarm(...)` — detects the
+    breach, records the reason code, and hands the leg an un-narrowed set anyway, leaving the
+    money path relying on some other gate happening to catch it. That is not a premise a live
+    door may hold."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), DryRunPaperStore())
+
+    assert seen["live_routable_strategy_ids"] == set(), (
+        "a breach the runtime could not persist still armed the leg"
+    )
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    # Not attempted, and honestly reported as not having landed.
+    assert record["live_allowance"]["disarmed"] is None
+    assert pool.live_routable_strategy_ids(pool.load_active_pool(tmp_path)) == {spec["strategy_id"]}
+
+
+def test_a_tier_write_that_refuses_still_refuses_the_entry(tmp_path, monkeypatch):
+    """The other half of the same rule: the store CAN write and the write fails anyway — a
+    locked pool, a raising writer. The in-cycle block is identical, and the reason code is what
+    tells the two apart on the record."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    def _explode(ids, **kw):
+        raise ToolError("STRATEGY_POOL_LOCKED", "stubbed: another writer holds the pool")
+
+    monkeypatch.setattr(cycle_mod.pool, "disarm_live_tier", _explode)
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen["live_routable_strategy_ids"] == set()
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    assert "STRATEGY_POOL_LOCKED" in record["reason_codes"]
+    assert record["live_allowance"]["disarmed"] is None
+
+
+def test_an_unreadable_live_history_disarms_every_lineage_before_the_leg(tmp_path, monkeypatch):
+    """The conservative direction, pinned at the cycle rather than only at the evaluator: a
+    history that cannot prove itself must not be able to argue an allowance is still unspent —
+    and it must not do so a cycle late."""
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    target = live_state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "live_outcomes.jsonl").write_text("not json\n", encoding="utf-8")
+    seen = _leg_recorder(monkeypatch)
+
+    _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+    assert seen["live_routable_strategy_ids"] == set()

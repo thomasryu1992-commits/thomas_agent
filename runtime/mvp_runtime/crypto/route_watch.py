@@ -57,10 +57,6 @@ MARK_FILENAME = "route_watch_mark.json"
 # the margin is small and the cost of being short is a run-length that reads as capped.
 RECORD_LOOKBACK = 400
 
-# Statuses that mean the live leg ran and reported. `DISABLED` is not one: it means the gate was
-# shut, so the context has nothing to say about money and must not dilute the ordering below.
-_REPORTED = "reported"
-
 
 def mark_path(root: Path | None = None) -> Path:
     """The last-announced incident set, so a quiet run can tell "unchanged" from "first run"."""
@@ -117,6 +113,8 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
     by_context: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         status = record.get("live_route_status")
+        # `DISABLED` means the gate was shut, so the context has nothing to say about money and
+        # must not dilute the ordering below.
         if not status or status == "DISABLED":
             continue
         by_context.setdefault(_context_key(record), []).append(record)

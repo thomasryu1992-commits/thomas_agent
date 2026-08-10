@@ -1295,6 +1295,56 @@ def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
     }
 
 
+def disarm_live_tier(
+    strategy_ids: Sequence[str], *, root: Path | None = None, now: str, reasons: Sequence[str] = (),
+) -> int:
+    """Move named entries OUT of the live tier. Locked. Returns how many actually moved.
+
+    **The only automatic writer of ``live_tier``, and it can only ever write OBSERVATION.**
+    That is a property of the signature rather than of the caller: there is no argument for a
+    target tier, so no caller — present or future, correct or confused — can arm a strategy
+    through here. Arming stays the operator promotion door, which is what #610 Part 1 bought
+    and what this must not spend.
+
+    It is the same asymmetry the lifecycle ladder already runs on ("auto-degradation is
+    permitted; auto-reactivation is not"), applied to the tier instead of the status, and for
+    the same reason: taking permission away on a machine's own judgement is safe in a way that
+    handing it out is not.
+
+    Deliberately **not** in `lifecycle`. The ladder is asserted never to name this field
+    (`test_the_lifecycle_ladder_cannot_arm_a_strategy`), and that assertion is worth more than
+    the convenience of one module: it means the recovery path `WARNING -> PAPER_ACTIVE` cannot
+    touch the tier even by accident. A separate writer keeps the ladder's blast radius exactly
+    where Part 1 put it.
+
+    Silent on an id the pool does not hold. A caller judging live outcomes may legitimately name
+    a lineage that has since been retired out of the pool entirely, and refusing there would
+    turn a stale name into a cycle failure — the outcome has already been recorded, and the
+    lineage is already not routable.
+    """
+    ids = {str(s) for s in strategy_ids if isinstance(s, str) and s}
+    if not ids:
+        return 0
+    path = pool_path(root)
+    with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
+        pool = load_active_pool(root)
+        moved = 0
+        for entry in pool.get("active_strategies") or []:
+            if not isinstance(entry, Mapping) or str(entry.get("strategy_id")) not in ids:
+                continue
+            if entry_live_tier(entry) != LIVE_TIER_LIVE:
+                continue
+            entry[LIVE_TIER_FIELD] = LIVE_TIER_OBSERVATION
+            entry["live_tier_updated_at"] = now
+            entry["live_tier_reasons"] = [str(r) for r in reasons]
+            moved += 1
+        if moved:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(path)
+        return moved
+
+
 def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
 

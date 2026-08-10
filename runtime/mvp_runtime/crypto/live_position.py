@@ -86,10 +86,6 @@ DRIFT_QUANTITY_MISMATCH = "POSITION_QUANTITY_MISMATCH"
 _QTY_RELATIVE_TOLERANCE = 1e-6
 _QTY_ABSOLUTE_TOLERANCE = 1e-9
 
-# What an unreadable account means for the exposure cap. Not 0.0 — see
-# `compute_open_notional_usdt`.
-EXPOSURE_UNKNOWN_AT_CAP = "EXPOSURE_UNKNOWN_TREATED_AS_AT_CAP"
-
 
 # --- the record ---------------------------------------------------------------
 

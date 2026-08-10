@@ -244,7 +244,6 @@ POSITIONING_PERIOD_SECONDS: dict[str, int] = {
     "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200,
     "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400,
 }
-POSITIONING_DEGRADED = "POSITIONING_DEGRADED"
 # The venue caps these at 1000 rows per call (klines allow 1500), and they page by the
 # same exclusive ``endTime`` walk.
 DERIVATIVE_PAGE_LIMIT = 1000
