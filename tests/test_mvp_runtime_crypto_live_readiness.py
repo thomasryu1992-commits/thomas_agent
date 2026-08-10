@@ -928,6 +928,60 @@ def test_a_blind_process_will_not_claim_live_trading_is_off(tmp_path, clean_env)
     assert "NOT READY - every FAIL above must clear first" not in text
 
 
+def test_env_rows_carry_their_scope_on_the_row_while_the_process_is_blind(tmp_path, clean_env):
+    """The banner was not enough (2026-08-10): a reader that summarises the board carries the
+    ROW out of it, so `[FAIL] live_trading_opt_in ... (live trading off)` became "live trading
+    is disabled" three times in one hour while the scheduler held an OPEN gate. The scope now
+    rides the mark, which no summary can drop and keep the row."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    for check in live_readiness.ENV_SCOPED_CHECKS:
+        row = next(line for line in text.splitlines() if check in line)
+        assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), row
+        assert live_readiness.OUT_OF_SCOPE_DETAIL in row, row
+    # The sentence that actually reached the operator as a system claim is GONE, not annotated.
+    assert "live trading off" not in text
+    assert "MVP_LIVE_TRADING is not" not in text
+    # The guard dry-run refuses for the same absent env; its blocks are withheld, not echoed.
+    assert "SCOPE  : this container cannot run the guard for real" in text
+    assert "BLOCK  :" not in text
+    # The kept line states what IS known rather than only what it is not evidence of.
+    assert f"gate was recorded OPEN at {status['recorded_gate']['recorded_at']}" in text
+    # Rendering only. The record every machine consumer reads is untouched, and so is `ready`.
+    assert status["ready"] is False
+    assert all(c["ok"] is False for c in status["checks"]
+               if c["check"] in live_readiness.ENV_SCOPED_CHECKS)
+
+
+def test_a_blind_process_still_says_FAIL_for_a_failure_it_can_see(tmp_path, clean_env):
+    """The downgrade is scoped to the env rows. A check that fails for a reason this container
+    CAN observe is a real finding, and blurring it would trade one false report for another."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    own_detail = next(c["detail"] for c in status["checks"]
+                      if c["check"] == "daily_loss_breaker" and not c["ok"])
+    breaker = next(line for line in text.splitlines() if "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]"), breaker
+    assert own_detail in breaker      # its own finding, verbatim — not the scoped stand-in
+    assert live_readiness.OUT_OF_SCOPE_DETAIL not in breaker
+
+
+def test_env_rows_read_FAIL_when_nothing_says_the_system_is_trading(tmp_path, clean_env):
+    """No record, no downgrade. Absence of evidence about the gate is not permission to soften
+    the rows — the ordinary machine with no live env must still read a plain FAIL."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    opt_in = next(line for line in text.splitlines() if "live_trading_opt_in" in line)
+    assert opt_in.startswith("[FAIL]"), opt_in
+    assert live_readiness.OUT_OF_SCOPE_MARK not in text
+    assert "SCOPE  : dry-run" not in text
+
+
 def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
     """Genuinely off must still read as off — the fix must not blur the real negative."""
     _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:55:00Z")

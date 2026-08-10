@@ -593,6 +593,47 @@ def contradicts_recorded_gate(status: Mapping[str, Any]) -> bool:
     )
 
 
+# The rows computed from ``os.environ``. On a process that carries no live-trading environment
+# every one of them fails for a single reason — the environment is absent — and the failure is a
+# fact about that container, never about the system. Named here so the renderer can say so on the
+# ROW, which is the part a reader keeps.
+ENV_SCOPED_CHECKS = frozenset({
+    "live_trading_opt_in",
+    "confirmation_phrase",
+    "account_visibility",
+    "market_data_visibility",
+})
+
+# What those rows are marked instead of FAIL while the banner is up. Four characters, so the
+# columns still line up under `[PASS]` / `[FAIL]` on an 80-column console.
+OUT_OF_SCOPE_MARK = "n/a "
+
+# ...and what they say instead of their own detail. The detail is REPLACED, not annotated: the
+# text `live_trading_opt_in` carries out of here is "MVP_LIVE_TRADING is not 'real' (live trading
+# off)", which is the exact sentence that reached the operator as a system claim. A suffix leaves
+# it in the row for a summariser to lift; substitution does not. The env var names are dropped
+# with it and that is the right trade — they describe a container that is not the money path, and
+# the banner above names the command that renders the one that is.
+OUT_OF_SCOPE_DETAIL = "not observable from this container - see the banner and live_gate_recorded"
+
+
+def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]:
+    """``(mark, detail)`` — ``n/a`` plus a scoped detail for an env row this process cannot see.
+
+    Only ever downgrades a **failure**, and only while :func:`contradicts_recorded_gate` holds —
+    which needs the trading process's own non-stale record saying the gate is OPEN. Where the
+    money path actually runs the env is present, the predicate is False, and every row reads
+    exactly as it did before. ``status["ready"]`` and ``status["checks"]`` are untouched: this is
+    what the board SAYS, not what it permits, and a console that cannot see the environment still
+    is not READY.
+    """
+    if check["ok"]:
+        return "PASS", check["detail"]
+    if env_out_of_scope and check["check"] in ENV_SCOPED_CHECKS:
+        return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+    return "FAIL", check["detail"]
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -616,7 +657,16 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     # first. #382 — the operator console and the assistant read door both ran this board in
     # containers with no MVP_LIVE_*, and both told a reader live trading was off while the
     # scheduler held an open gate.
-    if contradicts_recorded_gate(status):
+    #
+    # The banner was not enough. Measured 2026-08-10, three times in one hour: the assistant read
+    # this exact board — banner at the top, "(THIS PROCESS ONLY)" in the verdict, and a tool
+    # description telling it how to read both — and still reported "MVP_LIVE_TRADING is not 'real'
+    # so live trading is disabled" to the operator while the scheduler held an OPEN gate. Prose
+    # around a row does not beat the row: `[FAIL] live_trading_opt_in ... (live trading off)` is
+    # the thing a summariser carries out, so the scope now lives ON it. Prose is what a careful
+    # reader reads; the mark is what every reader takes.
+    env_out_of_scope = contradicts_recorded_gate(status)
+    if env_out_of_scope:
         recorded = status["recorded_gate"]
         lines.append("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
         lines.append(f"   the trading process recorded the gate OPEN at {recorded['recorded_at']}")
@@ -626,27 +676,44 @@ def render_readiness_text(status: dict[str, Any]) -> str:
                      ".live_readiness")
         lines.append("")
     for check in status["checks"]:
-        mark = "PASS" if check["ok"] else "FAIL"
-        lines.append(f"[{mark}] {check['check']:24} {check['detail']}")
+        mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
+        lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
     lines.append(f"guard dry-run ({probe} at the configured cap): {guard['status']}")
-    for block in guard.get("blocks") or []:
-        lines.append(f"  BLOCK  : {block}")
-    for repair in guard.get("repairs") or []:
-        lines.append(f"  REPAIR : {repair}")
+    if env_out_of_scope:
+        # The dry-run puts the REAL guard against THIS process's environment, so its blocks read
+        # back the absent env as a refusal — "live trading is not enabled (MVP_LIVE_TRADING is
+        # not 'real')", the same sentence the rows above just stopped printing. Listing them here
+        # would hand it straight back. The blocks are withheld rather than filtered because
+        # deciding which of them is env-derived means matching on their wording, and a message
+        # that gets reworded would silently start leaking again.
+        blocked = len(guard.get("blocks") or ()) + len(guard.get("repairs") or ())
+        lines.append(f"  SCOPE  : this container cannot run the guard for real - {blocked} "
+                     "line(s) withheld; they")
+        lines.append("           describe this process's environment, not the system. For the "
+                     "real dry-run")
+        lines.append("           use the authoritative board named above.")
+    else:
+        for block in guard.get("blocks") or []:
+            lines.append(f"  BLOCK  : {block}")
+        for repair in guard.get("repairs") or []:
+            lines.append(f"  REPAIR : {repair}")
     if status.get("counter_error"):
         lines.append(f"WARNING : daily order counter unreadable ({status['counter_error']})")
     lines.append("")
     if status["ready"]:
         lines.append("READY")
-    elif contradicts_recorded_gate(status):
+    elif env_out_of_scope:
         # Unqualified "NOT READY" here would be the same false statement the banner exists to
-        # prevent, in the one line a hurried reader keeps.
+        # prevent, in the one line a hurried reader keeps. The second line used to say only what
+        # this verdict is NOT evidence of; a reader who takes one line away deserves the fact
+        # instead, so it now states what IS known — the trading process's own record.
         lines.append("NOT READY (THIS PROCESS ONLY) - it carries no live-trading environment;")
-        lines.append("           this says nothing about whether the system is trading")
+        lines.append("           the system's own gate was recorded OPEN at "
+                     f"{status['recorded_gate']['recorded_at']}")
     else:
         lines.append("NOT READY - every FAIL above must clear first")
     if status["order_path_implemented"]:
