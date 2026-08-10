@@ -57,7 +57,7 @@ from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import live_promotion
+from . import live_promotion, pool
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
@@ -273,6 +273,56 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # different situations with different fixes — a kill needs a resume, a disarm needs a
     # re-arm — and this board exists so an operator does not have to guess which.
     checks.append(_check("trading_armed", trading_armed, armed_detail))
+
+    # 5c. The armed strategies — 5b's question again, one level down. `trading_armed` says
+    #     whether this RUNTIME's entries are armed; this row says how many STRATEGIES are, and
+    #     the two are independent doors on the same path. Since #610 Part 1 (#648) an entry may
+    #     open a real position only if its pool entry is occupying AND carries
+    #     `live_tier: LIVE`, and absence reads as OBSERVATION — so the migration deliberately
+    #     disarmed every entry promoted before the field existed. On 2026-08-10 that left this
+    #     board READY over an EMPTY armed set: every row was green, no strategy could open
+    #     anything, and the operator found out from the absence of positions. A fact that
+    #     decides whether READY ever produces an entry belongs on the board.
+    #
+    #     Zero armed is informational; an unreadable pool FAILS. That is the split the entry
+    #     door itself makes with two reason codes — "no strategy is armed" is the expected
+    #     steady state, "the pool could not be read" is a fault whose fix is elsewhere — and
+    #     the board keeps them apart for the door's own reason: an operator chasing one should
+    #     not be handed the other. `ready` keeps meaning "may this RUNTIME trade", because
+    #     arming is a per-strategy operator decision at the promotion door, and a board that
+    #     failed on zero would alarm on the deliberate safe state. Fail-closed both ways: an
+    #     unreadable pool reports UNREADABLE, never a comfortable "0 armed".
+    try:
+        active_pool = pool.load_active_pool(root)
+    except MvpRuntimeError as exc:
+        pool_error = getattr(exc, "reason_code", "UNKNOWN")
+        armed_strategies: dict[str, Any] = {
+            "known": False, "armed": None, "occupying": None, "error": pool_error,
+        }
+        armed_strategies_ok = False
+        armed_strategies_detail = (
+            f"UNREADABLE ({pool_error}) - the entry door refuses on this too, so no strategy "
+            "can open a live position until the pool is repaired"
+        )
+    else:
+        armed_ids = pool.live_routable_strategy_ids(active_pool)
+        occupying_ids = pool.routable_strategy_ids(active_pool)
+        armed_strategies = {
+            "known": True, "armed": len(armed_ids), "occupying": len(occupying_ids),
+            "error": None,
+        }
+        armed_strategies_ok = True
+        if armed_ids:
+            armed_strategies_detail = (
+                f"{len(armed_ids)} armed of {len(occupying_ids)} occupying (live_tier=LIVE)"
+            )
+        else:
+            armed_strategies_detail = (
+                f"0 armed of {len(occupying_ids)} occupying - NO strategy may open a real "
+                "position; arming is the operator promotion door "
+                "(scripts/promote_strategy_candidates.py --live-tier LIVE)"
+            )
+    checks.append(_check("live_armed_strategies", armed_strategies_ok, armed_strategies_detail))
 
     # Whether an account feed is configured at all. Computed here rather than at row 8 because
     # row 6's loss breaker needs the same answer first: it is what decides whether this board
@@ -507,6 +557,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "ready": all(c["ok"] for c in checks),
         "checks": checks,
         "recorded_gate": _recorded_gate(root, now=now),
+        # The armed set as data, beside its check row — the render needs the count (the WIRED
+        # note below qualifies itself on it), and a JSON consumer should not parse prose.
+        "live_armed_strategies": armed_strategies,
         "guard_dry_run": guard,
         # Which order the dry-run judged. A symbol-scoped block is unreadable without it: the
         # operator cannot tell "my budget excludes this symbol" from "this symbol is blocked".
@@ -606,6 +659,15 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             # the runbook first.
             lines.append("NOTE  : autonomous routing is WIRED - a scheduled crypto run on this")
             lines.append("        machine opens and closes REAL positions once every FAIL clears")
+            # The sentence above is the one a reader believed on 2026-08-10 while the armed set
+            # was empty. When nothing is armed the qualification goes HERE, where the promise is
+            # made — a PASS row further up does not outweigh a NOTE that says positions will
+            # appear.
+            armed_fact = status.get("live_armed_strategies") or {}
+            if armed_fact.get("known") and armed_fact.get("armed") == 0:
+                lines.append("NOTE  : ...but 0 strategies are armed - no autonomous entry will OPEN")
+                lines.append("        even with every FAIL clear; open positions still close. To arm")
+                lines.append("        one: python -m scripts.promote_strategy_candidates ... --live-tier LIVE")
             # The stop instruction changed with the gate (2026-07-28): there is no grant file to
             # delete any more. `console_cli kill` is what replaces it and is strictly the better
             # instruction — it writes control state, so it lands on the RUNNING scheduler at its
