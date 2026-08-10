@@ -49,6 +49,12 @@ SHARED_ACROSS_MODULES = frozenset({
     # shared name is the point: an operator reading either code back is looking at one contract
     # enforced at two depths.
     "KIND_NOT_PERMITTED", "REQUEST_REQUIRED",
+    # Added 2026-08-10 with the scheduler's analysis_task delegation. Both callers of the
+    # pipeline worker report the same thing under this code — "the engine did not answer, so
+    # nothing ran" — and neither falls back to running the work itself. `dispatch_bridge`
+    # raises it toward the assistant, `scheduler` toward a failed fire; one meaning, two
+    # readers, which is what makes the shared name right rather than a collision.
+    "WORKER_UNAVAILABLE",
     # Added 2026-08-08, and they are not new collisions — they are newly *visible* ones. Both are
     # handed to `jsonl`, which raises them on the caller's behalf, so the literal sits at the call
     # and the extractor (walking only error-class calls) never saw either. `LEDGER_UNREADABLE`:

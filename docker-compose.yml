@@ -112,29 +112,51 @@ services:
       - "0"
       - --interval-seconds
       - "30"
+    # DEPLOY ORDER: `pipeline-worker` must never be OLDER than this service. Since the Phase 2
+    # delegation an `analysis_task` fire forwards a frame carrying `actor_profile`, and a
+    # worker built before that key existed refuses the whole frame (ARGUMENT_NOT_ACCEPTED,
+    # its key set is closed) — so a scheduler recreated onto a new image while the worker
+    # still runs an old one fails every delegated fire. The reverse lags safely: the key is
+    # optional, so a new worker serves an old scheduler unchanged.
+    #
+    # A whole-project `compose up -d` satisfies this by construction. A PARTIAL deploy does
+    # not, and partial deploys happen here — sparing the money path while updating the doors
+    # is a reasonable thing to want, and it is exactly the shape that breaks this. Verified
+    # 2026-08-10 against the running containers: the pre-Phase-2 worker refused an
+    # `actor_profile` frame with ARGUMENT_NOT_ACCEPTED.
     environment:
-      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
-      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
-      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
-      # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
-      # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
+      # The ANALYSIS provider chain and the search tool are deliberately absent
+      # (MVP_HOSTED_PROVIDER, OPENROUTER_API_KEY, GOOGLE_AI_STUDIO_API_KEY,
+      # MVP_OPENROUTER_MODEL, MVP_SEARCH_TOOL, TAVILY_API_KEY — removed by PR-C of
+      # docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md). Their only consumer here
+      # was an `analysis_task` fire, and that now runs in `pipeline-worker`, which holds them.
+      # This is the service that also holds the Binance account and order keys, so a model
+      # credential it does not use is pure blast radius — the OpenRouter key most of all,
+      # since the assistant's own container spends from that same key.
+      #
+      # The removal is safe only BECAUSE the delegation landed with it: an env-less scheduler
+      # that still ran the pipeline in-process would silently produce mock analyses and report
+      # them COMPLETED. `scheduler.delegate_analysis_task` has no such fallback — an
+      # unreachable worker is a recorded failed fire.
+      #
+      # `MVP_VALIDATOR_PROVIDER` + `GROQ_API_KEY` STAY, and the reason is worth knowing before
+      # anyone "finishes the job": `crypto_propose` and `crypto_data_review` call a model from
+      # this process through `select_validator_provider`, which reads MVP_VALIDATOR_PROVIDER
+      # alone and never falls back to the chain above. Delegating those two needs either a
+      # second market-data collection path (against C9's one-feature-source rule) or a
+      # serialized live frame — deferred with its re-open condition in §6 of that proposal.
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
-      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # Naver keyword research for the blog content lane (optional). Here because the lane's
-      # weekly ideation runs as a schedule on this service. See the dispatch-bridge block for
-      # what these enable and why the operator service does not get them —
-      # MVP_NAVER_RESEARCH is the whole gate, with no grant behind it.
-      MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
-      NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
-      NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
-      NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
-      NAVER_APIHUB_KEY_ID: ${NAVER_APIHUB_KEY_ID:-}
-      NAVER_APIHUB_KEY: ${NAVER_APIHUB_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # The six Naver variables (MVP_NAVER_RESEARCH + the Search Ad and API HUB credentials)
+      # were forwarded here from #650 until the plane separation's PR-B
+      # (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md) removed them: `pipeline-worker`
+      # is the lane's only holder now. Deliberately absent rather than left "harmlessly" —
+      # Compose forwards only what this block names, and MVP_NAVER_RESEARCH is the WHOLE gate
+      # (no grant behind it), so a name here plus a value in `.env` would put the ad account's
+      # spend-capable signing secret back on the service that also holds the Binance keys.
+      # Consequence for the CLI: a `--naver-keywords` run must exec in thomas-pipeline-worker,
+      # not here — in this container the brief silently degrades to Mock rows.
+      # The weekly ideation schedule (blog lane Phase 3, unbuilt) executes via the worker.
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` grant and the
       # same registered chat as the operator service — the scheduler never reads

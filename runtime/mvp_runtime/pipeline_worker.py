@@ -38,6 +38,7 @@ from typing import Any, Callable
 from . import socket_door
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
+from .naver_research import MAX_SEED_CHARS
 from .pipeline import run_task
 from .programization import ProgramizationStore
 from .socket_door import ASSISTANT_ACTOR
@@ -54,10 +55,52 @@ from .dispatch_bridge import _ALLOWED_KINDS
 SOCKET_REL = ".runtime_governance_state/internal/pipeline.sock"
 SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 
-# What the door forwards: the three fields it validated, nothing else. `request_id` is
+# What the door forwards: the fields it validated, nothing else. `request_id` is
 # deliberately absent — idempotency is claimed at the door, and a frame carrying one here did
-# not come from the door.
-_ALLOWED_KEYS: frozenset[str] = frozenset({"request", "kind", "reason"})
+# not come from the door. `naver_keywords` is optional and travels only when the caller sent
+# it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
+# fail-closed means not trusting the peer to have checked, even when the peer is our own door.
+_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"request", "kind", "reason", "naver_keywords", "actor_profile"}
+)
+
+# Who a run is recorded as. Two callers reach this socket — the dispatch door and (since the
+# scheduler's analysis_task delegation) the scheduler — and the ledger must keep telling them
+# apart: "an operator reading the ledger must be able to tell an action that came from SSH
+# from one that came from the assistant" is the property `socket_door.ASSISTANT_ACTOR` exists
+# for, and a second caller inheriting the first's identity would quietly end it.
+#
+# **A caller declares its own profile, and neither declaration is reachable by the assistant.**
+# `dispatch_bridge._ALLOWED_KEYS` is closed and does not name `actor_profile`, so a frame
+# arriving at the door carrying one is refused (ARGUMENT_NOT_ACCEPTED) before it reaches here
+# — the assistant cannot express `scheduler`. The door's forward does not send the key at all
+# and gets the default below.
+#
+# Deliberately NOT a peer check: both callers run as uid 10001 in this deployment, so
+# SO_PEERCRED cannot separate them and a second socket would not either. This is an
+# attribution declaration, not an authorization — the profile chooses no capability, both
+# profiles run the same closed kind set at the same P3 ceiling, and nothing here reads it to
+# decide whether the work may run.
+ASSISTANT_PROFILE = "assistant"
+SCHEDULER_PROFILE = "scheduler"
+_ACTOR_PROFILES: dict[str, dict[str, str]] = {
+    # `source_ref_format` is applied to the caller's stated reason. The assistant's is stamped
+    # here because its reason is free text from the far end; the scheduler states its own
+    # source_ref verbatim (`scheduler:<schedule_id>`), which is the exact string an in-process
+    # scheduled run recorded before the delegation, so ledger rows read identically across it.
+    ASSISTANT_PROFILE: {
+        "requester_id": ASSISTANT_ACTOR,
+        "requester_type": "agent",
+        "channel": "agent",
+        "source_ref_format": ASSISTANT_ACTOR + ":dispatch: {reason}",
+    },
+    SCHEDULER_PROFILE: {
+        "requester_id": "mvp.scheduler",
+        "requester_type": "scheduler",
+        "channel": "scheduler",
+        "source_ref_format": "{reason}",
+    },
+}
 
 # Bound on the recorded reason: long enough to attribute, short enough that a reason cannot
 # bloat the source record. The assistant keeps the full text; this is the audit stub.
@@ -132,6 +175,38 @@ def apply_work(
         raise ControlBlocked("REASON_REQUIRED", "a dispatch must state its reason; it is recorded")
     reason = reason.strip()
 
+    raw_profile = request.get("actor_profile")
+    if raw_profile is None:
+        # The door does not send one, and its absence means the assistant — today's behaviour,
+        # unchanged. Named rather than inferred for the second caller.
+        profile_name = ASSISTANT_PROFILE
+    elif isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES:
+        profile_name = raw_profile.strip()
+    else:
+        # Refused rather than defaulted to the assistant: a caller that named a profile
+        # believed its work would be recorded as that, and quietly filing it under a different
+        # actor is the ledger-honesty failure this field exists to prevent.
+        raise ControlBlocked(
+            "ACTOR_PROFILE_NOT_PERMITTED",
+            f"{raw_profile!r} is not an attribution profile this worker records; it carries "
+            f"{sorted(_ACTOR_PROFILES)} only",
+        )
+    profile = _ACTOR_PROFILES[profile_name]
+
+    raw_seeds = request.get("naver_keywords")
+    if raw_seeds is None:
+        naver_keywords = None
+    elif not isinstance(raw_seeds, str) or not raw_seeds.strip() or len(raw_seeds) > MAX_SEED_CHARS:
+        # The door already refused these shapes; a frame failing here did not come from the
+        # door, and this worker does not guess at what it meant.
+        raise ControlBlocked(
+            "MALFORMED_REQUEST",
+            f"'naver_keywords' must be a non-empty string of at most {MAX_SEED_CHARS} "
+            "characters when given",
+        )
+    else:
+        naver_keywords = raw_seeds.strip()
+
     # The door checked this before forwarding; checked again so a halt that lands mid-flight
     # still stops the run, and so this engine refuses on its own even if a frame ever arrives
     # by a path that is not the door.
@@ -144,10 +219,11 @@ def apply_work(
 
     resolved = providers or {}
     # No `write_path`/`writer` is passed — nothing on this socket can lift a run above P3, and
-    # the run is attributed to the assistant, never to Thomas.
+    # the run is attributed to its caller, never to Thomas.
     result = run_task(
         text.strip(),
         request_kind=kind,
+        keyword_seeds=naver_keywords,
         provider=resolved.get("provider"),
         validator_provider=resolved.get("validator_provider"),
         search_tool=resolved.get("search_tool"),
@@ -156,39 +232,67 @@ def apply_work(
         store=ledger,
         repo_root=repo_root,
         now=now,
-        requester_id=ASSISTANT_ACTOR,
-        requester_type="agent",
-        channel="agent",
-        source_ref=_source_ref(reason),
+        requester_id=profile["requester_id"],
+        requester_type=profile["requester_type"],
+        channel=profile["channel"],
+        source_ref=_source_ref(reason, profile),
         authenticated=True,
     )
 
+    identity = _identity(result)
     if result.get("status") == "COMPLETED":
         return {
             "ok": True,
             "kind": kind,
-            "task_id": result.get("task_id"),
+            "task_id": identity.get("task_id"),
+            "trace_id": identity.get("trace_id"),
             "final_response": result.get("final_response", ""),
-            "actor": ASSISTANT_ACTOR,
+            "actor": profile["requester_id"],
         }
-    # A pipeline BLOCK is a real answer, not a worker error: it carries its `task_id`, so the
-    # door completes the idempotency claim and relays it — the assistant reports "the runtime
+    # A pipeline BLOCK is a real answer, not a worker error: it names its `kind`, so the door
+    # completes the idempotency claim and relays it — the assistant reports "the runtime
     # refused this" rather than "the door broke".
     block = result.get("block") or {}
     return {
         "ok": False,
         "kind": kind,
-        "task_id": result.get("task_id"),
+        "task_id": identity.get("task_id"),
+        "trace_id": identity.get("trace_id"),
         "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
         "reason": block.get("message", "the runtime blocked this dispatch"),
-        "actor": ASSISTANT_ACTOR,
+        "actor": profile["requester_id"],
     }
 
 
-def _source_ref(reason: str) -> str:
-    """The reason, recorded on the task's source. The `dispatch` tag is kept from before the
-    split so ledger attribution reads identically across it."""
-    return f"{ASSISTANT_ACTOR}:dispatch: {reason}"[:_MAX_REASON_ON_SOURCE]
+def _identity(result: Any) -> dict[str, Any]:
+    """The run's ids, from where the pipeline actually puts them.
+
+    ``run_task`` surfaces the task and trace ids on the received-task record, not at the top
+    level, so reading ``result["task_id"]`` returned None on every reply this door ever sent.
+    Two callers need them for real: the read door's ``result <task_id>`` is how the assistant
+    fetches a report it did not wait for, and the scheduler closes its task-registry entry
+    with both.
+    """
+    if not isinstance(result, dict):
+        return {}
+    records = result.get("records")
+    if not isinstance(records, dict):
+        return {}
+    received = records.get("received_task")
+    if not isinstance(received, dict):
+        return {}
+    identity = received.get("identity")
+    return identity if isinstance(identity, dict) else {}
+
+
+def _source_ref(reason: str, profile: dict[str, str]) -> str:
+    """The reason, recorded on the task's source, stamped per the caller's profile.
+
+    The assistant's keeps the `dispatch` tag from before the split so its ledger attribution
+    reads identically across it; the scheduler states its own ref verbatim
+    (``scheduler:<schedule_id>``), which is the string its in-process runs recorded.
+    """
+    return profile["source_ref_format"].format(reason=reason)[:_MAX_REASON_ON_SOURCE]
 
 
 def open_door(

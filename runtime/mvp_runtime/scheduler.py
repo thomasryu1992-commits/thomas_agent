@@ -17,8 +17,11 @@ Governance and safety:
   advances `next_run_at` before the fire, so a second claimant finds nothing due. Saying
   "single-process" instead named a premise that had stopped being true — the same stale premise
   let `reconcile_stale_running` abandon this service's live runs from the operator's startup.
-- Each scheduled task runs through the **full pipeline** (`run_task`) — same intake, planning,
-  permission, budget, and audit as an operator request; the scheduler grants no new authority.
+- Each scheduled task runs through the **full pipeline** — same intake, planning, permission,
+  budget, and audit as an operator request; the scheduler grants no new authority. Since the
+  credential plane separation Phase 2 it runs that pipeline in the `pipeline-worker` service
+  rather than in this process (`delegate_analysis_task`), so this service holds no model or
+  search key; see that function for what the delegation does and does not change.
 - Maintenance kinds do only what their module already allows unattended: `memory_prune`
   deletes expired working-memory candidates (R5 retention), `ledger_rotate` archives ledger
   rows and can delete nothing at all (LEDGER_RETENTION_V0.1).
@@ -39,13 +42,12 @@ from typing import Any, Callable, Mapping
 
 from runtime.read_only_kernel import integrity
 
-from . import jsonl, memory, retention, task_registry, timeutil
+from . import jsonl, memory, retention, socket_door, task_registry, timeutil
 from .events import stamped_event
 from .control import ControlStore
 from .errors import MvpRuntimeError, SchedulerBlocked, ToolBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
-from .pipeline import run_task
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore
 
@@ -753,9 +755,96 @@ def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]
     return [event for run_id, event in started.items() if run_id not in terminal]
 
 
+# How long a delegated fire waits for the worker's answer. A real analysis on the shared
+# free-tier chain is minute-plus, and a scheduled fire has no client timeout behind it — the
+# tick is the only thing waiting. Generous rather than tight for that reason: a deadline that
+# expires mid-run abandons a task that still completes and lands in the ledger, which is the
+# confusing half of a timeout rather than the useful half.
+WORKER_DEADLINE_SECONDS = 900.0
+
+# The kind a scheduled `analysis_task` runs as. `run_task(request_kind=None)` and
+# `request_kind="analysis"` resolve to the SAME capabilities and therefore the same Role
+# (`planner.classify_task` returns the analysis set for both), so naming it explicitly here
+# changes no routing — it is what lets the request cross a socket whose kind set is closed.
+# A schedule wanting a different Role is a new schedule kind, not a field on this one.
+DELEGATED_REQUEST_KIND = "analysis"
+
+
+def delegate_analysis_task(
+    request_text: str,
+    *,
+    source_ref: str,
+    now: str | None = None,
+    repo_root: Path | None = None,
+    **_unused: Any,
+) -> dict[str, Any]:
+    """Run one scheduled analysis in the pipeline worker and answer in ``run_task``'s shape.
+
+    The default ``executor`` for `run_due`. It keeps that seam's signature — including the
+    ``provider``/``search_tool``/store arguments it now ignores — so every test that injects a
+    fake executor keeps working, and so the KIND_TASK branch below reads the same as before.
+    The ignored arguments are the point of the change rather than an oversight: this service no
+    longer selects a provider or a search tool, because it no longer holds the keys for either
+    (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`). The worker selects both,
+    through the same Safety-Flag Gate, from the same per-machine grants.
+
+    **What does not change.** The run is still the full pipeline at the same P3 ceiling, still
+    attributed ``mvp.scheduler`` with ``source_ref = scheduler:<schedule_id>`` (the worker
+    stamps it from this call's own ``source_ref``, verbatim), and still synchronous — the fire
+    holds the tick for its duration exactly as an in-process run did, so the pass budget,
+    deferral, and at-most-once semantics are untouched.
+
+    **No fallback, deliberately.** A worker that cannot be reached raises, which `run_due`
+    records as a failed fire. Falling back to an in-process run would need this service to hold
+    a provider key again — and with no key it would silently run the deterministic mock and
+    report COMPLETED, which is the "reads as configured, does nothing" failure this deployment
+    has closed twice (#512, #650).
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {
+            "request": request_text,
+            "kind": DELEGATED_REQUEST_KIND,
+            "reason": source_ref,
+            "actor_profile": pipeline_worker.SCHEDULER_PROFILE,
+        },
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict):
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE", "the pipeline worker's reply was not an object",
+        )
+    if "kind" not in reply and not reply.get("ok"):
+        # A refusal envelope, not a run — the worker's own kill-switch or shape re-check, or
+        # the transport's BRIDGE_BUSY. Nothing ran, so this is a failed fire rather than a
+        # BLOCKED result: the distinction is the same one the dispatch door draws, and it is
+        # what keeps "the runtime refused this work" separate from "the work never started".
+        raise SchedulerBlocked(
+            str(reply.get("reason_code") or "WORKER_UNAVAILABLE"),
+            str(reply.get("reason") or "the pipeline worker refused this fire"),
+        )
+    # Answer in the shape the caller reads: status plus the identity it closes its
+    # task-registry entry with. Deliberately not the whole `run_task` result — the report is
+    # in the ledger, and copying it back through a socket to be discarded is the payload a
+    # bridge reply should never carry.
+    identity = {"task_id": reply.get("task_id"), "trace_id": reply.get("trace_id")}
+    if reply.get("ok"):
+        return {"status": "COMPLETED", "records": {"received_task": {"identity": identity}}}
+    return {
+        "status": "BLOCKED",
+        "records": {"received_task": {"identity": identity}},
+        "block": {
+            "reason_code": reply.get("reason_code", "BLOCKED"),
+            "message": reply.get("reason", ""),
+        },
+    }
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
-    provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
+    repo_root: Path | None, executor: Callable[..., dict[str, Any]],
     registry: Any = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
@@ -1349,7 +1438,7 @@ def _execute(
         requester_id=f"mvp.scheduler:{schedule.schedule_id}", now=now,
     )
     result = executor(
-        schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
+        schedule.request, working_memory=working_memory,
         programization=programization,
         now=now, store=ledger, repo_root=repo_root, channel="scheduler", requester_type="scheduler",
         requester_id="mvp.scheduler", authenticated=True, source_ref=f"scheduler:{schedule.schedule_id}",
@@ -1377,10 +1466,8 @@ def run_due(
     ledger: LedgerStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
     programization: Any | None = None,
-    provider: Any | None = None,
-    search_tool: Any | None = None,
     repo_root: Path | None = None,
-    executor: Callable[..., dict[str, Any]] = run_task,
+    executor: Callable[..., dict[str, Any]] = delegate_analysis_task,
     notifier: Callable[[str, str], None] | None = None,
     registry: Any = None,
 ) -> dict[str, Any]:
@@ -1541,7 +1628,7 @@ def run_due(
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization, registry=registry,
-                              provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
+                              repo_root=repo_root, executor=executor)
             action = "fired"
             fired += 1
         except MvpRuntimeError as exc:
