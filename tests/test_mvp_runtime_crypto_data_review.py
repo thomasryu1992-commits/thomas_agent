@@ -283,8 +283,30 @@ def test_report_names_accepted_and_rejected():
 
 # --- scheduled fire -----------------------------------------------------------
 
+def _worker_in_process(monkeypatch, tmp_path, provider=None):
+    """Route the scheduler's data-review delegation to the worker's own job handler.
+
+    Since Phase 2 D5 the model call runs in `pipeline-worker`, so a scheduled fire crosses a
+    socket. These tests keep exercising the whole chain — scheduler builds the inventory,
+    worker runs the review, scheduler appends and judges — by replacing only the transport.
+    The alternative (patching `delegate_data_review` away) would leave the worker's job path,
+    which is where the model call now lives, untested by every one of them.
+    """
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    from runtime.mvp_runtime.control import ControlStore as _CS
+
+    def _call(path, frame, **kwargs):
+        return pipeline_worker.apply_work(
+            frame, control_store=_CS(tmp_path),
+            providers={"validator_provider": provider} if provider is not None else None,
+        )
+
+    monkeypatch.setattr(sched.socket_door, "call_door", _call)
+
+
 def test_scheduled_data_review_fire_ledgers_the_record(tmp_path, monkeypatch):
     monkeypatch.delenv("MVP_VALIDATOR_PROVIDER", raising=False)
+    _worker_in_process(monkeypatch, tmp_path)
     schedule = build_schedule(kind=KIND_DATA_REVIEW, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-24T06:00:00Z")
     store = ScheduleStore(tmp_path)
@@ -352,6 +374,7 @@ def test_the_scheduled_fire_raises_on_a_stalled_loop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(providers, "select_validator_provider",
                         lambda **kwargs: _FailingProvider())
+    _worker_in_process(monkeypatch, tmp_path, provider=_FailingProvider())
     schedule = build_schedule(kind=KIND_DATA_REVIEW, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-24T06:00:00Z")
     store = ScheduleStore(tmp_path)

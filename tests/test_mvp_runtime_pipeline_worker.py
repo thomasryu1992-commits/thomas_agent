@@ -398,3 +398,112 @@ def test_a_request_through_the_door_is_attributed_to_the_assistant(tmp_path, mon
         for server in (door, worker):
             server.shutdown()
             server.server_close()
+
+
+# --- the job surface (Phase 2 D5: the model call, not the fire) ---------------
+
+def _inventory():
+    from runtime.mvp_runtime.crypto.data_review import build_data_inventory
+    return build_data_inventory([], [])
+
+
+def test_a_job_runs_the_model_call_and_returns_the_whole_record(tmp_path):
+    """The record travels whole: the scheduler appends it, renders the operator sheet from
+    it, and judges the stall on it. Summarising here would make the worker the authority on
+    a record it does not own."""
+    from runtime.mvp_runtime.crypto.data_review import (
+        DATA_REVIEW_RECORD_TYPE, MockDataReviewProvider,
+    )
+    out = pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory(),
+         "reason": "scheduler:crypto_data_review"},
+        control_store=ControlStore(tmp_path),
+        providers={"validator_provider": MockDataReviewProvider()},
+    )
+    assert out["ok"] is True
+    assert out["job"] == pipeline_worker.JOB_DATA_REVIEW
+    assert out["record"]["record_type"] == DATA_REVIEW_RECORD_TYPE
+    assert out["record"]["review_id"]
+
+
+def test_a_job_never_runs_the_pipeline(tmp_path, captured_run_task):
+    """A job is not a Task: no Role, no P3 binding, no `run_task`. What it shares with the
+    dispatch path is the credentials and the kill switch, and nothing else."""
+    from runtime.mvp_runtime.crypto.data_review import MockDataReviewProvider
+    pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()},
+        control_store=ControlStore(tmp_path),
+        providers={"validator_provider": MockDataReviewProvider()},
+    )
+    assert captured_run_task == []
+
+
+@pytest.mark.parametrize("bogus", ["crypto_propose", "anything", "", 42, ["x"]])
+def test_an_unnamed_job_is_refused(tmp_path, bogus):
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": bogus, "inventory": _inventory()}, control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "JOB_NOT_PERMITTED"
+
+
+def test_a_job_frame_carrying_a_dispatch_is_refused(tmp_path, captured_run_task):
+    """Two requests in one frame: guessing which was meant is how a caller gets the other."""
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory(),
+             "request": "analyze this", "kind": "analysis"},
+            control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+    assert captured_run_task == []
+
+
+@pytest.mark.parametrize("bad", [None, {}, "not an object", 42])
+def test_a_job_without_an_inventory_is_refused(tmp_path, bad):
+    """The worker collects nothing — the caller owns the state reads, and an empty inventory
+    would produce a review of nothing that still reads like a review."""
+    frame = {"job": pipeline_worker.JOB_DATA_REVIEW}
+    if bad is not None:
+        frame["inventory"] = bad
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "INVENTORY_REQUIRED"
+
+
+def test_a_job_is_refused_while_killed(tmp_path):
+    """A job spends model quota, so it is new work and a halt stops it."""
+    from runtime.mvp_runtime.crypto.data_review import MockDataReviewProvider
+    store = ControlStore(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="test", now=NOW,
+                          reason="halt", ledger=FakeLedger())
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()},
+            control_store=store, providers={"validator_provider": MockDataReviewProvider()},
+        )
+    assert exc.value.reason_code == store.load().refusal_reason_code()
+
+
+def test_the_assistant_cannot_express_a_job(tmp_path):
+    """Same property the actor profile rests on: the door's key set is closed, so `job`
+    cannot reach the worker from the assistant's side at all."""
+    assert "job" not in dispatch_bridge._ALLOWED_KEYS
+    assert "inventory" not in dispatch_bridge._ALLOWED_KEYS
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(
+            {"request": "x", "kind": "analysis", "reason": "y",
+             "job": pipeline_worker.JOB_DATA_REVIEW},
+            control_store=ControlStore(tmp_path), execute=lambda *a, **k: {"ok": True},
+        )
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+def test_the_worker_states_a_frame_ceiling_the_inventory_fits_in():
+    """A job frame carries an INPUT, not a sentence. The measured inventory was ~3.3 KB on
+    the live host and grows with the venue's vocabulary; the shared 8 KiB console default
+    fails as a dropped connection, which reads as the worker being down."""
+    import json
+    assert pipeline_worker.MAX_FRAME_BYTES > socket_door.MAX_FRAME_BYTES
+    frame = json.dumps({"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()})
+    assert len(frame.encode()) < pipeline_worker.MAX_FRAME_BYTES

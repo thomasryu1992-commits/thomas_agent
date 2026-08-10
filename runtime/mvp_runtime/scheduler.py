@@ -842,6 +842,54 @@ def delegate_analysis_task(
     }
 
 
+def delegate_data_review(
+    inventory: dict[str, Any], *, now: str | None, repo_root: Path | None,
+) -> dict[str, Any]:
+    """Run the data-gap review's model call in the pipeline worker and return its record.
+
+    The narrowest possible cut, and the reason it is narrow: everything this fire does EXCEPT
+    the model call needs no credentials and belongs where it already is. The inventory is
+    built from the ledger and the pool here; the record is appended, rendered and judged here.
+    Only the one step that needs a provider key crosses, which is what takes an LLM response
+    out of the process holding the Binance account and order keys.
+
+    **This removes no credential**, and saying so is the honest accounting: `crypto_propose`
+    still calls a model in this process, so `MVP_VALIDATOR_PROVIDER` and its key stay on the
+    scheduler either way. What it buys is one fewer model response parsed beside them
+    (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md` §7, D5).
+
+    Fail-closed with no fallback, exactly as `delegate_analysis_task`: an unreachable worker
+    raises and `run_due` records a failed fire. The in-process fallback that used to stand
+    here — a `MockDataReviewProvider` when no provider was authorized — now lives in the
+    worker, so a degraded review is still a real record and an absent worker is still a
+    visible failure. Those two must not collapse into each other.
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": inventory,
+         "reason": "scheduler:crypto_data_review"},
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise SchedulerBlocked(
+            str((reply or {}).get("reason_code") or "WORKER_UNAVAILABLE")
+            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
+            str((reply or {}).get("reason") or "the pipeline worker did not run the data review")
+            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
+        )
+    record = reply.get("record")
+    if not isinstance(record, dict) or not record.get("review_id"):
+        # A reply that is "ok" but carries no usable record would otherwise be appended to the
+        # ledger as evidence of a review that did not happen.
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE",
+            "the pipeline worker returned no data-review record; nothing was appended",
+        )
+    return record
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     repo_root: Path | None, executor: Callable[..., dict[str, Any]],
@@ -1315,7 +1363,6 @@ def _execute(
         from .crypto import pool as crypto_pool
         from .crypto.cycle import pool_cycle_contexts
         from .crypto.paper import read_outcomes
-        from .providers import select_validator_provider
 
         try:
             # A bounded window over a stream, not a filtered copy of the whole ledger.
@@ -1335,9 +1382,12 @@ def _execute(
         inventory = crypto_data_review.build_data_inventory(
             cycle_rows, outcomes, contexts=pool_cycle_contexts(repo_root),
         )
-        provider = (select_validator_provider(now=now, root=repo_root)
-                    or crypto_data_review.MockDataReviewProvider())
-        record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
+        # The model call runs in `pipeline-worker`, not here (Phase 2 D5). Everything around
+        # it stays: this process builds the inventory (pure state reads), appends the record,
+        # sends the operator's sheet, and judges the stall. What crosses is one frame of
+        # ~3 KB and what comes back is the record — so an LLM response is parsed in a process
+        # that holds no venue key. See `delegate_data_review` for the failure posture.
+        record = delegate_data_review(inventory, now=now, repo_root=repo_root)
         if ledger is not None:
             ledger.append_records(
                 record["review_id"], {crypto_data_review.DATA_REVIEW_LEDGER_KIND: record})
