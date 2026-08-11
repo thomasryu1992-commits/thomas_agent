@@ -1364,7 +1364,8 @@ def test_promotion_installs_selected_candidates(tmp_path):
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
-                            allow_oversized_pool=True, allow_below_entry_bar=True)
+                            allow_oversized_pool=True, allow_below_entry_bar=True,
+                            allow_unconfirmed_holdout=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -1378,11 +1379,11 @@ def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
                   keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
-                  allow_below_entry_bar=True)
+                  allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
                   keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                   allow_oversized_pool=True,   # same context as the incumbent; see above
-                  allow_below_entry_bar=True)
+                  allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
 

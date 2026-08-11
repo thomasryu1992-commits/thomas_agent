@@ -91,7 +91,10 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
         # 60 closes and a THIN holdout block, so the fixture clears the 5-3 observation
         # entry bar the same way it clears the cost and depth gates: these tests are about
         # OTHER axes, and a fixture the door refuses on sight is noise in every one of them.
-        evidence = {"closed_count": 60, "expectancy": 0.5, "holdout": {"closed_count": 10}}
+        # Stored CONFIRMED, so the fixture clears both the 5-3 entry bar and the 5-1 LIVE
+        # confirmation gate: these tests are about OTHER axes.
+        evidence = {"closed_count": 60, "expectancy": 0.5,
+                    "robustness": {"verdict": "PROVISIONAL", "holdout_status": "CONFIRMED"}}
         bars = _current_bars_replayed(spec) if bars_replayed is _MISSING else bars_replayed
         if bars is not None:
             evidence["bars_replayed"] = bars
@@ -401,7 +404,8 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
         "generation_id": "GEN-001", "status": "BACKTESTED", "champion_score": 0.5,
         "strategy_spec": spec.to_dict(),
         "backtest_evidence": {"closed_count": 60, "expectancy": 0.5,
-                              "holdout": {"closed_count": 10},
+                              "robustness": {"verdict": "PROVISIONAL",
+                                             "holdout_status": "CONFIRMED"},
                               "bars_replayed": _current_bars_replayed(spec),
                               "cost_summary": _current_cost_summary()},
         "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
