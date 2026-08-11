@@ -14,6 +14,11 @@ source. No new measurement code; this module only plans and judges.
 - N = 12 per batch: 3 symbols (BTCUSDT/ETHUSDT/SOLUSDT) x 2 volatility regimes
   (``atr_percentile`` above/below 0.5) x 2 repeats. Slippage is regime-dependent, so a
   sample pooled in one regime would re-distort the constant it exists to fix.
+  Since the second-batch approval (Thomas 2026-08-11, "2차 배치도 진행해줘") the symbol
+  set is a **request-time parameter**: the three above stay the defaults, N and the cell
+  grid derive from the requested set, and every set mints its own content hash — so a
+  new set is a new approval, never a re-pointing of an old one. The budget cap below
+  does NOT scale with the set.
 - Stop width 40 bps below entry, LONG probes only.
 - Unfilled-stop timeout 120 minutes, then market close. A timeout row is **not** a
   slippage sample (`STOP_EXIT_REASONS` already excludes a time exit). 120 is an
@@ -69,8 +74,9 @@ PLAN_FILENAME = "stop_slippage_probe_plan.json"
 # board and the plan resolver select probe rows by this prefix.
 PROBE_STRATEGY_PREFIX = "PROBE-"
 
-# --- the approved batch (Thomas 2026-08-11, proposal §5) -------------------------------
-PROBE_N = 12
+# --- the approved batch defaults (Thomas 2026-08-11, proposal §5; the symbol set is a
+# --- request-time parameter since the second-batch approval, same date) ----------------
+PROBE_N = 12                      # the DEFAULT grid's N; `build_batch_params` derives n
 PROBE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 PROBE_STOP_BPS = 40.0
 PROBE_DIRECTION = "LONG"          # §5-2: LONG probes only; SHORT is out of scope
@@ -164,7 +170,7 @@ _PLAN_KEYS = frozenset({
 
 def build_batch_params(
     *,
-    n: int = PROBE_N,
+    n: int | None = None,
     symbols: Iterable[str] = PROBE_SYMBOLS,
     stop_bps: float = PROBE_STOP_BPS,
     repeats: int = PROBE_REPEATS,
@@ -172,22 +178,48 @@ def build_batch_params(
     per_probe_notional_cap_usdt: float = PER_PROBE_NOTIONAL_CAP_USDT,
     budget_cap_usdt: float = PROBE_BUDGET_CAP_USDT,
 ) -> dict[str, Any]:
-    """The one approved batch shape, validated and budget-checked. Pure.
+    """One batch's shape, validated and budget-checked. Pure.
 
-    ``n`` must equal the grid product — the approval is for the 3x2x2 grid, and an ``n``
-    that disagrees with its own grid would make the hash describe a batch the cells do
-    not. The regime rule constants ride in the params so the approval hash pins them:
-    moving the split or the timeframe later mints a different batch.
+    ``symbols`` is the request-time parameter (second-batch approval, Thomas
+    2026-08-11); the module constants stay as the batch-1 defaults. ``n`` derives from
+    the symbols x regimes x repeats grid when omitted; an explicit ``n`` must equal it —
+    an ``n`` that disagrees with its own grid would make the hash describe a batch the
+    cells do not. The regime rule constants ride in the params so the approval hash pins
+    them: moving the split or the timeframe later mints a different batch. The budget
+    cap is NOT a function of the set: a set whose worst case exceeds it refuses below,
+    and a bigger universe therefore needs a newly approved cap, never a silent stretch.
     """
-    names = sorted({str(s).strip().upper() for s in symbols if str(s).strip()})
+    names = [str(s).strip().upper() for s in symbols]
     if not names:
         raise ToolError(PROBE_PARAMS_INVALID, "a probe batch needs at least one symbol")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ToolError(
+            PROBE_PARAMS_INVALID,
+            f"duplicate symbols {duplicates}: a repeated symbol would silently re-weight "
+            "the grid it claims to balance",
+        )
+    for name in names:
+        # Format-only validation, deliberately: no runtime module declares a canonical
+        # tradeable-symbol universe (candle_archive reads its universe from the venue by
+        # design, and `market_data.CROSS_SECTION_UNIVERSE` is the momentum-ranking
+        # cohort, which a traded symbol need not belong to). Membership is judged where
+        # it is knowable — the venue-filters read at --fire time refuses a symbol the
+        # venue does not list. USDT-quoted only, because every cap in this batch is
+        # priced in USDT.
+        if not name.endswith("USDT") or name == "USDT" or not name.isalnum():
+            raise ToolError(
+                PROBE_PARAMS_INVALID,
+                f"symbol {name!r} is not an alphanumeric USDT-quoted name (e.g. BNBUSDT)",
+            )
+    names = sorted(names)
     if int(repeats) < 1 or int(timeout_minutes) < 1:
         raise ToolError(PROBE_PARAMS_INVALID, "repeats and timeout_minutes must be positive")
     if not (float(stop_bps) > 0):
         raise ToolError(PROBE_PARAMS_INVALID, "stop_bps must be positive")
     grid = len(names) * len(REGIMES) * int(repeats)
-    if int(n) != grid:
+    n = grid if n is None else int(n)
+    if n != grid:
         raise ToolError(
             PROBE_PARAMS_INVALID,
             f"n={n} disagrees with the {len(names)} symbols x {len(REGIMES)} regimes x "

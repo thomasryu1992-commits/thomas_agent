@@ -5,11 +5,16 @@
     python -m scripts.run_slippage_probe --status
 
     # 2) ASK Thomas for one batch (stores the PENDING approval; places nothing).
-    python -m scripts.run_slippage_probe --request
+    #    --symbols overrides the approved default three (comma list; second-batch
+    #    approval, Thomas 2026-08-11) — the content hash then binds THAT set.
+    python -m scripts.run_slippage_probe --request [--symbols "BNBUSDT,DOGEUSDT"]
 
     # 3) Thomas answers /approve <id> on the verified control channel, then the plan
-    #    store is written (still places nothing):
-    python -m scripts.run_slippage_probe --confirm --approval-id approval_abc123
+    #    store is written (still places nothing). A --symbols request must repeat the
+    #    same set here: the confirm re-derives the batch and verifies it against the
+    #    approval's content hash, so a different set refuses.
+    python -m scripts.run_slippage_probe --confirm --approval-id approval_abc123 \
+        [--symbols "BNBUSDT,DOGEUSDT"]
 
     # 4) Operator-only, one probe per invocation, synchronous until the stop fills or
     #    the timeout closes it at market:
@@ -117,6 +122,15 @@ class _Refusal(Exception):
         self.reason_code = reason_code
 
 
+def _parse_symbols(text: str | None) -> tuple[str, ...] | None:
+    """The --symbols comma list, split and stripped ONLY. None when the flag is absent
+    (= the approved default set). Validation is `build_batch_params`'s alone — an empty
+    or duplicate entry must refuse there with its typed code, never be dropped here."""
+    if text is None:
+        return None
+    return tuple(part.strip() for part in text.split(","))
+
+
 # --- small seams (each delegates to the existing surface; tests monkeypatch these) -----
 
 def _read_regime(symbol: str, *, now: str, root: Path | None, timeout_seconds: int) -> str:
@@ -219,10 +233,16 @@ def run_status(*, root: Path | None) -> int:
     return EXIT_OK
 
 
-def run_request(*, root: Path | None, now: str | None = None) -> int:
-    """Build + store + audit the R9 ask for one batch (the promotion script's pattern)."""
+def run_request(
+    *, root: Path | None, now: str | None = None, symbols: tuple[str, ...] | None = None
+) -> int:
+    """Build + store + audit the R9 ask for one batch (the promotion script's pattern).
+
+    ``symbols`` is the request-time set (None = the approved default three); the batch is
+    built HERE so an invalid set refuses, typed, before anything is stored."""
     now = now or timeutil.utc_now_iso()
-    prepared = probe.request_probe_batch(now=now, repo_root=root)
+    params = probe.build_batch_params(symbols=symbols) if symbols is not None else None
+    prepared = probe.request_probe_batch(params=params, now=now, repo_root=root)
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
     store.append([prepared["approval_request"]])
@@ -236,16 +256,33 @@ def run_request(*, root: Path | None, now: str | None = None) -> int:
     request = prepared["approval_request"]
     from runtime.mvp_runtime import approval as approval_mod  # noqa: E402 (message renderer)
     print(approval_mod.request_message(request, prepared["permission_decision"], history=None))
+    confirm_cmd = f"--confirm --approval-id {request['approval_id']}"
+    if symbols is not None:
+        # The confirm re-derives the batch, so a --symbols ask must be confirmed with
+        # the SAME set — hand the operator the exact command rather than a mismatch.
+        confirm_cmd += " --symbols \"{}\"".format(",".join(prepared["params"]["symbols"]))
     print(f"\nSTORED: {request['approval_id']} is PENDING until {request['validity']['expires_at']}.")
     print("Thomas answers /approve <id> or /reject <id> on the verified control channel; then "
-          f"run --confirm --approval-id {request['approval_id']}.")
+          f"run {confirm_cmd}.")
     return EXIT_OK
 
 
-def run_confirm(*, approval_id: str, root: Path | None, now: str | None = None) -> int:
+def run_confirm(
+    *,
+    approval_id: str,
+    root: Path | None,
+    now: str | None = None,
+    symbols: tuple[str, ...] | None = None,
+) -> int:
+    """Verify the approval against the re-derived batch and write the plan store.
+
+    ``symbols`` must repeat the set the request named (None = the default three): the
+    approval's content hash binds one exact batch, so a different set refuses with
+    APPROVAL_CONTENT_MISMATCH rather than confirming something Thomas never saw."""
     now = now or timeutil.utc_now_iso()
+    params = probe.build_batch_params(symbols=symbols) if symbols is not None else None
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
-    plan = probe.confirm_probe_batch(store.get(approval_id), root=root, now=now)
+    plan = probe.confirm_probe_batch(store.get(approval_id), params=params, root=root, now=now)
     print(f"CONFIRMED: plan {plan['batch_id']} is {plan['status']} with {len(plan['cells'])} "
           f"cells under approval {plan['approval_id']}. No orders were placed; fire one at a "
           "time with --fire --symbol <SYMBOL>.")
@@ -634,6 +671,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm", action="store_true",
                         help="write the approved plan store (places NO orders)")
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer")
+    parser.add_argument("--symbols",
+                        help='comma list for --request/--confirm (e.g. "BNBUSDT,DOGEUSDT"); '
+                             "omitted = the approved default three. The content hash binds "
+                             "the set, so a --symbols request is confirmed with the same set")
     parser.add_argument("--fire", action="store_true",
                         help="operator-only: place ONE probe synchronously (real money)")
     parser.add_argument("--symbol", help="which symbol to probe (required with --fire)")
@@ -654,12 +695,13 @@ def main(argv: list[str] | None = None) -> int:
         # Every remaining verb writes state (approvals, the plan, or real orders).
         assert_not_foreign_root_run(args.root)
         if args.request:
-            return run_request(root=args.root)
+            return run_request(root=args.root, symbols=_parse_symbols(args.symbols))
         if args.confirm:
             if not args.approval_id:
                 print("USAGE: --confirm needs --approval-id (ask first with --request)")
                 return EXIT_USAGE
-            return run_confirm(approval_id=args.approval_id, root=args.root)
+            return run_confirm(approval_id=args.approval_id, root=args.root,
+                               symbols=_parse_symbols(args.symbols))
         if not args.symbol:
             print("USAGE: --fire needs --symbol")
             return EXIT_USAGE
