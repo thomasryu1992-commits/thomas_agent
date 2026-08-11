@@ -209,3 +209,52 @@ def test_exact_duplicates_are_not_also_reported_as_near():
     a = _record(_spec([CLOSE_GT_MA20], strategy_id="S1"))
     b = _record(_spec([ADX_GE], strategy_id="S2"), generation="GEN-002")
     assert pool.near_duplicate_groups([a, b]) == []
+
+
+# --- behaviour clusters: one routing slot per cluster (Thomas 5-2, 2026-08-11) ---
+
+def _cluster_pair():
+    """Two genuinely different rules whose recorded trading is indistinguishable:
+    same window, same 20/20 split, aggregates apart in the last decimals."""
+    a = _record(_spec([CLOSE_GT_MA20], strategy_id="S1"), expectancy=0.25, net=10.0)
+    b = _record(_spec([LOW_LT_HIGH], strategy_id="S2"), expectancy=0.2501, net=10.0016,
+                generation="GEN-002")
+    return a, b
+
+
+def test_two_cluster_siblings_cannot_share_one_batch():
+    a, b = _cluster_pair()
+    with pytest.raises(ToolError) as exc:
+        pool.assert_no_cluster_siblings([a, b])
+    assert exc.value.reason_code == "CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED"
+
+
+def test_a_sibling_of_an_occupying_incumbent_is_refused():
+    a, b = _cluster_pair()
+    with pytest.raises(ToolError) as exc:
+        pool.assert_no_cluster_siblings([a], incumbents=[b])
+    assert exc.value.reason_code == "CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED"
+
+
+def test_a_cluster_entirely_of_incumbents_is_not_this_batchs_to_answer_for():
+    """Grandfathered incumbents are the pool's history, not this promotion's doing —
+    refusing an unrelated batch for them would make the door unusable exactly when
+    the operator is trying to promote AWAY from the cluster."""
+    a, b = _cluster_pair()
+    c = _record(_spec([ADX_GE], strategy_id="S3"), closed=30, wins=11, generation="GEN-003")
+    pool.assert_no_cluster_siblings([c], incumbents=[a, b])
+
+
+def test_a_rescored_lineage_is_not_a_cluster():
+    """Same rule re-scored = one lineage measured twice. Identical aggregates share a
+    fingerprint, so the cluster tier stays silent — identity is the semantic gate's job."""
+    a = _record(_spec([CLOSE_GT_MA20], strategy_id="S1"))
+    a2 = _record(_spec([CLOSE_GT_MA20], strategy_id="S1"), generation="GEN-002")
+    pool.assert_no_cluster_siblings([a, a2])
+
+
+def test_distinct_trade_shapes_are_not_a_cluster():
+    a = _record(_spec([CLOSE_GT_MA20], strategy_id="S1"))
+    b = _record(_spec([LOW_LT_HIGH], strategy_id="S2"), closed=41, wins=20,
+                generation="GEN-002")
+    pool.assert_no_cluster_siblings([a, b])

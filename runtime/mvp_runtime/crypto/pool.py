@@ -570,7 +570,10 @@ def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
 # Both checks below are EXACT. Neither reasons about whether a condition "looks"
 # redundant — proving a condition inert in general needs invariants this module does
 # not have, and a guess in a fail-closed gate is worse than the gap it fills. What is
-# provable is used, and the rest is reported rather than refused (`near_duplicate_groups`).
+# provable is used. The tier below proof (`near_duplicate_groups`) is reported, and since
+# Thomas's 5-2 decision (2026-08-11) it gates exactly one thing — two cluster members
+# co-occupying routing slots (`assert_no_cluster_siblings`) — on the narrower claim that
+# indistinguishable evidence cannot buy a second slot.
 
 def canonical_rule_form(record: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """What a spec DOES, independent of how its conditions happen to be ordered.
@@ -981,12 +984,18 @@ def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Same window, same trade counts, but not identical R — reported, never refused.
+    """Same window, same trade counts, but not identical R — a cluster, reported here.
 
     The pair this exists for: two SOLUSDT lineages that closed 82 trades each with the
     same 45/37 split and the same drawdown, differing in net R by 0.0016. Almost
     certainly one strategy wearing two rules, but "almost certainly" is a judgement,
-    and this module refuses only on what it can prove. So an operator gets told.
+    and this module refuses only on what it can prove. So an operator gets told —
+    existence in the store and a single promotion stay unrefused.
+
+    What IS refused, since Thomas's 5-2 decision (2026-08-11), is two members of one
+    cluster CO-OCCUPYING routing slots — :func:`assert_no_cluster_siblings` below, which
+    rests on the one thing this grouping does prove: on every recorded axis the two
+    evidence rows are indistinguishable, so a second slot buys no independent evidence.
     """
     buckets: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for record in records:
@@ -1009,6 +1018,51 @@ def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, An
                 "strategy_ids": sorted({str(m.get("strategy_id")) for m in members}),
             })
     return groups
+
+
+def assert_no_cluster_siblings(
+    records: list[Mapping[str, Any]], *, incumbents: list[Mapping[str, Any]] | None = None,
+) -> None:
+    """One routing slot per behaviour cluster (Thomas 5-2, 2026-08-11).
+
+    The softer twin of :func:`assert_no_semantic_duplicates`, one tier down and with a
+    narrower claim. That gate proves two rows are the SAME strategy; this one proves only
+    that their recorded trading is indistinguishable (:func:`near_duplicate_groups` — same
+    window, same trade counts, aggregates apart in the last decimals). Indistinguishable
+    evidence cannot justify a second slot: the router picks one strategy per context, the
+    forward record the second member would accrue is the measurement the first is already
+    making, and OBSERVATION slots exist to buy independent forward evidence. So the store
+    keeps both rows, either may be promoted — what is refused is promoting BOTH, or
+    promoting one whose cluster already holds an occupying incumbent.
+
+    ``incumbents`` is the pool's own candidate records (add mode); replace mode passes
+    ``None`` and only the batch itself is checked, mirroring the semantic gate. A cluster
+    made ENTIRELY of incumbents is not this batch's to answer for and does not refuse.
+
+    Raises ``CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED`` naming each conflicting cluster.
+    """
+    pool_records = list(incumbents or [])
+    incoming_ids = {candidate_id(r) for r in records}
+    incumbent_ids = {candidate_id(r) for r in pool_records} - incoming_ids
+    conflicts: list[str] = []
+    for group in near_duplicate_groups(list(records) + pool_records):
+        ids = set(group["candidate_ids"])
+        selected = sorted(ids & incoming_ids)
+        occupied = sorted(ids & incumbent_ids)
+        if len(selected) >= 2 or (selected and occupied):
+            conflicts.append(
+                f"{'/'.join(group['strategy_ids'])} [selected: {', '.join(selected)}"
+                + (f"; occupying: {', '.join(occupied)}" if occupied else "")
+                + "]"
+            )
+    if not conflicts:
+        return
+    raise ToolError(
+        "CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED",
+        "these lineages traded indistinguishably on the recorded axes, and a behaviour "
+        f"cluster gets one routing slot: {'; '.join(conflicts)}. Promote one member per "
+        "cluster, or pass the explicit --allow-cluster-siblings escape.",
+    )
 
 
 # --- candidate identity (single source) ----------------------------------------

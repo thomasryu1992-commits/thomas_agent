@@ -64,6 +64,7 @@ PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
 def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
                 allow_duplicates: bool = False,
+                allow_cluster_siblings: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
                 allow_quarantined_derivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
@@ -73,6 +74,7 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
         allow_duplicates=allow_duplicates,
+        allow_cluster_siblings=allow_cluster_siblings,
         allow_quarantined_derivation=allow_quarantined_derivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
@@ -94,7 +96,8 @@ def run_promotion(
     keep_active: bool, live_tier: str, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
-    allow_duplicates: bool = False, allow_oversized_pool: bool = False,
+    allow_duplicates: bool = False, allow_cluster_siblings: bool = False,
+    allow_oversized_pool: bool = False,
     allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
@@ -180,8 +183,17 @@ def run_promotion(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
             )
+        # One tier below the semantic gate, same pool question, narrower claim: members of one
+        # behaviour cluster traded indistinguishably on the recorded axes, and a cluster gets
+        # ONE routing slot (Thomas 5-2, 2026-08-11) — the second member's forward record is
+        # the measurement the first is already making.
+        if not allow_cluster_siblings:
+            pool_store.assert_no_cluster_siblings(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
+            )
         # And last of all, the axis that is about neither the evidence nor the pool but about
-        # the ROW: what minted it. Ordered last because it is the only one of the four that
+        # the ROW: what minted it. Ordered last because it is the only one of the five that
         # refuses nothing today — it stands here so that an experimental derivation cannot
         # reach the live pool through the ordinary door on the day someone starts minting one.
         if not allow_quarantined_derivation:
@@ -312,6 +324,7 @@ def run_promotion(
         # ledger later rather than reconstructed from whoever ran the command.
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
         "duplicate_escape": bool(allow_duplicates),
+        "cluster_siblings_escape": bool(allow_cluster_siblings),
         "oversized_pool_escape": bool(allow_oversized_pool),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
@@ -349,6 +362,7 @@ def run_promotion(
                 ("cost_basis", allow_stale_cost_basis),
                 ("evidence_depth", allow_unrecorded_evidence_depth),
                 ("semantic_duplicates", allow_duplicates),
+                ("cluster_siblings", allow_cluster_siblings),
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
@@ -385,6 +399,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
+    parser.add_argument("--allow-cluster-siblings", action="store_true",
+                        help="explicit escape: give a behaviour cluster (lineages whose recorded "
+                             "trading is indistinguishable) more than its one routing slot")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")
@@ -550,14 +567,16 @@ def main(argv: list[str] | None = None) -> int:
             print("      the promotion door refuses these (CANDIDATE_SEMANTIC_DUPLICATE):")
             for g in dupes[:8]:
                 print(f"        {'/'.join(g['strategy_ids'])}  matched on {g['match']}")
-        # And the ones it will NOT refuse, because they are a judgement rather than a proof:
-        # same window, same trade counts, R differing in the last decimals. Almost certainly
-        # one strategy wearing two rules — but "almost" is why this reports instead of gating.
+        # The tier below proof: same window, same trade counts, R differing in the last
+        # decimals. Existence and a single promotion stay unrefused — what the door refuses
+        # (Thomas 5-2, 2026-08-11) is two members of one cluster co-occupying slots
+        # (CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED, escape --allow-cluster-siblings).
         near = pool_store.near_duplicate_groups(candidates)
         if near:
             print(f"      {len(near)} group(s) traded ALMOST identically (same window, same "
                   "trade counts,")
-            print("      R differing only in the last decimals) — not refused, worth a look:")
+            print("      R differing only in the last decimals) — one slot per cluster at "
+                  "the door:")
             # Collapsed by display name: strategy_id restarts every generation, so several
             # distinct lineage PAIRS routinely render as the same "S005/S006" line. Printing
             # it four times reads like a bug; the count says what is actually there.
@@ -639,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
                 allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
                 allow_duplicates=args.allow_duplicates,
+                allow_cluster_siblings=args.allow_cluster_siblings,
                 allow_quarantined_derivation=args.allow_quarantined_derivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
@@ -666,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
         allow_duplicates=args.allow_duplicates,
+        allow_cluster_siblings=args.allow_cluster_siblings,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
         allow_reactivation=args.allow_reactivation,
