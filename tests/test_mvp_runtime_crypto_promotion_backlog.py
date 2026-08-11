@@ -368,6 +368,26 @@ def test_the_zero_line_names_the_second_reason_too(tmp_path):
     assert "holdout_contradicted 4건" in line
 
 
+def test_the_zero_line_names_every_axis_not_a_top_two(tmp_path):
+    """Truncation reintroduces the silent axis one axis later: with three reasons in the
+    store, a two-axis line hides whichever finding ranks third — the same failure the
+    second axis was added to fix. The partition sums to `candidates_read`, so the full
+    breakdown is the one rendering that cannot point away from a finding."""
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    _write_candidates(tmp_path, [
+        *[_candidate(f"cand_old_{n}", family=f"old_{n}", taker=2.5) for n in range(5)],
+        *[_candidate(f"cand_fwd_{n}", family=f"fwd_{n}", holdout="CONTRADICTED") for n in range(3)],
+        *[_candidate(f"cand_thin_{n}", family=f"thin_{n}", holdout="INSUFFICIENT") for n in range(2)],
+    ])
+    _write_cursor(tmp_path, updated_at=NOW)
+
+    line = next(ln for ln in render_status_text(build_status(tmp_path, now=NOW)).splitlines()
+                if "승격 대기" in ln)
+    assert "cost_basis 5건" in line
+    assert "holdout_contradicted 3건" in line
+    assert "holdout_insufficient 2건" in line
+
+
 def test_an_empty_store_does_not_get_the_zero_line(tmp_path):
     """The line exists to separate "full store, all refused" from "nothing minted yet". A
     board that printed it for both would have replaced one unreadable zero with another."""
