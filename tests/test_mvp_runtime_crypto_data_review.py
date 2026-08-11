@@ -19,6 +19,7 @@ from runtime.mvp_runtime.crypto.data_review import (
     MAX_SUGGESTIONS_PER_RUN,
     MockDataReviewProvider,
     build_data_inventory,
+    build_review_prompt,
     evaluate_suggestion,
     format_review_report,
     review_data_gaps,
@@ -324,6 +325,77 @@ def test_scheduled_data_review_fire_ledgers_the_record(tmp_path, monkeypatch):
     reviews = [r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND]
     assert len(reviews) == 1
     assert reviews[0]["record"]["collection_effect"] == "NONE"
+
+
+# --- the prompt asks for a shape the provider will actually hand back ---------
+
+class _RealParseProvider:
+    """A provider that is fake only in the wire: it returns whatever a model would have
+    returned, through the REAL ``GroqProvider._parse``.
+
+    The point is that nothing here re-states the required key set. The answer is built from
+    the review prompt's OWN stated example, and the acceptance is the production parser, so
+    a prompt edit that goes back to asking for a bare object fails this test at the provider
+    exactly as it failed on the live host."""
+
+    model_id = "groq"
+    model_version = "test"
+    network_egress = False
+
+    def __init__(self, answer: dict):
+        self._answer = answer
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int):
+        from runtime.mvp_runtime.providers import GroqProvider
+
+        wire = json.dumps({
+            "choices": [{"message": {"content": json.dumps(self._answer)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        })
+        return GroqProvider(authorization=None)._parse(wire)
+
+
+def _prompt_example(prompt: str) -> dict:
+    """The example object the prompt itself states — read out of the prompt, never copied."""
+    line = next(ln for ln in prompt.splitlines() if ln.lstrip().startswith('{"summary"'))
+    return json.loads(line)
+
+
+def test_the_review_prompt_asks_for_a_shape_the_hosted_parser_accepts():
+    """The defect that made this review degrade on every live fire it ever had.
+
+    The hosted providers parse every answer through `_parse_hosted_response`, which rejects
+    anything missing summary/key_findings/facts. v1 of this prompt asked for a bare
+    ``{"suggestions": [...]}``, so a perfectly good answer died as MALFORMED_RESPONSE before
+    this module saw it — 2026-08-01 and 2026-08-08 in the ledger, reproduced 3-of-4 live on
+    2026-08-10. Asserting the property (an answer written to this prompt survives the real
+    parser) rather than the spelling (the word "summary" appears): the prompt could be
+    reworded freely and this still holds, and could not go back to the bare object."""
+    inventory = build_data_inventory([], [])
+    answer = _prompt_example(build_review_prompt(inventory))
+    record = review_data_gaps(inventory, provider=_RealParseProvider(answer), now=NOW)
+
+    assert "degraded" not in record, record.get("degraded_reason")
+    assert record["suggested_count"] >= 1
+    assert record["invocation"]["prompt_version"] == record["prompt_version"]
+
+
+def test_the_bare_suggestions_object_is_what_the_provider_refuses():
+    """The other half of the same fact, stated once so the shape above reads as necessary
+    rather than as taste: strip the envelope from the prompt's own example and the identical
+    suggestion list fails at the provider with the live host's exact reason_code."""
+    inventory = build_data_inventory([], [])
+    example = _prompt_example(build_review_prompt(inventory))
+    bare = {"suggestions": example["suggestions"]}
+
+    with pytest.raises(ProviderError) as caught:
+        _RealParseProvider(bare).generate("x", max_output_tokens=10, timeout_seconds=1)
+    assert caught.value.reason_code == "MALFORMED_RESPONSE"
+
+    # And the module's own posture over that failure is unchanged: degraded, never blocking.
+    record = review_data_gaps(inventory, provider=_RealParseProvider(bare), now=NOW)
+    assert record["degraded"] == DATA_REVIEW_DEGRADED
+    assert record["suggested_count"] == 0
 
 
 # --- a stalled loop reaches the failure alert ---------------------------------
