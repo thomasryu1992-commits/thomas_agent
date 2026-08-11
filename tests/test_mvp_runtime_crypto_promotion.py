@@ -88,7 +88,10 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = {"closed_count": 20, "expectancy": 0.5}
+        # 60 closes and a THIN holdout block, so the fixture clears the 5-3 observation
+        # entry bar the same way it clears the cost and depth gates: these tests are about
+        # OTHER axes, and a fixture the door refuses on sight is noise in every one of them.
+        evidence = {"closed_count": 60, "expectancy": 0.5, "holdout": {"closed_count": 10}}
         bars = _current_bars_replayed(spec) if bars_replayed is _MISSING else bars_replayed
         if bars is not None:
             evidence["bars_replayed"] = bars
@@ -397,7 +400,8 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
         "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
         "generation_id": "GEN-001", "status": "BACKTESTED", "champion_score": 0.5,
         "strategy_spec": spec.to_dict(),
-        "backtest_evidence": {"closed_count": 20, "expectancy": 0.5,
+        "backtest_evidence": {"closed_count": 60, "expectancy": 0.5,
+                              "holdout": {"closed_count": 10},
                               "bars_replayed": _current_bars_replayed(spec),
                               "cost_summary": _current_cost_summary()},
         "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
@@ -484,8 +488,11 @@ def test_promotion_residual_collision_fails_closed(tmp_path):
     seeded = _seed_candidates(tmp_path, *specs, generation_id="GEN-002")
     cids = [pool.candidate_id(s) for s in seeded]
     with pytest.raises(SystemExit) as exc:
+        # Three same-family lineages in one batch now trip the 5-3 family cap first; escape
+        # it explicitly, because the residual collision below is the failure under test.
         run_promotion(selectors=cids, promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                      without_approval=True, allow_family_overflow=True)
     assert "cannot assign a unique strategy_id" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
@@ -907,10 +914,13 @@ def test_reviews_skipped_names_every_review_stepped_around(tmp_path):
         selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
         allow_stale_cost_basis=True, allow_unrecorded_evidence_depth=True,
-        allow_duplicates=True, allow_oversized_pool=True, allow_quarantined_derivation=True,
+        allow_duplicates=True, allow_cluster_siblings=True,
+        allow_below_entry_bar=True, allow_family_overflow=True,
+        allow_oversized_pool=True, allow_quarantined_derivation=True,
     )
     assert summary["reviews_skipped"] == [
         "thomas_approval", "cost_basis", "evidence_depth", "semantic_duplicates",
+        "cluster_siblings", "observation_entry_bar", "family_cap",
         "pool_size_cap", "quarantined_derivation",
     ]
     # `silent_reactivation` is absent because nothing was reactivated — an unused escape is

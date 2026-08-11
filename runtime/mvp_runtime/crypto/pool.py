@@ -1065,6 +1065,150 @@ def assert_no_cluster_siblings(
     )
 
 
+# --- the OBSERVATION entry bar (Thomas 5-3, 2026-08-11) ---------------------------------------
+#
+# The bar selects for MEASURABILITY, not winners: in a population whose judgeable rows all
+# CONTRADICTED, a positive-expectancy pick is selection noise by construction, so what a slot
+# can honestly buy is forward evidence from a candidate whose backtest is honestly scored,
+# current, and capable of being disconfirmed. Applied to ENTRANTS only — a restatement of what
+# already occupies a slot is not an entry (the `assert_no_cluster_siblings` grandfathering
+# rule, one gate over), or every re-arm of the pre-bar pool would need two waivers forever.
+
+# Where the store's own expectancy-vs-sample table stops being inflated (`robustness.py`:
+# <20 closes +0.114R, 20-49 +0.093R, 50-199 -0.003R — the estimate converges on the truth
+# around fifty). Below it, a positive expectancy is mostly the small-sample lottery.
+OBSERVATION_MIN_BACKTEST_CLOSED = 50
+
+# Two occupying members per strategy_family. Forward evidence from a third sibling of one
+# family is mostly correlated with the first two (F1: no correlation control exists), so the
+# third slot buys diversity nowhere and multiple-testing debt everywhere.
+OBSERVATION_FAMILY_CAP = 2
+
+
+def _observation_holdout_term(record: Mapping[str, Any]) -> str | None:
+    """None when the holdout admits observation entry; else the failure, named.
+
+    Admitted: CONFIRMED (beyond the bar), and INSUFFICIENT that is merely THIN — a block
+    with fewer than `MIN_HOLDOUT_TRADES` closes, the case forward evidence exists to feed.
+    Refused: CONTRADICTED (evidence against), no block at all, and the vintage
+    INSUFFICIENT shapes (enough closes but no dispersion, or no period data) — those rows
+    cannot state their own uncertainty and their path back in is a re-mint, not a slot.
+    Branch order mirrors `robustness.holdout_status` so "thin" here is exactly the status
+    function's closed-count branch.
+    """
+    from .robustness import HOLDOUT_CONFIRMED, HOLDOUT_INSUFFICIENT, MIN_HOLDOUT_TRADES
+
+    quality_status = candidate_quality(record)["holdout_status"]
+    if quality_status == HOLDOUT_CONFIRMED:
+        return None
+    if quality_status != HOLDOUT_INSUFFICIENT:
+        return f"holdout={quality_status}"
+    evidence = record.get("backtest_evidence")
+    block = evidence.get("holdout") if isinstance(evidence, Mapping) else None
+    if not isinstance(block, Mapping):
+        return "holdout=INSUFFICIENT(no block)"
+    closed = block.get("closed_count", block.get("closed"))
+    if isinstance(closed, (int, float)) and not isinstance(closed, bool) \
+            and closed < MIN_HOLDOUT_TRADES:
+        return None  # thin: the shape observation exists to feed
+    return f"holdout=INSUFFICIENT(vintage: {closed} closes, undispersed)"
+
+
+def assert_observation_entry_bar(
+    records: list[Mapping[str, Any]], *, occupying_candidate_ids: frozenset[str] = frozenset(),
+) -> None:
+    """Every ENTRANT clears the 5-3 bar, and a refusal names every failing term.
+
+    Terms, all required: FULL depth among the RECORDED depths (SHALLOW is ranked and
+    promotable elsewhere, but a slot is spent on the current window or not at all), at
+    least `OBSERVATION_MIN_BACKTEST_CLOSED` backtest closes, positive expectancy at the
+    CURRENT rates, and a holdout that is thin or better (`_observation_holdout_term`).
+    Rows whose ``candidate_id`` is already occupying a slot are restatements, not entrants,
+    and pass untouched.
+
+    Deliberately NOT here: the cost-basis and unrecorded-depth axes, which their dedicated
+    gates already refuse with their own audited escapes. Restating them would double-charge
+    every use of those escapes — two waivers for one named decision — so this bar carries
+    only the strictness that is NEW with it.
+
+    Raises ``CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR`` listing every failing candidate with
+    every failing term — a bar that reports one term per run is a bar an operator meets
+    four times.
+    """
+    failures: list[str] = []
+    for record in records:
+        cid = candidate_id(record)
+        if cid in occupying_candidate_ids:
+            continue
+        quality = candidate_quality(record)
+        terms: list[str] = []
+        if quality["evidence_depth_rank"] == EVIDENCE_DEPTH_RANK_SHALLOW:
+            terms.append(f"depth={quality['evidence_depth']}")
+        closed = quality["closed_count"]
+        if not isinstance(closed, (int, float)) or closed < OBSERVATION_MIN_BACKTEST_CLOSED:
+            terms.append(f"closed={closed}<{OBSERVATION_MIN_BACKTEST_CLOSED}")
+        exp_now = quality["expectancy_at_current_costs"]
+        if not isinstance(exp_now, (int, float)) or not exp_now > 0:
+            terms.append(f"expectancy_at_current={exp_now}")
+        holdout_term = _observation_holdout_term(record)
+        if holdout_term is not None:
+            terms.append(holdout_term)
+        if terms:
+            failures.append(f"{quality['candidate_id']} ({record.get('strategy_id')}): "
+                            + ", ".join(terms))
+    if not failures:
+        return
+    raise ToolError(
+        "CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR",
+        "an OBSERVATION slot buys forward evidence, and these entrants cannot honestly "
+        f"supply it: {'; '.join(failures)}. Re-mint the lineage at the current window, or "
+        "pass the explicit --allow-below-entry-bar escape.",
+    )
+
+
+def assert_family_cap(
+    records: list[Mapping[str, Any]], *, occupying_entries: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    """No strategy_family holds more than `OBSERVATION_FAMILY_CAP` occupied slots.
+
+    Charged to ENTRANTS only, the same grandfathering as the entry bar: a family already
+    over the cap among incumbents alone blocks nothing until a batch tries to ADD to it —
+    the door must never refuse the promotion that is moving the pool AWAY from a
+    concentration. Occupying incumbents count toward the base; a restated incumbent in the
+    batch is counted once as base, never as an entrant.
+
+    Raises ``CANDIDATE_FAMILY_CAP_EXCEEDED`` naming each family over its cap.
+    """
+    occupying_ids = {
+        str(e.get("candidate_id")) for e in occupying_entries if e.get("candidate_id")
+    }
+    base: dict[str, int] = {}
+    for entry in occupying_entries:
+        family = str((entry.get("strategy_spec") or {}).get("strategy_family") or "?")
+        base[family] = base.get(family, 0) + 1
+    entrants: dict[str, list[str]] = {}
+    for record in records:
+        cid = candidate_id(record)
+        family = str((record.get("strategy_spec") or {}).get("strategy_family") or "?")
+        if cid in occupying_ids:
+            continue  # a restatement is already in the base
+        entrants.setdefault(family, []).append(cid)
+    over = [
+        f"{family}: {base.get(family, 0)} occupying + {len(cids)} entering "
+        f"[{', '.join(cids)}] > {OBSERVATION_FAMILY_CAP}"
+        for family, cids in sorted(entrants.items())
+        if base.get(family, 0) + len(cids) > OBSERVATION_FAMILY_CAP
+    ]
+    if not over:
+        return
+    raise ToolError(
+        "CANDIDATE_FAMILY_CAP_EXCEEDED",
+        f"a family gets {OBSERVATION_FAMILY_CAP} occupied slots — the third sibling's "
+        f"forward record is correlated with the first two, not independent: {'; '.join(over)}. "
+        "Promote into another family, or pass the explicit --allow-family-overflow escape.",
+    )
+
+
 # --- candidate identity (single source) ----------------------------------------
 
 def derive_candidate_id(record: Mapping[str, Any]) -> str:
