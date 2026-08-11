@@ -695,21 +695,24 @@ def render_status_text(status: dict[str, Any]) -> str:
         # 2026-08-04: 474 candidates at the current cost basis, every one of them stopped at the
         # holdout gate, and the daily report said nothing about any of it.
         #
-        # The top TWO axes, not the largest one, and the second is doing real work. Measured
-        # 2026-08-04 the largest is `cost_basis` at 546 — legacy mints that drain on their own
-        # as the factory re-scores — and a line naming only it reads as "old evidence, it will
-        # clear", while the second (`holdout_insufficient`, 409) is the whole of the CURRENT
-        # basis failing forward. One axis would have been true and would have pointed away
-        # from the finding.
+        # EVERY nonzero axis, not a top-N. This line started as the largest axis alone, grew a
+        # second because one was true-but-misleading (measured 2026-08-04: `cost_basis` 546 —
+        # legacy mints that drain on their own — over `holdout_insufficient` 409, the whole of
+        # the CURRENT basis failing forward; naming only the first read as "old evidence, it
+        # will clear"), and the same argument does not stop at two: any truncation reintroduces
+        # a silent axis, one axis later. The partition sums to `candidates_read` (pinned in the
+        # pool tests), so the full breakdown is the one rendering that cannot point away from a
+        # finding — the daily question this line answers is not "is the queue zero" but "WHY is
+        # it zero", and Thomas asked for the whole answer (2026-08-11).
         #
-        # Ties break on `BACKLOG_REFUSAL_AXES` order — the door's own order — so the line does
+        # Size order, ties on `BACKLOG_REFUSAL_AXES` order — the door's own — so the line does
         # not flip between two equal axes from one morning to the next.
         refused = backlog.get("refused") or {}
         ranked = sorted(
             (axis for axis in pool.BACKLOG_REFUSAL_AXES if refused.get(axis)),
             key=lambda axis: (-refused[axis], pool.BACKLOG_REFUSAL_AXES.index(axis)),
         )
-        detail = "".join(f" · {axis} {refused[axis]}건" for axis in ranked[:2])
+        detail = "".join(f" · {axis} {refused[axis]}건" for axis in ranked)
         lines.append(
             f"       승격 대기 0 (판정 후보 {backlog['candidates_read']}건{detail})"
         )
