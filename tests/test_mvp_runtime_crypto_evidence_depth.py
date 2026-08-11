@@ -61,6 +61,7 @@ def _current_cost_summary():
                 "taker_fee_bps": cost.DEFAULT_TAKER_FEE_BPS,
                 "maker_fee_bps": cost.DEFAULT_MAKER_FEE_BPS,
                 "slippage_bps": cost.DEFAULT_SLIPPAGE_BPS,
+                "stop_slippage_bps": cost.DEFAULT_STOP_SLIPPAGE_BPS,
                 "funding_bps_per_interval": cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
                 "funding_source": cost.FUNDING_SOURCE_VENUE,
             }}

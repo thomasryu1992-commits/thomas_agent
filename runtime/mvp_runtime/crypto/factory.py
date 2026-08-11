@@ -3147,6 +3147,11 @@ def _holdout_evidence(
             "taker_fee_bps": cost.taker_fee_bps,
             "maker_fee_bps": cost.maker_fee_bps,
             "slippage_bps": cost.slippage_bps,
+            # Stamped since Thomas's 2026-08-11 direction: the stop leg's own rate joined
+            # `pool.cost_basis_rank`'s comparison, and a row that does not say what its
+            # stops paid is judged on its general slippage (the pre-split identity) — so a
+            # 12bps-scored row MUST carry the field or it reads OPTIMISTIC forever.
+            "stop_slippage_bps": cost.stop_slippage_bps,
             "funding_bps_per_interval": cost.funding_bps_per_interval,
             "funding_source": funding_source,
         },
@@ -3440,6 +3445,7 @@ def backtest_spec_pooled(
                 "taker_fee_bps": cost.taker_fee_bps,
                 "maker_fee_bps": cost.maker_fee_bps,
                 "slippage_bps": cost.slippage_bps,
+                "stop_slippage_bps": cost.stop_slippage_bps,
                 "funding_bps_per_interval": cost.funding_bps_per_interval,
                 # Which quality of evidence the carry is: the venue's own settlements over this
                 # window, or the modelled base rate because the series was missing.
