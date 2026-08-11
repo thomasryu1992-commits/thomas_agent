@@ -28,6 +28,8 @@ from ..errors import ApprovalBlocked, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
+from . import forward_confirmation
+from . import paper as paper_store
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
@@ -159,6 +161,7 @@ def request_promotion(
     allow_cluster_siblings: bool = False,
     allow_below_entry_bar: bool = False,
     allow_family_overflow: bool = False,
+    allow_unconfirmed_holdout: bool = False,
     allow_quarantined_derivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
@@ -231,6 +234,19 @@ def request_promotion(
         ]
         try:
             pool_store.assert_family_cap(candidates, occupying_entries=base_entries)
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on unseen
+    # data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. OBSERVATION installs
+    # are exactly the tier that gate exists to protect, so they pass untouched; checked at
+    # the ask because an ask the install door refuses only spends Thomas's answer.
+    if live_tier == "LIVE" and not allow_unconfirmed_holdout:
+        try:
+            forward_confirmation.assert_live_tier_confirmed(
+                candidates,
+                outcomes=paper_store.read_outcomes(store_root),
+                observed_lineages=len(occupying),
+            )
         except ToolError as exc:
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]

@@ -323,6 +323,7 @@ def _seed(tmp_path, *, bars):
     """``bars=None`` seeds a row that records no window — the 41 rows the live store holds."""
     spec = StrategySpec.from_dict(_spec_dict())
     evidence = {"closed_count": 20, "expectancy": 0.5,
+                "robustness": {"holdout_status": "CONFIRMED"},
                 "cost_summary": _current_cost_summary()}
     if bars is not None:
         evidence["bars_replayed"] = bars

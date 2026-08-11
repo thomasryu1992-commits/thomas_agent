@@ -50,6 +50,8 @@ from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_confirmation  # noqa: E402
+from runtime.mvp_runtime.crypto import paper as paper_store  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -67,6 +69,7 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
                 allow_cluster_siblings: bool = False,
                 allow_below_entry_bar: bool = False,
                 allow_family_overflow: bool = False,
+                allow_unconfirmed_holdout: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
                 allow_quarantined_derivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
@@ -79,6 +82,7 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
         allow_cluster_siblings=allow_cluster_siblings,
         allow_below_entry_bar=allow_below_entry_bar,
         allow_family_overflow=allow_family_overflow,
+        allow_unconfirmed_holdout=allow_unconfirmed_holdout,
         allow_quarantined_derivation=allow_quarantined_derivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
@@ -102,6 +106,7 @@ def run_promotion(
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False, allow_cluster_siblings: bool = False,
     allow_below_entry_bar: bool = False, allow_family_overflow: bool = False,
+    allow_unconfirmed_holdout: bool = False,
     allow_oversized_pool: bool = False,
     allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
 ) -> dict:
@@ -222,8 +227,18 @@ def run_promotion(
                     e for e in occupying if str(e.get("candidate_id")) in selected_ids
                 ],
             )
+        # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on
+        # unseen data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. This is
+        # the condition #648 disarmed the pool for, standing as a door instead of a
+        # migration; OBSERVATION installs are the tier it protects and pass untouched.
+        if live_tier == "LIVE" and not allow_unconfirmed_holdout:
+            forward_confirmation.assert_live_tier_confirmed(
+                candidates,
+                outcomes=paper_store.read_outcomes(root),
+                observed_lineages=len(occupying),
+            )
         # And last of all, the axis that is about neither the evidence nor the pool but about
-        # the ROW: what minted it. Ordered last because it is the only one of the seven that
+        # the ROW: what minted it. Ordered last because it is the only one of the eight that
         # refuses nothing today — it stands here so that an experimental derivation cannot
         # reach the live pool through the ordinary door on the day someone starts minting one.
         if not allow_quarantined_derivation:
@@ -357,6 +372,7 @@ def run_promotion(
         "cluster_siblings_escape": bool(allow_cluster_siblings),
         "observation_entry_bar_escape": bool(allow_below_entry_bar),
         "family_cap_escape": bool(allow_family_overflow),
+        "unconfirmed_holdout_escape": bool(allow_unconfirmed_holdout),
         "oversized_pool_escape": bool(allow_oversized_pool),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
@@ -397,6 +413,7 @@ def run_promotion(
                 ("cluster_siblings", allow_cluster_siblings),
                 ("observation_entry_bar", allow_below_entry_bar),
                 ("family_cap", allow_family_overflow),
+                ("live_confirmation", allow_unconfirmed_holdout and live_tier == "LIVE"),
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
@@ -443,6 +460,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-family-overflow", action="store_true",
                         help="explicit escape: let a strategy_family hold more than its two "
                              "occupied slots")
+    parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
+                        help="explicit escape: arm LIVE although no confirmation was earned on "
+                             "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
+                             "paper record) — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")
@@ -702,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_cluster_siblings=args.allow_cluster_siblings,
                 allow_below_entry_bar=args.allow_below_entry_bar,
                 allow_family_overflow=args.allow_family_overflow,
+                allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
                 allow_quarantined_derivation=args.allow_quarantined_derivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
@@ -732,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_cluster_siblings=args.allow_cluster_siblings,
         allow_below_entry_bar=args.allow_below_entry_bar,
         allow_family_overflow=args.allow_family_overflow,
+        allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
         allow_reactivation=args.allow_reactivation,
