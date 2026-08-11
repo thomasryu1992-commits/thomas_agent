@@ -1066,6 +1066,105 @@ def build_nonfinancial_resume_permission_decision(
     )
 
 
+def build_slippage_probe_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    batch_id: str,
+    params: Mapping[str, Any],
+    content_sha256: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas for ONE stop-slippage
+    probe batch (proposal §5, approved 2026-08-11 — R9 wiring per §4-3: one ask per batch).
+
+    Mirrors the trading-switch builder's shape: same scope (RUNTIME_GOVERNANCE — no policy
+    edit, no new scope), same P4 level, RED risk text. P4 and not P5 for the switch
+    builder's own reason read here: the approval authorizes writing the batch PLAN, an
+    internal record — each probe order still passes the P5 live-order gate, the final
+    guard, the breakers and the live-trading opt-in at fire time, none of which this
+    record touches. The batch identity (N, symbols, stop width, regime rule, timeout,
+    budget cap) rides in ``content_sha256`` and ``normalized_parameters``, so an approval
+    of THIS batch cannot be re-pointed at a wider one
+    (``invalidated_by_any_material_field_change``). Building this record performs
+    nothing; the operator confirm door VERIFIES the approval against the same content
+    hash and never consumes it — the promotion door's pre-R10 posture.
+    """
+    if not (isinstance(batch_id, str) and batch_id):
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must carry its batch id")
+    if not (isinstance(content_sha256, str) and content_sha256.startswith("sha256:")):
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must carry its content hash")
+    symbols = [str(s) for s in (params.get("symbols") or [])]
+    if not symbols:
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must name its symbols")
+
+    worst_case = (
+        float(params.get("n") or 0)
+        * float(params.get("per_probe_notional_cap_usdt") or 0.0)
+        * float(params.get("worst_case_loss_fraction") or 0.0)
+    )
+    action = _ActionSpec(
+        action_type="crypto.probe.stop_slippage_batch",
+        target_suffix="stop_slippage_probe",
+        tool_id=None,
+        data_scope=("crypto.stop_slippage_probe_plan", "crypto.registered_trading_budget"),
+        # Decimal STRINGS for every fractional figure: the action fingerprint forbids
+        # floats (they do not canonicalize deterministically), same as the live order's
+        # notional. The full-precision identity is `content_sha256`.
+        normalized_parameters={
+            "batch_id": batch_id,
+            "n": int(params.get("n") or 0),
+            "symbols": sorted(symbols),
+            "direction": str(params.get("direction") or ""),
+            "stop_bps": f"{float(params.get('stop_bps') or 0.0):.1f}",
+            "regime_rule": (
+                f"{params.get('regime_feature')}@{params.get('regime_timeframe')}"
+                f" split {float(params.get('regime_split') or 0.0):.2f}"
+            ),
+            "repeats": int(params.get("repeats") or 0),
+            "timeout_minutes": int(params.get("timeout_minutes") or 0),
+            "per_probe_notional_cap_usdt": f"{float(params.get('per_probe_notional_cap_usdt') or 0.0):.2f}",
+            "budget_cap_usdt": f"{float(params.get('budget_cap_usdt') or 0.0):.2f}",
+        },
+        risk_reason=(
+            f"Authorizes {int(params.get('n') or 0)} REAL venue-minimum orders "
+            f"({', '.join(sorted(symbols))}) placed one at a time by the operator to buy the "
+            f"stop-slippage sample the cost model lacks. Worst case ~{worst_case:.2f} USDT, "
+            f"capped at {float(params.get('budget_cap_usdt') or 0.0):.2f} USDT. No strategy is "
+            "armed and no probe row can reach forward confirmation."
+        ),
+        authority_reason="Prime may prepare a probe-batch ask for Thomas review; the decision is Thomas's.",
+        decision_reason=(
+            "RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a batch of "
+            "real probe orders."
+        ),
+        constraint=(
+            "One batch only: the confirm door verifies this approval (never consumes it) and "
+            "writes the batch plan; every probe order additionally passes the live-trading "
+            "opt-in, the final order guard, the breakers and the P5 order gate at fire time. "
+            "A changed parameter set is a different hash and refuses."
+        ),
+        target_ref=f"stop_slippage_probe:{batch_id}",
+        content_sha256=content_sha256,
+        risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=STRATEGY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
 def trial_content_sha256(role: Mapping[str, Any], trial_request: str) -> str:
     """The content hash binding a trial approval to the EXACT role version + definition
     bytes + trial task text. Any drift in any of them after Thomas approved — a role

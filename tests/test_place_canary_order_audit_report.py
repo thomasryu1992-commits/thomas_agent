@@ -271,6 +271,9 @@ def test_every_caller_of_the_venue_also_counts_the_order():
     root = _Path(repo_root())
     doors = [
         root / "scripts" / "place_canary_order.py",
+        # The probe fire door (proposal §5, 2026-08-11): counts in a `finally` around the
+        # submit, the canary door's own posture.
+        root / "scripts" / "run_slippage_probe.py",
         root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
     ]
     # Excluded by path PARTS, not by substring: `"/tests/" in str(path)` is false on Windows,

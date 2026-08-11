@@ -35,6 +35,7 @@ GUARDED = {
     "promote_strategy_candidates": "the approval store and the active strategy pool",
     "register_program_candidate": "the approval store and the program registry entry",
     "import_crypto_history": "imported outcomes, counterfactuals and the candidate pool",
+    "run_slippage_probe": "the probe plan store, the approval store, and the probe order's audit event",
 }
 
 # Writers whose guard is deliberately NOT at the top of main, because they have a read-only

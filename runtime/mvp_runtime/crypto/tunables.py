@@ -59,6 +59,7 @@ from . import (
     null_control,
     paper,
     pool,
+    probe,
     proposer,
     robustness,
     strategy,
@@ -396,6 +397,25 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/candle_archive.py", VENUE,
             "Hyperliquid serves at most this many candles per request and nothing behind them",
             "a venue that pages backwards — which is the whole reason this archive exists"),
+
+    # --- the stop-slippage probe (proposal §5, Thomas 2026-08-11) -----------------------------
+    # The probe exists to measure DEFAULT_STOP_SLIPPAGE_BPS's sample; its own numbers ride in
+    # the batch approval's content hash, so changing any of them mints a different approval.
+    Tunable("PROBE_STOP_BPS", probe.PROBE_STOP_BPS, "crypto/probe.py", OPERATOR,
+            "§5-2: the factory's representative stop width, fixed rather than ATR-linked so "
+            "every probe buys the same measurement",
+            "the factory's representative stop width moving, or a re-approved probe design — "
+            "either way a new batch approval, never an edit"),
+    Tunable("WORST_CASE_LOSS_FRACTION", probe.WORST_CASE_LOSS_FRACTION, "crypto/probe.py", DERIVED,
+            "§3's arithmetic: stop 40 + measured-worst slippage 23.5 (§C, 2026-08-06) + ~10 "
+            "round-trip fees = 73.5 bps, carried as 0.75% so the budget cap errs upward",
+            "any term moving — a worse measured slippage RAISES it, the fail-closed direction "
+            "for a budget cap"),
+    Tunable("DECISION_SAMPLE_FLOOR", probe.DECISION_SAMPLE_FLOOR, "crypto/probe.py", OPERATOR,
+            "§5-5: at sample N >= 10 the DEFAULT_STOP_SLIPPAGE_BPS re-decision opens (this "
+            "floor is that constant's own reopens_when, quantified)",
+            "the re-decision actually opening — the floor retires with the interim constant "
+            "it exists to replace"),
 )
 
 
