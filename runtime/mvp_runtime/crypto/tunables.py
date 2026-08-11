@@ -206,6 +206,16 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/pool.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
+    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool.OBSERVATION_MIN_BACKTEST_CLOSED,
+            "crypto/pool.py", MEASURED,
+            "where the store's own expectancy-vs-sample table stops being inflated "
+            "(<20 closes +0.114R, 50-199 -0.003R); below it a positive pick is the lottery",
+            "the inflation table re-measured on a store with a different mint geometry"),
+    Tunable("OBSERVATION_FAMILY_CAP", pool.OBSERVATION_FAMILY_CAP,
+            "crypto/pool.py", OPERATOR,
+            "Thomas 5-3 (2026-08-11): a third sibling's forward record is correlated with the "
+            "first two, not independent — F1 has no correlation control to price it",
+            "correlation control landing (F1), which would price diversity instead of capping it"),
     Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool.LIFECYCLE_MIN_WINDOW_TRADES, "crypto/pool.py",
             DERIVED, "`lifecycle.DEFAULT_WINDOWS[0]`, restated; a test pins the two equal",
             "the ladder's smallest window moving"),

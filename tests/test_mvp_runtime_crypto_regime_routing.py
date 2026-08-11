@@ -264,6 +264,9 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
     prom.run_promotion(
         selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
+        # The fixture is deliberately minimal (24 closes, shallow window); the 5-3 bar is
+        # not the subject here — regime evidence propagation is.
+        allow_below_entry_bar=True,
     )
     entry = installed["active_strategies"][0]
     assert entry["regime_evidence"] == per_regime
@@ -295,6 +298,7 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
     prom.run_promotion(
         selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
+        allow_below_entry_bar=True,
     )
     entry = installed["active_strategies"][0]
     assert entry["regime_evidence"] is None

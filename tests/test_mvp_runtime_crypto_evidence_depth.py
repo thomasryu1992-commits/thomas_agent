@@ -343,13 +343,15 @@ def test_shallow_evidence_is_not_refused_at_the_promotion_door(tmp_path):
     """The decision, made executable so it cannot drift into a gate by accident.
 
     Shallow evidence is not an inflated number — its verdict errs AGAINST the candidate — so
-    the cost tier's argument for a refusal does not transfer. Two further reasons: every 1d
-    row in the store was scored at the old window, so a refusal would make the escape hatch
-    the normal door; and this door installs into the PAPER pool, which is precisely where
-    thin evidence goes to get thicker."""
+    the cost tier's argument for a refusal does not transfer: the DEPTH gate stays silent on
+    SHALLOW and refuses only the unreadable. Since Thomas's 5-3 (2026-08-11) the strictness
+    lives one gate over instead: the OBSERVATION entry bar refuses a SHALLOW *entrant* under
+    its own reason code and its own audited escape, which is what the escape below isolates —
+    this test keeps pinning that no depth refusal fires."""
     _seed(tmp_path, bars=_TODAY_1D // 4)
     run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  allow_below_entry_bar=True)
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
 
 
@@ -359,7 +361,8 @@ def test_the_window_behind_a_promotion_rides_onto_the_ledger(tmp_path):
     ledger is the ONLY record, because no gate refused it on the way through."""
     _seed(tmp_path, bars=_TODAY_1D // 4)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                            without_approval=True, allow_below_entry_bar=True)
     assert summary["evidence_depths"] == [f"replayed:{_TODAY_1D // 4}bars_1d_{_TODAY_1D // 4}d"]
     assert summary["evidence_depths"] != [current_evidence_depth("1d")], "the split is legible"
 
@@ -369,7 +372,8 @@ def test_a_promotion_on_todays_window_records_that_too(tmp_path):
     wrong makes its absence ambiguous between "fine" and "not checked"."""
     _seed(tmp_path, bars=_TODAY_1D)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                            without_approval=True, allow_below_entry_bar=True)
     assert summary["evidence_depths"] == [current_evidence_depth("1d")]
     assert summary["unrecorded_evidence_depth_escape"] is False
 
@@ -412,7 +416,7 @@ def test_the_unrecorded_depth_escape_promotes_and_is_recorded(tmp_path):
     _seed(tmp_path, bars=None)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
-                            allow_unrecorded_evidence_depth=True)
+                            allow_unrecorded_evidence_depth=True, allow_below_entry_bar=True)
     assert summary["unrecorded_evidence_depth_escape"] is True
     assert summary["evidence_depths"] == [EVIDENCE_DEPTH_UNRECORDED]
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1

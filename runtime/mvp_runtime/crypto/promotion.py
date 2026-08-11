@@ -157,6 +157,8 @@ def request_promotion(
     allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False,
     allow_cluster_siblings: bool = False,
+    allow_below_entry_bar: bool = False,
+    allow_family_overflow: bool = False,
     allow_quarantined_derivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
@@ -201,6 +203,34 @@ def request_promotion(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
             )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # The 5-3 entry bar and the family cap (Thomas 2026-08-11), at the ask for the same
+    # reason as every gate above. Both are charged to ENTRANTS only: a restatement of an
+    # occupying lineage is not an entry, so re-arming the pre-bar pool spends no waiver.
+    occupying = [
+        e for e in (pool_store.load_active_pool(store_root).get("active_strategies") or [])
+        if e.get("status") in pool_store.OCCUPYING_STATUSES
+    ]
+    occupying_ids = frozenset(
+        str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
+    )
+    if not allow_below_entry_bar:
+        try:
+            pool_store.assert_observation_entry_bar(
+                candidates, occupying_candidate_ids=occupying_ids,
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    if not allow_family_overflow:
+        selected_ids = {str(c.get("candidate_id")) for c in candidates}
+        # Add mode keeps every incumbent, so all of them are base; a replace pool is the
+        # batch alone, so only the RESTATED incumbents still occupy after it lands.
+        base_entries = occupying if keep_active else [
+            e for e in occupying if str(e.get("candidate_id")) in selected_ids
+        ]
+        try:
+            pool_store.assert_family_cap(candidates, occupying_entries=base_entries)
         except ToolError as exc:
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
