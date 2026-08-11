@@ -156,6 +156,7 @@ def request_promotion(
     allow_stale_cost_basis: bool = False,
     allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False,
+    allow_cluster_siblings: bool = False,
     allow_quarantined_derivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
@@ -186,6 +187,17 @@ def request_promotion(
     if not allow_duplicates:
         try:
             pool_store.assert_no_semantic_duplicates(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # One tier down, same shape: a behaviour cluster gets one routing slot (Thomas 5-2,
+    # 2026-08-11). Checked at the ask for the reason every gate above is — the install door
+    # refuses it too, and an ask that cannot execute only spends Thomas's answer.
+    if not allow_cluster_siblings:
+        try:
+            pool_store.assert_no_cluster_siblings(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
             )
