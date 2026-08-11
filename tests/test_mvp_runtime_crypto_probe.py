@@ -829,3 +829,68 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     # The naked close still recorded its outcome (money moved; the breaker must see it).
     assert len(ledger.outcomes) == 1
     assert ledger.outcomes[0]["close_reason"] == "naked_position_close"
+
+
+# --- abandoning a batch early (Thomas 2026-08-11) --------------------------------------
+
+def test_abandon_retires_an_active_plan_and_opens_the_next_confirm(tmp_path):
+    """The PROBE_PLAN_EXISTS refusal's own 'resolve' verb: the invariant (one plan at a
+    time) is untouched — what changes is that an operator can END a batch deliberately
+    instead of firing probes nobody wants."""
+    _active_plan(tmp_path)
+    plan = probe.abandon_plan(reason="two cells were enough", now=NOW, root=tmp_path)
+    assert plan["status"] == probe.PLAN_ABANDONED
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ABANDONED
+
+    second = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
+    replacement = probe.confirm_probe_batch(
+        _fake_approval(second), params=second, root=tmp_path, now=NOW)
+    assert replacement["status"] == probe.PLAN_ACTIVE
+    assert len(replacement["cells"]) == 8
+
+
+def test_abandon_refuses_while_a_probe_is_at_the_venue(tmp_path):
+    """An OPEN cell means a real position may be resting; the plan that tracks it must
+    not be closed out from under it."""
+    plan = _active_plan(tmp_path)
+    probe.write_plan(
+        probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_x"),
+        tmp_path,
+    )
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="r", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ACTIVE
+
+
+def test_abandon_refuses_without_a_plan_or_a_reason(tmp_path):
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="r", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_MISSING
+    _active_plan(tmp_path)
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="   ", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PARAMS_INVALID
+
+
+def test_abandon_is_terminal_not_repeatable(tmp_path):
+    _active_plan(tmp_path)
+    probe.abandon_plan(reason="done", now=NOW, root=tmp_path)
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="again", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_NOT_ACTIVE
+
+
+def test_an_abandoned_plan_still_loads_and_reports(tmp_path):
+    """ABANDONED is a first-class terminal status: the board must keep rendering the
+    batch's history (filled cells, sample rows) after the retirement."""
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_FILLED, now=NOW,
+                           outcome_id="out_1", stop_slippage_bps=0.28)
+    probe.write_plan(plan, tmp_path)
+    probe.abandon_plan(reason="sample judged sufficient", now=NOW, root=tmp_path)
+    loaded = probe.read_plan(tmp_path)
+    assert loaded["status"] == probe.PLAN_ABANDONED
+    assert loaded["cells"][0]["status"] == probe.CELL_FILLED
+    assert loaded["cells"][0]["stop_slippage_bps"] == 0.28
