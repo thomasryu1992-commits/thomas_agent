@@ -327,3 +327,21 @@ def test_the_verdict_always_carries_what_the_drawdown_was_measured_over():
     verdict = guards.run_risk_guard(DD_ROWS, now=DD_NOW)
     assert "drawdown_baseline" in verdict
     assert verdict["limits"]["drawdown_excluded_strategy_ids"] == []
+
+
+def test_the_breaker_charges_carry_and_a_short_receives_it():
+    """Carry is the one SIGNED cost term: a long pays it, a short receives the venue's real
+    payment — so the daily figure moves down for a held long and up for a held short."""
+    base = {
+        "result_R": 1.0, "outcome_closed": True, "created_at_utc": "2026-07-22T08:00:00Z",
+        "direction": "LONG", "entry_price": 100.0, "exit_price": 101.0, "risk": 1.0,
+        "holding_candles": 9, "timeframe": "1d",
+    }
+    held = run_risk_guard([base], now=NOW)["daily_pnl_r"]
+    flat = run_risk_guard([{**base, "holding_candles": 0}], now=NOW)["daily_pnl_r"]
+    assert held < flat
+
+    short = {**base, "direction": "SHORT", "exit_price": 99.0}
+    held_short = run_risk_guard([short], now=NOW)["daily_pnl_r"]
+    flat_short = run_risk_guard([{**short, "holding_candles": 0}], now=NOW)["daily_pnl_r"]
+    assert held_short > flat_short
