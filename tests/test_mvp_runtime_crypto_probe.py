@@ -894,3 +894,32 @@ def test_an_abandoned_plan_still_loads_and_reports(tmp_path):
     assert loaded["status"] == probe.PLAN_ABANDONED
     assert loaded["cells"][0]["status"] == probe.CELL_FILLED
     assert loaded["cells"][0]["stop_slippage_bps"] == 0.28
+
+
+def test_abandon_reconciles_a_stale_open_cell_before_refusing(tmp_path, monkeypatch):
+    """The day-one incident, pinned: the operator hand-closed the probe position at the
+    venue while --fire was dead. --abandon must run --fire's own reconcile (book clear +
+    no ledger row -> the cell returns to EMPTY) instead of refusing on a state that is
+    no longer true — without it, the only verb that could clear the cell was the one
+    that places a NEW probe."""
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_gone")
+    probe.write_plan(plan, tmp_path)
+    monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: None)
+    monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
+    assert cli.run_abandon(reason="hand-closed; moving to batch 2", root=tmp_path, now=NOW) == cli.EXIT_OK
+    loaded = probe.read_plan(tmp_path)
+    assert loaded["status"] == probe.PLAN_ABANDONED
+    assert loaded["cells"][0]["status"] == probe.CELL_EMPTY
+
+
+def test_abandon_still_refuses_while_the_position_is_genuinely_on_the_book(tmp_path, monkeypatch):
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_live")
+    probe.write_plan(plan, tmp_path)
+    monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: {"status": "OPEN"})
+    monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        cli.run_abandon(reason="r", root=tmp_path, now=NOW)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ACTIVE

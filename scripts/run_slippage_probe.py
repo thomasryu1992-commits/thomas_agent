@@ -299,6 +299,28 @@ PROBE_ABANDON_EVENT_TYPE = "crypto_probe_batch_abandoned_event.v0"
 def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None) -> int:
     """Retire the ACTIVE batch early — the PROBE_PLAN_EXISTS refusal's own 'resolve' verb."""
     now = now or timeutil.utc_now_iso()
+    plan = probe.read_plan(root)
+    if plan is None:
+        raise _Refusal(probe.PROBE_PLAN_MISSING, "no confirmed probe plan; nothing to abandon")
+    # The same reconcile --fire's preamble does, for the same reason one gate over: a
+    # crashed --fire must not wedge the RETIREMENT either. Measured the day this shipped:
+    # the operator hand-closed the probe position at the venue, and without this the only
+    # verb that could clear the stale OPEN cell was the one that then places a NEW probe.
+    # Still OPEN after the reconcile = a position genuinely on the book, and the refusal
+    # below is then the honest one.
+    opened = probe.open_cell_index(plan)
+    if opened is not None:
+        open_symbol = plan["cells"][opened]["symbol"]
+        plan, resolution = probe.resolve_open_cell(
+            plan,
+            outcomes=read_live_outcomes(root),
+            position_open=load_open_live_position(open_symbol, root) is not None,
+            now=now,
+        )
+        if resolution is not None:
+            probe.write_plan(plan, root)
+            print(f"resolved  : cell {resolution['index']} -> {resolution['status']} "
+                  f"(outcome {resolution['outcome_id']})")
     plan = probe.abandon_plan(reason=reason, now=now, root=root)
     counts: dict[str, int] = {}
     for cell in plan["cells"]:
