@@ -119,7 +119,13 @@ _TERMINAL_CELL_STATUSES = frozenset({CELL_FILLED, CELL_TIMEOUT})
 
 PLAN_ACTIVE = "ACTIVE"
 PLAN_COMPLETE = "COMPLETE"
-PLAN_STATUSES = frozenset({PLAN_ACTIVE, PLAN_COMPLETE})
+# The operator retired the batch early (Thomas 2026-08-11: "굳이 테스트로 전부 잡을 이유는
+# 없을 것 같은데"). Terminal like COMPLETE — the sample rows already on the ledger stay, the
+# unfilled cells simply never happen, and the next confirm may proceed. The reason is a
+# required argument and lands on the control ledger, because an early retirement with no
+# recorded why would read, a month later, exactly like a batch that finished.
+PLAN_ABANDONED = "ABANDONED"
+PLAN_STATUSES = frozenset({PLAN_ACTIVE, PLAN_COMPLETE, PLAN_ABANDONED})
 
 # Refusal codes. Every refusal on the probe path is one of these, stable by name.
 PROBE_PARAMS_INVALID = "PROBE_PARAMS_INVALID"
@@ -701,6 +707,44 @@ def confirm_probe_batch(
         )
     plan = build_plan(batch, approval_id=str(verified.get("approval_id")), now=now)
     return write_plan(plan, root)
+
+
+def abandon_plan(*, reason: str, now: str | None = None, root: Path | None = None) -> dict[str, Any]:
+    """Retire the ACTIVE batch early, deliberately. Returns the written plan.
+
+    The one-plan-at-a-time invariant is untouched — this is the operator verb the
+    ``PROBE_PLAN_EXISTS`` refusal always named ("finish or RESOLVE it"), not a bypass of
+    it. Two refusals guard the honesty of the act: a non-ACTIVE plan has nothing to
+    abandon, and an OPEN cell means a REAL position may be resting at the venue — the
+    probe must settle (stop, timeout, or the scheduler's fail-safe) before the plan that
+    tracks it may be closed, or the book would hold a position its instrument disowned.
+
+    The plan file records only the status flip (its key set stays closed); the WHY is the
+    caller's control-ledger event, same division as the promotion door's reasons.
+    """
+    now = now or timeutil.utc_now_iso()
+    if not isinstance(reason, str) or not reason.strip():
+        raise ToolError(PROBE_PARAMS_INVALID, "abandoning a batch requires a non-empty reason")
+    plan = read_plan(root)
+    if plan is None:
+        raise ToolError(PROBE_PLAN_MISSING, "no probe plan is confirmed; nothing to abandon")
+    if plan["status"] != PLAN_ACTIVE:
+        raise ToolError(
+            PROBE_PLAN_NOT_ACTIVE,
+            f"plan {plan['batch_id']} is {plan['status']}; only an ACTIVE plan can be abandoned",
+        )
+    open_index = open_cell_index(plan)
+    if open_index is not None:
+        cell = plan["cells"][open_index]
+        raise ToolError(
+            PROBE_CELL_OPEN,
+            f"cell {open_index} ({cell['symbol']} {cell['regime']}) is OPEN — a probe may be "
+            "resting at the venue; let it settle before abandoning the plan",
+        )
+    updated = dict(plan)
+    updated["status"] = PLAN_ABANDONED
+    updated["updated_at"] = now
+    return write_plan(updated, root)
 
 
 # --- the sample + §5-5 readiness -------------------------------------------------------

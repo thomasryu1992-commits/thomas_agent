@@ -102,6 +102,7 @@ from runtime.mvp_runtime.crypto.market_data import (  # noqa: E402
 from runtime.mvp_runtime.crypto.risk_limits import resolve_risk_limits  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
+from runtime.mvp_runtime.events import stamped_event  # noqa: E402
 from runtime.mvp_runtime.store import LedgerStore  # noqa: E402
 
 # Enough 4h bars for the atr_percentile window (100) plus indicator warm-up; the venue
@@ -286,6 +287,34 @@ def run_confirm(
     print(f"CONFIRMED: plan {plan['batch_id']} is {plan['status']} with {len(plan['cells'])} "
           f"cells under approval {plan['approval_id']}. No orders were placed; fire one at a "
           "time with --fire --symbol <SYMBOL>.")
+    return EXIT_OK
+
+
+# The abandonment record, on the CONTROL ledger like the promotion door's summaries: the plan
+# file keeps its closed key set and records only the status flip; the WHY lives here, where a
+# reason outlives the file that motivated it.
+PROBE_ABANDON_EVENT_TYPE = "crypto_probe_batch_abandoned_event.v0"
+
+
+def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None) -> int:
+    """Retire the ACTIVE batch early — the PROBE_PLAN_EXISTS refusal's own 'resolve' verb."""
+    now = now or timeutil.utc_now_iso()
+    plan = probe.abandon_plan(reason=reason, now=now, root=root)
+    counts: dict[str, int] = {}
+    for cell in plan["cells"]:
+        counts[cell["status"]] = counts.get(cell["status"], 0) + 1
+    summary = {
+        "batch_id": plan["batch_id"],
+        "approval_id": plan["approval_id"],
+        "reason": reason,
+        "cells": counts,
+        "abandoned_at": now,
+    }
+    LedgerStore.default(root).append_control(stamped_event(PROBE_ABANDON_EVENT_TYPE, **summary))
+    kept = counts.get(probe.CELL_FILLED, 0)
+    print(f"ABANDONED: plan {plan['batch_id']} retired early ({kept} filled cell(s) keep their "
+          f"sample rows; {counts.get(probe.CELL_EMPTY, 0)} cell(s) never happen). The next "
+          "batch may now --request/--confirm.")
     return EXIT_OK
 
 
@@ -675,6 +704,12 @@ def main(argv: list[str] | None = None) -> int:
                         help='comma list for --request/--confirm (e.g. "BNBUSDT,DOGEUSDT"); '
                              "omitted = the approved default three. The content hash binds "
                              "the set, so a --symbols request is confirmed with the same set")
+    parser.add_argument("--abandon", action="store_true",
+                        help="retire the ACTIVE batch early (needs --reason; the sample rows "
+                             "stay on the ledger, unfilled cells never happen, the next "
+                             "batch may then confirm)")
+    parser.add_argument("--reason", help="operator reason for --abandon (recorded on the "
+                                         "control ledger)")
     parser.add_argument("--fire", action="store_true",
                         help="operator-only: place ONE probe synchronously (real money)")
     parser.add_argument("--symbol", help="which symbol to probe (required with --fire)")
@@ -684,9 +719,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
     args = parser.parse_args(argv)
 
-    verbs = [args.status, args.request, args.confirm, args.fire]
+    verbs = [args.status, args.request, args.confirm, args.abandon, args.fire]
     if sum(1 for v in verbs if v) != 1:
-        print("USAGE: exactly one of --status / --request / --confirm / --fire")
+        print("USAGE: exactly one of --status / --request / --confirm / --abandon / --fire")
         return EXIT_USAGE
 
     try:
@@ -694,6 +729,11 @@ def main(argv: list[str] | None = None) -> int:
             return run_status(root=args.root)
         # Every remaining verb writes state (approvals, the plan, or real orders).
         assert_not_foreign_root_run(args.root)
+        if args.abandon:
+            if not args.reason or not args.reason.strip():
+                print("USAGE: --abandon needs --reason (the why outlives the batch)")
+                return EXIT_USAGE
+            return run_abandon(reason=args.reason.strip(), root=args.root)
         if args.request:
             return run_request(root=args.root, symbols=_parse_symbols(args.symbols))
         if args.confirm:
