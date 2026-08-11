@@ -60,6 +60,7 @@ from .cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_STOP_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_UNCHARGED,
     FUNDING_SOURCE_VENUE,
@@ -217,13 +218,18 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
+    # Present-only, the maker rule: a record scored before the stop split keeps the exact
+    # basis string it has always reported, and a stamped one says what its stops paid —
+    # which is the axis `cost_basis_rank` now refuses OPTIMISTIC rows on.
+    stop = model.get("stop_slippage_bps")
+    stop_term = f"+stop_{stop}bps" if isinstance(stop, (int, float)) else ""
     funding = model.get("funding_bps_per_interval")
     if isinstance(funding, (int, float)) and not isinstance(funding, bool):
         source = model.get("funding_source") or FUNDING_SOURCE_VENUE
         funding_term = f"+funding_{funding}bps/8h({source})"
     else:
         funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{stop_term}{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -236,6 +242,7 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "stop_slippage_bps": DEFAULT_STOP_SLIPPAGE_BPS,
         "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
         "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
@@ -288,15 +295,28 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
         # which is a property of the trade and not of the cost model this function ranks.
         return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
+    # The stop leg joined the comparison on Thomas's 2026-08-11 direction, the same evening
+    # the seam re-priced 3.0 -> 12.0: a row scored with cheaper stops overstates its edge on
+    # every stop exit exactly the way a cheaper taker did, and the safest treatment of the
+    # existing store is NOT a forced re-price but this rank — cheaper-than-current reads
+    # OPTIMISTIC, is refused at the door, and the lineage re-mints at the current model.
+    # A record with no `stop_slippage_bps` charged its stops at its own GENERAL slippage
+    # (the pre-#683 identity), so that is the figure it is judged on — the maker rule again:
+    # what the leg actually paid, never a missing field read as the current rate.
+    stop_charged = model.get("stop_slippage_bps")
+    if not _is_number(stop_charged):
+        stop_charged = slip
     if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
-            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip == DEFAULT_SLIPPAGE_BPS and stop_charged == DEFAULT_STOP_SLIPPAGE_BPS
+            and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip >= DEFAULT_SLIPPAGE_BPS and stop_charged >= DEFAULT_STOP_SLIPPAGE_BPS
+            and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 

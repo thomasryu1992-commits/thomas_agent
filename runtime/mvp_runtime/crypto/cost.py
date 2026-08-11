@@ -118,9 +118,11 @@ DEFAULT_SLIPPAGE_BPS = 3.0
 # averaging (or the stop-slippage probe of `docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md`,
 # which buys the sample without arming a strategy).
 #
-# `cost_basis_rank` deliberately does not compare this field, so no stored row's basis tier
-# moves; what moves is the scoring of NEW mints and every at-current-rates re-read of a
-# stop-closed row — all in the stricter direction. A literal rather than
+# Since the same evening (Thomas's direction), `cost_basis_rank` DOES compare this field —
+# the safest treatment of the store is not a forced re-price but the rank: a row scored at
+# a cheaper stop rate reads OPTIMISTIC, is refused at the promotion door, and its lineage
+# re-mints at the current model; a record with no stop field is judged on its own general
+# slippage (the pre-split identity). The factory stamps the field on every new mint. A literal rather than
 # `= DEFAULT_SLIPPAGE_BPS`, so the tunables sweep can see it; the divergence (and its
 # direction) is pinned by `test_the_split_is_a_seam_not_a_repricing`.
 DEFAULT_STOP_SLIPPAGE_BPS = 12.0
