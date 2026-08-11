@@ -513,12 +513,11 @@ def outcome_net_r(
     how long the position was open without knowing what a bar of its timeframe is worth, and a
     default invented here would be a holding period asserted rather than measured. The caller
     that can measure it passes it — ``feedback.net_result_r`` derives it from
-    ``holding_candles × timeframe`` and does. **``lifecycle`` and ``guards`` currently do not**,
-    so the ladder and the loss breakers read fees and slippage but no carry, while the
-    performance report reads all three. That asymmetry is inherited from both sides of this
-    merge rather than introduced by it, and it is stated here instead of left to be discovered:
-    on a spec holding 12-48 days the omitted carry is the larger term, so closing it is worth
-    its own increment.
+    ``holding_candles × timeframe`` and does, and since 2026-08-11 the ladder
+    (``lifecycle.outcome_judged_r``) and the loss breakers (``guards._judged_r``) read through
+    that same function, so all three consumers of a settled row charge the same three terms.
+    A caller reaching for this function directly therefore owes the carry itself or accepts
+    the optimistic zero knowingly.
     """
     basis = record.get("r_basis")
     if basis in R_BASES_NET_OF_COSTS or basis == R_BASIS_FILLED:

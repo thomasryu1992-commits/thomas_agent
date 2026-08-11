@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from .. import timeutil
-from . import cost
+from . import feedback
 
 # data-health defaults (source config/settings.py; TIMEFRAME_MINUTES there is the
 # cycle timeframe — the caller passes the snapshot's own timeframe minutes instead).
@@ -243,14 +243,19 @@ def run_data_health_check(
 def _closed_rows(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Closed outcomes in the source registry's shape, sorted by close time.
 
-    ``pnl_r`` is **net of costs wherever the row can price them** (``cost.outcome_net_r``),
+    ``pnl_r`` is **net of costs wherever the row can price them** (``feedback.net_result_r`` —
+    fees, slippage and carry, the same figure the ladder and the performance report read),
     falling back to the stored ``result_R``. The breakers below are stated in R against a
     fixed risk fraction, i.e. they are a claim about equity, and paper ``result_R`` never had
     fees or slippage taken out of it — so a day of trades that lost real money could read as
-    flat here and leave the daily breaker clear. Netting moves every one of these limits in the
-    conservative direction (a net figure is never larger than its gross), which is why it needs
-    no new threshold and no re-authorization: the numbers are the ones already registered, now
-    measured against what a trade actually costs.
+    flat here and leave the daily breaker clear. Fees and slippage only ever lower a figure,
+    so netting them moved every limit in the conservative direction and needed no new
+    threshold and no re-authorization: the numbers are the ones already registered, now
+    measured against what a trade actually costs. Carry is the one signed term — a long pays
+    and a SHORT RECEIVES, so a short's judged R can sit slightly above its fees-only figure.
+    That is the venue's real payment, not optimism, and it is bounded by the base rate over
+    the hold (0.2–4% of total cost on the traded timeframes, `docs/REMAINING_WORK.md`
+    2026-08-02 correction).
     """
     rows = [
         {
@@ -271,7 +276,7 @@ def _judged_r(outcome: Mapping[str, Any]) -> float:
     (see ``live_outcomes_for_analysis``) precisely because a loss read as breakeven would
     SHORTEN a loss streak. Changing it here would move that decision into two places.
     """
-    net = cost.outcome_net_r(outcome)
+    net = feedback.net_result_r(outcome)
     return float(net) if net is not None else float(outcome.get("result_R", 0.0) or 0.0)
 
 
