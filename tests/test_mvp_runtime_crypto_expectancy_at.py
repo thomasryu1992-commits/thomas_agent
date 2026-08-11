@@ -121,7 +121,10 @@ def test_a_record_without_the_maker_field_is_read_as_all_taker():
     expected = (
         summary["total_net_r"] - summary["total_fee_cost_r"] * (5.0 / 2.5 - 1.0)
     ) / candidate["backtest_evidence"]["closed_count"]
-    assert math.isclose(expectancy_at(candidate, taker_fee_bps=5.0), expected, abs_tol=1e-9)
+    # Half an 8-decimal ulp: `expectancy_at` rounds to 8 places, so the honest tolerance is
+    # the rounding bound, not 1e-9 — which held only while the fixture's numbers happened to
+    # land away from a rounding edge.
+    assert math.isclose(expectancy_at(candidate, taker_fee_bps=5.0), expected, abs_tol=5e-9)
 
 
 def test_an_unreadable_maker_share_refuses_rather_than_guesses():
