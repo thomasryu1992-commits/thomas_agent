@@ -13,11 +13,13 @@ import pytest
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto import paper, pool
 from runtime.mvp_runtime.crypto.cycle import run_crypto_cycle
+from runtime.mvp_runtime.crypto.feedback import net_result_r
 from runtime.mvp_runtime.crypto.lifecycle import (
     LifecycleThresholds,
     compute_metrics,
     compute_strategy_performance,
     evaluate_lifecycle,
+    outcome_judged_r,
     run_lifecycle,
 )
 from runtime.mvp_runtime.crypto.paper import DryRunPaperStore, RealPaperStore
@@ -480,3 +482,40 @@ def test_the_split_does_not_mutate_the_runtime_list():
     before = [dict(d) for d in decisions]
     split_for_record(decisions)
     assert decisions == before
+
+
+# --- carry: the ladder judges the same three cost terms the report prints ---------------------
+
+def _held_outcome(**overrides):
+    """A gross-basis settled row that was open 9 daily bars — 27 funding settlements."""
+    row = {
+        "result_R": 1.0, "outcome_closed": True, "direction": "LONG",
+        "entry_price": 100.0, "exit_price": 101.0, "risk": 1.0,
+        "holding_candles": 9, "timeframe": "1d",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_the_ladder_charges_carry_for_the_holding_window():
+    held, held_costed = outcome_judged_r(_held_outcome())
+    flat, flat_costed = outcome_judged_r(_held_outcome(holding_candles=0))
+    assert held_costed is True and flat_costed is True
+    assert held < flat
+
+
+def test_the_ladder_and_the_report_judge_a_row_alike():
+    """The drift this pins: two net-R copies disagreeing about the same settled row."""
+    row = _held_outcome()
+    judged, costed = outcome_judged_r(row)
+    assert costed is True
+    assert judged == net_result_r(row)
+
+
+def test_an_already_net_row_is_costed_its_carry_not_read_gross():
+    """`intent_net_of_costs` carries fees and slippage but no carry; the ladder now charges
+    the one term still owed instead of dropping the row into the gross fallback."""
+    row = _held_outcome(r_basis="intent_net_of_costs", result_R=0.5)
+    judged, costed = outcome_judged_r(row)
+    assert costed is True
+    assert judged < 0.5
