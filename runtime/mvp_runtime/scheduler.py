@@ -1281,9 +1281,16 @@ def _execute(
         # `generated=4/4 fused=4` are both complete fires and the denominator alone cannot say
         # which. Without it a shortfall draw that itself fell short would read as the stuck
         # family `_MAX_ATTEMPTS_PER_SPEC` exists to expose.
+        # `ablated=` / `luck_filtered=` because the lattice multiplies replays per hypothesis
+        # (factory.ablate_hypothesis) without any cadence change: the operator-facing line is
+        # where that spend and its yield — full conjunctions that failed to beat their own
+        # parts — become visible per fire, the same way `topup=` made the shortfall draw so.
         return (f"generated={result['accepted_count']}/{result['requested_count']} "
                 f"fused={result.get('fused_count', 0)} "
-                f"topup={result.get('seeded_topup_count', 0)} gen={result['generation_id']}")
+                f"topup={result.get('seeded_topup_count', 0)} "
+                f"ablated={result.get('ablated_count', 0)} "
+                f"luck_filtered={result.get('luck_filtered_count', 0)} "
+                f"gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
