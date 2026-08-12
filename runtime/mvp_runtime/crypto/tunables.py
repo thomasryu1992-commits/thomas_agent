@@ -275,6 +275,13 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/factory.py", MEASURED,
             "0 of 22 mints at 8 conditions produced a judgeable holdout; the band yields nothing",
             "a mint at 8 conditions reaching `MIN_HOLDOUT_TRADES` — needs a longer replay window"),
+    Tunable("ABLATION_MAX_CONDITIONS", factory.ABLATION_MAX_CONDITIONS, "crypto/factory.py",
+            OPERATOR,
+            "Thomas 2026-08-12, FACTORY_ABLATION_V0.1 §3-1 as proposed: hypotheses of up to "
+            "three conditions run the 7-member train-only lattice; wider ones stay on the "
+            "existing path",
+            "a cadence reallocation pricing the k=4 lattice's 15 members — §3-1 names it as "
+            "the decision that would move this"),
     Tunable("HOLDOUT_FRACTION", factory.HOLDOUT_FRACTION, "crypto/factory.py", INHERITED,
             "the most recent 30% is withheld from scoring entirely",
             "evidence that the split size is what limits holdout depth rather than signal rate"),

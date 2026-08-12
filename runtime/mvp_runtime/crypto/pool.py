@@ -1817,6 +1817,30 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     return (tuple(spec.get("symbol_scope") or ()), spec.get("timeframe"))
 
 
+def _lattice_attempts(record: Mapping[str, Any]) -> int:
+    """How many hypotheses this row charges its context with — its ablation lattice size
+    when it carries one, else 1.
+
+    An ablation winner registered alone, but its ``lattice_size - 1`` unregistered siblings
+    were each scored against the same bars (``factory.ablate_hypothesis`` replays every
+    non-empty subset of the drawn conjunction); uncharged, they would be exactly the escape
+    :func:`attempts_by_context`'s docstring forbids — attempts that raise no bar. The
+    division of labour is deliberate: ``lattice_size`` is stored FACT (how many members
+    were tried, true at mint and forever), while the attempt COUNT stays computed at read
+    time here. An absent or unreadable block charges 1 — the pre-ablation meaning every
+    stored row already has — and never 0, which would be a row escaping its own charge."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    ablation = evidence.get("ablation")
+    if not isinstance(ablation, Mapping):
+        return 1
+    size = ablation.get("lattice_size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        return 1
+    return size
+
+
 def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], int]:
     """How many candidates have been scored against each market/timeframe's bars.
 
@@ -1827,7 +1851,11 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
     same bars" is a property of the context and not of the day.
 
     Distinct candidates, not rows: the store re-appends a lineage and every append would
-    otherwise raise the bar for candidates that never moved."""
+    otherwise raise the bar for candidates that never moved.
+
+    A row minted through the ablation lattice counts as its whole lattice
+    (:func:`_lattice_attempts`): one winner registered, but every member was scored against
+    this context's bars, and the burden follows the scoring, not the storing."""
     seen: set[str] = set()
     counts: dict[tuple[Any, ...], int] = {}
     for record in records:
@@ -1836,7 +1864,7 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
             continue
         seen.add(cid)
         key = search_context_key(record.get("strategy_spec") or {})
-        counts[key] = counts.get(key, 0) + 1
+        counts[key] = counts.get(key, 0) + _lattice_attempts(record)
     return counts
 
 

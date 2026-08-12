@@ -1307,6 +1307,10 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     # (mock collector data is fine for MINING, not for trading)
     assert len(candidates) == 8
     assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4")
+    # What ablation did rides the same line: the lattice spends replays with no cadence
+    # change, and the status line is where that spend and its yield are legible per fire.
+    assert " ablated=" in summary["results"][0]["status"]
+    assert " luck_filtered=" in summary["results"][0]["status"]
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert any(r["kind"] == "crypto_factory" for r in rows)
@@ -1907,7 +1911,14 @@ def test_fusion_is_deterministic(tmp_path):
 
 
 def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
-    """rsi <= 5 AND rsi >= 95 parses, validates, and can never trade."""
+    """rsi <= 5 AND rsi >= 95 parses, validates, and can never trade.
+
+    The refusal reason moved when the ablation lattice landed in front of the no-trades
+    gate: a zero-trade union scores a train expectancy of 0.0, ties its zero-trade
+    subsets, a tie hands the win to the simpler side, and the winning subset carries the
+    parents' shared exits — so it IS a durable parent and falls to the duplicate guard.
+    Either way nothing is stored, which is the property this test pins; `no_trades` still
+    guards the registered spec for any winner that reaches its own backtest."""
     _durable_parent(tmp_path, "cand-lo",
                     _parent_spec("S1", [{"feature": "rsi", "comparison": "<=", "value": 5.0}]), 9.0)
     _durable_parent(tmp_path, "cand-hi",
@@ -1917,7 +1928,8 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
                          count=1, fusion_pairs=1)
     assert result["fused_count"] == 0
     assert result["fusion_rejected"] == [
-        {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
+        {"parent_candidate_ids": ["cand-hi", "cand-lo"],
+         "reason": "ablation_winner_duplicate_rule_hash"}
     ]
 
 
@@ -2053,14 +2065,24 @@ def test_no_parent_to_compare_against_is_unmeasurable_not_a_pass():
 def test_a_child_that_does_not_out_earn_its_parents_is_refused_rather_than_stored(tmp_path):
     """The ordinary pair, and the whole reason for the bar: the union of two profitable trend
     conditions earns +0.092R over 6 trades where the better parent earned +0.574R over 17.
-    Before the bar this was appended, ranked, and available to parent a further generation."""
+    Before the bar this was appended, ranked, and available to parent a further generation.
+
+    Since the ablation lattice, the refusal comes one gate EARLIER and says something
+    sharper: on the train segment the union fails to strictly beat its own best proper
+    subset, that subset carries the parents' shared exits and so IS one of the durable
+    parents, and re-minting a stored rule is what the duplicate guard exists to refuse.
+    The property this test pins — this union is refused, never stored — is unchanged;
+    `no_expectancy_gain` remains the refusal for a union that WINS its lattice and then
+    fails to out-earn its parents (the `_fusion_improvement` unit tests carry the bar
+    itself)."""
     parents = _two_durable_parents(tmp_path)
     result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
                          existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
     assert result["fused_count"] == 0
     assert not [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
     assert result["fusion_rejected"] == [
-        {"parent_candidate_ids": ["cand-aaa", "cand-bbb"], "reason": "no_expectancy_gain"}
+        {"parent_candidate_ids": ["cand-aaa", "cand-bbb"],
+         "reason": "ablation_winner_duplicate_rule_hash"}
     ]
 
 
@@ -2081,6 +2103,31 @@ def test_every_minted_child_records_beating_both_parents_on_one_window(tmp_path)
                 >= max(p["champion_score"] for p in comparison["parents"].values()))
         # The recorded child figures are the child's own evidence, not a second measurement.
         assert comparison["child"]["expectancy"] == child["backtest_evidence"]["expectancy"]
+
+
+def test_a_fused_conjunction_runs_the_lattice_and_registers_with_its_grid(tmp_path):
+    """The ablation lattice sits on the fusion path too, and §3-3 as approved: the winner
+    registers through the EXISTING path — ``derivation_type`` stays ``crossover``, and the
+    grid it survived rides in ``backtest_evidence.ablation``. On this fixture the union
+    (rsi >= 50 AND rsi <= 60) genuinely beats both one-sided parts on the train segment
+    (+0.116R against -0.54R and -0.48R), so the full conjunction is what mints — the
+    interaction case, measured through the real mint path with the improvement gate live."""
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert len(fused) == 1
+    child = fused[0]
+    ablation = child["backtest_evidence"]["ablation"]
+    assert ablation["lattice_size"] == 3
+    assert ablation["full_beat_subsets"] is True
+    assert ablation["winner_conditions"] == ablation["hypothesis_conditions"]
+    assert ablation["winner_conditions"] == child["strategy_spec"]["entry_rules"]["conditions"]
+    full_key = "0+1"
+    scores = ablation["train_net_expectancy_by_subset"]
+    assert all(scores[full_key] > scores[key] for key in scores if key != full_key)
+    # The fire's counters see the fused lattice alongside the seeded one.
+    assert result["ablated_count"] >= 1
 
 
 def test_the_bar_is_the_parents_replayed_here_not_the_row_they_were_stored_with(tmp_path):
@@ -2111,7 +2158,13 @@ def test_a_parent_is_replayed_once_per_fire_however_many_pairs_cite_it(monkeypat
         return original(spec, snapshot, **kwargs)
 
     monkeypatch.setattr(factory, "backtest_spec", counting)
-    specs = [_parent_spec(f"S{i}", [{"feature": "adx", "comparison": ">=", "value": 20.0 + i}])
+    # Distinct exits per parent, so an ablation winner — a single-condition subset carrying
+    # the pair's MIDPOINT exits — can never hash-collide with a parent and show up in the
+    # spy's parent filter as a spurious re-replay. What this test counts is the parent
+    # memoisation, and the fixture has to keep the two populations separable to count it.
+    specs = [_parent_spec(f"S{i}", [{"feature": "adx", "comparison": ">=", "value": 20.0 + i}],
+                          exit_rules={"stop_model": "atr", "stop_atr": 1.5 + 0.1 * i,
+                                      "target_atr": 2.0, "max_holding_bars": 10})
              for i in range(4)]
     bucket = [{"candidate_id": f"cand-{i}", "strategy_spec": s.to_dict(), "champion_score": 1.0}
               for i, s in enumerate(specs)]

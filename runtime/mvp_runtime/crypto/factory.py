@@ -3471,6 +3471,188 @@ def backtest_spec_pooled(
     }
 
 
+# --- ablation lattice: a conjunction must beat its own parts ------------------
+#
+# `docs/proposals/FACTORY_ABLATION_V0.1.md` §3, approved as proposed (Thomas 2026-08-12).
+# The generator searched "how many conditions make the score better", and that search
+# passes stacked luck: of the 592 stored rows whose holdout could be judged at all, 592
+# read CONTRADICTED. The lattice decomposes the luck at mint time — a full conjunction
+# that cannot strictly beat its own best proper subset on the TRAIN segment is fit, not
+# edge, and the best proper subset registers in its place.
+
+# §3-1: k <= 3, so the lattice is at most 2^3 - 1 = 7 members. A hypothesis with MORE
+# conditions stays on the existing path UNCHANGED: the seeded library mints up to k = 4
+# today (the `oi_squeeze_*` pair below 1d) and a fused union may carry up to
+# `MAX_FUSION_ENTRY_CONDITIONS` = 7 — a k = 4 lattice is 15 members, and §3-1 priced that
+# as a cadence reallocation this increment deliberately does not take.
+ABLATION_MAX_CONDITIONS = 3
+
+# k = 1 skips the lattice entirely: a single condition has no proper subset to beat.
+ABLATION_MIN_CONDITIONS = 2
+
+
+def _train_frame(frame: ReplayFrame) -> ReplayFrame:
+    """The frame's train segment as a frame of its own — the holdout bars are NOT in it.
+
+    This is what makes the lattice's train-only rule structural rather than a convention
+    (proposal §1-3): selection code handed this object cannot read a holdout bar, because
+    the object does not contain one. Choosing a subset on the shared holdout would replay
+    the A2 failure (holdout reuse) amplified by the lattice size, so the bars are removed
+    at the door instead of avoided by discipline. ``split`` stays the full frame's, which
+    after truncation equals ``len(rows)``: everything trains, nothing is held out.
+
+    Deliberately NOT :func:`_prefix_frame`, which re-splits its prefix by
+    :func:`holdout_split_index` and would carve a second holdout out of the train segment."""
+    split = frame.split
+    return ReplayFrame(
+        rows=frame.rows[:split], candles=frame.candles[:split],
+        funding=frame.funding[:split], funding_source=frame.funding_source,
+        split=split, cost=frame.cost,
+    )
+
+
+def _subset_spec(spec: StrategySpec, indices: tuple[int, ...]) -> StrategySpec:
+    """``spec`` carrying only the entry conditions at ``indices`` — all else identical.
+
+    The stored rule hash is dropped so ``from_dict`` recomputes it: the conditions changed,
+    so the identity did, and a subset that kept the hypothesis's hash would be refused as
+    tampered."""
+    as_dict = spec.to_dict()
+    conditions = as_dict["entry_rules"]["conditions"]
+    as_dict["entry_rules"] = {
+        "operator": "AND", "conditions": [conditions[i] for i in indices],
+    }
+    as_dict.pop("strategy_rule_hash", None)
+    return StrategySpec.from_dict(as_dict)
+
+
+def _train_net_expectancy(spec: StrategySpec, train_frames: Sequence[ReplayFrame]) -> float:
+    """Net expectancy of one lattice member over the train frames, pooled across legs.
+
+    The same costed replay the scored window runs (`_replay` under each frame's own cost
+    model — fees, slippage, funding carry), so the number a subset is selected on is the
+    same KIND of number the winner is later scored on. 0.0 over zero closed trades,
+    matching ``backtest_spec_pooled``'s convention for ``expectancy``."""
+    total = 0.0
+    closed = 0
+    for frame in train_frames:
+        outcomes, *_ = _replay(
+            spec, frame.rows, frame.candles, cost=frame.cost, funding=frame.funding,
+        )
+        for outcome in outcomes:
+            total += float(outcome["result_R"])
+            closed += 1
+    return round(total / closed, 8) if closed else 0.0
+
+
+def ablate_hypothesis(
+    spec: StrategySpec, frames: Sequence[ReplayFrame],
+) -> tuple[StrategySpec, dict[str, Any]] | None:
+    """Run the train-only ablation lattice over one drawn hypothesis.
+
+    ``None`` when there is no lattice to run: k outside
+    [:data:`ABLATION_MIN_CONDITIONS`, :data:`ABLATION_MAX_CONDITIONS`] (a single condition
+    has nothing to ablate; a wider conjunction stays on the existing path by §3-1), or an
+    OR hypothesis — dropping an OR member makes the rule STRICTER, the opposite of what a
+    proper subset means under AND, so the lattice's reasoning does not transfer.
+
+    Otherwise ``(winner, ablation_block)``. The selection rule is §3-2 as approved: the
+    full conjunction wins only if its train net expectancy strictly beats EVERY proper
+    subset's; otherwise the best proper subset wins, ties broken toward fewer conditions
+    and then toward the enumeration order (sizes ascending, index-lexicographic within a
+    size — deterministic, so a re-run selects identically). The winner is ``spec`` itself
+    when the full conjunction wins, so its rule hash — the one the draw's duplicate guard
+    already cleared — is untouched.
+
+    Holdout bars cannot enter the selection by construction: every member is replayed over
+    :func:`_train_frame` truncations, objects that do not contain the holdout. The winner's
+    holdout is spent exactly once, by the ordinary full backtest the caller runs next.
+
+    Consumes no randomness — the enumeration, the replays and the tie-breaks are pure
+    functions of the spec and the frames, so the seeded draws after a lattice are the same
+    draws they would have been without one."""
+    conditions = spec.entry_rules.conditions
+    k = len(conditions)
+    if not (ABLATION_MIN_CONDITIONS <= k <= ABLATION_MAX_CONDITIONS):
+        return None
+    if spec.entry_rules.operator != "AND":
+        return None
+    if not frames:
+        raise ValueError("an ablation lattice needs at least one frame to replay")
+    cost = frames[0].cost
+    for frame in frames:
+        if frame.cost != cost:
+            raise ValueError(
+                "ablation frames were built under different cost models; a lattice mixing "
+                "rates would select on numbers no one book was charged"
+            )
+    train = [_train_frame(frame) for frame in frames]
+    # Every non-empty subset, the full set last: sizes ascending, index-lexicographic
+    # within a size. This order is the tie-break of last resort below and the key order
+    # of the evidence map, so it is the one deterministic enumeration, stated once.
+    members = [combo for size in range(1, k + 1) for combo in combinations(range(k), size)]
+    scores = {
+        indices: _train_net_expectancy(
+            spec if len(indices) == k else _subset_spec(spec, indices), train
+        )
+        for indices in members
+    }
+    full = members[-1]
+    proper = members[:-1]
+    full_beats = all(scores[full] > scores[indices] for indices in proper)
+    if full_beats:
+        winner_indices, winner = full, spec
+    else:
+        winner_indices = min(proper, key=lambda indices: (-scores[indices], len(indices), indices))
+        winner = _subset_spec(spec, winner_indices)
+    return winner, {
+        "lattice_size": len(members),
+        "hypothesis_conditions": [c.to_dict() for c in conditions],
+        "winner_conditions": [c.to_dict() for c in winner.entry_rules.conditions],
+        "full_beat_subsets": full_beats,
+        # Keyed by "+"-joined indices into ``hypothesis_conditions``, in enumeration
+        # order — compact, and enough to reconstruct which grid the winner survived.
+        "train_net_expectancy_by_subset": {
+            "+".join(str(i) for i in indices): scores[indices] for indices in members
+        },
+    }
+
+
+def _lattice_winner(
+    hypothesis: StrategySpec, frames: Sequence[ReplayFrame], *,
+    seen_hashes: set[str], stats: dict[str, int],
+) -> tuple[StrategySpec, dict[str, Any] | None, str | None]:
+    """One drawn hypothesis through the lattice, returning what may register.
+
+    ``(winner, ablation_block, refusal)``. The winner is the hypothesis untouched when
+    there was no lattice to run (block and refusal both None). A swapped-in subset winner
+    is re-checked here for the two guards its draw cleared with DIFFERENT conditions: the
+    duplicate guard — the hash `generate_batch`/`fuse_specs` deduplicated was the full
+    conjunction's, and a subset that already exists in the store must be refused, never
+    re-minted (`known_rule_hashes`' own rule) — and the validator, unreachable for a
+    subset of a validated AND conjunction (per-condition checks over fewer conditions,
+    exits untouched) but kept because a typed refusal is cheaper than being wrong about
+    "unreachable". On refusal nothing registers: the hypothesis already lost the lattice,
+    and minting it anyway would register the exact spec the selection said was fit.
+
+    ``stats`` counts what ablation did (fires report it): every lattice run, and every
+    full conjunction that failed to strictly beat its best proper subset — counted at
+    selection time, so a later refusal of the winner does not un-count the finding."""
+    lattice = ablate_hypothesis(hypothesis, frames)
+    if lattice is None:
+        return hypothesis, None, None
+    winner, block = lattice
+    stats["lattices"] += 1
+    if not block["full_beat_subsets"]:
+        stats["luck_filtered"] += 1
+    if winner.strategy_rule_hash != hypothesis.strategy_rule_hash:
+        if winner.strategy_rule_hash in seen_hashes:
+            return winner, block, "ablation_winner_duplicate_rule_hash"
+        if not validate_strategy(winner)["approved_for_backtest"]:
+            return winner, block, "ablation_winner_failed_validation"
+    return winner, block, None
+
+
 # --- fusion: crossover of two proven lineages ---------------------------------
 
 # How many top-ranked lineages the pair search may draw from. A ceiling, not a
@@ -4002,7 +4184,7 @@ def _fusion_improvement(
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
-    frame: ReplayFrame | None = None,
+    frame: ReplayFrame | None = None, ablation_stats: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
 
@@ -4021,10 +4203,24 @@ def _fuse_batch(
     :data:`FUSION_IMPROVEMENT_METRICS` for the bar and why the parents are replayed here
     rather than read from their stored rows. That refusal is ordered last because it is the
     only one costing a replay, so the cheap structural checks drop the pairs that would
-    waste it; and it costs no mint, because the pair stream simply draws again."""
+    waste it; and it costs no mint, because the pair stream simply draws again.
+
+    A fused union of :data:`ABLATION_MIN_CONDITIONS`..:data:`ABLATION_MAX_CONDITIONS`
+    conditions runs the ablation lattice before its backtest — the winner (the union, or
+    its best proper subset) is what every gate after it judges and what registers. Wider
+    unions, up to ``MAX_FUSION_ENTRY_CONDITIONS`` = 7, stay on the existing path
+    unchanged: §3-1 of the ablation proposal priced the k = 4 lattice (15 members) as a
+    cadence decision and declined it. ``ablation_stats`` shares the caller's counters so
+    a fire reports seeded and fused lattices as one number."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     replayed: dict[str, dict[str, Any]] = {}
+    # Built once when the caller did not hand one over: the lattice needs a frame to slice
+    # its train segment from, and every child/parent backtest below reuses it. A frame is a
+    # pure function of (snapshot, cost model), so results are unchanged — only rebuilds go.
+    if frame is None:
+        frame = build_replay_frame(snapshot)
+    stats = ablation_stats if ablation_stats is not None else {"lattices": 0, "luck_filtered": 0}
 
     def on_this_window(spec: StrategySpec) -> dict[str, Any]:
         """This parent's evidence on the CHILD's snapshot, replayed once per fire."""
@@ -4053,6 +4249,17 @@ def _fuse_batch(
         if child.strategy_rule_hash in seen_hashes:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
             continue
+        # The ablation lattice sits between the union and its backtest: the winner is what
+        # the no-trades and improvement gates below judge, and what registers. A subset
+        # winner facing those gates is the point rather than a leniency — it must still
+        # improve on BOTH parents to be worth storing as a crossover, and a union whose
+        # value was all in one parent's conditions now fails exactly there.
+        child, ablation, refusal = _lattice_winner(
+            child, [frame], seen_hashes=seen_hashes, stats=stats,
+        )
+        if refusal is not None:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
+            continue
         evidence = backtest_spec(child, snapshot, frame=frame)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
@@ -4063,6 +4270,10 @@ def _fuse_batch(
         if refusal is not None:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
             continue
+        if ablation is not None:
+            # The grid this winner survived, on the record (§1-5). Stored FACT — how many
+            # were tried — which `pool.attempts_by_context` expands at read time.
+            evidence["ablation"] = ablation
         seen_hashes.add(child.strategy_rule_hash)
         record = {
             "strategy_id": child.strategy_id,
@@ -4157,7 +4368,12 @@ def run_factory(
     ``cohort_snapshots`` are the OTHER legs of a pooled mint — one spec scored across all of
     them, ``symbol_scope`` set to the whole cohort. Ignored unless ``snapshot``'s timeframe is in
     :data:`POOLED_TIMEFRAMES`, so a caller cannot pool 1h by accident. Absent (the default) is
-    exactly today's single-symbol behaviour, down to the seed."""
+    exactly today's single-symbol behaviour, down to the seed.
+
+    Every drawn hypothesis of 2..:data:`ABLATION_MAX_CONDITIONS` entry conditions — seeded,
+    topped-up, or fused — passes the train-only ablation lattice before registration
+    (:func:`ablate_hypothesis`); the result's ``ablated_count`` / ``luck_filtered_count``
+    say what the lattice did."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -4239,6 +4455,19 @@ def run_factory(
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
+    ablation_refused: list[dict[str, Any]] = []
+    # Every hash this fire may not register again: the store and pool (`known_hashes`)
+    # plus everything registered by this fire so far. An ablation winner is the one kind
+    # of spec that reaches registration WITHOUT its hash having passed the draw's own
+    # duplicate guard — the conditions changed after the draw — so the guard re-runs at
+    # the registration door, against this one running set.
+    fire_hashes: set[str] = set(known_hashes)
+    # What ablation did this fire, for the result and the operator's status line:
+    # `lattices` = hypotheses that ran one (2 <= k <= ABLATION_MAX_CONDITIONS), and
+    # `luck_filtered` = full conjunctions that failed to strictly beat their own best
+    # proper subset on train net expectancy — the stacked luck the lattice exists to
+    # catch, counted at selection time whether or not the subset then registered.
+    ablation_stats = {"lattices": 0, "luck_filtered": 0}
 
     def _score_draw(specs: Sequence[Mapping[str, Any]], params: Mapping[str, Any]) -> None:
         """Backtest one seeded draw, appending survivors to ``candidates``.
@@ -4255,13 +4484,36 @@ def run_factory(
             # none of the columns the rule names is a four-leg pool wearing a five-leg label,
             # and `_holdout_evidence` would report `symbols: 5` over it. Fail closed on ANY leg
             # — the guard F2's first pass walked around cost that batch its whole finding.
+            #
+            # And before the lattice, for the same reason in the other direction: ablation
+            # must not rescue a starved hypothesis by dropping its dead condition — the
+            # refusal is about the DRAW naming an unsupplied feature, and a subset minted
+            # from it would be a hypothesis nobody drew.
             starved = sorted({f for fr in frames for f in unsuppliable_features(spec, fr.rows)})
             if starved:
                 starved_specs.append({"strategy_family": spec.strategy_family,
                                       "reason": UNSUPPLIABLE_FEATURE, "features": starved})
                 continue
+            # The ablation lattice (proposal §3, approved as proposed): between the draw and
+            # registration, on the train segment only. The winner — the full conjunction if
+            # it strictly beat every proper subset, else the best proper subset — is what
+            # runs the ordinary full backtest below and registers. Exactly one winner per
+            # hypothesis; k = 1 and k > ABLATION_MAX_CONDITIONS pass through untouched.
+            spec, ablation, refusal = _lattice_winner(
+                spec, frames, seen_hashes=fire_hashes, stats=ablation_stats,
+            )
+            if refusal is not None:
+                ablation_refused.append({"strategy_family": spec.strategy_family,
+                                         "reason": refusal})
+                continue
             evidence = (backtest_spec_pooled(spec, [], frames=frames) if pooled
                         else backtest_spec(spec, snapshot, frame=frame))
+            if ablation is not None:
+                # The grid this winner survived, on the record (§1-5). `lattice_size` is
+                # stored FACT — how many members were tried — and `pool.attempts_by_context`
+                # expands it at read time, so the unregistered siblings still pay the
+                # multiple-testing charge.
+                evidence["ablation"] = ablation
             record = {
                 "strategy_id": spec.strategy_id,
                 "strategy_rule_hash": spec.strategy_rule_hash,
@@ -4286,6 +4538,7 @@ def run_factory(
             # Stored id == derived id: strategy_id restarts every generation, so the
             # lineage-derived candidate_id is the only key promotions may use.
             record["candidate_id"] = derive_candidate_id(record)
+            fire_hashes.add(spec.strategy_rule_hash)
             candidates.append(record)
 
     _score_draw(batch["specs"], batch["params"])
@@ -4325,10 +4578,15 @@ def run_factory(
             # same convention the shortfall draw below already uses.
             start_index=count + 1,
             pairs=fusion_pairs,
-            seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
+            # The fire's own running set — `known_hashes` plus everything registered so far
+            # (the same contents the literal union here used to build). `_fuse_batch` adds
+            # each minted child to it, so the shortfall draw below and its ablation winners
+            # are deduplicated against the fused children without a second convention.
+            seen_hashes=fire_hashes,
             evidence_sha=candles_sha,
             frame=frame,
             now=now,
+            ablation_stats=ablation_stats,
         )
 
     # --- the half of the budget fusion declined ----------------------------------------
@@ -4391,11 +4649,10 @@ def run_factory(
             symbol=symbol,
             timeframe=timeframe,
             elite_params=centres,
-            known_rule_hashes=frozenset({
-                *known_hashes,
-                *(c["strategy_rule_hash"] for c in candidates),
-                *(c["strategy_rule_hash"] for c in fused),
-            }),
+            # The fire's running set again: store + pool + this fire's seeded rows and fused
+            # children — the identical contents the literal union here used to spell out,
+            # now including any ablation winner whose hash the draw itself never saw.
+            known_rule_hashes=frozenset(fire_hashes),
             positioning_eligible=positioning_eligible,
             venue=venue,
             rotation_index=rotation_index,
@@ -4429,9 +4686,16 @@ def run_factory(
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
-        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs],
+        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs, *ablation_refused],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
+        # What the ablation lattice did this fire — seeded and fused hypotheses together,
+        # since `_fuse_batch` shares the counter. `ablated_count` is lattices RUN;
+        # `luck_filtered_count` is how many full conjunctions failed to strictly beat their
+        # own best proper subset, i.e. how much stacked luck the grid caught. The scheduler's
+        # status line forwards both, so the budget a lattice spends is legible per fire.
+        "ablated_count": ablation_stats["lattices"],
+        "luck_filtered_count": ablation_stats["luck_filtered"],
         # How much of the fusion allocation the shortfall draw re-spent, at MINT time — the
         # same basis as `accepted_count`, so the two decompose without a second convention.
         # Zero on a fire fusion filled, which is the only reading that says "nothing was

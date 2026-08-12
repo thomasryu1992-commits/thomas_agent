@@ -1,6 +1,13 @@
 # 제안: 팩토리에 가설 → 기여도 → 절제 → 파라미터 순서를 넣는다 (DRAFT v0.1)
 
-**상태:** DRAFT — 설계 선행(구현 아님). Thomas 2026-08-11 지시("Parameter Mutation 위주
+**상태:** §3 승인 — Thomas 2026-08-12, **제안대로(AS PROPOSED)**: k 상한 3(격자 ≤7); 판정
+기준은 train 순기대값, full이 최선 진부분집합을 **엄격히** 이겨야 하고 동률은 단순한
+쪽(조건 수 최소); `ablation` derivation 타입은 추가하지 않음(승자는 기존 경로로 등록,
+`backtest_evidence.ablation` 격자 요약 carried); 케이던스 유지(가설 수 감소·가설당 깊이
+증가 수용). 구현: `factory.ablate_hypothesis` + `pool.attempts_by_context` 격자 청구
+(브랜치 `crypto/the-factory-learns-to-ablate`). 원문(제안 시점)은 아래 그대로.
+
+Thomas 2026-08-11 지시("Parameter Mutation 위주
 탐색보다 Hypothesis → Feature contribution → Ablation → Parameter optimization을 넣는 것을
 추천… 실제 Edge가 OI에서 나오는지, 그냥 조건을 여러 개 붙여 우연히 좋아진 것인지 확인해야
 합니다. 이게 지금 다음 단계에서 굉장히 중요합니다.")를 설계로 고정한 문서.
