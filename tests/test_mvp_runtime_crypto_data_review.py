@@ -327,6 +327,47 @@ def test_scheduled_data_review_fire_ledgers_the_record(tmp_path, monkeypatch):
     assert reviews[0]["record"]["collection_effect"] == "NONE"
 
 
+def test_a_delegated_review_is_stamped_and_uniquely_identified(tmp_path, monkeypatch):
+    """A record written on the far side of the door still knows when it was written.
+
+    `build_worker_door`'s `_apply` calls `apply_work` without a `now` — so `None` is what a
+    job actually receives in production, and `_worker_in_process` above reproduces that by
+    omitting it too. The pipeline path never noticed because `run_task` resolves `None`
+    against the clock; the job path did not, and the data review stamps `created_at` from it
+    AND seeds `review_id` off it.
+
+    So the 2026-08-15 fire — the first to run through this door — wrote `created_at: null` and
+    `review_id: data_review_246e68234b481e1cb348`, which is `short_id("data_review", {"at":
+    None})`: a CONSTANT. Every weekly review after it would have been filed under the same id,
+    making the ledger's `trace_id` and the schedule's `last_status` identical week to week.
+
+    Asserted as a derivation rather than as "not that literal id": the id being a function of
+    the stamp is the property that makes it unique per fire, and it survives a change to
+    either the seed or the id format."""
+    from runtime.mvp_runtime import timeutil
+    from runtime.read_only_kernel import integrity
+
+    monkeypatch.delenv("MVP_VALIDATOR_PROVIDER", raising=False)
+    _worker_in_process(monkeypatch, tmp_path)
+    schedule = build_schedule(kind=KIND_DATA_REVIEW, request="", interval_seconds=86400,
+                              created_by="op", now="2026-07-24T06:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    ledger = LedgerStore(tmp_path / LEDGER_REL)
+    run_due(store, now=NOW, control_store=ControlStore(tmp_path),
+            ledger=ledger, repo_root=tmp_path)
+    rows = [json.loads(line) for line in
+            (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+    record = [r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND][0]["record"]
+
+    created_at = record["created_at"]
+    assert created_at is not None
+    assert timeutil.FIXED_UTC_PATTERN.match(created_at), created_at
+    assert record["review_id"] == integrity.short_id("data_review", {"at": created_at})
+    assert record["review_id"] != integrity.short_id("data_review", {"at": None})
+
+
 # --- the prompt asks for a shape the provider will actually hand back ---------
 
 class _RealParseProvider:
