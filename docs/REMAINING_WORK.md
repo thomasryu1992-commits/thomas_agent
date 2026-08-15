@@ -1452,8 +1452,28 @@ same answer.
       read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
       running is deliberately never interrupted (cutting a factory or archive mid-write trades a
       latency problem for a torn record). So a single hung fire blocks everything behind it in
-      that pass, without limit. Fifteen days say it has not happened — the worst observed is
-      +438s — but no in-process change can make it impossible.
+      that pass, without limit. ~~Fifteen days say it has not happened — the worst observed is
+      +438s~~ — no in-process change can make it impossible, and **it has now happened: twice in
+      four days, attributed to the second, measured 2026-08-15.**
+
+      #704 (merged 2026-08-12) added mint-time ablation, and on the days the drawn conjunctions
+      make it expensive the 4h cohort factory fire runs ~6.5 minutes where it ran ~75s. Both
+      times, `crypto_pipeline` — a `RISK_KINDS` member — was due mid-fire and fired the second
+      the factory fire ended:
+
+      | day | 4h factory fire | pipeline gap (960s = late) | attribution |
+      |---|---|---|---|
+      | 2026-08-12 | 391s, ended 08:19:10 | 1,202s, fired **08:19:10** | exact to the second |
+      | 2026-08-15 | 402s, ended 08:19:44 | 1,225s, fired **08:19:44** | exact to the second |
+
+      Three notes so this is read at its true size and no larger. The cost is ~5 minutes of
+      entry/bookkeeping latency on a 4h path whose protective bracket rests at the venue —
+      bounded, not an unprotected position. The long fires are the day's conjunction mix, not a
+      new floor: 08-13/08-14 ran 72–124s and were clean. And the same window produced two more
+      "late" gaps that the restart check above **discards**: 08-11's 1,799s contains an
+      `abandoned` recovery row (a restart — exactly the check this item prescribes), and
+      08-15's overnight 1,806s gap has no marker and no factory fire in its window, so it stays
+      unattributed rather than counted.
 
       **What reopens this:** one fire that hangs rather than merely running long; one abandoned
       run **that no container restart explains** (the process dying mid-fire, which OOM would
@@ -1465,8 +1485,19 @@ same answer.
       passes) rather than a judgement. Deferrals alone do not qualify and that is the point of
       recording them: the clustering above cost maintenance up to four minutes while
       `crypto_pipeline` held its cadence, so it is cosmetic, and the schedules should be left
-      alone until the two appear on the same day. Any of the four makes the separation a fix
-      rather than an investment, and the measurements above are the thing to re-run first.
+      alone until the two appear on the same day.
+
+      **The fourth condition is now met — 2026-08-12 and again 2026-08-15, the table above.**
+      Both days also deferred maintenance (the 1d cohort fire waited two passes behind its 4h
+      sibling), so "late risk-kind fires and deferrals together" holds literally. One precision
+      that matters for the remedy: the deferrals those days were the factory's own sibling and
+      the morning `crypto_null_control` burst, but the *lateness* was caused by fire
+      **duration**, not by the burst — so the `--first-run-at` / reschedule capability this
+      item's companion report points at targets the wrong mechanism for this instance, and the
+      candidate remedies are duration-shaped (a duration-aware budget, splitting the ablation
+      fire, or the process separation this item parked). Per this item's own closing sentence,
+      one of those is now a fix rather than an investment. **Which, and whether — that is a
+      Thomas decision; this paragraph records the evidence and decides nothing.**
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
