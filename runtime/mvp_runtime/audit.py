@@ -212,6 +212,8 @@ def build_pipeline_audit(
     now: str,
     tool_use: Mapping[str, Any] | None = None,
     search_permission_decision: Mapping[str, Any] | None = None,
+    keyword_use: Mapping[str, Any] | None = None,
+    keyword_permission_decision: Mapping[str, Any] | None = None,
     triage_result: Mapping[str, Any] | None = None,
     triage_invocation: Mapping[str, Any] | None = None,
     triage_permission_decision: Mapping[str, Any] | None = None,
@@ -343,6 +345,41 @@ def build_pipeline_audit(
                              if degraded else [])),
             related_record_refs=[search_permdec_ref],
             evidence_refs=[f"in_memory:tool_use:{tid}"], payload_sha256=tool_fp,
+        ))
+
+    if keyword_use is not None:
+        # The Naver keyword brief joins the chain in the search's exact shape — found
+        # missing by an external review (2026-08-10): the brief persisted as a record but
+        # left no audit event and acted under no PermissionDecision, invisible to the chain
+        # at both the authorization step and the evidence step.
+        kw_fp = _fingerprint(dict(keyword_use), "keyword_research")
+        kw_egress = bool(keyword_use.get("network_egress"))
+        kw_permdec_ref = (
+            f"in_memory:{keyword_permission_decision['permission_decision_id']}"
+            if keyword_permission_decision else f"in_memory:task:{tid}"
+        )
+        kw_degraded = bool(keyword_use.get("degraded"))
+        degraded_legs = dict(keyword_use.get("degraded_legs") or {})
+        # Mock rows must be visible ON THE CHAIN, not only in the record's source strings:
+        # an operator reading the trail should never need to open the row payload to learn
+        # the numbers were fixtures (the gate was closed) rather than measurements.
+        kw_mock = any(str(s).startswith("mock.") for s in keyword_use.get("sources") or [])
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("role", agent_output["role_id"], role_id=agent_output["role_id"],
+                         role_version=agent_output["role_version"], assignment_id=agent_output["assignment_id"]),
+            subject_type="TOOL_USE", subject_id=str(keyword_use.get("tool_id")),
+            subject_ref=f"in_memory:keyword_research:{tid}", subject_fingerprint=kw_fp,
+            summary=(f"Read-only keyword brief: {keyword_use.get('tool_id')} — "
+                     f"{keyword_use.get('result_count')} rows from {keyword_use.get('sources')}, "
+                     f"network_egress={kw_egress}, degraded={kw_degraded}, mock={kw_mock}."),
+            outcome="RECORDED",
+            reason_codes=(["TOOL_USED", "NETWORK_EGRESS" if kw_egress else "NO_NETWORK_EGRESS"]
+                          + (["MOCK_SOURCE"] if kw_mock else [])
+                          + (["KEYWORD_DEGRADED", *sorted(set(map(str, degraded_legs.values())))]
+                             if kw_degraded else [])),
+            related_record_refs=[kw_permdec_ref],
+            evidence_refs=[f"in_memory:keyword_research:{tid}"], payload_sha256=kw_fp,
         ))
 
     steps.append(dict(

@@ -112,6 +112,11 @@ def test_the_fixed_grant_table_matches_the_constants_it_is_built_from():
     drifted from its constants, that answer would be wrong in the one place people look."""
     expected = {
         "search": (P.SEARCH_PERMISSION_SCOPE, P.SEARCH_REQUIRED_PERMISSION_LEVEL),
+        # The Naver keyword brief (2026-08-10): the search's effect class at the search's
+        # level, with its own action identity. Added when the brief joined the audit chain —
+        # it had been running under no decision at all, the one external-review finding of
+        # six that survived verification.
+        "keyword_research": (P.KEYWORD_PERMISSION_SCOPE, P.KEYWORD_REQUIRED_PERMISSION_LEVEL),
         "triage": (P.TRIAGE_PERMISSION_SCOPE, P.TRIAGE_REQUIRED_PERMISSION_LEVEL),
         "validation": (P.VALIDATION_PERMISSION_SCOPE, P.VALIDATION_REQUIRED_PERMISSION_LEVEL),
         "trial_work": (P.TRIAL_WORK_PERMISSION_SCOPE, P.TRIAL_WORK_REQUIRED_PERMISSION_LEVEL),
@@ -137,6 +142,7 @@ def test_each_fixed_grant_builds_the_disposition_the_policy_prices():
     dispositions = _dispositions()
     builders = {
         "search": (P.build_search_permission_decision, "P3"),
+        "keyword_research": (P.build_keyword_permission_decision, "P3"),
         "triage": (P.build_triage_permission_decision, "P3"),
         "validation": (P.build_validation_permission_decision, "P2"),
         "trial_work": (P.build_trial_work_permission_decision, "P3"),
