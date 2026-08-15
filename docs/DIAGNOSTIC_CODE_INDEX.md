@@ -954,12 +954,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
 | `WRONG_APPROVER` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 249 | `record_decision` | `verification.approved_by != REQUIRED_APPROVER` |
-| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3804 | `fuse_specs` | `first.direction != second.direction` |
-| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3826 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
-| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3812 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
-| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3793 | `fuse_specs` | `first.schema_version != second.schema_version` |
-| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3810 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
-| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3808 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
-| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3806 | `fuse_specs` | `first.timeframe != second.timeframe` |
-| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3820 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
-| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3802 | `fuse_specs` | `first.venue != second.venue` |
+| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3811 | `fuse_specs` | `first.direction != second.direction` |
+| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3833 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
+| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3819 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
+| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3800 | `fuse_specs` | `first.schema_version != second.schema_version` |
+| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3817 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
+| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3815 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
+| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3813 | `fuse_specs` | `first.timeframe != second.timeframe` |
+| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3827 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
+| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3809 | `fuse_specs` | `first.venue != second.venue` |
