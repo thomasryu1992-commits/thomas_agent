@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import socket_door
+from . import socket_door, timeutil
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .naver_research import MAX_SEED_CHARS
@@ -324,7 +324,24 @@ def _apply_job(
     is assigned, no P3 ceiling applies, because nothing here is a task — it is one model call
     whose prompt and parser belong to the caller's own module. What it shares with the
     pipeline path is the thing that matters: the credentials, and the kill switch.
+
+    ``now`` is resolved here, against the clock, exactly as ``pipeline.run_task`` resolves its
+    own. The door does not supply one — ``build_worker_door``'s ``_apply`` calls ``apply_work``
+    without it — so ``None`` is what every job actually receives, and the pipeline path never
+    noticed because ``run_task`` has this same line. A job's record does not: the data review
+    stamps ``created_at`` from it AND seeds ``review_id`` off it, so a ``None`` produced a
+    record with a null timestamp and a **constant** id — `short_id("data_review", {"at": None})`
+    is `data_review_246e68234b481e1cb348` for every fire, forever. Measured on the 2026-08-15
+    fire, the first one to run through this door (delegation shipped in #680, 2026-08-10; the
+    2026-08-08 record still has a real timestamp because it ran in-process).
+
+    Resolved here rather than sent in the frame on purpose. `_JOB_KEYS` is closed, and a
+    caller-supplied timestamp would let the frame choose the id its own record is filed under
+    — the record's identity should come from the clock of the process that writes it, not from
+    the request. Nothing is lost: the caller's own occurrence time is already the schedule's
+    `last_run_at`, and the two differ by the socket round trip.
     """
+    now = now if now is not None else timeutil.utc_now_iso()
     job = request.get("job")
     if not isinstance(job, str) or job.strip() not in _ALLOWED_JOBS:
         raise ControlBlocked(
