@@ -93,6 +93,13 @@ CURRENT_SOURCES = (
                 "global_account) accumulated into positioning_store, because the vendor keeps "
                 "30 days. Feeds the positioning_* columns; the two families that read them stay "
                 "unminted until coverage covers the replay window"},
+    {"source": "binance_futures_order_book",
+     "content": "top-20 resting depth per side, sampled once per 15m period and reduced to "
+                "imbalance / spread_bps / mid in orderbook_store. THIS review suggested it "
+                "(2026-08-15) and it was built, which is why it is here: the endpoint serves "
+                "the current book and NO history, so unlike every other entry the store cannot "
+                "seed and a missed period is unrecoverable. Feeds no feature and cannot until "
+                "2029-05-11"},
     {"source": "dex_candle_archive",
      "content": "15m/1h/4h/1d candles for every perp the xyz DEX lists, accumulated into "
                 "candle_archive because that venue serves a rolling 5,000-candle window and "
@@ -246,9 +253,24 @@ class MockDataReviewProvider:
     "is not" collected; that became false when the daily series shipped, and nothing
     caught it because ``already_collected`` matches the source NAME and the two spellings
     differ. So the fixture went on stating a fact about the inventory that the inventory
-    contradicted. Resting liquidity is the replacement because no collected series
-    describes it: every one is a trade or a position, none is an order that is still
-    waiting."""
+    contradicted.
+
+    **It has now happened twice, to the replacement, and that is the useful part of this
+    note.** Resting liquidity was chosen next because no collected series described it —
+    true when written, false on 2026-08-15 when ``orderbook_store`` shipped and
+    ``binance_futures_order_book`` joined the list above. The same spelling gap hid it
+    again (``orderbook_depth_imbalance`` against ``binance_futures_order_book``), so the
+    filter this fixture is meant to stay clear of would not have caught it either time.
+
+    The pattern is not bad luck: a mock suggestion is chosen for being the most obviously
+    missing thing in the inventory, which is exactly the property that makes it the most
+    likely thing to be built next. So the replacement is picked for durability rather than
+    for being the best idea. Option-implied volatility qualifies because every source above
+    is a spot-or-perp series recording what already happened, and nothing in this runtime's
+    universe of gated venues quotes an option at all — the gap is structural, not a queue
+    position. If this one goes stale too, the fix is not a third guess: it is to stop
+    sourcing the fixture from real gaps and let it name something the runtime would never
+    collect."""
 
     model_id = "mock.data_gap_reviewer"
     model_version = "0.1.0"
@@ -262,13 +284,14 @@ class MockDataReviewProvider:
         "summary": "one usable suggestion, one malformed",
         "suggestions": [
             {
-                "name": "orderbook_depth_imbalance",
-                "data_kind": "market_microstructure",
-                "rationale": "Every collected series is a trade that happened or a position "
-                             "outstanding; none is resting liquidity, so nothing separates a "
-                             "move into a thin book from the same move into a deep one.",
-                "expected_use": "liquidity_vacuum family: take breakouts only when the book "
-                                "ahead of price is thin.",
+                "name": "option_implied_volatility",
+                "data_kind": "other",
+                "rationale": "Every collected series is a spot or perp observation of what has "
+                             "already happened; none of them is a price the market is paying "
+                             "for volatility it expects, so nothing distinguishes a quiet tape "
+                             "that is priced to stay quiet from one that is not.",
+                "expected_use": "vol_regime family: gate entries on realized volatility sitting "
+                                "below what options are charging for it.",
             },
             {
                 "name": "malformed_suggestion",

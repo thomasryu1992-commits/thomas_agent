@@ -138,13 +138,18 @@ def test_a_declared_venue_still_calls_the_provider():
 
 # --- the inventory stays true -------------------------------------------------
 
-# Every series `attach_feeds` reports a status for, as of 2026-08-08. A SNAPSHOT and a
+# Every series `attach_feeds` reports a status for, as of 2026-08-15. A SNAPSHOT and a
 # decision point, the `SHARED_ACROSS_MODULES` precedent in `test_diagnostic_code_index`:
 # the list is not a second source of truth, it is the thing that makes the ninth series a
 # choice somebody makes rather than one that lands unnoticed.
+#
+# It worked. ``orderbook`` is the ninth, and this pin is what stopped it landing unnoticed —
+# `CURRENT_SOURCES` had been updated in the same change but this line had not, so the guard
+# failed on exactly the half that was forgotten rather than on the half that was done.
 COLLECTED_SERIES = frozenset({
     "funding", "mark_prices", "index_prices", "premium_index",
     "positioning", "liquidations", "open_interest", "open_interest_1h",
+    "orderbook",
 })
 
 
@@ -183,7 +188,8 @@ def test_a_new_collected_series_forces_the_inventory_to_be_revisited(tmp_path):
     # own schedule kind), so the pin above cannot see them and they are named directly.
     sources = {s["source"] for s in CURRENT_SOURCES}
     assert {"coinalyze_open_interest", "coinalyze_open_interest_1h",
-            "binance_futures_positioning", "dex_candle_archive"} <= sources
+            "binance_futures_positioning", "dex_candle_archive",
+            "binance_futures_order_book"} <= sources
 
 
 def test_an_accumulating_source_says_it_feeds_nothing_yet():
@@ -225,7 +231,7 @@ def test_mock_provider_exercises_accept_and_reject():
                               provider=MockDataReviewProvider(), now=NOW)
     assert record["suggested_count"] == 2 and record["accepted_count"] == 1
     accepted = [s for s in record["suggestions"] if s["accepted"]]
-    assert accepted[0]["name"] == "orderbook_depth_imbalance"
+    assert accepted[0]["name"] == "option_implied_volatility"
     rejected = [s for s in record["suggestions"] if not s["accepted"]]
     assert "missing_rationale" in rejected[0]["problems"]
     assert record["collection_effect"] == "NONE"
@@ -278,7 +284,7 @@ def test_report_names_accepted_and_rejected():
     record = review_data_gaps(build_data_inventory([], []),
                               provider=MockDataReviewProvider(), now=NOW)
     sheet = format_review_report(record)
-    assert "orderbook_depth_imbalance" in sheet and "malformed_suggestion" in sheet
+    assert "option_implied_volatility" in sheet and "malformed_suggestion" in sheet
     assert "수집 효력 없음" in sheet
 
 
