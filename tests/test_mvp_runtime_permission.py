@@ -15,6 +15,7 @@ from runtime.mvp_runtime.errors import PlannerBlocked
 from runtime.mvp_runtime.intake import build_task
 from runtime.mvp_runtime import permission
 from runtime.mvp_runtime.permission import (
+    build_keyword_permission_decision,
     build_permission_decision,
     build_search_permission_decision,
     build_write_permission_decision,
@@ -165,6 +166,21 @@ def test_search_decision_is_allow_internal_read_at_p1():
     assert payload["target_ref"].endswith(":search")
     assert rec["authority"]["required_permission_level"] == "P1"
     assert rec["authority"]["authority_sufficient"] is True
+
+
+@requires_local_core
+def test_keyword_decision_is_allow_internal_read_at_p1_with_its_own_identity():
+    """The keyword brief acts at the search's scope and level but under its OWN action
+    identity — a decision naming search.readonly must never be the one a Naver lookup ran
+    under (the mismatched-lineage failure the brief's audit gap almost normalised)."""
+    rec = build_keyword_permission_decision(_bound_task(), role_permission_ceiling="P3", now=FIXED_NOW)
+    payload = rec["fingerprint_payload"]
+    assert rec["decision"]["permission_decision"] == "ALLOW"
+    assert payload["permission_scope"] == "INTERNAL_READ"
+    assert payload["action_type"] == "internal.read.keyword_research"
+    assert payload["tool_id"] == "naver.keyword_brief"
+    assert payload["target_ref"].endswith(":keyword_research")
+    assert rec["authority"]["required_permission_level"] == "P1"
 
 
 @requires_local_core

@@ -88,7 +88,7 @@ _RECORD_KINDS = (
     # store, so this closed list was never exercised — the store refused the run
     # (LEDGER_UNKNOWN_RECORD_KIND) exactly as designed. Sits beside tool_use because it is
     # the same shape of thing: one evidence-collection record per run, pipeline-ordered.
-    "keyword_research",
+    "keyword_research", "keyword_permission_decision",
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
     "revision",

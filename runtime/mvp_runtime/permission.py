@@ -48,6 +48,7 @@ from .authority import (
 )
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
+from .naver_research import BRIEF_TOOL_ID
 from .tools import SEARCH_TOOL_ID
 from .workspace import WORKSPACE_REL, WRITE_TOOL_ID
 
@@ -71,6 +72,12 @@ MVP_TTL_MINUTES = 30
 # Governance scope + least-privilege authority level for the R3 read-only search action.
 SEARCH_PERMISSION_SCOPE = "INTERNAL_READ"
 SEARCH_REQUIRED_PERMISSION_LEVEL = "P1"  # READ — a read-only lookup, one level below ANALYZE
+# The Naver keyword brief is the search's effect class exactly — a read-only public lookup
+# feeding evidence into the prompt — so it acts at the same scope and level. Named constants
+# of its own anyway: a future divergence (say, the brief gaining a paid API HUB tier) should
+# be a one-line change here, not a hunt for which "search" constant the brief was borrowing.
+KEYWORD_PERMISSION_SCOPE = SEARCH_PERMISSION_SCOPE
+KEYWORD_REQUIRED_PERMISSION_LEVEL = SEARCH_REQUIRED_PERMISSION_LEVEL
 
 # Governance scope + level for the R7 independent validation action. A distinct ALLOW-tier
 # scope (SIMULATION_VALIDATION) both matches the action semantically and keeps the validator's
@@ -365,8 +372,23 @@ class _FixedGrant:
     action: "_ActionSpec"
 
 
+_KEYWORD_ACTION = _ActionSpec(
+    action_type="internal.read.keyword_research",
+    target_suffix="keyword_research",
+    tool_id=BRIEF_TOOL_ID,
+    data_scope=("task.request", "web.public.read"),
+    normalized_parameters={"result_scope": "naver.keyword_demand", "visibility": "internal"},
+    risk_reason="Read-only Naver keyword-demand lookup; no external write, publication, financial, or runtime effect.",
+    authority_reason="Read-only information lookup within the assigned Task scope and authority ceiling.",
+    decision_reason="Authority is sufficient and the keyword brief is a reversible, read-only information lookup.",
+    constraint="Read-only keyword research; no external write, publication, tool/program execution, or runtime mutation.",
+)
+
 _FIXED_GRANTS: dict[str, _FixedGrant] = {
     "search": _FixedGrant(SEARCH_PERMISSION_SCOPE, SEARCH_REQUIRED_PERMISSION_LEVEL, _SEARCH_ACTION),
+    "keyword_research": _FixedGrant(
+        KEYWORD_PERMISSION_SCOPE, KEYWORD_REQUIRED_PERMISSION_LEVEL, _KEYWORD_ACTION
+    ),
     "triage": _FixedGrant(TRIAGE_PERMISSION_SCOPE, TRIAGE_REQUIRED_PERMISSION_LEVEL, _TRIAGE_ACTION),
     "validation": _FixedGrant(
         VALIDATION_PERMISSION_SCOPE, VALIDATION_REQUIRED_PERMISSION_LEVEL, _VALIDATION_ACTION
@@ -770,6 +792,30 @@ def build_search_permission_decision(
     return _build_fixed(
         "search", bound_task, role_permission_ceiling=role_permission_ceiling, now=now,
         actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
+    )
+
+
+def build_keyword_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the ALLOW PermissionDecision for the Naver keyword brief.
+
+    The ``keyword_research`` row of :data:`_FIXED_GRANTS` — the search's effect class at the
+    search's level (``INTERNAL_READ``, P1), with the brief's own action identity. Planned
+    only for runs that will brief (the pipeline asks when ``keyword_seeds`` was given), the
+    ``controlled_write`` precedent: a decision is built for an action that will be attempted,
+    never as standing furniture on every plan. Before this existed the brief ran under no
+    decision at all and left no audit event — found by an external review, 2026-08-10, the
+    one claim of six that survived verification intact."""
+    return _build_fixed(
+        "keyword_research", bound_task, role_permission_ceiling=role_permission_ceiling,
+        now=now, actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
     )
 
 
