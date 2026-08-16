@@ -1214,6 +1214,14 @@ def test_a_pooled_fire_does_not_fuse():
                          fusion_pairs=4)
     assert all((c.get("derivation_type") or "seeded_template") == "seeded_template"
                for c in result["candidates"])
+    # With fusion declined, the whole fusion budget re-fires as the seeded topup — the second
+    # `generate_batch` call site. Its rows must carry the cohort too: a topup row scoped
+    # `[symbol]` would wear pooled evidence over a single-symbol label (and split
+    # `pool.search_context_key` attempt counts).
+    assert result["seeded_topup_count"] > 0, "the topup path must actually fire here"
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
+        assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
 
 
 def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
