@@ -3659,6 +3659,13 @@ def _lattice_winner(
 # quota: the caller's ``fusion_pairs`` decides how many children are actually minted.
 FUSION_PARENT_POOL = 6
 
+# Why a fire produced no fused children WITHOUT the fusion path having run. `run_factory` reports
+# one of these in ``fusion_skipped``, or ``None`` when the path did execute — see the comment at
+# the dispatch for why "it ran and found nothing" has to be distinguishable from "it never ran".
+FUSION_NOT_REQUESTED = "not_requested"   # the caller passed fusion_pairs <= 0
+FUSION_POOLED_FIRE = "pooled_fire"       # a pooled mint: `_fuse_batch` scores on one frame
+FUSION_SKIP_REASONS = frozenset({FUSION_NOT_REQUESTED, FUSION_POOLED_FIRE})
+
 
 class FusionRefused(ValueError):
     """A parent pair cannot be fused. Carries a stable short ``reason``."""
@@ -4550,8 +4557,20 @@ def run_factory(
     # frame; handing it a cohort is a second increment. `fuse_specs` would pair pooled parents
     # happily (their scopes match, so `symbol_scope_mismatch` never fires), so the child would be
     # minted and scored on one leg while claiming five — the exact shape of wrong number this
-    # file spends most of its guards preventing. Recorded in the result so a fire that wanted
-    # fusion and got none says so.
+    # file spends most of its guards preventing.
+    #
+    # **`fusion_skipped` names WHY the path did not run, because `fused_count: 0` cannot.**
+    # Three unrelated situations produced an identical record — the caller never asked, the fire
+    # was pooled, or fusion ran and no bucket held a pair — and only the last is a fact about the
+    # candidate store. Measured 2026-08-15: every fire since the first pooled one
+    # (2026-08-10T08:12:38Z) reported `fused_count: 0` with an empty `fusion_rejected`, which is
+    # byte-identical to a dry parent pool, and the crossover path being off went unnoticed for six
+    # days. `pooled: true` was on the record and implied it, but implying is not saying — a reader
+    # has to already know this boundary exists to read it that way, and a watch built to catch a
+    # dry pool looked straight past it.
+    fusion_skipped = None if fusion_pairs > 0 else FUSION_NOT_REQUESTED
+    if fusion_pairs > 0 and pooled:
+        fusion_skipped = FUSION_POOLED_FIRE
     if fusion_pairs > 0 and not pooled:
         fused, fusion_rejected = _fuse_batch(
             # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
@@ -4703,6 +4722,9 @@ def run_factory(
         # itself was complete.
         "seeded_topup_count": topup_accepted,
         "fusion_rejected": fusion_rejected,
+        # ``None`` exactly when the fusion path executed, so an empty ``fusion_rejected`` beside a
+        # ``None`` here is the one reading that means "fusion looked and the store had no pair".
+        "fusion_skipped": fusion_skipped,
         "evidence_input_sha256": candles_sha,
         "created_at": now,
     }
