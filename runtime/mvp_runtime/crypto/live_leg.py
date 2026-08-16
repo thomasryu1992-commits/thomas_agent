@@ -113,6 +113,11 @@ BRACKET_CANCEL_FAILED = "LIVE_BRACKET_CANCEL_FAILED"
 FILL_FACTS_MISSING = "LIVE_FILL_FACTS_MISSING"
 POSITION_PERSIST_FAILED = "LIVE_POSITION_PERSIST_FAILED"
 OUTCOME_PERSIST_FAILED = "LIVE_OUTCOME_PERSIST_FAILED"
+# The ledger already held this settlement, so the settle wrote no new money row. The way this
+# happens: a previous settle appended the outcome and then failed to clear the book, and this
+# is the reconciliation-driven retry finishing the clear. Informational, never an error —
+# the durable row is the FIRST attempt's, and this attempt's remaining job is the book.
+OUTCOME_ALREADY_RECORDED = "LIVE_OUTCOME_ALREADY_RECORDED"
 BRACKET_IDS_MISSING = "LIVE_BRACKET_IDS_MISSING"
 VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
 # The two ways the fill-history fallback declines, kept apart because they mean different
@@ -252,6 +257,25 @@ def _exit_terms(decision: Mapping[str, Any]) -> Mapping[str, Any]:
     """
     terms = decision.get("exit_terms")
     return terms if isinstance(terms, Mapping) else {}
+
+
+def _persist_failure_reason(exc: Exception) -> str:
+    """The reason code a failed persist reports, whatever the store actually raised.
+
+    Every post-venue persist site below catches broadly and reports through this, because the
+    REAL stores do not fail with ``ToolError``: ``RealLivePositionStore`` and the live ledger
+    fail through ``filelock.locked()`` (``PersistenceError``), through the gate re-check
+    (``SafetyGateBlocked``), or through the write itself (a raw ``OSError``) — the first two
+    are *siblings* of ``ToolError`` under ``MvpRuntimeError``, not subclasses. A narrow
+    ``except ToolError`` therefore let the stores' actual failure modes escape to
+    ``run_live_leg``'s ``MvpRuntimeError`` handler, which stamps ``ROUTE_BLOCKED`` — a status
+    whose contract is "nothing was sent" — on a leg where money had already moved, and whose
+    escape point could sit *before* bracket placement or the naked close, leaving a filled
+    entry unprotected and unbooked while reported as a pre-venue refusal. Past the venue call
+    the choice is between a recorded persist failure and an unrecorded one, so breadth is the
+    point — the same posture ``live_route._record_entry_outcome`` takes on the route side.
+    """
+    return getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
 
 
 # --- the bracket ---------------------------------------------------------------
@@ -569,8 +593,10 @@ def execute_live_entry(
     if counter is not None:
         try:
             counter.record_submission()
-        except ToolError as exc:
-            result["reason_codes"].append(exc.reason_code)
+        except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+            # The order is already at the venue; an escape here would abort BEFORE the bracket
+            # is placed or a naked fill is closed, which is the worst point in the whole leg.
+            result["reason_codes"].append(_persist_failure_reason(exc))
 
     filled_qty = _f(entry["fill"].get("executed_qty")) or 0.0
     fill_price = _f(entry["fill"].get("avg_price")) or 0.0
@@ -688,12 +714,14 @@ def execute_live_entry(
     }
     try:
         position_store.save_position(position)
-    except ToolError as exc:
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         # The position is real and bracketed; only the local book failed. Say so loudly rather
         # than reporting a clean open — the venue and the book now disagree, and the next
         # cycle's reconciliation will refuse entries on this symbol, which is correct.
+        # POSITION_PERSIST_FAILED is also what halts the fan-out (`live_route._INCIDENT_REASONS`),
+        # so this catch must see the real store's failures, not just ToolError.
         result["reason_codes"].append(POSITION_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = ENTRY_OPENED
     result["position"] = position
@@ -1096,20 +1124,29 @@ def execute_live_exit(
     result["outcome"] = outcome
 
     # Record the money BEFORE clearing the book: an outcome that never lands is a loss the
-    # breaker will never see, whereas a cleared book with a recorded outcome is merely stale
-    # local state the next reconciliation catches.
+    # breaker will never see. The reverse failure — outcome durable, clear below fails, book
+    # stays OPEN — is recoverable ONLY because the ledger append is idempotent on
+    # settlement_id: the next fire's reconciliation reports the drift, re-settles, the ledger
+    # skips the row it already holds, and the clear gets its retry. Without that skip the
+    # retry appended a duplicate, and one duplicate settlement_id fails every verified read
+    # of the history — breaker, risk guard, promotion — until an operator hand-repairs the
+    # money ledger. The stale book is benign; the retry it triggers had to be made so.
     try:
-        ledger.append_outcome(outcome)
-    except ToolError as exc:
+        appended = ledger.append_outcome(outcome)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
         result["status"] = EXIT_NOT_CONFIRMED
         return result
+    if appended is False:
+        # This settle is the retry: the money row was durable before it started, so nothing
+        # new was written and its remaining job is the book-clear below.
+        result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
         position_store.clear_position(symbol)
-    except ToolError as exc:
-        result["reason_codes"].append(exc.reason_code)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = EXIT_CLOSED
     return result
@@ -1447,19 +1484,26 @@ def settle_venue_closed_position(
     )
     result["outcome"] = outcome
 
-    # Ledger before book, for the reason `execute_live_exit` gives: an outcome that never
-    # lands is a loss the breaker will never see.
+    # Ledger before book, for the reason `execute_live_exit` gives — and this is the path
+    # the retry actually rides: a settle whose clear failed leaves the book OPEN, the next
+    # fire's reconciliation reports DRIFT_MISSING_AT_VENUE, and the re-settle lands here
+    # having rebuilt the SAME settlement_id (the fill-history fallback recovers the same
+    # venue order). The ledger skips the duplicate (`append_outcome` returns False) and the
+    # clear below gets its retry — that skip is what keeps this loop from poisoning the
+    # history it reports to.
     try:
-        ledger.append_outcome(outcome)
-    except ToolError as exc:
+        appended = ledger.append_outcome(outcome)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
         return result
+    if appended is False:
+        result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
         position_store.clear_position(str(position.get("symbol") or ""))
-    except ToolError as exc:
-        result["reason_codes"].append(exc.reason_code)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = EXIT_CLOSED
     return result
@@ -1504,6 +1548,7 @@ __all__ = [
     "NAKED_POSITION_CLOSED",
     "NOT_READY",
     "NO_GOVERNANCE",
+    "OUTCOME_ALREADY_RECORDED",
     "OUTCOME_PERSIST_FAILED",
     "POSITION_PERSIST_FAILED",
     "PROTECTED",

@@ -18,6 +18,14 @@ import pytest
 
 from runtime.mvp_runtime.crypto import live_leg
 from runtime.mvp_runtime.crypto.live_leg import exit_fill_from_history
+from runtime.mvp_runtime.crypto.live_pnl import (
+    LIVE_TRADING_FLAGS,
+    LIVE_TRADING_PROVIDER_ID,
+    RealLiveLedger,
+    read_live_outcomes,
+)
+from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.safety_gate import Authorization
 
 OPENED = "2026-08-07T00:13:51Z"
 OPENED_MS = 1786_000_000_000  # replaced in _position(); the helper computes the real value
@@ -309,6 +317,64 @@ def test_a_price_that_never_resolved_names_no_source():
     assert result["status"] == live_leg.EXIT_UNSETTLEABLE
     assert "exit_source" not in result
     assert ledger.outcomes == []
+
+
+# --- the retry after a failed book-clear ---------------------------------------
+
+
+class _StoreClearFailsOnce:
+    """The transient failure that opened the incident: the first clear raises, later ones work."""
+
+    def __init__(self):
+        self.cleared = []
+        self._failed = False
+
+    def clear_position(self, symbol):
+        if not self._failed:
+            self._failed = True
+            raise ToolError("LIVE_POSITION_STORE_LOCKED", "scripted clear failure")
+        self.cleared.append(symbol)
+
+
+def test_a_failed_book_clear_cannot_poison_the_history_on_the_re_settle(tmp_path):
+    """The append-then-clear crash window, walked on the REAL ledger.
+
+    First settle: the outcome lands durably, the book-clear fails, the book stays OPEN. Next
+    fire: reconciliation reports the drift and re-settles — same position, same venue order
+    out of the fill history, so the SAME settlement_id at a later `now`. Before the ledger's
+    write-side skip that second append landed a duplicate settlement_id, and every verified
+    read of live_outcomes.jsonl failed LIVE_HISTORY_DUPLICATE from then on: breaker, risk
+    guard, promotion, all down on one transient clear failure, repairable only by hand-editing
+    the fsync'd money ledger. Pinned end to end: the re-settle writes nothing, says so,
+    finishes the clear, and the history stays readable with exactly one row."""
+    ledger = RealLiveLedger(root=tmp_path, authorization=Authorization(
+        flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID,
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    ))
+    store = _StoreClearFailsOnce()
+
+    first = live_leg.settle_venue_closed_position(
+        _position(), adapter=_Adapter(), position_store=store, ledger=ledger,
+        legs=_legs_unfilled(), account_feed=_Feed([_fill(quote=65.0)]),
+        now="2026-08-08T10:00:00Z",
+    )
+    assert first["status"] == live_leg.EXIT_CLOSED
+    assert "LIVE_POSITION_STORE_LOCKED" in first["reason_codes"]
+    assert store.cleared == []                       # the clear failed; the book is stale
+
+    second = live_leg.settle_venue_closed_position(
+        _position(), adapter=_Adapter(), position_store=store, ledger=ledger,
+        legs=_legs_unfilled(), account_feed=_Feed([_fill(quote=65.0)]),
+        now="2026-08-08T11:00:00Z",
+    )
+    assert second["status"] == live_leg.EXIT_CLOSED
+    assert live_leg.OUTCOME_ALREADY_RECORDED in second["reason_codes"]
+    assert store.cleared == ["BTCUSDT"]              # the retry's remaining job, done
+
+    rows = read_live_outcomes(tmp_path)              # readable — no LIVE_HISTORY_DUPLICATE
+    assert len(rows) == 1
+    assert rows[0]["settlement_id"] == first["outcome"]["settlement_id"]
 
 
 def test_every_source_is_a_distinct_name():
