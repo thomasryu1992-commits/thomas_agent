@@ -4675,6 +4675,7 @@ def run_factory(
             positioning_eligible=positioning_eligible,
             venue=venue,
             rotation_index=rotation_index,
+            symbol_scope=scope,
         )
         kept = topup["specs"][:topup_requested]
         topup_accepted = len(kept)
