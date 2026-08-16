@@ -88,16 +88,25 @@ RECORD_TYPE = "orderbook_depth.v0"
 ORDERBOOK_PERIOD = "15m"
 PERIOD_SECONDS = POSITIONING_PERIOD_SECONDS[ORDERBOOK_PERIOD]
 
-# A symbol is asked about again when its last ATTEMPT is older than one period.
+# A symbol is asked about again when ``now`` falls in a DIFFERENT period than its last ATTEMPT.
 #
-# From the last ATTEMPT, not from the newest stored row, and the distinction is inherited rather
-# than rediscovered: ``oi_store`` shipped the reading-age version first and it never skipped,
-# ``positioning_store`` documented why. Here it is sharper still — the newest stored row is
-# stamped to the CURRENT period the moment the first snapshot lands, so a reading-age throttle
-# would read as "fresh" for the rest of the period, which is right, and then as "due" the instant
-# the period turned even if the attempt had already failed, which is how a refusing endpoint
-# becomes twenty knocks a fire.
-REFRESH_AFTER_SECONDS = PERIOD_SECONDS
+# Keyed to period identity, not to elapsed time, and the distinction is this store's own scar.
+# The elapsed-time idiom (``elapsed >= PERIOD_SECONDS``) was copied from ``positioning_store``,
+# where an early refusal is harmless because ``refresh_rows_for`` backfills whatever it missed.
+# Here the firing cadence IS the period — the pipeline's median gap is exactly 900s, so jitter
+# delivers roughly half of all fires fractionally early — and an elapsed throttle refused those
+# fires as "fresh". With no backfill, every refusal was a permanently lost period: ~30% of
+# periods missing, identically across the cohort, measured live 2026-08-16 and reproduced
+# exactly by replaying the throttle over the recorded fire timestamps. A fire in a new period
+# is by definition asking about a row the store cannot otherwise have, so period identity is
+# the exact question; ``append_snapshot`` is idempotent per ``(symbol, period)``, so the early
+# ask can never double-write.
+#
+# From the last ATTEMPT, not from the newest stored row — that half is inherited unchanged:
+# the newest stored row is stamped to the CURRENT period the moment the first snapshot lands,
+# so a row-keyed throttle would go due the instant the period turned even if the attempt had
+# already failed, which is how a refusing endpoint becomes twenty knocks a fire. A failed
+# attempt still spends its period's one ask; the next period re-asks.
 
 # Where the attempt marks live: a small JSON map, one entry per symbol, rewritten whole — the
 # ``oi_store`` / ``positioning_store`` / ``routing_marks`` idiom.
@@ -330,16 +339,19 @@ def append_snapshot(
 def is_due(last_attempt: str | None, now: str) -> bool:
     """Whether this symbol should be asked about again, given when it was last ASKED.
 
-    Never attempted → due. Unparseable mark → due, because state this store cannot read must never
-    be able to stop accumulation; the append is idempotent, so being wrong costs one request.
+    Due exactly when ``now`` falls in a different period than the last attempt — see the comment
+    above :data:`REFRESH_MARKS_FILENAME` for why period identity and not elapsed time. Never
+    attempted → due. Unparseable mark → due, because state this store cannot read must never be
+    able to stop accumulation; the append is idempotent, so being wrong costs one request. An
+    unparseable ``now`` also reads as due: the caller's own :func:`period_start` refuses it
+    before anything durable can happen.
     """
     if not last_attempt:
         return True
     try:
-        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(last_attempt)).total_seconds()
-    except (ValueError, TypeError):
+        return period_start(now) != period_start(last_attempt)
+    except ToolError:
         return True
-    return elapsed >= REFRESH_AFTER_SECONDS
 
 
 def record_orderbook(
