@@ -222,15 +222,54 @@ def test_a_row_without_a_symbol_or_timestamp_is_refused(tmp_path):
 
 # --- the throttle ----------------------------------------------------------------
 
-def test_the_throttle_measures_from_the_last_attempt():
-    """Not from the newest stored row. Here that version is sharper than the inherited reason:
-    the newest row is stamped to the CURRENT period the moment the first snapshot lands, so a
-    reading-age throttle would read as due the instant the period turned even if the attempt had
-    already failed — twenty knocks a fire at a refusing endpoint."""
+def test_the_throttle_is_keyed_to_the_period_not_to_elapsed_time():
+    """Dueness is period identity, not an elapsed-seconds bar. The elapsed idiom this replaced
+    refused a fire arriving fractionally early — and the schedule's median gap IS the period, so
+    that was ~half of all fires, each refusal a permanently lost period in a store that cannot
+    backfill. A fire in a new period is asking about a row the store cannot otherwise have, no
+    matter how recently the previous period was asked about."""
     assert orderbook_store.is_due(None, NOW) is True
-    assert orderbook_store.is_due("2026-08-15T11:52:00Z", NOW) is False   # 8 min — too soon
+    assert orderbook_store.is_due("2026-08-15T11:59:59Z", NOW) is True    # 1s ago — but a NEW period
     assert orderbook_store.is_due("2026-08-15T11:45:00Z", NOW) is True    # a full period
+    assert orderbook_store.is_due("2026-08-15T12:00:01Z", "2026-08-15T12:14:59Z") is False  # 898s, same period
     assert orderbook_store.is_due("nonsense", NOW) is True                # cannot say → ask
+
+
+def test_the_throttle_measures_from_the_last_attempt():
+    """Not from the newest stored row — that half of the inherited idiom survives the period
+    keying: the newest row is stamped to the CURRENT period the moment the first snapshot lands,
+    so a row-keyed throttle would go due the instant the period turned even if the attempt had
+    already failed — twenty knocks a fire at a refusing endpoint. An attempt spends its period's
+    one ask whatever the venue answered."""
+    assert orderbook_store.is_due(NOW, NOW) is False
+    assert orderbook_store.is_due(NOW, "2026-08-15T12:14:59Z") is False
+
+
+def test_fires_arriving_fractionally_early_still_capture_every_period(tmp_path):
+    """The regression this store shipped with. The pipeline fires at a median gap of exactly one
+    period, so jitter routinely delivers the next fire at 899s — the elapsed-time throttle
+    refused those as ``skipped_fresh``, and with no backfill each refusal was a permanent hole
+    (~30% of periods on the live host, identically across the cohort). Fires 899s apart must
+    still capture every period they land in; the duplicate inside one period stays a duplicate."""
+    collector = MockMarketDataCollector()
+    fires = [
+        "2026-08-15T12:00:00Z",  # period 12:00 — first ask
+        "2026-08-15T12:14:59Z",  # period 12:00 again — 899s later, a true duplicate
+        "2026-08-15T12:29:58Z",  # period 12:15
+        "2026-08-15T12:44:57Z",  # period 12:30 — 899s after an ask; the old throttle lost THIS one
+        "2026-08-15T12:59:56Z",  # period 12:45
+    ]
+    for now in fires:
+        orderbook_store.record_orderbook(
+            symbol="BTCUSDT", collector=collector, now=now, root=tmp_path
+        )
+    stamps = [r["timestamp"] for r in orderbook_store.read_rows(tmp_path, symbol="BTCUSDT")]
+    assert stamps == [
+        "2026-08-15T12:00:00Z",
+        "2026-08-15T12:15:00Z",
+        "2026-08-15T12:30:00Z",
+        "2026-08-15T12:45:00Z",
+    ], "a fire in a new period was refused as fresh — that period is unrecoverable"
 
 
 def test_a_second_call_in_the_same_period_opens_no_socket(tmp_path):
