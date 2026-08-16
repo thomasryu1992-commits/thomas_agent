@@ -194,9 +194,16 @@ def build_live_outcome_record(
 ) -> dict[str, Any]:
     """One closed live position, self-hashed.
 
-    ``settlement_id`` is derived from the position identity, so a second attempt to record
-    the same settlement is detectable as a duplicate rather than quietly doubling the day's
-    realized P&L — which would move the breaker in the dangerous direction.
+    ``settlement_id`` is derived from the position identity (``position_id`` + exit order),
+    so a retried settlement rebuilds the SAME id even though ``outcome_id`` and the row hash
+    move with ``now``. That stable identity is what lets ``RealLiveLedger.append_outcome``
+    skip a settlement it already holds: the retry that follows a failed book-clear completes
+    the clear instead of doubling the day's realized P&L. The read-side duplicate check in
+    :func:`read_live_outcomes` is NOT that protection — it is the alarm for a duplicate that
+    lands anyway (a hand-edited file), and it fails the WHOLE history rather than
+    double-count, so a duplicate reaching the disk takes the breaker, the risk guard and
+    promotion down with it until an operator repairs the ledger. Detection at read time is
+    the last line, never the plan.
 
     **LP5.4 — the outcome bridge.** The original shape carried only what the daily-loss
     breaker needs (``realized_pnl_usdt``), which left the risk guard, the lifecycle demoter,
@@ -612,12 +619,17 @@ def _positive(value: Any) -> bool:
 
 class LiveLedger(Protocol):
     """Append-only live outcome recording. No read method — reads are ungated module
-    functions, so a caller never needs the gated object just to check the breaker."""
+    functions, so a caller never needs the gated object just to check the breaker.
+
+    ``append_outcome`` returns ``False`` only when it wrote nothing because a row with the
+    same ``settlement_id`` is already durable — the signal a retrying settle path reads as
+    "the money is recorded; finish the book-clear". Anything else (including the inert
+    ledger's accepted-and-dropped) is ``True``."""
 
     tool_id: str
     tool_version: str
 
-    def append_outcome(self, record: Mapping[str, Any]) -> None: ...
+    def append_outcome(self, record: Mapping[str, Any]) -> bool: ...
 
 
 class DryRunLiveLedger:
@@ -632,8 +644,10 @@ class DryRunLiveLedger:
     tool_version = f"{LIVE_LEDGER_TOOL_VERSION}-dryrun"
     filesystem_write = False
 
-    def append_outcome(self, record: Mapping[str, Any]) -> None:
-        return None
+    def append_outcome(self, record: Mapping[str, Any]) -> bool:
+        # True, never False: this ledger holds nothing a record could duplicate, and False
+        # would tell a settle path an outcome is durable when nothing is.
+        return True
 
 
 class RealLiveLedger:
@@ -661,18 +675,34 @@ class RealLiveLedger:
             now=timeutil.utc_now_iso(),
         )
 
-    def append_outcome(self, record: Mapping[str, Any]) -> None:
+    def append_outcome(self, record: Mapping[str, Any]) -> bool:
         self._assert()
         target = state_dir(self._root)
         target.mkdir(parents=True, exist_ok=True)
         path = target / LIVE_OUTCOMES_FILENAME
         with locked(path.with_suffix(".lock"), code="LIVE_STATE_LOCKED", label="live outcomes"):
+            # Idempotent on settlement_id, checked under the lock — the same rule
+            # `paper.RealPaperStore.settle_position` applies, for the same crash window: the
+            # settle paths record the money BEFORE clearing the book, so a clear that fails
+            # leaves an OPEN book whose outcome is already durable, and the next fire's
+            # reconciliation re-settles it with the identical settlement_id. Writing that row
+            # again would not double-count — worse, one duplicate fails EVERY verified read
+            # of this history (LIVE_HISTORY_DUPLICATE): breaker, risk guard, promotion, all
+            # unreadable until an operator hand-edits the fsync'd money ledger. The check
+            # rides the verified read, so an unverifiable history refuses the append rather
+            # than being treated as not-yet-recorded.
+            settlement_id = record.get("settlement_id")
+            if isinstance(settlement_id, str) and settlement_id and any(
+                o.get("settlement_id") == settlement_id for o in read_live_outcomes(self._root)
+            ):
+                return False
             with open(path, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
                 # A live outcome that reaches the disk buffer but not the disk would let the
                 # breaker forget a real loss across a crash. Force it down.
                 handle.flush()
                 os.fsync(handle.fileno())
+        return True
 
 
 def select_live_ledger(*, now: str | None = None, root: Path | None = None) -> LiveLedger:

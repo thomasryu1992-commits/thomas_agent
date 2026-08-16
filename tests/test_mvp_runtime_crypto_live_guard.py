@@ -192,6 +192,45 @@ def test_duplicate_settlement_refuses(tmp_path):
     assert exc.value.reason_code == live_pnl.LIVE_HISTORY_DUPLICATE
 
 
+# === LP2: the write side of that check — the append is idempotent ==================
+
+def _authorized_ledger(root):
+    return RealLiveLedger(root=root, authorization=Authorization(
+        flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID,
+        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
+        evidence_ref=".runtime_governance_state/evidence.md",
+    ))
+
+
+def test_a_retried_settlement_appends_nothing_and_says_so(tmp_path):
+    """The crash window the read-side alarm cannot repair: outcome appended, book-clear
+    failed, and the re-settle rebuilds the SAME settlement_id (same position, same exit
+    order) at a later `now`. Landing that row would not double-count — it would fail every
+    verified read of the history. The ledger skips it and returns False."""
+    ledger = _authorized_ledger(tmp_path)
+    assert ledger.append_outcome(_outcome(-5.0)) is True
+    retry = _outcome(-5.0, closed_at="2026-07-23T12:05:00Z")
+    # outcome_id and the row hash move with `now`; the settlement identity does not.
+    assert retry["outcome_id"] != _outcome(-5.0)["outcome_id"]
+    assert retry["settlement_id"] == _outcome(-5.0)["settlement_id"]
+    assert ledger.append_outcome(retry) is False
+    rows = read_live_outcomes(tmp_path)   # still readable — the whole point of the skip
+    assert len(rows) == 1 and rows[0]["realized_pnl_usdt"] == -5.0
+
+
+def test_the_dup_check_never_reads_an_unverifiable_history_as_not_recorded(tmp_path):
+    """Fail-closed: a history that cannot prove itself refuses the append rather than being
+    appended past — unverifiable is never treated as not-yet-recorded."""
+    target = state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / live_pnl.LIVE_OUTCOMES_FILENAME
+    path.write_text("{not json\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        _authorized_ledger(tmp_path).append_outcome(_outcome(-1.0))
+    assert exc.value.reason_code == live_pnl.LIVE_HISTORY_UNREADABLE
+    assert path.read_text(encoding="utf-8") == "{not json\n"   # nothing was appended
+
+
 def test_unparseable_line_refuses(tmp_path):
     target = state_dir(tmp_path)
     target.mkdir(parents=True, exist_ok=True)
