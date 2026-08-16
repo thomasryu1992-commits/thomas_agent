@@ -1216,6 +1216,46 @@ def test_a_pooled_fire_does_not_fuse():
                for c in result["candidates"])
 
 
+def test_a_pooled_fire_says_it_skipped_fusion_rather_than_looking_dry():
+    """`fused_count: 0` with an empty `fusion_rejected` is what a DRY PARENT POOL looks like, so
+    a pooled fire reporting the same thing is indistinguishable from one whose store had no pair.
+
+    Measured on the live ledger 2026-08-15: every fire from the first pooled one
+    (2026-08-10T08:12:38Z) onward carried exactly that record, and the crossover path being off
+    went unnoticed for six days. `pooled: true` implied it; a reader had to already know this
+    boundary existed to read it that way."""
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
+                         fusion_pairs=4)
+    assert result["pooled"] is True
+    assert result["fused_count"] == 0 and result["fusion_rejected"] == []
+    assert result["fusion_skipped"] == factory.FUSION_POOLED_FIRE
+
+
+def test_a_caller_that_never_asked_for_fusion_is_not_a_dry_pool_either():
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["fusion_skipped"] == factory.FUSION_NOT_REQUESTED
+
+
+def test_a_fire_that_ran_fusion_reports_no_skip_reason(tmp_path):
+    """``None`` is the load-bearing value: it is the only reading under which an empty
+    ``fusion_rejected`` means the store genuinely offered no pair."""
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    assert result["fusion_skipped"] is None
+    assert result["fused_count"] >= 1
+
+
+def test_every_skip_reason_is_a_declared_one():
+    """A stable vocabulary, so a reader (or a watch) can enumerate the cases rather than
+    pattern-match strings that drift."""
+    for kwargs, cohort in (({}, None),
+                           ({"fusion_pairs": 4}, [_shifted_snapshot(symbol="ETHUSDT")])):
+        result = _pooled_run(_trending_snapshot(), cohort, **kwargs)
+        assert result["fusion_skipped"] in factory.FUSION_SKIP_REASONS
+
+
 def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
     """Fail closed on ANY leg: a pooled figure whose fourth symbol supplied none of the columns
     the rule names is a four-leg pool reporting five."""

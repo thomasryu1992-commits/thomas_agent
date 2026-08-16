@@ -56,6 +56,21 @@ def test_no_rows_means_no_block_at_all():
     assert _keyword_context([]) == ""
 
 
+def test_mock_rows_announce_themselves_where_the_model_reads():
+    """Before this label the header asserted "Measured ... demand" over fixtures. The
+    ledger always knew (source, network_egress); the model never did."""
+    mock_rows = [dict(ROWS[0], source="mock.naver_searchad")]
+    block = _keyword_context(mock_rows)
+    assert "MOCK keyword fixtures" in block
+    assert "NOT measured demand" in block
+    assert "Measured Naver keyword demand" not in block
+    assert "[K1]" in block  # still citable — the label changes the claim, not the format
+
+    live = _keyword_context(ROWS)
+    assert "Measured Naver keyword demand" in live
+    assert "MOCK" not in live
+
+
 # --- the pipeline ------------------------------------------------------------------
 
 @requires_local_core
@@ -63,8 +78,40 @@ def test_without_seeds_the_run_carries_no_trace_of_the_lane():
     result = run_task(REQUEST, provider=MockProvider(), now=NOW)
     assert result["status"] == "COMPLETED"
     assert "keyword_research" not in result["records"]
+    assert "keyword_permission_decision" not in result["records"]
     assert all(e.get("type") != "keyword_demand"
                for e in result["records"]["agent_output"]["evidence"])
+    # No planned decision, no chain event: a run without seeds carries no authorization
+    # for an action it never attempts.
+    assert all(e["subject"].get("subject_id") != "naver.keyword_brief"
+               for e in result["records"]["audit_trail"])
+
+
+@requires_local_core
+def test_with_seeds_the_brief_joins_the_audit_chain():
+    """The external review's one intact finding (2026-08-10): the brief persisted as a
+    record but left no audit event and acted under no PermissionDecision. Now it gets the
+    search's exact treatment — a planned ALLOW decision recorded on the run, and a
+    hash-chained TOOL_USE event referencing it, with MOCK_SOURCE visible on the chain when
+    the gate was closed (as it is in this suite)."""
+    result = run_task(REQUEST, provider=MockProvider(), now=NOW, keyword_seeds="포스터 만들기")
+    assert result["status"] == "COMPLETED"
+    records = result["records"]
+
+    permdec = records["keyword_permission_decision"]
+    assert permdec["decision"]["permission_decision"] == "ALLOW"
+    assert permdec["authority"]["required_permission_level"] == "P1"
+
+    events = [e for e in records["audit_trail"]
+              if e["subject"].get("subject_type") == "TOOL_USE"
+              and e["subject"].get("subject_id") == "naver.keyword_brief"]
+    assert len(events) == 1
+    reasons = events[0]["event"]["reason_codes"]
+    assert "TOOL_USED" in reasons
+    assert "MOCK_SOURCE" in reasons  # gate closed in tests -> fixtures, said so ON THE CHAIN
+    assert "NO_NETWORK_EGRESS" in reasons
+    assert (f"in_memory:{permdec['permission_decision_id']}"
+            in events[0]["event"]["related_record_refs"])
 
 
 @requires_local_core
@@ -123,6 +170,12 @@ def test_the_record_survives_the_ledger_not_just_the_return_value(tmp_path):
     persisted = [row for row in store.iter_records() if row["kind"] == "keyword_research"]
     assert len(persisted) == 1
     assert persisted[0]["record"]["operation"] == "keyword_brief"
+    # The decision survives the ledger too — the #668 lesson, applied to the new kind at
+    # authoring time instead of discovered by the next real CLI run.
+    decisions = [row for row in store.iter_records()
+                 if row["kind"] == "keyword_permission_decision"]
+    assert len(decisions) == 1
+    assert decisions[0]["record"]["decision"]["permission_decision"] == "ALLOW"
 
 
 # --- the CLI flag -------------------------------------------------------------------

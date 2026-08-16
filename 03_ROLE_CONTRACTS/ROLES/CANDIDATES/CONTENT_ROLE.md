@@ -131,6 +131,9 @@ candidate_trial_policy:
   - audit_required
 ---
 
-# Content Role Candidate
+# Content Role
 
-현재 General Specialist가 초안을 작성한다. 콘텐츠 업무량과 브랜드·채널별 기준의 독립 관리 가치가 검증될 때 Candidate Trial을 거쳐 활성화를 검토한다.
+활성 역할이다 (Thomas 결정 2026-07-27, development.general과 같은 활성화 라운드).
+`content` request kind가 이 역할로 라우팅되며, 네이버 블로그 콘텐츠 레인의
+`draft_content` dispatch가 실제 소비자다. 상태의 유일한 권위는 `ROLE_REGISTRY.yaml`이며,
+이 파일이 `CANDIDATES/` 아래 있는 것은 후보로 출발했다는 이력이지 현재 상태가 아니다.

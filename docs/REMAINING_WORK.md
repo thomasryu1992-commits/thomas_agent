@@ -3160,6 +3160,47 @@ Recorded-and-surfaced is the cheapest honest start and matches how a shallow win
 handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
 rest.
 
+#### F9c. Pooling turned the crossover path off, and nothing recorded that as a decision — measured 2026-08-15
+
+**The state.** Since the first pooled fire (2026-08-10T08:12:38Z) **every** factory fire has been
+pooled, and `run_factory` skips fusion on a pooled fire (`if fusion_pairs > 0 and not pooled`).
+So the crossover path has produced **zero children for six days, from zero attempted pairs** —
+not a thin yield, an off switch. Before it, fusion was minting ~0.2 children per fire (~3.9 before
+#523/#525 tightened it) and crossover rows were **26% of the eligible parent pool** while being
+26% of all rows, at a 15.5% parent-eligibility rate against seeded's 9.0% and a 9.0% ROBUST rate
+against seeded's 2.8%.
+
+**The skip itself is right and is not the item.** #633's comment states it: `_fuse_batch`
+re-scores each parent on this window through the one-frame `backtest_spec`, so a pooled child
+would be scored on one leg while claiming five — and `fuse_specs` would pair pooled parents
+happily, since their scopes match and `symbol_scope_mismatch` never fires. That is the wrong-number
+shape the rest of the file exists to prevent. **What is missing is that the consequence was never
+priced.** The skip arrived inside a PR about holdout windows; no line anywhere says "the crossover
+path is now off", and F9's own decision screen does not count it among what pooling costs.
+
+**Why it went unnoticed for six days, which is the transferable part.** `fused_count: 0` with an
+empty `fusion_rejected` is exactly what a **dry parent pool** produces, so the record could not
+distinguish "fusion ran and the store had no pair" from "fusion never ran". A weekly watch built
+to catch a dry pool read straight past it — and its three triggers were all green at the time
+(pool 205 distinct hashes and growing ~7/day, crossover share 26%, seeded pass rate 12–62%).
+`fusion_skipped` (added alongside this entry) now names the reason, so the two are separable.
+
+**The decision, which is Thomas's.** Either pooled fusion is a wanted increment or the crossover
+path is retired in favour of pooled seeding — and if it is retired, #523's child bar and #525's
+parent filter are governing a path that no longer runs and should be reconsidered on those terms.
+
+**What the increment costs if it is wanted.** One thing: `_fuse_batch` has to score children and
+re-score parents through `backtest_spec_pooled` over the fire's legs rather than `backtest_spec`
+over one frame. The pieces already exist — `backtest_spec_pooled` is the scorer, and the parent
+replays are already memoised per rule hash, so the cohort cost is paid once per parent per fire,
+not once per pair. `fuse_specs` needs no change: pooled parents share a scope, so the union is
+already well-defined. The materials are there too — pooled candidates are accumulating at 8/fire,
+and two pooled parents in one bucket is all a pair needs.
+
+**What NOT to do.** Do not re-enable fusion on pooled fires without moving the scorer first. The
+guard is load-bearing exactly as written; removing it mints children whose evidence claims a
+cohort it never replayed.
+
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 
 F7 closes 1d's structural half and hands 4h over as *"a signal-rate problem"* on a utilisation of
