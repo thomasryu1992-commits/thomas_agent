@@ -138,6 +138,11 @@ activation_blockers:
 - explicit_file_and_deployment_permissions
 ---
 
-# Development Role Candidate
+# Development Role
 
-현재는 기술 분석과 초안 제안만 후보로 정의한다. 실제 파일 수정, 코드 실행과 배포는 Tool Registry, 격리 환경, 검증 및 별도 권한 계약이 마련되기 전까지 허용하지 않는다.
+활성 역할이다 (Thomas 결정 2026-07-27, content.general과 같은 활성화 라운드). `development`
+request kind가 이 역할로 라우팅된다 — 단, dispatch 도어는 이 kind를 의도적으로 제외한다
+(도어의 `_ALLOWED_KINDS` 주석 참조). 상태의 유일한 권위는 `ROLE_REGISTRY.yaml`이다.
+
+허용 범위는 기술 분석과 초안 제안까지다. 실제 파일 수정, 코드 실행과 배포는 Tool
+Registry, 격리 환경, 검증 및 별도 권한 계약이 마련되기 전까지 허용하지 않는다.

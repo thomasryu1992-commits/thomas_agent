@@ -134,9 +134,11 @@ candidate_trial_policy:
   - audit_required
 ---
 
-# Research Role Candidate
+# Research Role
 
-현재 General Specialist가 담당한다. 반복적인 외부 조사와 별도 Source Quality 기준의 가치가 실제 Task에서 검증될 때 Candidate Trial을 거쳐 활성화를 검토한다.
+활성 역할이다 (Thomas 결정 2026-07-27, §8.5 라우팅과 함께). `research` request kind가
+이 역할로 라우팅된다. 상태의 유일한 권위는 `ROLE_REGISTRY.yaml`이며, 이 파일이
+`CANDIDATES/` 아래 있는 것은 후보로 출발했다는 이력이지 현재 상태가 아니다.
 
 ## 조사 방법론 (quality_criteria 보충 설명)
 
