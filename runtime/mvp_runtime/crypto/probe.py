@@ -78,7 +78,16 @@ PROBE_STRATEGY_PREFIX = "PROBE-"
 # --- request-time parameter since the second-batch approval, same date) ----------------
 PROBE_N = 12                      # the DEFAULT grid's N; `build_batch_params` derives n
 PROBE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
-PROBE_STOP_BPS = 40.0
+# 40.0 until 2026-08-17. At 40 bps the probe mostly buys timeouts, not samples: of the
+# first four real probes, one filled and three timed out, and the touch-rate measurement
+# behind the re-set (60 days of 15m bars, regime = 4h ATR(14) percentile < 0.5, entries
+# every other bar) puts 40 bps / 120 m at a 27% (BNB) / 42% (DOGE) low_vol fill rate.
+# 25 bps / 240 m measures 58% / 73% — and 25 bps stays ~15x the majors' spread and next
+# to the strategy stops the constant serves (median 37.6 bps), so the slippage measured
+# at the probe's stop still speaks for the stops it will be applied to. Cells burned by
+# timeouts are terminal (`_TERMINAL_CELL_STATUSES`), which is what makes the fill rate
+# the economics of the whole batch, not a nuisance statistic.
+PROBE_STOP_BPS = 25.0
 PROBE_DIRECTION = "LONG"          # §5-2: LONG probes only; SHORT is out of scope
 PROBE_REPEATS = 2
 
@@ -91,13 +100,17 @@ REGIMES = (REGIME_LOW, REGIME_HIGH)
 # on. 4h is the primary live rotation tier; the split is meaningless without naming it.
 REGIME_TIMEFRAME = "4h"
 
-# Implementation default under the approval hash (§5-3 left T open; 120 minutes is the
-# default this increment ships). A timeout close is a market close and NOT a sample.
-PROBE_TIMEOUT_MINUTES = 120
+# Implementation default under the approval hash (§5-3 left T open; 120 minutes was the
+# first increment's default, re-set 2026-08-17 with the stop width above — the fill-rate
+# table is one measurement over both knobs). A timeout close is a market close and NOT a
+# sample. Doubling T doubles exposure DURATION only: the loss cap is the stop, which T
+# does not move.
+PROBE_TIMEOUT_MINUTES = 240
 
 # §3's arithmetic, kept as the approval priced it: stop 40 bps + measured-worst slippage
 # 23.5 bps (REMAINING_WORK §C, 2026-08-06) + round-trip fees ~10 bps = 73.5 bps, carried
-# as 0.75% so the cap errs upward. The per-probe notional ceiling is an implementation
+# as 0.75% so the cap errs upward — and errs further upward since the 2026-08-17 stop
+# re-set to 25 bps (58.5 bps actual); the fraction stays as the approval priced it. The per-probe notional ceiling is an implementation
 # default under the approval hash — `--fire` refuses an order the venue minimum prices
 # above it, so the approved worst case cannot be exceeded by a venue filter change.
 WORST_CASE_LOSS_FRACTION = 0.0075

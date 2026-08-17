@@ -39,11 +39,20 @@ from tests._helpers import requires_local_core
 NOW = timeutil.utc_now_iso()
 
 # Frozen on origin/main @ 2bfd610 — the last commit BEFORE symbols became a request-time
-# parameter. The live machine's batch-1 approval and ACTIVE plan bind exactly this
-# identity, so the DEFAULT batch must keep reproducing it byte for byte: a drift here
-# silently invalidates a standing approval.
+# parameter. The batch-1 identity (40 bps / 120 m): its approval was CONSUMED on
+# 2026-08-11, so since the 2026-08-17 parameter re-set the DEFAULTS no longer reproduce
+# it — the explicit params in `_params()` must, byte for byte, because the ledger rows
+# batch 1 minted carry this id and a drift here would orphan them.
 BATCH_ONE_CONTENT_SHA256 = "sha256:11a6109dc75131cd4998cbd251e4b590f4c5a0bada3d45946618ff69f61c1a2f"
 BATCH_ONE_BATCH_ID = "probe_batch_900fc0ad8ea51614381a"
+
+# Frozen 2026-08-17, the touch-rate re-set (stop 25 bps, timeout 240 m — measured 40/120
+# bought 27-42% low_vol fills and three timeouts in four real probes). No standing
+# approval binds the DEFAULT identity today (batch 1 consumed, batch 2 hash-bound to its
+# own params), which is the only condition under which this freeze may move; the next
+# default drift is still a deliberate act, caught here.
+DEFAULT_BATCH_CONTENT_SHA256 = "sha256:da5ece09b5f4141f1f849c6e1f6766418e6b8bb7cf0acc4a4590a2347680488d"
+DEFAULT_BATCH_BATCH_ID = "probe_batch_9e2e3f066e8dbe4376c1"
 
 
 def _params(**overrides):
@@ -105,13 +114,19 @@ def test_params_refuse_a_grid_mismatch():
 
 
 def test_the_default_batch_identity_is_frozen_for_the_live_approval():
-    """--symbols omitted must stay byte-identical to the pre-change default: the batch-1
-    approval and plan on the live machine bind this hash, and the new code must not
-    quietly re-mint them."""
+    """--symbols omitted must reproduce the FROZEN default identity byte for byte — a
+    quiet default drift re-mints what an operator believes they are asking for. The
+    identity moved once, deliberately: 2026-08-17, 40/120 → 25/240 off the measured
+    touch rates, at a moment no standing approval bound the default hash. The batch-1
+    identity stays reproducible from its explicit params — the ledger rows it minted
+    carry that id."""
     params = probe.build_batch_params()
-    assert probe.probe_content_sha256(params) == BATCH_ONE_CONTENT_SHA256
-    assert probe.batch_id_of(params) == BATCH_ONE_BATCH_ID
+    assert probe.probe_content_sha256(params) == DEFAULT_BATCH_CONTENT_SHA256
+    assert probe.batch_id_of(params) == DEFAULT_BATCH_BATCH_ID
     assert params["n"] == 12 and params["symbols"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert params["stop_bps"] == 25.0 and params["timeout_minutes"] == 240
+    assert probe.probe_content_sha256(_params()) == BATCH_ONE_CONTENT_SHA256
+    assert probe.batch_id_of(_params()) == BATCH_ONE_BATCH_ID
 
 
 def test_a_two_symbol_batch_derives_n_cells_and_budget_from_its_symbols():
@@ -411,8 +426,8 @@ def test_request_builds_decision_and_pending_approval():
     assert payload["permission_scope"] == "RUNTIME_GOVERNANCE"
     assert payload["action_type"] == probe.PROBE_ACTION_TYPE
     assert payload["content_sha256"] == prepared["content_sha256"]
-    # A default request (no symbols named) still asks for exactly the batch-1 identity.
-    assert prepared["content_sha256"] == BATCH_ONE_CONTENT_SHA256
+    # A default request (no symbols named) asks for exactly the frozen default identity.
+    assert prepared["content_sha256"] == DEFAULT_BATCH_CONTENT_SHA256
     assert request["status"] == "PENDING"
     assert request["approved_action_snapshot"]["content_sha256"] == prepared["content_sha256"]
 

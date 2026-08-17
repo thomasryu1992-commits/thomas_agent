@@ -451,7 +451,12 @@ def run_fire(
             "per-probe ceiling the approval was budgeted on; a wider batch needs a new ask",
         )
 
-    stop_estimate = probe.probe_stop_price(price, filters.tick_size)
+    # The plan's own width, never the module default: the approval's content hash binds
+    # `stop_bps`, so a default re-set between batches must not re-price a standing plan's
+    # stop. Latent until 2026-08-17 (default == every plan so far); the 25 bps re-set is
+    # what made the divergence reachable.
+    stop_estimate = probe.probe_stop_price(
+        price, filters.tick_size, stop_bps=float(plan["params"]["stop_bps"]))
     sid = probe.probe_strategy_id(plan["batch_id"])
     intent = build_live_order_intent(
         # Lineage-free on purpose: strategy_id is the probe marker, and no candidate /
@@ -556,7 +561,9 @@ def run_fire(
         return EXIT_BLOCKED
 
     # 2. The resting stop, through the same leg placement the autonomous bracket uses.
-    trigger = probe.probe_stop_price(fill_price, filters.tick_size)
+    # Width from the plan, as above — hung on the ACTUAL fill.
+    trigger = probe.probe_stop_price(
+        fill_price, filters.tick_size, stop_bps=float(plan["params"]["stop_bps"]))
     stop_intent = live_leg.build_bracket_intent(
         symbol=symbol, leg="SL", side="SELL", price=trigger,
         working_type=BRACKET_WORKING_TYPE, position_seed=str(entry["client_order_id"]),
