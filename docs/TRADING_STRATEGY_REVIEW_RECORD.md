@@ -764,3 +764,76 @@ maker fee 항이 추가될 때 주석만 안 따라온 것. 타입 체커를 붙
 
 A1·A2를 제대로 풀려면 결국 "이 창에서 몇 번 뽑았는가"를 후보 레코드가 알아야 한다. 그게
 이 시스템에서 가장 부족한 단일 정보다.
+
+---
+
+## 2026-08-17 — F9 topup scope 누락: 오라벨 56행의 판정과 처분 (정정 기록)
+
+**사건.** 풀드 파이어의 fusion-shortfall topup draw가 `symbol_scope`를 전달하지 않아
+(9977537이 놓친 두 번째 호출부, #712로 코드 수정), 2026-08-10~08-17 사이 풀드 파이어 산출의
+절반 — **56행** (4h 28 + 1d 28, 전부 scope `['BTCUSDT']`) — 이 **5심볼 코호트로 채점된 증거를
+단일 심볼 전략의 기록으로** 들고 있다. 저장소는 append-only + 자체 해시이므로 행은 고치지
+않는다. 이 항목이 정정 기록이고, 독자 쪽 수정(아래)이 실효 조치다.
+
+**판정 측정 (2026-08-17, 읽기 전용).**
+
+- **선별 보정 재계산:** 무장 전략 S005-GEN-833(`cand_3b14f39ffeb1f246ce7b`, oi_unwind_short
+  BTCUSDT 4h)의 t=2.027은 저장 키(N=220, bar 3.687) / 쪼개진 풀드 키(N=104, bar 3.491) /
+  **교정 풀드 키(N=184, bar 3.641)** 어느 쪽에서도 tier가 같다: `CLEARS_UNCORRECTED`(rank 1).
+  즉 버그는 문이 본 것을 tier가 바뀌는 방식으로 왜곡하지 않았다. 맥락: 측정 가능한 1,019개
+  후보 중 형제-보정 바를 넘는 것은 6개뿐 — rank 1이 이 저장소의 상태다.
+- **BTCUSDT 단독 재생 (가드 통과, 실피드, 08:25Z 종료 창):** scored −0.044R × 94거래
+  (t=−0.47), holdout **+0.522R × 26거래, t=3.89, CONFIRMED** (MIN_HOLDOUT_TRADES=25 턱걸이).
+  코호트의 in-sample 엣지는 다른 심볼들이 지고 있었고, 자기 심볼의 최근 테일은 자체 확인된다.
+  26거래 ≈ 유효 기간 몇 개라는 한계는 그대로 적용된다.
+
+**처분 (권고, 최종 결정 Thomas).** 무장 유지. 리포 자신의 두 판정 도구(보정 선별 바, 자기
+심볼 holdout 규칙)가 해제 사유를 내지 않았다. 해제의 정직한 트리거는 이 재생이 아니라
+**forward-confirmation(#694) 실패**이며, 그 시계는 무장 상태로 이미 돌고 있다.
+
+**독자 수정 (이 커밋).** 시도(attempt)는 그것이 채점된 바(bars)를 charge한다 —
+`pool.attempt_context_key`: scope는 단일인데 증거가 풀드(`symbols_replayed`/`holdout.symbols`
+> 1)인 행은, 저장소가 그 타임프레임에서 같은 크기의 코호트를 **정확히 하나** 지명할 수 있고
+심볼이 그 구성원일 때에 한해, 풀드 컨텍스트에 charge되고 같은 키로 판정받는다. 증명 불가는
+저장 키 폴백(오늘 더 큰 카운트 = 더 높은 바, 보수 방향). 카운트와 조회가 같은 키를 쓴다.
+
+**의도적으로 안 고친 것.** `factory._matches_context`는 무변경 — 단일 심볼 마이닝이 풀드
+행을 센터로 받는 것은 membership 규칙의 **설계된** 동작이고(올바른 라벨이어도 동일), 버그의
+실제 센터링 피해는 반대 방향(풀드 컨텍스트가 exact-equality에서 자기 선행 파이어를 잃는
+박탈)인데 그것은 명시된 안전 폴백(무센터 → 템플릿 베이스)이며 #712 이후 자연 치유된다.
+
+**오라벨 56행** (candidate_id / family / tf / gen):
+
+```
+cand_017af43355dfe50629c1 premium_fade_long 1d GEN-828    cand_01b25ef83292a6bd13cd oi_squeeze_long 4h GEN-831
+cand_04d317beb1787dcacae5 funding_fade_short 4h GEN-829   cand_0903bd2d650053180344 bollinger_breakout 1d GEN-836
+cand_0953b2b7198bbec0ba06 bollinger_breakout 4h GEN-827   cand_0d51705a7586f0147f34 taker_flow_long 1d GEN-826
+cand_0ec84f8f4b5a84a8c986 premium_fade_long 4h GEN-835    cand_13c40c6aa7fb6c171f1c mean_reversion_short 1d GEN-836
+cand_1c5a999e54ffac8ce7f7 taker_absorption_short 4h GEN-835  cand_1e3df246c4f8fcd87aa5 taker_absorption_short 1d GEN-838
+cand_24dbcdd5c70059ea99b1 breakdown_short 4h GEN-825      cand_2ee75d6566590f8ff900 taker_flow_fade_long 1d GEN-830
+cand_2f4c12045bbd7887877e funding_fade_long 4h GEN-829    cand_33c44a37d650ef3f1daa ma_cross_down 1d GEN-832
+cand_35ef46dcb76fdc200718 macd_cross_down 1d GEN-832      cand_3b14f39ffeb1f246ce7b oi_unwind_short 4h GEN-833 [ARMED]
+cand_3c97e5b9cdc092e911cf xs_reversion_short 4h GEN-837   cand_4261344549d9bc79f3d9 bollinger_breakdown_short 4h GEN-827
+cand_429b44807dfe0fbcd77c breakout 4h GEN-825             cand_43046ce9f3832252e098 mean_reversion 4h GEN-827
+cand_4929e603222972298c16 volatility_expansion_short 1d GEN-830  cand_51ab1a3aaf8481bdd1c6 xs_reversion_long 1d GEN-828
+cand_55ae3df372bbdf704298 session_trend_short 4h GEN-837  cand_613a567d2ef5895f20f6 oi_squeeze_short 4h GEN-831
+cand_6a803eb318d992be3773 taker_flow_fade_short 1d GEN-830  cand_72a86d1dd782d4a2e7f5 breakdown_short 1d GEN-834
+cand_75995712d6651c024e2e trend_pullback_short 4h GEN-825 cand_75d673c51ec666b91532 bollinger_breakdown_short 1d GEN-836
+cand_780436fc31ad7e389d7f taker_flow_long 4h GEN-833      cand_7c2bb234e2e3742cbdcf taker_flow_long 1d GEN-838
+cand_860e493e2985017a7b0d htf_trend_strength_short 4h GEN-829  cand_8e4fbe1f47c35390a844 htf_trend_strength_long 4h GEN-829
+cand_978181b15afcaff8f86d breakout 1d GEN-834             cand_9e8cdb4f4f76c3031773 taker_absorption_short 1d GEN-826
+cand_a40eccf6bb2a01e4720b xs_reversion_short 1d GEN-828   cand_a72c31c9af6319d2c410 taker_absorption_long 4h GEN-835
+cand_ab9b1ea6bcad88a531d2 taker_flow_short 1d GEN-826     cand_aeaf34324cfe85964795 volatility_expansion_long 1d GEN-830
+cand_af72e3faee9a219e568a ma_cross_up 1d GEN-832          cand_b4a6c61877cef98b7bfb taker_absorption_long 1d GEN-826
+cand_b5ecacc7f4338821e7e7 premium_fade_short 4h GEN-835   cand_b6b0f39c4f919d3730ea taker_absorption_long 1d GEN-838
+cand_c4b4647141b495a01247 mean_reversion_short 4h GEN-827 cand_c4eac564db358772b9f2 trend_pullback 4h GEN-825
+cand_c99aac0e674d6f7b2f12 trend_pullback 1d GEN-834       cand_cb673eae100242c72519 macd_cross_up 1d GEN-832
+cand_df19f5a41aa3722d56ce oi_unwind_long 4h GEN-831       cand_e011ddcf0e781f42d72d htf_pullback_long 4h GEN-831
+cand_e181f1426cc764450968 xs_reversion_long 4h GEN-837    cand_e4a78be20950e626850d htf_pullback_short 4h GEN-833
+cand_e76ba0f2cd4a193ccc54 session_trend_long 4h GEN-837   cand_eb47193c3ce81fd6d9ba taker_flow_short 4h GEN-833
+cand_f0ea60cd2873766a0acc premium_fade_short 1d GEN-828   cand_f4f2d6175717a022c4eb trend_pullback_short 1d GEN-834
+cand_fdf45b19eb0ff98586dd taker_flow_short 1d GEN-838     cand_ff7c69b35a59fa3c7a67 mean_reversion 1d GEN-836
+```
+
+재측정 방법: scope 길이 1 ∧ (`holdout.symbols` 또는 `symbols_replayed`) > 1 을
+`pool.read_candidates` 위에서 세면 된다. #712가 실린 이미지가 돈 뒤로 이 수는 늘지 않는다.
