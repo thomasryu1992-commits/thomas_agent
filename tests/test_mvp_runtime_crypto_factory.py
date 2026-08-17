@@ -34,6 +34,7 @@ from runtime.mvp_runtime.crypto.factory import (
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
 from runtime.mvp_runtime.errors import ToolBlocked
+from runtime.mvp_runtime import scheduler as scheduler_mod
 from runtime.mvp_runtime.scheduler import (
     FACTORY_FUSION_PAIRS,
     KIND_FACTORY,
@@ -1336,6 +1337,24 @@ def test_generation_number_advances_past_pool_and_candidates():
 
 # --- scheduler template -------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_leftover_factory_child():
+    # The factory fire spawns a child since the #705 process separation; module state
+    # must not leak one test's child into the next.
+    yield
+    scheduler_mod._reset_factory_child()
+
+
+def _fire_and_collect(store, ledger, tmp_path, *, spawn_at, collect_at):
+    """One scheduled factory occurrence, end to end: spawn pass, child, collect pass."""
+    spawn = run_due(store, now=spawn_at, control_store=ControlStore(tmp_path),
+                    ledger=ledger, repo_root=tmp_path)
+    assert spawn["spawned"] == 1, spawn["results"]
+    assert scheduler_mod.factory_child_join(300), "the factory child never finished"
+    return run_due(store, now=collect_at, control_store=ControlStore(tmp_path),
+                   ledger=ledger, repo_root=tmp_path)
+
+
 def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-22T10:00:00Z")
@@ -1343,8 +1362,9 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.add(schedule)
     ledger = LedgerStore(tmp_path / LEDGER_REL)
-    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
-                      ledger=ledger, repo_root=tmp_path)
+    summary = _fire_and_collect(store, ledger, tmp_path,
+                                spawn_at="2026-07-23T11:00:00Z",
+                                collect_at="2026-07-23T11:01:00Z")
     assert summary["fired"] == 1
     assert summary["results"][0]["status"].startswith("generated=")
     candidates = pool.read_candidates(tmp_path)
@@ -1383,10 +1403,11 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.add(schedule)
     ledger = LedgerStore(tmp_path / LEDGER_REL)
-    run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
-            ledger=ledger, repo_root=tmp_path)          # fire 1: parents become durable
-    summary = run_due(store, now="2026-07-24T12:00:00Z", control_store=ControlStore(tmp_path),
-                      ledger=ledger, repo_root=tmp_path)  # fire 2: fusion draws on them
+    _fire_and_collect(store, ledger, tmp_path,               # fire 1: parents become durable
+                      spawn_at="2026-07-23T11:00:00Z", collect_at="2026-07-23T11:01:00Z")
+    summary = _fire_and_collect(store, ledger, tmp_path,     # fire 2: fusion draws on them
+                                spawn_at="2026-07-24T12:00:00Z",
+                                collect_at="2026-07-24T12:01:00Z")
     assert summary["fired"] == 1
     assert "fused=" in summary["results"][0]["status"]
     rows = [json.loads(line) for line in
