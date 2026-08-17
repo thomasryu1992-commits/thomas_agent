@@ -24,6 +24,7 @@ from runtime.mvp_runtime.crypto.account import (
     ACCOUNT_DATA_DEGRADED,
     ACCOUNT_FEED_ENV,
     BINANCE_ACCOUNT,
+    INCOME_PAGE_LIMIT,
     AccountSnapshot,
     BinanceFuturesAccountFeed,
     NoAccountFeed,
@@ -36,6 +37,7 @@ from runtime.mvp_runtime.crypto.account import (
     snapshot_record,
 )
 from runtime.mvp_runtime import safety_gate
+from runtime.mvp_runtime.crypto.live_pnl import venue_daily_realized_net
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
 
@@ -244,15 +246,70 @@ def test_snapshot_record_carries_no_credentials(monkeypatch):
 
 # --- degradation --------------------------------------------------------------------
 
-def test_failed_pnl_read_keeps_balances(monkeypatch):
-    """Losing the income history must narrow the answer, not discard the working part."""
+def test_failed_pnl_read_keeps_balances_and_withholds_windows(monkeypatch):
+    """Losing the income history must narrow the answer, not discard the working part.
+
+    Narrowing means the windows are ABSENT: a zero-filled window would travel through
+    ``venue_daily_realized_net`` as a confident "no loss today" on the exact series the
+    daily-loss breaker meters. Absent windows read as ``None`` and the breaker falls back
+    to the local ledger.
+    """
     _creds(monkeypatch)
     _patch_urlopen(monkeypatch, [_account_payload(), urllib.error.URLError("down")])
     feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
     snapshot = feed.account_snapshot(timeout_seconds=1)
     assert snapshot.wallet_balance == pytest.approx(1000.50)
-    assert snapshot.realized_windows["7d"]["net"] == 0.0
+    assert snapshot.realized_windows == {}
+    assert venue_daily_realized_net(snapshot.realized_windows) is None
     assert any("TOOL_TRANSPORT" in w for w in snapshot.warnings)
+
+
+def _income_rows(count: int) -> str:
+    return json.dumps(
+        [
+            {"incomeType": "REALIZED_PNL", "asset": "USDT", "income": "-1.5",
+             "time": 1_753_000_000_000 + i}
+            for i in range(count)
+        ]
+    )
+
+
+def test_full_income_page_withholds_windows_instead_of_reading_zero(monkeypatch):
+    """A page at the venue cap is the tell-tale of truncation, and the endpoint returns
+    ascending rows — the dropped rows are the NEWEST, the daily-loss breaker's window.
+    The windows must be withheld (→ ``None`` → local-ledger fallback), never summed as if
+    the page were the whole story."""
+    _creds(monkeypatch)
+    _patch_urlopen(monkeypatch, [_account_payload(), _income_rows(INCOME_PAGE_LIMIT)])
+    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    snapshot = feed.account_snapshot(timeout_seconds=1)
+    assert snapshot.wallet_balance == pytest.approx(1000.50)
+    assert snapshot.realized_windows == {}
+    assert venue_daily_realized_net(snapshot.realized_windows) is None
+    assert any("truncated" in w for w in snapshot.warnings)
+
+
+def test_partial_income_page_still_builds_windows(monkeypatch):
+    """One row under the cap is a complete answer and must keep working as before."""
+    _creds(monkeypatch)
+    _patch_urlopen(monkeypatch, [_account_payload(), _income_rows(INCOME_PAGE_LIMIT - 1)])
+    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    snapshot = feed.account_snapshot(timeout_seconds=1)
+    assert set(snapshot.realized_windows) == {"1d", "7d", "30d", "today"}
+    assert snapshot.warnings == []
+
+
+def test_render_shows_withheld_windows_as_unknown_not_zero():
+    snapshot = AccountSnapshot(
+        asset="USDT", wallet_balance=1.0, margin_balance=1.0, available_balance=1.0,
+        unrealized_pnl=0.0, positions=[], realized_windows={}, source="test",
+        collected_at=NOW, feed_version="t", latency_ms=1,
+        warnings=["realized P&L income page full"],
+    )
+    text = render_account_text(snapshot)
+    # Every window line says unknown; none renders the confident zero.
+    assert text.count("n/a (income history withheld)") == 3
+    assert "realized 1d  : +0.00" not in text
 
 
 def test_read_account_degrades_instead_of_raising(tmp_path, monkeypatch):
