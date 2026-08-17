@@ -1506,7 +1506,10 @@ same answer.
       the ablation-fire split were passed over, not refuted. Design and its own open
       decisions: `docs/proposals/FACTORY_FIRE_PROCESS_SEPARATION_V0.1.md` — the compute
       already has a pure seam (`run_factory`), the child writes nothing but a spool, and the
-      scheduler stays the single writer. No code moves until §3 of that document is approved.
+      scheduler stays the single writer. §3 was approved as proposed the same day and the
+      separation is implemented: the fetch stays in-pass, the pure compute forks, and
+      `_collect_factory_child` closes the bracket on a later pass. The exposure this item
+      measured ends when an image carrying it is deployed.
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
