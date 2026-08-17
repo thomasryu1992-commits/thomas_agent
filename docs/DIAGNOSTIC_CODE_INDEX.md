@@ -153,14 +153,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 332 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
-| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1503 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
+| `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1550 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
 | `ARCHIVE_NAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 134 | `archive_path` | `not all((part and _SAFE_NAME.fullmatch(part) for part in parts))` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 1011 | `collect` | `—` |
 | `ARCHIVE_NOT_ENABLED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 1017 | `live_symbols` | `—` |
-| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1515 | `_execute` | `summary.get('rate_limited')` |
+| `ARCHIVE_RATE_LIMITED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1562 | `_execute` | `summary.get('rate_limited')` |
 | `ARCHIVE_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 291 | `append_candles` | `not str(symbol).strip()` |
 | `ARCHIVE_TIMEFRAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 143 | `_require_timeframe` | `timeframe not in TIMEFRAMES` |
-| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1496 | `_execute` | `summary['blocked']` |
+| `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1543 | `_execute` | `summary['blocked']` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 157 | `apply_dispatch` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 128 | `apply_knowledge` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 191 | `apply_work` | `unexpected` |
@@ -918,7 +918,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_FLAG` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 226 | `build_activation_record` | `bad` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 253 | `build_entry` | `unknown` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 423 | `build_schedule` | `kind not in KINDS` |
-| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1533 | `_execute` | `schedule.kind != KIND_TASK` |
+| `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1580 | `_execute` | `schedule.kind != KIND_TASK` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 242 | `build_entry` | `origin not in ORIGINS` |
 | `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1298 | `validate_candidate_lineage` | `unknown` |
 | `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 595 | `select_env_gated_chain` | `unknown` |

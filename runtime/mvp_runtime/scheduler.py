@@ -989,6 +989,66 @@ def _execute(
         parts = schedule.request.split()
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "4h"
+
+        # The store first, the venue second. `too_young` is decidable from the mint stamp
+        # alone, and until the oldest eligible spec has lived `MIN_POST_MINT_DAYS` this fire
+        # paid a factory-depth collection to measure nothing — 99.1% of the kind's ledger
+        # spend (4,901s of 4,945s to 2026-08-16), one 259s fire of which made a RISK_KIND
+        # neighbour 1,057s late on 2026-08-12. The filters here are the measure loop's own,
+        # minus the spec parse: a record that would fail to parse is a superset entry, and a
+        # superset can only forfeit a skip, never claim a wrong one.
+        eligible: list[tuple[dict[str, Any], Mapping[str, Any]]] = []
+        for record in crypto_pool.read_candidates(repo_root):
+            spec_dict = record.get("strategy_spec")
+            if not isinstance(spec_dict, Mapping):
+                continue
+            if str(spec_dict.get("timeframe")) != timeframe:
+                continue
+            if symbol not in (spec_dict.get("symbol_scope") or []):
+                continue
+            # Selected strategies only. The store keeps every mint and roughly three quarters of
+            # them were negative in their own scored window, so an unfiltered sample answers a
+            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
+            # is the error the first run of this measurement made.
+            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
+                continue
+            eligible.append((record, spec_dict))
+
+        # Skip the collection only when the calendar PROVES the answer for every eligible
+        # spec — an unprovable stamp collects as before, and an EMPTY cell collects as
+        # before (a fresh machine's "no specs" record should come from the ordinary path,
+        # which is also the path the five-leg frame test pins). The record still lands:
+        # "no spec was old enough" is a fact the accumulating series must keep, and
+        # `too_young_calendar` keeps it distinct from a frame-measured `too_young`.
+        floor_bars = null_control.min_post_mint_bars(timeframe)
+        bounds = [
+            null_control.calendar_bars_bound(
+                str(record.get("created_at_utc") or ""), timeframe=timeframe, now=now)
+            for record, _ in eligible
+        ]
+        if eligible and all(bound is not None and bound < floor_bars for bound in bounds):
+            result = null_control.build_record(
+                [{
+                    "symbol": symbol, "timeframe": timeframe,
+                    "measurements": [
+                        {
+                            "candidate_id": record.get("candidate_id"),
+                            "strategy_family": spec_dict.get("strategy_family"),
+                            "status": "too_young_calendar",
+                            "post_mint_bars_bound": bound,
+                        }
+                        for (record, spec_dict), bound in zip(eligible, bounds)
+                    ],
+                }],
+                now=now, symbol=symbol, timeframe=timeframe,
+            )
+            if ledger is not None:
+                ledger.append_records(
+                    f"NULLCTL-{integrity.short_id('null_control', {'at': now, 's': symbol, 't': timeframe})}",
+                    {null_control.LEDGER_KIND: result},
+                )
+            return null_control.status_line(result)
+
         collector = select_market_data_collector(now=now, root=repo_root)
         try:
             snapshot, _ = collect_market_data(
@@ -1020,20 +1080,7 @@ def _execute(
             {"candles": snapshot.get("candles") or []}).split(":", 1)[1][:8], 16)
 
         measurements: list[dict[str, Any]] = []
-        for record in crypto_pool.read_candidates(repo_root):
-            spec_dict = record.get("strategy_spec")
-            if not isinstance(spec_dict, Mapping):
-                continue
-            if str(spec_dict.get("timeframe")) != timeframe:
-                continue
-            if symbol not in (spec_dict.get("symbol_scope") or []):
-                continue
-            # Selected strategies only. The store keeps every mint and roughly three quarters of
-            # them were negative in their own scored window, so an unfiltered sample answers a
-            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
-            # is the error the first run of this measurement made.
-            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
-                continue
+        for record, spec_dict in eligible:
             try:
                 spec = StrategySpec.from_dict(dict(spec_dict))
             except SpecParseError:
