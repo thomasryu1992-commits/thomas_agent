@@ -1499,6 +1499,15 @@ same answer.
       one of those is now a fix rather than an investment. **Which, and whether — that is a
       Thomas decision; this paragraph records the evidence and decides nothing.**
 
+      **Decided (Thomas 2026-08-17): process separation.** By then the re-measurement had
+      moved the frequency from "twice in four days" to four of the last six (08-16 337s and
+      08-17 384s joined, each with the same second-exact pipeline gap), so the exposure is
+      the daily cost of lattice-era mints, not a bad-day tail. The duration-aware budget and
+      the ablation-fire split were passed over, not refuted. Design and its own open
+      decisions: `docs/proposals/FACTORY_FIRE_PROCESS_SEPARATION_V0.1.md` — the compute
+      already has a pure seam (`run_factory`), the child writes nothing but a spool, and the
+      scheduler stays the single writer. No code moves until §3 of that document is approved.
+
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
 
