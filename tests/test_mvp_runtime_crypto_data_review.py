@@ -14,6 +14,8 @@ import pytest
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.data_review import (
+    CURRENT_SOURCES,
+    DATA_FAMILIES,
     DATA_REVIEW_DEGRADED,
     DATA_REVIEW_LEDGER_KIND,
     MAX_SUGGESTIONS_PER_RUN,
@@ -240,16 +242,59 @@ def test_mock_provider_exercises_accept_and_reject():
 
 def test_already_collected_source_is_rejected():
     verdict = evaluate_suggestion(
-        {"name": "binance_futures_funding", "data_kind": "positioning",
+        {"name": "binance_futures_funding", "data_family": "other",
          "rationale": "r", "expected_use": "u"},
-        index=1, known_sources=frozenset({"binance_futures_funding"}))
+        index=1, known_sources=frozenset({"binance_futures_funding"}),
+        known_families=frozenset())
     assert not verdict["accepted"] and "already_collected" in verdict["problems"]
+
+
+def test_a_family_variant_of_a_collected_series_is_rejected():
+    """#708's recorded miss, closed: `orderbook_depth_imbalance` passed the name filter
+    while `binance_futures_order_book` collected the same series. The family axis
+    (Thomas ②, 2026-08-17) refuses it whatever the spelling — and venue never keys the
+    check, because #708 judged same-family-different-venue a partial duplicate too."""
+    verdict = evaluate_suggestion(
+        {"name": "orderbook_depth_imbalance", "data_family": "order_book",
+         "venue": "some_other_exchange", "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset({"binance_futures_order_book"}),
+        known_families=frozenset({"order_book"}))
+    assert not verdict["accepted"]
+    assert "already_collected_family" in verdict["problems"]
+    assert "already_collected" not in verdict["problems"]  # the name filter alone missed it
+
+
+def test_an_unknown_family_is_refused_not_guessed():
+    verdict = evaluate_suggestion(
+        {"name": "resting_liquidity_snapshots", "data_family": "resting_liquidity",
+         "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset(), known_families=frozenset())
+    assert not verdict["accepted"] and "unknown_data_family" in verdict["problems"]
+
+
+def test_the_other_family_is_the_escape_and_never_dedups():
+    verdict = evaluate_suggestion(
+        {"name": "a_genuinely_new_kind", "data_family": "other",
+         "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset(),
+        known_families=frozenset(s["family"] for s in CURRENT_SOURCES) | {"other"})
+    assert verdict["accepted"], verdict["problems"]
+
+
+def test_every_collected_source_declares_a_known_family_and_venue():
+    """The same-PR discipline, pinned: a source joins the list WITH its family and venue,
+    and the family is a vocabulary member — a stale or missing axis silently disarms the
+    only deterministic dedup the review has, which is how the name axis rotted."""
+    for entry in CURRENT_SOURCES:
+        assert entry["family"] in DATA_FAMILIES, entry["source"]
+        assert entry["venue"], entry["source"]
+    assert "other" not in {s["family"] for s in CURRENT_SOURCES}
 
 
 def test_suggestions_capped_per_run():
     class Flood(MockDataReviewProvider):
         _ANSWER = {"suggestions": [
-            {"name": f"s{i}", "data_kind": "other", "rationale": "r", "expected_use": "u"}
+            {"name": f"s{i}", "data_family": "other", "rationale": "r", "expected_use": "u"}
             for i in range(20)
         ]}
     record = review_data_gaps(build_data_inventory([], []), provider=Flood(), now=NOW)
