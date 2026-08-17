@@ -142,10 +142,20 @@ EXIT_SOURCE_RUNTIME_CLOSE = "runtime_close"    # this runtime sent the closing o
 EXIT_SOURCE_BRACKET_LEG = "bracket_leg"        # a resting bracket leg triggered and filled
 EXIT_SOURCE_FILL_HISTORY = "fill_history"      # rebuilt from the account's own fill list
 
-# A conditional order rests at the venue until its trigger price is reached. Only that resting
-# state counts as "the bracket is in place": anything else (a rejection, an instant trigger, an
-# unknown status) means the position is not protected the way the decision assumed.
-BRACKET_RESTING_STATUSES = frozenset({"NEW"})
+# A conditional order rests at the venue until its trigger price is reached. Only a working
+# state counts as "the bracket is in place": anything else (a rejection, an instant full
+# trigger, an unknown status) means the position is not protected the way the decision assumed.
+#
+# PARTIALLY_FILLED is working, not lost. A partial fill of the sized reduceOnly LIMIT target
+# is an ordinary market event: the remainder is still on the book, and the closePosition stop
+# beside it covers whatever remains by construction. Until 2026-08-17 this set was {NEW}
+# alone, so that ordinary event read as a lost bracket — rule 2 then force-closed a
+# still-stop-protected position at the book's stale full quantity, reconciled MISMATCH
+# against the venue's reduced position, and latched a portfolio-wide incident with the book
+# still OPEN. The quantity drift a partial fill creates is reconciliation's fact to report
+# (BOOK_DRIFT halts entries, fail-closed), not this classifier's to answer with a taker
+# close that abandons the resting maker remainder.
+BRACKET_RESTING_STATUSES = frozenset({"NEW", "PARTIALLY_FILLED"})
 
 # Terminal states that mean "this leg executed". Two spellings for one fact, because a bracket
 # leg is a CONDITIONAL algo order and the Algo endpoint has its own vocabulary: the order

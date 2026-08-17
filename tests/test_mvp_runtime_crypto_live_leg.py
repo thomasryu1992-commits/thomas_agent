@@ -600,6 +600,18 @@ def test_a_resting_leg_is_placed_a_filled_one_is_not():
                                  sleep=_no_sleep)["placed"] is False
 
 
+def test_a_target_that_partially_fills_at_placement_still_counts_as_placed():
+    """A GTC target crossing part of its size the moment it lands is still a working order —
+    its remainder rests. Counting it as not-placed would run `_close_naked_position` against
+    a position the target is actively closing at profit."""
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="TP", side="SELL", price=62000.0,
+                                     working_type="MARK_PRICE", position_seed="seed",
+                                     quantity=0.002)
+    result = ll.place_bracket_leg(intent, adapter=FakeAdapter(statuses={"TP": "PARTIALLY_FILLED"}),
+                                  sleep=_no_sleep)
+    assert result["placed"] is True
+
+
 def test_the_two_legs_get_distinct_idempotency_keys():
     sl = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                  working_type="MARK_PRICE", position_seed="seed")
