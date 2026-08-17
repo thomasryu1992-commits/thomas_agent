@@ -246,6 +246,27 @@ def test_two_resting_legs_read_as_protected():
     assert live_leg.read_bracket_legs(_position(), adapter=adapter)["status"] == live_leg.PROTECTED
 
 
+def test_a_partially_filled_target_reads_as_protected_not_lost():
+    """A partial fill of the sized reduceOnly LIMIT target is an ordinary market event: the
+    remainder is still working on the book, and the closePosition stop beside it covers
+    whatever remains by construction. Reading it as UNPROTECTED sent rule 2's taker
+    force-close at the book's stale full quantity against a still-stop-protected position —
+    guaranteed MISMATCH, EXIT_NOT_CONFIRMED, and a portfolio-wide halt with the book OPEN.
+    The quantity drift a partial fill creates is reconciliation's fact to report
+    (BOOK_DRIFT), not this classifier's to punish."""
+    adapter = _Adapter(orders={
+        "sl-1": _venue_order("NEW"),
+        "tp-1": _venue_order("PARTIALLY_FILLED", qty=0.001),
+    })
+    read = live_leg.read_bracket_legs(_position(), adapter=adapter)
+    assert read["status"] == live_leg.PROTECTED
+    target = next(leg for leg in read["legs"] if leg["client_order_id"] == "tp-1")
+    assert target["resting"] is True
+    # A partial fill is not "this leg executed": the settle path must not price an exit off
+    # a position that is still open at the venue.
+    assert target["filled"] is False
+
+
 def test_a_leg_the_venue_says_is_gone_reads_as_unprotected():
     """``fetch_order`` returning None is the venue *answering* — "no such order" — not a
     failed read. A position with a missing stop is genuinely unprotected."""
