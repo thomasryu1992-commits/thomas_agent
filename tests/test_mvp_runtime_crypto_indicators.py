@@ -41,10 +41,71 @@ def _assert_series_equal(name: str, actual: list, expected: list) -> None:
             assert math.isclose(a, e, rel_tol=1e-9, abs_tol=1e-12), f"{name}[{i}]: {a} != {e}"
 
 
-@pytest.mark.parametrize("name", sorted(EXPECTED))
+# Deliberate deviations from the source, each carrying the decision that made it. The fixture
+# stays untouched — it is a record of what the SOURCE computed, and overwriting its values with
+# ours would dress a deviation as parity.
+SOURCE_DEVIATIONS = {
+    # 2026-08-17 (Thomas; docs/proposals/FUNDING_ZSCORE_TIME_BASE_V0.1.md, B안): the funding z
+    # moved from bar space to its own 8h settlement cadence — the `open_interest`/positioning
+    # rule the source predates. The source's bar-space series re-counted each settlement once
+    # per bar, so the same |z| threshold meant a 16.7-day norm at 4h and a 100-day norm at 1d.
+    "funding_zscore",
+}
+
+
+@pytest.mark.parametrize("name", sorted(set(EXPECTED) - SOURCE_DEVIATIONS))
 def test_feature_parity_with_source_implementation(name):
     actual = [row.get(name) for row in ROWS]
     _assert_series_equal(name, actual, EXPECTED[name])
+
+
+def test_every_source_deviation_actually_deviates():
+    """A deviation that quietly converges back to the source is a stale exemption: either the
+    code regressed to bar space or the fixture was edited to match us — both are findings."""
+    for name in SOURCE_DEVIATIONS:
+        actual = [row.get(name) for row in ROWS]
+        assert actual != EXPECTED[name], f"{name} matches the source again; retire the exemption"
+
+
+# --- funding z in its own time base (the 2026-08-17 decision) -----------------------
+
+def test_funding_z_is_the_same_answer_on_every_bar_grid():
+    """The property the decision bought: one settlement history, one z — whatever grid asks.
+    Under bar space this fails (a coarser grid holds more settlements per window)."""
+    fine = features.build_feature_rows(SNAPSHOT)
+    coarse_candles = CANDLES[::2]
+    coarse = features.build_feature_rows({**SNAPSHOT, "candles": coarse_candles})
+    fine_by_time = {c["open_time"]: row["funding_zscore"]
+                    for c, row in zip(CANDLES, fine)}
+    compared = 0
+    for candle, row in zip(coarse_candles, coarse):
+        z_fine = fine_by_time[candle["open_time"]]
+        if z_fine is None and row["funding_zscore"] is None:
+            continue
+        assert row["funding_zscore"] == pytest.approx(z_fine), candle["open_time"]
+        compared += 1
+    assert compared > 0, "no comparable bars — the fixture's funding feed did not engage"
+
+
+def test_funding_z_moves_only_when_a_settlement_arrives():
+    """Between two settlements the z is the last settlement's z, repeated — never a rolling
+    recomputation over the repeats themselves."""
+    rows = features.build_feature_rows(SNAPSHOT)
+    funding_times = {e["timestamp"] for e in SNAPSHOT.get("funding") or []}
+    previous = None
+    changes_without_settlement = 0
+    settled_bars = 0
+    for candle, row in zip(CANDLES, rows):
+        z = row["funding_zscore"]
+        new_settlement = any(previous is not None and previous_time < t <= candle["open_time"]
+                             for t in funding_times) if previous is not None else True
+        if previous is not None and z != previous and not new_settlement:
+            changes_without_settlement += 1
+        if new_settlement:
+            settled_bars += 1
+        previous, previous_time = z, candle["open_time"]
+    assert changes_without_settlement == 0
+    assert settled_bars > 1, "the fixture never delivered a second settlement"
 
 
 def test_direct_indicator_calls_match_feature_rows():

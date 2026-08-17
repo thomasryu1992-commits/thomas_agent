@@ -77,8 +77,9 @@ ATR_REFERENCE_MIN_PERIODS = 20
 ROC_FAST = 4
 VOLUME_Z_WINDOW = 20
 ADX_TREND_THRESHOLD = 20.0  # entry_policy.adx_trend_threshold source default
-FUNDING_Z_WINDOW = 100      # features.funding_z_window source default
-FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods for the funding z
+FUNDING_Z_WINDOW = 100      # SETTLEMENTS (~33.3 days on every timeframe) since the 2026-08-17
+                            # event-space decision; the source default judged 100 BARS
+FUNDING_Z_MIN_PERIODS = 10  # the source's looser min_periods, now counted in settlements
 OI_CHANGE_PERIOD = 1        # OI READINGS between the two reads a change compares (feed cadence, not bars)
 OI_Z_WINDOW = 30            # OI readings the z-score judges the current level against
 OI_Z_MIN_PERIODS = 10
@@ -96,11 +97,14 @@ TRADE_SIZE_Z_WINDOW = 20
 TRADE_SIZE_Z_MIN_PERIODS = 10
 
 # --- derivative price series --------------------------------------------------
-# The premium index z-score window. 100 bars matches FUNDING_Z_WINDOW so the two describe
-# the same span of the same underlying pressure — one at 8h event cadence, one per bar —
-# and a threshold mined on either means the same thing. The looser min_periods is the
-# funding series' own rule, kept for the same reason: a spec should not wait 100 bars to
-# become evaluable when 10 observations already locate the current reading.
+# The premium index z-score window. Premium is a BAR-native series (collected at the frame's
+# own interval), so bar space is its correct time base — unlike funding, whose z moved to its
+# 8h settlement cadence on 2026-08-17. The shared 100/10 numbers survive that split but the
+# SPANS no longer match across the pair: 100 premium bars is 16.7 days at 4h and 100 days at
+# 1d, while 100 settlements is ~33.3 days everywhere — a threshold mined on one does not mean
+# the other's span. The looser min_periods is the funding series' own rule, kept because a
+# spec should not wait 100 bars to become evaluable when 10 observations already locate the
+# current reading.
 PREMIUM_Z_WINDOW = 100
 PREMIUM_Z_MIN_PERIODS = 10
 
@@ -160,8 +164,10 @@ XS_COLUMNS = (*XS_NUMERIC_COLUMNS, *XS_EVIDENCE_COLUMNS)
 # out is the DIVERGENCE between the first and the last — large capital against the crowd — because
 # it is the one measurement here that cannot be derived from OHLCV at any resolution.
 #
-# Windows match the funding z-score deliberately: both describe a crowding pressure on its own
-# cadence, so a threshold mined on one means the same span as one mined on the other.
+# Windows match the funding z-score deliberately: both describe a crowding pressure in its own
+# cadence, at the same 100-observation depth. Depth, not calendar span — 100 hourly readings is
+# ~4.2 days while 100 funding settlements is ~33.3 — and since 2026-08-17 funding actually is
+# on its own cadence (it was bar-space between the C3 port and the event-space decision).
 POSITIONING_Z_WINDOW = 100
 POSITIONING_Z_MIN_PERIODS = 10
 # Periods a change is measured over, in the SERIES' own time base (hourly readings, not bars) —
@@ -929,8 +935,34 @@ def build_feature_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
            else {col: [None] * len(candles) for col in HTF_COLUMNS})
     has_funding_series = "funding" in snapshot
     if has_funding_series:
-        funding_rate = _asof_align(bar_times, snapshot.get("funding") or [], ("funding_rate",))["funding_rate"]
-        funding_zscore = indicators.zscore(funding_rate, FUNDING_Z_WINDOW, FUNDING_Z_MIN_PERIODS)
+        # The same events the alignment will see: an event without a usable timestamp must not
+        # consume a z-window slot the aligned columns cannot carry.
+        funding_events = [
+            e for e in (snapshot.get("funding") or [])
+            if isinstance(e, dict) and isinstance(e.get("timestamp"), str) and e.get("timestamp")
+        ]
+        funding_rate = _asof_align(bar_times, funding_events, ("funding_rate",))["funding_rate"]
+        # Z in the SERIES' own time base, then aligned — the `open_interest`/positioning rule,
+        # adopted for funding by decision 2026-08-17 (Thomas; evidence and options in
+        # docs/proposals/FUNDING_ZSCORE_TIME_BASE_V0.1.md). The z over the ALIGNED column this
+        # replaces re-counted each 8h settlement once per bar, so the 100-"observation" window
+        # held ~4 real settlements at 15m and 300 at 1d — the same |z| threshold asked a
+        # 16.7-day question at 4h and a 100-day question at 1d, and the two bases disagreed on
+        # 15-20% of |z| >= 1.0 gate decisions (measured on live feeds, 2026-08-17). Now the
+        # window is FUNDING_Z_WINDOW settlements (~33.3 days) on every timeframe. This is the
+        # one deliberate deviation from C3 source parity; the parity test names it.
+        ordered = sorted(funding_events, key=lambda e: str(e.get("timestamp") or ""))
+        event_z = indicators.zscore(
+            [e.get("funding_rate") for e in ordered], FUNDING_Z_WINDOW, FUNDING_Z_MIN_PERIODS
+        )
+        # None z rides along (warmup, zero-variance): a bar after such a settlement must read
+        # indeterminate, never the previous settlement's stale z.
+        funding_zscore = _asof_align(
+            bar_times,
+            [{"timestamp": e.get("timestamp"), "funding_zscore": z}
+             for e, z in zip(ordered, event_z)],
+            ("funding_zscore",),
+        )["funding_zscore"]
     else:
         funding_rate = [None] * len(candles)
         funding_zscore = [None] * len(candles)
