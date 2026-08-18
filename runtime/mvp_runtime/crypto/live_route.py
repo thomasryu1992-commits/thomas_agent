@@ -379,6 +379,35 @@ def _run_gated_live_leg(
             now=now, root=root, timeout_seconds=timeout_seconds,
         )
 
+    # A position the venue has ALREADY closed settles in whichever context runs first,
+    # whatever its symbol. That settlement sends nothing — the MISSING_AT_VENUE branch of
+    # `_settle_or_protect` reads the fill and writes the book — and it is the only thing
+    # that can clear the drift judged below. Scoping it to the position's own context
+    # deadlocked on 2026-08-18 (~02:59Z): a probe position (`timeframe: None`) put ITS
+    # symbol's 1d context first in the fan-out, the account-wide drift halted the pass
+    # there, and the drifted symbol's context — the only one that would have settled it —
+    # never ran. #631's one-cycle settle had only ever worked because the drifted symbol's
+    # context happened to run before anything halted; this makes that property structural.
+    # Other drift kinds (side, quantity, untracked-at-venue) are deliberately NOT visited
+    # here: they are venue states bookkeeping cannot repair, and the halt below is still
+    # exactly what they mean. Empty candle_ts/context: a foreign context holds no timing
+    # authority and must not touch the position's clock (`_time_exit_or_hold` already
+    # times nothing for a caller that names no context) — unreachable on the MISSING
+    # branch, load-bearing if these reasons ever widen.
+    books = reconciliation.get("books") or {}
+    for position in local_positions:
+        other = position_symbol(position)
+        if other == symbol:
+            continue  # settled above, with the context's full leg semantics
+        if DRIFT_MISSING_AT_VENUE in ((books.get(other) or {}).get("reasons") or ()):
+            _settle_or_protect(
+                record, position,
+                adapter=adapter, position_store=position_store, ledger=ledger,
+                reconciliation=reconciliation, limits=limits, candle_ts=None,
+                context_timeframe="",
+                now=now, root=root, timeout_seconds=timeout_seconds,
+            )
+
     # A book that still disagrees with the venue AFTER settlement is the dangerous kind: the
     # normal bracket-closed drift resolved itself just above, so what remains is a position
     # this runtime cannot account for. Entries are already refused per symbol; the halt is

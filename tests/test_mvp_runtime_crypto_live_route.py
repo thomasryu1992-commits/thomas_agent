@@ -755,3 +755,78 @@ def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):
     )
     assert record["live_settled"] is not None
     assert record["live_opened"] is None, "a settling cycle opened a position"
+
+
+def test_a_venue_closed_position_settles_from_whichever_context_runs_first(tmp_path, monkeypatch):
+    """The 2026-08-18 deadlock, pinned: an operator hand-closed BTCUSDT while an ETH probe
+    was in flight. The probe's `timeframe: None` put the ETH 1d context first in the
+    fan-out, the account-wide drift halted the pass THERE, and the BTCUSDT context — the
+    only one that settled its drift — never ran. #631's one-cycle settle only ever worked
+    because the drifted symbol's context happened to run first.
+
+    The property now: a MISSING_AT_VENUE position is settled by whichever context runs
+    first, whatever its symbol — so the drift clears, the pass continues, and the halt
+    stays what it means (a disagreement settlement could NOT repair)."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    eth_local = {"symbol": "ETHUSDT", "position_id": "probe-eth", "status": "OPEN",
+                 "direction": "LONG", "quantity": 0.002}
+    btc_local = {"symbol": "BTCUSDT", "position_id": "s005-btc", "status": "OPEN",
+                 "direction": "SHORT", "quantity": 0.003}
+    eth_venue = AccountPosition(symbol="ETHUSDT", side="LONG", quantity=0.002,
+                                entry_price=4600.0, mark_price=4600.0, unrealized_pnl=0.0,
+                                leverage=1.0, notional=9.2)
+    monkeypatch.setattr(live_route, "read_account",
+                        lambda **kw: (_snapshot(positions=[eth_venue]), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [eth_local, btc_local])
+
+    settled_positions = []
+
+    def _settle(record, position, **kw):
+        settled_positions.append(position["position_id"])
+        if position["symbol"] == "BTCUSDT":
+            # The MISSING branch settles it (sends nothing) and the record says so.
+            record["live_settled"] = {
+                "status": "SETTLED", "outcome": {"result_R": 0.4}, "reason_codes": [],
+            }
+
+    monkeypatch.setattr(live_route, "_settle_or_protect", _settle)
+
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
+        route=None, feature_row={"timestamp": NOW}, verdict={"allow_new_position": True},
+        symbol="ETHUSDT", collector=object(), now=NOW, root=tmp_path,
+    )
+    assert "s005-btc" in settled_positions, (
+        "the ETH context never settled the venue-closed BTC position — the deadlock is back")
+    assert record["halt"] is False
+    assert live_route.BOOK_DRIFT not in record["live_reason_codes"]
+
+
+def test_drift_that_bookkeeping_cannot_repair_still_halts_from_any_context(tmp_path, monkeypatch):
+    """The other half of the fix's scope: a quantity mismatch is a venue state settlement
+    cannot repair, so a context that is not the drifted symbol's own must NOT touch the
+    position — and the halt still fires exactly as before."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    btc_local = {"symbol": "BTCUSDT", "position_id": "s005-btc", "status": "OPEN",
+                 "direction": "SHORT", "quantity": 0.003}
+    btc_venue = AccountPosition(symbol="BTCUSDT", side="SHORT", quantity=0.005,
+                                entry_price=64000.0, mark_price=64000.0, unrealized_pnl=0.0,
+                                leverage=1.0, notional=320.0)
+    monkeypatch.setattr(live_route, "read_account",
+                        lambda **kw: (_snapshot(positions=[btc_venue]), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: [btc_local])
+    monkeypatch.setattr(
+        live_route, "_settle_or_protect",
+        lambda record, position, **kw: pytest.fail(
+            "a foreign context touched a position whose drift bookkeeping cannot repair"),
+    )
+
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
+        route=None, feature_row={"timestamp": NOW}, verdict={"allow_new_position": True},
+        symbol="ETHUSDT", collector=object(), now=NOW, root=tmp_path,
+    )
+    assert record["halt"] is True
+    assert live_route.BOOK_DRIFT in record["live_reason_codes"]
+    assert record["live_route_status"] == live_route.ROUTE_INCIDENT
