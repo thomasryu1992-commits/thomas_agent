@@ -481,6 +481,35 @@ def test_an_approval_binds_one_parameter_set_only(tmp_path):
     assert probe.read_plan(tmp_path) is None
 
 
+def test_a_timeout_override_must_be_repeated_at_confirm(tmp_path):
+    """The batch-3 decision (Thomas 2026-08-18): 400m rides the ask as a request-time
+    parameter, exactly like --symbols — the content hash binds it, so a confirm that
+    falls back to the module default refuses rather than confirming a batch with a
+    timeout Thomas never saw."""
+    asked = probe.build_batch_params(timeout_minutes=400)
+    with pytest.raises(ApprovalBlocked) as exc:
+        probe.confirm_probe_batch(_fake_approval(asked), params=None, root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
+    assert probe.read_plan(tmp_path) is None
+
+    plan = probe.confirm_probe_batch(_fake_approval(asked), params=asked, root=tmp_path, now=NOW)
+    assert plan["status"] == probe.PLAN_ACTIVE
+    assert plan["params"]["timeout_minutes"] == 400
+
+
+def test_cli_request_and_confirm_derive_the_same_override_params():
+    """`_override_params` is the single derivation both verbs share: a drift between the
+    request's batch and the confirm's is exactly the mismatch the hash refuses, so the
+    derivation itself is pinned here once."""
+    assert cli._override_params(None, None) is None
+    only_timeout = cli._override_params(None, 400)
+    assert only_timeout == probe.build_batch_params(timeout_minutes=400)
+    both = cli._override_params(("BNBUSDT", "DOGEUSDT"), 400)
+    assert both == probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"), timeout_minutes=400)
+    assert cli._override_params(("BNBUSDT", "DOGEUSDT"), None) == probe.build_batch_params(
+        symbols=("BNBUSDT", "DOGEUSDT"))
+
+
 def test_confirm_refuses_over_an_active_plan(tmp_path):
     params = _params()
     _active_plan(tmp_path, params)

@@ -6,8 +6,10 @@
 
     # 2) ASK Thomas for one batch (stores the PENDING approval; places nothing).
     #    --symbols overrides the approved default three (comma list; second-batch
-    #    approval, Thomas 2026-08-11) — the content hash then binds THAT set.
-    python -m scripts.run_slippage_probe --request [--symbols "BNBUSDT,DOGEUSDT"]
+    #    approval, Thomas 2026-08-11) and --timeout-minutes the unfilled-stop expiry
+    #    (batch-3 decision, Thomas 2026-08-18: 400) — the content hash binds both.
+    python -m scripts.run_slippage_probe --request [--symbols "BNBUSDT,DOGEUSDT"] \
+        [--timeout-minutes 400]
 
     # 3) Thomas answers /approve <id> on the verified control channel, then the plan
     #    store is written (still places nothing). A --symbols request must repeat the
@@ -234,15 +236,35 @@ def run_status(*, root: Path | None) -> int:
     return EXIT_OK
 
 
+def _override_params(symbols: tuple[str, ...] | None,
+                     timeout_minutes: int | None) -> dict[str, Any] | None:
+    """The request-time overrides, built once so request and confirm derive the SAME batch.
+
+    None = the module defaults untouched. Both callers thread through here on purpose:
+    the approval's content hash binds every param, so a divergence between the two
+    derivations is exactly the mismatch the confirm exists to refuse."""
+    overrides: dict[str, Any] = {}
+    if symbols is not None:
+        overrides["symbols"] = symbols
+    if timeout_minutes is not None:
+        overrides["timeout_minutes"] = timeout_minutes
+    return probe.build_batch_params(**overrides) if overrides else None
+
+
 def run_request(
-    *, root: Path | None, now: str | None = None, symbols: tuple[str, ...] | None = None
+    *, root: Path | None, now: str | None = None, symbols: tuple[str, ...] | None = None,
+    timeout_minutes: int | None = None,
 ) -> int:
     """Build + store + audit the R9 ask for one batch (the promotion script's pattern).
 
-    ``symbols`` is the request-time set (None = the approved default three); the batch is
-    built HERE so an invalid set refuses, typed, before anything is stored."""
+    ``symbols`` is the request-time set (None = the approved default three) and
+    ``timeout_minutes`` the unfilled-stop expiry (None = the module default — #728 moved
+    it once already, so no number is repeated here; the batch-3 decision, Thomas
+    2026-08-18, names 400 so a resting stop gets the session to fill before the market
+    close wastes the cell); the batch is built HERE so an invalid value refuses, typed,
+    before anything is stored."""
     now = now or timeutil.utc_now_iso()
-    params = probe.build_batch_params(symbols=symbols) if symbols is not None else None
+    params = _override_params(symbols, timeout_minutes)
     prepared = probe.request_probe_batch(params=params, now=now, repo_root=root)
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -262,6 +284,10 @@ def run_request(
         # The confirm re-derives the batch, so a --symbols ask must be confirmed with
         # the SAME set — hand the operator the exact command rather than a mismatch.
         confirm_cmd += " --symbols \"{}\"".format(",".join(prepared["params"]["symbols"]))
+    if timeout_minutes is not None:
+        # Same rule for the timeout: it is inside the content hash, so the confirm must
+        # repeat it or refuse on a batch Thomas never saw.
+        confirm_cmd += f" --timeout-minutes {prepared['params']['timeout_minutes']}"
     print(f"\nSTORED: {request['approval_id']} is PENDING until {request['validity']['expires_at']}.")
     print("Thomas answers /approve <id> or /reject <id> on the verified control channel; then "
           f"run {confirm_cmd}.")
@@ -274,14 +300,16 @@ def run_confirm(
     root: Path | None,
     now: str | None = None,
     symbols: tuple[str, ...] | None = None,
+    timeout_minutes: int | None = None,
 ) -> int:
     """Verify the approval against the re-derived batch and write the plan store.
 
-    ``symbols`` must repeat the set the request named (None = the default three): the
-    approval's content hash binds one exact batch, so a different set refuses with
-    APPROVAL_CONTENT_MISMATCH rather than confirming something Thomas never saw."""
+    ``symbols`` and ``timeout_minutes`` must repeat what the request named (None = the
+    module defaults): the approval's content hash binds one exact batch, so a different
+    value refuses with APPROVAL_CONTENT_MISMATCH rather than confirming something Thomas
+    never saw."""
     now = now or timeutil.utc_now_iso()
-    params = probe.build_batch_params(symbols=symbols) if symbols is not None else None
+    params = _override_params(symbols, timeout_minutes)
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     plan = probe.confirm_probe_batch(store.get(approval_id), params=params, root=root, now=now)
     print(f"CONFIRMED: plan {plan['batch_id']} is {plan['status']} with {len(plan['cells'])} "
@@ -733,6 +761,10 @@ def main(argv: list[str] | None = None) -> int:
                         help='comma list for --request/--confirm (e.g. "BNBUSDT,DOGEUSDT"); '
                              "omitted = the approved default three. The content hash binds "
                              "the set, so a --symbols request is confirmed with the same set")
+    parser.add_argument("--timeout-minutes", type=int, default=None,
+                        help="unfilled-stop expiry for --request/--confirm (omitted = the "
+                             "module default). Inside the content hash like --symbols: a "
+                             "request that names it is confirmed with the same value")
     parser.add_argument("--abandon", action="store_true",
                         help="retire the ACTIVE batch early (needs --reason; the sample rows "
                              "stay on the ledger, unfilled cells never happen, the next "
@@ -764,13 +796,15 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_USAGE
             return run_abandon(reason=args.reason.strip(), root=args.root)
         if args.request:
-            return run_request(root=args.root, symbols=_parse_symbols(args.symbols))
+            return run_request(root=args.root, symbols=_parse_symbols(args.symbols),
+                               timeout_minutes=args.timeout_minutes)
         if args.confirm:
             if not args.approval_id:
                 print("USAGE: --confirm needs --approval-id (ask first with --request)")
                 return EXIT_USAGE
             return run_confirm(approval_id=args.approval_id, root=args.root,
-                               symbols=_parse_symbols(args.symbols))
+                               symbols=_parse_symbols(args.symbols),
+                               timeout_minutes=args.timeout_minutes)
         if not args.symbol:
             print("USAGE: --fire needs --symbol")
             return EXIT_USAGE
