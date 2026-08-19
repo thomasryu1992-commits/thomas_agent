@@ -96,7 +96,10 @@ def test_the_streak_does_not_reset_at_midnight(tmp_path):
     refill is what let the loop resume; a breaker expiring on the same clock as the budget it
     bounds would bound nothing."""
     breaker = _breaker(tmp_path)
-    _fail(breaker, at="2026-08-02T23:59:00Z")
+    # The streak is built to the limit ACROSS the boundary, never to a hardcoded count: the fact
+    # under test is that midnight does not reset it, not what the limit happens to be today.
+    for _ in range(MAX_CONSECUTIVE_BRACKET_FAILURES - 1):
+        _fail(breaker, at="2026-08-02T23:59:00Z")
     _fail(breaker, at="2026-08-03T00:01:00Z")
     assert bracket_breaker_status(tmp_path)["tripped"] is True
 

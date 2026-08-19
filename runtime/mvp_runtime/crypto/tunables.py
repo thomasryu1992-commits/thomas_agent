@@ -193,9 +193,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "fraction of usable equity per trade; can only ever make an order smaller than the caps",
             "the same evidence that would move `guards.RISK_PER_TRADE`"),
     Tunable("MAX_CONSECUTIVE_BRACKET_FAILURES", live_order.MAX_CONSECUTIVE_BRACKET_FAILURES,
-            "crypto/live_order.py", MEASURED,
-            "the incident's own number: two refusals in a row is the path broken, not a venue moment",
-            "a bracket failure mode that is not the confirm race #460 fixed"),
+            "crypto/live_order.py", OPERATOR,
+            "2 was the first incident's own number; Thomas raised it to 5 on 2026-08-19 after the "
+            "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
+            "before its own error_detail could be read",
+            "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
     Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
             "crypto/live_entry.py", OPERATOR,
             "spread above 50 bps signals a liquidity event; entering wide eats the edge in slippage",

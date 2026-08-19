@@ -11,7 +11,10 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.crypto import live_leg
-from runtime.mvp_runtime.crypto.live_order import LiveBracketFailureBreaker
+from runtime.mvp_runtime.crypto.live_order import (
+    MAX_CONSECUTIVE_BRACKET_FAILURES,
+    LiveBracketFailureBreaker,
+)
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
 from runtime.mvp_runtime.safety_gate import Authorization
 from scripts import clear_bracket_breaker as cbb
@@ -29,7 +32,7 @@ def tripped(tmp_path, monkeypatch):
     """A breaker at its limit, with the durable implementation wired in — tests hold no grant,
     so the script's own selection would hand back the inert one."""
     breaker = LiveBracketFailureBreaker(root=tmp_path, authorization=_LIVE_AUTH)
-    for _ in range(2):
+    for _ in range(MAX_CONSECUTIVE_BRACKET_FAILURES):
         breaker.record_failure(
             symbol="ETHUSDT", status=live_leg.ENTRY_NAKED_CLOSED, at=NOW,
             reason_codes=[live_leg.BRACKET_FAILED],
