@@ -1,7 +1,16 @@
-# 제안: 스케줄러 레인 분리 V0.1 — risk kind는 어떤 fire 뒤에도 줄 서지 않는다 (DRAFT v0.1)
+# 제안: 스케줄러 레인 분리 V0.1 — risk kind는 어떤 fire 뒤에도 줄 서지 않는다 (APPROVED v0.2)
 
-> **상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
-> 요구되는 Thomas 결정은 §8에 있다.
+> **상태: 승인 — Thomas 2026-08-19, §8의 D1·D2·D3 전부. PR-A 구현: #733.**
+>
+> **v0.2 (2026-08-19) — PR-A 감사 결과를 반영하고, v0.1이 몰랐던 지형 하나를 정정한다.**
+> v0.1은 §2에서 "ablation fire 분할은 factory만 고치고, 다음에 길어질 kind마다 같은
+> 수술을 반복하게 된다"고 썼는데, 그 수술은 이미 별도 상신으로 승인·병합되어 있었다:
+> `FACTORY_FIRE_PROCESS_SEPARATION_V0.1` (#705 처방, #726으로 2026-08-17 병합) — factory
+> **compute**를 fork된 자식으로 옮긴다. 그리고 그 다음 날(08-18) `crypto_pipeline`은
+> 여전히 1,181초 늦었다 — 부모가 의도적으로 유지한 **in-pass fetch(~360초)** 뒤에서.
+> null_control도 store-first 조기종료를 따로 받았다. 즉 kind별 수술 두 건이 실제로
+> 진행되었고, 그 후에도 지연이 남았다는 것이 §2의 클래스 논거의 실증이다. 상세는
+> §1.1(v0.2 추가)과 §5.3의 감사 확정.
 >
 > 사실 확인 기준: 2026-08-19, 라이브 원장(`runtime_ledger/scheduler_events.jsonl` + 아카이브
 > 전체)을 직접 재측정. 코드 사실(인용한 상수·`claim_due`·`rotate_file`의 잠금)은
@@ -30,7 +39,7 @@
 | 08-16 08:18 | 1,161s | `crypto_factory` 337s |
 | 08-17 04:48 | 1,132s | **`crypto_null_control` 3연속** — 234s/259s/257s, 각 pass가 하나씩 시작 |
 | 08-17 08:19 | 1,201s | `crypto_factory` 384s |
-| 08-18 08:18 | 1,181s | pass가 08:06:48부터 **원장에 없는 작업으로 360s** 소모 (deferral 행의 `pass_elapsed_ms: 360496`이 유일한 증거) 후 factory 진행 |
+| 08-18 08:18 | 1,181s | factory fire의 **in-pass fetch ~360s** (v0.2 정정 — §1.1; v0.1은 "원장에 없는 작업"으로만 적었다) |
 
 나흘 연속, 하루 두 번인 날도 있다. 08-19는 factory가 93s/44s로 빨라 깨끗했다 —
 문서가 예측한 대로 conjunction mix에 따라 요동칠 뿐, 바닥이 오른 것은 아니다.
@@ -52,7 +61,22 @@
 비용의 크기는 바뀌지 않았다: 보호 브래킷은 거래소에 상주하므로 각 사건은 진입·장부
 경로의 ~4–5분 지연이지 무방비 포지션이 아니다. 바뀐 것은 **빈도(매일)와 폭(두 kind)**이다.
 
-## 2. 왜 2분할이고 3분할이 아닌가
+### 1.1 (v0.2) 08-18의 귀속 — "무기록 360s"는 factory의 in-pass fetch였다
+
+두 가지가 v0.1의 읽기를 정정한다. 첫째, `fired` 행의 `created_at`은 fire의 시각이 아니라
+**pass의 `now` 스탬프**다 — 한 pass의 모든 행이 같은 시각을 공유하며, `duration_ms`만이
+실측이다. 둘째, 08-18의 이미지에는 #726(factory 자식 분리, 08-17 10:31Z 병합)이 이미
+실려 있었다: `started` 08:12:48(claim) → 자식 spawn → 다음 pass들이 collect, `fired` 행
+08:20:48에 `duration_ms=119,733`(자식 벽시계). 그러면 남는 조각이 정확히 맞는다 —
+sibling deferral 행의 `pass_elapsed_ms: 360496`은 **부모가 의도적으로 유지한 fetch 단계**
+(#705 §3: "boundary = the parent keeps the fetch")가 pass 안에서 소모한 ~6분이고, 그것이
+어느 fire의 `duration_ms`에도 잡히지 않는 이유다. `crypto_pipeline`은 그 fetch가 끝난
+08:18:49에 발화했다.
+
+**이 귀속이 결정에 주는 것:** 자식 분리가 배포된 다음 날에도 risk kind는 6분 늦었다.
+compute를 옮겨도 fetch가 남고, fetch를 또 옮기면 다음 긴 단계가 남는다 — 단일 루프
+안에서의 수술은 항상 잔여를 남기며, 레인 분리는 잔여가 어디에 있든 risk 캐던스에서
+그것을 통째로 치운다.
 
 2026-08-06 보류의 논리는 절반이 여전히 옳다: research와 maintenance를 서로 나눌 근거는
 그때도 지금도 없다 — 서로가 서로를 늦춰서 잃는 것이 없기 때문이다. 무너진 것은 나머지
@@ -65,7 +89,9 @@
   그 한계를 이중으로 보여준다), 지속시간을 막으려면 선점(preemption)이 필요한데 그것은
   이미 기각된 방향이다(중단된 factory/archive 쓰기 = 찢어진 레코드).
 - **ablation fire 분할** — factory만 고친다. 08-17의 null_control 사례가 그대로 남고,
-  다음에 길어질 kind마다 같은 수술을 반복하게 된다.
+  다음에 길어질 kind마다 같은 수술을 반복하게 된다. *(v0.2: 이 예측은 실측이 되었다 —
+  factory는 #726으로, null_control은 store-first 조기종료로 각각 수술을 받았고, 그
+  다음 날에도 08-18의 fetch 잔여 지연이 남았다. §1.1.)*
 
 프로세스 분리는 클래스 전체를 닫는다: 어떤 kind의 fire도 `crypto_pipeline` 앞에 설 수
 없는 것이 **배치의 속성**이 된다.
@@ -106,9 +132,19 @@
 옮긴다"와 같은 방향이며, 부수 효과로 **6분짜리 fire를 도는 프로세스가 더 이상 Binance
 키 옆에 있지 않게 된다.**
 
-maintenance 레인의 env 목록은 이 표가 아니라 **PR-A의 감사가 확정한다**: kind별 소비
-env를 코드에서 역추적하고, `test_the_scheduler_selects_no_model_provider_at_all`과 같은
-패턴의 테스트로 "maintenance 레인 모듈은 계정·주문·라이브 변수를 읽지 않는다"를 고정한다.
+**(v0.2) maintenance 레인의 env 목록, PR-A 감사로 확정** — fire 분기(`_execute`)를
+kind별로 역추적한 결과:
+
+- **필요**: `MVP_MARKET_DATA` (factory·null_control의 캔들 수집),
+  `MVP_LIQUIDATION_FEED` + `COINALYZE_API_KEY` (두 kind의 피드 leg),
+  `MVP_CANDLE_ARCHIVE` (아카이브 자체 venue 축),
+  `MVP_OPERATOR_CHANNEL` + `TELEGRAM_BOT_TOKEN` (발신 전용 알림).
+- **없음**: `BINANCE_ACCOUNT_*`, `MVP_ACCOUNT_FEED`, `MVP_PAPER_TRADING`,
+  `MVP_LIVE_*` 전부 — analysis_task·report·propose·data_review는 `pipeline-worker`로
+  위임되어 로컬 소비가 없고, prune·rotate·null_control 측정은 로컬이다.
+
+"maintenance 레인은 계정·주문·라이브 변수를 읽지 않는다"의 테스트 고정은 compose가
+실제로 두 서비스를 갖는 PR-B에서, 그 compose 블록을 대상으로 한다.
 
 ## 5. 메커니즘 — 코드 변경
 
@@ -180,15 +216,18 @@ maintenance 레인에서는 지킬 risk kind가 없어 목적을 잃는다. 그�
   분리로 그 비용이 **risk 캐던스에서 사라질 뿐**이다. 길이 자체가 문제가 되면(예: 아침
   버스트가 자기 레인 안에서 밀려 아카이브가 시간을 놓침) 그때 ablation fire 분할을
   다시 꺼낸다 — 그 후보는 기각이 아니라 후순위다.
-- **08-18의 무기록 360s.** 그 시간이 무엇이었는지는 이 제안과 별개로 규명할 가치가
-  있다(fire 밖의 pass 작업은 레인을 나눠도 자기 레인을 막는다). PR-A 감사 항목에
-  포함하되, 이 제안의 채택 여부와는 독립이다.
+- ~~**08-18의 무기록 360s.**~~ *(v0.2: 규명됨 — factory의 in-pass fetch, §1.1. fire
+  **안의** 시간이었으므로 "fire 밖의 pass 작업" 우려는 해당 사례에선 성립하지 않았고,
+  레인 분리가 이 시간도 risk 캐던스에서 치운다.)*
 
 ## 7. PR 시퀀스와 배포
 
-**PR-A — 코드 (동작 무변경).** §5의 1–4 + env·인터리빙 감사. 기본값 `--lane all`이므로
-머지·배포되어도 아무것도 달라지지 않는다. 감사 결과(maintenance env 목록, 인터리빙
-표의 확정)를 이 문서 v0.2에 반영.
+**PR-A — 코드 (동작 무변경). ✅ 구현: #733 (`feat/a-tick-loop-can-run-one-lane`).**
+§5의 1–4 + env·인터리빙 감사. 기본값 `--lane all`이므로 머지·배포되어도 아무것도
+달라지지 않는다. 감사 결과는 이 v0.2에 반영됨(§1.1, §4). 구현이 §5에 더한 것 하나:
+KIND_TASK의 registry 화해(reconcile)도 같은 소유권 논리로 레인 스코프했다 — risk 레인
+재시작이 maintenance 레인의 진행 중 분석을 RUN_ABANDONED로 오판하는 네 번째 함정.
+전체 스위트 5,257 통과, release gate PASS.
 
 **PR-B — compose (배치 전환).** 서비스 신설 + `--lane risk` 부여 + 헤더 개정.
 배포는 CLAUDE.md의 candidate-tag 절차 그대로. `compose up -d` 한 번으로 전환되며,
