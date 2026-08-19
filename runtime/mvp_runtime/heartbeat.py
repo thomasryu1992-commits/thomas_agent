@@ -29,6 +29,12 @@ HEARTBEATS_REL = ".runtime_governance_state/heartbeats"
 
 SCHEDULER_SERVICE = "scheduler"
 OPERATOR_SERVICE = "operator"
+# One heartbeat per tick PROCESS, so the lane split gets a name per lane
+# (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): a shared "scheduler" file would let a
+# live maintenance loop keep a dead risk loop reading FRESH — the exact silent stall this
+# module exists to catch. `SCHEDULER_SERVICE` remains the `--lane all` single-process name.
+SCHEDULER_RISK_SERVICE = "scheduler-risk"
+SCHEDULER_MAINTENANCE_SERVICE = "scheduler-maintenance"
 
 # A loop is late only when it has missed several passes: one slow pass (a long-poll that
 # held open, a pipeline run that took minutes) is normal operation, not a stall.
@@ -109,7 +115,8 @@ def check_heartbeat(service: str, *, now: str | None = None, root: Path | None =
 
 
 __all__ = [
-    "FRESH", "MISSING", "OPERATOR_SERVICE", "SCHEDULER_SERVICE", "STALE", "UNREADABLE",
+    "FRESH", "MISSING", "OPERATOR_SERVICE", "SCHEDULER_MAINTENANCE_SERVICE",
+    "SCHEDULER_RISK_SERVICE", "SCHEDULER_SERVICE", "STALE", "UNREADABLE",
     "check_heartbeat", "heartbeat_path", "heartbeats_dir", "stale_after_seconds",
     "write_heartbeat",
 ]

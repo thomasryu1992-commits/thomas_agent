@@ -11,6 +11,11 @@
     # Run the tick loop (respects the kill switch; one tick by default):
     python -m runtime.mvp_runtime.scheduler_cli tick --max-ticks 0 --interval-seconds 60
 
+    # Or one lane of it (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): `risk` fires only
+    # RISK_KINDS, `maintenance` the rest; each lane stamps its own heartbeat and closes
+    # only its own lane's runs at startup. Default `all` = the single-process deployment.
+    python -m runtime.mvp_runtime.scheduler_cli tick --lane risk --max-ticks 0 --interval-seconds 30
+
 The tick loop runs a scheduled `analysis_task` in the `pipeline-worker` service rather than
 in this process, so it selects no model provider and no search tool — that service holds
 those keys and passes them through the same Safety-Flag Gate
@@ -128,15 +133,23 @@ def remaining_period(interval_seconds: float, elapsed_seconds: float) -> float:
 
 
 def report_startup_gap(
-    store: ScheduleStore, *, now: str, ledger: LedgerStore | None, alerter: OperatorAlerter | None
+    store: ScheduleStore, *, now: str, ledger: LedgerStore | None, alerter: OperatorAlerter | None,
+    kinds: frozenset[str] | None = None,
 ) -> list[tuple[Any, int]]:
     """Detect and report scheduling the loop missed while it was NOT RUNNING.
 
     A schedule more than a full interval overdue means nothing ticked it — the one
     failure mode an in-process guard can never catch (a dead process reports nothing).
     Recorded durably as ``gap_detected`` scheduler events so the downtime is evidence on
-    the ledger, not just a Telegram message that could fail to send."""
-    late = scheduler.overdue_schedules(store.list(), now=now)
+    the ledger, not just a Telegram message that could fail to send.
+
+    Scoped to ``kinds`` under the lane split, because the diagnosis assumes "nothing ticked
+    it" and this process can only vouch for its own lane: a maintenance schedule overdue at
+    the risk lane's startup may simply be waiting on a maintenance loop that has not started
+    yet, and a `gap_detected` for it here would be the other lane's downtime reported as
+    fact by a process that cannot know it."""
+    visible = [s for s in store.list() if kinds is None or s.kind in kinds]
+    late = scheduler.overdue_schedules(visible, now=now)
     if not late:
         return []
     for schedule, overdue in late:
@@ -158,7 +171,8 @@ def report_startup_gap(
 
 
 def report_abandoned_runs(
-    *, ledger: LedgerStore | None, now: str, alerter: OperatorAlerter | None
+    *, ledger: LedgerStore | None, now: str, alerter: OperatorAlerter | None,
+    kinds: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Close out occurrences whose process died mid-fire, and report them.
 
@@ -167,6 +181,13 @@ def report_abandoned_runs(
     the evidence, and this is the only vantage point that can pair it — a dead process
     diagnoses nothing. Each orphan gets its honest ending (an ``abandoned`` event, which
     also makes this idempotent across restarts) and one operator alert.
+
+    Scoped to ``kinds`` under the lane split, and the scope is what keeps the diagnosis
+    honest rather than merely tidy: both lanes share one ledger, so at a risk-lane restart
+    the maintenance lane's fire CURRENTLY RUNNING next door is an unpaired ``started`` —
+    exactly the shape this scan exists to notice. Closing it would write a false
+    ``abandoned`` for a run that finishes minutes later, leaving the ledger claiming one
+    occurrence both died and fired. A lane only ever pairs up its own dead.
 
     An unreadable scheduler ledger only skips the scan, loudly: the tick loop must still
     start. This is diagnosis, not a gate."""
@@ -177,7 +198,8 @@ def report_abandoned_runs(
     except MvpRuntimeError as exc:
         sys.stderr.write(f"SCHEDULER: abandoned-run scan SKIPPED ({exc.reason_code})\n")
         return []
-    abandoned = scheduler.find_abandoned_runs(events)
+    abandoned = [e for e in scheduler.find_abandoned_runs(events)
+                 if kinds is None or e.get("kind") in kinds]
     for started in abandoned:
         sys.stderr.write(f"SCHEDULER: abandoned run — {started.get('kind')} "
                          f"({started.get('schedule_id')}) started {started.get('created_at')} "
@@ -215,6 +237,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p_tick = sub.add_parser("tick", help="run due schedules")
     p_tick.add_argument("--max-ticks", type=int, default=1, help="ticks to run; 0 = until interrupted (default 1)")
     p_tick.add_argument("--interval-seconds", type=float, default=60.0, help="sleep between ticks (default 60)")
+    # The lane split (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): one tick process per
+    # side of the RISK_KINDS/MAINTENANCE_KINDS partition, so no fire of any kind can stand
+    # in front of a due risk kind. Default `all` = the single-process deployment, unchanged.
+    p_tick.add_argument("--lane", choices=sorted(scheduler.LANES), default=scheduler.LANE_ALL,
+                        help="which side of the kind partition this loop fires (default: all)")
     return parser.parse_args(argv)
 
 
@@ -312,40 +339,65 @@ def main(
         # no longer uses — and after the compose change it would print the MOCK banner while
         # delegated fires ran real analyses, which is worse than saying nothing.
         gate_banners()
-        sys.stderr.write(f"SCHEDULER: ticking (ledger: {ledger.root}; control: {control_store.load().mode})\n")
+        # The lane resolves ONCE, before anything runs or reports: every startup diagnosis
+        # below scopes to it, and a lane that failed to resolve must not have written a
+        # heartbeat or closed anyone's runs first. `lane_kinds` fails closed on a name
+        # outside `LANES` (argparse `choices` already refuses those; this keeps injected
+        # callers as safe as the CLI).
+        lane_kind_set = scheduler.lane_kinds(args.lane)
+        sys.stderr.write(f"SCHEDULER: ticking (lane: {args.lane}; ledger: {ledger.root}; "
+                         f"control: {control_store.load().mode})\n")
         if alerter is None:
             alerter = build_alerter(repo_root=repo_root, now=now)
         # Before the first tick, report what went wrong while this loop was NOT running:
         # occurrences nothing ticked (gap), and occurrences that started but never
         # finished (abandoned). After the first tick both are current by construction.
+        # Both reports are scoped to this lane's kinds — the other lane's overdue schedules
+        # and unpaired starts are its process's to explain, not this one's (see each
+        # function's docstring for the false-`abandoned` shape the scope prevents).
         startup_stamp = now or timeutil.utc_now_iso()
-        report_startup_gap(store, now=startup_stamp, ledger=ledger, alerter=alerter)
-        report_abandoned_runs(ledger=ledger, now=startup_stamp, alerter=alerter)
+        report_startup_gap(store, now=startup_stamp, ledger=ledger, alerter=alerter,
+                           kinds=lane_kind_set)
+        report_abandoned_runs(ledger=ledger, now=startup_stamp, alerter=alerter,
+                              kinds=lane_kind_set)
         # ...and the coordination view of the same thing. A KIND_TASK fire opens a RUNNING
         # registry entry (`scheduler.py`), so a scheduler killed mid-analysis strands it — and
         # nothing closed it, because only the operator service reconciled and it (correctly, as
         # of this change) no longer touches another service's origins. Scoped to SCHEDULER for
         # the same reason: an operator request in flight is not this process's to abandon.
         # Best-effort, like the operator's: bookkeeping must not stop the service.
-        try:
-            stranded = task_registry.reconcile_stale_running(
-                TaskRegistryStore.default(repo_root), now=startup_stamp,
-                origins=task_registry.SCHEDULER_ORIGINS,
-            )
-            if stranded:
-                sys.stderr.write(
-                    f"SCHEDULER: {len(stranded)} interrupted scheduled task(s) marked RUN_ABANDONED\n"
+        # Under the lane split the same ownership argument goes one level down: KIND_TASK is a
+        # maintenance kind, so a SCHEDULER-origin entry belongs to the lane that fires
+        # KIND_TASK, and the risk lane restarting must not mark the maintenance lane's
+        # in-flight analysis RUN_ABANDONED while it still runs next door.
+        if lane_kind_set is None or scheduler.KIND_TASK in lane_kind_set:
+            try:
+                stranded = task_registry.reconcile_stale_running(
+                    TaskRegistryStore.default(repo_root), now=startup_stamp,
+                    origins=task_registry.SCHEDULER_ORIGINS,
                 )
-        except MvpRuntimeError as exc:
-            sys.stderr.write(f"SCHEDULER: task registry not reconciled ({exc.reason_code})\n")
+                if stranded:
+                    sys.stderr.write(
+                        f"SCHEDULER: {len(stranded)} interrupted scheduled task(s) marked RUN_ABANDONED\n"
+                    )
+            except MvpRuntimeError as exc:
+                sys.stderr.write(f"SCHEDULER: task registry not reconciled ({exc.reason_code})\n")
 
         # Stamp once before the first tick so a probe has an answer from the moment the
         # service is up, and once per completed pass thereafter. Best-effort: a heartbeat
         # write that fails must not stop the scheduling it only observes.
+        # One heartbeat per lane PROCESS: a shared file would let a live maintenance loop
+        # keep a dead risk loop reading FRESH — see the service names in `heartbeat`.
+        heartbeat_service = {
+            scheduler.LANE_ALL: heartbeat.SCHEDULER_SERVICE,
+            scheduler.LANE_RISK: heartbeat.SCHEDULER_RISK_SERVICE,
+            scheduler.LANE_MAINTENANCE: heartbeat.SCHEDULER_MAINTENANCE_SERVICE,
+        }[args.lane]
+
         def _beat() -> None:
             try:
                 heartbeat.write_heartbeat(
-                    heartbeat.SCHEDULER_SERVICE,
+                    heartbeat_service,
                     interval_seconds=args.interval_seconds, now=now, root=repo_root,
                 )
             except OSError as exc:
@@ -369,6 +421,7 @@ def main(
                     # operator's own requests appear in — otherwise /tasks would show
                     # nothing while an unattended run held the tick.
                     registry=TaskRegistryStore.default(repo_root),
+                    kinds=lane_kind_set,
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]
