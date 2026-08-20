@@ -9,12 +9,18 @@ The MVP deploys as **two services from one image**, sharing one mounted state vo
 - **operator** — the control-channel loop (`runtime/mvp_runtime/operator_cli.py`): poll
   Telegram → verify the registered operator → run the single-agent pipeline → reply. The same
   emergency console (`/pause` `/kill` `/resume` `/status`) governs the running service.
-- **scheduler** — the tick loop (`runtime/mvp_runtime/scheduler_cli.py tick`): fires due
-  schedules (scheduled analysis, the crypto pipeline cycle, the strategy factory, memory
-  prune). **Without this service nothing scheduled ever runs** — the operator loop does not
-  tick schedules. Run at most ONE scheduler per state volume (the deployment contract is a
-  single tick process; the stores are cross-process locked, but parallel crypto workers are
-  out of scope).
+- **scheduler** — the RISK-lane tick loop (`scheduler_cli.py tick --lane risk`): fires the
+  money path's kinds (crypto pipeline cycle, breaker watch, route watch) and nothing else.
+  This is the service that holds the venue keys; the lane split kept it in place.
+- **scheduler-maint** — the MAINTENANCE-lane tick loop (`tick --lane maintenance`): factory,
+  null_control, candle archive, scheduled analysis, prune, rotate, report, propose, data
+  review — the long fires, in a process the risk lane never waits on
+  (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`). Holds no venue, live, or model credential.
+
+  **Without its lane's service nothing that lane schedules ever runs** — the operator loop
+  does not tick schedules. Run at most ONE tick service PER LANE per state volume (the
+  stores are cross-process locked and the lanes' kind sets are disjoint, but parallel
+  crypto workers are out of scope).
 
 ## What the image contains — and deliberately does not
 
@@ -73,8 +79,9 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 ## Run (compose — the one deployment path)
 
 **Compose is the only way this is deployed. Do not `docker run` the services and do not
-build private `thomas-agent-operator:<tag>` images to deploy from.** The two services own
-the fixed names `thomas-operator` and `thomas-scheduler`; a hand-run container claiming
+build private `thomas-agent-operator:<tag>` images to deploy from.** The services own
+the fixed names `thomas-operator`, `thomas-scheduler`, and `thomas-scheduler-maint`; a
+hand-run container claiming
 either name blocks the next `docker compose up` with a name conflict, and two people
 deploying by different routes on one host means each redeploy silently replaces the
 other's containers. One host, one deploy command, run from a checkout on the commit you
@@ -87,7 +94,7 @@ docker compose up -d --build
 This is safe to run from any session: it rebuilds `thomas-agent-runtime` from the current
 checkout and recreates both services in place. The mounted state volume is untouched, so
 no history is lost. If a name conflict is reported, an out-of-band container exists —
-`docker rm -f thomas-operator thomas-scheduler` and re-run compose (their state is on the
+`docker rm -f thomas-operator thomas-scheduler thomas-scheduler-maint` and re-run compose (their state is on the
 bind mount, not in the container). Confirm the commit you are on is a superset of whatever
 the running image carried before removing anything.
 
