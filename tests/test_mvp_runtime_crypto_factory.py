@@ -3433,3 +3433,93 @@ def test_fusion_reads_the_symbol_run_factory_resolved(monkeypatch):
     factory.run_factory(snapshot, active_pool={"active_strategies": []},
                         existing_candidates=[], now=NOW, fusion_pairs=2)
     assert seen["symbol"] == "BTCUSDT", "the two fallbacks for one fact disagree again"
+
+
+# --- post-stop-loss cooldown --------------------------------------------------
+
+class TestReplayCooldown:
+    """The backtest replay must skip re-entry for COOLDOWN_BARS_AFTER_STOPLOSS bars
+    after a stop-loss, matching the live paper path's cooldown gate."""
+
+    def _make_rows_and_candles(self, n=50):
+        """A series where a breakout spec enters and stops out repeatedly."""
+        step = timedelta(days=1)
+        last_close = NOW_DT - timedelta(hours=1)
+        rows = []
+        candles = []
+        price = 100.0
+        for i in range(n):
+            drift = 1.0 if (i // 10) % 2 == 0 else -1.0
+            price = max(10.0, price + drift)
+            close_time = last_close - (n - 1 - i) * step
+            atr = 3.0
+            candle = {
+                "open_time": timeutil.format_iso(close_time - step),
+                "open": price - drift,
+                "high": price + 2.0,
+                "low": price - 2.0,
+                "close": price,
+                "volume": 10.0,
+                "close_time": timeutil.format_iso(close_time),
+            }
+            candles.append(candle)
+            rows.append({
+                "close": price, "atr": atr, "ma20": price - 1.0,
+                "market_regime": "TREND_UP",
+            })
+        return rows, candles
+
+    def test_cooldown_skips_entries_after_stoploss(self):
+        """After a stop-loss, the replay must skip COOLDOWN_BARS_AFTER_STOPLOSS bars
+        before allowing a new entry on the same series."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 0.5, "target_atr": 5.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = self._make_rows_and_candles(n=80)
+        outcomes, *_, cooldown_skipped = factory._replay(
+            spec, rows, candles, cost=CostModel(),
+        )
+        stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
+        if len(stop_losses) >= 1:
+            assert cooldown_skipped >= 1, (
+                "stop-losses occurred but no cooldown skips were recorded"
+            )
+
+    def test_cooldown_counter_is_returned_as_seventh_element(self):
+        """The return tuple has 7 elements now, and the last is cooldown_skipped."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory._replay(spec, [], [], cost=CostModel())
+        assert len(result) == 7
+        assert result[-1] == 0
+
+    def test_cooldown_does_not_fire_on_take_profit_or_time_exit(self):
+        """Only stop_loss triggers cooldown; take_profit and time_exit do not."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 5.0, "target_atr": 0.3,
+                        "max_holding_bars": 3},
+        ))
+        rows, candles = self._make_rows_and_candles(n=80)
+        outcomes, *_, cooldown_skipped = factory._replay(
+            spec, rows, candles, cost=CostModel(),
+        )
+        stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
+        if not stop_losses:
+            assert cooldown_skipped == 0, (
+                "cooldown fired without any stop-losses"
+            )
+
+    def test_backtest_evidence_carries_cooldown_door_block(self):
+        """backtest_spec_pooled records a cooldown_door block in its output."""
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "cooldown_door" in result
+        assert result["cooldown_door"]["applied"] is True
+        assert result["cooldown_door"]["cooldown_bars"] == 2

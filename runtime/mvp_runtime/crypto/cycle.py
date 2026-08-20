@@ -64,6 +64,7 @@ from .market_data import (
     collect_market_data,
     degraded_market_data_record,
 )
+from .cooldown import CooldownMarkStore
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
@@ -530,6 +531,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
     candle_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
@@ -720,6 +722,7 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, paper_verdict,
         store=store, now=now, root=root, control_store=control_store,
         intrabar_collector=collector, routing_marks=routing_marks,
+        cooldown_marks=cooldown_marks,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
@@ -1284,6 +1287,7 @@ def run_pool_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
 ) -> dict[str, Any]:
     """Fan one governed pass out over every context the pool trades. Returns a summary.
 
@@ -1348,7 +1352,8 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks, candle_cache=candle_cache,
+                routing_marks=routing_marks, cooldown_marks=cooldown_marks,
+                candle_cache=candle_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
