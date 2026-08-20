@@ -269,6 +269,46 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
 # whether the spend clusters at the boundary or far past it. See the deferral branch in `run_due`.
 MAINTENANCE_PASS_BUDGET_SECONDS = 60.0
 
+# --- lanes: the tick loop can run one side of the partition -----------------------------------
+#
+# `docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`, approved Thomas 2026-08-19 (D1–D3). The
+# factory-child separation above fixed the one fire that had been measured holding the pass;
+# the week after it was approved, `crypto_null_control` fires of ~4 minutes produced the same
+# late `crypto_pipeline` by the same mechanism (2026-08-17 04:48Z, three of them back to
+# back). Any kind can grow a long fire, so the durable fix is the class one: a deployment may
+# run TWO tick processes, one per side of the partition, and then no fire of any kind can
+# stand in front of a due risk kind.
+#
+# The lane boundary is the partition above — reused, not restated. A kind's budget
+# classification IS its lane assignment, so the forcing tests that keep every kind classified
+# (`test_every_kind_is_classified_as_risk_or_maintenance` and its siblings) already keep every
+# kind laned, and a new kind cannot land in no lane or in two.
+#
+# `LANE_ALL` is the single-process deployment and the default everywhere: a caller that names
+# no lane gets exactly the behavior this module had before lanes existed.
+LANE_RISK = "risk"
+LANE_MAINTENANCE = "maintenance"
+LANE_ALL = "all"
+LANES = frozenset({LANE_RISK, LANE_MAINTENANCE, LANE_ALL})
+
+
+def lane_kinds(lane: str) -> frozenset[str] | None:
+    """The kind set a lane fires; ``None`` means every kind (the single-process deployment).
+
+    Fail-closed on an unknown lane: a typo'd ``--lane`` must refuse to tick rather than
+    quietly run everything — a lane that silently widened would put a 6-minute fire back in
+    front of the money path with nothing recording that it had."""
+    if lane == LANE_ALL:
+        return None
+    if lane == LANE_RISK:
+        return RISK_KINDS
+    if lane == LANE_MAINTENANCE:
+        return MAINTENANCE_KINDS
+    raise SchedulerBlocked(
+        "SCHEDULER_UNKNOWN_LANE",
+        f"{lane!r} is not a lane; expected one of {sorted(LANES)}",
+    )
+
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
 
@@ -1899,6 +1939,7 @@ def run_due(
     executor: Callable[..., dict[str, Any]] = delegate_analysis_task,
     notifier: Callable[[str, str], None] | None = None,
     registry: Any = None,
+    kinds: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
 
@@ -1943,7 +1984,15 @@ def run_due(
     kind — see ``RISK_KINDS`` for the measurement that motivated it. A ``crypto_factory``
     fire no longer even holds the pass for its compute: the fetch runs here (seconds), the
     pure ``run_factory`` call leaves for a child process, and a later pass collects it at
-    the top — the factory-child section above `run_due` is the contract."""
+    the top — the factory-child section above `run_due` is the contract.
+
+    **Lanes.** With ``kinds`` set (the lane split, `SCHEDULER_LANE_SPLIT_V0.1`), only
+    schedules of those kinds are visible to this pass at all: everything else is neither
+    fired, skipped, nor deferred — it is left due, untouched and unrecorded, because it
+    belongs to the other lane's process. That reach extends to the kill-switch branch (a
+    kill in the risk lane must not claim-and-drop maintenance occurrences the maintenance
+    lane would have dropped itself) and to the factory-child collect (see the gate below).
+    ``None`` — the default — is the whole schedule set, exactly as before lanes existed."""
     schedules = store.list()
     if control_store is None:
         control_store = ControlStore(repo_root if repo_root is not None else _repo_root())
@@ -1958,19 +2007,32 @@ def run_due(
     # A spawned factory child from an earlier pass is collected FIRST (a few ms): its
     # terminal event closes the bracket its own pass left open, and an orphaned spool from
     # a dead process fails closed here. See the factory-child section above.
-    for entry in _collect_factory_child(store, ledger=ledger, notifier=notifier,
-                                        now=now, repo_root=repo_root):
-        if entry["action"] == "fired":
-            fired += 1
-        else:
-            failed += 1
-        results.append(entry)
+    #
+    # Gated on the lane owning KIND_FACTORY, and the gate is load-bearing rather than an
+    # optimization: `_collect_factory_child` with no registered child treats every spool
+    # meta as an orphan whose parent died — kills the pid, fails the occurrence, deletes
+    # the spool. The risk-lane process NEVER has a registered child (it cannot spawn one),
+    # so without this gate its every pass would execute the maintenance lane's live child
+    # as that recovery: a false `failed:FACTORY_CHILD_ORPHANED` for a fire whose parent is
+    # alive next door. Orphan recovery stays exactly as safe as before — the lane that can
+    # spawn a child is the lane that survives to fail its spool.
+    if kinds is None or KIND_FACTORY in kinds:
+        for entry in _collect_factory_child(store, ledger=ledger, notifier=notifier,
+                                            now=now, repo_root=repo_root):
+            if entry["action"] == "fired":
+                fired += 1
+            else:
+                failed += 1
+            results.append(entry)
 
     # Risk kinds first, then everything else in store order. Within a pass this changes nothing
     # about WHICH fires happen — the same set is due — only the order, so a risk kind sharing a
     # due time no longer waits behind maintenance. `sorted` is stable, so the store's own order
     # survives inside each group and a schedule cannot change its position by being re-saved.
-    due = [s for s in schedules if s.enabled and s.next_run_at <= now]
+    # The lane filter sits here, before the loop, so the other lane's schedules are invisible
+    # to every branch below — including the kill-switch skip, which claims and DROPS.
+    due = [s for s in schedules
+           if s.enabled and s.next_run_at <= now and (kinds is None or s.kind in kinds)]
     due.sort(key=lambda s: 0 if s.kind in RISK_KINDS else 1)
     pass_started = time.monotonic()
 

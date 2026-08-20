@@ -2,6 +2,8 @@
 
     python -m runtime.mvp_runtime.heartbeat_cli scheduler
     python -m runtime.mvp_runtime.heartbeat_cli operator
+    python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk          # lane-split services
+    python -m runtime.mvp_runtime.heartbeat_cli scheduler-maintenance
 
 Exits 0 when the named loop stamped a heartbeat recently enough for its own cadence,
 non-zero when it has gone quiet, its record is unreadable, or it never started one.
@@ -28,7 +30,10 @@ def main(argv: list[str] | None = None, *, root: Path | None = None, now: str | 
     force_utf8_io()
     parser = argparse.ArgumentParser(
         prog="heartbeat_cli", description="Check whether a deployed service loop is still turning.")
-    parser.add_argument("service", choices=[heartbeat.SCHEDULER_SERVICE, heartbeat.OPERATOR_SERVICE])
+    parser.add_argument("service", choices=[
+        heartbeat.SCHEDULER_SERVICE, heartbeat.OPERATOR_SERVICE,
+        heartbeat.SCHEDULER_RISK_SERVICE, heartbeat.SCHEDULER_MAINTENANCE_SERVICE,
+    ])
     args = parser.parse_args(argv)
 
     report = heartbeat.check_heartbeat(args.service, now=now, root=root)
