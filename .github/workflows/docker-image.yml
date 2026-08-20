@@ -42,9 +42,10 @@ jobs:
           set -euo pipefail
           services=$(docker compose config --services | sort)
           echo "services:"; echo "${services}"
-          # Both halves of the deployment must exist: an operator-only deploy runs no
-          # schedules at all, which is exactly the bug L3b fixed.
-          for required in operator scheduler; do
+          # Every half of the deployment must exist: an operator-only deploy runs no
+          # schedules at all (the bug L3b fixed), and a one-lane deploy silently never
+          # fires the other lane's kinds — same failure, half the size.
+          for required in operator scheduler scheduler-maint; do
             echo "${services}" | grep -qx "${required}" || {
               echo "compose is missing the '${required}' service"; exit 1; }
           done
@@ -160,26 +161,34 @@ jobs:
           out=$(state status); echo "${out}"
           echo "${out}" | grep -q "mode: ACTIVE" || { echo "resume did not clear the kill"; exit 1; }
 
-      - name: The scheduler service starts from its compose definition
+      - name: The scheduler lanes start from their compose definitions
         run: |
           set -euo pipefail
-          # Only the scheduler: the operator correctly fails closed without a registration,
-          # so it would crash-loop here — that refusal is asserted above instead.
-          docker compose up -d scheduler
-          for _ in $(seq 1 30); do
-            sleep 2
-            if docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking"; then
-              break
-            fi
+          # Both lanes, not the operator: the operator correctly fails closed without a
+          # registration, so it would crash-loop here — that refusal is asserted above
+          # instead. Starting both lanes is the deploy-coupling check in one move — a
+          # compose file whose `--lane` the image does not know crash-loops right here.
+          docker compose up -d scheduler scheduler-maint
+          for service in scheduler scheduler-maint; do
+            for _ in $(seq 1 30); do
+              sleep 2
+              if docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking"; then
+                break
+              fi
+            done
+            docker compose logs "${service}"
+            docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking" || {
+              echo "the ${service} service never started ticking"; exit 1; }
           done
-          docker compose logs scheduler
-          docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking" || {
-            echo "the scheduler service never started ticking"; exit 1; }
-          state=$(docker inspect -f '{{.State.Status}}' thomas-scheduler)
-          [ "${state}" = "running" ] || { echo "scheduler is ${state}, not running"; exit 1; }
-          # The compose healthcheck command itself must answer — and it now asserts the
-          # loop actually turned, not merely that a state file parses.
-          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler
+          for pair in thomas-scheduler thomas-scheduler-maint; do
+            state=$(docker inspect -f '{{.State.Status}}' "${pair}")
+            [ "${state}" = "running" ] || { echo "${pair} is ${state}, not running"; exit 1; }
+          done
+          # The compose healthcheck commands themselves must answer — each lane by its OWN
+          # heartbeat name, which is the split's whole liveness point: one lane being fresh
+          # must say nothing about the other.
+          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk
+          docker compose exec -T scheduler-maint python -m runtime.mvp_runtime.heartbeat_cli scheduler-maintenance
 
       - name: Tear down
         if: always()

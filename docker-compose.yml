@@ -1,14 +1,26 @@
-# Thomas Agent MVP — the two-service deployment (operator + scheduler).
+# Thomas Agent MVP — the deployment (operator + the two scheduler lanes).
 #
-# One image, two long-lived processes sharing ONE state volume:
-#   - operator:  Telegram poll -> verify -> pipeline -> reply (+ emergency console)
-#   - scheduler: the tick loop firing due schedules (analysis, crypto cycle/factory,
-#     memory prune). Without this service NOTHING scheduled ever runs — the operator
-#     loop does not tick schedules.
+# One image, long-lived processes sharing ONE state volume:
+#   - operator:        Telegram poll -> verify -> pipeline -> reply (+ emergency console)
+#   - scheduler:       the RISK-lane tick loop (crypto_pipeline / breaker / route watch —
+#     the money path's cadence). `--lane risk` fires RISK_KINDS and nothing else.
+#   - scheduler-maint: the MAINTENANCE-lane tick loop (factory, null_control, archive,
+#     analysis, prune, rotate, report, propose, data review). Split so that no fire of any
+#     kind can stand in front of a due risk kind — the factory child (#726) moved compute
+#     out of the pass and the very next day the pipeline was still 1,181s late behind the
+#     in-pass fetch; a lane is the class fix (docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md).
+#   Without a scheduler lane NOTHING its kinds schedule ever runs — the operator loop does
+#   not tick schedules, and each lane leaves the other lane's schedules strictly alone.
 #
-# Run at most ONE scheduler service per state volume. Concurrent stores are
-# cross-process locked (claim_due prevents a double-claim), but the deployment
-# contract is a single tick process — parallel crypto workers are out of scope.
+# Run at most ONE tick service PER LANE per state volume. Concurrent stores are
+# cross-process locked (claim_due prevents a double-claim) and the lanes' kind sets are
+# disjoint by construction, but the deployment contract is one process per lane —
+# parallel crypto workers are out of scope.
+#
+# DEPLOY COUPLING (lane split): `--lane` exists only from #733 on. This compose file with
+# an OLDER image crash-loops both lanes on an unknown flag — so never `compose up -d` after
+# merging this without first promoting an image that carries #733. The safe order is the
+# candidate-tag flow in CLAUDE.md: build+verify+promote `latest`, then `compose up -d`.
 #
 # Secrets come from the environment (compose reads an optional gitignored `.env`
 # next to this file); per-machine governance state is mounted, never baked in. A
@@ -96,18 +108,25 @@ services:
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     # Same liveness rule as the operator: the tick loop's own heartbeat. A scheduler
-    # wedged on a provider call used to report healthy indefinitely.
+    # wedged on a provider call used to report healthy indefinitely. The probe names the
+    # LANE's heartbeat — each lane stamps its own file, because a shared one would let a
+    # live maintenance loop keep a dead risk loop reading FRESH.
     healthcheck:
-      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler"]
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler-risk"]
       interval: 60s
       timeout: 20s
       retries: 3
       start_period: 30s
+    # `--lane risk`: this service — the one holding the venue keys — fires RISK_KINDS and
+    # nothing else. Its name, env, and mounts deliberately did not move in the lane split:
+    # the money path stays put, the maintenance kinds moved out (scheduler-maint below).
     command:
       - python
       - -m
       - runtime.mvp_runtime.scheduler_cli
       - tick
+      - --lane
+      - risk
       - --max-ticks
       - "0"
       - --interval-seconds
@@ -195,16 +214,11 @@ services:
       MVP_PAPER_TRADING: ${MVP_PAPER_TRADING:-}
       MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
       COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
-      # The candle archive's own axis, and it has to be its own: MVP_MARKET_DATA names the
-      # single venue the PIPELINE collects from, so pointing that at Hyperliquid to start
-      # archiving would take the crypto pipeline off Binance — including the leg that can
-      # place a real order. Unlike its neighbours above, this one needs no grant: Thomas
-      # moved it to the env-only gate on 2026-08-04 (#496), because a 30-day TTL cannot
-      # bound a job that races a rolling window for months. So THIS line is the whole gate,
-      # which is exactly why forgetting it is the failure it was: the code shipped in #486
-      # and this block did not name the variable, so setting it in `.env` reached nothing
-      # and archiving would have stayed silently off while reading as configured.
-      MVP_CANDLE_ARCHIVE: ${MVP_CANDLE_ARCHIVE:-}
+      # MVP_CANDLE_ARCHIVE moved to `scheduler-maint` with the lane split: the archive fire
+      # is a MAINTENANCE kind, so this lane has no consumer for it — and this block's own
+      # doctrine is that an unconsumed name here is pure blast radius, not a convenience.
+      # Deliberately absent rather than left "harmlessly"; the drift gate
+      # (`tests/test_deployment_env_passthrough.py`) pins the move in both directions.
       # Five prediction-market selectors (Kalshi / Polymarket / Binance, plus that venue's
       # signed key pair) were forwarded here until 2026-08-02, when the lane was removed —
       # `docs/BUILD_HISTORY.md`. Deliberately NOT left in place "harmlessly": Compose
@@ -245,6 +259,77 @@ services:
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
+
+  # The MAINTENANCE-lane tick loop (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): factory,
+  # null_control, candle archive, analysis, prune, rotate, report, propose, data review —
+  # every kind whose lateness costs freshness rather than money. Its fires are the long ones
+  # (a factory fetch+ablation morning runs minutes), which is exactly why they live in a
+  # process the risk lane never waits on.
+  #
+  # Its env is the AUDITED consumer set and nothing more (SCHEDULER_LANE_SPLIT_V0.1 §4):
+  # collection selectors for the factory/null_control legs, the archive's own venue axis,
+  # and outbound-only notification. NO venue account or order key, NO MVP_LIVE_*, NO model
+  # credential — the service that runs 6-minute fires does not sit next to money. The drift
+  # gate (`tests/test_deployment_env_passthrough.py`) pins every one of these absences.
+  #
+  # The pipeline-worker deploy-order rule on the scheduler service applies here unchanged —
+  # since the lane split it is THIS lane whose analysis_task/report/propose/data_review
+  # fires delegate into the worker, so `pipeline-worker` must never be OLDER than this
+  # service either. A whole-project `compose up -d` satisfies it by construction.
+  scheduler-maint:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-scheduler-maint
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
+    # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
+    healthcheck:
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler-maintenance"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.scheduler_cli
+      - tick
+      - --lane
+      - maintenance
+      - --max-ticks
+      - "0"
+      - --interval-seconds
+      - "30"
+    environment:
+      # The collection selectors the factory and null_control fires read in-process
+      # (`select_market_data_collector` / `select_liquidation_feed`). Same fail-closed
+      # shape as everywhere: env alone selects, unset = the inert mock.
+      MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
+      MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
+      COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
+      # The candle archive's own venue axis, moved here from the scheduler service with the
+      # lane split — the archive fire is a maintenance kind. The whole gate is this line
+      # (env-only since #496): an unforwarded name does not fail loudly, it archives nothing
+      # while reading as configured on the host, which is the failure that got it written
+      # down the first time.
+      MVP_CANDLE_ARCHIVE: ${MVP_CANDLE_ARCHIVE:-}
+      # Outbound-only notification, exactly like the risk lane: this loop TELLS Thomas when
+      # a schedule fails, recovers, or was left overdue while it was down. It never reads
+      # inbound messages, so the shared-bot token swap below is as safe here as there — and
+      # both lanes de-dup their own alerts, so a shared failure alerts once per lane, which
+      # is honest: two loops, two restarts, two diagnoses.
+      MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
+      TELEGRAM_BOT_TOKEN: ${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
