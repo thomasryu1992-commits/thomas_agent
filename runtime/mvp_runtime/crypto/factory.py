@@ -2986,9 +2986,15 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
 # **It is cheap, which is the reason it can sit on the mint path.** Every FEATURE is a
 # trailing-window computation (`rolling_percentile` over `PERCENTILE_WINDOW`, the z-scores over
 # their own), so a prefix of a built frame carries exactly the values those bars had in the full
-# series — verified column-by-column over 4,200 rows, not assumed. No `build_feature_rows` call,
-# no refetch; every earlier window is a prefix of candles already in hand, and only the replay
-# repeats, over 0.7 + 0.49 + 0.34 of the series.
+# series. This is the **lookahead guard**: it ensures no feature at bar i depends on bars
+# after i, which is what makes replay-live parity hold on differently-sized candle windows.
+# Pinned by two tests:
+#   - `test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding`
+#     (OHLCV + funding + taker_flow, the original 200-bar verification)
+#   - `test_prefix_invariance_holds_with_htf_and_external_series`
+#     (adds close-time-keyed HTF columns and backward-asof liquidation events)
+# No `build_feature_rows` call, no refetch; every earlier window is a prefix of candles already
+# in hand, and only the replay repeats, over 0.7 + 0.49 + 0.34 of the series.
 #
 # **The funding series is the one exception and it is one bar wide.** `funding_charges_per_bar`
 # spreads settlements across the bars they fall in, so the FINAL bar of a prefix was charged

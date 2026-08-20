@@ -46,7 +46,11 @@ see ``_derivative_price_columns`` and ``_reference_columns``.
 for series on this frame's own grid (:func:`_same_grid_column`: derivative prices, the
 reference symbol); backward as-of for series on their own cadence (:func:`_asof_align`:
 funding, liquidations, open interest); close-time keying for the coarser higher timeframe
-(:func:`_htf_columns`). Each is named where it applies and each has its own test.
+(:func:`_htf_columns`). Each is named where it applies and each has its own test. Together
+they form the **lookahead guard**: every column at bar i depends only on data at or before
+bar i, so a prefix of the built frame carries exactly the values those bars had in the full
+series — the property that makes replay-live parity hold on differently-sized candle windows
+(pinned by ``test_prefix_invariance_holds_with_htf_and_external_series``).
 """
 
 from __future__ import annotations
