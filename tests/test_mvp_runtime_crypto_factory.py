@@ -1180,6 +1180,80 @@ def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding
     )
 
 
+def test_prefix_invariance_holds_with_htf_and_external_series():
+    """The lookahead guard, beyond OHLCV: HTF columns and asof-aligned external series
+    (liquidations) are also trailing-window after alignment, so a prefix of the built
+    frame must carry exactly the values those bars had in the full series.
+
+    The existing test above pins this for the basic OHLCV + funding + taker_flow fixture.
+    This test adds the two alignment code paths the basic fixture does not exercise:
+    close-time-keyed HTF columns (_htf_columns) and backward as-of liquidation events.
+    If either alignment leaks a future value into an earlier bar, this fails."""
+    step = timedelta(hours=1)
+    n = 200
+    last_close = NOW_DT - timedelta(hours=1)
+    candles = []
+    price = 100.0
+    for i in range(n):
+        drift = 1.0 if (i // 20) % 3 != 2 else -1.5
+        price = max(10.0, price + drift)
+        close_time = last_close - (n - 1 - i) * step
+        volume = 10.0 + (i % 7)
+        candles.append({
+            "open_time": timeutil.format_iso(close_time - step),
+            "open": price - drift, "high": price + 1.5, "low": price - 1.5,
+            "close": price, "volume": volume,
+            "close_time": timeutil.format_iso(close_time),
+            "taker_buy_base": volume * 0.55,
+            "taker_buy_quote": volume * 0.55 * price,
+            "quote_volume": volume * price,
+            "trade_count": 40.0 + (i % 11),
+        })
+
+    # HTF candles: one every 4 bars, keyed by close_time (the first instant known).
+    htf_candles = []
+    for j in range(0, n, 4):
+        block = candles[j : j + 4]
+        if len(block) < 4:
+            break
+        htf_candles.append({
+            "open_time": block[0]["open_time"],
+            "close_time": block[-1]["close_time"],
+            "open": block[0]["open"], "close": block[-1]["close"],
+            "high": max(c["high"] for c in block),
+            "low": min(c["low"] for c in block),
+            "volume": sum(c["volume"] for c in block),
+        })
+
+    # Liquidation events: one every 3 bars, backward-asof aligned.
+    liq_events = []
+    for k in range(0, n, 3):
+        liq_events.append({
+            "timestamp": candles[k]["open_time"],
+            "long_liquidation": 1000.0 + k * 10,
+            "short_liquidation": 500.0 + k * 5,
+        })
+
+    snapshot = {
+        "symbol": "BTCUSDT", "timeframe": "1h", "candles": candles,
+        "is_synthetic": False, "htf_candles": htf_candles,
+        "funding": _funding_series(candles, hours=8),
+        "liquidations": liq_events,
+    }
+
+    full = factory.build_replay_frame(snapshot)
+    keep = factory.holdout_split_index(len(full.rows))
+    sliced = factory._prefix_frame(full, keep)
+    rebuilt = factory.build_replay_frame(
+        {**snapshot, "candles": candles[:keep], "candle_count": keep})
+
+    assert sliced is not None
+    assert len(sliced.rows) == len(rebuilt.rows) == keep
+    assert sliced.rows == rebuilt.rows, (
+        "a feature stopped being trailing-window — the lookahead guard tripped"
+    )
+
+
 def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
     """Window *k+1*'s tail must end exactly where window *k*'s begins — F3's construction. Any
     overlap would score the same bars twice and read as agreement between windows."""
