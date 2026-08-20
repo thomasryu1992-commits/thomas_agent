@@ -11,10 +11,15 @@ Inputs this port cannot measure score ZERO, never full credit — the module's o
 ("absence of evidence, not evidence of stability"). One term is still in that state; one
 has left it, and this header went on claiming otherwise:
 
-- ``temporal_stability`` is not computed (the source's walk-forward module was not
-  ported); the factory supplies only the in-backtest window pass rate — `factory` still
-  passes ``temporal_stability: None`` — so the ``insufficient_walk_forward_evidence``
-  warning rides on every candidate. Unchanged and still true.
+- ``temporal_stability`` is still ``None`` on every candidate, but the reason has changed:
+  its INPUTS now exist. The factory subtotals the scored region into equal-bar periods
+  (``walk_forward.period_r`` / ``period_trades`` — the tail's ``HOLDOUT_PERIODS`` treatment
+  applied to the train span, ``factory.WALK_FORWARD_PERIODS``) and deliberately withholds
+  the judgment until the store's own occupancy and discrimination numbers say the subtotals
+  mean something (``scripts/walk_forward_stability_report.py`` reads them; the decision gate
+  is ``docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md``). Until that decision the
+  ``insufficient_walk_forward_evidence`` warning still rides on every candidate — now as a
+  statement of a pending decision rather than of a missing port.
 - ``cost_robustness`` **is live**, and has been since the factory's cost model landed.
   This paragraph used to read "the cost model was not ported, so the term scores 0 with
   its warning — uniformly for every candidate", which is the opposite of what runs:

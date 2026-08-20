@@ -150,6 +150,29 @@ _FUNDING_SOURCE_STRENGTH = {
 # twice as many of them.
 HOLDOUT_PERIODS = 10
 
+# The SCORED region subtotalled the way the tail above already is, so temporal stability can
+# one day be judged on market periods rather than on trades — the independence unit the
+# 2026-08-04/06 measurements above established. Twenty is width-matched to the tail, not
+# count-matched: the train span is 70% of the window against the tail's 30%, so twenty slices
+# give ~35 days each — the '30 slices / 33 days' row of the autocorrelation table above
+# (mildly mean-reverting, i.e. conservative), well clear of the 50-67-day band that table
+# flags as hardest to reason about.
+#
+# **This increment records; it does not judge.** `walk_forward.temporal_stability` stays None
+# until the store's own occupancy and discrimination numbers say the subtotals mean something
+# (`scripts/walk_forward_stability_report.py` is the reader; the decision gate is
+# `docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md`) — the same measured-then-moved
+# order `HOLDOUT_PERIODS` itself followed off 5. Until then the scorer keeps reading absent
+# evidence, so nothing about any score or verdict moves.
+WALK_FORWARD_PERIODS = 20
+# Below this many JUDGED periods (≥1 closed trade) stability may never be claimed — the field
+# stays None, not 0: a spec whose feed covers only the newest quarter of the window must read
+# "cannot measure", never "unstable" (the `_oi_feed_reaches` lesson below, where structurally
+# empty older slices retired a family for a window that had no data in it). Eight carries the
+# resolution argument `robustness.MIN_HOLDOUT_PERIODS` made, and it is what stops a spec that
+# traded one hot month from buying full credit off three slices.
+WALK_FORWARD_MIN_PERIODS = 8
+
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
 
@@ -3337,12 +3360,11 @@ def backtest_spec_pooled(
     }
 
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
-    # with enough trades. temporal_stability stays None (the source walk-forward
-    # module was not ported) — the scorer treats that as absent evidence, not skip.
-    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
-    # into the last window rather than opening a window the other legs never reached. Bar *i*
-    # is the same calendar window on every leg — that is the one-timeframe precondition above,
-    # and it is what makes pooling by `closed_at_bar` mean anything.
+    # with enough trades. The shallowest leg sets the slice width, so a trade closing late on
+    # a longer leg clamps into the last window rather than opening a window the other legs
+    # never reached. Bar *i* is the same calendar window on every leg — that is the
+    # one-timeframe precondition above, and it is what makes pooling by `closed_at_bar`
+    # mean anything.
     window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
@@ -3350,6 +3372,21 @@ def backtest_spec_pooled(
             outcome["result_R"]
         )
     counted = [values for values in window_r.values() if len(values) >= MIN_TRADES_PER_WINDOW]
+    # The scored region subtotalled the way `_holdout_evidence` subtotals the tail — same
+    # field names, same clamp rule, and net R like everything here (`result_R` is costed).
+    # These are `temporal_stability`'s INPUTS, recorded so the store can measure whether they
+    # discriminate before anything judges on them; the field itself stays None until that
+    # decision is taken on the store's own numbers (see WALK_FORWARD_PERIODS). The scorer
+    # reads None as absent evidence, so this block moves no score and no verdict — and the
+    # holdout suite's "changing only the tail leaves walk_forward identical" test now pins
+    # these subtotals to the scored region for free.
+    wf_width = max(1, min(scored_bars) // WALK_FORWARD_PERIODS)
+    wf_period_r = [0.0] * WALK_FORWARD_PERIODS
+    wf_period_trades = [0] * WALK_FORWARD_PERIODS
+    for outcome in outcomes:
+        index = min(outcome["closed_at_bar"] // wf_width, WALK_FORWARD_PERIODS - 1)
+        wf_period_r[index] += float(outcome["result_R"])
+        wf_period_trades[index] += 1
     walk_forward = {
         "walk_forward_pass_rate": (
             sum(1 for values in counted if sum(values) > 0) / len(counted) if counted else None
@@ -3357,6 +3394,10 @@ def backtest_spec_pooled(
         "temporal_stability": None,
         "windows": BACKTEST_WINDOWS,
         "windows_counted": len(counted),
+        "period_r": [round(value, 8) for value in wf_period_r],
+        "period_trades": wf_period_trades,
+        "periods": WALK_FORWARD_PERIODS,
+        "periods_judged": sum(1 for n in wf_period_trades if n > 0),
     }
 
     # C12: total_net_r is the sum of costed R over every closed trade — the
