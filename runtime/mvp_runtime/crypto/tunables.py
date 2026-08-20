@@ -319,6 +319,16 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MIN_TRADES_PER_WINDOW", factory.MIN_TRADES_PER_WINDOW, "crypto/factory.py", INHERITED,
             "a walk-forward slice needs this many closed trades before its sign counts",
             "the same evidence that moved `MIN_HOLDOUT_TRADES` off 3 — this one is still 3"),
+    Tunable("WALK_FORWARD_PERIODS", factory.WALK_FORWARD_PERIODS, "crypto/factory.py", DERIVED,
+            "the train span subtotalled at the tail's slice WIDTH (~35 days), not its count — "
+            "the autocorrelation table above `HOLDOUT_PERIODS` is the argument",
+            "`HOLDOUT_PERIODS` or the replay window moving, or the store's occupancy "
+            "measurement (walk_forward_stability_report) disagreeing with the width match"),
+    Tunable("WALK_FORWARD_MIN_PERIODS", factory.WALK_FORWARD_MIN_PERIODS, "crypto/factory.py",
+            DERIVED,
+            "the resolution argument `MIN_HOLDOUT_PERIODS` made, applied to the train span; "
+            "records only — nothing judges on it until PR-2's decision",
+            "the same store measurement that decides whether temporal_stability judges at all"),
     Tunable("MAX_HOLDING_BARS_RANGE", factory.MAX_HOLDING_BARS_RANGE, "crypto/factory.py",
             INHERITED, "validator bounds, source S3 verbatim",
             "the measured median hold, which sits at 5-27% of what a spec declares"),

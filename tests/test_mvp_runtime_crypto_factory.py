@@ -1009,6 +1009,71 @@ def test_a_pooled_backtest_needs_something_to_replay():
         factory.backtest_spec_pooled(spec, [])
 
 
+# --- walk-forward period subtotals: temporal_stability's inputs, recorded before judged ------
+#
+# The scored region cut the way `_holdout_evidence` cuts the tail — same field names, same
+# clamp rule — so the store can measure whether the subtotals discriminate BEFORE anything
+# scores on them (`scripts/walk_forward_stability_report.py` reads them; the decision gate is
+# `docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md`). The holdout suite's
+# "changing only the tail leaves walk_forward identical" test already pins these to the
+# scored region, so what is left to pin here is the accounting and the withheld judgment.
+
+
+def test_walk_forward_periods_subtotal_the_scored_region_exactly():
+    """Every closed trade lands in exactly one period: the subtotals are a partition of the
+    scored net R, never a resample of it."""
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), _trending_snapshot(400))
+    assert evidence["closed_count"] > 0, "fixture must trade, or this pins nothing"
+    wf = evidence["walk_forward"]
+    assert len(wf["period_r"]) == factory.WALK_FORWARD_PERIODS
+    assert len(wf["period_trades"]) == factory.WALK_FORWARD_PERIODS
+    assert wf["periods"] == factory.WALK_FORWARD_PERIODS
+    assert sum(wf["period_trades"]) == evidence["closed_count"]
+    assert sum(wf["period_r"]) == pytest.approx(
+        evidence["cost_summary"]["total_net_r"], abs=1e-6)
+    assert wf["periods_judged"] == sum(1 for n in wf["period_trades"] if n > 0)
+
+
+def test_temporal_stability_is_recorded_as_inputs_but_not_yet_judged():
+    """This increment records and withholds: the field stays None, the scorer keeps reading
+    absent evidence, and stripping the new subtotals moves nothing — so no score and no
+    verdict can differ between a record minted before and after this landed. The judgment
+    is PR-2's, taken on the store's own measured occupancy and discrimination (the
+    `HOLDOUT_PERIODS` order: measured, then moved)."""
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), _trending_snapshot(400))
+    walk_forward = evidence["walk_forward"]
+    assert walk_forward["temporal_stability"] is None
+    assert "insufficient_walk_forward_evidence" in evidence["robustness"]["warnings"]
+
+    spec = StrategySpec.from_dict(_spec_dict())
+    metrics = {"trade_count": evidence["closed_count"],
+               "total_net_r": evidence["cost_summary"]["total_net_r"],
+               "fee_cost_r": evidence["cost_summary"]["total_fee_cost_r"],
+               "slippage_cost_r": evidence["cost_summary"]["total_slippage_cost_r"],
+               "funding_cost_r": evidence["cost_summary"]["total_funding_cost_r"]}
+    stripped = {key: value for key, value in walk_forward.items()
+                if key not in {"period_r", "period_trades", "periods", "periods_judged"}}
+    with_inputs = robustness.score_robustness(
+        spec, metrics, walk_forward, evidence["regime_breakdown"], holdout=evidence["holdout"])
+    without = robustness.score_robustness(
+        spec, metrics, stripped, evidence["regime_breakdown"], holdout=evidence["holdout"])
+    assert with_inputs["robustness_score"] == without["robustness_score"]
+    assert with_inputs["verdict"] == without["verdict"]
+
+
+def test_a_pooled_leg_closing_late_clamps_into_the_last_period_and_loses_no_trade():
+    """The shallowest leg sets the period width (the `window_r` rule, kept): a trade closing
+    beyond the short leg's span clamps into the last period rather than falling off the
+    partition."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(
+        spec, [_trending_snapshot(200), _shifted_snapshot(120)])
+    wf = pooled["walk_forward"]
+    assert sum(wf["period_trades"]) == pooled["closed_count"]
+    assert sum(wf["period_r"]) == pytest.approx(
+        pooled["cost_summary"]["total_net_r"], abs=1e-6)
+
+
 def test_the_mint_scope_still_defaults_to_the_symbol_being_mined():
     """Every one of the stored candidates carries a single-symbol scope, and `run_factory`
     is untouched — widening is a caller's decision, never a default."""
