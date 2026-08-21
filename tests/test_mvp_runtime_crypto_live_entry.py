@@ -475,3 +475,29 @@ def test_the_removed_gate_left_no_reason_code_behind():
     kind that survives a deletion because nothing fails when it lingers."""
     assert not hasattr(le, "CANDIDATE_REFUSED")
     assert "live_candidate" not in inspect.signature(le.plan_live_entry).parameters
+
+
+# --- ⑨ spread veto ---------------------------------------------------------
+
+def test_a_wide_spread_refuses_the_entry():
+    decision = _plan(spread_bps=80.0)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.SPREAD_REFUSED in decision["reasons"]
+    assert decision["spread_bps"] == 80.0
+    assert decision["spread_limit_bps"] == le.MAX_ENTRY_SPREAD_BPS
+
+
+def test_a_narrow_spread_does_not_refuse():
+    decision = _plan(spread_bps=5.0)
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_no_spread_reading_does_not_refuse():
+    """When the orderbook could not be read, the entry proceeds as before the guard existed."""
+    decision = _plan(spread_bps=None)
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_spread_at_the_limit_does_not_refuse():
+    decision = _plan(spread_bps=le.MAX_ENTRY_SPREAD_BPS)
+    assert decision["status"] == le.STATUS_READY

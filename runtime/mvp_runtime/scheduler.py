@@ -1238,7 +1238,10 @@ def _execute(
         # every open position) so no strategy is symbol-starved — the default that
         # actually covers the pool. Each sub-cycle rides the ledger on its own id.
         from .crypto.cycle import (
+            PIPELINE_STALLED,
+            cycle_is_stalled,
             cycle_status_line,
+            pool_cycle_is_stalled,
             pool_cycle_status_line,
             run_crypto_cycle,
             run_pool_cycle,
@@ -1278,7 +1281,14 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            return cycle_status_line(record)
+            status = cycle_status_line(record)
+            if cycle_is_stalled(record, schedule.last_status):
+                raise SchedulerBlocked(PIPELINE_STALLED, (
+                    f"crypto pipeline has degraded for two consecutive fires; "
+                    f"this one: {record.get('reason_codes')}. "
+                    f"Previous status: {schedule.last_status!r}. {status}"
+                ))
+            return status
 
         summary = run_pool_cycle(
             collector=collector, store=store, liquidation_feed=liquidation_feed,
@@ -1288,7 +1298,13 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        return pool_cycle_status_line(summary)
+        status = pool_cycle_status_line(summary)
+        if pool_cycle_is_stalled(summary, schedule.last_status):
+            raise SchedulerBlocked(PIPELINE_STALLED, (
+                f"crypto pipeline has degraded across all contexts for two consecutive fires; "
+                f"Previous status: {schedule.last_status!r}. {status}"
+            ))
+        return status
     if schedule.kind == KIND_FACTORY:
         # One factory run (C8): generate + backtest candidates over a deep candle
         # window, append them to the candidates store. ALLOW-tier record creation —

@@ -74,6 +74,7 @@ from .cost import (
     round_trip_cost_r,
 )
 from .feedback import summarize_outcomes
+from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
 from .paper import (
     ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
@@ -3556,6 +3557,9 @@ def backtest_spec_pooled(
             },
         },
         "regime_breakdown": regime_breakdown,
+        "distribution_reference": compute_distribution_reference(
+            [row for frame in frames for row in frame.rows[:frame.split]]
+        ),
         "walk_forward": walk_forward,
         "holdout": holdout,
         "robustness": robustness,

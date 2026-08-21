@@ -78,6 +78,8 @@ from . import live_execution, live_governance, live_leg, live_promotion
 from .account import read_account, select_account_feed
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
+from .market_data import ORDER_BOOK_LEVELS
+from .orderbook_store import summarize_book
 from .live_order import (
     bracket_breaker_status,
     count_today,
@@ -437,6 +439,13 @@ def _run_gated_live_leg(
 
     filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
 
+    spread_bps: float | None = None
+    try:
+        raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
+        spread_bps = summarize_book(raw_book)["spread_bps"]
+    except (ToolError, Exception):  # noqa: BLE001
+        record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
+
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
     # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
     # measures late is a breaker that does not bound today (#247).
@@ -487,6 +496,7 @@ def _run_gated_live_leg(
         equity_usdt=_f(getattr(snapshot, "available_balance", None)) or 0.0,
         verdict=verdict,
         now=now,
+        spread_bps=spread_bps,
     )
     record["live_decision"] = {
         "status": decision["status"],
