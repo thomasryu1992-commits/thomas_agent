@@ -796,14 +796,17 @@ def _volatility_regime_snapshot(n=600):
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
     candles = []
-    price = 100.0
+    # Prices scaled so ATR (±span) is a realistic fraction of price (~0.5-1.5%),
+    # not the 4% that price=100 / span=4 produces — at 20x leverage the liquidation
+    # guard correctly refuses stops wider than ~4.6% of entry.
+    price = 5000.0
     for i in range(n):
         violent = (i // 25) % 2 == 1
-        drift = 2.0 if violent else 0.25
-        span = 4.0 if violent else 0.4
+        drift = 20.0 if violent else 2.5
+        span = 40.0 if violent else 4.0
         if (i // 25) % 4 == 3:  # one falling violent block, so the short legs can enter
             drift = -drift
-        price = max(10.0, price + drift)
+        price = max(500.0, price + drift)
         close_time = last_close - (n - 1 - i) * step
         candles.append({
             "open_time": timeutil.format_iso(close_time - step),
@@ -3479,22 +3482,22 @@ class TestReplayCooldown:
                         "max_holding_bars": 20},
         ))
         rows, candles = self._make_rows_and_candles(n=80)
-        outcomes, *_, cooldown_skipped = factory._replay(
-            spec, rows, candles, cost=CostModel(),
-        )
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        outcomes = result[0]
+        cooldown_skipped = result[6]
         stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
         if len(stop_losses) >= 1:
             assert cooldown_skipped >= 1, (
                 "stop-losses occurred but no cooldown skips were recorded"
             )
 
-    def test_cooldown_counter_is_returned_as_seventh_element(self):
-        """The return tuple has 7 elements now, and the last is cooldown_skipped."""
+    def test_cooldown_counter_is_returned_in_replay_tuple(self):
+        """The return tuple carries cooldown_skipped (index 6)."""
         from runtime.mvp_runtime.crypto.cost import CostModel
         spec = StrategySpec.from_dict(_spec_dict())
         result = factory._replay(spec, [], [], cost=CostModel())
-        assert len(result) == 7
-        assert result[-1] == 0
+        assert len(result) == 8
+        assert result[6] == 0
 
     def test_cooldown_does_not_fire_on_take_profit_or_time_exit(self):
         """Only stop_loss triggers cooldown; take_profit and time_exit do not."""
@@ -3505,9 +3508,9 @@ class TestReplayCooldown:
                         "max_holding_bars": 3},
         ))
         rows, candles = self._make_rows_and_candles(n=80)
-        outcomes, *_, cooldown_skipped = factory._replay(
-            spec, rows, candles, cost=CostModel(),
-        )
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        outcomes = result[0]
+        cooldown_skipped = result[6]
         stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
         if not stop_losses:
             assert cooldown_skipped == 0, (
@@ -3595,3 +3598,99 @@ class TestIntrabarGapMeasurement:
         assert "gap_per_trade_r" in gap
         assert gap["ambiguous_exits"] >= 0
         assert isinstance(gap["total_gap_r"], float)
+
+
+class TestLiquidationGuard:
+    """A stop placed beyond the liquidation price never triggers — the position is
+    liquidated first. The guard refuses such entries in backtest, paper, and live."""
+
+    def test_stop_beyond_liquidation_is_refused(self):
+        """At 20x leverage with ATR wide enough, the stop exceeds liquidation distance."""
+        from runtime.mvp_runtime.crypto.paper import (
+            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
+            liquidation_price, stop_is_beyond_liquidation,
+            stop_beyond_liquidation_refusal,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "LONG")
+        # liq ≈ 100 * (1 - 0.05 + 0.004) = 95.4 — a stop at 94 is below it
+        assert liq == pytest.approx(95.4, abs=0.01)
+        assert stop_is_beyond_liquidation(entry, 94.0, True)
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "LONG", "entry_price": entry, "stop_loss": 94.0,
+        })
+        assert refusal is not None
+        assert refusal["reason_code"] == "STOP_BEYOND_LIQUIDATION"
+        assert refusal["liquidation_price"] == pytest.approx(liq, abs=0.01)
+
+    def test_stop_within_liquidation_is_admitted(self):
+        """A stop safely above the liquidation price passes."""
+        from runtime.mvp_runtime.crypto.paper import stop_beyond_liquidation_refusal
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "LONG", "entry_price": 100.0, "stop_loss": 97.0,
+        })
+        assert refusal is None
+
+    def test_short_direction(self):
+        """SHORT: liquidation is above entry; stop above liquidation is refused."""
+        from runtime.mvp_runtime.crypto.paper import (
+            liquidation_price, stop_is_beyond_liquidation, stop_beyond_liquidation_refusal,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "SHORT")
+        # liq ≈ 100 * (1 + 0.05 - 0.004) = 104.6
+        assert liq == pytest.approx(104.6, abs=0.01)
+        assert stop_is_beyond_liquidation(entry, 106.0, False)
+        assert not stop_is_beyond_liquidation(entry, 103.0, False)
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "SHORT", "entry_price": entry, "stop_loss": 106.0,
+        })
+        assert refusal is not None
+
+    def test_low_leverage_admits_wide_stop(self):
+        """At 5x leverage, the liquidation distance is ~19.6% — most stops fit."""
+        from runtime.mvp_runtime.crypto.paper import (
+            liquidation_price, stop_is_beyond_liquidation,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "LONG", leverage=5.0)
+        # liq ≈ 100 * (1 - 0.2 + 0.004) = 80.4
+        assert liq == pytest.approx(80.4, abs=0.01)
+        assert not stop_is_beyond_liquidation(entry, 90.0, True, leverage=5.0)
+
+    def test_high_leverage_refuses_normal_stop(self):
+        """At 125x, the liquidation distance is ~0.4% — even a 1-ATR stop exceeds it."""
+        from runtime.mvp_runtime.crypto.paper import stop_is_beyond_liquidation
+        entry = 100.0
+        # At 125x: liq ≈ 100 * (1 - 0.008 + 0.004) = 99.6 — stop at 98 is way below
+        assert stop_is_beyond_liquidation(entry, 98.0, True, leverage=125.0)
+
+    def test_replay_counts_liquidation_refusals(self):
+        """_replay returns a liquidation_refused count as the 8th element.
+
+        At 20x leverage the liquidation distance is ~4.6% of entry. A stop_atr of 5.0
+        with ATR=3.0 on a ~100 price puts the stop ~15% away — well beyond liquidation."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 5.0, "target_atr": 6.0,
+                        "max_holding_bars": 10},
+        ))
+        rows, candles = TestReplayCooldown()._make_rows_and_candles(n=80)
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        assert len(result) == 8
+        liq_refused = result[7]
+        assert liq_refused >= 1, "expected at least one liquidation refusal at stop_atr=5.0"
+
+    def test_backtest_evidence_carries_liquidation_guard_block(self):
+        """backtest_spec_pooled records a liquidation_guard block in its output."""
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "liquidation_guard" in result
+        guard = result["liquidation_guard"]
+        assert guard["applied"] is True
+        assert guard["assumed_leverage"] == 20
+        assert guard["maintenance_margin_rate"] == 0.004
+        assert guard["refused_entries"] >= 0
