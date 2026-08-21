@@ -3,9 +3,9 @@
 Thomas approved #690 §5-1 on 2026-08-11. The OBSERVATION tier accumulates forward paper
 evidence; this module is the rule that lets it reach the arming door: the backtest holdout's
 own thresholds (``MIN_HOLDOUT_TRADES``, ``CONFIDENCE_Z``, the ``_periods_confirm`` slice test
-at ``t_critical_95``), the same slice width the holdout derives (tail/10 of the timeframe's
-replay target: 30 days at 4h, 60 at 1d), applied to outcomes settled AFTER the lineage was
-minted — which by construction were not available to fit against (A2's reuse contamination
+at ``t_critical_95``), the same slice width the holdout derives (tail/10 of the calendar span
+the timeframe replays: 30 days at 4h and at 1d), applied to outcomes settled AFTER the lineage
+was minted — which by construction were not available to fit against (A2's reuse contamination
 cannot occur).
 
 **One threshold IS minted here, and it is the exception that has to be stated.** #741 (Thomas
@@ -52,13 +52,13 @@ FORWARD_INSUFFICIENT = "FORWARD_INSUFFICIENT"  # the record cannot be judged (to
 # 1d trades ~0.03/day (backtest average); at MIN_HOLDOUT_TRADES=25 forward confirmation
 # takes ~25 months — unreachable in practice. Thomas 2026-08-21: 10 for 1d, 25 elsewhere.
 #
-# **This floor is not the binding constraint at 1d, and saying so here is the point.**
-# ``judge_forward`` also requires `MIN_HOLDOUT_PERIODS` active slices, and a 1d slice is 60
-# days wide, so 8 of them need 420 calendar days no matter how fast trades arrive: the real
-# horizon stayed ~18-20 months when this floor moved. That 60 is itself a `MIN_FACTORY_BARS`
-# artifact — see `slice_width_days` and docs/proposals/FORWARD_SLICE_WIDTH_ARTIFACT_V0.1.md,
-# which proposes removing it. Until that is decided, do not read this constant as the thing
-# that sets how long a 1d lineage waits.
+# **This floor is not the only constraint at 1d, and saying so here is the point.**
+# ``judge_forward`` also requires `MIN_HOLDOUT_PERIODS` active slices, which is a CALENDAR
+# demand no trade rate can shorten: at the 30-day slice `slice_width_days` now returns, eight
+# of them need 210 days. When this floor first moved (#741) that second rule stood at 420 days
+# — a 60-day slice, the `MIN_FACTORY_BARS` artifact removed in #747 — so #741 alone changed
+# nothing about how long a 1d lineage waits. The two rules are now the same order of magnitude
+# (~10 months of trades against ~7 of calendar) and neither is decorative: read them together.
 MIN_FORWARD_TRADES_1D = 10
 
 _FORWARD_TRADE_FLOORS: dict[str, int] = {
@@ -74,20 +74,32 @@ def min_forward_trades(timeframe: str | None) -> int:
 def slice_width_days(timeframe: str) -> float | None:
     """The holdout's own slice width, in calendar days, for this timeframe.
 
-    ``factory_candle_target(tf) × HOLDOUT_FRACTION / HOLDOUT_PERIODS`` bars, converted
-    through the timeframe's bar length — the exact derivation the backtest holdout slices
-    with, so 4h reads 30 days and 1d reads 60 and both MOVE if the window ever does.
+    The replay span this timeframe actually covers, in CALENDAR days, cut into
+    ``HOLDOUT_PERIODS`` slices over the ``HOLDOUT_FRACTION`` tail — the holdout's own
+    derivation, so every width MOVES if the factory window ever does. 15m/1h/4h and 1d all
+    read 30 days; 1m reads 2.5 and 5m 12.5, because those two genuinely replay less calendar.
 
-    **The 1d width is twice the rest for a reason that is not about 1d regimes.** Every
-    other timeframe's target is the `FACTORY_DEPTH_DAYS` calendar span and lands on 30 days;
-    1d alone is floored to `MIN_FACTORY_BARS` (2,000 bars = 2,000 days), a floor that exists
-    to buy the BACKTEST scorer enough trades. Carried onto a calendar gate it doubles how
-    long a 1d lineage must wait — docs/proposals/FORWARD_SLICE_WIDTH_ARTIFACT_V0.1.md.
+    **Why the span is capped at ``FACTORY_DEPTH_DAYS`` rather than read off the bar target**
+    (Thomas 2026-08-21, docs/proposals/FORWARD_SLICE_WIDTH_ARTIFACT_V0.1.md).
+    ``factory_candle_target`` clamps in both directions, and only one of the two belongs on a
+    calendar gate:
+
+    - **The `MIN_FACTORY_BARS` FLOOR binds 1d alone** and pushes its target to 2,000 bars =
+      2,000 days. That floor exists to buy the BACKTEST scorer enough trades — the repo says
+      so where it is defined ("a 2,000-BAR floor, not a calendar span"). Carried onto this
+      gate it claimed a 1d market regime lasts 60 days against everyone else's 30, which
+      nobody measured, and doubled the calendar wait for a 1d lineage. ``min`` removes it.
+    - **The `MAX_CANDLES` CEILING binds 1m and 5m** and truncates them to 83 and 417 days of
+      real history. That truncation is honest — the data really does stop — so the span must
+      keep it, and a flat 30 days would invent slices wider than 1m's entire replay.
+
     ``None`` for a timeframe the factory does not target: a width invented here would be
     a threshold minted outside the judge it claims to mirror.
     """
     from .factory import HOLDOUT_FRACTION, HOLDOUT_PERIODS  # local: heavy module
-    from .market_data import TIMEFRAMES, factory_candle_target  # local: heavy module
+    from .market_data import (  # local: heavy module
+        FACTORY_DEPTH_DAYS, TIMEFRAMES, factory_candle_target,
+    )
 
     minutes = TIMEFRAMES.get(str(timeframe or ""))
     try:
@@ -96,7 +108,8 @@ def slice_width_days(timeframe: str) -> float | None:
         return None
     if not minutes or not isinstance(target, int) or target <= 0:
         return None
-    return target * HOLDOUT_FRACTION / HOLDOUT_PERIODS * minutes / 1440.0
+    span_days = min(target * minutes / 1440.0, float(FACTORY_DEPTH_DAYS))
+    return span_days * HOLDOUT_FRACTION / HOLDOUT_PERIODS
 
 
 def lineage_keys(record: Mapping[str, Any]) -> frozenset[str]:
