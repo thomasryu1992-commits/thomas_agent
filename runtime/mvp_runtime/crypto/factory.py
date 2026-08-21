@@ -75,7 +75,7 @@ from .cost import (
 )
 from .feedback import summarize_outcomes
 from .features import build_feature_rows
-from .paper import settle_trade_plan
+from .paper import COOLDOWN_BARS_AFTER_STOPLOSS, settle_trade_plan
 from .pool import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
@@ -2819,7 +2819,7 @@ def funding_charges_per_bar(
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
-) -> tuple[list[dict[str, Any]], float, float, float, float, int]:
+) -> tuple[list[dict[str, Any]], float, float, float, float, int, int]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
     Extracted so the scored window and the holdout run through **exactly** the same
@@ -2837,6 +2837,8 @@ def _replay(
     # whose evidence is thin because most of its setups were uneconomic is a different fact
     # from one that simply did not fire, and only the count can tell them apart.
     uneconomic_entries = 0
+    cooldown_skipped = 0
+    cooldown_remaining = 0
     charges = funding if funding is not None else [0.0] * len(rows)
 
     for i, row in enumerate(rows):
@@ -2875,7 +2877,13 @@ def _replay(
                 })
                 position = None
                 entry_regime = None
+                if reason == "stop_loss":
+                    cooldown_remaining = COOLDOWN_BARS_AFTER_STOPLOSS
         if position is None:
+            if cooldown_remaining > 0:
+                cooldown_remaining -= 1
+                cooldown_skipped += 1
+                continue
             close, atr = row.get("close"), row.get("atr")
             if not (isinstance(close, (int, float)) and isinstance(atr, (int, float)) and close > 0 and atr > 0):
                 continue
@@ -2927,7 +2935,7 @@ def _replay(
             }
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-            total_funding_cost_r, uneconomic_entries)
+            total_funding_cost_r, uneconomic_entries, cooldown_skipped)
 
 
 # A feature the rows never supply, and why minting on one is not merely wasteful.
@@ -3093,7 +3101,7 @@ def _holdout_evidence(
     period_r = [0.0] * HOLDOUT_PERIODS
     period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, _cd = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
             cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
         )
@@ -3322,10 +3330,11 @@ def backtest_spec_pooled(
     outcomes: list[dict[str, Any]] = []
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
     uneconomic_entries = 0
+    cooldown_entries = 0
     scored_bars: list[int] = []
     for frame in frames:
         split = frame.split
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown = _replay(
             spec, frame.rows[:split], frame.candles[:split],
             cost=cost, funding=frame.funding[:split],
         )
@@ -3335,6 +3344,7 @@ def backtest_spec_pooled(
         total_slippage_cost_r += part_slip
         total_funding_cost_r += part_carry
         uneconomic_entries += part_uneconomic
+        cooldown_entries += part_cooldown
         scored_bars.append(split)
     holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
@@ -3471,6 +3481,11 @@ def backtest_spec_pooled(
             # specs on the same bars, and for seeing at a glance that a spec's setups mostly
             # arrive on bars too quiet to pay for themselves.
             "refused_entries": uneconomic_entries,
+        },
+        "cooldown_door": {
+            "applied": True,
+            "cooldown_bars": COOLDOWN_BARS_AFTER_STOPLOSS,
+            "skipped_entries": cooldown_entries,
         },
         "cost_summary": {
             "total_net_r": total_net_r,

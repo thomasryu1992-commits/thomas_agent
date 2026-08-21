@@ -136,6 +136,18 @@ SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
 # The freshness gate held a new entry: this context was already evaluated for the
 # current closed candle, so a coarser-timeframe strategy is not re-entered every tick.
 CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
+# A stop-loss just settled on this context and the cooldown window has not elapsed.
+# The counterfactual tracker shadows the blocked signal under this reason so the
+# gate's cost is measurable via `r_values_by_reason`.
+STOP_LOSS_COOLDOWN = "STOP_LOSS_COOLDOWN"
+
+# After a stop-loss, block re-entry on the same (venue, symbol, timeframe) for this
+# many bars.  Applied identically in `_replay` (backtest) and `run_paper_update`
+# (live paper) so the evidence the lifecycle reads reflects the actual trading rule.
+# 2 bars is conservative: long enough to skip the immediate reversion bar and the
+# one after it, short enough to re-enter on a genuine trend resumption.
+COOLDOWN_BARS_AFTER_STOPLOSS = 2
+
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # The friction this plan would pay is too large a share of the one R it is risking, so the
@@ -1428,6 +1440,7 @@ def run_paper_update(
     manual_exit: bool = False,
     intrabar_collector: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One cycle's paper step: settle the open position, then maybe open one.
 
@@ -1615,6 +1628,15 @@ def run_paper_update(
                     **({"max_hold_fallback": LEGACY_MAX_HOLD_FALLBACK} if legacy_fallback else {}),
                 }))
                 position = None
+                # Record cooldown when the exit was a stop-loss, so this context
+                # is blocked from re-entry for COOLDOWN_BARS_AFTER_STOPLOSS bars.
+                if reason == "stop_loss" and cooldown_marks is not None and getattr(store, "filesystem_write", False):
+                    candle_close = last_candle.get("close_time") if isinstance(last_candle, Mapping) else None
+                    if candle_close is not None:
+                        from .market_data import TIMEFRAMES
+                        tf_minutes = TIMEFRAMES.get(timeframe, 60)
+                        expiry = timeutil.plus_minutes(candle_close, COOLDOWN_BARS_AFTER_STOPLOSS * tf_minutes)
+                        cooldown_marks.record_stoploss(context.key, expiry)
             else:
                 store.save_position(position)  # persist advanced holding_candles
 
@@ -1640,6 +1662,14 @@ def run_paper_update(
             }
             summary["open_skipped"] = skip
             records.append(_event("open_skipped", {**skip, "read_only": True}))
+        elif cooldown_marks is not None and cooldown_marks.is_cooling_down(context.key, candle_time):
+            refusal = {
+                "reason_code": STOP_LOSS_COOLDOWN,
+                "candle_time": candle_time,
+                "cooldown_expiry": cooldown_marks.expiry(context.key),
+            }
+            summary["open_refused"] = refusal
+            records.append(_event("open_refused", {**refusal, "read_only": True}))
         else:
             plan = build_entry_plan(route, feature_row, now=now)
             # The economics door, before the portfolio lock: it is pure arithmetic on the plan

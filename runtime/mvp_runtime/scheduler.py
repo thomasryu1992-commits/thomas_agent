@@ -1249,6 +1249,7 @@ def _execute(
             select_market_data_collector,
         )
         from .crypto.paper import select_paper_store
+        from .crypto.cooldown import CooldownMarkStore
         from .crypto.routing_marks import RoutingMarkStore
 
         # Wrapped for the length of THIS fire only. A fan-out asks the venue the same
@@ -1263,6 +1264,7 @@ def _execute(
         # every tick. Marks persist only when the paper store is live (dry run keeps
         # none), so this changes nothing for a dry-run cycle.
         routing_marks = RoutingMarkStore(repo_root)
+        cooldown_marks = CooldownMarkStore(repo_root)
 
         parts = schedule.request.split()
         if parts and parts[0]:
@@ -1271,7 +1273,8 @@ def _execute(
                 kwargs["timeframe"] = parts[1]
             record = run_crypto_cycle(
                 collector=collector, store=store, liquidation_feed=liquidation_feed,
-                now=now, root=repo_root, routing_marks=routing_marks, **kwargs,
+                now=now, root=repo_root, routing_marks=routing_marks,
+                cooldown_marks=cooldown_marks, **kwargs,
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
@@ -1280,6 +1283,7 @@ def _execute(
         summary = run_pool_cycle(
             collector=collector, store=store, liquidation_feed=liquidation_feed,
             now=now, root=repo_root, routing_marks=routing_marks,
+            cooldown_marks=cooldown_marks,
         )
         if ledger is not None:
             for record in summary["cycles"]:
