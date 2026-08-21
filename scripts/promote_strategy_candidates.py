@@ -303,6 +303,11 @@ def run_promotion(
             # labels behind — the defect `pool.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.
             "regime_evidence": ((c.get("backtest_evidence") or {}).get("regime_breakdown") or {}).get("per_regime"),
+            # Same argument, same shape: the backtest's per-feature mean/std, which
+            # `distribution_gate.distribution_admits` reads off the ENTRY at route time. A
+            # reference that stays on the candidate is a gate that never fires — measured on
+            # #743, which shipped the gate with this line missing and every entry fail-open.
+            "distribution_reference": (c.get("backtest_evidence") or {}).get("distribution_reference"),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })

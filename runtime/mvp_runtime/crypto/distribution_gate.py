@@ -22,13 +22,20 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
+# Every name here must be a key ``features.build_feature_rows`` actually emits, and every
+# one must be **scale-free**: a feature that rides the price level (raw ``atr``, ``bb_width``
+# in quote units) reads as a distribution shift whenever the price drifts, which on a
+# multi-month backtest window is always. #743 shipped with raw ``atr`` and two names the
+# rows never carried (``momentum_z``, ``vol_ratio``) — the gate silently ran on four
+# features, one of them non-stationary. ``tests/test_mvp_runtime_crypto_distribution_gate.py``
+# now pins the names against the real row builder.
 DI_FEATURES: tuple[str, ...] = (
-    "atr",
+    "atr_pct_of_price",
     "adx",
     "rsi",
     "bb_width_percentile",
-    "momentum_z",
-    "vol_ratio",
+    "roc_4",
+    "volume_zscore",
 )
 
 DI_THRESHOLD = 3.0

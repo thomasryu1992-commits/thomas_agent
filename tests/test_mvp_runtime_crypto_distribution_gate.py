@@ -146,58 +146,158 @@ class TestDistributionAdmits:
 
 
 # ---------------------------------------------------------------------------
-# Integration: backtest produces a reference
+# Integration: the feature names are real, the backtest produces a reference,
+# and promotion carries it to where the router reads it
 # ---------------------------------------------------------------------------
 
-class TestBacktestDistributionReference:
-    def test_backtest_result_carries_distribution_reference(self):
-        from runtime.mvp_runtime.crypto.factory import backtest_spec_pooled
-        from runtime.mvp_runtime.crypto.strategy import StrategySpec
+_SPEC = {
+    "schema_version": "strategy_spec.v1",
+    "strategy_id": "test_di",
+    "strategy_version": "1.0",
+    "strategy_family": "breakout",
+    "strategy_rule_hash": "",
+    "generation_id": "g",
+    "direction": "long",
+    "symbol_scope": ["BTCUSDT"],
+    "timeframe": "1d",
+    "entry_rules": {"conditions": [
+        {"feature": "rsi", "comparison": "<", "value": 90},
+    ]},
+    "exit_rules": {"stop_model": "atr", "stop_atr": 2.0, "target_atr": 3.0, "max_holding_bars": 10},
+    "risk_constraints": {"max_risk_per_trade_R": 1.0},
+}
 
-        spec = StrategySpec.from_dict({
-            "schema_version": "strategy_spec.v1",
-            "strategy_id": "test_di",
-            "strategy_version": "1.0",
-            "strategy_family": "breakout",
-            "strategy_rule_hash": "",
-            "generation_id": "g",
-            "direction": "long",
-            "symbol_scope": ["BTCUSDT"],
-            "timeframe": "1d",
-            "entry_rules": {"conditions": [
-                {"feature": "rsi", "comparison": "<", "value": 90},
-            ]},
-            "exit_rules": {"stop_model": "atr", "stop_atr": 2.0, "target_atr": 3.0, "max_holding_bars": 10},
-            "risk_constraints": {"max_risk_per_trade_R": 1.0},
+NOW = "2025-08-01T00:00:00Z"
+
+
+def _snapshot(n: int = 400) -> dict:
+    """``n`` daily candles with a varying path, long enough to clear every warm-up window
+    (``PERCENTILE_WINDOW`` is 100) with room for :data:`MIN_REFERENCE_BARS` finite rows."""
+    import math
+    candles = []
+    for i in range(n):
+        base = 1000 + i + 40 * math.sin(i / 9)
+        candles.append({
+            "open_time": f"2024-01-01T00:00:00Z",
+            "close_time": f"2024-01-01T23:59:59Z",
+            "open": base, "high": base + 10 + (i % 7), "low": base - 10 - (i % 5),
+            "close": base + (i % 3) - 1, "volume": 100.0 + (i % 11) * 10,
         })
-        candles = [
-            {
-                "open_time": f"2025-01-{i+1:02d}T00:00:00Z",
-                "close_time": f"2025-01-{i+1:02d}T23:59:59Z",
-                "open": 1000 + i, "high": 1010 + i, "low": 990 + i,
-                "close": 1000 + i, "volume": 100.0,
-            }
-            for i in range(200)
+    return {
+        "snapshot_version": "0.1",
+        "symbol": "BTCUSDT",
+        "timeframe": "1d",
+        "candles": candles,
+        "candle_count": len(candles),
+        "last_close": candles[-1]["close"],
+        "last_candle_time": candles[-1]["close_time"],
+        "source": "test",
+        "venue": "binance",
+        "is_synthetic": False,
+        "created_at": NOW,
+    }
+
+
+def test_every_di_feature_is_a_key_the_row_builder_emits():
+    """Pins the names against the real builder. #743 shipped two names the rows never carried
+    (``momentum_z``, ``vol_ratio``): ``compute_distribution_reference`` skips an absent key
+    without complaint, so the gate silently ran on fewer features than it claimed."""
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    rows = build_feature_rows(_snapshot())
+    missing = [f for f in DI_FEATURES if not any(f in row for row in rows)]
+    assert not missing, f"DI_FEATURES not emitted by build_feature_rows: {missing}"
+    # Present is not enough — the reference needs MIN_REFERENCE_BARS finite values per feature.
+    for feature in DI_FEATURES:
+        finite = [
+            row[feature] for row in rows
+            if isinstance(row.get(feature), (int, float)) and math.isfinite(row[feature])
         ]
-        snapshot = {
-            "snapshot_version": "0.1",
-            "symbol": "BTCUSDT",
-            "timeframe": "1d",
-            "candles": candles,
-            "candle_count": len(candles),
-            "last_close": candles[-1]["close"],
-            "last_candle_time": candles[-1]["close_time"],
-            "source": "test",
-            "venue": "binance",
-            "is_synthetic": False,
-            "created_at": "2025-01-01T00:00:00Z",
-        }
-        result = backtest_spec_pooled(spec, [snapshot])
-        assert "distribution_reference" in result
-        ref = result["distribution_reference"]
-        assert isinstance(ref, dict)
-        if ref:
-            for stats in ref.values():
-                assert "mean" in stats
-                assert "std" in stats
-                assert "n" in stats
+        assert len(finite) >= MIN_REFERENCE_BARS, (feature, len(finite))
+
+
+def test_no_di_feature_rides_the_price_level():
+    """Scale the same path by 10x: a scale-free feature set produces the same reference. Raw
+    ``atr`` (the #743 choice) fails this — its mean moves with the price, so a strategy mined
+    at one price level reads as a distribution shift at another."""
+    from runtime.mvp_runtime.crypto.features import build_feature_rows
+
+    base = _snapshot()
+    scaled = dict(base)
+    scaled["candles"] = [
+        {**c, "open": c["open"] * 10, "high": c["high"] * 10, "low": c["low"] * 10, "close": c["close"] * 10}
+        for c in base["candles"]
+    ]
+    ref_a = compute_distribution_reference(build_feature_rows(base))
+    ref_b = compute_distribution_reference(build_feature_rows(scaled))
+    assert set(ref_a) == set(DI_FEATURES)
+    for feature in DI_FEATURES:
+        assert ref_a[feature]["mean"] == pytest.approx(ref_b[feature]["mean"], rel=1e-6, abs=1e-9), feature
+        assert ref_a[feature]["std"] == pytest.approx(ref_b[feature]["std"], rel=1e-6, abs=1e-9), feature
+
+
+def test_backtest_result_carries_a_reference_for_every_di_feature():
+    from runtime.mvp_runtime.crypto.factory import backtest_spec_pooled
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+
+    result = backtest_spec_pooled(StrategySpec.from_dict(_SPEC), [_snapshot()])
+    ref = result["distribution_reference"]
+    assert set(ref) == set(DI_FEATURES)
+    for stats in ref.values():
+        assert set(stats) == {"mean", "std", "n"}
+        assert stats["n"] >= MIN_REFERENCE_BARS
+
+
+def _promote(monkeypatch, tmp_path, candidate):
+    from scripts import promote_strategy_candidates as prom
+
+    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [candidate])
+    monkeypatch.setattr(prom.pool_store, "assert_promotable_cost_basis", lambda records: None)
+    monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
+    installed: dict = {}
+    monkeypatch.setattr(prom.pool_store, "install_active_pool",
+                        lambda pool, *, root=None: installed.update(pool) or 1)
+    monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
+    prom.run_promotion(
+        selectors=[candidate["candidate_id"]], promoted_by="thomas", reason="test",
+        keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+        allow_below_entry_bar=True,
+    )
+    return installed["active_strategies"][0]
+
+
+def test_promotion_copies_the_distribution_reference_onto_the_entry(monkeypatch, tmp_path):
+    """The router reads the POOL, and ``distribution_admits`` reads the entry. #743 computed
+    the reference on the backtest and never copied it here, so every entry was fail-open and
+    the gate could not fire. This is the test that would have caught it."""
+    reference = {"rsi": {"mean": 50.0, "std": 1.0, "n": 100}}
+    candidate = {
+        "candidate_id": "cand_di", "strategy_id": "test_di", "generation_id": "g",
+        "champion_score": 0.7, "strategy_rule_hash": "",
+        "strategy_spec": dict(_SPEC),
+        "backtest_evidence": {
+            "closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000,
+            "robustness": {"holdout_status": "CONFIRMED"},
+            "distribution_reference": reference,
+        },
+    }
+    entry = _promote(monkeypatch, tmp_path, candidate)
+    assert entry["distribution_reference"] == reference
+
+    # And the installed entry is directly usable by the gate — the point of copying it.
+    assert distribution_admits(entry, {"rsi": 50.5}) == (True, None, 0.5)
+    assert distribution_admits(entry, {"rsi": 60.0}) == (False, DISTRIBUTION_SHIFT, 10.0)
+
+
+def test_a_candidate_without_the_reference_promotes_fail_open(monkeypatch, tmp_path):
+    """Every candidate minted before the reference existed must promote and route as before."""
+    candidate = {
+        "candidate_id": "cand_old", "strategy_id": "test_di", "generation_id": "g",
+        "champion_score": 0.5, "strategy_rule_hash": "",
+        "strategy_spec": dict(_SPEC),
+        "backtest_evidence": {"closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000,
+                              "robustness": {"holdout_status": "CONFIRMED"}},
+    }
+    entry = _promote(monkeypatch, tmp_path, candidate)
+    assert entry["distribution_reference"] is None
+    assert distribution_admits(entry, {"rsi": 99.0}) == (True, None, None)
