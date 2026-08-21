@@ -1492,19 +1492,51 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     if book_degraded:
         head += f" orderbook-degraded={','.join(book_degraded)}"
     parts = [head]
+    if cycles and all(c.get("degraded") for c in cycles):
+        head += " all_degraded"
+    parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
     parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)
     return " | ".join(parts)
 
 
+PIPELINE_STALLED = "PIPELINE_STALLED"
+
+
+def cycle_is_stalled(record: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether THIS degraded cycle follows one that also degraded — a stalled pipeline.
+
+    Same pattern as ``data_review.review_loop_is_stalled``: the first degraded fire stays
+    quiet (delivered on the status line), the second consecutive one raises onto the failure
+    alert. At a 15-minute cadence two consecutive degraded fires is 30 minutes of a pipeline
+    producing nothing — long enough to be a real problem rather than a transient venue hiccup.
+    """
+    if not record.get("degraded"):
+        return False
+    previous = str(previous_status or "")
+    return previous.startswith("degraded") or PIPELINE_STALLED in previous
+
+
+def pool_cycle_is_stalled(summary: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether every context in this pool fire degraded after a previous all-degraded fire."""
+    cycles = summary.get("cycles") or []
+    if not cycles or not all(c.get("degraded") for c in cycles):
+        return False
+    previous = str(previous_status or "")
+    return "all_degraded" in previous or PIPELINE_STALLED in previous
+
+
 __all__ = [
+    "PIPELINE_STALLED",
     "accumulate_open_interest_cohort",
     "accumulate_orderbook_cohort",
     "accumulate_positioning_cohort",
     "attach_cross_section",
     "attach_positioning",
+    "cycle_is_stalled",
     "cycle_status_line",
     "pool_cycle_contexts",
+    "pool_cycle_is_stalled",
     "pool_cycle_status_line",
     "retention_cohort",
     "run_crypto_cycle",

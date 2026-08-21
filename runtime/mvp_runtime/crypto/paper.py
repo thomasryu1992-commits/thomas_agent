@@ -47,6 +47,7 @@ from ..filelock import locked
 from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from . import cost as costs
+from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
@@ -385,6 +386,9 @@ def route_entries(
         admitted, regime_reason = (
             regime_admits(entry, feature_row.get("market_regime")) if result.matched else (True, None)
         )
+        di_admitted, di_reason, di_score = (
+            distribution_admits(entry, feature_row) if result.matched and admitted else (True, None, None)
+        )
         evaluation = {
             "strategy_id": entry.get("strategy_id"),
             "matched": result.matched,
@@ -393,8 +397,11 @@ def route_entries(
         if regime_reason is not None:
             evaluation["regime_excluded"] = regime_reason
             evaluation["regime"] = feature_row.get("market_regime")
+        if di_reason is not None:
+            evaluation["distribution_excluded"] = di_reason
+            evaluation["dissimilarity_index"] = di_score
         evaluations.append(evaluation)
-        if result.matched and admitted:
+        if result.matched and admitted and di_admitted:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
                 "candidate_id": entry.get("candidate_id"),
@@ -416,6 +423,10 @@ def route_entries(
         "regime_excluded_strategy_ids": sorted(
             str(e["strategy_id"]) for e in evaluations
             if e.get("regime_excluded") and e.get("strategy_id") is not None
+        ),
+        "distribution_excluded_strategy_ids": sorted(
+            str(e["strategy_id"]) for e in evaluations
+            if e.get("distribution_excluded") and e.get("strategy_id") is not None
         ),
         "regime": feature_row.get("market_regime") if feature_row else None,
         # The traded context, so a plan books under the symbol this cycle actually

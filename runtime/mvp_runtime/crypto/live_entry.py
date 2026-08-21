@@ -106,9 +106,12 @@ COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # a live protective order on every bar, which is a change to the money path and a separate
 # decision with its own approval.
 MANAGED_EXIT_REFUSED = "LIVE_ENTRY_MANAGED_EXIT_UNSUPPORTED"
+SPREAD_REFUSED = "LIVE_ENTRY_SPREAD_TOO_WIDE"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
+
+MAX_ENTRY_SPREAD_BPS = 50.0
 
 # Which venue price the protective orders trigger on. MARK_PRICE rather than the last
 # traded price: a stop that triggers on a single wick print on one venue's tape is the
@@ -204,6 +207,7 @@ def plan_live_entry(
     allowed_symbols: Sequence[str] = (),
     filters_reason: str | None = None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
+    spread_bps: float | None = None,
 ) -> dict[str, Any]:
     """Decide one live entry, or refuse it. Pure: no I/O, no venue, no order.
 
@@ -307,6 +311,11 @@ def plan_live_entry(
     if managed:
         reasons.append(MANAGED_EXIT_REFUSED)
         detail["managed_exit"] = managed
+
+    if spread_bps is not None and spread_bps > MAX_ENTRY_SPREAD_BPS:
+        reasons.append(SPREAD_REFUSED)
+        detail["spread_bps"] = round(spread_bps, 6)
+        detail["spread_limit_bps"] = MAX_ENTRY_SPREAD_BPS
 
     if reasons:
         return _decision(STATUS_REFUSED, reasons, symbol=symbol, now=now, **detail)

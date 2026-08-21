@@ -1302,3 +1302,99 @@ def test_an_unreadable_live_history_disarms_every_lineage_before_the_leg(tmp_pat
 
     _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
     assert seen["live_routable_strategy_ids"] == set()
+
+
+# ---------------------------------------------------------------------------
+# ⑧ Pipeline stall detection (dead-man switch)
+# ---------------------------------------------------------------------------
+
+class TestCycleIsStalled:
+    """``cycle_is_stalled`` mirrors ``data_review.review_loop_is_stalled``:
+    the first degraded fire stays quiet, the second consecutive one raises."""
+
+    def test_one_degraded_cycle_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, None) is False
+        assert cycle_is_stalled(record, "verdict=ALLOW route=matched") is False
+
+    def test_two_consecutive_degraded_cycles_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD route=no_strategies") is True
+
+    def test_stalled_status_is_recognised_on_the_next_fire(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_a_healthy_cycle_is_never_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": False}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD") is False
+
+
+class TestPoolCycleIsStalled:
+    """``pool_cycle_is_stalled`` checks that ALL contexts degraded for two
+    consecutive fires — one healthy context keeps the pipeline productive."""
+
+    def test_all_degraded_after_healthy_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2") is False
+
+    def test_all_degraded_after_all_degraded_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
+
+    def test_one_healthy_context_prevents_stall(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is False
+
+    def test_stalled_status_is_recognised(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_empty_cycles_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        assert pool_cycle_is_stalled({"cycles": []}, "pool_cycle all_degraded") is False
+
+
+class TestPoolCycleStatusLineAllDegraded:
+    """The ``all_degraded`` marker on the status line makes two consecutive
+    all-degraded fires detectable from ``last_status`` alone."""
+
+    def test_all_degraded_marker_appears_when_every_context_degraded(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" in status
+
+    def test_marker_absent_when_some_contexts_healthy(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+                {"degraded": False, "symbol": "ETHUSDT", "timeframe": "15m",
+                 "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                 "route_status": "matched",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" not in status
