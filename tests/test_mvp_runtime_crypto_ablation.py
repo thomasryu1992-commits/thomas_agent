@@ -67,12 +67,15 @@ def _planted_snapshot(events, *, n=300):
     exits."""
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
-    closes = [100.0] * n
+    # Prices scaled so the ATR / price ratio (~2%) keeps the stop within the
+    # liquidation guard's distance at 20x leverage (~4.6%) while staying above the
+    # cost gate's floor (~1%). Range ±10 at price 1000 gives ATR≈20, stop≈30 (3%).
+    closes = [1000.0] * n
     for index, (_volume, _open, kind) in events.items():
         if kind == "win":
-            closes[index + 1], closes[index + 2] = 106.0, 112.0
+            closes[index + 1], closes[index + 2] = 1060.0, 1120.0
         else:
-            closes[index + 1] = 85.0
+            closes[index + 1] = 850.0
     candles = []
     for i in range(n):
         volume, open_price, _ = events.get(i, (1.0, 1.0, None))
@@ -80,7 +83,7 @@ def _planted_snapshot(events, *, n=300):
         candles.append({
             "open_time": timeutil.format_iso(close_time - step),
             "open": open_price,
-            "high": closes[i] + 2.0, "low": closes[i] - 2.0, "close": closes[i],
+            "high": closes[i] + 10.0, "low": closes[i] - 10.0, "close": closes[i],
             "volume": volume,
             "close_time": timeutil.format_iso(close_time),
         })

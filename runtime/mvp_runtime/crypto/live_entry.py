@@ -62,6 +62,7 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
+from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -107,6 +108,7 @@ COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # decision with its own approval.
 MANAGED_EXIT_REFUSED = "LIVE_ENTRY_MANAGED_EXIT_UNSUPPORTED"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
+LIQUIDATION_REFUSED = "LIVE_ENTRY_STOP_BEYOND_LIQUIDATION"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
 
@@ -320,6 +322,14 @@ def plan_live_entry(
             STATUS_REFUSED, [bracket_reason or BRACKET_UNPRICEABLE], symbol=symbol, now=now, **detail
         )
     detail["bracket"] = bracket
+
+    # 5a. The liquidation guard, on the rounded bracket stop — the price the venue will use.
+    liq_refusal = stop_beyond_liquidation_refusal(
+        {**dict(plan), "stop_loss": bracket["stop_loss"]},
+    )
+    if liq_refusal is not None:
+        detail["liquidation_refusal"] = liq_refusal
+        return _decision(STATUS_REFUSED, [LIQUIDATION_REFUSED], symbol=symbol, now=now, **detail)
 
     # 5b. The economics door, and it belongs HERE rather than beside the cheap checks above:
     #     the friction is a share of the risk, and the risk that will actually apply is the
