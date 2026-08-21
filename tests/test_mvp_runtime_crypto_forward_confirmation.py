@@ -91,11 +91,25 @@ def test_1d_uses_lower_trade_floor():
     assert fc.min_forward_trades(None) == 25
 
 
-def test_1d_forward_confirms_at_10_trades():
-    """A 1d record with 10 priceable closes in enough slices can confirm."""
-    rows = _spread_outcomes(slices=9, per_slice=2, base=0.3)  # 18 closes > 10
+def test_1d_forward_confirms_at_exactly_10_trades():
+    """The 1d floor is reachable at its own value, not merely above it.
+
+    Ten closes, one per slice — the shape a 1d lineage actually produces, where a slice
+    holding two trades is the exception. A test that passed 18 would not have shown that
+    the floor `min_forward_trades` returns is a floor anything can stand on."""
+    rows = _spread_outcomes(slices=10, per_slice=1, base=0.3)
     verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["priceable_count"] == fc.MIN_FORWARD_TRADES_1D == 10
+    assert verdict["active_slices"] == 10
     assert verdict["status"] == fc.FORWARD_CONFIRMED
+
+
+def test_1d_forward_is_insufficient_one_trade_below_its_floor():
+    """Nine closes refuse — the floor binds, rather than the slice count carrying it."""
+    rows = _spread_outcomes(slices=9, per_slice=1, base=0.3)
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["priceable_count"] == 9
+    assert verdict["status"] == fc.FORWARD_INSUFFICIENT
 
 
 def test_4h_forward_insufficient_at_12_trades():
