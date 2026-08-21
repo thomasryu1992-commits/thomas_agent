@@ -83,6 +83,28 @@ def test_a_thin_forward_record_is_insufficient_not_a_pass():
     assert fc.judge_forward(_record(), rows)["status"] == fc.FORWARD_INSUFFICIENT
 
 
+def test_1d_uses_lower_trade_floor():
+    """1d timeframe has a 10-trade floor (Thomas 2026-08-21), not 25."""
+    assert fc.min_forward_trades("1d") == fc.MIN_FORWARD_TRADES_1D == 10
+    assert fc.min_forward_trades("4h") == fc.MIN_HOLDOUT_TRADES == 25
+    assert fc.min_forward_trades("1h") == 25
+    assert fc.min_forward_trades(None) == 25
+
+
+def test_1d_forward_confirms_at_10_trades():
+    """A 1d record with 10 priceable closes in enough slices can confirm."""
+    rows = _spread_outcomes(slices=9, per_slice=2, base=0.3)  # 18 closes > 10
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["status"] == fc.FORWARD_CONFIRMED
+
+
+def test_4h_forward_insufficient_at_12_trades():
+    """A 4h record with 12 priceable closes is still below the 25-trade floor."""
+    rows = _spread_outcomes(slices=4, per_slice=3)  # 12 closes
+    verdict = fc.judge_forward(_record(timeframe="4h"), rows)
+    assert verdict["status"] == fc.FORWARD_INSUFFICIENT
+
+
 def test_enough_trades_in_too_few_slices_is_insufficient():
     """Slice concentration is the regime-lottery shape the period rule exists to refuse."""
     rows = _spread_outcomes(slices=3, per_slice=9)  # 27 closes, 3 active slices
