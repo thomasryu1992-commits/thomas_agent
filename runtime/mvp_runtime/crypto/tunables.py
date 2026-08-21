@@ -329,6 +329,14 @@ TUNABLES: tuple[Tunable, ...] = (
             "a per-regime sign read off three trades is the overfitting hazard wired into routing",
             "a measured relationship between per-regime sample size and forward sign"),
 
+    # --- liquidation guard: stop-beyond-liquidation refusal ----------------------------------
+    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", OPERATOR,
+            "Binance USDM default for most perpetuals; higher → guard more restrictive",
+            "the operator changing the account leverage, or adding per-symbol leverage reads"),
+    Tunable("MAINTENANCE_MARGIN_RATE", paper.MAINTENANCE_MARGIN_RATE, "crypto/paper.py", VENUE,
+            "Binance USDM tier-1 MMR (0.4%); lowest tier is permissive for the guard",
+            "trading positions large enough to cross into tier-2 (> $50K notional)"),
+
     # --- what counts as enough evidence to score at all --------------------------------------
     Tunable("MIN_FACTORY_BARS", market_data.MIN_FACTORY_BARS, "crypto/market_data.py", VENUE,
             "what the venue can answer: ~2.1k daily bars on the shortest routed history (SOLUSDT)",

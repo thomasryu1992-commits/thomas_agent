@@ -142,12 +142,28 @@ CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
 # gate's cost is measurable via `r_values_by_reason`.
 STOP_LOSS_COOLDOWN = "STOP_LOSS_COOLDOWN"
 
+# The planned stop sits beyond the isolated-margin liquidation price, so the position
+# would be liquidated before the stop triggers. Applied identically in `_replay`
+# (backtest) and `run_paper_update` (live paper) and `plan_live_entry` (live).
+STOP_BEYOND_LIQUIDATION = "STOP_BEYOND_LIQUIDATION"
+
 # After a stop-loss, block re-entry on the same (venue, symbol, timeframe) for this
 # many bars.  Applied identically in `_replay` (backtest) and `run_paper_update`
 # (live paper) so the evidence the lifecycle reads reflects the actual trading rule.
 # 2 bars is conservative: long enough to skip the immediate reversion bar and the
 # one after it, short enough to re-enter on a genuine trend resumption.
 COOLDOWN_BARS_AFTER_STOPLOSS = 2
+
+# The leverage the liquidation guard assumes when no venue-reported leverage is
+# available (paper, backtest). Binance USDM defaults to 20x for most perpetual
+# contracts. A higher assumption makes the guard MORE restrictive (liquidation price
+# closer to entry); a lower one more permissive.
+ASSUMED_LEVERAGE = 20
+
+# Tier-1 maintenance margin rate on Binance USDM (0.4%). Using the lowest tier is
+# permissive — larger positions have higher MMR and get liquidated sooner, so a
+# stop that clears this check can still be beyond liquidation at a higher tier.
+MAINTENANCE_MARGIN_RATE = 0.004
 
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
@@ -617,6 +633,63 @@ def entry_cost_refusal(
         # path, which is the one path that must not crash.
         "round_trip_cost_r": round(cost_r, 6) if math.isfinite(cost_r) else "inf",
         "limit_r": max_cost_r,
+        "symbol": plan.get("symbol"),
+        "timeframe": plan.get("timeframe"),
+        "strategy_id": plan.get("strategy_id"),
+    }
+
+
+def liquidation_price(
+    entry_price: float, direction: str, *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> float:
+    """Approximate isolated-margin liquidation price for Binance USDM futures.
+
+    Isolated margin is conservative relative to cross margin: the liquidation price is
+    closer to entry (less margin backing), so a stop that clears this check is safe under
+    both modes."""
+    if direction == "LONG":
+        return entry_price * (1.0 - 1.0 / leverage + mmr)
+    return entry_price * (1.0 + 1.0 / leverage - mmr)
+
+
+def stop_is_beyond_liquidation(
+    entry_price: float, stop_price: float, is_long: bool, *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> bool:
+    """True when the stop sits on the wrong side of the liquidation price."""
+    if entry_price <= 0 or leverage <= 0:
+        return False
+    liq = liquidation_price(entry_price, "LONG" if is_long else "SHORT", leverage=leverage, mmr=mmr)
+    if is_long:
+        return stop_price <= liq
+    return stop_price >= liq
+
+
+def stop_beyond_liquidation_refusal(
+    plan: Mapping[str, Any], *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> dict[str, Any] | None:
+    """Refuse a plan whose stop sits beyond the isolated-margin liquidation price. Pure.
+
+    At the refused leverage the position would be liquidated before the stop-loss order
+    triggers, making the protective stop ineffective."""
+    direction = str(plan.get("direction") or "")
+    entry = float(plan.get("entry_price") or 0.0)
+    stop = float(plan.get("stop_loss") or 0.0)
+    if entry <= 0 or leverage <= 0:
+        return None
+    is_long = direction == "LONG"
+    if not stop_is_beyond_liquidation(entry, stop, is_long, leverage=leverage, mmr=mmr):
+        return None
+    liq = liquidation_price(entry, direction, leverage=leverage, mmr=mmr)
+    return {
+        "reason_code": STOP_BEYOND_LIQUIDATION,
+        "entry_price": entry,
+        "stop_loss": stop,
+        "liquidation_price": round(liq, 8),
+        "assumed_leverage": leverage,
+        "maintenance_margin_rate": mmr,
         "symbol": plan.get("symbol"),
         "timeframe": plan.get("timeframe"),
         "strategy_id": plan.get("strategy_id"),
@@ -1688,9 +1761,13 @@ def run_paper_update(
             # was uneconomic would serialise cycles on a question none of them needed shared
             # state to answer.
             cost_refusal = entry_cost_refusal(plan) if plan is not None else None
+            liq_refusal = stop_beyond_liquidation_refusal(plan) if plan is not None and cost_refusal is None else None
             if cost_refusal is not None:
                 summary["open_refused"] = cost_refusal
                 records.append(_event("open_refused", {**cost_refusal, "read_only": True}))
+            elif liq_refusal is not None:
+                summary["open_refused"] = liq_refusal
+                records.append(_event("open_refused", {**liq_refusal, "read_only": True}))
             elif plan is not None:
                 portfolio_lock = positions_dir(root) / "portfolio.lock"
                 with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):

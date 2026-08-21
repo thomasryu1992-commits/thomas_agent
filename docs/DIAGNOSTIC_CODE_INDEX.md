@@ -671,10 +671,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ORDER_REJECTED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 849 | `cancel_order` | `code is not None` |
 | `ORDER_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 639 | `_signed_request` | `code is None` |
 | `ORDER_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 645 | `_signed_request` | `—` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1220 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1225 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
-| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1214 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1202 | `read_outcomes` | `—` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1293 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1298 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
+| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1287 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1275 | `read_outcomes` | `—` |
 | `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 745 | `run_analysis_worker` | `—` |
 | `OUT_OF_MVP_SCOPE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 204 | `classify_task` | `_READ_ONLY_CONSTRAINT not in constraints` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 175 | `resolve_target` | `'..' in candidate.parts` |
@@ -719,12 +719,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POOL_SIZE_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 963 | `assert_pool_within_size_cap` | `len(occupying) > MAX_ROUTABLE_STRATEGIES` |
 | `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 258 | `append_rows` | `series not in POSITIONING_SERIES` |
 | `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 256 | `append_rows` | `not name` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1044 | `__post_init__` | `not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value))` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1049 | `__post_init__` | `value.split('.', 1)[0].upper() in RESERVED_BASENAMES` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1095 | `position_path` | `path.parent != resolved_base` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1130 | `load_open_position` | `PositionContext.from_position(stored) != context` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1165 | `list_open_positions` | `blocker is not None` |
-| `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1109 | `_read_position_file` | `—` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1117 | `__post_init__` | `not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value))` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1122 | `__post_init__` | `value.split('.', 1)[0].upper() in RESERVED_BASENAMES` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1168 | `position_path` | `path.parent != resolved_base` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1203 | `load_open_position` | `PositionContext.from_position(stored) != context` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1238 | `list_open_positions` | `blocker is not None` |
+| `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1182 | `_read_position_file` | `—` |
 | `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 482 | `select_cell` | `not empty` |
 | `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 282 | `assert_batch_budget` | `worst > cap` |
 | `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 475 | `select_cell` | `opened is not None` |
@@ -859,7 +859,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SECRET_IN_REQUEST` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 339 | `create_program_request` | `—` |
 | `SECRET_IN_VALIDATED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 633 | `promote_candidate` | `—` |
 | `SEED_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 252 | `_require_seed` | `len(seed) > MAX_SEED_CHARS` |
-| `SETTLEMENT_RACE_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1400 | `settle_position` | `current is None or current.get('position_id') != expected_id` |
+| `SETTLEMENT_RACE_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1473 | `settle_position` | `current is None or current.get('position_id') != expected_id` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 624 | `record_shadow_result` | `not (isinstance(comparison_ref, str) and comparison_ref.strip())` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 626 | `record_shadow_result` | `not (isinstance(result, str) and result.strip())` |
 | `SHADOW_NOT_RUNNING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 630 | `record_shadow_result` | `latest.get('status') != 'VALIDATING' or latest.get('shadow_validation', {}).get('status') != 'R…` |
@@ -956,12 +956,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
 | `WRONG_APPROVER` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 249 | `record_decision` | `verification.approved_by != REQUIRED_APPROVER` |
-| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3902 | `fuse_specs` | `first.direction != second.direction` |
-| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3924 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
-| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3910 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
-| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3891 | `fuse_specs` | `first.schema_version != second.schema_version` |
-| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3908 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
-| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3906 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
-| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3904 | `fuse_specs` | `first.timeframe != second.timeframe` |
-| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3918 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
-| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3900 | `fuse_specs` | `first.venue != second.venue` |
+| `direction_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3918 | `fuse_specs` | `first.direction != second.direction` |
+| `holdout_unjudgeable` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3940 | `fuse_specs` | `len(conditions) > MAX_FUSION_ENTRY_CONDITIONS` |
+| `non_and_parent` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3926 | `fuse_specs` | `'OR' in (first.entry_rules.operator, second.entry_rules.operator)` |
+| `schema_version_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3907 | `fuse_specs` | `first.schema_version != second.schema_version` |
+| `stop_model_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3924 | `fuse_specs` | `first.exit_rules.stop_model != second.exit_rules.stop_model` |
+| `symbol_scope_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3922 | `fuse_specs` | `sorted(first.symbol_scope) != sorted(second.symbol_scope)` |
+| `timeframe_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3920 | `fuse_specs` | `first.timeframe != second.timeframe` |
+| `too_many_conditions` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3934 | `fuse_specs` | `len(conditions) > MAX_ENTRY_CONDITIONS` |
+| `venue_mismatch` | `FusionRefused` | `runtime/mvp_runtime/crypto/factory.py` | 3916 | `fuse_specs` | `first.venue != second.venue` |

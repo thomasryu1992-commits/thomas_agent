@@ -76,7 +76,10 @@ from .cost import (
 from .feedback import summarize_outcomes
 from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
-from .paper import COOLDOWN_BARS_AFTER_STOPLOSS, settle_trade_plan
+from .paper import (
+    ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
+    settle_trade_plan, stop_is_beyond_liquidation,
+)
 from .pool import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
@@ -2820,7 +2823,7 @@ def funding_charges_per_bar(
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
-) -> tuple[list[dict[str, Any]], float, float, float, float, int, int]:
+) -> tuple[list[dict[str, Any]], float, float, float, float, int, int, int]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
     Extracted so the scored window and the holdout run through **exactly** the same
@@ -2838,6 +2841,7 @@ def _replay(
     # whose evidence is thin because most of its setups were uneconomic is a different fact
     # from one that simply did not fire, and only the count can tell them apart.
     uneconomic_entries = 0
+    liquidation_refused = 0
     cooldown_skipped = 0
     cooldown_remaining = 0
     charges = funding if funding is not None else [0.0] * len(rows)
@@ -2924,6 +2928,10 @@ def _replay(
             ) > MAX_ENTRY_COST_R:
                 uneconomic_entries += 1
                 continue
+            stop_price = close - stop_distance if long else close + stop_distance
+            if stop_is_beyond_liquidation(float(close), stop_price, long):
+                liquidation_refused += 1
+                continue
             position = {
                 "direction": "LONG" if long else "SHORT",
                 "entry_price": float(close),
@@ -2946,7 +2954,7 @@ def _replay(
             }
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-            total_funding_cost_r, uneconomic_entries, cooldown_skipped)
+            total_funding_cost_r, uneconomic_entries, cooldown_skipped, liquidation_refused)
 
 
 # A feature the rows never supply, and why minting on one is not merely wasteful.
@@ -3112,7 +3120,7 @@ def _holdout_evidence(
     period_r = [0.0] * HOLDOUT_PERIODS
     period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, _cd = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, _cd, _liq = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
             cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
         )
@@ -3342,10 +3350,11 @@ def backtest_spec_pooled(
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
     uneconomic_entries = 0
     cooldown_entries = 0
+    liquidation_entries = 0
     scored_bars: list[int] = []
     for frame in frames:
         split = frame.split
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown, part_liq = _replay(
             spec, frame.rows[:split], frame.candles[:split],
             cost=cost, funding=frame.funding[:split],
         )
@@ -3356,6 +3365,7 @@ def backtest_spec_pooled(
         total_funding_cost_r += part_carry
         uneconomic_entries += part_uneconomic
         cooldown_entries += part_cooldown
+        liquidation_entries += part_liq
         scored_bars.append(split)
     holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
@@ -3512,6 +3522,12 @@ def backtest_spec_pooled(
             "ambiguous_exits": ambiguous_exits,
             "total_gap_r": ambiguous_gap_r,
             "gap_per_trade_r": round(ambiguous_gap_r / ambiguous_exits, 4) if ambiguous_exits else 0.0,
+        },
+        "liquidation_guard": {
+            "applied": True,
+            "assumed_leverage": ASSUMED_LEVERAGE,
+            "maintenance_margin_rate": MAINTENANCE_MARGIN_RATE,
+            "refused_entries": liquidation_entries,
         },
         "cost_summary": {
             "total_net_r": total_net_r,
