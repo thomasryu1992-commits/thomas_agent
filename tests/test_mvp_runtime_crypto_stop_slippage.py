@@ -35,13 +35,10 @@ NOW = "2026-08-10T15:00:00Z"
 
 
 def test_the_split_is_a_seam_not_a_repricing():
-    """The seam re-priced on 2026-08-11 — Thomas's interim re-decision, ahead of the sample
-    the original comment waited for, because that sample sits behind the 34-to-69-week
-    forward-confirmation clock. Pinned: the stop leg is STRICTLY dearer than the general
-    rate (the fail-closed direction — the two measured fills read 23.5 and 0.0 bps against
-    the inherited 3.0, and 12.0 is their mean), and the next re-pricing cites
-    `stop_slippage_observations` or the stop-slippage probe."""
-    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == 12.0
+    """Re-priced 2026-08-21 from 12.0 to 1.4 bps after the stop-slippage probe reached
+    n=10 (median 1.07, upper quartile 1.60; Thomas chose 1.4 as the round figure).
+    Pinned: still dearer than the general slippage rate (fail-closed direction)."""
+    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == 1.4
     assert cost.DEFAULT_STOP_SLIPPAGE_BPS > cost.DEFAULT_SLIPPAGE_BPS
 
 

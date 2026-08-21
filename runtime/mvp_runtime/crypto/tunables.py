@@ -110,13 +110,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("DEFAULT_SLIPPAGE_BPS", cost.DEFAULT_SLIPPAGE_BPS, "crypto/cost.py", INHERITED,
             "carried from the source system unmeasured; a canary is one order, not a sample",
             "enough live fills to measure realized slippage against intended price"),
-    Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", OPERATOR,
-            "Thomas's 2026-08-11 interim: the mean of the only two measured stop fills (23.5, "
-            "0.0 bps) — the seam's first re-pricing, taken ahead of the sample because that "
-            "sample sits behind the 34-69-week forward-confirmation clock and the error runs "
-            "fail-closed",
-            "the sample `live_pnl.stop_slippage_observations` (or the stop-slippage probe, "
-            "docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md) reaching a size worth averaging"),
+    Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", MEASURED,
+            "measured 2026-08-21 via the stop-slippage probe (n=10, median 1.07 bps, "
+            "upper quartile 1.60 bps; Thomas chose 1.4 as the round figure)",
+            "a material change in venue microstructure or a larger sample contradicting "
+            "the current estimate"),
     Tunable("DEFAULT_FUNDING_BPS_PER_INTERVAL", cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
             "crypto/cost.py", VENUE,
             "Binance USD-M's base rate; a FALLBACK only — real history is charged when present",
