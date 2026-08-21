@@ -48,6 +48,7 @@ from . import (
     factory,
     features,
     feedback,
+    forward_confirmation,
     guards,
     live_allowance,
     live_order,
@@ -209,6 +210,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/pool.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
+    Tunable("MIN_FORWARD_TRADES_1D", forward_confirmation.MIN_FORWARD_TRADES_1D,
+            "crypto/forward_confirmation.py", OPERATOR,
+            "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
+            "10 closes is the t-test minimum that still prices dispersion honestly",
+            "a 1d strategy reaching forward confirmation or the inflation table re-measured at 1d"),
     Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool.OBSERVATION_MIN_BACKTEST_CLOSED,
             "crypto/pool.py", MEASURED,
             "where the store's own expectancy-vs-sample table stops being inflated "

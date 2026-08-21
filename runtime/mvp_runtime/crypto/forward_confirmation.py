@@ -45,6 +45,19 @@ FORWARD_CONFIRMED = "FORWARD_CONFIRMED"        # unseen forward record shows an 
 FORWARD_CONTRADICTED = "FORWARD_CONTRADICTED"  # enough forward closes, and the edge does not clear it
 FORWARD_INSUFFICIENT = "FORWARD_INSUFFICIENT"  # the record cannot be judged (too few, no spread, thin slices)
 
+# 1d trades ~0.03/day (backtest average); at MIN_HOLDOUT_TRADES=25 forward confirmation
+# takes ~25 months — unreachable in practice. Thomas 2026-08-21: 10 for 1d, 25 elsewhere.
+MIN_FORWARD_TRADES_1D = 10
+
+_FORWARD_TRADE_FLOORS: dict[str, int] = {
+    "1d": MIN_FORWARD_TRADES_1D,
+}
+
+
+def min_forward_trades(timeframe: str | None) -> int:
+    """The trade floor for forward confirmation, scaled by timeframe."""
+    return _FORWARD_TRADE_FLOORS.get(str(timeframe or ""), MIN_HOLDOUT_TRADES)
+
 
 def slice_width_days(timeframe: str) -> float | None:
     """The holdout's own slice width, in calendar days, for this timeframe.
@@ -126,7 +139,9 @@ def judge_forward(
             **extra,
         }
 
-    if len(priced) < MIN_HOLDOUT_TRADES:
+    spec = record.get("strategy_spec") or {}
+    trade_floor = min_forward_trades(spec.get("timeframe"))
+    if len(priced) < trade_floor:
         return verdict(FORWARD_INSUFFICIENT)
     nets = [n for _, n in priced]
     spread = statistics.stdev(nets)
@@ -136,7 +151,6 @@ def judge_forward(
     if mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)) <= 0:
         return verdict(FORWARD_CONTRADICTED, mean_net_r=round(mean, 6))
 
-    spec = record.get("strategy_spec") or {}
     width = slice_width_days(str(spec.get("timeframe") or ""))
     if width is None:
         return verdict(FORWARD_INSUFFICIENT, mean_net_r=round(mean, 6))
