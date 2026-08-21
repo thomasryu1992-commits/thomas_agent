@@ -2861,7 +2861,8 @@ def _replay(
                 total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
                 total_funding_cost_r += breakdown.funding_cost_r
-                outcomes.append({
+                resolution = position.get("exit_resolution") or "unambiguous"
+                outcome: dict[str, Any] = {
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
                     "gross_R": breakdown.gross_r,
@@ -2874,7 +2875,16 @@ def _replay(
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
                     "closed_at_bar": offset + i,
-                })
+                    "exit_resolution": resolution,
+                }
+                if resolution == "pessimistic_sl_first":
+                    direction = position["direction"]
+                    entry = float(position["entry_price"])
+                    tp = float(position["take_profit"])
+                    risk = float(position["risk"])
+                    alt_gross_r = (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
+                    outcome["ambiguous_gap_r"] = round(alt_gross_r - breakdown.gross_r, 8)
+                outcomes.append(outcome)
                 position = None
                 entry_regime = None
                 if reason == "stop_loss":
@@ -3375,6 +3385,16 @@ def backtest_spec_pooled(
         },
     }
 
+    # Intrabar ambiguity: trades where a single bar touched both SL and TP. The
+    # pessimistic SL-first assumption applies to all of them in the backtest, and the
+    # gap is the maximum R a more favourable resolution could have added.
+    ambiguous_exits = sum(
+        1 for o in outcomes if o.get("exit_resolution") == "pessimistic_sl_first"
+    )
+    ambiguous_gap_r = round(sum(
+        float(o.get("ambiguous_gap_r") or 0.0) for o in outcomes
+    ), 8)
+
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
     # with enough trades. The shallowest leg sets the slice width, so a trade closing late on
     # a longer leg clamps into the last window rather than opening a window the other legs
@@ -3486,6 +3506,11 @@ def backtest_spec_pooled(
             "applied": True,
             "cooldown_bars": COOLDOWN_BARS_AFTER_STOPLOSS,
             "skipped_entries": cooldown_entries,
+        },
+        "intrabar_gap": {
+            "ambiguous_exits": ambiguous_exits,
+            "total_gap_r": ambiguous_gap_r,
+            "gap_per_trade_r": round(ambiguous_gap_r / ambiguous_exits, 4) if ambiguous_exits else 0.0,
         },
         "cost_summary": {
             "total_net_r": total_net_r,

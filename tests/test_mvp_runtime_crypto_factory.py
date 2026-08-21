@@ -3523,3 +3523,75 @@ class TestReplayCooldown:
         assert "cooldown_door" in result
         assert result["cooldown_door"]["applied"] is True
         assert result["cooldown_door"]["cooldown_bars"] == 2
+
+
+class TestIntrabarGapMeasurement:
+    """When a single bar touches both SL and TP, the backtest assumes SL-first
+    (pessimistic). The intrabar_gap block measures how often this happens and
+    the maximum R the assumption could have cost."""
+
+    def _ambiguous_candles(self, n=60):
+        """Bars wide enough that both SL and TP are touched on the same candle."""
+        step = timedelta(days=1)
+        last_close = NOW_DT - timedelta(hours=1)
+        rows = []
+        candles = []
+        price = 100.0
+        for i in range(n):
+            close_time = last_close - (n - 1 - i) * step
+            atr = 2.0
+            candles.append({
+                "open_time": timeutil.format_iso(close_time - step),
+                "open": price,
+                "high": price + 20.0,
+                "low": price - 20.0,
+                "close": price,
+                "volume": 10.0,
+                "close_time": timeutil.format_iso(close_time),
+            })
+            rows.append({
+                "close": price, "atr": atr, "ma20": price - 1.0,
+                "market_regime": "TREND_UP",
+            })
+        return rows, candles
+
+    def test_ambiguous_exits_are_counted(self):
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 1.0, "target_atr": 2.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = self._ambiguous_candles()
+        outcomes, *_ = factory._replay(spec, rows, candles, cost=CostModel())
+        ambiguous = [o for o in outcomes if o.get("exit_resolution") == "pessimistic_sl_first"]
+        assert len(ambiguous) >= 1, "expected at least one ambiguous exit"
+        for o in ambiguous:
+            assert "ambiguous_gap_r" in o
+            assert o["ambiguous_gap_r"] > 0, "gap should be positive (TP_R > SL_R)"
+
+    def test_unambiguous_exits_have_no_gap(self):
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 0.5, "target_atr": 5.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = TestReplayCooldown()._make_rows_and_candles(n=80)
+        outcomes, *_ = factory._replay(spec, rows, candles, cost=CostModel())
+        unambiguous = [o for o in outcomes if o.get("exit_resolution") == "unambiguous"]
+        for o in unambiguous:
+            assert "ambiguous_gap_r" not in o
+
+    def test_backtest_evidence_carries_intrabar_gap_block(self):
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "intrabar_gap" in result
+        gap = result["intrabar_gap"]
+        assert "ambiguous_exits" in gap
+        assert "total_gap_r" in gap
+        assert "gap_per_trade_r" in gap
+        assert gap["ambiguous_exits"] >= 0
+        assert isinstance(gap["total_gap_r"], float)
