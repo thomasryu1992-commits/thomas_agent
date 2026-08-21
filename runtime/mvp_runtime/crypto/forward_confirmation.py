@@ -1,13 +1,17 @@
 """Forward confirmation — the holdout's own test, applied to data nobody could have seen.
 
 Thomas approved #690 §5-1 on 2026-08-11. The OBSERVATION tier accumulates forward paper
-evidence; this module is the rule that lets it reach the arming door: same thresholds as
-the backtest holdout (``MIN_HOLDOUT_TRADES``, ``CONFIDENCE_Z``, the ``_periods_confirm``
-slice test at ``t_critical_95``), same slice width the holdout derives (tail/10 of the
-timeframe's replay target: 21 days at 4h, 42 at 1d), applied to outcomes settled AFTER the
-lineage was minted — which by construction were not available to fit against (A2's reuse
-contamination cannot occur). No threshold is minted here; every constant is imported from
-the judge it mirrors.
+evidence; this module is the rule that lets it reach the arming door: the backtest holdout's
+own thresholds (``MIN_HOLDOUT_TRADES``, ``CONFIDENCE_Z``, the ``_periods_confirm`` slice test
+at ``t_critical_95``), the same slice width the holdout derives (tail/10 of the timeframe's
+replay target: 30 days at 4h, 60 at 1d), applied to outcomes settled AFTER the lineage was
+minted — which by construction were not available to fit against (A2's reuse contamination
+cannot occur).
+
+**One threshold IS minted here, and it is the exception that has to be stated.** #741 (Thomas
+2026-08-21) gave 1d its own trade floor, ``MIN_FORWARD_TRADES_1D``, because at ~0.03 trades a
+day the holdout's 25 is a horizon nothing reaches. Every other constant is still imported from
+the judge it mirrors, and ``min_forward_trades`` is the one place the exception lives.
 
 The refusal side is symmetric on purpose (a confirmation must be able to fail):
 ``FORWARD_CONTRADICTED`` — enough priceable closes and the net edge does not clear its own
@@ -47,6 +51,14 @@ FORWARD_INSUFFICIENT = "FORWARD_INSUFFICIENT"  # the record cannot be judged (to
 
 # 1d trades ~0.03/day (backtest average); at MIN_HOLDOUT_TRADES=25 forward confirmation
 # takes ~25 months — unreachable in practice. Thomas 2026-08-21: 10 for 1d, 25 elsewhere.
+#
+# **This floor is not the binding constraint at 1d, and saying so here is the point.**
+# ``judge_forward`` also requires `MIN_HOLDOUT_PERIODS` active slices, and a 1d slice is 60
+# days wide, so 8 of them need 420 calendar days no matter how fast trades arrive: the real
+# horizon stayed ~18-20 months when this floor moved. That 60 is itself a `MIN_FACTORY_BARS`
+# artifact — see `slice_width_days` and docs/proposals/FORWARD_SLICE_WIDTH_ARTIFACT_V0.1.md,
+# which proposes removing it. Until that is decided, do not read this constant as the thing
+# that sets how long a 1d lineage waits.
 MIN_FORWARD_TRADES_1D = 10
 
 _FORWARD_TRADE_FLOORS: dict[str, int] = {
@@ -64,7 +76,13 @@ def slice_width_days(timeframe: str) -> float | None:
 
     ``factory_candle_target(tf) × HOLDOUT_FRACTION / HOLDOUT_PERIODS`` bars, converted
     through the timeframe's bar length — the exact derivation the backtest holdout slices
-    with, so 4h reads 21 days and 1d reads 42 and both MOVE if the window ever does.
+    with, so 4h reads 30 days and 1d reads 60 and both MOVE if the window ever does.
+
+    **The 1d width is twice the rest for a reason that is not about 1d regimes.** Every
+    other timeframe's target is the `FACTORY_DEPTH_DAYS` calendar span and lands on 30 days;
+    1d alone is floored to `MIN_FACTORY_BARS` (2,000 bars = 2,000 days), a floor that exists
+    to buy the BACKTEST scorer enough trades. Carried onto a calendar gate it doubles how
+    long a 1d lineage must wait — docs/proposals/FORWARD_SLICE_WIDTH_ARTIFACT_V0.1.md.
     ``None`` for a timeframe the factory does not target: a width invented here would be
     a threshold minted outside the judge it claims to mirror.
     """
