@@ -1491,7 +1491,6 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     )
     if book_degraded:
         head += f" orderbook-degraded={','.join(book_degraded)}"
-    parts = [head]
     if cycles and all(c.get("degraded") for c in cycles):
         head += " all_degraded"
     parts = [head]

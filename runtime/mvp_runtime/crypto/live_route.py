@@ -443,7 +443,7 @@ def _run_gated_live_leg(
     try:
         raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
         spread_bps = summarize_book(raw_book)["spread_bps"]
-    except (ToolError, Exception):  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — fail-open: an unreadable book must not refuse the entry
         record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
 
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
