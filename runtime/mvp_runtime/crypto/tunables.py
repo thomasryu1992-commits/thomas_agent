@@ -198,8 +198,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
     Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
             "crypto/live_entry.py", OPERATOR,
-            "spread above 50 bps signals a liquidity event; entering wide eats the edge in slippage",
-            "the store's realized slippage distribution showing a different threshold"),
+            "a dislocation breaker, not a cost control: re-measured 2026-08-22 at ~15x the "
+            "widest spread this venue has shown (3.2 bps over 3,806 samples) and kept there, "
+            "because MAX_ENTRY_COST_R already owns entry economics",
+            "a symbol whose ordinary spread is a material fraction of 50 bps joining the "
+            "universe — per-symbol medians already span 0.015 to 1.42 bps"),
     Tunable("DI_THRESHOLD", distribution_gate.DI_THRESHOLD,
             "crypto/distribution_gate.py", OPERATOR,
             "mean |z| > 3 means current features average 3 stdev from their backtest distribution",

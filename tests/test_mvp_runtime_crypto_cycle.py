@@ -1348,10 +1348,29 @@ class TestPoolCycleIsStalled:
         summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
         assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
 
-    def test_one_healthy_context_prevents_stall(self):
+    def test_a_bare_majority_is_stalled(self):
+        """Thomas 2026-08-22 moved the rule from `all` to `majority`. Half counts."""
         from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
         summary = {"cycles": [{"degraded": True}, {"degraded": False}]}
-        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is False
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 majority_degraded") is True
+
+    def test_below_half_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] + [{"degraded": False}] * 2}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=3 majority_degraded") is False
+
+    def test_ten_of_eleven_dead_is_stalled(self):
+        """The case the `all` rule left silent, and the reason it was widened."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] * 10 + [{"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=11 majority_degraded") is True
+
+    def test_an_older_images_all_degraded_marker_still_arms_the_switch(self):
+        """A stall straddling a deploy: the previous fire was recorded by the image that only
+        wrote `all_degraded`, and must not silently restart the count."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
 
     def test_stalled_status_is_recognised(self):
         from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, pool_cycle_is_stalled
@@ -1364,8 +1383,10 @@ class TestPoolCycleIsStalled:
 
 
 class TestPoolCycleStatusLineAllDegraded:
-    """The ``all_degraded`` marker on the status line makes two consecutive
-    all-degraded fires detectable from ``last_status`` alone."""
+    """The markers on the status line are what make two consecutive degraded fires detectable
+    from ``last_status`` alone. ``majority_degraded`` is the one the predicate arms on;
+    ``all_degraded`` and ``degraded=N/M`` ride alongside so the operator can tell a total
+    outage from a bare majority, which the arming token deliberately cannot."""
 
     def test_all_degraded_marker_appears_when_every_context_degraded(self):
         from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
@@ -1398,6 +1419,38 @@ class TestPoolCycleStatusLineAllDegraded:
         }
         status = pool_cycle_status_line(summary)
         assert "all_degraded" not in status
+        # One of two IS a majority, so the arming token is present where `all_degraded` is not.
+        assert "majority_degraded" in status
+        assert "degraded=1/2" in status
+
+    def test_below_half_carries_the_count_but_not_the_arming_token(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+
+        def ctx(symbol, degraded):
+            return {"degraded": degraded, "symbol": symbol, "timeframe": "15m",
+                    "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                    "route_status": "no_strategies",
+                    "live_route_status": None, "reason_codes": []}
+
+        status = pool_cycle_status_line({
+            "cycles": [ctx("BTCUSDT", True), ctx("ETHUSDT", False), ctx("SOLUSDT", False)],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=1/3" in status
+        assert "majority_degraded" not in status
+        assert "all_degraded" not in status
+
+    def test_a_healthy_fire_carries_no_degraded_token_at_all(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        status = pool_cycle_status_line({
+            "cycles": [{"degraded": False, "symbol": "BTCUSDT", "timeframe": "15m",
+                        "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                        "route_status": "matched",
+                        "live_route_status": None, "reason_codes": []}],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=" not in status
+        assert "majority_degraded" not in status
 
 
 # ---------------------------------------------------------------------------
@@ -1411,9 +1464,9 @@ class TestStallDetectionWiring:
     ``schedule.last_status``. A status line that lost its marker between two fires would leave
     the dead-man switch permanently silent, and every predicate test above would still pass.
 
-    Measured on the live schedule while writing these: 961 terminal fires over ten days, and
-    the marker appears in **zero** of them — production has never exercised this path, so a
-    test is the only thing standing behind it.
+    Measured on the live schedule while writing these: across 909 terminal fires over nine days
+    no context degraded even once, so `any`, `majority` and `all` would each have fired exactly
+    zero times. Production has never exercised this path — a test is the only thing behind it.
     """
 
     T0 = "2026-07-16T09:00:00Z"
@@ -1501,16 +1554,28 @@ class TestStallDetectionWiring:
         env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: degraded)
         assert self._fire(env, self.T3)["fired"] == 1, "degraded after healthy is the FIRST again"
 
-    def test_one_healthy_context_keeps_the_pool_out_of_the_stall(self, env):
-        """The live pool runs eleven contexts and ``all()`` is the rule, so this is the cost the
-        rule accepts: ten dead contexts and one alive never trip the switch. Pinned so the gap is
-        a decision on the record rather than a surprise during an outage."""
+    def test_ten_of_eleven_contexts_dead_now_stalls(self, env):
+        """The live pool runs eleven contexts. Under the original ``all()`` rule this exact
+        shape stayed silent indefinitely; Thomas widened it to a majority on 2026-08-22."""
         mixed = {"cycles": [self._record(f"S{i}") for i in range(10)]
                            + [self._record("ALIVE", degraded=False)],
                  "skipped": [], "contexts": 11}
         env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: mixed)
+        assert self._fire(env, self.T1)["fired"] == 1, "the first one still stays quiet"
+        assert "degraded=10/11" in self._last_status(env), self._last_status(env)
+        assert self._fire(env, self.T2)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+    def test_a_minority_of_degraded_contexts_still_never_stalls(self, env):
+        """The other side of the new rule: below half is noise, however long it persists."""
+        minority = {"cycles": [self._record("DEAD")]
+                              + [self._record(f"S{i}", degraded=False) for i in range(10)],
+                    "skipped": [], "contexts": 11}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: minority)
         assert self._fire(env, self.T1)["fired"] == 1
-        assert self._fire(env, self.T2)["fired"] == 1, "partial degradation never stalls — by design"
+        assert self._fire(env, self.T2)["fired"] == 1
+        assert self._fire(env, self.T3)["fired"] == 1
+        assert "degraded=1/11" in self._last_status(env)
 
     def test_single_symbol_override_stalls_on_two_degraded_fires(self, env, tmp_path):
         """The ``SYMBOL TIMEFRAME`` override runs a different branch with a different prefix rule
