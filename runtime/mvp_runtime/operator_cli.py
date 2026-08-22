@@ -36,6 +36,7 @@ from .frontdesk import select_frontdesk_provider
 from .operator import (
     OperatorChannel,
     OperatorIdentity,
+    announce_pending_approvals,
     load_operator_registration,
     run_operator_once,
     select_operator_channel,
@@ -242,6 +243,20 @@ def main(
                 sys.stderr.write(f"  handled trace={reply.trace_id} status={reply.status}\n")
             batch += 1
             _beat()
+            # Deliver any switch-door approval ask nobody has seen. After the batch, so an
+            # `/approve` waiting in this poll is handled before the ask it answers could be
+            # re-sent. Best-effort like `_beat` and the startup reconcile: the announcement is
+            # a courtesy on top of the loop's job, and losing it must not take down the one
+            # service that also READS `/approve` — being unable to deliver an ask is bad, but
+            # a dead control channel means Thomas cannot stop anything either.
+            try:
+                announced = announce_pending_approvals(
+                    channel, approval_store, now=timeutil.utc_now_iso(), repo_root=repo_root,
+                )
+                for approval_id in announced:
+                    sys.stderr.write(f"OPERATOR: announced approval {approval_id}\n")
+            except MvpRuntimeError as exc:
+                sys.stderr.write(f"OPERATOR: pending asks not announced ({exc.reason_code})\n")
             if args.sleep_seconds > 0 and (args.max_batches == 0 or batch < args.max_batches):
                 sleep(args.sleep_seconds)
     except KeyboardInterrupt:
