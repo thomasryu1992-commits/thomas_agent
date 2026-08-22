@@ -113,6 +113,25 @@ LIQUIDATION_REFUSED = "LIVE_ENTRY_STOP_BEYOND_LIQUIDATION"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
 
+# A dislocation breaker, NOT a cost control — kept at 50 deliberately, Thomas 2026-08-22, after
+# the number was measured and found to be ~15x the widest spread this venue has shown.
+#
+# The measurement (3,806 book samples over the six-symbol universe) is what makes the choice a
+# decision rather than an oversight: per-symbol medians run 0.015 bps (BTCUSDT) to 1.42 bps
+# (DOGEUSDT) — a hundredfold spread — while each symbol's own max sits only 1.5-3.3x above its
+# median, and the widest reading anywhere was 3.2 bps. So no absolute limit between 5 and 50
+# would have refused a single entry, and the reason to prefer the loose end is that **entry
+# economics are already owned elsewhere**: `MAX_ENTRY_COST_R` prices the friction against the R
+# being risked and refuses on that basis. A second, tighter cost door here would be a competing
+# authority over one question, which is the failure this package warns about everywhere else.
+#
+# What is left for this door is the case the cost model cannot see: a book so wide that the
+# quote is not a market. At 50 bps every symbol above is 15x-3000x its own normal, so a reading
+# that trips this is a liquidity event on any of them.
+#
+# Reopens when: a symbol whose ordinary spread is a material fraction of 50 bps joins the
+# universe — the hundredfold span above is the warning that one could — or realized slippage on
+# live entries shows the cost door letting through fills this would have caught.
 MAX_ENTRY_SPREAD_BPS = 50.0
 
 # Which venue price the protective orders trigger on. MARK_PRICE rather than the last

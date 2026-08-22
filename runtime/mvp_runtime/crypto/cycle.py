@@ -1491,7 +1491,16 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     )
     if book_degraded:
         head += f" orderbook-degraded={','.join(book_degraded)}"
-    if cycles and all(c.get("degraded") for c in cycles):
+    # The marker `pool_cycle_is_stalled` reads back off `last_status` on the next fire, so its
+    # threshold and the predicate's are the same number by construction. `degraded=N/M` rides
+    # alongside for the operator: "6/11" and "11/11" are different incidents and the token that
+    # arms the switch cannot say which.
+    cycle_degraded = sum(1 for c in cycles if c.get("degraded"))
+    if cycle_degraded:
+        head += f" degraded={cycle_degraded}/{len(cycles)}"
+    if cycles and 2 * cycle_degraded >= len(cycles):
+        head += " majority_degraded"
+    if cycles and cycle_degraded == len(cycles):
         head += " all_degraded"
     parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
@@ -1517,12 +1526,31 @@ def cycle_is_stalled(record: Mapping[str, Any], previous_status: str | None) -> 
 
 
 def pool_cycle_is_stalled(summary: Mapping[str, Any], previous_status: str | None) -> bool:
-    """Whether every context in this pool fire degraded after a previous all-degraded fire."""
+    """Whether a MAJORITY of this pool fire's contexts degraded, twice in a row.
+
+    **Majority rather than the original `all`**, Thomas 2026-08-22. `all` over the eleven
+    contexts the pool runs meant ten dead feeds and one alive stayed silent indefinitely; the
+    argument for tightening is that the cost of doing so is only alert noise, and the evidence
+    says there is none to spend: across 909 terminal fires over nine days **no context degraded
+    even once**, so `any`, `majority` and `all` would each have fired exactly zero times. Half
+    is the point where "the pool is not working" beats "one venue feed is flaky".
+
+    What this does NOT do is stop trading, and that asymmetry is why widening it is cheap:
+    `run_pool_cycle` has already run and its records are already on the ledger by the time this
+    is consulted (see `scheduler._execute`). Raising only re-labels the fire `failed` and puts
+    it on the operator's alert — the next fire runs the full cycle exactly as before.
+    """
     cycles = summary.get("cycles") or []
-    if not cycles or not all(c.get("degraded") for c in cycles):
+    if not cycles:
+        return False
+    if 2 * sum(1 for c in cycles if c.get("degraded")) < len(cycles):
         return False
     previous = str(previous_status or "")
-    return "all_degraded" in previous or PIPELINE_STALLED in previous
+    # `all_degraded` is accepted alongside `majority_degraded` for one reason only: a fire
+    # recorded by the deployed-but-older image writes the former and this one reads the latter,
+    # so the pair keeps a stall that straddles a deploy from silently restarting its count.
+    return ("majority_degraded" in previous or "all_degraded" in previous
+            or PIPELINE_STALLED in previous)
 
 
 __all__ = [
