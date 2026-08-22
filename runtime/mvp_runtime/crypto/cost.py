@@ -125,7 +125,7 @@ DEFAULT_SLIPPAGE_BPS = 3.0
 # slippage (the pre-split identity). The factory stamps the field on every new mint. A literal rather than
 # `= DEFAULT_SLIPPAGE_BPS`, so the tunables sweep can see it; the divergence (and its
 # direction) is pinned by `test_the_split_is_a_seam_not_a_repricing`.
-DEFAULT_STOP_SLIPPAGE_BPS = 12.0
+DEFAULT_STOP_SLIPPAGE_BPS = 1.4
 
 # The maker rate, for the one leg that can earn it: the take-profit exit.
 #

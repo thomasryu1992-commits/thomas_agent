@@ -110,13 +110,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("DEFAULT_SLIPPAGE_BPS", cost.DEFAULT_SLIPPAGE_BPS, "crypto/cost.py", INHERITED,
             "carried from the source system unmeasured; a canary is one order, not a sample",
             "enough live fills to measure realized slippage against intended price"),
-    Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", OPERATOR,
-            "Thomas's 2026-08-11 interim: the mean of the only two measured stop fills (23.5, "
-            "0.0 bps) — the seam's first re-pricing, taken ahead of the sample because that "
-            "sample sits behind the 34-69-week forward-confirmation clock and the error runs "
-            "fail-closed",
-            "the sample `live_pnl.stop_slippage_observations` (or the stop-slippage probe, "
-            "docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md) reaching a size worth averaging"),
+    Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", MEASURED,
+            "measured 2026-08-21 via the stop-slippage probe (n=10, median 1.07 bps, "
+            "upper quartile 1.60 bps; Thomas chose 1.4 as the round figure)",
+            "a material change in venue microstructure or a larger sample contradicting "
+            "the current estimate"),
     Tunable("DEFAULT_FUNDING_BPS_PER_INTERVAL", cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
             "crypto/cost.py", VENUE,
             "Binance USD-M's base rate; a FALLBACK only — real history is charged when present",
@@ -193,9 +191,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "fraction of usable equity per trade; can only ever make an order smaller than the caps",
             "the same evidence that would move `guards.RISK_PER_TRADE`"),
     Tunable("MAX_CONSECUTIVE_BRACKET_FAILURES", live_order.MAX_CONSECUTIVE_BRACKET_FAILURES,
-            "crypto/live_order.py", MEASURED,
-            "the incident's own number: two refusals in a row is the path broken, not a venue moment",
-            "a bracket failure mode that is not the confirm race #460 fixed"),
+            "crypto/live_order.py", OPERATOR,
+            "2 was the first incident's own number; Thomas raised it to 5 on 2026-08-19 after the "
+            "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
+            "before its own error_detail could be read",
+            "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
     Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
             "crypto/live_entry.py", OPERATOR,
             "spread above 50 bps signals a liquidity event; entering wide eats the edge in slippage",

@@ -109,12 +109,26 @@ LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"
 BRACKET_BREAKER_FILENAME = "live_bracket_failures.json"
 LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
 
-# Two consecutive failures, and the number is the incident's own. The first protective bracket
-# this runtime ever placed was refused; so was the second, on the next signal seventeen minutes
-# later. One rejection can be the venue having a moment. Two in a row is the path being broken,
-# and every repetition is an entry that fills and is closed again immediately — a round trip in
-# fees for no exposure, repeating as fast as the daily order budget refills.
-MAX_CONSECUTIVE_BRACKET_FAILURES = 2
+# Five consecutive failures. **2 until 2026-08-19**, and that number was the first incident's own:
+# the first protective bracket this runtime ever placed was refused, so was the second on the next
+# signal seventeen minutes later. One rejection can be the venue having a moment; two in a row is
+# the path being broken, and every repetition is an entry that fills and is closed again
+# immediately — a round trip in fees for no exposure, repeating as fast as the daily order budget
+# refills. That reasoning is unchanged and is why a limit exists at all.
+#
+# What moved the number is the SECOND failure mode, which is precisely what the tunables record
+# named as the thing that would move it: the `-1111` tick-residue rejection measured
+# 2026-08-18T14:28:52Z and fixed the next day. That one is deterministic rather than intermittent —
+# arithmetic refused 40% of BTCUSDT stops, on no venue condition at all — so a limit of 2 spent the
+# entire budget of attempts before an operator could read the first `error_detail`, and latched the
+# door on a cause the breaker record already held in full.
+#
+# 5 is a Thomas decision (2026-08-19), not a measurement. It buys room for an intermittent venue
+# fault to clear itself, and it costs up to five naked round trips before the door shuts — ~0.03
+# USDT each at current sizing, so the price of the change is fees, not exposure. Nothing else about
+# the breaker relaxes: the streak still resets only on a bracket that actually RESTS, it still does
+# not expire, and it still takes a written operator reason to clear.
+MAX_CONSECUTIVE_BRACKET_FAILURES = 5
 
 _TRUTHY = frozenset({"1", "true", "yes", "y", "on", "enabled"})
 
