@@ -100,6 +100,46 @@ def test_price_tick_rounding_both_directions():
     assert ls.round_price_to_tick(60000.07, 0.0) == 0.0
 
 
+def _decimals(value: float) -> int:
+    text = repr(float(value))
+    assert "e" not in text and "E" not in text, f"scientific notation reaches the venue as-is: {text}"
+    return len(text.split(".")[1]) if "." in text else 0
+
+
+@pytest.mark.parametrize("increment", [0.1, 0.01, 0.001, 1.0])
+def test_rounded_values_serialise_inside_the_increment_s_precision(increment):
+    """What the venue reads is the REPR, and `pytest.approx` is blind to it.
+
+    Measured on the live account 2026-08-18T14:28:52Z. `round(n * tick, 12)` — the old ending of
+    both helpers — left `640001 * 0.1` as `64000.100000000006`; `urlencode` sent that repr, and
+    the venue refused the BTCUSDT `STOP_MARKET` leg with **-1111 Precision is over the maximum
+    defined for this asset**. The entry had already filled, so `live_leg` rule 2 closed the
+    position naked and the bracket-failure breaker moved to 1 of 2.
+
+    Every assertion above this one uses `pytest.approx`, which is why the defect lived: the wrong
+    value equals the right one to within any tolerance anyone would write. Only the text differs,
+    so the text is what this pins.
+
+    The sweep runs ABOVE `1e-12 * 2**52` (~4.5e3) on purpose — that magnitude is where the
+    residue climbs inside the twelfth decimal. Below it the old code passed, which is exactly why
+    ETHUSDT and SOLUSDT never showed the fault and BTCUSDT always could.
+    """
+    allowed = _decimals(increment)
+    for n in range(45_000, 45_400):
+        value = n * increment
+        assert _decimals(ls.floor_to_step(value, increment)) <= allowed
+        for mode in ("up", "down"):
+            assert _decimals(ls.round_price_to_tick(value, increment, mode=mode)) <= allowed
+
+
+def test_the_btcusdt_stop_that_was_refused_now_serialises():
+    """The exact shape of the 2026-08-18 rejection, pinned as itself."""
+    assert repr(ls.round_price_to_tick(64000.13, 0.1, mode="down")) == "64000.1"
+    assert repr(ls.round_price_to_tick(64847.94, 0.1, mode="down")) == "64847.9"
+    # Rounding DIRECTION is unchanged by the fix — a stop must not drift past what was planned.
+    assert ls.round_price_to_tick(64000.13, 0.1, mode="up") == pytest.approx(64000.2)
+
+
 # --- refuse rather than default -----------------------------------------------
 
 @pytest.mark.parametrize("kwargs,reason", [

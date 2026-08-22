@@ -35,22 +35,19 @@ NOW = "2026-08-10T15:00:00Z"
 
 
 def test_the_split_is_a_seam_not_a_repricing():
-    """The seam re-priced on 2026-08-11 — Thomas's interim re-decision, ahead of the sample
-    the original comment waited for, because that sample sits behind the 34-to-69-week
-    forward-confirmation clock. Pinned: the stop leg is STRICTLY dearer than the general
-    rate (the fail-closed direction — the two measured fills read 23.5 and 0.0 bps against
-    the inherited 3.0, and 12.0 is their mean), and the next re-pricing cites
-    `stop_slippage_observations` or the stop-slippage probe."""
-    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == 12.0
-    assert cost.DEFAULT_STOP_SLIPPAGE_BPS > cost.DEFAULT_SLIPPAGE_BPS
+    """Re-priced 2026-08-21 from 12.0 to 1.4 bps after the stop-slippage probe reached
+    n=10 (median 1.07, upper quartile 1.60; Thomas chose 1.4 as the round figure).
+    Pinned: cheaper than the general slippage rate — stops fill near their trigger."""
+    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == 1.4
+    assert cost.DEFAULT_STOP_SLIPPAGE_BPS < cost.DEFAULT_SLIPPAGE_BPS
 
 
-def test_a_stop_exit_prices_dearer_than_a_market_exit_at_the_default_rates():
-    """The inverse of the pre-2026-08-11 pin: the interim rate makes the stop leg pay more
-    than a time exit on the same move — never less."""
+def test_a_stop_exit_prices_cheaper_than_a_market_exit_at_the_measured_rates():
+    """Post-probe: the measured stop rate (1.4 bps) is below the general rate (3.0 bps),
+    so a stop exit loses less to slippage than a time exit on the same move."""
     stop = apply_cost_model("LONG", 100.0, 97.0, 3.0, close_reason="stop_loss")
     market = apply_cost_model("LONG", 100.0, 97.0, 3.0, close_reason="time_exit")
-    assert stop.net_r < market.net_r
+    assert stop.net_r > market.net_r
 
 
 def test_a_raised_stop_rate_reprices_only_the_stop_exit():

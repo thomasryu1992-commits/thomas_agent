@@ -4,8 +4,9 @@
     python -m scripts.clear_bracket_breaker --cleared-by thomas \
         --reason "venue returned -2021 order-would-immediately-trigger; stop distance fixed in #NNN"
 
-The breaker counts live entries that filled and could not be protected. Two in a row and it
-refuses new entries — see ``live_order.MAX_CONSECUTIVE_BRACKET_FAILURES`` for why two, and
+The breaker counts live entries that filled and could not be protected. Enough in a row and it
+refuses new entries — see ``live_order.MAX_CONSECUTIVE_BRACKET_FAILURES`` for the count and what
+has moved it, and
 ``live_entry.plan_live_entry`` for the door it closes. It does not expire, and the daily order
 budget's midnight refill does not touch it, so this script is the only way back apart from a
 protective bracket actually resting at the venue.

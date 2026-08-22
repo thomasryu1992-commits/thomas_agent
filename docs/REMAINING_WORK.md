@@ -1087,6 +1087,58 @@ The pattern is now specific enough to design against: **a module that writes sta
 leg owns, read by a door the autonomous leg cannot reach, is a counter that counts nothing.** Both
 #246 and #247 are exactly that, and neither had a test because both halves worked.
 
+### Three live closes on 2026-08-18 came from the Binance mobile app, not from this runtime — recorded 2026-08-18
+
+`venue_external_close` is defined in `crypto/live_leg.py` as the close this runtime did not send and
+no bracket leg performed. Three rows carry it on 2026-08-18, and the venue names their origin: each
+one is a `reduceOnly` `MARKET` order whose `clientOrderId` carries Binance's **`ios_`** prefix — the
+marker for an order placed by hand from the mobile app.
+
+| position | strategy | opened | venue close | detected | close order | entry → exit | realized |
+|---|---|---|---|---|---|---|---|
+| `live_position_a73ca2db540ec074991a` | S005-GEN-833 (`cand_3b14f39ffeb1f246ce7b`) | 2026-08-17T23:59:11Z | **02:54:47Z** | 04:44:12Z | `ios_r0kk5Z07by52itCR0vX1` | 64521.0 → 64090.1 | +1.2927 USDT |
+| `live_position_72764f6ca0d6063bef1e` | `PROBE-probe_batch_bbca200a67aae9570a36` | 03:23:25Z | **04:30:19Z** | 04:44:12Z | `ios_aZLlW33qFedZgYX2qlVe` | 75.37 → 75.69 | +0.0224 USDT |
+| `live_position_a5c59aacb777bcebb801` | `PROBE-probe_batch_bbca200a67aae9570a36` | 06:32:37Z | **07:12:49Z** | 07:14:13Z | `ios_UUfL5f4VrL4jLMzGWkh7` | 75.94 → 76.09 | +0.0105 USDT |
+
+**All three closes are Thomas's own, stated 2026-08-18.** This record is that statement, because the
+outcome row cannot carry it: no tool writes an operator's reason onto a close.
+`scripts/record_unreported_live_order.py` is narrow to a canary order's missing audit append and
+refuses a general operator-note verb by construction, so §C is where it goes. What the ledger does
+get right on its own is the exclusion — `venue_external_close` is deliberately kept out of the names
+that feed a strategy's R statistics, so the +1.2927 does not credit S005-GEN-833 for a human's exit.
+
+**Nothing here is unexplained venue behaviour.** The two probe closes were first reported as not
+made by hand and then confirmed as Thomas's own within the same session; the venue's `ios_` marker
+is the whole account of all three. The batch's poor sample yield on 2026-08-18 therefore has one
+cause, and it is not the probe: a hand close ends the position before its stop can be touched, and a
+stop that is never touched is the one thing this instrument cannot measure. Neither probe cost the
+batch a cell — `resolve_open_cell` returns any non-`stop_loss` close to `EMPTY` — so what they cost
+is the fire, not the sample slot.
+
+**Read `closed_at_utc` as the detection pass, not the fill.** The gap ran 14 minutes on the probes
+and **1h49m** on BTCUSDT. Same reading the 2026-08-06 pair above already required, now with the
+venue's own `time` beside it to size the lag.
+
+#### The position-mode switch this sits inside — and it has not taken effect
+
+Thomas set the account to hedge (양방향) mode by hand at the venue. **It did not apply.** Read back
+read-only from `GET /fapi/v1/positionSide/dual`, 2026-08-18:
+
+    {"dualSidePosition": false}
+
+The venue refuses a position-mode change while any position or open order exists, and BTCUSDT has
+held a position plus two resting bracket legs continuously since 04:59:11Z. Consistent with that,
+every entry in the window — the 04:59 BTCUSDT strategy entry, the 06:32 SOLUSDT probe — was accepted
+without a `positionSide` parameter, which hedge mode rejects as `-4061`.
+
+**If it ever does take, this runtime breaks.** `positionSide` and `dualSidePosition` appear nowhere
+in the codebase; every order is built for one-way mode. `tunables.py` already names the exposure:
+`MAX_LIVE_POSITIONS_PER_SYMBOL` is classified `VENUE` on the stated ground *"the venue nets per
+symbol in one-way mode, so a second book cannot exist"*, with *"hedge mode, which would make this a
+choice rather than a fact"* as what would reopen it. The per-symbol position store
+(`live_positions/<SYMBOL>.json`, one book per symbol) rests on the same assumption. Hedge mode is
+therefore a code change, not a venue setting — and until it is one, the setting must stay off.
+
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.

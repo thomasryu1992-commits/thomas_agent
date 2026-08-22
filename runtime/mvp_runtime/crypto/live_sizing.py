@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Mapping
 
 from ..coerce import as_float as _f
@@ -90,6 +91,31 @@ class SymbolFilters:
         return self.step_size > 0 and self.min_qty > 0 and self.min_notional > 0
 
 
+def _exact_multiple(count: int, increment: float) -> float:
+    """``count * increment`` without the binary-float residue.
+
+    The residue is why this is not a plain multiply. ``count * increment`` carries an error of
+    roughly ``value * 2**-52``, and ``round(..., 12)`` — what both callers below used to end on —
+    erases it only while that error stays under the twelfth decimal. Above ``1e-12 * 2**52``,
+    about 4.5e3, it does not: ``640001 * 0.1`` is ``64000.100000000006``, which survives the
+    round, reaches ``urlencode`` as its own repr, and is refused by the venue as **-1111
+    Precision is over the maximum defined for this asset**.
+
+    Measured on the live account 2026-08-18T14:28:52Z: a BTCUSDT ``STOP_MARKET`` leg rejected on
+    exactly this, the entry already filled, and `live_leg` rule 2 closing the naked position —
+    40% of BTCUSDT prices at the tick the venue publishes for it hit the residue.
+
+    **The threshold is a property of the magnitude, not of the symbol.** Every BTCUSDT price is
+    above it, no ETHUSDT or SOLUSDT price is at today's levels, and an ETHUSDT above ~4,096 would
+    be. So this is not a BTCUSDT special case and must not be narrowed into one.
+
+    ``Decimal(str(increment))`` is the exact decimal the venue's filter names — ``Decimal(0.1)``
+    would re-import the very error being removed — and ``float()`` of the exact product is the
+    nearest double, whose repr is the shortest round-tripping form, which is what the venue reads.
+    """
+    return float(Decimal(count) * Decimal(str(increment)))
+
+
 def floor_to_step(value: float, step: float) -> float:
     """Round DOWN to the venue's increment. Down, never nearest: rounding up could push a
     size past the per-order cap the budget registered, turning a sizing helper into a way
@@ -101,7 +127,7 @@ def floor_to_step(value: float, step: float) -> float:
     if step <= 0 or value <= 0:
         return 0.0
     steps = math.floor(round(value / step, 9))
-    return round(steps * step, 12)
+    return _exact_multiple(steps, step)
 
 
 def round_price_to_tick(price: float, tick: float, *, mode: str = "down") -> float:
@@ -113,7 +139,7 @@ def round_price_to_tick(price: float, tick: float, *, mode: str = "down") -> flo
         return 0.0
     ticks = price / tick
     n = math.floor(round(ticks, 9)) if mode == "down" else math.ceil(round(ticks, 9))
-    return round(n * tick, 12)
+    return _exact_multiple(n, tick)
 
 
 def _refusal(reasons: list[str], **detail: Any) -> dict[str, Any]:

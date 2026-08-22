@@ -315,16 +315,15 @@ def test_cheaper_evidence_ranks_below_dearer_evidence_whatever_its_score():
 
 # --- the stop axis (Thomas 2026-08-11: a cheaper stop rate reads as OPTIMISTIC) ---------------
 
-def test_a_record_scored_before_the_stop_split_is_optimistic_now():
-    """Thomas's direction, in one assertion: the safest treatment of the pre-12bps store is
-    not a forced re-price but this rank — absent stop field -> judged on its own general
-    slippage (3.0 < 12.0) -> OPTIMISTIC -> refused at the door -> re-mint at the current
-    model. This is the taker 2.5 -> 5.0 precedent applied to the stop leg."""
+def test_a_record_scored_before_the_stop_split_is_conservative_now():
+    """After the 2026-08-21 repricing (12.0 -> 1.4 bps), a pre-split record without
+    stop_slippage_bps is judged on its own general slippage (3.0 > 1.4) -> CONSERVATIVE.
+    Before the repricing 3.0 < 12.0 made it OPTIMISTIC; the measured rate inverted it."""
     record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
                      slippage_bps=DEFAULT_SLIPPAGE_BPS,
                      funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
                      funding_source=FUNDING_SOURCE_VENUE)
-    assert cost_basis_rank(record) == COST_BASIS_RANK_OPTIMISTIC
+    assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
 
 
 def test_a_dearer_stop_rate_is_conservative_and_the_string_names_it():
