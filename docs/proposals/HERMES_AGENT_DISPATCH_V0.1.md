@@ -1,6 +1,29 @@
-# 제안: Hermes 에이전트 구동 문 — 어시스턴트가 무엇을 *시작*시킬 수 있는가 (DRAFT v0.1)
+# 제안: Hermes 에이전트 구동 문 — 어시스턴트가 무엇을 *시작*시킬 수 있는가 (v0.1)
 
-**상태:** DRAFT — 설계 선행(구현 아님). **§6 결정 확정**(모드 A, 캡 없음, $50 USD/일 알림,
+> **상태 (2026-08-22 갱신): 이 문서는 더 이상 DRAFT가 아니다 — 문은 지어졌고 라이브다.**
+> 헤더가 "설계 선행(구현 아님)"이라고 적혀 있는 동안 `thomas-dispatch-bridge`는 이미
+> 가동 중이었고 원장에 15건의 dispatch가 쌓여 있었다. 무엇이 지어졌고 무엇이 지어지지
+> 않았는지를 아래에 갈라 적는다.
+>
+> | 이 문서가 요구한 것 | 결과 |
+> |---|---|
+> | 문 자체 — `dispatch.sock`, 자체 컨테이너 | **출시** — `runtime/mvp_runtime/dispatch_bridge.py`, `thomas-dispatch-bridge` |
+> | P3 상한 + 롤 allowlist (§4-1, §4-2) | **출시** — `_ALLOWED_KINDS` = analysis/research/translation/content, 닫힌 집합. crypto·trading kind는 목록에 없다 |
+> | 키 없음 (§2-5) | **출시** — 2026-08-10 자격증명 평면 분리 이후 실행과 Naver 자격증명은 `pipeline-worker`에 있고 이 문은 검증·전달만 한다 |
+> | 감사·귀속 (§2-4) | **출시** — actor `assistant_bridge`. 다만 2026-08-21까지 그 이름은 **Hermes를 식별하지 않았다**: 문이 gid만 검사해 호스트 셸의 호출도 같은 이름으로 기록됐고, 원장의 15건 중 11건이 호스트측 배포 검증이다. `MVP_BRIDGE_CLIENT_UID=10000`으로 피어 uid를 고정한 2026-08-21 이후에야 그 라벨이 구성상 참이 됐다 |
+> | **§6-6 거버넌스 위치** — `control_channel.assistant_dispatch` 블록, policy 1.3.0 | **미이행** — `GOVERNANCE_POLICY.yaml`은 `policy_version: 1.2.0`이고 `assistant_dispatch` 블록은 없다 |
+> | **§6-3 사용량 계측 + $50 USD/일 임계 알림** | **미이행** — 강제하는 코드가 런타임에 없다(`dispatch_usage`/`spend_alert` 참조 0건) |
+> | §7 정책 diff | **미적용** |
+>
+> **즉 능력은 배포됐고 그것을 기록·계측하기로 한 조문은 배포되지 않았다.** 이 비대칭 자체가
+> 기록되어야 할 사실이라 여기 적는다 — §12–16이 요구하는 "Expansion = 승인 + 버전드 거버넌스
+> 업데이트 + 감사" 중 세 번째만 성립하고 두 번째가 비어 있다.
+>
+> **본문(§0–§7)은 제안 원문 그대로 둔다.** 무엇을 제안했고 무엇이 그 모양대로 지어졌는지의
+> 대조가 이 문서에 남은 값이다. 따라서 본문의 미래시제는 현재 사실의 진술이 아니다.
+> 실행 사실은 `docs/ACTIVE_ARCHITECTURE.md`, 권한·효과는 `governance/GOVERNANCE_POLICY.yaml`.
+
+**상태(원문):** DRAFT — 설계 선행(구현 아님). **§6 결정 확정**(모드 A, 캡 없음, $50 USD/일 알림,
 allowlist, P3, 거버넌스 위치) + **§7 정책 diff 초안**. 남은 것: §12–16 정식 승인(PR #373).
 **근거:** 아키텍처 §12–16, `governance/GOVERNANCE_POLICY.yaml`(authority P0–P6, control_channel),
 `runtime/mvp_runtime/halt_bridge.py`·`read_bridge.py` 선례.

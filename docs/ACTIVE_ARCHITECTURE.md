@@ -149,6 +149,37 @@ Domain packages      crypto/ (C-series, incl. the gated live-order path)
 Domain packages are applications of the same chokepoints, not parallel runtimes: they build the same
 PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audit chain.
 
+### Who is on the other side of the four assistant doors
+
+Named here because until 2026-08-22 no document in this repository did, and two facts about that
+client change how the doors' guarantees should be read.
+
+The client is **Hermes**, a separate assistant deployed from `/root/hermes-trial` — its own
+repository, its own container, its own Telegram bot, none of it committed here. It reaches the four
+doors over the sockets under `.runtime_governance_state/bridge/`, which are bind-mounted into its
+container, and through MCP shims it owns.
+
+**The doors are not the only path from that container to this runtime.** Since 2026-07-31 the Hermes
+container also mounts the host Docker socket, which makes it equivalent to host root: it can `docker
+exec` into any container including `thomas-scheduler`, and read the live-order keys that the
+credential-plane separation keeps out of the door processes. It has been used — 37 times, all on
+2026-07-30 and 07-31, last at 07-31T07:29:58Z — including running `live_readiness` inside the trading
+container. The mount is retained by Thomas's decision (2026-08-22); what is recorded here is that the
+structural constraints the door modules enforce — P3 ceiling, closed kind set, no money path, `enable`
+only on a single-use grant — **do not constrain that path**, and no test in this repository can
+observe it, because the file that creates it lives in the other repository. The invariant is owned by
+a deployment checklist (`docs/DEPLOYMENT.md`), not by pytest, and that is a weaker guarantee than the
+door modules give. Say so rather than let a reader infer otherwise from the door tests.
+
+**Peer identity is checked, and was not always.** Each door authorises its peer by the uid the kernel
+records at `connect()` (`socket_door.authorize_peer`, `MVP_BRIDGE_CLIENT_UID`). Before 2026-08-21 that
+variable was unset on this deployment and the doors checked the gid alone, so every socket peer was
+recorded as actor `assistant_bridge` whether it was Hermes or a root shell on the host — 11 of the 15
+dispatches then in the ledger were host-side deploy checks wearing that name. The uid allowlist is now
+the Hermes gateway's uid and nothing else, which makes the attribution true by construction. uid 0 is
+deliberately excluded: `docker exec hermes` defaults to root, so uid 0 cannot tell the host operator
+apart from Hermes-as-root.
+
 A second domain package, `predmarket/` (PM-series, observe-only), stood beside `crypto/` until
 2026-08-02 and was removed — prediction-market trading is not a lane this project may operate under
 Korean domestic regulation. `docs/BUILD_HISTORY.md` records what it was and what the PM1 observation
