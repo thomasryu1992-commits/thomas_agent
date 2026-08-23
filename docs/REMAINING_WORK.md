@@ -2943,6 +2943,30 @@ then §F8's sensitivity stands on one stop fill, and the constant it re-prices s
 > §3d's own instruction ("do not count selection-adjusted passes on sixteen rows; wait for the
 > population") is now answerable and has not been answered.
 >
+> **And the one that passed cannot be promoted.** Measured 2026-08-23 when a rotation tried:
+> `cand_d83674b2dff471bde90e` (S001-GEN-833, the single CONFIRMED row) carries the cohort's
+> whole `symbol_scope`, so `assert_pool_within_size_cap` refuses it with
+> `POOL_CONTEXT_CAP_EXCEEDED`. This is **structural, not a scheduling accident**, and it is the
+> next thing F9 has to answer:
+>
+> * A cohort schedule mints on `BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT`, so **every one of
+>   the 144 pooled rows has a five-symbol scope** — 72 at 4h, 72 at 1d, no exceptions.
+> * `routable_context_map` occupies one context per symbol, so a pooled candidate needs **all
+>   five** at its timeframe. Today that means retiring **4 incumbents at 4h** (one of them
+>   `S005-GEN-833`, the pool's only ROBUST/CONFIRMED member) and **5 at 1d** (the whole tier).
+> * **Narrowing the scope to the free contexts has no evidence behind it.** The pooled evidence
+>   block carries `symbols_replayed: 5` — a count. There is no per-symbol breakdown, so an
+>   expectancy earned across five symbols says nothing about any one of them, and promoting it
+>   onto BNBUSDT alone would be trading on a number that was never measured there.
+>
+> So pooling and `MAX_ROUTABLE_PER_CONTEXT = 1` are in tension **by construction**: pooling earns
+> evidence by spreading across symbols, and the cap allocates by symbol. A pooled candidate is
+> promotable only into a tier that is empty or nearly so, which incremental rotation — replace
+> one dead slot — can never produce. The three shapes worth pricing, none costed yet:
+> per-symbol figures on the pooled block (makes narrowing legitimate), a cohort-sized routing
+> slot that the cap understands as one occupant, or accepting that pooled minting feeds whole-tier
+> replacements rather than rotations.
+>
 > **Which schedules are enabled is a per-machine fact this file cannot hold**, the same rule the
 > deployed image gets at the top: `schedules.jsonl` is gitignored, so there is no repo trace and
 > no amount of reading this file answers it. On the Docker host at the 08-10 timestamp the five
