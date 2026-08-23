@@ -1403,17 +1403,30 @@ absence is compliance.
       stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
       agent cannot hold the three. See `BUILD_HISTORY.md`.
 
-- [ ] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
-      awaiting a Thomas decision.** `control.ControlState` has one global dimension, so the switch
-      door's `enable` has exactly one effect: `CMD_RESUME`, which restores the analysis path and
-      the live order path together. The assistant's only key to a halted runtime is therefore the
-      **RED** `runtime.trading.enable` approval — correctly labelled, and used for doors it was
-      not minted for. The design, the evidence it rests on (only two consumers of
-      `execution_allowed` gate trading; exits are already ungated by construction) and the five
-      decisions it needs are in
+- [x] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
+      built 2026-08-06, exercised 2026-08-22. D1, D3 and D4 are still Thomas's to confirm.**
+      `control.ControlState` had one global dimension, so the switch door's `enable` had exactly
+      one effect: `CMD_RESUME`, restoring the analysis path and the live order path together. The
+      assistant's only key to a halted runtime was therefore the **RED** `runtime.trading.enable`
+      approval — correctly labelled, and used for doors it was not minted for. The design, the
+      evidence it rests on (only two consumers of `execution_allowed` gate trading; exits are
+      already ungated by construction) and the decisions it needs are in
       [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
-      **Nothing is implemented, and nothing should be until D1–D5 are answered** — it adds a
-      dimension to the one kill switch this runtime has, on a machine that trades live.
+
+      **This entry said "Nothing is implemented, and nothing should be until D1–D5 are answered"
+      until 2026-08-22, by which point it had been implemented for sixteen days.** The design
+      record's own header has read `**Status:** IMPLEMENTED` since it was built, on the
+      *recommended* answers to D1/D3/D4 — so the two documents contradicted each other and the
+      roadmap was the wrong one. `switch_bridge.SCOPE_RUNTIME` and `_TARGET_PREFIX_ARMS` carry the
+      split, `resume_arms=False` reaches `control.apply_command`, and the assistant reaches it
+      through the `resume_runtime_only` tool. What is genuinely outstanding is narrower than "all
+      of it": **D1, D3 and D4 are unconfirmed**, each one branch point, priced in that record.
+
+      First real use: the quarterly drill on 2026-08-22 (`approval_3680ef714b828ace466e`,
+      `runtime_resume:crypto`, consumed 05:37:25Z), which is also the first time the door's
+      `enable` chain completed end to end in production at all. See
+      [`RUNBOOK_APPROVAL_PATH_DRILL.md`](RUNBOOK_APPROVAL_PATH_DRILL.md).
+
       Not the same thing as PR #535's `DOMAIN_EFFECT_MISMATCH` tripwire, which covers the
       *domain* axis of that same state and is already handled.
 
