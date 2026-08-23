@@ -185,8 +185,17 @@ def apply_work(
     providers: dict[str, Any] | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
+    independent_validation: bool | str = False,
+    revise: bool = False,
 ) -> dict[str, Any]:
     """Re-validate one forwarded dispatch and run it, or raise a typed ``ControlBlocked``.
+
+    ``independent_validation`` and ``revise`` are the two assurance policies the operator loop
+    has always been able to set and this one could not. Every task the dispatch door has ever
+    forwarded — fifteen on record, including every blog draft — ran with `AUTOMATIC` checks
+    only, because `run_task`'s defaults are False and nothing here passed anything else. They
+    default to False HERE too: turning either on is a deployment decision (a flag on the
+    service's command), not a code change, and both cost model calls per task.
 
     The reply shape is the dispatch contract the assistant has always seen — the door relays
     it unchanged. A raise here reaches the door as a typed envelope without a ``task_id``,
@@ -283,6 +292,8 @@ def apply_work(
         text.strip(),
         request_kind=kind,
         keyword_seeds=naver_keywords,
+        independent_validation=independent_validation,
+        revise=revise,
         provider=resolved.get("provider"),
         validator_provider=resolved.get("validator_provider"),
         search_tool=resolved.get("search_tool"),
@@ -515,6 +526,8 @@ def open_door(
     working_memory: WorkingMemoryStore | None = None,
     programization: ProgramizationStore | None = None,
     resolve_providers: ProviderSelector | None = None,
+    independent_validation: bool | str = False,
+    revise: bool = False,
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and run forwarded work from it — refusing to listen at all unless
     the deployment states who may connect.
@@ -554,6 +567,8 @@ def open_door(
             working_memory=working_memory,
             programization=programization,
             providers=providers,
+            independent_validation=independent_validation,
+            revise=revise,
         )
 
     return socket_door.SocketDoor(

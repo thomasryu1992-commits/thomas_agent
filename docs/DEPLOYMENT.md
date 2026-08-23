@@ -382,6 +382,50 @@ ever changes, removing the **mount** is what closes it: the container's `stage2-
 the group on every boot by inspecting the socket, so removing `group_add` alone leaves the path
 open. That correction is recorded in the Hermes-side compose header.
 
+## Assurance policies that ship OFF
+
+Two policies cost a model call per task, so both default off and turning either on is a line on
+a service's compose `command` — a deploy with a diff, not a behaviour that arrives with a
+rebuild.
+
+| flag | service | what it adds |
+|---|---|---|
+| `--independent-validation [always\|auto]` | `operator`, `pipeline-worker` | R7's second reviewer; the stricter verdict decides delivery |
+| `--revise` | `operator`, `pipeline-worker` | M3's single bounded regeneration on a REVISE verdict (hard cap 1) |
+
+**`pipeline-worker` had neither until 2026-08-23**, which is why every task the dispatch door
+forwarded — fifteen on record, including every blog draft — ran with AUTOMATIC checks only. The
+validator provider is already in that container's environment (`MVP_VALIDATOR_PROVIDER`), so
+turning it on is the compose line and nothing else.
+
+`--revise` has never run in any deployed path. Seven REVISE verdicts are on record and all
+seven ended `FINAL_BLOCKED`, waiting for the operator to ask again.
+
+## Register the memory prune schedule
+
+The kind, the lane, the store wiring, the pruner and its audit event all exist; the schedule row
+does not, so expired memory candidates are filtered at read time and never removed. 315 of them
+are on disk.
+
+```bash
+docker exec thomas-scheduler-maint python -m runtime.mvp_runtime.scheduler_cli \
+    add --kind memory_prune --interval-seconds 86400
+```
+
+Module form and inside the container, per CLAUDE.md — a root run on the host leaves files the
+service cannot rewrite. No restart: the tick loop picks the row up within 30s.
+
+**Decide before registering.** Pruning permanently deletes expired candidates, and an expired
+candidate is still promotable today — `promote_candidate` checks status, not expiry. If the
+315-candidate backlog is worth a review pass, do that first; the prune is not reversible.
+
+## Sending feedback on a completed run
+
+`/feedback good|bad <note>` on the control channel binds to the last delivered run. `bad` with a
+note also mints a correction candidate. Deployed since R-E1 and used **zero** times — the
+mechanism is not the gap, the habit is. Nothing else in the runtime records that an answer was
+wrong, so a run nobody comments on is a run the system will repeat.
+
 ## Health, logs, shutdown
 
 - **Healthcheck** (compose): each service's own **heartbeat**
