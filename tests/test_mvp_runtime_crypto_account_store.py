@@ -36,7 +36,14 @@ def _record(**over):
         "wallet_balance": 1234.5678, "margin_balance": 1230.0,
         "available_balance": 1100.25, "unrealized_pnl": -4.5678,
         "open_position_count": 3,
-        "realized_windows": {"1d": 2.5, "7d": -11.0, "30d": None},
+        # The venue's real shape: a breakdown per window, not a number. The first deployment
+        # of this board rendered these raw and put a Python dict in front of the operator.
+        "realized_windows": {
+            "today": {"commission": 0.0, "funding": 0.0, "net": 0.0, "realized": 0.0},
+            "1d": {"commission": -0.5, "funding": -0.02, "net": 2.5, "realized": 3.02},
+            "7d": {"commission": -1.48, "funding": -0.017, "net": -11.0, "realized": -9.5},
+            "30d": None,
+        },
         "collected_at": "2026-08-23T11:58:00Z", "as_of": "2026-08-23T11:58:00Z",
         "written_at": "2026-08-23T11:58:01Z", "warnings": [],
     }
@@ -154,10 +161,22 @@ def test_the_board_never_claims_there_are_no_positions(tmp_path):
 def test_a_withheld_income_window_is_not_rendered_as_zero(tmp_path):
     """`account` renders "n/a (income history withheld)" when the venue's income page filled.
     A bare 0.00 there asserts "no loss today" to the very breaker that measures the day."""
-    _store(tmp_path, _record(realized_windows={"1d": None, "7d": -11.0}))
+    _store(tmp_path, _record())
     text = account_store.load_funds_board(now=NOW, root=tmp_path)
-    assert "realized 1d: n/a (income history withheld)" in text
-    assert "realized 7d: -11.0 USDT" in text
+    assert "n/a (income history withheld)" in text          # the 30d window
+
+
+def test_a_realized_window_renders_its_net_and_not_its_mapping(tmp_path):
+    """Each window is `{commission, funding, net, realized}`. `net` is the figure that answers
+    the question — gross minus the fees and funding actually charged — and rendering the
+    mapping raw, which the first deployment did, buries it behind a Python dict."""
+    _store(tmp_path, _record())
+    text = account_store.load_funds_board(now=NOW, root=tmp_path)
+    assert "{" not in text and "'commission'" not in text
+    assert "realized 1d    : 2.5 USDT net" in text
+    assert "gross 3.02" in text
+    assert "realized 7d    : -11.0 USDT net" in text
+    assert "realized today" in text          # the venue's fourth window rides along
 
 
 def test_warnings_ride_along(tmp_path):

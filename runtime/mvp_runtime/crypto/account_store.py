@@ -225,13 +225,27 @@ def render_funds_text(body: Mapping[str, Any], *, now: str) -> str:
     windows = body.get("realized_windows")
     if isinstance(windows, Mapping) and windows:
         lines.append("")
+        # Each window is a breakdown, not a number — `{commission, funding, net, realized}` —
+        # and `net` is the one to read: gross realized minus the fees and funding that were
+        # actually charged. Rendering the mapping raw (which this did on its first deployment,
+        # 2026-08-23) puts a Python dict in front of an operator and buries the figure that
+        # answers the question. `today` rides along beside the day/week/month windows.
         for key in sorted(windows, key=str):
             value = windows[key]
-            # `account` renders "n/a (income history withheld)" when a window is absent because
-            # the venue's income page filled; a bare 0.00 there would assert "no loss today" to
-            # the very breaker that measures the day. Keep the absence visible.
-            lines.append(f"realized {key}: "
-                         f"{'n/a (income history withheld)' if value is None else value} {asset}")
+            if value is None:
+                # `account` withholds a window when the venue's income page filled. A bare 0.00
+                # there would assert "no loss today" to the very breaker that measures the day.
+                lines.append(f"realized {key:<6}: n/a (income history withheld)")
+                continue
+            if isinstance(value, Mapping):
+                net = value.get("net")
+                gross = value.get("realized")
+                fees = (value.get("commission") or 0.0) + (value.get("funding") or 0.0)
+                lines.append(
+                    f"realized {key:<6}: {_fmt(net)} {asset} net"
+                    f"  (gross {_fmt(gross)}, fees/funding {round(fees, 8)})")
+                continue
+            lines.append(f"realized {key:<6}: {_fmt(value)} {asset}")
     count = body.get("open_position_count")
     lines += [
         "",
