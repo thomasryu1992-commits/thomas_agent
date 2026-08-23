@@ -1501,13 +1501,18 @@ class TestStallDetectionWiring:
         store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900,
                                  created_by="op", now=self.T0))
         return {"store": store, "cycle_mod": cycle_mod, "monkeypatch": monkeypatch,
-                "ledger": LedgerStore(tmp_path / "ledger"), "control": ControlStore(tmp_path)}
+                "ledger": LedgerStore(tmp_path / "ledger"), "control": ControlStore(tmp_path),
+                "root": tmp_path}
 
     @staticmethod
     def _fire(env, now, notifier=None):
+        # An explicit root, not None. The crypto branch refreshes the account snapshot on
+        # its way past, and `root=None` resolves to the REPO's own state directory — which
+        # on the live server is the volume the running containers own. This test is about
+        # the status line; it has no business writing there.
         from runtime.mvp_runtime.scheduler import run_due
         return run_due(env["store"], now=now, ledger=env["ledger"],
-                       control_store=env["control"], repo_root=None, notifier=notifier)
+                       control_store=env["control"], repo_root=env["root"], notifier=notifier)
 
     @staticmethod
     def _last_status(env):

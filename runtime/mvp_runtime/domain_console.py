@@ -132,11 +132,25 @@ def _crypto_paper(*, now: str, root: Path | None) -> str:
 
 
 
+def _crypto_funds(*, now: str, root: Path | None) -> str:
+    """Current balance, from the snapshot the scheduler wrote. Opens no socket.
+
+    The console never asks the venue — `test_the_board_is_never_asked_for_the_account` pins
+    that, and this verb keeps it: the lane holding the credentials writes a snapshot on its own
+    cadence and this renders the file. Minutes old rather than live, and the board says how
+    many.
+    """
+    from .crypto import account_store
+
+    return account_store.load_funds_board(now=now, root=root)
+
+
 _SUBCOMMANDS: dict[str, dict[str, Callable[..., str]]] = {
     CRYPTO_COMMAND: {
         "status": _crypto_status,
         "readiness": _crypto_readiness,
         "paper": _crypto_paper,
+        "funds": _crypto_funds,
     },
 }
 
