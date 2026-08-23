@@ -310,3 +310,130 @@ def test_the_numbers_moving_under_an_unchanged_door_stay_quiet(tmp_path):
     _pool(tmp_path, "S_A")
     breaker_watch.run_breaker_watch(tmp_path, now=NOW)
     _seed(tmp_path, _outcome(0.5), _outcome(0.4))
+
+
+# --- the gap between announcements -------------------------------------------
+#
+# The blind spot is structural, not a bug in the comparison: this watch is an edge trigger that
+# compares now against the last state it ANNOUNCED, and it fires hourly. A breaker that trips
+# and releases inside one hour shows the same verdict at both ends. On 2026-08-21 the daily
+# limit breached at 03:59:13Z, the limits record went unusable at 04:14:00Z and a new record
+# cleared it at 04:29:00Z; the 03:58 and 04:58 fires both read NORMAL and both stayed quiet.
+
+import json as _json  # noqa: E402
+
+from runtime.mvp_runtime.crypto import breaker_watch as _bw  # noqa: E402
+
+
+def _cycle(at, status="ALLOW", problems=(), limits_id="risklimits_aaaa"):
+    return {"kind": "crypto_cycle", "trace_id": at, "record": {
+        "created_at": at, "verdict_status": status, "verdict_problems": list(problems),
+        "risk_limits": {"limits_id": limits_id}}}
+
+
+def _ledger(tmp_path, rows):
+    path = tmp_path / ".runtime_governance_state" / "runtime_ledger" / "records.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return path
+
+
+# Deliberately not `NOW`: this file already has one at module scope, and rebinding it here
+# would silently retime every test above — which is exactly what the first draft of this block
+# did, and five of them failed on the shadowed value rather than on anything they test.
+GAP_NOW = "2026-08-21T04:58:00Z"
+GAP_LAST_SPOKE = "2026-08-19T08:58:56Z"
+
+
+def test_the_watch_names_the_transitions_its_hourly_fire_missed(tmp_path):
+    """The 2026-08-21 episode, to shape. Both ends NORMAL, a shut door in the middle."""
+    _ledger(tmp_path, [
+        _cycle("2026-08-21T03:58:43Z"),
+        _cycle("2026-08-21T03:59:13Z", "NO_NEW_POSITION", ["daily_loss_limit_breached"]),
+        _cycle("2026-08-21T04:29:00Z"),
+    ])
+    missed, coverage = _bw.transitions_since(tmp_path, since=GAP_LAST_SPOKE, now=GAP_NOW)
+    assert coverage["read"] is True
+    assert [m["to_status"] for m in missed] == ["NO_NEW_POSITION", "ALLOW"]
+    assert missed[0]["to_problems"] == ["daily_loss_limit_breached"]
+
+
+def test_a_limits_record_swap_is_a_transition_of_its_own(tmp_path):
+    """Three of this year's breaker releases were the bar moving, not the streak recovering. A
+    list that showed only the verdict would report the release with no cause."""
+    _ledger(tmp_path, [
+        _cycle("2026-08-21T03:58:00Z", limits_id="risklimits_16426bf1"),
+        _cycle("2026-08-21T04:29:00Z", limits_id="risklimits_b794afbb"),
+    ])
+    missed, _ = _bw.transitions_since(tmp_path, since=GAP_LAST_SPOKE, now=GAP_NOW)
+    assert any(m.get("limits_swapped_to") == "risklimits_b794afbb" for m in missed)
+
+
+def test_a_quiet_gap_produces_nothing(tmp_path):
+    """The normal case, and it must stay the normal case — an empty list here is what keeps
+    this from becoming the trade feed the module's docstring argues against."""
+    _ledger(tmp_path, [_cycle("2026-08-21T03:58:00Z"), _cycle("2026-08-21T04:29:00Z")])
+    missed, coverage = _bw.transitions_since(tmp_path, since=GAP_LAST_SPOKE, now=GAP_NOW)
+    assert missed == []
+    assert coverage["rows"] == 2
+
+
+def test_a_first_fire_does_not_replay_history(tmp_path):
+    """With no mark the watch already announces unconditionally. Replaying a week into that
+    first message is the burst this module spends four paragraphs arguing against."""
+    _ledger(tmp_path, [
+        _cycle("2026-08-21T03:59:13Z", "NO_NEW_POSITION", ["daily_loss_limit_breached"]),
+        _cycle("2026-08-21T04:29:00Z"),
+    ])
+    missed, coverage = _bw.transitions_since(tmp_path, since=None, now=GAP_NOW)
+    assert missed == []
+    assert coverage["read"] is False
+
+
+def test_a_window_older_than_the_reach_says_so_instead_of_reading_empty(tmp_path):
+    """"Nothing found" and "nothing happened" are different, and `ledger_rotate` makes the
+    first one common: a month-old mark points past what the active file still holds."""
+    _ledger(tmp_path, [_cycle("2026-08-21T04:29:00Z")])
+    _missed, coverage = _bw.transitions_since(
+        tmp_path, since="2026-06-01T00:00:00Z", now=GAP_NOW)
+    assert coverage["truncated"] is True
+
+
+def test_an_unreadable_ledger_is_not_reported_as_a_quiet_gap(tmp_path):
+    _missed, coverage = _bw.transitions_since(tmp_path, since=GAP_LAST_SPOKE, now=GAP_NOW)
+    assert coverage["read"] is False        # no file at all
+    assert coverage["since"] == GAP_LAST_SPOKE
+
+
+def test_a_missed_transition_is_the_one_new_reason_to_speak():
+    """And it is not a number. `has_changed` still ignores every R on the state, which is what
+    keeps the two silence tests above green."""
+    base = {"allow_new_position": True, "problems": [], "live_entry_open": True}
+    assert _bw.has_changed(base, dict(base)) is False
+    assert _bw.has_changed(dict(base, weekly_pnl_r=-9.9), dict(base)) is False
+    assert _bw.has_changed(
+        dict(base, missed_transitions=[{"at": "x", "to_status": "NO_NEW_POSITION"}]),
+        dict(base)) is True
+
+
+def test_the_status_line_carries_the_numbers_on_every_fire():
+    """The scheduler's `fired` event stores this string, so writing the numbers here gives the
+    breakers an hourly time series with no new store. On 2026-08-21 the weekly figure jumped
+    from 43R to 441R between two fires and neither line recorded either number."""
+    line = _bw.status_line({"changed": False, "state": {
+        "status": "NORMAL", "daily_pnl_r": 0.0, "weekly_pnl_r": 441.08,
+        "consecutive_losses": 3, "drawdown_r": -2.15, "judged_rows": 15,
+        "limits": {"max_consecutive_losses": 10, "drawdown_limit_r": 10.0,
+                   "limits_id": "risklimits_b794afbb"}}})
+    assert "weekly=441.08" in line
+    assert "streak=3/10" in line
+    assert "dd=-2.15/10.0" in line
+    assert "limits=risklimits_b794afbb" in line
+
+
+def test_the_guard_owns_the_problem_vocabulary():
+    """A watch that re-spelled these would drift silently the first time a fifth was added."""
+    from runtime.mvp_runtime.crypto import guards as _guards
+
+    assert "daily_loss_limit_breached" in _guards.RISK_GUARD_PROBLEMS
+    assert _guards.RISK_LIMITS_UNUSABLE_PROBLEM in _guards.RISK_GUARD_PROBLEMS

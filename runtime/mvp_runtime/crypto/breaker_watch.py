@@ -1,5 +1,15 @@
 """The C4 breaker's transition watch — speak when the verdict CHANGES, not on a timer.
 
+**Updated 2026-08-23.** The edge trigger below is unchanged and still ignores the numbers, but
+it had a blind spot that follows from being an edge trigger fired on a schedule: a verdict that
+moves and moves back BETWEEN two fires shows the same state at both ends, so the whole episode
+was invisible on this channel. On 2026-08-21 the daily limit breached at 03:59:13Z, the limits
+record went unusable at 04:14:00Z and a new record cleared it at 04:29:00Z — the 03:58 and
+04:58 fires both read NORMAL and both stayed quiet, correctly by the rule and uselessly for the
+operator. `transitions_since` reads the cycle ledger for the gap since the last ANNOUNCEMENT
+(the mark advances only when something is said), and a gap that contains a transition is now
+the one non-numeric reason to speak that did not exist before.
+
 `crypto_report` already renders the dashboard daily, and the breaker's current state is one
 line in it. That answers *"is it blocked right now?"* for anyone who reads that morning's
 message. It does not answer *"when did it release?"*, which is the question an operator
@@ -46,10 +56,12 @@ from __future__ import annotations
 
 import collections
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
-from .. import timeutil
+from .. import paths, timeutil
+from ..store import LEDGER_REL, RECORDS_FILE
 from ..errors import ToolError
 from ..filelock import locked
 from . import guards, pool
@@ -99,7 +111,134 @@ def write_mark(state: Mapping[str, Any], *, root: Path | None = None) -> Path:
     return path
 
 
-def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
+# How far back a fire will look for transitions it did not report. The mark advances only when
+# something is ANNOUNCED, so a quiet month leaves a month-wide gap — and `ledger_rotate` will
+# have moved most of it to an archive this reader does not open. Seven days is the honest reach:
+# past it the answer would be "nothing found", which is not the same as "nothing happened" and
+# must not be reported as though it were. `transition_coverage` says which one it is.
+TRANSITION_WINDOW_SECONDS = 7 * 24 * 60 * 60
+
+# One line per row is the memory bound, as in `dashboard._read_cycle_records`: the live ledger
+# is tens of megabytes and this runs on a 3.8GB host beside the trading loop.
+_CYCLE_HINT = '"crypto_cycle"'
+
+
+def _verdict_key(record: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """The part of a stored cycle this watch would have announced: allow, and why not."""
+    problems = record.get("verdict_problems") or []
+    return (
+        str(record.get("verdict_status") or ""),
+        tuple(sorted(str(p) for p in problems)),
+    )
+
+
+def transitions_since(
+    root: Path | None, *, since: str | None, now: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Verdict transitions recorded in the cycle ledger since the last ANNOUNCEMENT.
+
+    This is the blind spot the watch had, and it is structural rather than accidental. The
+    watch is an edge trigger comparing now against the last state it *announced*, and it fires
+    hourly. A breaker that trips and releases between two fires shows the same verdict at both
+    ends, so the episode leaves no trace on this channel at all — on 2026-08-21 the daily limit
+    breached at 03:59:13Z, the limits record went unusable at 04:14:00Z, and a new record
+    cleared it at 04:29:00Z, entirely inside one hour. The 03:58 and 04:58 fires both read
+    NORMAL and both stayed quiet, which was correct by the rule and useless to the operator.
+
+    The cycle ledger already holds every verdict the runtime actually acted on, so the gap is
+    readable after the fact. Reading it does not change what the watch decides — the numbers
+    still do not trigger, which is the property `has_changed` exists to hold — it changes what
+    the announcement CONTAINS when one happens, and adds the one new reason to announce:
+    something changed while nobody was looking.
+
+    Returns ``(transitions, coverage)``. Coverage is not decoration: a window this reader
+    cannot cover must not read as an empty one.
+    """
+    coverage: dict[str, Any] = {"read": False, "rows": 0, "since": since,
+                                "oldest_seen": None, "truncated": False}
+    if not since:
+        # No mark: `run_breaker_watch` already announces unconditionally on a first fire, and
+        # a fresh deployment replaying a week of history into that first message is the burst
+        # this module's docstring spends four paragraphs arguing against.
+        return [], coverage
+    try:
+        floor = max(
+            timeutil.parse_iso(since),
+            timeutil.parse_iso(now) - timedelta(seconds=TRANSITION_WINDOW_SECONDS),
+        )
+        coverage["truncated"] = (
+            timeutil.parse_iso(now) - timeutil.parse_iso(since)
+        ).total_seconds() > TRANSITION_WINDOW_SECONDS
+    except (ValueError, TypeError):
+        return [], coverage
+
+    # The ledger's own constants, not a path spelled again here: a second spelling is how a
+    # reader ends up looking in the directory the writer stopped using.
+    path = (root if root is not None else paths.repo_root()) / LEDGER_REL / RECORDS_FILE
+    if not path.is_file():
+        return [], coverage
+
+    rows: list[dict[str, Any]] = []
+    oldest: str | None = None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if _CYCLE_HINT not in line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except ValueError:
+                    continue  # a torn row is not this reader's business
+                if parsed.get("kind") != "crypto_cycle":
+                    continue
+                record = parsed.get("record") or {}
+                stamp = str(record.get("created_at") or "")
+                if not stamp:
+                    continue
+                if oldest is None or stamp < oldest:
+                    oldest = stamp
+                try:
+                    if timeutil.parse_iso(stamp) < floor:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+                rows.append(record)
+    except OSError:
+        return [], coverage
+
+    coverage.update({"read": True, "rows": len(rows), "oldest_seen": oldest})
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+
+    transitions: list[dict[str, Any]] = []
+    previous: tuple[str, tuple[str, ...]] | None = None
+    previous_limits: str | None = None
+    for record in rows:
+        key = _verdict_key(record)
+        limits_id = str((record.get("risk_limits") or {}).get("limits_id") or "")
+        if previous is not None and key != previous:
+            transitions.append({
+                "at": str(record.get("created_at")),
+                "from_status": previous[0], "to_status": key[0],
+                "from_problems": list(previous[1]), "to_problems": list(key[1]),
+                "limits_id": limits_id or None,
+            })
+        # A limits record swap is its own event. It is how three of this year's breaker
+        # releases actually happened — not the streak recovering, but the bar moving — and a
+        # transition list that showed only the verdict would report the release with no cause.
+        if previous_limits is not None and limits_id and limits_id != previous_limits:
+            transitions.append({
+                "at": str(record.get("created_at")),
+                "limits_swapped_from": previous_limits, "limits_swapped_to": limits_id,
+            })
+        previous = key
+        if limits_id:
+            previous_limits = limits_id
+    return transitions, coverage
+
+
+def evaluate(
+    root: Path | None = None, *, now: str, since: str | None = None,
+) -> dict[str, Any]:
     """Today's breaker state, read the way the LIVE leg reads it.
 
     Deliberately the same composition as the RISK half of the guard step behind
@@ -143,6 +282,7 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
     # watch speaks for the breaker alone, which is the whole of the door it can still see.
     closed = [r for r in own if r.get("outcome_closed") is True]
     basis = collections.Counter(str(r.get("r_basis") or "unlabelled") for r in closed)
+    missed, coverage = transitions_since(root, since=since, now=now)
     return {
         "watch_version": WATCH_VERSION,
         "created_at_utc": now,
@@ -174,6 +314,10 @@ def evaluate(root: Path | None = None, *, now: str) -> dict[str, Any]:
         # and because this is where a second lock would compose back in if one is ever added.
         # A reader keying on the door should not have to know how many locks it has today.
         "live_entry_open": bool(verdict["allow_new_position"]),
+        # What happened between the last announcement and now. Empty on almost every fire, and
+        # empty is the answer this watch is designed to produce — see `transitions_since`.
+        "missed_transitions": missed,
+        "transition_coverage": coverage,
     }
 
 
@@ -195,6 +339,12 @@ def has_changed(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
         bool(current.get("allow_new_position")) != bool(previous.get("allow_new_position"))
         or sorted(current.get("problems") or []) != sorted(previous.get("problems") or [])
         or bool(current.get("live_entry_open")) != bool(previous.get("live_entry_open"))
+        # The one reason added 2026-08-23, and it is still not a number: a verdict that moved
+        # and moved back between two fires leaves both ends equal, so the three keys above all
+        # say "unchanged" about an hour in which the door shut and reopened. This asks the
+        # cycle ledger whether that happened rather than asking the current numbers, which is
+        # why `test_moving_numbers_alone_do_not_announce` stays green.
+        or bool(current.get("missed_transitions"))
     )
 
 
@@ -267,6 +417,33 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
             lines.append("  NOTE: mixed R bases - the gross rows understate their share of the loss")
     if current.get("live_outcomes_excluded"):
         lines.append("  NOTE: at least one live outcome had no honest R and was not counted")
+
+    # What happened while nobody was looking. Printed last because it is history and the block
+    # above is the present, and an operator reading a shut door wants the door first.
+    missed = current.get("missed_transitions") or []
+    if missed:
+        lines.append("")
+        lines.append(f"  MISSED between announcements ({len(missed)}) - this watch fires hourly "
+                     "and these")
+        lines.append("  moved and settled inside a gap, so both ends read the same:")
+        for item in missed:
+            if item.get("limits_swapped_to"):
+                lines.append(
+                    f"    {item.get('at')}  limits record swapped "
+                    f"{item.get('limits_swapped_from')} -> {item.get('limits_swapped_to')}")
+                continue
+            was = ",".join(item.get("from_problems") or []) or "none"
+            became = ",".join(item.get("to_problems") or []) or "none"
+            lines.append(f"    {item.get('at')}  {item.get('from_status')} [{was}]"
+                         f" -> {item.get('to_status')} [{became}]")
+    coverage = current.get("transition_coverage") or {}
+    if coverage.get("truncated"):
+        lines.append(f"  NOTE: only the last {TRANSITION_WINDOW_SECONDS // 86400} days of "
+                     "cycles were searched; anything older is not")
+        lines.append("        'nothing happened', it is 'not looked at'")
+    elif coverage.get("since") and not coverage.get("read"):
+        lines.append("  NOTE: the cycle ledger could not be read, so a transition in the gap "
+                     "would not appear here")
     return "\n".join(lines)
 
 
@@ -279,7 +456,9 @@ def run_breaker_watch(root: Path | None = None, *, now: str, persist: bool = Tru
     what a caller that failed to deliver should use so the next fire retries the announcement.
     """
     previous = read_mark(root)
-    state = evaluate(root, now=now)
+    # The mark's stamp is when this watch last SPOKE, not when it last ran — `write_mark` is
+    # called only on an announcement. That is exactly the window a missed transition hides in.
+    state = evaluate(root, now=now, since=(previous or {}).get("created_at_utc"))
     changed = has_changed(state, previous)
     if changed and persist:
         write_mark(state, root=root)
@@ -294,10 +473,24 @@ def run_breaker_watch(root: Path | None = None, *, now: str, persist: bool = Tru
 def status_line(result: Mapping[str, Any]) -> str:
     """One line for the scheduler's run record."""
     state = result.get("state") or {}
+    limits = state.get("limits") or {}
+    missed = state.get("missed_transitions") or []
+    # Every fire's numbers, on every fire — this string lands in the scheduler's `fired` event,
+    # so writing them here gives the breakers an hourly time series at no storage cost and with
+    # no new store. It is NOT a change to what announces: `has_changed` still ignores numbers,
+    # and this line is read after the fact by someone asking "when did that move?", which on
+    # 2026-08-21 could only be answered by re-deriving the guard from the ledger by hand.
+    numbers = (
+        f"daily={state.get('daily_pnl_r')} weekly={state.get('weekly_pnl_r')} "
+        f"streak={state.get('consecutive_losses')}/{limits.get('max_consecutive_losses')} "
+        f"dd={state.get('drawdown_r')}/{limits.get('drawdown_limit_r')} "
+        f"judged={state.get('judged_rows')} limits={limits.get('limits_id')}"
+    )
+    gap = f" missed={len(missed)}" if missed else ""
     if not result.get("changed"):
-        return f"breaker_unchanged status={state.get('status')} weekly={state.get('weekly_pnl_r')}"
+        return f"breaker_unchanged status={state.get('status')} {numbers}{gap}"
     return (
         f"breaker_changed status={state.get('status')} "
-        f"allow={state.get('allow_new_position')} weekly={state.get('weekly_pnl_r')} "
+        f"allow={state.get('allow_new_position')} {numbers}{gap} "
         f"problems={','.join(state.get('problems') or []) or 'none'}"
     )
