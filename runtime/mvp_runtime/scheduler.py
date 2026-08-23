@@ -1316,6 +1316,7 @@ def _execute(
         from .crypto import positioning_store
         from .crypto.factory import run_factory
         from .crypto.market_data import (
+            PeerCandleCache,
             collect_market_data,
             factory_candle_target,
             select_liquidation_feed,
@@ -1327,6 +1328,14 @@ def _execute(
         symbol = symbols[0]
         collector = select_market_data_collector(now=now, root=repo_root)
         liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+        # One cache for the fire, the same contract `run_pool_cycle` has always used: a pooled
+        # mint is a fan-out, and its two context legs read series that do not depend on which
+        # leg is asking. `attach_reference` reads the constant proxy once per leg — five asks
+        # for one answer on a five-symbol cohort — and `attach_cross_section` pages the same
+        # universe for every leg. Both at `factory_candle_target`, the deepest window this
+        # runtime reads, which is why it is worth caching here and not merely tidy. Built here
+        # and dropped when the fire ends, so no later fire can be served a stale bar.
+        candle_cache = PeerCandleCache(collector)
 
         def _mining_snapshot(for_symbol: str):
             """One fully-attached leg. Returns None when the venue is degraded for it."""
@@ -1345,6 +1354,7 @@ def _execute(
             crypto_cycle.attach_mining_legs(
                 built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
                 liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
+                candle_cache=candle_cache,
             )
             return built
 

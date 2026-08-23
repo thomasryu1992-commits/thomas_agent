@@ -344,6 +344,44 @@ A `KILLED` state blocks all new/pending execution; only `/status` and audit read
 only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 
+## The four assistant doors — check the boundary, no test can
+
+`read` / `switch` / `dispatch` / `knowledge` serve an assistant that lives in **another
+repository** (`/root/hermes-trial`). Two properties of that boundary are enforced by
+configuration rather than by code in this repo, so nothing here fails when they drift. Check them
+whenever either side is redeployed.
+
+**1. Each door admits one uid, and it is the assistant's gateway.**
+
+```bash
+for c in thomas-read-bridge thomas-switch-bridge thomas-dispatch-bridge thomas-knowledge-bridge; do
+  printf '%-26s ' "$c"; docker logs "$c" 2>&1 | grep -o 'uids=[^)]*' | tail -1
+done
+```
+
+Expect `uids=[10000]` on all four. `uids=unrestricted (group only)` means
+`MVP_BRIDGE_CLIENT_UID` is unset, and the doors are back to checking the gid alone — every peer,
+including a root shell on this host, is then recorded as actor `assistant_bridge` and the ledger
+cannot tell them apart. uid 0 is deliberately **not** in the allowlist: `docker exec hermes`
+defaults to root, so it cannot distinguish the host operator from the assistant's own container.
+Host-side checks go through the scheduler CLI (above), not through these doors — expect
+`PEER_NOT_PERMITTED` if you point a root shell at a door socket, and that is correct.
+
+**2. The assistant's container reaches this host by more than the doors.**
+
+```bash
+docker inspect hermes --format '{{json .HostConfig.Binds}} {{json .HostConfig.GroupAdd}}'
+```
+
+Since 2026-07-31 that container mounts `/var/run/docker.sock` and carries the host `docker`
+group, which makes it equivalent to host root — it can `docker exec` into `thomas-scheduler` and
+read the live-order keys the door processes are kept away from. **This is retained by Thomas's
+decision (2026-08-22), not an oversight**, and it is recorded here because the door modules'
+guarantees (P3 ceiling, closed kind set, no money path) do not apply to that path. If the intent
+ever changes, removing the **mount** is what closes it: the container's `stage2-hook.sh` re-adds
+the group on every boot by inspecting the socket, so removing `group_add` alone leaves the path
+open. That correction is recorded in the Hermes-side compose header.
+
 ## Health, logs, shutdown
 
 - **Healthcheck** (compose): each service's own **heartbeat**

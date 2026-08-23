@@ -3054,6 +3054,7 @@ def _prefix_frame(frame: "ReplayFrame", keep: int) -> "ReplayFrame | None":
     return ReplayFrame(
         rows=frame.rows[:keep], candles=frame.candles[:keep], funding=frame.funding[:keep],
         funding_source=frame.funding_source, split=split, cost=frame.cost,
+        symbol=frame.symbol,   # a prefix of one market is still that market
     )
 
 
@@ -3238,6 +3239,13 @@ class ReplayFrame:
     funding_source: str
     split: int
     cost: CostModel
+    # Which market this frame IS. Absent until 2026-08-23, and the omission is what made a
+    # pooled evidence block able to say `symbols_replayed: 5` and nothing about the five: the
+    # scored loop already replays one frame at a time, so the per-symbol figures were computed
+    # and then summed away with no way to label them on the way past. Optional because a frame
+    # built by a caller that predates the field still replays correctly — it just cannot
+    # contribute a labelled leg, which reads as an absent breakdown rather than a wrong one.
+    symbol: str | None = None
 
 
 def build_replay_frame(
@@ -3258,6 +3266,7 @@ def build_replay_frame(
     return ReplayFrame(
         rows=rows, candles=candles, funding=funding, funding_source=funding_source,
         split=holdout_split_index(len(rows)), cost=cost,
+        symbol=(str(snapshot.get("symbol")) if snapshot.get("symbol") else None),
     )
 
 
@@ -3352,6 +3361,7 @@ def backtest_spec_pooled(
     cooldown_entries = 0
     liquidation_entries = 0
     scored_bars: list[int] = []
+    per_symbol: dict[str, dict[str, Any]] = {}
     for frame in frames:
         split = frame.split
         part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown, part_liq = _replay(
@@ -3359,6 +3369,28 @@ def backtest_spec_pooled(
             cost=cost, funding=frame.funding[:split],
         )
         outcomes.extend(part)
+        # The leg, kept rather than summed away. `part` is exactly this symbol's scored trades
+        # and it is discarded on the next line, which is why a pooled block could report how
+        # MANY symbols it replayed and nothing about any of them. A pooled expectancy is an
+        # average across markets, so "the cohort earns +0.29R" and "each of the five earns
+        # about +0.29R" are different claims and only the second licenses trading one of them.
+        if frame.symbol:
+            leg = summarize_outcomes(part)
+            per_symbol[frame.symbol] = {
+                "closed_count": leg["closed_count"],
+                # **None, not 0.0, when the leg never traded.** `summarize_outcomes` returns
+                # 0.0 for an empty population and that is right for a total — a book with no
+                # trades has made no money. It is wrong for a leg being COMPARED against its
+                # siblings, which is this block's only purpose: at 0.0 "this symbol broke even"
+                # and "this symbol never entered" are the same number, and the second is the
+                # one that must stop a promotion. `closed_count` disambiguates them for a
+                # reader who checks it, and the whole reason this block exists is that someone
+                # will scan the expectancies. Same absent-means-unknown contract the block
+                # already keeps for a frame with no symbol.
+                "expectancy": leg["expectancy"] if leg["closed_count"] else None,
+                "total_r": round(sum(o["result_R"] for o in part), 8),
+                "win_count": leg["win_count"],
+            }
         total_fee_cost_r += part_fees
         total_maker_fee_cost_r += part_maker
         total_slippage_cost_r += part_slip
@@ -3575,6 +3607,17 @@ def backtest_spec_pooled(
         # How many legs are behind every figure above. Absent on evidence minted before pooling,
         # which is exactly what 1 means, so a reader needs no migration to interpret an old row.
         "symbols_replayed": len(frames),
+        # WHICH legs, and what each earned on its own — the breakdown `symbols_replayed` could
+        # only count. Added 2026-08-23 for §F9's blocked promotion: a pooled candidate carries
+        # the whole cohort's `symbol_scope`, so promoting it needs every one of those contexts,
+        # and narrowing it to the free ones had no evidence behind it while the block held a
+        # five-market average and nothing else. This is not a new measurement — the scored loop
+        # already replays one frame per symbol and these figures were being summed away.
+        #
+        # Empty when no frame carried a symbol (a caller predating `ReplayFrame.symbol`), which
+        # is the same absent-means-unknown contract as the line above: a reader that finds no
+        # breakdown learns the block cannot say, never that the legs agreed.
+        "per_symbol": per_symbol,
     }
 
 
@@ -3615,6 +3658,7 @@ def _train_frame(frame: ReplayFrame) -> ReplayFrame:
         rows=frame.rows[:split], candles=frame.candles[:split],
         funding=frame.funding[:split], funding_source=frame.funding_source,
         split=split, cost=frame.cost,
+        symbol=frame.symbol,   # truncating the holdout away does not change which market it is
     )
 
 

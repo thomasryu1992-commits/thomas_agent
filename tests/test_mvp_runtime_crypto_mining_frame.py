@@ -141,3 +141,88 @@ def test_an_unexpected_collector_exception_is_not_swallowed():
     snapshot, _ = _bare()
     with pytest.raises(RuntimeError):
         attach_mining_legs(snapshot, collector=_Broken(), timeframe="1h", now=NOW)
+
+
+# --- the cohort's context legs read one answer per series, not one per leg ------------------
+
+class TestPooledMintSharesOneCandleCache:
+    """A pooled mint is a fan-out even though it produces one candidate, and its two context
+    legs read series that do not depend on which leg is asking: `attach_reference` always reads
+    the constant proxy, and `attach_cross_section` reads the same cohort universe every time.
+    Before `candle_cache` reached `attach_mining_legs`, a five-symbol cohort asked for each of
+    those series once per leg — at `factory_candle_target`, the deepest window this runtime
+    reads. `run_pool_cycle` has threaded one `PeerCandleCache` through both legs since the
+    fan-out existed; the mining path simply had no parameter to accept one.
+
+    Counted rather than asserted by name: what matters is the number of venue reads, and a
+    check on the argument would survive the cache being threaded to nowhere.
+    """
+
+    class CountingCollector(MockMarketDataCollector):
+        """Every `collect` — the venue read itself, which is what a cache can remove. Counted
+        by (symbol, timeframe, limit) because that triple is the cache's own key."""
+
+        def __init__(self):
+            super().__init__()
+            self.calls: list[tuple] = []
+
+        def collect(self, symbol, timeframe, *, limit, timeout_seconds):
+            self.calls.append((symbol, timeframe, limit))
+            return super().collect(symbol, timeframe, limit=limit,
+                                   timeout_seconds=timeout_seconds)
+
+    COHORT = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT")
+
+    def _mint_cohort(self, *, cache):
+        from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+        collector = self.CountingCollector()
+        shared = PeerCandleCache(collector) if cache else None
+        for symbol in self.COHORT:
+            snapshot, _ = collect_market_data(symbol, "1h", collector=collector, now=NOW)
+            attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW,
+                               candle_cache=shared)
+        return collector.calls
+
+    def test_the_cache_removes_reads_the_cohort_would_otherwise_repeat(self):
+        without = self._mint_cohort(cache=False)
+        with_cache = self._mint_cohort(cache=True)
+        assert len(with_cache) < len(without), (
+            f"the cache saved nothing: {len(without)} -> {len(with_cache)}")
+        # The saving is the repeats, so what survives is the distinct series — never fewer.
+        assert len(with_cache) >= len(set(without))
+
+    def test_no_series_is_read_twice_when_the_cohort_shares_a_cache(self):
+        """The property that makes it a cache rather than a coincidence: within one fan-out,
+        what ETH's hourly candles were cannot depend on which leg asked."""
+        calls = self._mint_cohort(cache=True)
+        repeated = [key for key in set(calls) if calls.count(key) > 1]
+        # The frame's own read is the cohort member's own candles, fetched by
+        # `collect_market_data` outside the cache — one per leg, never repeated within a leg.
+        assert all(key[0] in self.COHORT for key in repeated), (
+            f"a context leg re-read a series inside one fire: {repeated}")
+
+    def test_without_a_cache_the_behaviour_is_exactly_what_it_was(self):
+        """Absent means the previous behaviour, so an existing caller cannot be changed by this."""
+        snapshot, collector = _bare("1h")
+        attach_mining_legs(snapshot, collector=collector, timeframe="1h", now=NOW)
+        supplied = _supplied(snapshot)
+        snapshot2, collector2 = _bare("1h")
+        attach_mining_legs(snapshot2, collector=collector2, timeframe="1h", now=NOW,
+                           candle_cache=None)
+        assert supplied == _supplied(snapshot2)
+
+    def test_a_cached_cohort_still_gets_every_column(self):
+        """The saving must not come out of the frame: caching a read cannot drop a leg."""
+        from runtime.mvp_runtime.crypto.market_data import PeerCandleCache
+
+        collector = self.CountingCollector()
+        shared = PeerCandleCache(collector)
+        uncached, _ = collect_market_data("ETHUSDT", "1h", collector=self.CountingCollector(),
+                                          now=NOW)
+        attach_mining_legs(uncached, collector=collector, timeframe="1h", now=NOW)
+
+        cached, _ = collect_market_data("ETHUSDT", "1h", collector=collector, now=NOW)
+        attach_mining_legs(cached, collector=collector, timeframe="1h", now=NOW,
+                           candle_cache=shared)
+        assert _supplied(cached) == _supplied(uncached)

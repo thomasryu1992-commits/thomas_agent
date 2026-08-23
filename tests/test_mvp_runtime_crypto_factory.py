@@ -951,6 +951,31 @@ def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0, funding=False):
     return snapshot
 
 
+def _weak_trend_snapshot(n=200, *, symbol="ETHUSDT"):
+    """`_trending_snapshot`'s shape with a shallower rise — same down-blocks, weaker up-blocks.
+
+    A genuinely DIFFERENT market, which `_shifted_snapshot` is not: that one scales the same
+    path, and ATR-relative exits are scale-invariant, so a scaled leg scores IDENTICALLY. Any
+    test about two legs disagreeing needs a market like this one. Measured against the base
+    fixture: 5 closes at +0.093R here, 15 at +0.834R there.
+
+    The rise stays positive on purpose. A market hostile enough that nothing enters (drift
+    flipping every bar; the whole trend inverted) compares nothing — the leg reports
+    `expectancy: None` and the test goes vacuous by a second route, which is the failure this
+    fixture exists to avoid rather than to swap for another one.
+    """
+    snapshot = dict(_trending_snapshot(n))
+    snapshot["symbol"] = symbol
+    candles, price = [], 100.0
+    for i, source in enumerate(snapshot["candles"]):
+        drift = 0.4 if (i // 20) % 3 != 2 else -1.5   # the base fixture's 1.0, weakened
+        price = max(10.0, price + drift)
+        candles.append({**source, "open": price - drift, "high": price + 1.5,
+                        "low": price - 1.5, "close": price})
+    snapshot["candles"] = candles
+    return snapshot
+
+
 def test_a_single_frame_pool_is_the_single_symbol_backtest():
     """`backtest_spec` delegates here, so the one-leg answer must not have moved."""
     spec = StrategySpec.from_dict(_spec_dict())
@@ -3694,3 +3719,111 @@ class TestLiquidationGuard:
         assert guard["assumed_leverage"] == 20
         assert guard["maintenance_margin_rate"] == 0.004
         assert guard["refused_entries"] >= 0
+
+
+# --- the pooled block says WHICH symbols, not just how many --------------------------------
+
+class TestPooledPerSymbolBreakdown:
+    """`symbols_replayed` counts the legs; `per_symbol` says what each one earned.
+
+    The distinction decides a promotion. A pooled candidate carries the whole cohort's
+    `symbol_scope`, so promoting it needs every one of those contexts — and §F9 recorded the
+    2026-08-23 refusal where narrowing it to the free ones had no evidence behind it, because
+    the block held a five-market average and nothing else. "The cohort earns +0.29R" and "each
+    of the five earns about +0.29R" are different claims, and only the second licenses trading
+    one of them.
+
+    Not a new measurement: the scored loop already replays one frame per symbol, and these
+    figures were computed and summed away on the next line.
+    """
+
+    def test_each_leg_is_named_and_its_own_trades_are_reported(self):
+        spec = StrategySpec.from_dict(_spec_dict())
+        first, second = _trending_snapshot(), _shifted_snapshot()
+        one, two = backtest_spec(spec, first), backtest_spec(spec, second)
+
+        pooled = factory.backtest_spec_pooled(spec, [first, second])
+        per = pooled["per_symbol"]
+        assert set(per) == {"BTCUSDT", "ETHUSDT"}
+        assert per["BTCUSDT"]["closed_count"] == one["closed_count"]
+        assert per["ETHUSDT"]["closed_count"] == two["closed_count"]
+        assert per["BTCUSDT"]["expectancy"] == pytest.approx(one["expectancy"])
+        assert per["ETHUSDT"]["expectancy"] == pytest.approx(two["expectancy"])
+
+    def test_the_legs_sum_to_the_pooled_figures(self):
+        """The breakdown must be the same trades seen differently, never a second population."""
+        spec = StrategySpec.from_dict(_spec_dict())
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _shifted_snapshot()])
+        per = pooled["per_symbol"]
+        assert sum(leg["closed_count"] for leg in per.values()) == pooled["closed_count"]
+        assert sum(leg["win_count"] for leg in per.values()) == pooled["win_count"]
+
+    def test_a_disagreeing_leg_is_visible_rather_than_averaged_away(self):
+        """The property that makes this worth recording. Two legs whose expectancies differ
+        must show that difference, or the block cannot answer the question §F9 blocked on.
+
+        **The comparison has to be worth making, and nothing here checked that it was.** The
+        first version paired `_trending_snapshot` with `_shifted_snapshot(scale=5.0)` and
+        asserted only `min <= pooled <= max`, which holds when all three numbers are equal. It
+        did in fact separate them — by 0.0408R, and not because of the scale (ATR-relative
+        exits are scale-invariant) but because that fixture defaults `funding=False`, so the
+        legs paid different carry. A spread that arrives by accident is one fixture default
+        away from vanishing, and the assertion would have gone quiet rather than red.
+
+        So the spread is asserted first, and the pairing is a strong trend against a weak one:
+        0.834R over 15 closes against 0.093R over 5. A fixture change that collapses that —
+        or a leg that stops trading, which compares nothing by a second route — fails here.
+        """
+        spec = StrategySpec.from_dict(_spec_dict())
+        # A strong trend against a weak one, both still trading — see `_weak_trend_snapshot`
+        # for why the weak one stays positive.
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _weak_trend_snapshot()])
+        legs = {name: leg["expectancy"] for name, leg in pooled["per_symbol"].items()}
+        assert len(legs) == 2
+        scored = [v for v in legs.values() if v is not None]
+        assert len(scored) == 2, f"a leg did not trade, so nothing is being compared: {legs}"
+        assert max(scored) - min(scored) > 0, (
+            f"the two markets scored alike, so this test proves nothing: {legs}")
+        # And the pooled average sits between them — which is exactly why the average alone
+        # cannot license trading either one.
+        assert min(scored) <= pooled["expectancy"] <= max(scored)
+
+    def test_a_leg_that_never_traded_says_so_rather_than_reading_break_even(self):
+        """`summarize_outcomes` returns 0.0 expectancy for an empty population, which is right
+        for a total and wrong for a leg being compared: at 0.0 "this symbol broke even" and
+        "this symbol never entered" are the same number, and the second is the one that must
+        stop a promotion."""
+        # A condition no bar in either fixture satisfies, so both legs replay and neither enters.
+        spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+            "operator": "AND",
+            "conditions": [{"feature": "rsi", "comparison": "<", "value": -1.0}],
+        }))
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _shifted_snapshot()])
+        assert set(pooled["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
+        for name, leg in pooled["per_symbol"].items():
+            assert leg["closed_count"] == 0, name
+            assert leg["expectancy"] is None, f"{name} reads break-even on zero trades"
+
+    def test_a_single_symbol_backtest_names_its_one_leg(self):
+        spec = StrategySpec.from_dict(_spec_dict())
+        snapshot = _trending_snapshot()
+        result = backtest_spec(spec, snapshot)
+        assert set(result["per_symbol"]) == {"BTCUSDT"}
+        assert result["per_symbol"]["BTCUSDT"]["closed_count"] == result["closed_count"]
+
+    def test_a_frame_with_no_symbol_reads_as_absent_never_as_agreement(self):
+        """A caller predating `ReplayFrame.symbol` still replays correctly; it just cannot
+        contribute a labelled leg. The reader must learn "cannot say", not "the legs agreed"."""
+        spec = StrategySpec.from_dict(_spec_dict())
+        frame = factory.build_replay_frame(_trending_snapshot())
+        anonymous = factory.ReplayFrame(
+            rows=frame.rows, candles=frame.candles, funding=frame.funding,
+            funding_source=frame.funding_source, split=frame.split, cost=frame.cost,
+        )
+        assert anonymous.symbol is None
+        pooled = factory.backtest_spec_pooled(spec, [], frames=[anonymous])
+        assert pooled["per_symbol"] == {}
+        assert pooled["closed_count"] > 0, "the replay itself must be unaffected"
