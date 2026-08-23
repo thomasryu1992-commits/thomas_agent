@@ -1520,3 +1520,78 @@ def test_the_risk_lane_never_touches_the_factory_spool(tmp_path):
     assert not meta_path.exists()
     failed = [e for e in _events(ledger) if e["action"] == "failed"]
     assert len(failed) == 1 and failed[0]["status"] == "failed:FACTORY_CHILD_ORPHANED"
+
+
+# --- the blog lane's weekly kind ---------------------------------------------
+#
+# `content_ideation` is the wiring the lane never had: every capability it uses shipped by
+# 2026-08-10 and `schedules.jsonl` has never held a content kind, so `content.general` has
+# executed once in the ledger's whole history. The kind is what makes it periodic.
+
+
+def test_content_ideation_is_a_maintenance_kind():
+    """It spends model allowance and venue quota, never money — a week that fires late costs
+    freshness. Putting it in RISK_KINDS would let a blog draft stand in front of a due crypto
+    cycle, which is the one thing the lane split exists to prevent."""
+    assert scheduler.KIND_CONTENT_IDEATION in scheduler.KINDS
+    assert scheduler.KIND_CONTENT_IDEATION in scheduler.MAINTENANCE_KINDS
+    assert scheduler.KIND_CONTENT_IDEATION not in scheduler.RISK_KINDS
+
+
+def test_a_content_ideation_schedule_requires_its_seed_keywords():
+    """The request column carries them, as `crypto_factory` carries a symbol list. Without
+    seeds the worker has nothing to research and the fire would burn a model call to say so."""
+    with pytest.raises(SchedulerBlocked) as exc:
+        scheduler.build_schedule(
+            kind=scheduler.KIND_CONTENT_IDEATION, request="  ", interval_seconds=604800,
+            created_by="thomas", now="2026-08-23T09:00:00Z")
+    assert exc.value.reason_code == "MISSING_REQUEST"
+
+    built = scheduler.build_schedule(
+        kind=scheduler.KIND_CONTENT_IDEATION, request="미리캔버스, 포스터제작",
+        interval_seconds=604800, created_by="thomas", now="2026-08-23T09:00:00Z")
+    assert built.request == "미리캔버스, 포스터제작"
+
+
+def test_the_ideation_deadline_clears_two_governed_runs():
+    """900s bounds a single-run delegation. This fire is research + content + an independent
+    validation, and a deadline that fired mid-package would pay for the research run and throw
+    its result away."""
+    assert scheduler.CONTENT_IDEATION_DEADLINE_SECONDS > scheduler.WORKER_DEADLINE_SECONDS
+
+
+def test_the_sheet_names_the_decision_and_the_verdict_without_repeating_the_draft():
+    """What an operator needs is which keyword won and whether the draft cleared the bar. The
+    body is in the package record; pasting 3,000 characters into a message buries both."""
+    sheet = scheduler.format_ideation_sheet({
+        "target_keyword": "미리캔버스 포스터",
+        "package_id": "bcp_0123456789abcdef0123",
+        "keyword_evidence": {"metrics": [{"keyword": "a"}, {"keyword": "b"}],
+                             "as_of": "2026-08-23T08:55:00Z", "total_competing_posts": 1020},
+        "score": {"critical_pass": True, "standards_version": "blog_draft_standards.2026-08-10",
+                  "measured": {"body_chars": 2100, "headings": 5, "images": 4}},
+        "scorecard_lines": [],
+        "written": False,
+        "filesystem_write": "not enabled on this deployment",
+    })
+    assert "미리캔버스 포스터" in sheet
+    assert "bcp_0123456789abcdef0123" in sheet
+    assert "2100 chars" in sheet
+    assert "PASS" in sheet
+    assert "no file written" in sheet
+
+
+def test_a_draft_that_missed_the_standards_is_reported_not_hidden():
+    """The package is recorded either way — a short draft an operator can lengthen beats a
+    fire that produced nothing. But the sheet has to say so, or the miss is invisible."""
+    sheet = scheduler.format_ideation_sheet({
+        "target_keyword": "포스터", "package_id": "bcp_0123456789abcdef0123",
+        "keyword_evidence": {"metrics": [], "as_of": "2026-08-23T08:55:00Z"},
+        "score": {"critical_pass": False, "standards_version": "v",
+                  "measured": {"body_chars": 990, "headings": 2, "images": 0}},
+        "scorecard_lines": [" * 본문 글자수   990   [1800~3500]  MISS ", "   문단  4  under"],
+        "written": False, "filesystem_write": "off",
+    })
+    assert "MISS" in sheet
+    assert "본문 글자수" in sheet
+    assert "recorded, not discarded" in sheet

@@ -99,6 +99,10 @@ _RECORD_KINDS = (
     "crypto_strategy_proposal",
     "crypto_data_review",
     "crypto_null_control",
+    # The blog content lane's package (Phase 2). A ledger row rather than a file: the workspace
+    # writer is behind `filesystem_write`, which is unset on this deployment, so the record IS
+    # the artefact until that opens.
+    "blog_content_package",
     "programization_observation", "programization_pattern",
 )
 
