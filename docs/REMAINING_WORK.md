@@ -4679,6 +4679,65 @@ I1 argues is not what is blocking.
 
 ---
 
+## J. Naver blog content lane — Phase 1 built, the cadence was not
+
+Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
+exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
+in a document whose job is "what is still to build". The lane's own proposal carried the
+checklist, and a proposal is not a backlog.
+
+What that cost is measurable: every capability the weekly loop needs shipped by 2026-08-10, and
+`content.general` has executed **once** in the ledger's entire history (2026-08-10T13:43Z).
+`schedules.jsonl` has never held a content kind. Nothing was blocked — nothing was wired.
+
+**Built**
+
+- [x] Naver research adapters (keyword volume, trend, blog competition) behind the
+      `network_access` env gate — Thomas 2026-08-09, exercised against the real API
+- [x] Keyword brief wired into the governed run (`keyword_seeds` -> `keyword_research` record,
+      audit chain joined)
+- [x] `blog_content_package.v0.1` closed schema
+- [x] `scripts/score_blog_draft.py` — Thomas's operating standards, 2026-08-10
+- [x] `content.general` role active and routable (2026-07-27)
+- [x] **the producer and the cadence** — `content_ideation` schedule kind, the worker job, the
+      package assembler and the standards check moved into the runtime (2026-08-23)
+
+**Not built**
+
+- [ ] the package as a **file**. `workspace.run_write` is behind `filesystem_write`, which is
+      unset on this deployment and not passed to `pipeline-worker`; the package is a ledger row
+      until that opens. §4b's two paste files (`POST.md` / `PASTE.txt`) do not exist yet.
+- [ ] Phase 4 — rank tracking feeding the next keyword choice. Its prerequisite does not exist:
+      **nothing can tell the runtime a post was published.** `BlogCompetitionTool` returns
+      counts and titles, not links, so the runtime cannot observe a publication, and the
+      package schema's `published_url` has no writer. The proposal calls this the loop's one
+      weak point and it still is.
+
+**Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
+schedule row is a state write, and no row means no fire.
+
+1. **Register the schedule?** `scheduler_cli add --kind content_ideation --request "<seeds>"
+   --interval-seconds 604800`, run inside `thomas-scheduler-maint`. Registering it starts a
+   weekly fire that spends two specialist calls plus a validation.
+2. **Open `filesystem_write` on the worker?** Needs `MVP_WORKSPACE_WRITER` passed and
+   `workspace/` mounted, and `tests/test_deployment_env_passthrough.py` currently pins that
+   variable as NOT deployed on the reasoning "the loop does not write artefacts" — a premise
+   this lane reverses, so the pin needs a recorded reason, not a quiet edit.
+3. **Adopt the automatic keyword rule as the default?** The code picks the most-searched
+   winnable unused keyword and records every exclusion with its reason; `target=<keyword>` in
+   the schedule's request overrides it for one week. Adopting the default is the decision;
+   the override is why it is not already one.
+4. **How does a publication URL get back in?** A container CLI writing a second
+   `blog_content_package` row for the same `package_id` with `publish_state: published` reuses
+   the schema as written; extending an assistant door to carry it does not. Phase 4 cannot
+   start before this.
+5. **The §12–16 MVP use-case expansion judgement has not been made.** The proposal's §6 leaves
+   it unchecked and no record of it exists here or in `BUILD_HISTORY.md`. A weekly cadence
+   makes the lane a standing specialist function, which is what §14 asks the question about.
+   Decision 1 should not be taken before this one is written down.
+
+---
+
 ## Per-machine setup that does NOT travel via git
 
 A fresh machine has the code but not the local runtime state (gitignored, per CLAUDE.md). To actually
