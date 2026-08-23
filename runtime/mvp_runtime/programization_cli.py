@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -113,6 +114,21 @@ def _load_review_input(path_str: str | None) -> dict:
     return loaded
 
 
+def _days_since(stamp: Any, now: str) -> int | None:
+    """Whole days between two ISO stamps, or None when either will not parse.
+
+    None rather than 0: "cannot tell how long" and "crossed today" are different facts about a
+    review nobody has done, and only one of them is reassuring.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        delta = timeutil.parse_iso(now) - timeutil.parse_iso(stamp)
+    except (ValueError, TypeError):
+        return None
+    return max(int(delta.total_seconds() // 86400), 0)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -130,17 +146,33 @@ def main(
     ledger = ledger if ledger is not None else LedgerStore.default()
     stamp = now or timeutil.utc_now_iso()
 
+
+
     try:
         if args.command == "status":
             patterns = store.latest_patterns()
             candidates = store.latest_candidates()
             if not patterns:
                 sys.stdout.write("no programization patterns\n")
-            for pattern_id, p in sorted(patterns.items()):
+            # TRIGGERED first, and with the command that acts on it. This board is the only
+            # surface a standing trigger appears on, and `observe_completed_run` announces a
+            # crossing exactly once — a pattern that crossed in the past never speaks again, so
+            # sorting by id put the one thing waiting on a human below the ones that are not.
+            # `progpat_f336b83625b790850630` has stood at 9/5 since 2026-08-10.
+            def _rank(item: tuple[str, dict]) -> tuple[int, str]:
+                return (0 if item[1].get("review_status") == "TRIGGERED" else 1, item[0])
+
+            for pattern_id, p in sorted(patterns.items(), key=_rank):
+                waiting = ""
+                if p.get("review_status") == "TRIGGERED":
+                    days = _days_since(p.get("last_updated_at_utc"), stamp)
+                    waiting = (f"  <- WAITING{f' {days}d' if days is not None else ''} "
+                               f"for: programization_cli review {pattern_id} "
+                               f"--by thomas --reason \"...\"")
                 sys.stdout.write(
                     f"{pattern_id}  {p.get('review_status'):<13} "
                     f"valid={p.get('valid_repetition_count')}/{p.get('review_trigger_count')}  "
-                    f"updated={p.get('last_updated_at_utc')}\n"
+                    f"updated={p.get('last_updated_at_utc')}{waiting}\n"
                 )
             for candidate_id, c in sorted(candidates.items()):
                 shadow = c.get("shadow_validation", {})
