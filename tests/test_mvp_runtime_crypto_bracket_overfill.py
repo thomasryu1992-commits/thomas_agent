@@ -43,8 +43,9 @@ the reconstruction is validated by the fact that it reproduces the stored P&L an
 (`test_the_recorded_figure_is_the_overfill_arithmetic`). Field names and shapes follow
 `test_mvp_runtime_crypto_algo_settlement.py`, whose payloads *are* verbatim.
 
-These tests describe present behaviour. `test_realized_pnl_prices_an_overfill_against_the_book`
-asserts the defect, so it passes today and must be inverted by whoever fixes it.
+The first version of this file asserted the defect, so that it passed against the code as it
+stood. It is now inverted: `test_realized_pnl_refuses_an_overfill_against_the_book` pins the
+refusal, and the control cases beside it pin that nothing else moved.
 """
 
 from __future__ import annotations
@@ -123,14 +124,13 @@ def test_the_true_result_is_a_loss_slightly_better_than_a_full_stop():
 
 # --- the defect ---------------------------------------------------------------
 
-def test_realized_pnl_prices_an_overfill_against_the_book():
-    """THE DEFECT, asserted as it behaves today — invert this test when it is fixed.
+def test_realized_pnl_refuses_an_overfill_against_the_book():
+    """THE FIX. Before it, this returned +77.5357 — one leg's notional, priced as a result.
 
     `realized_pnl_usdt` takes the exit quote from the venue and the entry quote from the book
-    and subtracts them. When the venue closed twice the book's size, the difference is not a
-    result: it is one leg's notional. Nothing in the function compares `exit_quantity` against
-    `position['quantity']`, so it returns a number, and a caller cannot tell it apart from a
-    real one.
+    and subtracts them. When the venue closed twice the book's size the difference is not a
+    P&L, and nothing compared `exit_quantity` against `position['quantity']`, so a number came
+    back that no caller could tell from a real one.
     """
     facts = fill_facts(normalize_algo_order(BTC_STOP_OVERFILLED))
     assert facts["executed_qty"] == pytest.approx(0.002)
@@ -138,27 +138,41 @@ def test_realized_pnl_prices_an_overfill_against_the_book():
 
     pnl, detail = realized_pnl_usdt(BTC_POSITION, facts)
 
-    assert pnl == pytest.approx(RECORDED_PNL, abs=5e-5)
-    assert pnl / RISK_USDT == pytest.approx(RECORDED_R, abs=5e-6)
-    # The evidence of the mismatch is right there in the detail the caller is handed, unused:
-    # the two sides of the subtraction describe different amounts of BTC.
+    assert pnl is None, "an exit twice the book's size must not be priced"
+    # The refusal names both numbers, so the operator resolving the OPEN book can see the
+    # disagreement instead of rediscovering it.
+    assert detail["quantity_mismatch"] == {"book": 0.001, "venue_filled": 0.002}
     assert detail["exit_quantity"] == pytest.approx(2 * BTC_POSITION["quantity"])
     assert detail["entry_quote_usdt"] == pytest.approx(
         BTC_POSITION["quantity"] * BTC_POSITION["entry_price"], abs=5e-5
     )
-    assert detail["exit_quote_usdt"] == pytest.approx(0.002 * 77708.50, abs=5e-5)
 
 
-def test_the_priced_result_is_indistinguishable_from_a_real_one():
-    """No flag, no None, no reason code. `pnl_source` still reads `venue_fills_gross`, which is
-    true and beside the point: every number came from the venue, and the pair does not describe
-    one round trip. This is why the row passes its own `record_sha256` downstream — the
-    corruption is upstream of the hash."""
-    pnl, detail = realized_pnl_usdt(BTC_POSITION, fill_facts(normalize_algo_order(BTC_STOP_OVERFILLED)))
+def test_the_refusal_is_the_documented_unsettleable_path_not_a_new_one():
+    """Returning `(None, detail)` is what this function already does for figures it does not
+    have, and `settle_venue_closed_position` already knows what that means: leave the book
+    OPEN, report `EXIT_UNSETTLEABLE`, let reconciliation refuse new entries on the symbol until
+    an operator resolves it. The fix adds a reason to refuse, not a way to fail."""
+    missing_price = {"executed_qty": 0.001, "avg_price": None, "cum_quote": None}
+    pnl, detail = realized_pnl_usdt(BTC_POSITION, missing_price)
+    assert pnl is None                              # the pre-existing refusal
+    assert "quantity_mismatch" not in detail        # ...and it is not attributed to size
+
+    pnl, detail = realized_pnl_usdt(
+        BTC_POSITION, fill_facts(normalize_algo_order(BTC_STOP_OVERFILLED)))
+    assert pnl is None                              # the new one
+    assert detail["pnl_source"] == "venue_fills_gross"   # same shape, same keys
+
+
+def test_a_lot_step_rounding_difference_is_not_a_mismatch():
+    """The tolerance mirrors `exit_fill_from_history`: what a lot-step rounding can leave
+    behind, not a licence to accept a different size. A float that differs in the last bits
+    must still price, or every exit starts refusing."""
+    facts = fill_facts(normalize_algo_order(dict(BTC_STOP_OVERFILLED, actualQty="0.001")))
+    facts = dict(facts, executed_qty=0.001 + 1e-12)
+    pnl, detail = realized_pnl_usdt(BTC_POSITION, facts)
     assert pnl is not None
-    assert detail["pnl_source"] == "venue_fills_gross"
     assert "quantity_mismatch" not in detail
-    assert detail.get("refused") is None
 
 
 def test_the_same_fill_at_the_book_quantity_prices_correctly():
