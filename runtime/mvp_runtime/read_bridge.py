@@ -60,6 +60,10 @@ _READS: dict[str, tuple[str, Any]] = {
     "crypto_status":    (_DOMAIN, ("CRYPTO", "status")),
     "crypto_readiness": (_DOMAIN, ("CRYPTO", "readiness")),
     "crypto_paper":     (_DOMAIN, ("CRYPTO", "paper")),
+    # The third of Thomas's original three (position, funds, return). It reads a snapshot the
+    # scheduler wrote, never the venue — this door holds no venue credential and adding one
+    # would put an order-capable key in the process the assistant talks to.
+    "crypto_funds":     (_DOMAIN, ("CRYPTO", "funds")),
     "tasks":            (_REGISTRY, "TASKS"),
     "history":          (_REGISTRY, "HISTORY"),
     "result":           (_REGISTRY, "RESULT"),
