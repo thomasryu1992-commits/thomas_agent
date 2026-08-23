@@ -68,7 +68,7 @@ from .cooldown import CooldownMarkStore
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
-from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
+from .live_pnl import excluded_outcomes_digest, live_outcomes_for_analysis, read_live_outcomes
 from .live_route import (
     DEFAULT_TIMING_CONTEXT,
     ROUTE_DISABLED,
@@ -672,6 +672,10 @@ def run_crypto_cycle(
     except ToolError as exc:
         reason_codes.append(exc.reason_code)
 
+    # Hoisted: the record below is written on every path, including the ones where the guard
+    # never read the history. `None` there means "not measured this cycle", which the absent
+    # key on the record then means too — distinct from a measured zero.
+    live_excluded_digest: dict[str, Any] | None = None
     if risk_limits is not None:
         try:
             # **The loss breakers judge LIVE outcomes, and only live outcomes.**
@@ -706,6 +710,10 @@ def run_crypto_cycle(
             live_history_readable = True
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
+                # The code alone says a row was dropped, never how many or for how much, so an
+                # operator could not tell two cents of unmeasurable risk from a material loss
+                # leaving the R statistics. Both readings were live on 2026-08-23.
+                live_excluded_digest = excluded_outcomes_digest(live_excluded)
             risk = run_risk_guard(
                 live_readable, now=now, limits=risk_limits,
                 routable_strategy_ids=routable_ids,
@@ -1064,6 +1072,14 @@ def run_crypto_cycle(
         "report_text": report_text,
         "created_at": now,
     }
+    # Set only when there was something to drop, and therefore only when
+    # LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD is in `reason_codes` above. Absent means the guard
+    # dropped nothing OR never ran — the reason codes beside it already distinguish those, and a
+    # zeroed digest on every clean cycle would be a field a reader learns to skip. Added rather
+    # than folded into the literal so a record written by an older build, which has neither key,
+    # stays readable by exactly the same consumers.
+    if live_excluded_digest:
+        record["live_outcomes_excluded"] = live_excluded_digest
     record["cycle_id"] = integrity.short_id(
         "crypto_cycle", {"symbol": symbol, "timeframe": timeframe, "at": now}
     )

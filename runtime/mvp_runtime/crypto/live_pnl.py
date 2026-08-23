@@ -408,6 +408,48 @@ def live_outcomes_for_analysis(
     return readable, excluded
 
 
+def excluded_outcomes_digest(excluded: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """A FIXED-SIZE account of what :func:`live_outcomes_for_analysis` dropped, for the ledger.
+
+    `live_analysis_summary` below carries both row lists whole. That is right for a caller
+    holding them in memory and wrong for a record appended every cycle: the readable side alone
+    is the entire live history, restated every fifteen minutes for as long as the runtime runs.
+    This keeps four keys whose size does not depend on how many rows were dropped. The rows stay
+    recoverable without them — this module is pure and reads an append-only file, so any later
+    reader reproduces the exact ids by running the split again over `live_outcomes.jsonl`.
+
+    **Net and gross, both.** Two dropped rows that cancel are not "no money left the R
+    statistics", and a single figure of `+0.0090` over `-0.0081` and `+0.0171` says they are.
+    The same distinction `_pnl_agrees_with_prices` draws between a number that is zero and one
+    nobody could compute.
+
+    Either amount is ``None`` when any row's is missing or non-numeric, following the rule the
+    rest of this module already follows: a figure that could not be computed is not a zero.
+    A missing amount does not blank the ``count`` or the ``reasons`` — those are still known,
+    and the reason this row was dropped is the thing the operator is reading.
+    """
+    rows = list(excluded)
+    reasons: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("reason") or UNKNOWN_R)
+        reasons[key] = reasons.get(key, 0) + 1
+    net: float | None = 0.0
+    gross: float | None = 0.0
+    for row in rows:
+        amount = row.get("realized_pnl_usdt")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            net = gross = None
+            break
+        net += float(amount)
+        gross += abs(float(amount))
+    return {
+        "count": len(rows),
+        "realized_pnl_usdt": None if net is None else round(net, 8),
+        "abs_realized_pnl_usdt": None if gross is None else round(gross, 8),
+        "reasons": reasons,
+    }
+
+
 def live_analysis_summary(
     outcomes: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
