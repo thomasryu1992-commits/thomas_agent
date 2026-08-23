@@ -6,8 +6,7 @@ so the durable hand-off lives here. On a fresh machine: `git pull`, then read th
 
 Last updated: **2026-08-10** — **three sections moved and none of them said so here.** F9's
 decision was taken and shipped (#638 + #651, 2026-08-09): the rotation runs cohort schedules and
-F9 is now the working rather than an open ask — its first fire had not landed at 02:55Z
-(`scripts.pooled_mint_check`: 0 pooled rows). Section **G is exhausted** (2026-08-09) and states
+F9 is now the working rather than an open ask. Section **G is exhausted** (2026-08-09) and states
 what would re-open it. Section **H's (a) cost re-derivation is done** (2026-08-09), leaving (b)
 waiting on symbol age rather than on code.
 
@@ -17,6 +16,15 @@ evidence that is not being produced (3 live outcomes total; nothing in the live 
 PROGRAM route explicitly not recommended yet, F's remainder a direction plus a deferred lever,
 G exhausted, H(b) a clock into 2027, I awaiting Thomas. That is a real state, not an oversight —
 but it means the next build item comes from a decision or from new evidence, not from this list.
+
+**Two of those terms have since moved, and the survey above carries its date for exactly this
+reason (2026-08-23):** F9's first fire landed, so its reading is no longer pending — 144 pooled
+rows, the pre-registered bar met, and CONFIRMED at 1/72 (4h) and 0/72 (1d); §F9 carries the
+numbers. And C's premise — *"live evidence that is not being produced"* — is spent: the live
+ledger holds 28 rows, one of which is the wrong one §C's newest subsection records. **That row
+is where the one unblocked build item now lives**: a correction record type, with its own schema
+and governance, because nothing in this runtime can amend an append-only outcome and hand-editing
+the figure is the trap rather than the shortcut.
 
 Earlier — **2026-08-06, the live round trip is complete.** The stop refusal that headed
 section C since 2026-08-02 was resolved on 08-04 (#460, the confirm race), and on 08-06T04:44Z
@@ -2898,23 +2906,37 @@ then §F8's sensitivity stands on one stop fill, and the constant it re-prices s
 > caller but the single-symbol path"* — is history. It is corrected here rather than deleted,
 > because the reasoning under it is still the authority for **why** the shape is what it is.
 >
-> **What is open now is the first fire and its reading, not the decision.** The reading is
-> pre-registered, which is the whole point of #651 — read it with the script rather than by
-> eye, and do not re-derive the bar afterwards:
+> **What is open now is the reading, not the decision.** It is pre-registered, which is the
+> whole point of #651 — read it with the script rather than by eye, and do not re-derive the
+> bar afterwards:
 >
 > ```
 > docker exec thomas-scheduler python -m scripts.pooled_mint_check
 > ```
 >
 > Run 2026-08-10T02:55Z: `store rows: 1961   pooled rows: 0` — *"the cohort schedules have not
-> fired, or were reverted."* Both readings are live at that moment; the script cannot tell them
+> fired, or were reverted."* Both readings were live at that moment; the script cannot tell them
 > apart and does not pretend to.
+>
+> **Re-run 2026-08-23: `store rows: 2169   pooled rows: 144`** (72 at 4h, 72 at 1d, `legs=[5]`),
+> so the first of those two readings was the true one and the wiring is firing. The
+> pre-registered bar is met and then some — 4h pooled holdout trades run a **median of 264**
+> against a single-symbol median of 9, and the script says so itself: *"the wiring did what it
+> was for"*. 65 of 72 clear the 25-trade floor at 4h, 50 of 72 at 1d.
+>
+> **And the bar it clears is judgeability, not survival: CONFIRMED is 1/72 at 4h and 0/72 at
+> 1d.** That is the same answer §3d of `TRADING_ALPHA_RESEARCH_RECORD.md` recorded on sixteen
+> rows, now standing on a hundred and forty-four — five crypto symbols share the same ten
+> regimes, so pooling bought the right to judge and did not move what the judgement says.
+> §3d's own instruction ("do not count selection-adjusted passes on sixteen rows; wait for the
+> population") is now answerable and has not been answered.
 >
 > **Which schedules are enabled is a per-machine fact this file cannot hold**, the same rule the
 > deployed image gets at the top: `schedules.jsonl` is gitignored, so there is no repo trace and
-> no amount of reading this file answers it. On the Docker host at that same timestamp the five
+> no amount of reading this file answers it. On the Docker host at the 08-10 timestamp the five
 > single-symbol schedules were `enabled=False` and two cohort schedules (4h and 1d) were
-> `enabled=True`. Reverting is those `enable` calls, not a code change.
+> `enabled=True`; at 08-23 two `crypto_factory` schedules remain enabled and minting daily at
+> 08:12Z. Reverting is those `enable` calls, not a code change.
 
 #### The ask, in one screen — everything below this subsection is the working
 
