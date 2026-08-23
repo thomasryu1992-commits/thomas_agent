@@ -62,7 +62,7 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # fail-closed means not trusting the peer to have checked, even when the peer is our own door.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
-     "proposal_inputs"}
+     "proposal_inputs", "ideation_inputs"}
 )
 
 # The second thing this process does, and the reason it is a *set* rather than a second
@@ -86,12 +86,22 @@ JOB_DATA_REVIEW = "crypto_data_review"
 # a focus, a count and a venue and has never read the snapshot. The frame is used only by the
 # judging half, which invokes no model and therefore stays beside the market data.
 JOB_CRYPTO_PROPOSE = "crypto_propose"
-_ALLOWED_JOBS: frozenset[str] = frozenset({JOB_DATA_REVIEW, JOB_CRYPTO_PROPOSE})
+# The third job, and the first that is not crypto: the blog lane's weekly package. Same reason
+# as the two above — the Naver keys and the model providers are here and on no other service,
+# so the scheduler delegates the sequence rather than collecting anything itself. Unlike them
+# it runs the ORDINARY pipeline twice (research, then content) rather than making one bare
+# model call, which is why it needs the ledger and the memory stores the other two do not.
+JOB_CONTENT_IDEATION = "content_ideation"
+_ALLOWED_JOBS: frozenset[str] = frozenset(
+    {JOB_DATA_REVIEW, JOB_CRYPTO_PROPOSE, JOB_CONTENT_IDEATION}
+)
 
 # What a job frame may carry beside `job` itself. Pipeline keys are refused on a job frame
 # rather than ignored: a caller that sent both believed both would be used. Each job then
 # requires its own input below, so a frame carrying the other job's input is refused too.
-_JOB_KEYS: frozenset[str] = frozenset({"job", "inventory", "proposal_inputs", "reason"})
+_JOB_KEYS: frozenset[str] = frozenset(
+    {"job", "inventory", "proposal_inputs", "ideation_inputs", "reason"}
+)
 
 # Bounds on the one job input that is a list. A prompt naming every family ever proposed would
 # spend the allowance on recitation; the live table is twelve.
@@ -197,6 +207,8 @@ def apply_work(
     if request.get("job") is not None:
         return _apply_job(
             request, control_store=control_store, providers=providers, now=now,
+            ledger=ledger, working_memory=working_memory, programization=programization,
+            repo_root=repo_root,
         )
 
     text = request.get("request")
@@ -317,6 +329,10 @@ def _apply_job(
     control_store: ControlStore,
     providers: dict[str, Any] | None,
     now: str | None,
+    ledger: LedgerStore | None = None,
+    working_memory: WorkingMemoryStore | None = None,
+    programization: ProgramizationStore | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run one named job — a bounded model call on a caller-supplied input.
 
@@ -370,6 +386,39 @@ def _apply_job(
         )
 
     resolved = providers or {}
+    if job == JOB_CONTENT_IDEATION:
+        inputs = request.get("ideation_inputs")
+        if not isinstance(inputs, dict) or not str(inputs.get("seeds") or "").strip():
+            raise ControlBlocked(
+                "IDEATION_INPUTS_REQUIRED",
+                f"{job!r} needs an 'ideation_inputs' object carrying a non-empty 'seeds' "
+                f"string; the schedule's request column is where it comes from",
+            )
+        for other in ("inventory", "proposal_inputs"):
+            if other in request:
+                raise ControlBlocked(
+                    "ARGUMENT_NOT_ACCEPTED", f"{job!r} does not take {other!r}"
+                )
+        from . import blog_content
+
+        # Unlike the two crypto jobs this runs the ordinary pipeline — twice — so it is handed
+        # the ledger and the memory stores rather than only a provider. Its own refusals
+        # (`NO_ELIGIBLE_KEYWORD`, a blocked governed run) are `ToolError`s and travel to the
+        # scheduler as the fire's status, the same shape a blocked review has.
+        return {
+            "ok": True,
+            "job": job,
+            **blog_content.run_content_ideation(
+                inputs,
+                providers=providers or {},
+                ledger=ledger,
+                working_memory=working_memory,
+                programization=programization,
+                now=now,
+                repo_root=repo_root,
+            ),
+        }
+
     if job == JOB_DATA_REVIEW:
         inventory = request.get("inventory")
         if not isinstance(inventory, dict) or not inventory:
