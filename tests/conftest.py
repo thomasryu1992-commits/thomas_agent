@@ -182,7 +182,7 @@ def _default_state_lands_in_tmp(tmp_path_factory, monkeypatch):
 
         monkeypatch.setattr(store_cls, "default", classmethod(_default))
 
-    # The two state writers that are plain functions rather than store classes.
+    # The state writers that are plain functions rather than store classes.
     heartbeat = importlib.import_module("runtime.mvp_runtime.heartbeat")
     original_beat = heartbeat.write_heartbeat
 
@@ -201,6 +201,26 @@ def _default_state_lands_in_tmp(tmp_path_factory, monkeypatch):
                                **kwargs)
 
     monkeypatch.setattr(feedback, "record_delivery", _record_delivery)
+
+    # The operator loop announces undelivered switch-door asks after every batch, and the
+    # announced-id pointer is the third plain-function writer. Without this the CLI tests
+    # that run `main([])` with no repo_root write it into the repo's own state directory.
+    operator = importlib.import_module("runtime.mvp_runtime.operator")
+    original_announced = operator.record_announced
+
+    def _record_announced(announced, *, now=None, repo_root=None, **kwargs):
+        return original_announced(announced, now=now,
+                                  repo_root=repo_root if repo_root is not None else state_root,
+                                  **kwargs)
+
+    monkeypatch.setattr(operator, "record_announced", _record_announced)
+
+    original_load_announced = operator.load_announced
+
+    def _load_announced(repo_root=None):
+        return original_load_announced(repo_root if repo_root is not None else state_root)
+
+    monkeypatch.setattr(operator, "load_announced", _load_announced)
     return state_root
 
 

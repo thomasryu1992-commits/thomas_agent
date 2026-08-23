@@ -47,7 +47,11 @@ from .authority import permission_decision_runtime_effect
 from .control import command_verb
 from .errors import ApprovalBlocked
 from .paths import repo_root as _repo_root
-from .permission import TRIAL_PERMISSION_SCOPE
+from .permission import (
+    NONFINANCIAL_RESUME_TARGET_PREFIX,
+    TRADING_SWITCH_TARGET_PREFIX,
+    TRIAL_PERMISSION_SCOPE,
+)
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
@@ -353,6 +357,16 @@ def format_request(approval: Mapping[str, Any]) -> str:
     snapshot = approval["approved_action_snapshot"]
     permdec_reasons = approval.get("_decision_reasons") or []
     trial = snapshot.get("permission_scope") == TRIAL_PERMISSION_SCOPE
+    # The switch door's asks are the third kind this renderer serves, and until 2026-08-22 it
+    # had no branch for them: they went out carrying "되돌릴 수 있는가: 아니오 — validated
+    # memory는 지속됩니다" and a closing paragraph about `approval_consumption`, neither of
+    # which is true of a runtime switch. Keyed on the target prefix rather than the scope
+    # because both switch asks share RUNTIME_GOVERNANCE with strategy promotion, and it is the
+    # target that says what is being started. Prefixes imported from `permission`, which mints
+    # them, so the two sides cannot drift.
+    target_ref = str(snapshot.get("target_ref") or "")
+    arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
+    switch = arms_live or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX)
     lines = [
         "Approval Request",
         "",
@@ -366,9 +380,15 @@ def format_request(approval: Mapping[str, Any]) -> str:
     lines += [
         f"요청 이유: {'; '.join(permdec_reasons) if permdec_reasons else '—'}",
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
-        "예상 비용: 없음",
+        ("예상 비용: 실주문이 다시 나갈 수 있게 되므로 그 이후의 손익이 곧 비용입니다"
+         if arms_live else "예상 비용: 없음"),
         ("되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
          if trial else
+         # Stopping needs no approval and applies at once, which is this door's whole
+         # asymmetry — so a switch grant is the reversible kind, and saying otherwise
+         # (as this line did for three weeks) misprices the decision in the wrong direction.
+         "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다"
+         if switch else
          "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",
@@ -379,7 +399,17 @@ def format_request(approval: Mapping[str, Any]) -> str:
         "",
         "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
     ]
-    if trial:
+    if switch:
+        lines += [
+            "이 승인은 `approval_cli consume`으로 쓰지 않습니다. 어시스턴트가 같은 approval id로",
+            "스위치 문을 다시 호출할 때 1회만 소비됩니다 — approval_consumption 세이프티 플래그와",
+            "무관합니다.",
+            ("승인하면 라이브 진입이 다시 무장됩니다." if arms_live else
+             "이 승인은 런타임만 재개하며 라이브 진입을 무장하지 않습니다."),
+            "승인과 소비 사이에 정지 상태가 바뀌면 이 승인은 STOP_CHANGED로 거부되고, 새 요청이",
+            "필요합니다.",
+        ]
+    elif trial:
         lines += [
             "승인 후 소비(trial run)는 별도의 운영자 단계이며, approval_consumption 세이프티",
             "플래그가 켜진 기기에서만 이 승인 하나에 묶인 격리 트라이얼을 1회 실행합니다.",

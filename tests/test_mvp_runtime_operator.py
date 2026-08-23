@@ -945,3 +945,167 @@ def test_the_operator_loop_always_wires_the_kill_switch():
     assert "control_store" in source
     # The loop constructs a ControlStore and hands it down; a refactor that drops it fails here.
     assert "ControlStore" in source
+
+
+# --- announcing the switch door's asks ---------------------------------------
+#
+# The delivery half that never existed. `approval.py` mints an ask and nothing carries it:
+# every other approval is minted by Thomas running a script, so the id is already on his
+# screen, but the switch door's are minted by an assistant and went nowhere. The one real
+# attempt (2026-07-31) expired unanswered fifteen minutes later, and the enable chain had
+# never once completed in production before 2026-08-22.
+
+from runtime.mvp_runtime import approval as _approval  # noqa: E402
+from runtime.mvp_runtime import permission as _permission  # noqa: E402
+from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
+from runtime.mvp_runtime.binding import bind_task_to_core  # noqa: E402
+from runtime.mvp_runtime.intake import build_task  # noqa: E402
+from runtime.mvp_runtime.operator import (  # noqa: E402
+    ANNOUNCED_POINTER_REL,
+    MAX_ANNOUNCEMENTS_PER_BATCH,
+    announce_pending_approvals,
+    load_announced,
+)
+
+_ANN_NOW = "2026-08-22T09:00:00Z"
+
+
+def _switch_ask(store, tmp_path, *, arms=True, now=_ANN_NOW, stop_ref="stop_abc123"):
+    """Mint a real switch-door ask into `store` and return it.
+
+    The binding uses the repo's own Core activation (as every other approval test does) while
+    the store, the registration and the announced pointer live under `tmp_path` — those are
+    what the announcer reads and writes, and they are what must stay isolated per test.
+    """
+    task = build_task("자동매매를 다시 켜줘", now=now)
+    _, bound = bind_task_to_core(task, now=now)
+    builder = (_permission.build_trading_switch_permission_decision if arms
+               else _permission.build_nonfinancial_resume_permission_decision)
+    permdec = builder(
+        bound, "crypto", stop_ref=stop_ref,
+        stop_summary="the KILLED placed by local_console", now=now,
+    )
+    req = _approval.build_approval_request(permdec, now=now)
+    store.append([req])
+    store.append_permission_decision(permdec)
+    return req
+
+
+@requires_local_core
+def test_the_first_run_marks_the_backlog_seen_without_sending_it(tmp_path):
+    """Ten asks are pending on the deployment host, the oldest from 2026-07-21. A first run
+    that announced its backlog would open with a burst of messages Thomas cannot act on."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    ask = _switch_ask(store, tmp_path)
+    ch = MockOperatorChannel()
+
+    assert load_announced(tmp_path) is None
+    sent = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+
+    assert sent == []
+    assert ch.sent == []
+    assert load_announced(tmp_path) == {ask["approval_id"]}
+    assert (tmp_path / ANNOUNCED_POINTER_REL).is_file()
+
+
+@requires_local_core
+def test_a_pending_switch_ask_is_announced_once_to_the_registered_chat(tmp_path):
+    """The whole point: the ask reaches the window `/approve` is read in — and only once."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+
+    ask = _switch_ask(store, tmp_path)
+    sent = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+
+    assert sent == [ask["approval_id"]]
+    assert len(ch.sent) == 1
+    chat_id, text = ch.sent[0]
+    assert chat_id == "chat-registered"          # never the caller's choice
+    assert ask["approval_id"] in text
+    assert "Approval Request" in text
+
+    # A second pass sends nothing: the pointer is keyed on the id, not a timestamp.
+    assert announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path) == []
+    assert len(ch.sent) == 1
+
+
+@requires_local_core
+def test_an_expired_ask_is_never_announced(tmp_path):
+    """A dead id cannot be approved. Sending one invites Thomas to answer something that will
+    refuse him — which is how the 2026-07-31 attempt read from his side."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    _switch_ask(store, tmp_path)
+
+    long_after = "2026-08-22T23:00:00Z"
+    assert announce_pending_approvals(ch, store, now=long_after, repo_root=tmp_path) == []
+    assert ch.sent == []
+
+
+@requires_local_core
+def test_only_the_switch_doors_asks_are_announced(tmp_path):
+    """`pending()` returns every scope. Memory candidates, strategy-pool promotions and probe
+    batches are already in front of Thomas by the flow that minted them — announcing those
+    would put a candidate's full text into the control channel for nothing. The filter is the
+    target prefix, because both switch asks share RUNTIME_GOVERNANCE with strategy promotion."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+
+    task = build_task("이 사업 아이디어를 분석해줘", now=_ANN_NOW)
+    _, bound = bind_task_to_core(task, now=_ANN_NOW)
+    candidate = {
+        "candidate_id": "memcand_notannounced01",
+        "candidate_type": "operating_preference",
+        "content": "Thomas prefers cash-flow first framing.",
+    }
+    permdec = _permission.build_memory_promotion_permission_decision(
+        bound, candidate, now=_ANN_NOW)
+    memory_req = _approval.build_approval_request(permdec, now=_ANN_NOW)
+    store.append([memory_req])
+    store.append_permission_decision(permdec)
+
+    switch_req = _switch_ask(store, tmp_path)
+
+    sent = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+    assert sent == [switch_req["approval_id"]]
+    assert memory_req["approval_id"] not in "".join(t for _, t in ch.sent)
+
+
+@requires_local_core
+def test_the_batch_cap_leaves_the_rest_for_the_next_pass(tmp_path):
+    """A cap, not a rate limit — and the unsent ones must NOT be marked seen. Marking by a
+    timestamp watermark instead of the id set is exactly how a capped pass loses an ask."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(ch := MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+
+    asks = [_switch_ask(store, tmp_path, stop_ref=f"stop_{i:04d}")
+            for i in range(MAX_ANNOUNCEMENTS_PER_BATCH + 2)]
+    first = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+    assert len(first) == MAX_ANNOUNCEMENTS_PER_BATCH
+
+    second = announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+    assert len(second) == 2
+    assert set(first) | set(second) == {a["approval_id"] for a in asks}
+    assert len(ch.sent) == len(asks)
+
+
+@requires_local_core
+def test_announcing_without_a_registration_fails_closed(tmp_path):
+    """Same gate as every other outbound: with nobody registered there is nobody to notify,
+    and the loop reports the reason code rather than sending anywhere."""
+    store = ApprovalStore(tmp_path)
+    (tmp_path / ANNOUNCED_POINTER_REL).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / ANNOUNCED_POINTER_REL).write_text(
+        json.dumps({"announced_approval_ids": [], "updated_at": _ANN_NOW}), encoding="utf-8")
+    _switch_ask(store, tmp_path)
+
+    ch = MockOperatorChannel()
+    with pytest.raises(OperatorBlocked) as exc:
+        announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
+    assert exc.value.reason_code == "REGISTRATION_MISSING"
+    assert ch.sent == []
