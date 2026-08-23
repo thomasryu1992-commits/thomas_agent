@@ -1189,6 +1189,18 @@ And the row passes its own `record_sha256`, because the corruption happened befo
 taken, so no integrity check will ever flag it. A correction therefore needs a designed record
 type (void / supersede) with its own schema and governance, not an edit.
 
+**That design is now written: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md`** (DRAFT,
+2026-08-23, no code). It answers the shape — a separate `live_outcome_corrections.jsonl` with its
+own closed schema, so the outcome read path's duplicate and hash checks are untouched; a
+`corrects_record_sha256` that pins each correction to the exact row it voids, so a correction
+cannot drift onto another row; and application inside `read_live_outcomes`, which is the **single
+chokepoint every consumer already passes through** (`breaker_watch`, `cycle`, `live_pnl`,
+`live_promotion`, `run_slippage_probe`), so no consumer changes. It also argues SUPERSEDE over
+VOID for this row on the evidence already in this section: voiding erases a real 0.887R loss and
+lands wrong in the other direction, which is the same trap
+`drawdown_excluded_strategy_ids` was measured falling into. Three open questions are left for
+Thomas at the end of it; the proposal is a decision to take, not work in flight.
+
 **Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
 and it would leave no record that anyone changed a money figure — on the one ledger whose whole
 purpose is to be the thing nobody can quietly change.
