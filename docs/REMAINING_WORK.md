@@ -3454,6 +3454,93 @@ version of this test.
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
+### F11. The regime diagnosis for the biggest losing family cannot be made — measured 2026-08-06
+
+> **Every count below is the 2026-08-06 store (1,721 rows); it was 2,169 on 08-23 and the
+> partition will have moved with it.** The finding this section carries is not a count — it is
+> that `breakdown_short`'s regime profile inverts its own premise because §F6 folds volatility
+> over trend, and that survives a re-measure or is refuted by one. Re-derive before quoting a
+> number; read the argument as it stands.
+
+The promotion door reads **0 promotable** over 1,721 rows, and the partition says where they go:
+`already_active` 148, `cost_basis` 546, `holdout_insufficient` 574, **`holdout_contradicted` 453**.
+F7/F9/F10 are all about the 574. This section is about the 453, which are a different finding —
+they reached the tail, were judged, and did not clear it.
+
+**First, CONTRADICTED is not "lost money".** `holdout_status` returns it when
+`expectancy - 1.96 x stderr <= 0`, so it holds both the losers and the merely unproven. Split:
+**354 (78%) are negative, 99 (22%) are positive and unproven.** Expectancy p10/median/p90 is
+**-0.34 / -0.14 / +0.11**.
+
+**The tier orders it and nothing else does.** Direction is inert — long -0.1432 against short
+-0.1436, negative share 79% and 78%:
+
+| tf | n | median holdout expectancy | share negative |
+|---|---|---|---|
+| 15m | 20 | **-0.290** | 95% |
+| 1h | **239** | **-0.173** | 87% |
+| 4h | 178 | -0.068 | 67% |
+| 1d | 16 | **+0.026** | 50% |
+
+**53% of the bucket is 1h alone**, which is independent support for #566's freeze of that tier —
+reached from the contradicted population rather than from the null control it was decided on.
+
+#### `breakdown_short` is 86 of the 453, and its regime profile inverts its own premise
+
+The largest single contributor. Over its 228 stored specs and 25,758 in-sample trades:
+
+| regime | share of trades | R/trade |
+|---|---|---|
+| **TREND_DOWN** | **66%** | **-0.0900** |
+| HIGH_VOLATILITY | 34% | **+0.0550** |
+
+A short-breakdown family losing in downtrends and earning in high volatility. **Cost is not the
+cause** — it trades at **0.2068R** per trade against **0.2379R** for every other family, cheaper
+than average.
+
+**F6's folding is why that reads backwards.** `classify_market_regime` tests
+`atr_percentile >= 0.80` **before any trend test**, so the top volatility quintile is labelled
+HIGH_VOLATILITY whatever the trend is doing. `TREND_DOWN` therefore means *"a downtrend in the
+calmer 80%"* and HIGH_VOLATILITY absorbs the violent breakdowns. Read that way the profile is
+coherent rather than perverse: **the family works on violent breakdowns and loses on orderly
+ones** — which is a retiming or a gating claim, not a retirement one.
+
+#### Except the in-sample profile does not survive, and that is the finding
+
+At 4h both regimes are in-sample **positive** (TREND_DOWN +0.0321, HIGH_VOLATILITY +0.1732) —
+gross +0.24 and +0.38 once the cost above is added back. The holdout for the same family at the
+same tier is **-0.1661** over 91 rows:
+
+| tf | rows | median holdout expectancy |
+|---|---|---|
+| 15m | 23 | -0.2889 |
+| 1h | 72 | -0.1842 |
+| 4h | 91 | **-0.1661** |
+| 1d | 8 | +0.3296 |
+
+So the regime story is an in-sample artifact until it is measured out of sample — F1's finding
+arriving once more, in the one place a reader would most want to act on the in-sample number.
+
+**And it cannot be measured out of sample.** `_holdout_evidence` is *"compact by design — only
+the few numbers a confirmation needs"*, and a per-regime breakdown is not among them. The scored
+window carries `regime_breakdown`; the tail carries none. So the measurement that decides
+**retime versus retire** for the family contributing a fifth of the contradicted bucket is not
+producible by this runtime today.
+
+**What would settle it, and what it costs.** `_holdout_evidence` already walks the tail's
+outcomes to total them, and each outcome carries `entry_regime` — the same field the in-sample
+`regime_breakdown` is built from. Adding the breakdown is a second accumulation over a list the
+function already iterates, not a second replay. What it buys is the ability to ask of any family
+"did the regime it earns in reproduce", which is the question F6 left open for `mean_reversion`,
+F3 for the htf pair, and this section for `breakdown_short`. What it does **not** buy is any of
+those verdicts today: the field only starts describing rows minted after it lands, so this is
+another change judged over generations.
+
+**Bounds.** The regime split is in-sample and pooled over specs of one family, so it mixes
+parameter draws whose thresholds differ; `1d` reads +0.33 on **8 rows** and should not be quoted;
+and `breakdown_short` was `ok` on F10's entry-rate test at 4h (4.00%), so this is a signal-quality
+axis and not the judgeability one the rest of section F is about.
+
 ## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**, G5 profiled
 
 > G1 sliced twice, G2 removed, G3 indexed and twice corrected, G4a/b/c done. What is left is the
