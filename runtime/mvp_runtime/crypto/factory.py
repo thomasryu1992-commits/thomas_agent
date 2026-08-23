@@ -3378,7 +3378,16 @@ def backtest_spec_pooled(
             leg = summarize_outcomes(part)
             per_symbol[frame.symbol] = {
                 "closed_count": leg["closed_count"],
-                "expectancy": leg["expectancy"],
+                # **None, not 0.0, when the leg never traded.** `summarize_outcomes` returns
+                # 0.0 for an empty population and that is right for a total — a book with no
+                # trades has made no money. It is wrong for a leg being COMPARED against its
+                # siblings, which is this block's only purpose: at 0.0 "this symbol broke even"
+                # and "this symbol never entered" are the same number, and the second is the
+                # one that must stop a promotion. `closed_count` disambiguates them for a
+                # reader who checks it, and the whole reason this block exists is that someone
+                # will scan the expectancies. Same absent-means-unknown contract the block
+                # already keeps for a frame with no symbol.
+                "expectancy": leg["expectancy"] if leg["closed_count"] else None,
                 "total_r": round(sum(o["result_R"] for o in part), 8),
                 "win_count": leg["win_count"],
             }
