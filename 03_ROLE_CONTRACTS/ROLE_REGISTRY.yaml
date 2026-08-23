@@ -58,7 +58,7 @@ roles:
   status: active
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/RESEARCH_ROLE.md
-  definition_sha256: 3be9ab603480d6b345aad274b411bd59df3cb61205e9415e9996fc8beaa020c7
+  definition_sha256: acf1824e7e47ddde94ac802c150a68db5710643239779a588c86d84020c1824a
 # Activated by explicit Thomas decision, 2026-07-27. Recorded here rather than only in a
 # commit message because this registry is the source of truth for role status, and the one
 # thing a later reader needs is WHY a candidate became routable.
@@ -72,7 +72,7 @@ roles:
   status: active
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/TRANSLATION_ROLE.md
-  definition_sha256: 8cbe949c1d5f9110873542a380fc465dbdb6436dc21dec60957c28679e3f388d
+  definition_sha256: bc9d973183db56f41b4aaf24db0e1dce4c73f37c8b828dbaee42f8f62179ec8a
 # Activated by explicit Thomas decision, 2026-07-27, in the same round as research.general and
 # translation.general. `business.analysis` was deliberately held back in that decision: its
 # capabilities (opportunity_analysis / revenue_potential_assessment / downside_risk_assessment)
@@ -85,7 +85,7 @@ roles:
   status: active
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/CONTENT_ROLE.md
-  definition_sha256: 13e58c21e6e8ee19c546b9bbabd36d1e1493b9955e9575b6e0ec282baf17b3fd
+  definition_sha256: f88a7c8dda0c97789136292cb3dcb70fd2862868bf114b7cc04be4b4a176bafa
 - role_id: business.analysis
   version: 0.3.0
   role_type: dynamic_specialist
@@ -105,7 +105,7 @@ roles:
   status: active
   routable: true
   definition_path: 03_ROLE_CONTRACTS/ROLES/CANDIDATES/DEVELOPMENT_ROLE.md
-  definition_sha256: ade8a410ae91a38aac7cc94eb3643cfc94759e290bd244ef22ed656a834f18d7
+  definition_sha256: 4fd6e5f240eda8abb5a32cffe5031df62b98c0d579b8dc13f6cbcf23508f4a79
 - role_id: execution.live_trader
   version: 0.2.0
   role_type: dynamic_specialist

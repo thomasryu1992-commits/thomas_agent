@@ -405,14 +405,12 @@ def test_nothing_in_the_feature_or_routing_path_reads_the_archive():
 def test_the_archive_axis_does_not_move_the_pipeline_venue(monkeypatch):
     # The property this whole axis exists for. `MVP_MARKET_DATA` names the ONE venue the
     # pipeline collects from, and the crypto pipeline's leg can place a real order — so
-    # enabling the archive must not take it off Binance.
+    # enabling the archive must not take it off Binance. (Env-only since 2026-08-10, so
+    # the assertion is on the venue actually CHOSEN, not on a missing grant.)
     monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
     monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
-    # The pipeline still asks for Binance (and fails closed here only for want of a grant,
-    # which is the Binance path being chosen, not the Hyperliquid one).
-    with pytest.raises(Exception) as exc:
-        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z")
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    collector = market_data.select_market_data_collector(now="2026-08-04T00:00:00Z")
+    assert isinstance(collector, market_data.BinanceFuturesCollector)
 
 
 def test_archiving_is_off_unless_its_own_env_names_the_venue(monkeypatch):
@@ -446,13 +444,14 @@ def test_opting_in_needs_no_grant_but_still_carries_an_authorization(monkeypatch
     assert isinstance(collector._authorization, Authorization)
 
 
-def test_the_pipeline_still_needs_its_grant(monkeypatch, tmp_path):
-    # The exception is scoped to the archive. Nothing about it may loosen the gate that
-    # governs the venue the money path collects from.
-    monkeypatch.setenv(market_data.MARKET_DATA_ENV, market_data.BINANCE_FUTURES)
-    with pytest.raises(Exception) as exc:
-        market_data.select_market_data_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+def test_the_archive_env_does_not_open_the_pipeline_venue(monkeypatch, tmp_path):
+    # The archive axis is scoped to the archive. The venue the money path collects from
+    # is chosen by MVP_MARKET_DATA alone (env-only since 2026-08-10) — the archive's own
+    # opt-in must neither open nor move it.
+    monkeypatch.delenv(market_data.MARKET_DATA_ENV, raising=False)
+    monkeypatch.setenv(market_data.CANDLE_ARCHIVE_ENV, market_data.HYPERLIQUID)
+    collector = market_data.select_market_data_collector(now="2026-08-04T00:00:00Z", root=tmp_path)
+    assert isinstance(collector, market_data.MockMarketDataCollector)
 
 
 def _no_sleep(_seconds):
@@ -644,7 +643,8 @@ def test_no_book_sits_permanently_past_the_budget(tmp_path):
     """Stronger than "4h appears sometimes": the union of the windows must cover every book.
 
     The offset advances one book per minute, so consecutive windows of a cadence shorter than
-    the budget overlap instead of leaving gaps."""
+    the budget overlap instead of leaving gaps — while the universe holds still. The test
+    below is the same property when it does not."""
     symbols = [f"S{i}" for i in range(10)]
     timeframes = ("15m", "1h", "4h", "1d")
     for timeframe in timeframes:
@@ -657,6 +657,40 @@ def test_no_book_sits_permanently_past_the_budget(tmp_path):
                                   now_ms=NOW_MS + minute * 60_000, root=tmp_path)
         seen.update(order[:budget])
     assert seen == {(s, tf) for tf in timeframes for s in symbols}
+
+
+def test_coverage_survives_a_universe_that_keeps_growing(tmp_path):
+    """The offset is ``minutes % len(refreshes)``, so every listing moves the modulus and the
+    window jumps rather than advancing. That is the real operating condition — the venue listed
+    three symbols in three hours on 2026-08-05 — and the test above cannot see it, because it
+    holds the universe still.
+
+    **Coverage is conditional, and the condition is a race**: a new symbol inserts its books
+    into the 15m region and pushes every later book forward, while the offset advances one book
+    per minute. Coverage holds while the offset outruns the growth. At the registered hourly
+    cadence that is 60 books per pass against 4 per listing — a 15x margin at the observed rate
+    of roughly one listing an hour, which is what this models. Written as a rate rather than a
+    fixed count so the margin, not just the outcome, is what fails if either side changes.
+    """
+    timeframes = ("15m", "1h", "4h", "1d")
+    symbols = [f"S{i:02d}" for i in range(80)]
+    for timeframe in timeframes:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+    original = {(s, tf) for tf in timeframes for s in symbols}
+
+    budget, seen = 100, set()
+    for hour in range(12):                                   # hourly, like the registered kind
+        new = f"N{hour:02d}"                                 # and one listing per pass
+        symbols.append(new)
+        for timeframe in timeframes:
+            _fill(tmp_path, new, timeframe)
+        order = archive.plan_pass(symbols, timeframes, venue=VENUE,
+                                  now_ms=NOW_MS + hour * 3_600_000, root=tmp_path)
+        seen.update(order[:budget])
+
+    missed = original - seen
+    assert not missed, f"{len(missed)} of the original books were never reached: {sorted(missed)[:5]}"
 
 
 def test_refreshes_rotate_but_first_fills_never_do(tmp_path):
@@ -733,7 +767,7 @@ def _fire(schedule_kind, tmp_path, monkeypatch):
     )
     return scheduler._execute(
         schedule, now="2026-08-04T00:00:00Z", ledger=None, working_memory=None,
-        programization=None, registry=None, provider=None, search_tool=None,
+        programization=None, registry=None,
         repo_root=tmp_path, executor=None,
     )
 
@@ -820,3 +854,49 @@ def test_a_rate_limited_pass_reaches_the_operator(tmp_path, monkeypatch):
     assert exc.value.reason_code == "ARCHIVE_RATE_LIMITED"
     # The all-degraded check cannot be what caught it: only one book actually degraded.
     assert "not attempted" in str(exc.value)
+
+
+def test_the_sweep_bound_is_a_property_of_the_cadence_not_the_rotation(tmp_path):
+    """Evenly spaced passes tile; the scheduler does not space them evenly.
+
+    The offset is a function of the CLOCK, not of the pass count, so an irregular gap moves the
+    window by an irregular number of books: two hours between fires advances the offset 120
+    while the window is 100 wide, and the 20 in between wait a whole lap. `plan_pass`'s first
+    paragraph describes the tiling and is where a reader stops.
+
+    Measured over the 88 real fires 2026-08-04T14:59Z..2026-08-08T06:59Z, the spacing runs
+    49.1-120.0 minutes (median 60.1), and enumerating against the live store over those actual
+    times gives max 12.0h / p90 7.0h / median 6.0h against a tiling bound of 6 — coverage intact
+    (376 of 376), the bound twice what the arithmetic says.
+
+    Pinned synthetically because the live figure is a fact about the venue and the scheduler,
+    not about this function; what belongs in a test is that the two cadences differ at all.
+    """
+    symbols = [f"S{i:02d}" for i in range(25)]
+    timeframes = ("15m", "1h", "4h", "1d")            # 100 books
+    for timeframe in timeframes:
+        for symbol in symbols:
+            _fill(tmp_path, symbol, timeframe)
+    budget = 40
+
+    def worst_gap(spacings_minutes):
+        seen: dict[tuple[str, str], int] = {}
+        gap, minute = 0, 0
+        for index, step in enumerate(spacings_minutes):
+            minute += step
+            order = archive.plan_pass(symbols, timeframes, venue=VENUE,
+                                      now_ms=NOW_MS + minute * 60_000, root=tmp_path)
+            for book in order[:budget]:
+                if book in seen:
+                    gap = max(gap, index - seen[book])
+                seen[book] = index
+        return gap
+
+    even = worst_gap([60] * 40)
+    # The observed shape: mostly hourly with the 49- and 120-minute fires the ledger records.
+    uneven = worst_gap(([60, 60, 120, 49, 60, 60, 60, 120] * 5))
+    assert even <= 3, "evenly spaced passes should tile within the window's own arithmetic"
+    assert uneven > even, (
+        "the tiling bound only holds for evenly spaced passes — if this stops being true the "
+        "docstring's measured figure should be re-derived, not the other way round"
+    )

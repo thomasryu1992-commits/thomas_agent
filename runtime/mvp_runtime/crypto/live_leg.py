@@ -69,6 +69,7 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
+from .. import timeutil
 from ..coerce import as_optional_float as _f
 from ..errors import ToolError
 from .live_execution import (
@@ -112,13 +113,49 @@ BRACKET_CANCEL_FAILED = "LIVE_BRACKET_CANCEL_FAILED"
 FILL_FACTS_MISSING = "LIVE_FILL_FACTS_MISSING"
 POSITION_PERSIST_FAILED = "LIVE_POSITION_PERSIST_FAILED"
 OUTCOME_PERSIST_FAILED = "LIVE_OUTCOME_PERSIST_FAILED"
+# The ledger already held this settlement, so the settle wrote no new money row. The way this
+# happens: a previous settle appended the outcome and then failed to clear the book, and this
+# is the reconciliation-driven retry finishing the clear. Informational, never an error —
+# the durable row is the FIRST attempt's, and this attempt's remaining job is the book.
+OUTCOME_ALREADY_RECORDED = "LIVE_OUTCOME_ALREADY_RECORDED"
 BRACKET_IDS_MISSING = "LIVE_BRACKET_IDS_MISSING"
 VENUE_CLOSE_UNSETTLEABLE = "LIVE_VENUE_CLOSE_UNSETTLEABLE"
+# The two ways the fill-history fallback declines, kept apart because they mean different
+# things to whoever reads the record. UNAVAILABLE is "this runtime could not ask" — no account
+# grant, or the read failed — and is fixed by configuration. INCONCLUSIVE is "it asked and the
+# answer does not identify this position's close", which is a statement about the account's
+# activity and is NOT fixed by asking again.
+FILL_HISTORY_UNAVAILABLE = "LIVE_FILL_HISTORY_UNAVAILABLE"
+FILL_HISTORY_INCONCLUSIVE = "LIVE_FILL_HISTORY_INCONCLUSIVE"
 
-# A conditional order rests at the venue until its trigger price is reached. Only that resting
-# state counts as "the bracket is in place": anything else (a rejection, an instant trigger, an
-# unknown status) means the position is not protected the way the decision assumed.
-BRACKET_RESTING_STATUSES = frozenset({"NEW"})
+# Where an exit PRICE came from. On the settle result AND on the outcome record it produced —
+# the second is the one that matters, because `live_outcomes.jsonl` is what the breakers and
+# every R-denominated limit read, and a consumer holding only that row could otherwise infer
+# the provenance solely from `close_reason`. That inference is wrong in both directions: a
+# `venue_external_close` could in principle be priced by a leg, and a `stop_loss` priced from
+# the fill history is exactly what this module now produces.
+#
+# All three paths name themselves, so ABSENT on a row means one thing — written before this
+# field existed. That is the `lifecycle_*` provenance rule: absent is "an older runtime wrote
+# this", a different answer from any value, never folded into the commonest one.
+EXIT_SOURCE_RUNTIME_CLOSE = "runtime_close"    # this runtime sent the closing order
+EXIT_SOURCE_BRACKET_LEG = "bracket_leg"        # a resting bracket leg triggered and filled
+EXIT_SOURCE_FILL_HISTORY = "fill_history"      # rebuilt from the account's own fill list
+
+# A conditional order rests at the venue until its trigger price is reached. Only a working
+# state counts as "the bracket is in place": anything else (a rejection, an instant full
+# trigger, an unknown status) means the position is not protected the way the decision assumed.
+#
+# PARTIALLY_FILLED is working, not lost. A partial fill of the sized reduceOnly LIMIT target
+# is an ordinary market event: the remainder is still on the book, and the closePosition stop
+# beside it covers whatever remains by construction. Until 2026-08-17 this set was {NEW}
+# alone, so that ordinary event read as a lost bracket — rule 2 then force-closed a
+# still-stop-protected position at the book's stale full quantity, reconciled MISMATCH
+# against the venue's reduced position, and latched a portfolio-wide incident with the book
+# still OPEN. The quantity drift a partial fill creates is reconciliation's fact to report
+# (BOOK_DRIFT halts entries, fail-closed), not this classifier's to answer with a taker
+# close that abandons the resting maker remainder.
+BRACKET_RESTING_STATUSES = frozenset({"NEW", "PARTIALLY_FILLED"})
 
 # Terminal states that mean "this leg executed". Two spellings for one fact, because a bracket
 # leg is a CONDITIONAL algo order and the Algo endpoint has its own vocabulary: the order
@@ -195,6 +232,13 @@ CLOSE_REASON_UNPROTECTED = "unprotected_position_close"
 # the cost does not, and `r_basis` keeps the two populations labelled.
 CLOSE_REASON_TIME_EXIT = "time_exit"
 
+# A close this runtime did not send and no bracket leg performed — the operator flattened the
+# position at the venue. Deliberately NOT one of the names above: those describe a strategy rule
+# ending, and aggregating an external close into `stop_loss` or `time_exit` would put a human
+# decision into the population the R statistics use to judge a strategy. It is a real outcome
+# and it is recorded as one; it is simply not the strategy's.
+CLOSE_REASON_VENUE_EXTERNAL = "venue_external_close"
+
 # Whether this position's protective legs are still where the entry left them.
 PROTECTED = "PROTECTED"
 UNPROTECTED = "UNPROTECTED"
@@ -223,6 +267,25 @@ def _exit_terms(decision: Mapping[str, Any]) -> Mapping[str, Any]:
     """
     terms = decision.get("exit_terms")
     return terms if isinstance(terms, Mapping) else {}
+
+
+def _persist_failure_reason(exc: Exception) -> str:
+    """The reason code a failed persist reports, whatever the store actually raised.
+
+    Every post-venue persist site below catches broadly and reports through this, because the
+    REAL stores do not fail with ``ToolError``: ``RealLivePositionStore`` and the live ledger
+    fail through ``filelock.locked()`` (``PersistenceError``), through the gate re-check
+    (``SafetyGateBlocked``), or through the write itself (a raw ``OSError``) — the first two
+    are *siblings* of ``ToolError`` under ``MvpRuntimeError``, not subclasses. A narrow
+    ``except ToolError`` therefore let the stores' actual failure modes escape to
+    ``run_live_leg``'s ``MvpRuntimeError`` handler, which stamps ``ROUTE_BLOCKED`` — a status
+    whose contract is "nothing was sent" — on a leg where money had already moved, and whose
+    escape point could sit *before* bracket placement or the naked close, leaving a filled
+    entry unprotected and unbooked while reported as a pre-venue refusal. Past the venue call
+    the choice is between a recorded persist failure and an unrecorded one, so breadth is the
+    point — the same posture ``live_route._record_entry_outcome`` takes on the route side.
+    """
+    return getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
 
 
 # --- the bracket ---------------------------------------------------------------
@@ -540,8 +603,10 @@ def execute_live_entry(
     if counter is not None:
         try:
             counter.record_submission()
-        except ToolError as exc:
-            result["reason_codes"].append(exc.reason_code)
+        except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+            # The order is already at the venue; an escape here would abort BEFORE the bracket
+            # is placed or a naked fill is closed, which is the worst point in the whole leg.
+            result["reason_codes"].append(_persist_failure_reason(exc))
 
     filled_qty = _f(entry["fill"].get("executed_qty")) or 0.0
     fill_price = _f(entry["fill"].get("avg_price")) or 0.0
@@ -659,12 +724,14 @@ def execute_live_entry(
     }
     try:
         position_store.save_position(position)
-    except ToolError as exc:
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         # The position is real and bracketed; only the local book failed. Say so loudly rather
         # than reporting a clean open — the venue and the book now disagree, and the next
         # cycle's reconciliation will refuse entries on this symbol, which is correct.
+        # POSITION_PERSIST_FAILED is also what halts the fan-out (`live_route._INCIDENT_REASONS`),
+        # so this catch must see the real store's failures, not just ToolError.
         result["reason_codes"].append(POSITION_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = ENTRY_OPENED
     result["position"] = position
@@ -889,6 +956,7 @@ def _record_naked_outcome(
         # from it, and a None collides across two naked closes on one symbol in one cycle.
         position_id=identity.get("position_id"),
         close_reason=CLOSE_REASON_NAKED,
+        exit_source=EXIT_SOURCE_RUNTIME_CLOSE,
         opened_at_utc=now,
         risk_usdt=identity.get("risk_usdt"),
         candidate_id=identity.get("candidate_id"),
@@ -935,6 +1003,33 @@ def realized_pnl_usdt(
     }
     if entry_quote is None or exit_quote is None:
         return None, detail
+
+    # The two sides of the subtraction below come from different places — the exit quote from
+    # the venue's fill, the entry quote from this runtime's book — and until 2026-08-22 nothing
+    # asked whether they describe the same amount. They did not, once: a `closePosition`
+    # STOP_MARKET is Close-All, so it closes whatever is actually open, and on
+    # 2026-08-21T09:03:43Z it closed 0.002 BTC against a book that held 0.001. The difference
+    # priced as a 77.5357 USDT profit on a trade that lost 0.1728, and `result_R` carried
+    # +398.03 into the risk guard's weekly sum. `0.002 * 77708.50 - 0.001 * 77881.30` is that
+    # number to the cent.
+    #
+    # Both sibling exit paths already refuse this: `live_execution.reconcile_order` on
+    # `abs(filled - wanted) > 1e-9` for a runtime-sent exit, and `exit_fill_from_history` on a
+    # fill that overshoots the remaining quantity. The invariant is not new here — it was
+    # present twice and absent once, and the once produced every `stop_loss` sample.
+    #
+    # Refusing returns the caller to its documented behaviour for figures it does not have:
+    # `settle_venue_closed_position` leaves the book OPEN and reports `EXIT_UNSETTLEABLE`,
+    # reconciliation then refuses new entries on the symbol, and an operator resolves it. That
+    # is the correct consequence of not knowing what closed, and this function's own docstring
+    # already says so. Tolerance mirrors `exit_fill_from_history`: what a lot-step rounding can
+    # leave behind, not a licence to accept a different size. A missing `executed_qty` is left
+    # alone rather than refused — it is a pre-existing gap, not this defect, and closing it here
+    # would refuse fills that price correctly today.
+    if exit_qty is not None and quantity > 0:
+        if abs(exit_qty - quantity) > max(quantity * 1e-9, 1e-9):
+            detail["quantity_mismatch"] = {"book": quantity, "venue_filled": exit_qty}
+            return None, detail
 
     direction = str(position.get("direction") or "").upper()
     if direction == "LONG":
@@ -1050,7 +1145,11 @@ def execute_live_exit(
         strategy_id=position.get("strategy_id"),
         position_id=position.get("position_id"),
         close_reason=close_reason,
+        exit_source=EXIT_SOURCE_RUNTIME_CLOSE,
         opened_at_utc=position.get("opened_at_utc"),
+        # The resting trigger, so a stop close measures its own fill against it
+        # (`stop_slippage_bps`) instead of the figure being reconstructed by hand later.
+        stop_price=_f(position.get("stop_loss")),
         # LP5.4's bridge: without the recorded risk there is no honest R, and the bridge
         # excludes an R-less row rather than letting it read as a breakeven.
         risk_usdt=_f(position.get("risk")),
@@ -1062,20 +1161,29 @@ def execute_live_exit(
     result["outcome"] = outcome
 
     # Record the money BEFORE clearing the book: an outcome that never lands is a loss the
-    # breaker will never see, whereas a cleared book with a recorded outcome is merely stale
-    # local state the next reconciliation catches.
+    # breaker will never see. The reverse failure — outcome durable, clear below fails, book
+    # stays OPEN — is recoverable ONLY because the ledger append is idempotent on
+    # settlement_id: the next fire's reconciliation reports the drift, re-settles, the ledger
+    # skips the row it already holds, and the clear gets its retry. Without that skip the
+    # retry appended a duplicate, and one duplicate settlement_id fails every verified read
+    # of the history — breaker, risk guard, promotion — until an operator hand-repairs the
+    # money ledger. The stale book is benign; the retry it triggers had to be made so.
     try:
-        ledger.append_outcome(outcome)
-    except ToolError as exc:
+        appended = ledger.append_outcome(outcome)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
         result["status"] = EXIT_NOT_CONFIRMED
         return result
+    if appended is False:
+        # This settle is the retry: the money row was durable before it started, so nothing
+        # new was written and its remaining job is the book-clear below.
+        result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
         position_store.clear_position(symbol)
-    except ToolError as exc:
-        result["reason_codes"].append(exc.reason_code)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = EXIT_CLOSED
     return result
@@ -1165,6 +1273,123 @@ def read_bracket_legs(
     return {"status": status, "legs": legs}
 
 
+def _history_start_ms(position: Mapping[str, Any]) -> int:
+    """Where to start the venue's fill query for this position.
+
+    The open, minus a minute. The margin is for clock skew between this runtime's recorded
+    open and the venue's own stamp on the entry fill — a start time a few hundred milliseconds
+    late would drop the very fills being looked for. Widening it costs nothing: everything
+    before the open is filtered out again in :func:`exit_fill_from_history`, which compares
+    against the open itself rather than against this bound.
+    """
+    opened = position.get("opened_at_utc")
+    if isinstance(opened, str) and opened:
+        try:
+            return int(timeutil.parse_iso(opened).timestamp() * 1000) - 60_000
+        except (ValueError, TypeError, OSError):
+            pass
+    return 0
+
+
+def exit_fill_from_history(
+    position: Mapping[str, Any], rows: Any
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The closing fill, rebuilt from the account's own fill history. Pure.
+
+    Returns ``(fill_facts, exit_order_id)`` in the shape :func:`fill_facts` produces, so the
+    caller prices it through the same :func:`realized_pnl_usdt` every other exit uses — an
+    externally closed trade and a bracket-closed one become the same kind of record. Returns
+    ``(None, None)`` whenever the history cannot answer **unambiguously**, which is most of the
+    ways it can fail.
+
+    This exists because the bracket legs cannot answer at all when the position was closed by
+    something other than the bracket. An operator flattening at the venue leaves both legs
+    EXPIRED with no fill, so :func:`settle_venue_closed_position` had nothing to price and the
+    book stayed OPEN forever — reconciliation then refuses new entries on that symbol and the
+    incident halts live routing everywhere. The venue's own fill list is the authority that was
+    always there and was never read.
+
+    **This is not the "invents rather than refuses" path the caller warns about.** Every number
+    here comes from the venue's record of what it filled. What is added is a rule for deciding
+    WHICH fills closed this position, and that rule refuses instead of guessing:
+
+    - only fills on the CLOSING side (SELL closes a LONG), and only at or after the open;
+    - taken oldest-first, accumulating until they exactly cover the position's quantity;
+    - a fill that would overshoot the remaining quantity refuses the whole answer — it cannot
+      be part of this position's close, and its presence means the symbol saw activity this
+      function cannot attribute;
+    - a total that never reaches the quantity refuses — a partial close is still an open
+      position, and clearing the book on one would hide real exposure.
+
+    ``rows`` is what ``AccountFeed.fill_history`` returned: ``None`` means no feed (a different
+    statement from an empty list, which honestly means the account has no fills) and both
+    refuse here, for different reasons that the caller records separately.
+    """
+    if not isinstance(rows, list) or not rows:
+        return None, None
+    quantity = _f(position.get("quantity")) or 0.0
+    if quantity <= 0:
+        return None, None
+    closing_side = "SELL" if str(position.get("direction") or "").upper() == "LONG" else "BUY"
+
+    opened_ms = None
+    opened = position.get("opened_at_utc")
+    if isinstance(opened, str) and opened:
+        try:
+            opened_ms = int(timeutil.parse_iso(opened).timestamp() * 1000)
+        except (ValueError, TypeError, OSError):
+            return None, None
+    if opened_ms is None:
+        return None, None
+
+    candidates = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("side") or "").upper() != closing_side:
+            continue
+        stamp = _f(row.get("time"))
+        if stamp is None or stamp < opened_ms:
+            continue
+        qty = _f(row.get("qty"))
+        quote = _f(row.get("quoteQty"))
+        if qty is None or qty <= 0 or quote is None or quote < 0:
+            return None, None  # a malformed row makes the whole history unusable, not skippable
+        candidates.append((stamp, qty, quote, row.get("orderId")))
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda c: c[0])
+    remaining = quantity
+    taken: list[tuple[float, float, float, Any]] = []
+    # Quantities are decimal strings on the wire and floats here; the tolerance is what a
+    # lot-step rounding can leave behind, not a licence to accept a different size.
+    tolerance = max(quantity * 1e-9, 1e-9)
+    for entry in candidates:
+        if entry[1] > remaining + tolerance:
+            return None, None  # overshoot: not this position's close
+        taken.append(entry)
+        remaining -= entry[1]
+        if remaining <= tolerance:
+            break
+    if remaining > tolerance:
+        return None, None  # never covered the position
+
+    executed_qty = sum(t[1] for t in taken)
+    cum_quote = sum(t[2] for t in taken)
+    if executed_qty <= 0 or cum_quote <= 0:
+        return None, None
+    order_ids = {t[3] for t in taken if t[3] is not None}
+    return (
+        {
+            "avg_price": round(cum_quote / executed_qty, 8),
+            "cum_quote": round(cum_quote, 8),
+            "executed_qty": round(executed_qty, 8),
+        },
+        next(iter(order_ids)) if len(order_ids) == 1 else None,
+    )
+
+
 def settle_venue_closed_position(
     position: Mapping[str, Any],
     *,
@@ -1172,6 +1397,7 @@ def settle_venue_closed_position(
     position_store: Any,
     ledger: Any,
     legs: Mapping[str, Any] | None = None,
+    account_feed: Any | None = None,
     now: str,
     timeout_seconds: int = 10,
 ) -> dict[str, Any]:
@@ -1205,19 +1431,63 @@ def settle_venue_closed_position(
     result["bracket"] = read
 
     filled = next((leg for leg in read.get("legs") or [] if leg.get("filled")), None)
-    if filled is None:
-        result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
-        return result
+    exit_order_id = filled.get("exchange_order_id") if filled is not None else None
+    close_reason = str(filled["close_reason"]) if filled is not None else CLOSE_REASON_VENUE_EXTERNAL
+    exit_fill = filled["fill"] if filled is not None else None
+    exit_source = EXIT_SOURCE_BRACKET_LEG
 
-    pnl, pnl_detail = realized_pnl_usdt(position, filled["fill"])
-    result["pnl_detail"] = pnl_detail
-    result["exit"] = filled
+    pnl, pnl_detail = realized_pnl_usdt(position, exit_fill) if exit_fill else (None, {})
     if pnl is None:
-        result["reason_codes"].append(FILL_FACTS_MISSING)
-        result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
-        return result
+        # No leg filled, or one did and its payload will not price. Both mean the same thing at
+        # this point — the bracket cannot say what the exit was — and the venue's own fill list
+        # can. Read it before giving up, because the alternative is a book that stays OPEN
+        # forever: reconciliation then refuses new entries on this symbol and the incident halts
+        # live routing everywhere, with no path back that does not involve inventing a price.
+        rows = None
+        if account_feed is not None:
+            try:
+                rows = account_feed.fill_history(
+                    str(position.get("symbol") or ""),
+                    start_ms=_history_start_ms(position),
+                    timeout_seconds=timeout_seconds,
+                )
+            except ToolError as exc:
+                result["reason_codes"].append(exc.reason_code)
+                rows = None
+        if rows is None:
+            result["reason_codes"].append(FILL_HISTORY_UNAVAILABLE)
+        else:
+            history_fill, history_order_id = exit_fill_from_history(position, rows)
+            if history_fill is None:
+                result["reason_codes"].append(FILL_HISTORY_INCONCLUSIVE)
+            else:
+                pnl, pnl_detail = realized_pnl_usdt(position, history_fill)
+                if pnl is not None:
+                    exit_fill = history_fill
+                    exit_order_id = history_order_id
+                    # Only when NO leg filled. The fallback runs on two different facts —
+                    # "the bracket did not close this" and "a leg closed it but its payload
+                    # will not price" — and the second is still a strategy exit. Overwriting
+                    # the reason there would take a real `stop_loss` OUT of the population the
+                    # R statistics judge the strategy on, which is this label's own purpose
+                    # inverted. A leg query that merely FAILED lands here too, so the test is
+                    # "did a leg say it filled", never "did the bracket answer".
+                    if filled is None:
+                        close_reason = CLOSE_REASON_VENUE_EXTERNAL
+                    exit_source = EXIT_SOURCE_FILL_HISTORY
 
-    close_reason = str(filled["close_reason"])
+    result["pnl_detail"] = pnl_detail
+    result["exit"] = filled if filled is not None else (
+        {"fill": exit_fill, "close_reason": close_reason} if exit_fill else None
+    )
+    if pnl is None:
+        if exit_fill is not None:
+            result["reason_codes"].append(FILL_FACTS_MISSING)
+        result["reason_codes"].append(VENUE_CLOSE_UNSETTLEABLE)
+        # Deliberately no `exit_source` on this return: nothing priced the exit, so naming a
+        # source would assert a provenance for a number that does not exist.
+        return result
+    result["exit_source"] = exit_source
     # Rule 3 again: the leg that did NOT trigger is still resting against a position that no
     # longer exists. `cancel_bracket_legs` treats an already-gone order as a success, so the
     # triggered leg costs nothing here.
@@ -1233,11 +1503,16 @@ def settle_venue_closed_position(
         entry_price=_f(position.get("entry_price")),
         exit_price=pnl_detail["exit_price"],
         entry_order_id=position.get("entry_exchange_order_id"),
-        exit_order_id=filled.get("exchange_order_id"),
+        exit_order_id=exit_order_id,
         strategy_id=position.get("strategy_id"),
         position_id=position.get("position_id"),
         close_reason=close_reason,
+        exit_source=exit_source,
         opened_at_utc=position.get("opened_at_utc"),
+        # This is the path the first two real stops settled through (a leg fill, or the fill
+        # history), and the path whose slippage had to be reconstructed by hand in §C — the
+        # trigger rides on the row from here on so `stop_slippage_bps` is measured at source.
+        stop_price=_f(position.get("stop_loss")),
         risk_usdt=_f(position.get("risk")),
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),
@@ -1246,19 +1521,26 @@ def settle_venue_closed_position(
     )
     result["outcome"] = outcome
 
-    # Ledger before book, for the reason `execute_live_exit` gives: an outcome that never
-    # lands is a loss the breaker will never see.
+    # Ledger before book, for the reason `execute_live_exit` gives — and this is the path
+    # the retry actually rides: a settle whose clear failed leaves the book OPEN, the next
+    # fire's reconciliation reports DRIFT_MISSING_AT_VENUE, and the re-settle lands here
+    # having rebuilt the SAME settlement_id (the fill-history fallback recovers the same
+    # venue order). The ledger skips the duplicate (`append_outcome` returns False) and the
+    # clear below gets its retry — that skip is what keeps this loop from poisoning the
+    # history it reports to.
     try:
-        ledger.append_outcome(outcome)
-    except ToolError as exc:
+        appended = ledger.append_outcome(outcome)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(OUTCOME_PERSIST_FAILED)
-        result["reason_codes"].append(exc.reason_code)
+        result["reason_codes"].append(_persist_failure_reason(exc))
         return result
+    if appended is False:
+        result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
         position_store.clear_position(str(position.get("symbol") or ""))
-    except ToolError as exc:
-        result["reason_codes"].append(exc.reason_code)
+    except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
+        result["reason_codes"].append(_persist_failure_reason(exc))
 
     result["status"] = EXIT_CLOSED
     return result
@@ -1303,6 +1585,7 @@ __all__ = [
     "NAKED_POSITION_CLOSED",
     "NOT_READY",
     "NO_GOVERNANCE",
+    "OUTCOME_ALREADY_RECORDED",
     "OUTCOME_PERSIST_FAILED",
     "POSITION_PERSIST_FAILED",
     "PROTECTED",
@@ -1316,6 +1599,13 @@ __all__ = [
     "leg_status_line",
     "place_bracket_leg",
     "read_bracket_legs",
+    "CLOSE_REASON_VENUE_EXTERNAL",
+    "EXIT_SOURCE_BRACKET_LEG",
+    "EXIT_SOURCE_FILL_HISTORY",
+    "EXIT_SOURCE_RUNTIME_CLOSE",
+    "FILL_HISTORY_INCONCLUSIVE",
+    "FILL_HISTORY_UNAVAILABLE",
     "realized_pnl_usdt",
+    "exit_fill_from_history",
     "settle_venue_closed_position",
 ]

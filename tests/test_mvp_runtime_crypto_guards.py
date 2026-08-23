@@ -41,8 +41,12 @@ def _snapshot(n: int = 60, *, timeframe_minutes: int = 1440, is_synthetic: bool 
     return snap
 
 
-def _outcome(result_r: float, closed_at: str, *, closed: bool = True):
-    return {"result_R": result_r, "outcome_closed": closed, "created_at_utc": closed_at}
+def _outcome(result_r: float, closed_at: str, *, closed: bool = True,
+             strategy_id: str | None = None):
+    row = {"result_R": result_r, "outcome_closed": closed, "created_at_utc": closed_at}
+    if strategy_id is not None:
+        row["strategy_id"] = strategy_id
+    return row
 
 
 # --- data health --------------------------------------------------------------
@@ -163,6 +167,55 @@ def test_consecutive_losses_breached():
     ]
     verdict = run_risk_guard(outcomes, now=NOW)
     assert "max_consecutive_losses_breached" in verdict["problems"]
+
+
+def test_probe_losses_do_not_trip_the_consecutive_breaker():
+    """A probe closes at a loss by design — the stop fill IS the sample. Measured
+    2026-08-17: three probe closes breached the pool streak and muted live routing while
+    the armed strategy's own last close was a win. Probe rows must not count."""
+    outcomes = [
+        _outcome(0.9, "2026-07-09T10:00:00Z"),  # the strategy's last real close: a WIN
+        _outcome(-1.0, "2026-07-10T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.3, "2026-07-11T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.1, "2026-07-12T10:00:00Z", strategy_id="PROBE-probe_batch_bbb"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert "max_consecutive_losses_breached" not in verdict["problems"]
+    assert verdict["consecutive_losses"] == 0
+
+
+def test_a_probe_win_does_not_reset_a_strategy_streak():
+    """The symmetric half: a probe that happens to close positive (timeout exit above
+    entry) must not unlatch a real strategy losing streak."""
+    outcomes = [
+        _outcome(-0.3, "2026-07-10T10:00:00Z"),
+        _outcome(-0.3, "2026-07-11T10:00:00Z"),
+        _outcome(0.2, "2026-07-11T18:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.3, "2026-07-12T10:00:00Z"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert verdict["consecutive_losses"] == 3
+    assert "max_consecutive_losses_breached" in verdict["problems"]
+
+
+def test_probe_rows_still_count_toward_daily_loss():
+    """Invisibility is scoped to the streak alone — probe spend is real money and the
+    daily/weekly sums keep reading it."""
+    outcomes = [
+        _outcome(-1.0, "2026-07-22T08:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-1.2, "2026-07-22T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert verdict["daily_pnl_r"] == -2.2
+    assert "daily_loss_limit_breached" in verdict["problems"]
+    assert "max_consecutive_losses_breached" not in verdict["problems"]
+
+
+def test_probe_prefix_matches_the_probe_module():
+    """`guards` keeps a local literal so the cycle guard does not import the live-order
+    stack; this pin is what makes that duplication safe."""
+    from runtime.mvp_runtime.crypto import probe
+    assert guards._PROBE_STRATEGY_PREFIX == probe.PROBE_STRATEGY_PREFIX
 
 
 def test_drawdown_breaker_uses_current_not_historical_max():
@@ -327,3 +380,21 @@ def test_the_verdict_always_carries_what_the_drawdown_was_measured_over():
     verdict = guards.run_risk_guard(DD_ROWS, now=DD_NOW)
     assert "drawdown_baseline" in verdict
     assert verdict["limits"]["drawdown_excluded_strategy_ids"] == []
+
+
+def test_the_breaker_charges_carry_and_a_short_receives_it():
+    """Carry is the one SIGNED cost term: a long pays it, a short receives the venue's real
+    payment — so the daily figure moves down for a held long and up for a held short."""
+    base = {
+        "result_R": 1.0, "outcome_closed": True, "created_at_utc": "2026-07-22T08:00:00Z",
+        "direction": "LONG", "entry_price": 100.0, "exit_price": 101.0, "risk": 1.0,
+        "holding_candles": 9, "timeframe": "1d",
+    }
+    held = run_risk_guard([base], now=NOW)["daily_pnl_r"]
+    flat = run_risk_guard([{**base, "holding_candles": 0}], now=NOW)["daily_pnl_r"]
+    assert held < flat
+
+    short = {**base, "direction": "SHORT", "exit_price": 99.0}
+    held_short = run_risk_guard([short], now=NOW)["daily_pnl_r"]
+    flat_short = run_risk_guard([{**short, "holding_candles": 0}], now=NOW)["daily_pnl_r"]
+    assert held_short > flat_short

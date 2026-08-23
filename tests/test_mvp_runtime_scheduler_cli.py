@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from runtime.mvp_runtime import control
+from runtime.mvp_runtime import control, heartbeat, scheduler, task_registry
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.scheduler import KIND_PRUNE, KIND_TASK, ScheduleStore, build_schedule
 from runtime.mvp_runtime.scheduler_cli import main, remaining_period
@@ -221,3 +221,160 @@ def test_tick_skips_while_killed(tmp_path, capsys):
               store=store, ledger=ledger, control_store=control_store, working_memory=wm, now=DUE)
     assert rc == 0
     assert "skipped 1" in capsys.readouterr().out
+
+
+def _budget_bound_tick(tmp_path, monkeypatch, *, budget):
+    """One tick with a due non-risk schedule and the maintenance budget set by the caller.
+
+    A negative budget binds on the first candidate (elapsed 0 > -1), which is the only way to
+    drive this branch without a fire that genuinely runs for a minute — `run_due` reads the real
+    `time.monotonic`, not the clock the CLI injects for its own sleep arithmetic.
+    """
+    from runtime.mvp_runtime import scheduler as scheduler_mod
+
+    monkeypatch.setattr(scheduler_mod, "MAINTENANCE_PASS_BUDGET_SECONDS", budget)
+    store, ledger = _stores(tmp_path)
+    control_store = ControlStore(tmp_path)
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+    rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
+              store=store, ledger=ledger, control_store=control_store, working_memory=wm,
+              now=DUE)
+    assert rc == 0
+
+
+def test_a_bound_maintenance_budget_says_so_on_the_pass_it_bound(tmp_path, capsys, monkeypatch):
+    """The gap this closes: the service runs `--max-ticks 0`, so the end-of-loop summary that
+    carries `deferred` is unreachable — the `while` never exits and SIGTERM raises no
+    KeyboardInterrupt. The count accumulated for the life of the container and died with it.
+
+    Narrowly the AGGREGATE, not the fact: the per-result line already printed every individual
+    deferral, and the durable record is the `ACTION_DEFERRED` scheduler event (#596). What was
+    missing was one line saying the budget bound this pass, without counting the others."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=-1.0)
+    err = capsys.readouterr().err
+    assert "maintenance budget bound this pass" in err
+    assert "deferred 1" in err
+    assert "running total 1" in err
+
+
+def test_a_pass_that_did_not_bind_says_nothing(tmp_path, capsys, monkeypatch):
+    """Quiet by construction. A line every pass is a line an operator learns to skip, which is
+    the failure the breaker and route watches were both written to avoid."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=3600.0)
+    err = capsys.readouterr().err
+    assert "maintenance budget" not in err
+
+
+def test_the_end_of_loop_summary_keeps_the_shape_ci_greps_for(tmp_path, capsys, monkeypatch):
+    """`.github/workflows/docker-image.yml` greps the literal "fired 0, skipped 0, failed 0".
+    The new line is additive and on stderr; this pins that the summary itself did not move."""
+    _budget_bound_tick(tmp_path, monkeypatch, budget=-1.0)
+    out = capsys.readouterr().out
+    assert "fired 0, skipped 0, failed 0, deferred 1 over 1 tick(s)" in out
+
+
+# === the tick loop can run one lane ================================================
+# `docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md` (Thomas 2026-08-19). `--lane` selects one
+# side of the RISK_KINDS/MAINTENANCE_KINDS partition; the default `all` is the
+# single-process deployment, byte-for-byte the old behavior. The hard part of the split is
+# not what a lane fires — it is what a lane's STARTUP must leave alone, because both lanes
+# share one store and one ledger and each one's restart diagnosis reads shapes the other
+# lane produces while healthy.
+
+LATE = "2026-07-19T09:00:00Z"      # two full intervals past DUE for an 86400s schedule
+
+
+def _tick(tmp_path, store, ledger, lane, *, now, capsys):
+    rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0", "--lane", lane],
+              store=store, ledger=ledger, control_store=ControlStore(tmp_path),
+              working_memory=WorkingMemoryStore(tmp_path / "wm"), repo_root=tmp_path, now=now)
+    assert rc == 0
+    return capsys.readouterr().out
+
+
+def test_a_risk_lane_tick_leaves_a_due_maintenance_schedule_for_its_own_lane(tmp_path, capsys):
+    store, ledger = _stores(tmp_path)
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+
+    out = _tick(tmp_path, store, ledger, "risk", now=DUE, capsys=capsys)
+    assert "fired 0" in out
+    assert store.list()[0].next_run_at <= DUE          # still due, still unclaimed
+
+    out = _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
+    assert "fired 1" in out
+    assert store.list()[0].last_run_at == DUE
+
+
+def test_each_lane_stamps_its_own_heartbeat(tmp_path, capsys):
+    """One heartbeat per PROCESS: a shared file would let a live maintenance loop keep a
+    dead risk loop reading FRESH — the silent stall the probe exists to catch."""
+    store, ledger = _stores(tmp_path)
+    _tick(tmp_path, store, ledger, "risk", now=DUE, capsys=capsys)
+    _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
+    assert heartbeat.heartbeat_path(heartbeat.SCHEDULER_RISK_SERVICE, tmp_path).is_file()
+    assert heartbeat.heartbeat_path(heartbeat.SCHEDULER_MAINTENANCE_SERVICE, tmp_path).is_file()
+    assert not heartbeat.heartbeat_path(heartbeat.SCHEDULER_SERVICE, tmp_path).is_file()
+
+    rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
+              store=store, ledger=ledger, control_store=ControlStore(tmp_path),
+              working_memory=WorkingMemoryStore(tmp_path / "wm"), repo_root=tmp_path, now=DUE)
+    assert rc == 0
+    assert heartbeat.heartbeat_path(heartbeat.SCHEDULER_SERVICE, tmp_path).is_file()
+
+
+def test_a_lanes_startup_never_abandons_the_other_lanes_run(tmp_path, capsys):
+    """Both lanes share one ledger, so at a risk-lane restart the maintenance lane's fire
+    currently RUNNING next door is an unpaired `started` — exactly the shape the abandoned
+    scan notices. Closing it would leave the ledger claiming one occurrence both died and
+    fired. A lane pairs up only its own dead."""
+    store, ledger = _stores(tmp_path)
+    s = build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                       created_by="op", now=T0)
+    ledger.append_scheduler_event(scheduler._scheduler_event(
+        scheduler.ACTION_STARTED, s, now=T0, status="running", run_id="srun_next_door"))
+
+    _tick(tmp_path, store, ledger, "risk", now=DUE, capsys=capsys)
+    assert all(e["action"] != "abandoned" for e in ledger.read_scheduler_events())
+
+    _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
+    abandoned = [e for e in ledger.read_scheduler_events() if e["action"] == "abandoned"]
+    assert len(abandoned) == 1 and abandoned[0]["schedule_run_id"] == "srun_next_door"
+
+
+def test_a_lanes_startup_reports_only_its_own_gaps(tmp_path, capsys):
+    """A maintenance schedule overdue at the risk lane's startup may just be waiting on a
+    maintenance loop that has not started yet — a `gap_detected` for it here would be the
+    other lane's downtime reported as fact by a process that cannot know it."""
+    store, ledger = _stores(tmp_path)
+    store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400,
+                             created_by="op", now=T0))
+
+    _tick(tmp_path, store, ledger, "risk", now=LATE, capsys=capsys)
+    assert all(e["action"] != "gap_detected" for e in ledger.read_scheduler_events())
+
+    _tick(tmp_path, store, ledger, "maintenance", now=LATE, capsys=capsys)
+    gaps = [e for e in ledger.read_scheduler_events() if e["action"] == "gap_detected"]
+    assert len(gaps) == 1 and gaps[0]["kind"] == KIND_PRUNE
+
+
+def test_only_the_lane_that_fires_analysis_tasks_reconciles_them(tmp_path, capsys, monkeypatch):
+    """KIND_TASK is a maintenance kind, so a SCHEDULER-origin registry entry belongs to the
+    maintenance lane — the risk lane restarting must not mark the maintenance lane's
+    in-flight analysis RUN_ABANDONED while it still runs next door."""
+    calls: list[dict] = []
+
+    def _record(store_, **kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(task_registry, "reconcile_stale_running", _record)
+    store, ledger = _stores(tmp_path)
+
+    _tick(tmp_path, store, ledger, "risk", now=DUE, capsys=capsys)
+    assert calls == []
+
+    _tick(tmp_path, store, ledger, "maintenance", now=DUE, capsys=capsys)
+    assert len(calls) == 1 and calls[0]["origins"] == task_registry.SCHEDULER_ORIGINS

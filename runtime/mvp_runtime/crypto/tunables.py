@@ -40,18 +40,32 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    account,
+    candle_archive,
     cost,
+    dashboard,
+    digest,
+    distribution_gate,
     factory,
+    features,
     feedback,
+    forward_confirmation,
     guards,
+    live_allowance,
+    live_entry,
     live_order,
     live_position,
+    live_budget,
     live_promotion,
     live_sizing,
     market_data,
+    null_control,
     paper,
     pool,
+    probe,
+    proposer,
     robustness,
+    strategy,
 )
 
 # --- provenance: how this number came to be what it is ----------------------------------------
@@ -96,6 +110,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("DEFAULT_SLIPPAGE_BPS", cost.DEFAULT_SLIPPAGE_BPS, "crypto/cost.py", INHERITED,
             "carried from the source system unmeasured; a canary is one order, not a sample",
             "enough live fills to measure realized slippage against intended price"),
+    Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", MEASURED,
+            "measured 2026-08-21 via the stop-slippage probe (n=10, median 1.07 bps, "
+            "upper quartile 1.60 bps; Thomas chose 1.4 as the round figure)",
+            "a material change in venue microstructure or a larger sample contradicting "
+            "the current estimate"),
     Tunable("DEFAULT_FUNDING_BPS_PER_INTERVAL", cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
             "crypto/cost.py", VENUE,
             "Binance USD-M's base rate; a FALLBACK only — real history is charged when present",
@@ -114,6 +133,26 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MAX_CONSECUTIVE_LOSSES", guards.MAX_CONSECUTIVE_LOSSES, "crypto/guards.py", INHERITED,
             "source `config/settings.py`; three in a row halts",
             "a measured run-length distribution; three is a plausible number nobody checked here"),
+    # #615 §5 — the per-lineage allowance. DERIVED because both are the pool-wide breaker's own
+    # numbers narrowed to one lineage's share; when those move, these should be reconsidered
+    # together. The proposal states their weakness rather than hiding it (§8-A): the live sample
+    # is 3 outcomes, so there is nothing to calibrate against and will not be for months.
+    #
+    # An allowance does not need a calibrated threshold the way a verdict does — it encodes how
+    # much we were willing to risk before pausing to look. What would falsify the choice is the
+    # opposite failure: lineages leaving the live tier before they can produce any evidence at
+    # all. If that happens, the honest reading is "there is nothing worth proving live right
+    # now", not "the numbers are wrong".
+    Tunable("MAX_CONSECUTIVE_LIVE_LOSSES", live_allowance.MAX_CONSECUTIVE_LIVE_LOSSES,
+            "crypto/live_allowance.py", DERIVED,
+            "`guards.MAX_CONSECUTIVE_LOSSES` (3) narrowed to one lineage; deliberately tighter",
+            "a per-lineage run-length distribution, which needs live outcomes this pool has not "
+            "produced — 3 live settlements exist in total as of 2026-08-09"),
+    Tunable("MAX_CUMULATIVE_LIVE_LOSS_R", live_allowance.MAX_CUMULATIVE_LIVE_LOSS_R,
+            "crypto/live_allowance.py", DERIVED,
+            "`guards.WEEKLY_MAX_LOSS_R` (-5.0) narrowed to one lineage's share of the portfolio",
+            "the same measurement, and the -1.108R live stop-out of 2026-08-04 first: if realized "
+            "R runs past planned R systematically, every R-denominated limit here is optimistic"),
     Tunable("MAX_DRAWDOWN_PCT", guards.MAX_DRAWDOWN_PCT, "crypto/guards.py", INHERITED,
             "source `config/settings.py`",
             "the same"),
@@ -152,9 +191,26 @@ TUNABLES: tuple[Tunable, ...] = (
             "fraction of usable equity per trade; can only ever make an order smaller than the caps",
             "the same evidence that would move `guards.RISK_PER_TRADE`"),
     Tunable("MAX_CONSECUTIVE_BRACKET_FAILURES", live_order.MAX_CONSECUTIVE_BRACKET_FAILURES,
-            "crypto/live_order.py", MEASURED,
-            "the incident's own number: two refusals in a row is the path broken, not a venue moment",
-            "a bracket failure mode that is not the confirm race #460 fixed"),
+            "crypto/live_order.py", OPERATOR,
+            "2 was the first incident's own number; Thomas raised it to 5 on 2026-08-19 after the "
+            "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
+            "before its own error_detail could be read",
+            "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
+    Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
+            "crypto/live_entry.py", OPERATOR,
+            "a dislocation breaker, not a cost control: re-measured 2026-08-22 at ~15x the "
+            "widest spread this venue has shown (3.2 bps over 3,806 samples) and kept there, "
+            "because MAX_ENTRY_COST_R already owns entry economics",
+            "a symbol whose ordinary spread is a material fraction of 50 bps joining the "
+            "universe — per-symbol medians already span 0.015 to 1.42 bps"),
+    Tunable("DI_THRESHOLD", distribution_gate.DI_THRESHOLD,
+            "crypto/distribution_gate.py", OPERATOR,
+            "mean |z| > 3 means current features average 3 stdev from their backtest distribution",
+            "accumulated live DI scores showing a different boundary between edge and noise"),
+    Tunable("MIN_REFERENCE_BARS", distribution_gate.MIN_REFERENCE_BARS,
+            "crypto/distribution_gate.py", OPERATOR,
+            "fewer than 30 scored bars means the reference distribution is too thin to trust",
+            "a backtest window short enough that 30 is a binding constraint"),
     Tunable("DEFAULT_MIN_CLEAN_CANARY_ORDERS", live_promotion.DEFAULT_MIN_CLEAN_CANARY_ORDERS,
             "crypto/live_promotion.py", INHERITED,
             "the source's default: three clean canaries before an autonomous live entry",
@@ -171,6 +227,21 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/pool.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
+    Tunable("MIN_FORWARD_TRADES_1D", forward_confirmation.MIN_FORWARD_TRADES_1D,
+            "crypto/forward_confirmation.py", OPERATOR,
+            "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
+            "10 closes is the t-test minimum that still prices dispersion honestly",
+            "a 1d strategy reaching forward confirmation or the inflation table re-measured at 1d"),
+    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool.OBSERVATION_MIN_BACKTEST_CLOSED,
+            "crypto/pool.py", MEASURED,
+            "where the store's own expectancy-vs-sample table stops being inflated "
+            "(<20 closes +0.114R, 50-199 -0.003R); below it a positive pick is the lottery",
+            "the inflation table re-measured on a store with a different mint geometry"),
+    Tunable("OBSERVATION_FAMILY_CAP", pool.OBSERVATION_FAMILY_CAP,
+            "crypto/pool.py", OPERATOR,
+            "Thomas 5-3 (2026-08-11): a third sibling's forward record is correlated with the "
+            "first two, not independent — F1 has no correlation control to price it",
+            "correlation control landing (F1), which would price diversity instead of capping it"),
     Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool.LIFECYCLE_MIN_WINDOW_TRADES, "crypto/pool.py",
             DERIVED, "`lifecycle.DEFAULT_WINDOWS[0]`, restated; a test pins the two equal",
             "the ladder's smallest window moving"),
@@ -227,6 +298,13 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/factory.py", MEASURED,
             "0 of 22 mints at 8 conditions produced a judgeable holdout; the band yields nothing",
             "a mint at 8 conditions reaching `MIN_HOLDOUT_TRADES` — needs a longer replay window"),
+    Tunable("ABLATION_MAX_CONDITIONS", factory.ABLATION_MAX_CONDITIONS, "crypto/factory.py",
+            OPERATOR,
+            "Thomas 2026-08-12, FACTORY_ABLATION_V0.1 §3-1 as proposed: hypotheses of up to "
+            "three conditions run the 7-member train-only lattice; wider ones stay on the "
+            "existing path",
+            "a cadence reallocation pricing the k=4 lattice's 15 members — §3-1 names it as "
+            "the decision that would move this"),
     Tunable("HOLDOUT_FRACTION", factory.HOLDOUT_FRACTION, "crypto/factory.py", INHERITED,
             "the most recent 30% is withheld from scoring entirely",
             "evidence that the split size is what limits holdout depth rather than signal rate"),
@@ -254,6 +332,14 @@ TUNABLES: tuple[Tunable, ...] = (
             "a per-regime sign read off three trades is the overfitting hazard wired into routing",
             "a measured relationship between per-regime sample size and forward sign"),
 
+    # --- liquidation guard: stop-beyond-liquidation refusal ----------------------------------
+    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", OPERATOR,
+            "Binance USDM default for most perpetuals; higher → guard more restrictive",
+            "the operator changing the account leverage, or adding per-symbol leverage reads"),
+    Tunable("MAINTENANCE_MARGIN_RATE", paper.MAINTENANCE_MARGIN_RATE, "crypto/paper.py", VENUE,
+            "Binance USDM tier-1 MMR (0.4%); lowest tier is permissive for the guard",
+            "trading positions large enough to cross into tier-2 (> $50K notional)"),
+
     # --- what counts as enough evidence to score at all --------------------------------------
     Tunable("MIN_FACTORY_BARS", market_data.MIN_FACTORY_BARS, "crypto/market_data.py", VENUE,
             "what the venue can answer: ~2.1k daily bars on the shortest routed history (SOLUSDT)",
@@ -264,12 +350,120 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MIN_TRADES_PER_WINDOW", factory.MIN_TRADES_PER_WINDOW, "crypto/factory.py", INHERITED,
             "a walk-forward slice needs this many closed trades before its sign counts",
             "the same evidence that moved `MIN_HOLDOUT_TRADES` off 3 — this one is still 3"),
+    Tunable("WALK_FORWARD_PERIODS", factory.WALK_FORWARD_PERIODS, "crypto/factory.py", DERIVED,
+            "the train span subtotalled at the tail's slice WIDTH (~35 days), not its count — "
+            "the autocorrelation table above `HOLDOUT_PERIODS` is the argument",
+            "`HOLDOUT_PERIODS` or the replay window moving, or the store's occupancy "
+            "measurement (walk_forward_stability_report) disagreeing with the width match"),
+    Tunable("WALK_FORWARD_MIN_PERIODS", factory.WALK_FORWARD_MIN_PERIODS, "crypto/factory.py",
+            DERIVED,
+            "the resolution argument `MIN_HOLDOUT_PERIODS` made, applied to the train span; "
+            "records only — nothing judges on it until PR-2's decision",
+            "the same store measurement that decides whether temporal_stability judges at all"),
     Tunable("MAX_HOLDING_BARS_RANGE", factory.MAX_HOLDING_BARS_RANGE, "crypto/factory.py",
             INHERITED, "validator bounds, source S3 verbatim",
             "the measured median hold, which sits at 5-27% of what a spec declares"),
     Tunable("MIN_SAMPLE_SIZE", feedback.MIN_SAMPLE_SIZE, "crypto/feedback.py", INHERITED,
             "source default for the performance report; NOT what Gate 0 uses",
             "nothing on its own — `LIVE_CANDIDATE_MIN_SAMPLE` is the one that gates money"),
+
+    # === second slice, 2026-08-08 — the ten modules the first one left ==========================
+    #
+    # The first slice took the money path and named its boundary in the coverage test so the rest
+    # was a decision rather than an oversight. This finishes it: every crypto module is swept now.
+    # The count is the surprise — 29 decision-shaped constants had no owner across those ten, not
+    # the hundreds §G1's headline implies, because the headline counts every upper-case assignment
+    # and most of them are mechanics. Twelve are decisions and are indexed here; seventeen are
+    # estimator warm-up, page budgets and display thresholds, and are named in the test's
+    # `MECHANICS` with a reason apiece.
+
+    # --- what the regime label and the digest inherited, and nobody re-measured ---------------
+    Tunable("ADX_TREND_THRESHOLD", features.ADX_TREND_THRESHOLD, "crypto/features.py", INHERITED,
+            "source `entry_policy.adx_trend_threshold`; the cutoff every regime label turns on",
+            "§F6 already reads this runtime's regime/outcome record for a different question"),
+    Tunable("TREND_THRESHOLD_R", digest.TREND_THRESHOLD_R, "crypto/digest.py", INHERITED,
+            "source `performance_digest`'s ±0.1R band, ported whole with the bucketing",
+            "a digest verdict that disagrees with what the ledger says over the same window"),
+    Tunable("DEFAULT_MIN_BUCKET_SAMPLE", digest.DEFAULT_MIN_BUCKET_SAMPLE, "crypto/digest.py",
+            INHERITED, "the same port's floor for calling a bucket judgeable at all",
+            "the same evidence that moved `MIN_HOLDOUT_TRADES` off 3"),
+
+    # --- floors this runtime measured for itself ----------------------------------------------
+    Tunable("MIN_MEANINGFUL_SAMPLE", dashboard.MIN_MEANINGFUL_SAMPLE, "crypto/dashboard.py",
+            MEASURED,
+            "the board graduated here while +0.08R over 60 trades sat 0.4 standard errors from 0",
+            "nothing: it is a floor now, not the promoter — `MIN_INTERVAL_SAMPLE` and the interval are"),
+    Tunable("MIN_POST_MINT_DAYS", null_control.MIN_POST_MINT_DAYS, "crypto/null_control.py",
+            MEASURED, "a month is one market period, and the period is the unit of independence",
+            "the store accumulating — on the day it landed nothing cleared it, which was honest"),
+    Tunable("MIN_POST_MINT_TRADES", null_control.MIN_POST_MINT_TRADES, "crypto/null_control.py",
+            DERIVED, "the same independence argument on the other axis: a long window can be thin",
+            "moves with `MIN_POST_MINT_DAYS`; neither alone makes a window judgeable"),
+
+    # --- decided here, with the argument in the code beside each ------------------------------
+    Tunable("MAX_PROPOSALS_PER_RUN", proposer.MAX_PROPOSALS_PER_RUN, "crypto/proposer.py",
+            OPERATOR, "an unbounded list spends the whole allowance on quantity and none on thought",
+            "a review rate that empties the backlog faster than the cap fills it"),
+    Tunable("MAX_UNREVIEWED_BACKLOG", proposer.MAX_UNREVIEWED_BACKLOG, "crypto/proposer.py",
+            OPERATOR, "M4b's gate: it reverses the 2026-07-24 manual-CLI-only decision safely",
+            "installing families into `factory.TEMPLATES` faster than the proposer accepts them"),
+    Tunable("BACKLOG_WINDOW_DAYS", proposer.BACKLOG_WINDOW_DAYS, "crypto/proposer.py", OPERATOR,
+            "how far back the backlog counts, so the tap reopens without anyone installing anything",
+            "#607 already corrected what this measures — it is the rotation horizon, not 30 days of review"),
+    Tunable("MAX_CONDITION_LAG", strategy.MAX_CONDITION_LAG, "crypto/strategy.py", OPERATOR,
+            "one bar, because that is what a crossover needs and each depth copies the vocabulary",
+            "a hypothesis that needs persistence over n bars — which wants a rolling derivative instead"),
+    Tunable("MIN_CROSS_SECTION_MEMBERS", features.MIN_CROSS_SECTION_MEMBERS, "crypto/features.py",
+            OPERATOR, "below it `xs_rank_pct` has fewer distinct values than a coin flip has sides",
+            "a cohort that is reliably deeper — the floor is about determinacy, not about universe size"),
+
+    # --- a window that is really another window -----------------------------------------------
+    Tunable("FEE_MEASUREMENT_DAYS", account.FEE_MEASUREMENT_DAYS, "crypto/account.py", DERIVED,
+            "matches the longest window `PNL_WINDOW_DAYS` already reports; one query, same span",
+            "a fee tier that changes inside the window, which is what the bound exists to exclude"),
+
+    # === third slice, 2026-08-09 — found by profiling, not by reading ===========================
+    #
+    # Profiling the scheduler put `candle_archive` at 64% of everything it does (p50 125s, ~49
+    # minutes a day), and all three constants that govern it were invisible to the coverage
+    # test's name pattern — as was the number that bounds live order size. A pattern that misses
+    # a ceiling and a pace misses the two shapes an operator most often reaches for.
+
+    Tunable("HARD_CEILING_USDT", live_budget.HARD_CEILING_USDT, "crypto/live_budget.py", OPERATOR,
+            "the largest per-order cap a registered budget may declare; 200 at bring-up, 500 since",
+            "Thomas raised it 2026-08-08 after 4 clean canaries and 2 round trips; the same evidence"),
+    Tunable("ARCHIVE_REQUEST_INTERVAL_SECONDS", candle_archive.ARCHIVE_REQUEST_INTERVAL_SECONDS,
+            "crypto/candle_archive.py", MEASURED,
+            "the venue's own wall, measured: 352 reads at speed answered ~70 and rate-limited 282",
+            "a venue that answers faster — nothing else; the number is a demonstrated limit"),
+    Tunable("ARCHIVE_BOOKS_PER_PASS", candle_archive.ARCHIVE_BOOKS_PER_PASS,
+            "crypto/candle_archive.py", OPERATOR,
+            "archive latency traded against tick latency: `run_due` is sequential and the live "
+            "leg's `_settle_or_protect` runs on the same tick",
+            "the scheduler ceasing to run due schedules sequentially, which is what forces the trade"),
+    Tunable("VENUE_CANDLE_CEILING", candle_archive.VENUE_CANDLE_CEILING,
+            "crypto/candle_archive.py", VENUE,
+            "Hyperliquid serves at most this many candles per request and nothing behind them",
+            "a venue that pages backwards — which is the whole reason this archive exists"),
+
+    # --- the stop-slippage probe (proposal §5, Thomas 2026-08-11) -----------------------------
+    # The probe exists to measure DEFAULT_STOP_SLIPPAGE_BPS's sample; its own numbers ride in
+    # the batch approval's content hash, so changing any of them mints a different approval.
+    Tunable("PROBE_STOP_BPS", probe.PROBE_STOP_BPS, "crypto/probe.py", OPERATOR,
+            "§5-2: the factory's representative stop width, fixed rather than ATR-linked so "
+            "every probe buys the same measurement",
+            "the factory's representative stop width moving, or a re-approved probe design — "
+            "either way a new batch approval, never an edit"),
+    Tunable("WORST_CASE_LOSS_FRACTION", probe.WORST_CASE_LOSS_FRACTION, "crypto/probe.py", DERIVED,
+            "§3's arithmetic: stop 40 + measured-worst slippage 23.5 (§C, 2026-08-06) + ~10 "
+            "round-trip fees = 73.5 bps, carried as 0.75% so the budget cap errs upward",
+            "any term moving — a worse measured slippage RAISES it, the fail-closed direction "
+            "for a budget cap"),
+    Tunable("DECISION_SAMPLE_FLOOR", probe.DECISION_SAMPLE_FLOOR, "crypto/probe.py", OPERATOR,
+            "§5-5: at sample N >= 10 the DEFAULT_STOP_SLIPPAGE_BPS re-decision opens (this "
+            "floor is that constant's own reopens_when, quantified)",
+            "the re-decision actually opening — the floor retires with the interim constant "
+            "it exists to replace"),
 )
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse, yaml
-from datetime import datetime, timezone
 from pathlib import Path
+from lib.utctime import utc_now
 from lib.control_supervision import canonical_sha256, evaluate_metric
 ROOT=Path(__file__).resolve().parents[1]
 def main()->int:
@@ -15,7 +15,7 @@ def main()->int:
     if a.unit!=rule['unit']: raise ValueError('metric unit does not match policy rule')
     metric={'metric_id':a.metric_id,'observed_value':a.value if a.data_status=='AVAILABLE' else None,'unit':a.unit,'data_status':a.data_status,'age_seconds':a.age_seconds}
     severity,reasons=evaluate_metric(rule,metric)
-    now=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00','Z')
+    now=utc_now()
     eid=f"threval_preview_{a.metric_id}"
     payload={'evaluation_id':eid,'policy_ref':str(policy_path.relative_to(ROOT)).replace('\\','/'),'policy_fingerprint':policy['policy_fingerprint'],'metric':metric}
     false_effects={'alert_event_created':False,'notification_sent':False,'remediation_performed':False,'kill_switch_triggered':False,'runtime_state_changed':False}

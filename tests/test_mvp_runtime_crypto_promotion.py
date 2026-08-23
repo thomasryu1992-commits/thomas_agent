@@ -67,6 +67,7 @@ def _current_cost_summary():
                 "taker_fee_bps": cost.DEFAULT_TAKER_FEE_BPS,
                 "maker_fee_bps": cost.DEFAULT_MAKER_FEE_BPS,
                 "slippage_bps": cost.DEFAULT_SLIPPAGE_BPS,
+                "stop_slippage_bps": cost.DEFAULT_STOP_SLIPPAGE_BPS,
                 "funding_bps_per_interval": cost.DEFAULT_FUNDING_BPS_PER_INTERVAL,
                 "funding_source": cost.FUNDING_SOURCE_VENUE,
             }}
@@ -88,7 +89,13 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
     records = []
     for spec_dict in specs:
         spec = StrategySpec.from_dict(spec_dict)
-        evidence = {"closed_count": 20, "expectancy": 0.5}
+        # 60 closes and a THIN holdout block, so the fixture clears the 5-3 observation
+        # entry bar the same way it clears the cost and depth gates: these tests are about
+        # OTHER axes, and a fixture the door refuses on sight is noise in every one of them.
+        # Stored CONFIRMED, so the fixture clears both the 5-3 entry bar and the 5-1 LIVE
+        # confirmation gate: these tests are about OTHER axes.
+        evidence = {"closed_count": 60, "expectancy": 0.5,
+                    "robustness": {"verdict": "PROVISIONAL", "holdout_status": "CONFIRMED"}}
         bars = _current_bars_replayed(spec) if bars_replayed is _MISSING else bars_replayed
         if bars is not None:
             evidence["bars_replayed"] = bars
@@ -113,16 +120,16 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
 # --- content hash -------------------------------------------------------------
 
 def test_content_hash_changes_on_any_material_change():
-    base = promotion_content_sha256(["S1"], ["aaa"], keep_active=False)
-    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=False) == base
-    assert promotion_content_sha256(["S2"], ["aaa"], keep_active=False) != base
-    assert promotion_content_sha256(["S1"], ["bbb"], keep_active=False) != base
-    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=True) != base  # add vs replace
+    base = promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE",)
+    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE",) == base
+    assert promotion_content_sha256(["S2"], ["aaa"], keep_active=False, live_tier="LIVE",) != base
+    assert promotion_content_sha256(["S1"], ["bbb"], keep_active=False, live_tier="LIVE",) != base
+    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=True, live_tier="LIVE",) != base  # add vs replace
 
 
 def test_content_hash_is_order_insensitive():
-    assert promotion_content_sha256(["S1", "S2"], ["a", "b"], keep_active=False) == \
-        promotion_content_sha256(["S2", "S1"], ["b", "a"], keep_active=False)
+    assert promotion_content_sha256(["S1", "S2"], ["a", "b"], keep_active=False, live_tier="LIVE",) == \
+        promotion_content_sha256(["S2", "S1"], ["b", "a"], keep_active=False, live_tier="LIVE",)
 
 
 # --- the ask ------------------------------------------------------------------
@@ -130,7 +137,7 @@ def test_content_hash_is_order_insensitive():
 @requires_local_core
 def test_request_builds_decision_and_pending_approval(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
-    prepared = request_promotion(["S1"], keep_active=False, now=NOW, candidates_root=tmp_path)
+    prepared = request_promotion(["S1"], keep_active=False, live_tier="LIVE", now=NOW, candidates_root=tmp_path)
     decision = prepared["permission_decision"]
     request = prepared["approval_request"]
     payload = decision["fingerprint_payload"]
@@ -144,7 +151,7 @@ def test_request_builds_decision_and_pending_approval(tmp_path):
 @requires_local_core
 def test_request_refuses_unknown_candidate(tmp_path):
     with pytest.raises(MvpRuntimeError) as exc:
-        request_promotion(["S_NOPE"], keep_active=False, now=NOW, candidates_root=tmp_path)
+        request_promotion(["S_NOPE"], keep_active=False, live_tier="LIVE", now=NOW, candidates_root=tmp_path)
     assert exc.value.reason_code == "UNKNOWN_CANDIDATE"
 
 
@@ -155,7 +162,7 @@ def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.
     if content is None:
         record = pool.resolve_candidates(["S1"], tmp_path)[0]
         content = promotion_content_sha256(
-            [record["candidate_id"]], [record["strategy_rule_hash"]], keep_active=False
+            [record["candidate_id"]], [record["strategy_rule_hash"]], keep_active=False, live_tier="LIVE",
         )
     return {
         "approval_id": "approval_test",
@@ -168,7 +175,7 @@ def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.
 def test_verify_accepts_matching_approved(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     verified = verify_promotion_approval(
-        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
+        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
     )
     assert verified["approval_id"] == "approval_test"
 
@@ -185,7 +192,7 @@ def test_verify_fails_closed(tmp_path, mutation, code):
     with pytest.raises(ApprovalBlocked) as exc:
         verify_promotion_approval(
             _fake_approval(tmp_path, **mutation),
-            selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
+            selectors=["S1"], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
         )
     assert exc.value.reason_code == code
 
@@ -193,7 +200,7 @@ def test_verify_fails_closed(tmp_path, mutation, code):
 def test_verify_missing_approval_fails(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(ApprovalBlocked) as exc:
-        verify_promotion_approval(None, selectors=["S1"], keep_active=False, root=tmp_path, now=NOW)
+        verify_promotion_approval(None, selectors=["S1"], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert exc.value.reason_code == "APPROVAL_MISSING"
 
 
@@ -202,7 +209,7 @@ def test_verify_rejects_mode_flip(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(ApprovalBlocked) as exc:
         verify_promotion_approval(
-            _fake_approval(tmp_path), selectors=["S1"], keep_active=True, root=tmp_path, now=NOW,
+            _fake_approval(tmp_path), selectors=["S1"], keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW,
         )
     assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
 
@@ -217,7 +224,7 @@ def test_verify_refuses_ambiguous_strategy_id_after_regeneration(tmp_path):
         {"feature": "adx", "comparison": ">=", "value": 30.0}]})
     _seed_candidates(tmp_path, changed, generation_id="GEN-002")
     with pytest.raises(ApprovalBlocked) as exc:
-        verify_promotion_approval(approval, selectors=["S1"], keep_active=False, root=tmp_path, now=NOW)
+        verify_promotion_approval(approval, selectors=["S1"], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert exc.value.reason_code == "CANDIDATE_AMBIGUOUS"
 
 
@@ -232,14 +239,14 @@ def test_verify_by_candidate_id_survives_regeneration(tmp_path):
         {"feature": "adx", "comparison": ">=", "value": 30.0}]})
     _seed_candidates(tmp_path, changed, generation_id="GEN-002")
     verified = verify_promotion_approval(
-        approval, selectors=[approved_cid], keep_active=False, root=tmp_path, now=NOW,
+        approval, selectors=[approved_cid], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
     )
     assert verified["approval_id"] == "approval_test"
     # The new lineage's own cid does NOT satisfy the approval — it binds content.
     new_cid = next(pool.candidate_id(c) for c in pool.read_candidates(tmp_path)
                    if pool.candidate_id(c) != approved_cid)
     with pytest.raises(ApprovalBlocked) as exc:
-        verify_promotion_approval(approval, selectors=[new_cid], keep_active=False, root=tmp_path, now=NOW)
+        verify_promotion_approval(approval, selectors=[new_cid], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
 
 
@@ -249,7 +256,7 @@ def test_promotion_requires_approval_or_explicit_escape(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert "--approval-id" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
@@ -257,7 +264,7 @@ def test_promotion_requires_approval_or_explicit_escape(tmp_path):
 def test_promotion_with_escape_is_audited_as_such(tmp_path):
     seeded = _seed_candidates(tmp_path, _spec_dict())
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert summary["without_approval_escape"] is True and summary["approval_verified"] is False
     assert summary["promoted_candidate_ids"] == [pool.candidate_id(seeded[0])]
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
@@ -283,7 +290,7 @@ def test_promotion_refuses_evidence_scored_more_cheaply_than_the_venue_charges(t
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
 
@@ -293,7 +300,7 @@ def test_promotion_refuses_evidence_with_no_recorded_cost_model(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(), cost_summary=None)
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
 
 
@@ -304,7 +311,7 @@ def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(),
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                             allow_stale_cost_basis=True)
     assert summary["stale_cost_basis_escape"] is True
     # The recorded basis names every axis the evidence is stale on, not just the one this test
@@ -318,7 +325,7 @@ def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
 def test_a_promotion_on_current_evidence_records_the_escape_as_unused(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert summary["stale_cost_basis_escape"] is False
     assert summary["cost_bases"] == [pool.current_cost_basis()]
 
@@ -333,7 +340,7 @@ def test_the_ask_refuses_stale_evidence_too(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(),
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     with pytest.raises(ApprovalBlocked) as exc:
-        request_promotion(["S1"], keep_active=False, now=NOW, candidates_root=tmp_path)
+        request_promotion(["S1"], keep_active=False, live_tier="LIVE", now=NOW, candidates_root=tmp_path)
     assert exc.value.reason_code == "CANDIDATE_COST_BASIS_STALE"
 
 
@@ -368,7 +375,7 @@ def test_an_approved_promotion_can_still_use_the_stale_basis_escape(tmp_path):
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW,
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
                             approval_id=approval_id, allow_stale_cost_basis=True)
     assert summary["approval_verified"] is True and summary["stale_cost_basis_escape"] is True
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
@@ -379,7 +386,7 @@ def test_an_approved_promotion_can_still_use_the_unrecorded_depth_escape(tmp_pat
     _seed_candidates(tmp_path, _spec_dict(), bars_replayed=None)
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW,
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
                             approval_id=approval_id, allow_unrecorded_evidence_depth=True)
     assert summary["approval_verified"] is True
     assert summary["unrecorded_evidence_depth_escape"] is True
@@ -397,7 +404,9 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
         "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
         "generation_id": "GEN-001", "status": "BACKTESTED", "champion_score": 0.5,
         "strategy_spec": spec.to_dict(),
-        "backtest_evidence": {"closed_count": 20, "expectancy": 0.5,
+        "backtest_evidence": {"closed_count": 60, "expectancy": 0.5,
+                              "robustness": {"verdict": "PROVISIONAL",
+                                             "holdout_status": "CONFIRMED"},
                               "bars_replayed": _current_bars_replayed(spec),
                               "cost_summary": _current_cost_summary()},
         "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
@@ -406,7 +415,7 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
     monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW,
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
                             approval_id=approval_id, allow_quarantined_derivation=True)
     assert summary["approval_verified"] is True
     assert summary["quarantined_derivation_escape"] is True
@@ -426,7 +435,7 @@ def test_an_approved_promotion_without_the_escape_still_refuses(tmp_path, seed, 
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, approval_id=approval_id)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, approval_id=approval_id)
     assert code in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
 
@@ -439,7 +448,7 @@ def test_verification_judges_the_approval_and_not_the_evidence(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(),
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     verified = verify_promotion_approval(
-        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, root=tmp_path, now=NOW,
+        _fake_approval(tmp_path), selectors=["S1"], keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
     )
     assert verified["approval_id"] == "approval_test"
 
@@ -463,7 +472,7 @@ def test_promotion_derives_unique_display_id_on_collision(tmp_path):
     )
     cid_a, cid_b = pool.candidate_id(a[0]), pool.candidate_id(b[0])
     summary = run_promotion(selectors=[cid_a, cid_b], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     entries = pool.load_active_pool(tmp_path)["active_strategies"]  # re-load validates the invariant
     sids = [e["strategy_id"] for e in entries]
     assert len(set(sids)) == 2 and "S1" in sids                    # one bare, one derived
@@ -484,8 +493,11 @@ def test_promotion_residual_collision_fails_closed(tmp_path):
     seeded = _seed_candidates(tmp_path, *specs, generation_id="GEN-002")
     cids = [pool.candidate_id(s) for s in seeded]
     with pytest.raises(SystemExit) as exc:
+        # Three same-family lineages in one batch now trip the 5-3 family cap first; escape
+        # it explicitly, because the residual collision below is the failure under test.
         run_promotion(selectors=cids, promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                      without_approval=True, allow_family_overflow=True)
     assert "cannot assign a unique strategy_id" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
@@ -494,7 +506,7 @@ def test_promotion_with_bad_approval_refused(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, approval_id="approval_missing")
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, approval_id="approval_missing")
     assert "APPROVAL_MISSING" in str(exc.value)
 
 
@@ -508,13 +520,13 @@ def test_promotion_ambiguous_strategy_id_refused(tmp_path):
 
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_AMBIGUOUS" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
     old_cid = pool.candidate_id(old[0])
     summary = run_promotion(selectors=[old_cid], promoted_by="Thomas", reason="r",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
     assert summary["promoted_candidate_ids"] == [old_cid]
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
     assert entry["strategy_rule_hash"] == old[0]["strategy_rule_hash"]  # not the newest
@@ -533,6 +545,27 @@ def test_candidate_store_stamps_and_verifies_self_hash(tmp_path):
     with pytest.raises(MvpRuntimeError) as exc:
         pool.read_candidates(tmp_path)
     assert exc.value.reason_code == "CANDIDATES_TAMPERED"
+
+
+def test_a_corrupt_candidate_line_keeps_this_stores_error_class_and_line_number(tmp_path):
+    """`read_candidates` streams through ``jsonl.iter_numbered`` now; what must not move is which
+    class comes out. 47 sites in the runtime catch ToolError by name — five in ``promotion.py``,
+    which reads this very store — so adopting jsonl's PersistenceError would fail *past* those
+    handlers rather than at them. The line number is the operator's other handle, and it counts
+    file lines: a blank row must not shift it."""
+    import json
+
+    from runtime.mvp_runtime.errors import PersistenceError, ToolError
+
+    path = pool.candidates_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"strategy_id": "s1"}) + "\n\n{not json\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        pool.read_candidates(tmp_path)
+    assert exc.value.reason_code == "CANDIDATES_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
 
 
 def test_candidate_rows_without_hash_still_read(tmp_path):
@@ -803,3 +836,176 @@ def test_an_empty_pool_is_an_empty_set_not_a_failure():
     an empty set releases every exclusion, so the two must not be able to arrive as one value."""
     assert pool.routable_strategy_ids({"active_strategies": []}) == set()
     assert pool.routable_strategy_ids({}) == set()
+
+
+# --- the effect the approval cannot name --------------------------------------
+
+def _suspend(tmp_path, strategy_id="S1"):
+    pool.update_statuses(
+        [{"strategy_id": strategy_id, "new_status": "SUSPENDED", "consecutive_failures": 3,
+          "created_at_utc": NOW, "reasons": ["metric_suspension"]}],
+        root=tmp_path,
+    )
+
+
+def test_replace_mode_refuses_to_reactivate_a_terminal_member(tmp_path):
+    """Replace mode rebuilds every entry with a hardcoded PAPER_ACTIVE, so re-listing the
+    incumbents to drop one brings back everything the lifecycle terminated. `BUILD_HISTORY`
+    records it simulated against a copy of the real pool on 2026-07-29: 16 reactivated, 57
+    lifecycle counters reset. The retirement verb removed the REASON to reach for replace
+    mode; it did not close the path.
+
+    The authority is what makes it a refusal rather than a note. `promotion_content_sha256`
+    is a function of candidate ids, rule hashes and keep_active — nothing about status — so
+    the approval Thomas signs says "install these lineages" and cannot say "and un-suspend
+    these". The signature is honest about a smaller effect than the one it authorizes.
+    """
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                      root=tmp_path, now=NOW, without_approval=True)
+    assert "POOL_SILENT_REACTIVATION" in str(exc.value)
+    assert "SUSPENDED" in str(exc.value), "the refusal must name what it is coming back from"
+    # Refused means refused: the pool is untouched, so the member is still terminal.
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    assert entry["status"] == "SUSPENDED"
+
+
+def test_the_reactivation_escape_promotes_and_records_who_came_back(tmp_path):
+    """The escape exists because reactivation IS a legitimate operator act — `lifecycle`
+    calls it the manual re-validation path. What it may not be is a side effect."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            allow_reactivation=True)
+    assert summary["reactivation_escape"] is True
+    assert summary["reactivated"] == [
+        {"candidate_id": summary["promoted_candidate_ids"][0], "strategy_id": "S1",
+         "from_status": "SUSPENDED"}
+    ]
+    assert "silent_reactivation" in summary["reviews_skipped"]
+    assert pool.load_active_pool(tmp_path)["active_strategies"][0]["status"] == "PAPER_ACTIVE"
+
+
+def test_an_ordinary_promotion_records_no_reactivation(tmp_path):
+    """The inverse pin. `reactivated` is written whether or not the escape fired, so an empty
+    list is a statement rather than an absent key — and the escape reads as unused."""
+    _seed_candidates(tmp_path, _spec_dict())
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+    assert summary["reactivated"] == [] and summary["reactivation_escape"] is False
+    # Not empty: this promotion really did skip Thomas. That is the point of the field —
+    # every escape was already recorded separately, and no record answered "what survived".
+    assert summary["reviews_skipped"] == ["thomas_approval"]
+
+
+def test_reviews_skipped_names_every_review_stepped_around(tmp_path):
+    """The composition finding. Each escape is individually defensible and individually
+    recorded; what nobody could read off the ledger was the total. With the approval escaped
+    too, a promotion can reach the pool having met nothing but pool structural validation and
+    read exactly like one that cleared everything."""
+    _seed_candidates(tmp_path, _spec_dict(),
+                     cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0),
+                     bars_replayed=None)
+    summary = run_promotion(
+        selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+        root=tmp_path, now=NOW, without_approval=True,
+        allow_stale_cost_basis=True, allow_unrecorded_evidence_depth=True,
+        allow_duplicates=True, allow_cluster_siblings=True,
+        allow_below_entry_bar=True, allow_family_overflow=True,
+        allow_oversized_pool=True, allow_quarantined_derivation=True,
+    )
+    assert summary["reviews_skipped"] == [
+        "thomas_approval", "cost_basis", "evidence_depth", "semantic_duplicates",
+        "cluster_siblings", "observation_entry_bar", "family_cap",
+        "pool_size_cap", "quarantined_derivation",
+    ]
+    # `silent_reactivation` is absent because nothing was reactivated — an unused escape is
+    # not a skipped review, or every promotion would read as having skipped everything.
+    assert "silent_reactivation" not in summary["reviews_skipped"]
+
+
+# --- v3: the hash names who comes back ----------------------------------------
+
+def test_the_reactivation_set_is_material_to_the_hash():
+    """The gap v3 closes: the signature was honest about a smaller effect than the one it
+    authorized. `BUILD_HISTORY` records replace mode simulated against a copy of the real pool
+    on 2026-07-29 — 16 reactivated, 57 lifecycle counters reset — while the hash was a function
+    of ids, rules and mode alone."""
+    base = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE")
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[]) == base
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=["c1"]) != base
+    # Order-insensitive, like the two lists beside it.
+    assert promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c2", "c1"]) == \
+        promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c1", "c2"])
+
+
+def test_a_promotion_that_reactivates_nothing_hashes_as_stably_as_before():
+    """The cost of v3 is zero for every promotion that returns nobody: an empty set is the
+    default, so a fresh install's hash does not move with the pool underneath it."""
+    empty = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[])
+    assert empty == promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE")
+
+
+def test_add_mode_reactivates_nothing_by_construction(tmp_path):
+    """Add mode keeps the incumbents' own status and the door refuses a candidate already in
+    the pool, so nothing can come back — answered without reading the pool at all."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
+    assert pool.reactivated_candidate_ids([cid], keep_active=True, root=tmp_path) == []
+    assert pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path) == [cid]
+
+
+def test_the_hash_input_and_the_door_guard_cannot_drift(tmp_path):
+    """Two views of one fact — the hash reads it by candidate id at the ask, the door reads it
+    off assembled entries at the install. They must name the same lineages or the approval
+    binds one thing and the guard refuses another."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                  root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    cid = entry["candidate_id"]
+
+    by_id = pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path)
+    by_entry = pool.silent_reactivations(
+        [{**entry, "status": "PAPER_ACTIVE"}], root=tmp_path,
+    )
+    assert by_id == sorted(r["candidate_id"] for r in by_entry) == [cid]
+
+
+def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval(tmp_path):
+    """The brittleness, asserted as the intended behaviour rather than avoided.
+
+    Measured 2026-08-09 before making this change: 0 lifecycle status transitions across
+    15,157 cycle records over 19 days, against an ask-to-approve window with a median of 1.9
+    minutes. So this refusal is rare — and when it fires, the set of members being returned to
+    trading really did change, which is exactly what the approval is supposed to bind.
+    """
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+                  root=tmp_path, now=NOW, without_approval=True)
+    cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
+
+    # Asked while the member is live: nothing is being reactivated.
+    asked = promotion_content_sha256(
+        [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
+        False, "LIVE", pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+    )
+    _suspend(tmp_path)          # the lifecycle moves underneath the pending approval
+    now_hash = promotion_content_sha256(
+        [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
+        False, "LIVE", pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+    )
+    assert asked != now_hash, "the approval would still verify against a changed effect"

@@ -5,10 +5,26 @@ the authority table below.
 
 ## What this project is
 
-A governance-first autonomous agent. **Strong governance core, thin deterministic runtime**:
-behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime only
-executes validated inputs in order. Nothing is active until an explicit, versioned, audited
-approval turns it on.
+A governance-first autonomous agent. **Strong governance core, policy-thin deterministic
+runtime**: behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime
+only executes validated inputs in order. Nothing is active until an explicit, versioned,
+audited approval turns it on.
+
+"Thin" is a claim about **policy, not size**. The domain packages have outgrown the core and
+keep growing while the kernel does not move (§G of `docs/REMAINING_WORK.md` re-measures this —
+and has already priced and declined restructuring, so do not "fix" the growth). What keeps the
+core thin while lanes grow, stated as rules:
+
+- A domain package (`crypto/`, `knowledge/`) is an **application of the core's chokepoints**
+  (PermissionDecision, Safety-Flag Gate, audit chain — `docs/ACTIVE_ARCHITECTURE.md`), never a
+  parallel runtime.
+- The core import graph loads **zero** domain modules. A domain package appears at module
+  level only in its own door modules (today `knowledge_bridge*.py`); everywhere else the core
+  dispatches into a lane with function-local imports at the dispatch sites (`scheduler.py`,
+  `domain_console.py`). `tests/test_mvp_runtime_domain_isolation.py` pins both properties;
+  widening the door list is a decision to record there, not a convenience.
+- A lane earns its size with evidence or is removed **whole** (`predmarket/`, 2026-08-02, is
+  the precedent). Lanes are removable units, never core accretion.
 
 ## Guardrails (do not violate without explicit Thomas approval)
 
@@ -23,12 +39,30 @@ approval turns it on.
   record you produce; the schema is authoritative.
 - **Secrets are metadata-only.** Never store/log/audit secret values.
   `execution_budget.cost_currency` is a 3-letter code, never null.
-- **Safety flags are OFF, enforced in code.** `model_invocation` / `network_access` need Thomas
-  approval + a versioned governance update + audit before enabling. Selection goes through
-  `safety_gate.select_gated(...)`, which constructs the capable implementation only after
-  `authorize()` verifies a local integrity-checked grant (one per provider, gitignored,
-  per-machine). An env var alone (`MVP_HOSTED_PROVIDER`) fails closed. A passing test is never
-  an approval for the next capability. Mechanics: `runtime/mvp_runtime/safety_gate.py`.
+- **Safety flags are OFF, enforced in code — and the environment is the gate.** Enabling a
+  `model_invocation` / `network_access` capability needs Thomas approval + a versioned
+  governance update + audit; a passing test is never an approval for the next capability.
+  Since **Thomas 2026-08-10**, every gated capability opens on its **environment opt-in
+  alone**: selection goes through `safety_gate.select_env_gated(...)` (or its `_chain` /
+  `_optional` variants), which constructs the capable implementation only behind the opt-in
+  and hands it its `Authorization`; every egress re-check re-reads the env var. The
+  per-machine grant records and their 30-day renewal are **retired** — on capabilities meant
+  to run indefinitely the renewal bought too little: live trading left grants first
+  (2026-07-28; an expiry could block the CLOSE path and trap an open position), the candle
+  archive (2026-08-04) and the Naver lane (2026-08-09) followed (a renewal gap is a silent
+  hole in a long-running collection), and 2026-08-10 retired the rest on the same ledger.
+  **What that gives up, on the record:** the second factor, the expiry, the per-machine
+  audited scope/authority record, and file-deletion revocation — revoking a capability now
+  means unsetting the var and **restarting the container**. What it does not give up: an
+  unset/unknown value still selects the inert default, and an unknown or duplicate chain
+  member still fails the whole chain closed.
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` enforces both
+  directions — zero callers of the retired grant selectors, and an exact enumeration of the
+  env-gated call sites, so a new capability still cannot ship ungoverned. Every opt-in var is
+  stripped per-test in `tests/conftest.py` (`_GATE_ENV_VARS`), floor-checked by
+  `test_the_suite_isolates_every_gate_opt_in_env_var`. Leftover
+  `safety_flag_activations/*.json` files are inert (delete freely, as uid 10001). Mechanics:
+  `runtime/mvp_runtime/safety_gate.py`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
@@ -58,6 +92,70 @@ approval turns it on.
   The fallback is `git checkout <commit> && docker compose build && docker compose up -d` —
   reproducible, and the reason this is a lost minute rather than a lost deploy, but it needs a
   clean tree and takes minutes where a tag takes seconds.
+- **Build to a candidate tag, verify it, then promote `latest`.** Everything above is about
+  surviving a build that overwrites `latest`; this avoids the overwrite. `docker compose build`
+  and a bare `docker build -t …:latest` both reassign the tag the running containers were
+  started from, which is what opens the window the rule above closes by hand. Building to a
+  name of its own does not:
+
+  ```
+  docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>   # still first
+  docker build -t thomas-agent-runtime:candidate-<PR#> <clean-worktree>
+  docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
+  docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
+  docker compose up -d
+  ```
+
+  `latest` keeps pointing at the running image for the whole build, the candidate is provable
+  before anything restarts, and promotion is one atomic retag. Used for every deploy on
+  2026-08-08/09. Never assert by the commit the worktree was on: what a build actually
+  contains is the question, and a `git log` that says the merge landed does not answer it.
+- **Assert what the fix DOES, not how it is spelled — and a failed assertion is where the
+  investigation starts, never where it ends.** The obvious check is an identifier: `hasattr`,
+  a constant's value, a substring of `inspect.getsource`. Identifiers move. Measured twice in
+  one audit on 2026-08-09, both false alarms on merged-and-deployed work:
+
+  - a check for `attach_cross_section` in `scheduler.py` reported the #601 fix missing, after
+    #621 extracted the five legs into `cycle.attach_mining_legs`;
+  - `PROMOTION_HASH_VERSION == "strategy_promotion.v3"` reported #649 missing, after #648
+    bumped it to v4 while keeping #649's field.
+
+  Prefer calling the thing over matching a name — *"the reactivation set changes the hash"*,
+  *"this column is supplied on the frame"*, *"the helper attaches all five legs"* — because a
+  property survives the rename that breaks a grep. Where only a name will do, expect it to rot.
+
+  **The rule that matters is the second half.** Both checks above were wrong in the direction
+  that produces a confident false report, and reporting either as a regression would have been
+  the only damage done that day. Read the code before calling a deploy incomplete: a MISS means
+  *the check and the tree disagree*, and the check is the newer of the two.
+- **Build from a clean `origin/main` worktree, and never `compose up --build`.** The compose
+  build context is `/root/thomas_agent`, the primary checkout — which on a busy day is on
+  another session's branch with uncommitted work in it. `--build` ships that. Measured
+  repeatedly on 2026-08-08/09: the primary checkout sat on a foreign feature branch with
+  modified `live_leg.py` for most of the day. `git worktree add <tmp> origin/main --detach`,
+  build from there, remove it after. Cheap, and it is the only way to say what the image
+  contains.
+- **You are not the only session deploying. Re-read the host, never your own notes.** A
+  concurrent session redeploys everything, not just its own slice. Measured 2026-08-09: a deploy
+  finished at 07:56 and by 07:59 the containers had been recreated by someone else — a different
+  running image, and two `rollback-pre-*` tags this session had not created. A state recorded
+  minutes ago is not evidence. So the running-vs-`latest` check above is not a formality at the
+  start of a deploy — it is a **re-read immediately before the promote**, because the window
+  between build and promote is exactly where the other session lands. A `rollback-pre-<N>` tag
+  you did not create is the signal that it already has.
+- **A one-off script does not need a deploy.** To run newly merged code against live state
+  without restarting anything, build to a throwaway tag and run it with the scheduler's own
+  mounts and user — `latest` untouched, so no other session's `compose up -d` picks it up:
+
+  ```
+  docker run --rm --user thomas -w /app \
+    -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
+    --entrypoint python thomas-agent-runtime:tool-<PR#> -m scripts.<script> --list
+  ```
+
+  Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from
+  here, and back up any file the script rewrites first. Used 2026-08-09 to dedupe the shadow
+  book while the live window kept trading.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
 - **No direct `main` commits.** Branch → PR → gates → merge. Enforced by
@@ -89,9 +187,14 @@ above; `pytest` cannot, because the image carries no `tests/` and no pytest.
 
 Intake flags: `--independent-validation[=auto]`, `--important` (priority HIGH; under `auto`
 adds the independent reviewer), `--revise` (one governed regeneration on a validation REVISE,
-then deliver or BLOCK), `--write-output PATH`. Any unknown `--flag` → `EXIT_USAGE`, never
+then deliver or BLOCK), `--write-output PATH`, `--naver-keywords "SEED[, SEED...]"` (runs the
+gated Naver keyword brief; rows become [K#] evidence). Any unknown `--flag` → `EXIT_USAGE`, never
 folded into the request text. The CLI takes **no** pointer argument — it reads
 `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` by default.
+**A `--naver-keywords` run execs in `thomas-pipeline-worker`, not the scheduler** — since the
+plane separation that container is the only one holding the Naver env, and in any other the
+brief silently degrades to Mock rows (`docker exec thomas-pipeline-worker python -m
+runtime.mvp_runtime.cli "…" --naver-keywords "…"`). Keyword-less CLI runs are unaffected.
 
 First-time setup, local Core activation, and end-to-end verification: use the `verify` skill.
 
@@ -114,8 +217,9 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 MVP use case = "analyze this business idea"; MVP role = `general.specialist`; the MVP runtime
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
-(`MVP_HOSTED_PROVIDER=google_ai_studio,groq`; Thomas 2026-07-20): each member needs its own
-per-machine grant, a chain with an unknown/unauthorized member fails closed **entirely**
+(`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
+prepended Thomas 2026-07-24 — 8bde1f9, 4da8118; grants retired Thomas 2026-08-10, the env
+names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
 member's own retry) — never on timeout or 4xx.
 

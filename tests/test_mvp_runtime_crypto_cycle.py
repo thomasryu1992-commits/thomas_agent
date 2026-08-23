@@ -1147,3 +1147,449 @@ def test_the_live_leg_is_handed_gate_0(tmp_path, monkeypatch):
     assert "live_candidate" not in seen, "the live leg was handed a gate that no longer exists"
     assert record["report_status"] is not None
     assert "live_candidate_eligible" in record
+
+
+# --- the LIVE PERMISSION phase runs before the entry (#615 §5) ------------------------------
+
+def _install_live_armed_pool(root, spec, *, candidate_id="cand-1"):
+    """The pool `_install_pool` builds, plus the one field that lets a strategy spend money."""
+    pool.install_active_pool(
+        {"active_strategies": [{
+            "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
+            "strategy_spec": spec, "candidate_id": candidate_id,
+            "strategy_rule_hash": "h1", "generation_id": "GEN-1",
+            pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
+        }]},
+        root=root,
+    )
+
+
+def _seed_live_losses(root, *, candidate_id="cand-1", count=2, risk=10.0):
+    """`count` consecutive live losses on one lineage — enough to spend the allowance.
+
+    Written through `build_live_outcome_record` so each row is self-hashed and shaped exactly as
+    the exit path writes it: a hand-made row fails the verified read, which is also a refusal but
+    never the one these tests mean."""
+    from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+
+    target = live_state_dir(root)
+    target.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for i in range(count):
+        record = build_live_outcome_record(
+            realized_pnl_usdt=-1.5 * risk, symbol="BTCUSDT", side="SELL", quantity=0.001,
+            position_id=f"live_p{i}", risk_usdt=risk, candidate_id=candidate_id,
+            strategy_rule_hash="h1", strategy_generation_id="GEN-1",
+            now=NOW,
+        )
+        lines.append(json.dumps(record, ensure_ascii=False) + "\n")
+    (target / "live_outcomes.jsonl").write_text("".join(lines), encoding="utf-8")
+
+
+def _leg_recorder(monkeypatch):
+    """Capture what the live leg was handed, and let it do nothing."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    return seen
+
+
+def test_a_spent_allowance_is_taken_away_before_the_leg_can_spend_it(tmp_path, monkeypatch):
+    """The ordering, asserted where it has an effect: on the set the leg is HANDED.
+
+    This block used to run after the leg, which meant a lineage whose allowance was already
+    spent still got one more real entry — the leg had run on the un-narrowed set, and the
+    disarm only bound the cycle after. Pinned as "the leg cannot see the breached id" rather
+    than as a line number, because the property is what must survive a reshuffle."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen, "the live leg never ran"
+    assert seen["live_routable_strategy_ids"] == set(), (
+        "the leg was handed a lineage whose allowance was already spent"
+    )
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    assert record["live_allowance"]["blocked_from_live_this_cycle"] == [spec["strategy_id"]]
+    # ...and the durable tier move landed too, on a store that can write.
+    assert record["live_allowance"]["disarmed"] == 1
+    assert pool.live_routable_strategy_ids(pool.load_active_pool(tmp_path)) == set()
+
+
+def test_an_unspent_allowance_leaves_the_leg_armed(tmp_path, monkeypatch):
+    """The control for the test above: without it, a block that narrowed the set unconditionally
+    would pass just as well and no lineage could ever trade live."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen["live_routable_strategy_ids"] == {spec["strategy_id"]}
+    assert "LIVE_ALLOWANCE_SPENT" not in record["reason_codes"]
+    assert record["live_allowance"]["breached"] == []
+
+
+def test_a_breach_that_cannot_be_persisted_still_refuses_the_entry(tmp_path, monkeypatch):
+    """A dry-run store cannot write the tier move. The refusal must not depend on that write.
+
+    The tempting shape — `if breached and store.filesystem_write: disarm(...)` — detects the
+    breach, records the reason code, and hands the leg an un-narrowed set anyway, leaving the
+    money path relying on some other gate happening to catch it. That is not a premise a live
+    door may hold."""
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    record = _cycle(tmp_path, FakeExchangeCollector(), DryRunPaperStore())
+
+    assert seen["live_routable_strategy_ids"] == set(), (
+        "a breach the runtime could not persist still armed the leg"
+    )
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    # Not attempted, and honestly reported as not having landed.
+    assert record["live_allowance"]["disarmed"] is None
+    assert pool.live_routable_strategy_ids(pool.load_active_pool(tmp_path)) == {spec["strategy_id"]}
+
+
+def test_a_tier_write_that_refuses_still_refuses_the_entry(tmp_path, monkeypatch):
+    """The other half of the same rule: the store CAN write and the write fails anyway — a
+    locked pool, a raising writer. The in-cycle block is identical, and the reason code is what
+    tells the two apart on the record."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    _seed_live_losses(tmp_path)
+    seen = _leg_recorder(monkeypatch)
+
+    def _explode(ids, **kw):
+        raise ToolError("STRATEGY_POOL_LOCKED", "stubbed: another writer holds the pool")
+
+    monkeypatch.setattr(cycle_mod.pool, "disarm_live_tier", _explode)
+    record = _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+
+    assert seen["live_routable_strategy_ids"] == set()
+    assert "LIVE_ALLOWANCE_SPENT" in record["reason_codes"]
+    assert "STRATEGY_POOL_LOCKED" in record["reason_codes"]
+    assert record["live_allowance"]["disarmed"] is None
+
+
+def test_an_unreadable_live_history_disarms_every_lineage_before_the_leg(tmp_path, monkeypatch):
+    """The conservative direction, pinned at the cycle rather than only at the evaluator: a
+    history that cannot prove itself must not be able to argue an allowance is still unspent —
+    and it must not do so a cycle late."""
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir as live_state_dir
+
+    spec = _always_spec()
+    _install_live_armed_pool(tmp_path, spec)
+    target = live_state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "live_outcomes.jsonl").write_text("not json\n", encoding="utf-8")
+    seen = _leg_recorder(monkeypatch)
+
+    _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
+    assert seen["live_routable_strategy_ids"] == set()
+
+
+# ---------------------------------------------------------------------------
+# ⑧ Pipeline stall detection (dead-man switch)
+# ---------------------------------------------------------------------------
+
+class TestCycleIsStalled:
+    """``cycle_is_stalled`` mirrors ``data_review.review_loop_is_stalled``:
+    the first degraded fire stays quiet, the second consecutive one raises."""
+
+    def test_one_degraded_cycle_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, None) is False
+        assert cycle_is_stalled(record, "verdict=ALLOW route=matched") is False
+
+    def test_two_consecutive_degraded_cycles_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD route=no_strategies") is True
+
+    def test_stalled_status_is_recognised_on_the_next_fire(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_a_healthy_cycle_is_never_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": False}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD") is False
+
+
+class TestPoolCycleIsStalled:
+    """``pool_cycle_is_stalled`` checks that ALL contexts degraded for two
+    consecutive fires — one healthy context keeps the pipeline productive."""
+
+    def test_all_degraded_after_healthy_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2") is False
+
+    def test_all_degraded_after_all_degraded_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
+
+    def test_a_bare_majority_is_stalled(self):
+        """Thomas 2026-08-22 moved the rule from `all` to `majority`. Half counts."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 majority_degraded") is True
+
+    def test_below_half_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] + [{"degraded": False}] * 2}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=3 majority_degraded") is False
+
+    def test_ten_of_eleven_dead_is_stalled(self):
+        """The case the `all` rule left silent, and the reason it was widened."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] * 10 + [{"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=11 majority_degraded") is True
+
+    def test_an_older_images_all_degraded_marker_still_arms_the_switch(self):
+        """A stall straddling a deploy: the previous fire was recorded by the image that only
+        wrote `all_degraded`, and must not silently restart the count."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
+
+    def test_stalled_status_is_recognised(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_empty_cycles_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        assert pool_cycle_is_stalled({"cycles": []}, "pool_cycle all_degraded") is False
+
+
+class TestPoolCycleStatusLineAllDegraded:
+    """The markers on the status line are what make two consecutive degraded fires detectable
+    from ``last_status`` alone. ``majority_degraded`` is the one the predicate arms on;
+    ``all_degraded`` and ``degraded=N/M`` ride alongside so the operator can tell a total
+    outage from a bare majority, which the arming token deliberately cannot."""
+
+    def test_all_degraded_marker_appears_when_every_context_degraded(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" in status
+
+    def test_marker_absent_when_some_contexts_healthy(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+                {"degraded": False, "symbol": "ETHUSDT", "timeframe": "15m",
+                 "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                 "route_status": "matched",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" not in status
+        # One of two IS a majority, so the arming token is present where `all_degraded` is not.
+        assert "majority_degraded" in status
+        assert "degraded=1/2" in status
+
+    def test_below_half_carries_the_count_but_not_the_arming_token(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+
+        def ctx(symbol, degraded):
+            return {"degraded": degraded, "symbol": symbol, "timeframe": "15m",
+                    "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                    "route_status": "no_strategies",
+                    "live_route_status": None, "reason_codes": []}
+
+        status = pool_cycle_status_line({
+            "cycles": [ctx("BTCUSDT", True), ctx("ETHUSDT", False), ctx("SOLUSDT", False)],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=1/3" in status
+        assert "majority_degraded" not in status
+        assert "all_degraded" not in status
+
+    def test_a_healthy_fire_carries_no_degraded_token_at_all(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        status = pool_cycle_status_line({
+            "cycles": [{"degraded": False, "symbol": "BTCUSDT", "timeframe": "15m",
+                        "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                        "route_status": "matched",
+                        "live_route_status": None, "reason_codes": []}],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=" not in status
+        assert "majority_degraded" not in status
+
+
+# ---------------------------------------------------------------------------
+# The wiring, end to end: does a degraded fire's status line reach the NEXT fire?
+# ---------------------------------------------------------------------------
+
+class TestStallDetectionWiring:
+    """The classes above pin the two predicates against a hand-written ``previous_status``.
+    Nothing pinned the mechanism that supplies it: that ``_execute`` returns the status line,
+    that ``record_result`` stores it verbatim, and that the next fire reads it back as
+    ``schedule.last_status``. A status line that lost its marker between two fires would leave
+    the dead-man switch permanently silent, and every predicate test above would still pass.
+
+    Measured on the live schedule while writing these: across 909 terminal fires over nine days
+    no context degraded even once, so `any`, `majority` and `all` would each have fired exactly
+    zero times. Production has never exercised this path — a test is the only thing behind it.
+    """
+
+    T0 = "2026-07-16T09:00:00Z"
+    T1 = "2026-07-16T09:15:00Z"
+    T2 = "2026-07-16T09:30:00Z"
+    T3 = "2026-07-16T09:45:00Z"
+
+    @staticmethod
+    def _record(symbol="BTCUSDT", timeframe="1d", *, degraded=True):
+        return {
+            "cycle_id": f"cyc_{symbol}_{timeframe}", "symbol": symbol, "timeframe": timeframe,
+            "degraded": degraded,
+            "reason_codes": ["MARKET_DATA_DEGRADED"] if degraded else [],
+            "verdict_status": "NO_ENTRY", "route_status": "NO_ROUTE",
+        }
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        from runtime.mvp_runtime.crypto import cycle as cycle_mod
+        from runtime.mvp_runtime.crypto import market_data
+        from runtime.mvp_runtime.crypto import paper as paper_mod
+        from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule
+        from runtime.mvp_runtime.store import LedgerStore
+
+        # The three Safety-Flag chokepoints the crypto branch selects through. Stubbed to inert
+        # objects: this test is about the status string, and the cycle itself is stubbed too.
+        monkeypatch.setattr(market_data, "select_market_data_collector", lambda **kw: object())
+        monkeypatch.setattr(market_data, "select_liquidation_feed", lambda **kw: object())
+        monkeypatch.setattr(paper_mod, "select_paper_store", lambda **kw: object())
+
+        store = ScheduleStore(tmp_path)
+        store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900,
+                                 created_by="op", now=self.T0))
+        return {"store": store, "cycle_mod": cycle_mod, "monkeypatch": monkeypatch,
+                "ledger": LedgerStore(tmp_path / "ledger"), "control": ControlStore(tmp_path)}
+
+    @staticmethod
+    def _fire(env, now, notifier=None):
+        from runtime.mvp_runtime.scheduler import run_due
+        return run_due(env["store"], now=now, ledger=env["ledger"],
+                       control_store=env["control"], repo_root=None, notifier=notifier)
+
+    @staticmethod
+    def _last_status(env):
+        return env["store"].list()[0].last_status
+
+    def test_two_all_degraded_fires_stall_and_stay_stalled(self, env):
+        summary = {"cycles": [self._record("BTCUSDT"), self._record("ETHUSDT")],
+                   "skipped": [], "contexts": 2}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: summary)
+
+        first = self._fire(env, self.T1)
+        assert first["fired"] == 1 and first["failed"] == 0, "the FIRST degraded fire stays quiet"
+        assert "all_degraded" in self._last_status(env), self._last_status(env)
+
+        assert self._fire(env, self.T2)["failed"] == 1, "the SECOND consecutive one must block"
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+        # And it STAYS blocked: fire 3 reads `failed:PIPELINE_STALLED`, not a status line.
+        assert self._fire(env, self.T3)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+    def test_the_stall_reaches_the_operator(self, env):
+        """Blocking is only useful if somebody is told."""
+        summary = {"cycles": [self._record("BTCUSDT")], "skipped": [], "contexts": 1}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: summary)
+        sent: list[tuple] = []
+
+        self._fire(env, self.T1, notifier=lambda *a: sent.append(a))
+        assert sent == [], "a quiet first degraded fire must not page anyone"
+        self._fire(env, self.T2, notifier=lambda *a: sent.append(a))
+        assert len(sent) == 1
+        assert "PIPELINE_STALLED" in " ".join(str(x) for x in sent[0])
+
+    def test_a_healthy_fire_between_two_degraded_ones_resets_the_counter(self, env):
+        """CONSECUTIVE degradation, not two degraded fires ever."""
+        degraded = {"cycles": [self._record("BTCUSDT")], "skipped": [], "contexts": 1}
+        healthy = {"cycles": [self._record("BTCUSDT", degraded=False)], "skipped": [], "contexts": 1}
+
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: degraded)
+        assert self._fire(env, self.T1)["fired"] == 1
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: healthy)
+        assert self._fire(env, self.T2)["fired"] == 1
+        assert "all_degraded" not in self._last_status(env)
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: degraded)
+        assert self._fire(env, self.T3)["fired"] == 1, "degraded after healthy is the FIRST again"
+
+    def test_ten_of_eleven_contexts_dead_now_stalls(self, env):
+        """The live pool runs eleven contexts. Under the original ``all()`` rule this exact
+        shape stayed silent indefinitely; Thomas widened it to a majority on 2026-08-22."""
+        mixed = {"cycles": [self._record(f"S{i}") for i in range(10)]
+                           + [self._record("ALIVE", degraded=False)],
+                 "skipped": [], "contexts": 11}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: mixed)
+        assert self._fire(env, self.T1)["fired"] == 1, "the first one still stays quiet"
+        assert "degraded=10/11" in self._last_status(env), self._last_status(env)
+        assert self._fire(env, self.T2)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+    def test_a_minority_of_degraded_contexts_still_never_stalls(self, env):
+        """The other side of the new rule: below half is noise, however long it persists."""
+        minority = {"cycles": [self._record("DEAD")]
+                              + [self._record(f"S{i}", degraded=False) for i in range(10)],
+                    "skipped": [], "contexts": 11}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: minority)
+        assert self._fire(env, self.T1)["fired"] == 1
+        assert self._fire(env, self.T2)["fired"] == 1
+        assert self._fire(env, self.T3)["fired"] == 1
+        assert "degraded=1/11" in self._last_status(env)
+
+    def test_single_symbol_override_stalls_on_two_degraded_fires(self, env, tmp_path):
+        """The ``SYMBOL TIMEFRAME`` override runs a different branch with a different prefix rule
+        (``startswith("degraded")`` rather than the pool's marker)."""
+        from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule
+
+        store = ScheduleStore(tmp_path / "single")
+        store.add(build_schedule(kind=KIND_CRYPTO, request="BTCUSDT 1d", interval_seconds=900,
+                                 created_by="op", now=self.T0))
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_crypto_cycle",
+                                   lambda **kw: self._record("BTCUSDT", "1d"))
+        env["store"] = store
+
+        assert self._fire(env, self.T1)["fired"] == 1
+        assert self._last_status(env).startswith("degraded"), self._last_status(env)
+        assert self._fire(env, self.T2)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"

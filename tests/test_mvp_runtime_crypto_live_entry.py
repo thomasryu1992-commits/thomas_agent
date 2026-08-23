@@ -80,9 +80,10 @@ def _plan(**kw):
     The verdict is supplied explicitly, like every other fact. It used to be omitted, which made
     the *unguarded* path the tested happy path — the review finding that closed this fail-open.
     """
+    plan = kw.pop("plan", PLAN)
     args = dict(
         verdict=kw.pop("verdict", ALLOWING_VERDICT),
-        plan=kw.pop("plan", PLAN),
+        plan=plan,
         symbol=kw.pop("symbol", "BTCUSDT"),
         reconciliation=kw.pop("reconciliation", reconcile_positions([], FLAT, now=NOW)),
         local_positions=kw.pop("local_positions", []),
@@ -99,6 +100,12 @@ def _plan(**kw):
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         now=kw.pop("now", NOW),
+        # #610 Part 1. Defaulted to "this plan's strategy is armed for live" so the existing
+        # cases keep testing the doors they were written for; the tier door has its own tests.
+        live_routable_strategy_ids=kw.pop(
+            "live_routable_strategy_ids",
+            {str((plan or {}).get("strategy_id") or "")},
+        ),
         **kw,
     )
     return le.plan_live_entry(**args)
@@ -468,3 +475,29 @@ def test_the_removed_gate_left_no_reason_code_behind():
     kind that survives a deletion because nothing fails when it lingers."""
     assert not hasattr(le, "CANDIDATE_REFUSED")
     assert "live_candidate" not in inspect.signature(le.plan_live_entry).parameters
+
+
+# --- ⑨ spread veto ---------------------------------------------------------
+
+def test_a_wide_spread_refuses_the_entry():
+    decision = _plan(spread_bps=80.0)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.SPREAD_REFUSED in decision["reasons"]
+    assert decision["spread_bps"] == 80.0
+    assert decision["spread_limit_bps"] == le.MAX_ENTRY_SPREAD_BPS
+
+
+def test_a_narrow_spread_does_not_refuse():
+    decision = _plan(spread_bps=5.0)
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_no_spread_reading_does_not_refuse():
+    """When the orderbook could not be read, the entry proceeds as before the guard existed."""
+    decision = _plan(spread_bps=None)
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_spread_at_the_limit_does_not_refuse():
+    decision = _plan(spread_bps=le.MAX_ENTRY_SPREAD_BPS)
+    assert decision["status"] == le.STATUS_READY

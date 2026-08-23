@@ -11,6 +11,37 @@ Two files under the crypto state directory:
   tampered data rather than trade on whatever half-parses.
 - ``strategy_candidates.jsonl`` — append-only candidates (C7 import provenance now,
   C8 factory output later). Candidates never route; only the active pool does.
+
+**Some fields on a stored row are SNAPSHOTS, not answers.** Both stores are append-only —
+a candidate row's ``record_sha256`` covers the whole row, so correcting a label in place
+would not merely violate a convention, it would read as tampering. The consequence is that
+any judgment written at write time is frozen at the rule that produced it, and this runtime
+has changed those rules more than once. Measured 2026-08-08:
+
+- Stored ``robustness.verdict`` / ``robustness.holdout_status`` across 1,841 candidate rows
+  read ROBUST=83 and CONFIRMED=237. Recomputed under today's rule: **0 and 0.**
+- The 41 import rows carry ``status`` PAPER_ACTIVE=25 / SUSPENDED=16, snapshotted at import.
+  The pool — the authority on membership — has all 41 of those members SUSPENDED.
+- Of 94 pool entries, the 34 carrying ``robustness_verdict: ROBUST`` are import-lineage
+  (no ``candidate_id``) and every one is SUSPENDED, from a label two rule vintages old. The
+  53 factory-promoted entries — including all 5 that are PAPER_ACTIVE — carry **no**
+  robustness field at all.
+
+None of that is a live defect, and the reason is worth stating because it is the thing a
+future change can break: **no runtime decision reads those fields.**
+:func:`candidate_quality` recomputes the verdict and the holdout status from the stored
+COMPONENTS on every read, membership comes from the pool rather than from a candidate row's
+``status``, and the promotion door deliberately copies raw per-regime numbers onto a pool
+entry instead of a derived label — see the comment at the entry construction in
+``scripts/promote_strategy_candidates.py``, which names this exact defect as one
+`candidate_quality` already had to fix once.
+
+So the pool entries that carry no robustness fields are the CORRECT ones, and the 34 that do
+are the residue of a one-time import. Copying a verdict onto a routable entry would not fill
+a gap; it would reintroduce the defect. What was missing is that this held by accident —
+nothing checked it — which `test_stored_snapshot_fields_are_not_inputs` now does.
+
+:data:`STORED_SNAPSHOT_FIELDS` names them.
 """
 
 from __future__ import annotations
@@ -21,6 +52,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
@@ -28,6 +60,7 @@ from .cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_STOP_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_UNCHARGED,
     FUNDING_SOURCE_VENUE,
@@ -41,6 +74,24 @@ from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_poo
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
+
+# Pool-entry fields that are PROVENANCE — what a rule said when the row was written — which
+# no decision surface may read as an input. See the module docstring for what each currently
+# says and what it should say.
+#
+# Deliberately NOT here: ``robustness_score`` and ``trades_per_parameter``. Those are
+# MEASUREMENTS, and a measurement survives a rule change — :func:`candidate_quality` feeds
+# them back into `classify_verdict` on every read, which is the whole mechanism that makes
+# the labels disposable. Listing them would forbid the recompute it is protecting.
+#
+# The candidate-row equivalents live nested under ``backtest_evidence.robustness`` and are
+# reachable only through :func:`candidate_quality`, which recomputes rather than reads them
+# back. That is why it is a function and not a dictionary lookup at each call site, and
+# `test_stored_snapshot_fields_are_not_inputs` pins it as the sole reader of that block.
+STORED_SNAPSHOT_FIELDS = frozenset({
+    "robustness_verdict",
+    "robustness_warnings",
+})
 
 # The basis of every R in a candidate's quality view.
 #
@@ -167,13 +218,18 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
+    # Present-only, the maker rule: a record scored before the stop split keeps the exact
+    # basis string it has always reported, and a stamped one says what its stops paid —
+    # which is the axis `cost_basis_rank` now refuses OPTIMISTIC rows on.
+    stop = model.get("stop_slippage_bps")
+    stop_term = f"+stop_{stop}bps" if isinstance(stop, (int, float)) else ""
     funding = model.get("funding_bps_per_interval")
     if isinstance(funding, (int, float)) and not isinstance(funding, bool):
         source = model.get("funding_source") or FUNDING_SOURCE_VENUE
         funding_term = f"+funding_{funding}bps/8h({source})"
     else:
         funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{stop_term}{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -186,6 +242,7 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "stop_slippage_bps": DEFAULT_STOP_SLIPPAGE_BPS,
         "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
         "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
@@ -238,15 +295,28 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
         # which is a property of the trade and not of the cost model this function ranks.
         return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
+    # The stop leg joined the comparison on Thomas's 2026-08-11 direction, the same evening
+    # the seam re-priced 3.0 -> 12.0: a row scored with cheaper stops overstates its edge on
+    # every stop exit exactly the way a cheaper taker did, and the safest treatment of the
+    # existing store is NOT a forced re-price but this rank — cheaper-than-current reads
+    # OPTIMISTIC, is refused at the door, and the lineage re-mints at the current model.
+    # A record with no `stop_slippage_bps` charged its stops at its own GENERAL slippage
+    # (the pre-#683 identity), so that is the figure it is judged on — the maker rule again:
+    # what the leg actually paid, never a missing field read as the current rate.
+    stop_charged = model.get("stop_slippage_bps")
+    if not _is_number(stop_charged):
+        stop_charged = slip
     if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
-            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip == DEFAULT_SLIPPAGE_BPS and stop_charged == DEFAULT_STOP_SLIPPAGE_BPS
+            and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip >= DEFAULT_SLIPPAGE_BPS and stop_charged >= DEFAULT_STOP_SLIPPAGE_BPS
+            and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 
@@ -520,7 +590,10 @@ def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
 # Both checks below are EXACT. Neither reasons about whether a condition "looks"
 # redundant — proving a condition inert in general needs invariants this module does
 # not have, and a guess in a fail-closed gate is worse than the gap it fills. What is
-# provable is used, and the rest is reported rather than refused (`near_duplicate_groups`).
+# provable is used. The tier below proof (`near_duplicate_groups`) is reported, and since
+# Thomas's 5-2 decision (2026-08-11) it gates exactly one thing — two cluster members
+# co-occupying routing slots (`assert_no_cluster_siblings`) — on the narrower claim that
+# indistinguishable evidence cannot buy a second slot.
 
 def canonical_rule_form(record: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """What a spec DOES, independent of how its conditions happen to be ordered.
@@ -652,6 +725,112 @@ def assert_no_semantic_duplicates(
         "CANDIDATE_SEMANTIC_DUPLICATE",
         f"these are the same strategy under a different rule hash: {listed}. "
         f"Promote one of each group, or pass the explicit --allow-duplicates escape.",
+    )
+
+
+def reactivated_candidate_ids(
+    candidate_ids: Sequence[str], *, keep_active: bool, root: Path | None = None,
+) -> list[str]:
+    """Lineages this promotion would return to trading, sorted. One pool read.
+
+    The id-keyed form of :func:`silent_reactivations`, and the one the promotion CONTENT HASH
+    is a function of — the hash is computed from selectors at the ask, long before entries are
+    assembled, so it cannot use the entry-keyed view.
+
+    Sorted, so the hash does not depend on selector order, for the same reason
+    ``candidate_ids`` and ``rule_hashes`` are sorted beside it.
+
+    ``keep_active`` decides it entirely in one direction: in ADD mode the incumbents keep the
+    status they had and the door refuses a candidate already in the pool, so nothing can come
+    back — the answer is empty without reading anything. Only REPLACE rebuilds every entry,
+    and that is where a terminal member re-listed alongside the rest returns as PAPER_ACTIVE.
+    """
+    if keep_active:
+        return []
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    current = {
+        str(e.get("candidate_id")): e
+        for e in load_active_pool(root).get("active_strategies") or []
+        if e.get("candidate_id")
+    }
+    wanted = {str(c) for c in candidate_ids if c}
+    return sorted(
+        cid for cid in wanted
+        if cid in current and str(current[cid].get("status")) in TERMINAL_STATUSES
+    )
+
+
+def silent_reactivations(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Members this install would move OUT of a terminal status, keyed by lineage.
+
+    Pure-ish (one pool read), returns ``[{candidate_id, strategy_id, from_status}]`` oldest
+    first. Empty is the ordinary answer; a non-empty list is the promotion door about to do
+    something its approval never named."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    current = {
+        e.get("candidate_id"): e for e in load_active_pool(root).get("active_strategies") or []
+        if e.get("candidate_id")
+    }
+    found = []
+    for entry in entries:
+        was = current.get(entry.get("candidate_id"))
+        if was is None:
+            continue
+        if str(was.get("status")) in TERMINAL_STATUSES and \
+                str(entry.get("status")) not in TERMINAL_STATUSES:
+            found.append({
+                "candidate_id": str(entry.get("candidate_id")),
+                "strategy_id": str(entry.get("strategy_id")),
+                "from_status": str(was.get("status")),
+            })
+    return found
+
+
+def assert_no_silent_reactivation(
+    entries: list[Mapping[str, Any]], *, root: Path | None = None,
+) -> None:
+    """Refuse an install that un-suspends a member nobody asked to un-suspend.
+
+    **The promotion door's replace mode rebuilds every entry with a hardcoded
+    ``PAPER_ACTIVE``.** So an operator dropping one redundant strategy — by re-listing the
+    rest — brings back every terminally SUSPENDED member with them. `BUILD_HISTORY` records
+    this simulated against a copy of the real pool on 2026-07-29: **16 reactivated, 57
+    lifecycle counters reset.** The answer then was the narrow `retirement` verb, which
+    removed the REASON to reach for replace mode; it did not close the path.
+
+    What makes it worth a guard rather than a note is where the authority sits.
+    ``promotion_content_sha256`` is a function of candidate ids, rule hashes and
+    ``keep_active`` — nothing about lifecycle status — so the approval Thomas signs says
+    "install these lineages" and cannot say "and un-suspend sixteen of them". The signature
+    is honest about a smaller effect than the one it authorizes. And the lifecycle's own
+    rule is that this direction is never automatic: `evaluate_lifecycle` degrades only, and
+    a terminal entry refuses at `update_statuses` precisely so reactivation stays deliberate.
+    Coming back through a membership operation is that rule being routed around.
+
+    So the door fails closed and the operator has to name it, in the idiom the four evidence
+    escapes already use: refuse, list exactly who and from what, and let an explicit
+    ``--allow-reactivation`` through — recorded on the ledger, because an escape that leaves
+    no trace is indistinguishable later from a door that never refused.
+
+    This does not make the approval cover the reactivation; only the content hash could, and
+    changing what Thomas's signature binds is his decision, not this door's. It makes the
+    reactivation deliberate and legible, which is the half that can be fixed here.
+
+    Raises ``POOL_SILENT_REACTIVATION``.
+    """
+    found = silent_reactivations(entries, root=root)
+    if not found:
+        return
+    listed = "; ".join(f"{f['strategy_id']} [{f['candidate_id']}] {f['from_status']}" for f in found)
+    raise ToolError(
+        "POOL_SILENT_REACTIVATION",
+        f"this install returns {len(found)} terminal member(s) to trading, which the "
+        f"promotion approval does not name: {listed}. Retire-then-promote, or pass the "
+        f"explicit --allow-reactivation escape.",
     )
 
 
@@ -825,12 +1004,18 @@ def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Same window, same trade counts, but not identical R — reported, never refused.
+    """Same window, same trade counts, but not identical R — a cluster, reported here.
 
     The pair this exists for: two SOLUSDT lineages that closed 82 trades each with the
     same 45/37 split and the same drawdown, differing in net R by 0.0016. Almost
     certainly one strategy wearing two rules, but "almost certainly" is a judgement,
-    and this module refuses only on what it can prove. So an operator gets told.
+    and this module refuses only on what it can prove. So an operator gets told —
+    existence in the store and a single promotion stay unrefused.
+
+    What IS refused, since Thomas's 5-2 decision (2026-08-11), is two members of one
+    cluster CO-OCCUPYING routing slots — :func:`assert_no_cluster_siblings` below, which
+    rests on the one thing this grouping does prove: on every recorded axis the two
+    evidence rows are indistinguishable, so a second slot buys no independent evidence.
     """
     buckets: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for record in records:
@@ -853,6 +1038,195 @@ def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, An
                 "strategy_ids": sorted({str(m.get("strategy_id")) for m in members}),
             })
     return groups
+
+
+def assert_no_cluster_siblings(
+    records: list[Mapping[str, Any]], *, incumbents: list[Mapping[str, Any]] | None = None,
+) -> None:
+    """One routing slot per behaviour cluster (Thomas 5-2, 2026-08-11).
+
+    The softer twin of :func:`assert_no_semantic_duplicates`, one tier down and with a
+    narrower claim. That gate proves two rows are the SAME strategy; this one proves only
+    that their recorded trading is indistinguishable (:func:`near_duplicate_groups` — same
+    window, same trade counts, aggregates apart in the last decimals). Indistinguishable
+    evidence cannot justify a second slot: the router picks one strategy per context, the
+    forward record the second member would accrue is the measurement the first is already
+    making, and OBSERVATION slots exist to buy independent forward evidence. So the store
+    keeps both rows, either may be promoted — what is refused is promoting BOTH, or
+    promoting one whose cluster already holds an occupying incumbent.
+
+    ``incumbents`` is the pool's own candidate records (add mode); replace mode passes
+    ``None`` and only the batch itself is checked, mirroring the semantic gate. A cluster
+    made ENTIRELY of incumbents is not this batch's to answer for and does not refuse.
+
+    Raises ``CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED`` naming each conflicting cluster.
+    """
+    pool_records = list(incumbents or [])
+    incoming_ids = {candidate_id(r) for r in records}
+    incumbent_ids = {candidate_id(r) for r in pool_records} - incoming_ids
+    conflicts: list[str] = []
+    for group in near_duplicate_groups(list(records) + pool_records):
+        ids = set(group["candidate_ids"])
+        selected = sorted(ids & incoming_ids)
+        occupied = sorted(ids & incumbent_ids)
+        if len(selected) >= 2 or (selected and occupied):
+            conflicts.append(
+                f"{'/'.join(group['strategy_ids'])} [selected: {', '.join(selected)}"
+                + (f"; occupying: {', '.join(occupied)}" if occupied else "")
+                + "]"
+            )
+    if not conflicts:
+        return
+    raise ToolError(
+        "CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED",
+        "these lineages traded indistinguishably on the recorded axes, and a behaviour "
+        f"cluster gets one routing slot: {'; '.join(conflicts)}. Promote one member per "
+        "cluster, or pass the explicit --allow-cluster-siblings escape.",
+    )
+
+
+# --- the OBSERVATION entry bar (Thomas 5-3, 2026-08-11) ---------------------------------------
+#
+# The bar selects for MEASURABILITY, not winners: in a population whose judgeable rows all
+# CONTRADICTED, a positive-expectancy pick is selection noise by construction, so what a slot
+# can honestly buy is forward evidence from a candidate whose backtest is honestly scored,
+# current, and capable of being disconfirmed. Applied to ENTRANTS only — a restatement of what
+# already occupies a slot is not an entry (the `assert_no_cluster_siblings` grandfathering
+# rule, one gate over), or every re-arm of the pre-bar pool would need two waivers forever.
+
+# Where the store's own expectancy-vs-sample table stops being inflated (`robustness.py`:
+# <20 closes +0.114R, 20-49 +0.093R, 50-199 -0.003R — the estimate converges on the truth
+# around fifty). Below it, a positive expectancy is mostly the small-sample lottery.
+OBSERVATION_MIN_BACKTEST_CLOSED = 50
+
+# Two occupying members per strategy_family. Forward evidence from a third sibling of one
+# family is mostly correlated with the first two (F1: no correlation control exists), so the
+# third slot buys diversity nowhere and multiple-testing debt everywhere.
+OBSERVATION_FAMILY_CAP = 2
+
+
+def _observation_holdout_term(record: Mapping[str, Any]) -> str | None:
+    """None when the holdout admits observation entry; else the failure, named.
+
+    Admitted: CONFIRMED (beyond the bar), and INSUFFICIENT that is merely THIN — a block
+    with fewer than `MIN_HOLDOUT_TRADES` closes, the case forward evidence exists to feed.
+    Refused: CONTRADICTED (evidence against), no block at all, and the vintage
+    INSUFFICIENT shapes (enough closes but no dispersion, or no period data) — those rows
+    cannot state their own uncertainty and their path back in is a re-mint, not a slot.
+    Branch order mirrors `robustness.holdout_status` so "thin" here is exactly the status
+    function's closed-count branch.
+    """
+    from .robustness import HOLDOUT_CONFIRMED, HOLDOUT_INSUFFICIENT, MIN_HOLDOUT_TRADES
+
+    quality_status = candidate_quality(record)["holdout_status"]
+    if quality_status == HOLDOUT_CONFIRMED:
+        return None
+    if quality_status != HOLDOUT_INSUFFICIENT:
+        return f"holdout={quality_status}"
+    evidence = record.get("backtest_evidence")
+    block = evidence.get("holdout") if isinstance(evidence, Mapping) else None
+    if not isinstance(block, Mapping):
+        return "holdout=INSUFFICIENT(no block)"
+    closed = block.get("closed_count", block.get("closed"))
+    if isinstance(closed, (int, float)) and not isinstance(closed, bool) \
+            and closed < MIN_HOLDOUT_TRADES:
+        return None  # thin: the shape observation exists to feed
+    return f"holdout=INSUFFICIENT(vintage: {closed} closes, undispersed)"
+
+
+def assert_observation_entry_bar(
+    records: list[Mapping[str, Any]], *, occupying_candidate_ids: frozenset[str] = frozenset(),
+) -> None:
+    """Every ENTRANT clears the 5-3 bar, and a refusal names every failing term.
+
+    Terms, all required: FULL depth among the RECORDED depths (SHALLOW is ranked and
+    promotable elsewhere, but a slot is spent on the current window or not at all), at
+    least `OBSERVATION_MIN_BACKTEST_CLOSED` backtest closes, positive expectancy at the
+    CURRENT rates, and a holdout that is thin or better (`_observation_holdout_term`).
+    Rows whose ``candidate_id`` is already occupying a slot are restatements, not entrants,
+    and pass untouched.
+
+    Deliberately NOT here: the cost-basis and unrecorded-depth axes, which their dedicated
+    gates already refuse with their own audited escapes. Restating them would double-charge
+    every use of those escapes — two waivers for one named decision — so this bar carries
+    only the strictness that is NEW with it.
+
+    Raises ``CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR`` listing every failing candidate with
+    every failing term — a bar that reports one term per run is a bar an operator meets
+    four times.
+    """
+    failures: list[str] = []
+    for record in records:
+        cid = candidate_id(record)
+        if cid in occupying_candidate_ids:
+            continue
+        quality = candidate_quality(record)
+        terms: list[str] = []
+        if quality["evidence_depth_rank"] == EVIDENCE_DEPTH_RANK_SHALLOW:
+            terms.append(f"depth={quality['evidence_depth']}")
+        closed = quality["closed_count"]
+        if not isinstance(closed, (int, float)) or closed < OBSERVATION_MIN_BACKTEST_CLOSED:
+            terms.append(f"closed={closed}<{OBSERVATION_MIN_BACKTEST_CLOSED}")
+        exp_now = quality["expectancy_at_current_costs"]
+        if not isinstance(exp_now, (int, float)) or not exp_now > 0:
+            terms.append(f"expectancy_at_current={exp_now}")
+        holdout_term = _observation_holdout_term(record)
+        if holdout_term is not None:
+            terms.append(holdout_term)
+        if terms:
+            failures.append(f"{quality['candidate_id']} ({record.get('strategy_id')}): "
+                            + ", ".join(terms))
+    if not failures:
+        return
+    raise ToolError(
+        "CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR",
+        "an OBSERVATION slot buys forward evidence, and these entrants cannot honestly "
+        f"supply it: {'; '.join(failures)}. Re-mint the lineage at the current window, or "
+        "pass the explicit --allow-below-entry-bar escape.",
+    )
+
+
+def assert_family_cap(
+    records: list[Mapping[str, Any]], *, occupying_entries: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    """No strategy_family holds more than `OBSERVATION_FAMILY_CAP` occupied slots.
+
+    Charged to ENTRANTS only, the same grandfathering as the entry bar: a family already
+    over the cap among incumbents alone blocks nothing until a batch tries to ADD to it —
+    the door must never refuse the promotion that is moving the pool AWAY from a
+    concentration. Occupying incumbents count toward the base; a restated incumbent in the
+    batch is counted once as base, never as an entrant.
+
+    Raises ``CANDIDATE_FAMILY_CAP_EXCEEDED`` naming each family over its cap.
+    """
+    occupying_ids = {
+        str(e.get("candidate_id")) for e in occupying_entries if e.get("candidate_id")
+    }
+    base: dict[str, int] = {}
+    for entry in occupying_entries:
+        family = str((entry.get("strategy_spec") or {}).get("strategy_family") or "?")
+        base[family] = base.get(family, 0) + 1
+    entrants: dict[str, list[str]] = {}
+    for record in records:
+        cid = candidate_id(record)
+        family = str((record.get("strategy_spec") or {}).get("strategy_family") or "?")
+        if cid in occupying_ids:
+            continue  # a restatement is already in the base
+        entrants.setdefault(family, []).append(cid)
+    over = [
+        f"{family}: {base.get(family, 0)} occupying + {len(cids)} entering "
+        f"[{', '.join(cids)}] > {OBSERVATION_FAMILY_CAP}"
+        for family, cids in sorted(entrants.items())
+        if base.get(family, 0) + len(cids) > OBSERVATION_FAMILY_CAP
+    ]
+    if not over:
+        return
+    raise ToolError(
+        "CANDIDATE_FAMILY_CAP_EXCEEDED",
+        f"a family gets {OBSERVATION_FAMILY_CAP} occupied slots — the third sibling's "
+        f"forward record is correlated with the first two, not independent: {'; '.join(over)}. "
+        "Promote into another family, or pass the explicit --allow-family-overflow escape.",
+    )
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -1082,6 +1456,113 @@ def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
     }
 
 
+# --- the live tier (#610 Part 1) ---------------------------------------------------------
+#
+# Occupying a routing slot and being allowed to spend real money were **one fact** until now:
+# `OCCUPYING_STATUSES` answered both, so installing a strategy into the pool armed it for live
+# orders on the next 15-minute cycle. `live_entry`'s check order has no per-strategy question in
+# it at all — slot 2b was Gate 0 and it was removed 2026-08-03 for being unsatisfiable — so every
+# remaining live gate asks whether this RUNTIME may trade, never whether this STRATEGY may.
+#
+# **Why a field and not a status, which is what the proposal first said.** The lifecycle ladder
+# recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.py:292`). Had the observation
+# tier been a status, that recovery would move a strategy the operator deliberately kept off the
+# money path INTO it — an automatic promotion into real money, arriving through the one mechanism
+# this system says may only ever demote. `update_statuses` writes **only** `status`
+# (see its docstring), so a separate field cannot be reached by the ladder at all: the property
+# is structural rather than guarded, and there is no rank ordering anybody has to get right.
+#
+# Absence means OBSERVATION. Every entry promoted before this existed therefore stops being
+# live-routable the moment this ships, which is the intended migration and the fail-closed
+# direction: a pool that predates the distinction cannot assert the permissive half of it.
+LIVE_TIER_FIELD = "live_tier"
+LIVE_TIER_LIVE = "LIVE"
+LIVE_TIER_OBSERVATION = "OBSERVATION"
+LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
+
+
+def entry_live_tier(entry: Mapping[str, Any]) -> str:
+    """This entry's tier, defaulting to OBSERVATION — including for an unrecognised value.
+
+    A tier this code does not know is not a reason to allow real money; it is a reason to refuse
+    until somebody says what it means. Same direction as an absent field."""
+    value = entry.get(LIVE_TIER_FIELD)
+    return LIVE_TIER_LIVE if value == LIVE_TIER_LIVE else LIVE_TIER_OBSERVATION
+
+
+def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
+    """Every strategy id that may open a REAL position: occupying **and** in the live tier.
+
+    Strictly narrower than :func:`routable_strategy_ids`, and the two answer different
+    questions — that one is "could this trade again at all", which the drawdown baseline needs
+    and which an observation-tier strategy still answers YES to (it papers, and its live history
+    stays attributable). This one is "may this spend money", and nothing infers it: the entry
+    has to say so.
+
+    A pool that cannot be read must never arrive here as an empty dict. Empty means "no strategy
+    is live-routable", which refuses every entry — safe — but the caller still owes the
+    distinction, because the same shape reaching :func:`routable_strategy_ids` would release a
+    drawdown exclusion instead."""
+    return {
+        str(entry.get("strategy_id"))
+        for entry in (pool.get("active_strategies") or [])
+        if isinstance(entry, Mapping)
+        and entry.get("status") in OCCUPYING_STATUSES
+        and entry.get("strategy_id")
+        and entry_live_tier(entry) == LIVE_TIER_LIVE
+    }
+
+
+def disarm_live_tier(
+    strategy_ids: Sequence[str], *, root: Path | None = None, now: str, reasons: Sequence[str] = (),
+) -> int:
+    """Move named entries OUT of the live tier. Locked. Returns how many actually moved.
+
+    **The only automatic writer of ``live_tier``, and it can only ever write OBSERVATION.**
+    That is a property of the signature rather than of the caller: there is no argument for a
+    target tier, so no caller — present or future, correct or confused — can arm a strategy
+    through here. Arming stays the operator promotion door, which is what #610 Part 1 bought
+    and what this must not spend.
+
+    It is the same asymmetry the lifecycle ladder already runs on ("auto-degradation is
+    permitted; auto-reactivation is not"), applied to the tier instead of the status, and for
+    the same reason: taking permission away on a machine's own judgement is safe in a way that
+    handing it out is not.
+
+    Deliberately **not** in `lifecycle`. The ladder is asserted never to name this field
+    (`test_the_lifecycle_ladder_cannot_arm_a_strategy`), and that assertion is worth more than
+    the convenience of one module: it means the recovery path `WARNING -> PAPER_ACTIVE` cannot
+    touch the tier even by accident. A separate writer keeps the ladder's blast radius exactly
+    where Part 1 put it.
+
+    Silent on an id the pool does not hold. A caller judging live outcomes may legitimately name
+    a lineage that has since been retired out of the pool entirely, and refusing there would
+    turn a stale name into a cycle failure — the outcome has already been recorded, and the
+    lineage is already not routable.
+    """
+    ids = {str(s) for s in strategy_ids if isinstance(s, str) and s}
+    if not ids:
+        return 0
+    path = pool_path(root)
+    with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
+        pool = load_active_pool(root)
+        moved = 0
+        for entry in pool.get("active_strategies") or []:
+            if not isinstance(entry, Mapping) or str(entry.get("strategy_id")) not in ids:
+                continue
+            if entry_live_tier(entry) != LIVE_TIER_LIVE:
+                continue
+            entry[LIVE_TIER_FIELD] = LIVE_TIER_OBSERVATION
+            entry["live_tier_updated_at"] = now
+            entry["live_tier_reasons"] = [str(r) for r in reasons]
+            moved += 1
+        if moved:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(path)
+        return moved
+
+
 def routable_contexts(pool: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Distinct ``(symbol, timeframe)`` pairs the active pool can route on.
 
@@ -1142,7 +1623,8 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
 
 
 def update_statuses(
-    decisions: list[dict[str, Any]], *, root: Path | None = None, updated_by: str = "lifecycle_agent"
+    decisions: list[dict[str, Any]], *, root: Path | None = None,
+    updated_by: str = "lifecycle_agent", now: str | None = None,
 ) -> int:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
 
@@ -1159,7 +1641,24 @@ def update_statuses(
     transition that produced the status the entry is currently in. Entries transitioned
     before these fields existed carry none: absent means "written by an older runtime",
     which is a different answer from an empty list and is why the reader treats it as
-    unknown rather than as no reason."""
+    unknown rather than as no reason.
+
+    **The pool header is stamped as a PAIR.** This used to set ``updated_by`` and leave
+    ``updated_at`` alone, which is worse than setting neither: the two fields describe one
+    event, so a reader gets a current writer against a timestamp from whenever the
+    promotion door last ran. Measured on the live host 2026-08-08 — the file was rewritten
+    at 11:29 by the 15-minute pool cycle and its ``updated_at`` read ``2026-07-31T10:04:33Z``,
+    earlier even than the last transition it had itself recorded (10:07:15Z). "Nothing has
+    happened since Jul 31" and "eight days of cycles have run" are indistinguishable.
+
+    ``now`` is that stamp. It defaults to the newest ``created_at_utc`` among ``decisions``,
+    which is not a fallback but the better answer in the ordinary case: it is the moment this
+    write's transitions were DECIDED, so the header agrees with the ``lifecycle_updated_at``
+    the same call wrote onto the entries instead of being independently sourced. Every
+    decision shape this accepts carries one; a caller with its own clock may pass ``now`` and
+    override. The stamp lands on every write, like ``updated_by`` — "when was this file last
+    written, and by whom" is the question the pair answers, and per-entry
+    ``lifecycle_updated_at`` remains the one that says when a given strategy last moved."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
     if not decisions:
@@ -1208,6 +1707,15 @@ def update_statuses(
                     entry["lifecycle_retired_by"] = retired_by
                 changed += 1
         pool["updated_by"] = updated_by
+        # Never widen to `or ""`: an empty stamp would overwrite a true timestamp with a
+        # blank, which is the one outcome worse than the stale one being fixed here.
+        stamp = now or max(
+            (str(d.get("created_at_utc")) for d in decisions
+             if isinstance(d.get("created_at_utc"), str) and d.get("created_at_utc")),
+            default="",
+        )
+        if stamp:
+            pool["updated_at"] = stamp
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)
@@ -1224,20 +1732,16 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
     before stamping existed have no hash to check — documented gap, closed for
     every new row."""
     path = candidates_path(root)
-    if not path.is_file():
-        return []
     rows: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("CANDIDATES_UNREADABLE", f"strategy candidates line {i + 1} is not valid JSON") from exc
+    # Streams rather than materializing the store twice, and keeps ToolError: 47 sites in the
+    # runtime catch it by name — five of them in `promotion.py`, which reads this very store —
+    # so raising jsonl's PersistenceError here would fail past those handlers, not at them.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="CANDIDATES_UNREADABLE",
+        label="strategy candidates",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         stored = record.get("record_sha256")
@@ -1245,7 +1749,7 @@ def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
             body = {k: v for k, v in record.items() if k != "record_sha256"}
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
-                    "CANDIDATES_TAMPERED", f"strategy candidates line {i + 1} fails its self-hash"
+                    "CANDIDATES_TAMPERED", f"strategy candidates line {lineno} fails its self-hash"
                 )
         rows.append(record)
     return rows
@@ -1313,6 +1817,96 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     return (tuple(spec.get("symbol_scope") or ()), spec.get("timeframe"))
 
 
+def _lattice_attempts(record: Mapping[str, Any]) -> int:
+    """How many hypotheses this row charges its context with — its ablation lattice size
+    when it carries one, else 1.
+
+    An ablation winner registered alone, but its ``lattice_size - 1`` unregistered siblings
+    were each scored against the same bars (``factory.ablate_hypothesis`` replays every
+    non-empty subset of the drawn conjunction); uncharged, they would be exactly the escape
+    :func:`attempts_by_context`'s docstring forbids — attempts that raise no bar. The
+    division of labour is deliberate: ``lattice_size`` is stored FACT (how many members
+    were tried, true at mint and forever), while the attempt COUNT stays computed at read
+    time here. An absent or unreadable block charges 1 — the pre-ablation meaning every
+    stored row already has — and never 0, which would be a row escaping its own charge."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    ablation = evidence.get("ablation")
+    if not isinstance(ablation, Mapping):
+        return 1
+    size = ablation.get("lattice_size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        return 1
+    return size
+
+
+def _evidence_symbols(record: Mapping[str, Any]) -> int:
+    """How many symbols this record's evidence was actually scored over, from the record.
+
+    Reads the holdout's ``symbols`` first (stamped by the pooled replay), then the top-level
+    ``symbols_replayed``. Returns 1 whenever the evidence does not positively say "pooled" —
+    absence must stay the single-symbol reading every pre-F9 row already has."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    holdout = evidence.get("holdout")
+    for value in (
+        holdout.get("symbols") if isinstance(holdout, Mapping) else None,
+        evidence.get("symbols_replayed"),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 1:
+            return value
+    return 1
+
+
+def pooled_context_keys(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, int], tuple[Any, ...]]:
+    """The store's multi-symbol context key per ``(timeframe, cohort size)`` — when unambiguous.
+
+    Read off the store rather than off a constant, because the row that needs it cannot name
+    its own cohort (that is the defect being compensated). A slot where two different cohorts
+    of the same size share a timeframe is dropped: an ambiguous reattribution would move an
+    attempt onto bars it may never have been scored against, and the fallback (charge the
+    stored key) is the behavior the store already had."""
+    keys: dict[tuple[str, int], tuple[Any, ...]] = {}
+    ambiguous: set[tuple[str, int]] = set()
+    for record in records:
+        key = search_context_key(record.get("strategy_spec") or {})
+        scope, timeframe = key
+        if len(scope) > 1:
+            slot = (str(timeframe), len(scope))
+            if slot in keys and keys[slot] != key:
+                ambiguous.add(slot)
+            keys[slot] = key
+    return {slot: key for slot, key in keys.items() if slot not in ambiguous}
+
+
+def attempt_context_key(
+    record: Mapping[str, Any], *, pooled_keys: Mapping[tuple[str, int], tuple[Any, ...]],
+) -> tuple[Any, ...]:
+    """The context whose BARS this record's attempt was scored against — evidence-aware.
+
+    For almost every row this is :func:`search_context_key` unchanged. The exception is the
+    F9 topup omission (56 rows, 2026-08-10..17, code fixed by #712): specs minted with a
+    single-symbol ``symbol_scope`` whose evidence was scored pooled over the whole cohort.
+    An attempt charges the bars it was scored against, so those rows charge — and are judged
+    against — their timeframe's pooled context, provided the store can name exactly one
+    cohort of that size (``pooled_keys``) and the stored symbol is a member of it. Anything
+    less provable falls back to the stored key, which is the pre-existing behavior and the
+    conservative direction: the single-symbol keys carry the larger counts today, so a row
+    left behind faces the higher bar, never a lower one."""
+    key = search_context_key(record.get("strategy_spec") or {})
+    scope, timeframe = key
+    symbols = _evidence_symbols(record)
+    if len(scope) == 1 and symbols > 1:
+        pooled = pooled_keys.get((str(timeframe), symbols))
+        if pooled is not None and scope[0] in pooled[0]:
+            return pooled
+    return key
+
+
 def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], int]:
     """How many candidates have been scored against each market/timeframe's bars.
 
@@ -1323,16 +1917,27 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
     same bars" is a property of the context and not of the day.
 
     Distinct candidates, not rows: the store re-appends a lineage and every append would
-    otherwise raise the bar for candidates that never moved."""
+    otherwise raise the bar for candidates that never moved.
+
+    A row minted through the ablation lattice counts as its whole lattice
+    (:func:`_lattice_attempts`): one winner registered, but every member was scored against
+    this context's bars, and the burden follows the scoring, not the storing."""
     seen: set[str] = set()
-    counts: dict[tuple[Any, ...], int] = {}
+    distinct: list[Mapping[str, Any]] = []
     for record in records:
         cid = candidate_id(record)
         if cid in seen:
             continue
         seen.add(cid)
-        key = search_context_key(record.get("strategy_spec") or {})
-        counts[key] = counts.get(key, 0) + 1
+        distinct.append(record)
+    # Two passes because the reattribution needs the whole population first: which cohort a
+    # scope-mismatched row charges is read off the store (`pooled_context_keys`), not off the
+    # row, and a single pass would answer differently depending on store order.
+    pooled_keys = pooled_context_keys(distinct)
+    counts: dict[tuple[Any, ...], int] = {}
+    for record in distinct:
+        key = attempt_context_key(record, pooled_keys=pooled_keys)
+        counts[key] = counts.get(key, 0) + _lattice_attempts(record)
     return counts
 
 
@@ -1527,10 +2132,13 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
     attempts = attempts_by_context(list(by_cid.values()))
+    # The lookup follows the same evidence-aware key the counting used: a row judged against
+    # a key it does not charge would face a bar computed without its own attempt in it.
+    pooled_keys = pooled_context_keys(list(by_cid.values()))
 
     def _key(record: Mapping[str, Any]) -> tuple[int, int, int, int, float, float, str]:
         q = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         return (q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
                 q["evidence_depth_rank"], -q["edge_quality"], -q["expectancy"],
@@ -1742,6 +2350,8 @@ def promotable_backlog(
     # in the backlog is the tier the ordering used. Recomputing it per record here instead
     # would count a different store than the one that produced the order.
     attempts = attempts_by_context(list(records))
+    # Same evidence-aware key as the counting, for the reason `rank_candidates` states.
+    pooled_keys = pooled_context_keys(list(records))
     active_hashes = {entry.get("strategy_rule_hash") for entry in active_entries}
     seen_lineages: set[tuple[Any, ...]] = {
         _lineage_key(entry.get("strategy_spec") or {}) for entry in active_entries
@@ -1772,7 +2382,7 @@ def promotable_backlog(
             refused["derivation"] += 1
             continue
         quality = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
             refused["cost_basis"] += 1

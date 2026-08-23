@@ -815,3 +815,43 @@ def test_both_accumulating_stores_read_one_scope_rule(tmp_path):
     cohort = retention_cohort([("ADAUSDT", "1h")])
     assert set(CROSS_SECTION_UNIVERSE) <= set(cohort) and "ADAUSDT" in cohort
     assert cohort == sorted(cohort)
+
+
+def test_a_corrupt_line_is_skipped_and_the_rest_of_the_store_still_reads(tmp_path):
+    """Why these two readers were NOT folded into `jsonl` with the other five (§G4a).
+
+    `jsonl.iter_objects` fails closed on a bad line — correct for an outcome store the breaker
+    reads, wrong here. This feed backs a board number and its docstring says it answers with less
+    rather than refusing to answer, so a single unparseable row must cost that row and nothing
+    else. Streaming the handle instead of `read_text().splitlines()` changed the memory profile
+    and deliberately not this.
+    """
+    path = positioning_store.positioning_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good_a = {"record_type": "positioning_ratio.v0", "symbol": "BTCUSDT",
+              "series": "global_account", "period": "1h",
+              "timestamp": "2026-08-09T00:00:00Z", "long_ratio": 0.6, "short_ratio": 0.4}
+    good_b = {**good_a, "symbol": "ETHUSDT"}
+    path.write_text(
+        json.dumps(good_a) + "\n"
+        + "{not json at all\n"
+        + "\n"                      # a blank line is skipped too, and is not corruption
+        + json.dumps(good_b) + "\n",
+        encoding="utf-8")
+
+    rows = positioning_store.read_rows(root=tmp_path)
+    symbols = sorted(r["symbol"] for r in rows)
+    assert symbols == ["BTCUSDT", "ETHUSDT"], "a corrupt line must cost its own row and no other"
+
+
+def test_an_unreadable_store_yields_nothing_rather_than_a_partial_read(tmp_path):
+    """The other half of the degrade contract: OSError anywhere yields `[]`, never a prefix.
+
+    The eager reader got this for free — it failed before building anything. Streaming can fail
+    mid-iteration with rows already collected, so the partial dict is discarded rather than
+    returned as though it were the store.
+    """
+    path = positioning_store.positioning_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()                     # a directory where the store should be: open() raises OSError
+    assert positioning_store.read_rows(root=tmp_path) == []

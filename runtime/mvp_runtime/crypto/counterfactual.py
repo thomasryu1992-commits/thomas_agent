@@ -23,11 +23,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
-from .. import timeutil
+from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
@@ -67,6 +67,13 @@ NEUTRAL_BLOCK = "NEUTRAL_BLOCK"
 # what `settles_in_context` exists to prevent in the other direction.
 EXPIRED_STATUS = "EXPIRED"
 EXPIRY_REASON_CLOCK_FROZEN = "holding_budget_elapsed_unsettled"
+
+# A shadow the one-per-context rule would never have opened, left behind by the book that
+# predates it. Its own reason rather than `EXPIRY_REASON_CLOCK_FROZEN`: that one names a
+# shadow whose clock stopped, which is a fact about the fan-out; this names a shadow that
+# should not exist, which is a fact about the rule. Filing them together would make the
+# frozen-clock count unreadable the moment anyone ran the cleanup.
+EXPIRY_REASON_CONTEXT_DUPLICATE = "superseded_by_context_dedupe"
 
 COUNTERFACTUAL_BOOK_UNVERIFIABLE = "COUNTERFACTUAL_BOOK_UNVERIFIABLE"
 COUNTERFACTUAL_HISTORY_TAMPERED = "COUNTERFACTUAL_HISTORY_TAMPERED"
@@ -190,6 +197,88 @@ def _save_book(rows: list[dict[str, Any]], *, root: Path | None, now: str) -> No
         tmp.replace(path)
 
 
+def context_duplicates(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Open shadows the one-per-context rule would never have opened. Pure.
+
+    The book holds one shadow per ``(symbol, timeframe)`` because the book being shadowed
+    holds one position per ``(symbol, timeframe)``. That rule arrived after the book did, so
+    a store filled before it can hold a context many times over — measured 2026-08-08, 16 of
+    17 open shadows were ETHUSDT 1d for one strategy, opened one per 15-minute cycle over
+    31 hours while a block persisted, with two distinct entry prices between them.
+
+    **The OLDEST survives**, which is what the rule itself would have produced: the first
+    blocked signal opens a shadow and every later one is refused while it is still open.
+    Ordered by ``opened_at_utc`` with the counterfactual id as the tiebreak, so the answer is
+    the same on every run over the same book rather than depending on file order.
+
+    A row with no ``opened_at_utc`` cannot be placed in that order, so it is never chosen as
+    the survivor and never selected for expiry either — it is left exactly where it is. The
+    ordering is the whole basis for deciding which one is real, and a row that cannot join it
+    is one this function has nothing to say about.
+    """
+    by_context: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if str(row.get("status") or "") != "OPEN":
+            continue
+        opened = row.get("opened_at_utc")
+        if not (isinstance(opened, str) and opened):
+            continue
+        key = (str(row.get("symbol") or ""), str(row.get("timeframe") or ""))
+        by_context.setdefault(key, []).append(row)
+    duplicates: list[dict[str, Any]] = []
+    for group in by_context.values():
+        if len(group) < 2:
+            continue
+        group = sorted(group, key=lambda r: (str(r.get("opened_at_utc")),
+                                             str(r.get("counterfactual_id") or "")))
+        duplicates.extend(dict(r) for r in group[1:])
+    return duplicates
+
+
+def expire_context_duplicates(
+    *, root: Path | None = None, now: str, persist: bool = True
+) -> dict[str, Any]:
+    """Drop the duplicates :func:`context_duplicates` names, keeping the oldest per context.
+
+    Expiring rather than settling, and the distinction is the point: a settled shadow writes
+    an outcome carrying a ``result_R`` that feeds per-reason expectancy, and these sixteen
+    would feed it sixteen near-identical numbers for what the real book could only have
+    traded once. `dashboard.sample_verdict` builds an interval over those rows and gates a
+    gate's verdict on ``distinguishable_from_zero``, so the duplicates do not merely add
+    noise — they shrink the interval on a sample whose true size is one. Expiry writes no
+    outcome, which is the honest record: nobody priced these.
+
+    The expired rows leave the book, as :func:`expire_shadow` describes — the book has only
+    ever held OPEN rows. The durable trace is the caller's: the operator door records the
+    ids it expired on the control ledger, because unlike the cycle path there is no cycle
+    record to carry them.
+    """
+    rows = load_open_counterfactuals(root)
+    duplicates = context_duplicates(rows)
+    dropped = {str(r.get("counterfactual_id") or "") for r in duplicates}
+    kept = [r for r in rows if str(r.get("counterfactual_id") or "") not in dropped]
+    if persist and duplicates:
+        _save_book(kept, root=root, now=now)
+    return {
+        "open_before": len(rows),
+        "open_after": len(kept),
+        "expired_count": len(duplicates),
+        "expiry_reason": EXPIRY_REASON_CONTEXT_DUPLICATE,
+        "expired": [
+            {"counterfactual_id": r.get("counterfactual_id"), "symbol": r.get("symbol"),
+             "timeframe": r.get("timeframe"), "strategy_id": r.get("strategy_id"),
+             "opened_at_utc": r.get("opened_at_utc"), "block_reasons": r.get("block_reasons")}
+            for r in duplicates
+        ],
+        "kept": [
+            {"counterfactual_id": r.get("counterfactual_id"), "symbol": r.get("symbol"),
+             "timeframe": r.get("timeframe"), "opened_at_utc": r.get("opened_at_utc")}
+            for r in kept
+        ],
+        "persisted": bool(persist and duplicates),
+    }
+
+
 def build_shadow_plan(
     entry_plan: Mapping[str, Any], *, block_reasons: list[str], now: str
 ) -> dict[str, Any]:
@@ -296,22 +385,17 @@ def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any
     SOURCE's hash over pre-import fields, so their tamper evidence is the audited
     import batch, not a recompute here."""
     path = state_dir(root) / OUTCOMES_FILENAME
-    if not path.is_file():
-        return []
     rows: list[dict[str, Any]] = []
     seen_settlements: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ToolError("COUNTERFACTUAL_HISTORY_UNREADABLE", f"counterfactual outcomes unreadable: {exc.strerror}") from exc
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as exc:
-            raise ToolError("COUNTERFACTUAL_HISTORY_UNREADABLE",
-                            f"counterfactual outcomes line {i + 1} is not valid JSON") from exc
+    # Streams rather than materializing the file twice, and keeps this reader's own error
+    # class: the tool chokepoints above catch ToolError, so raising jsonl's PersistenceError
+    # here would fail past the caller instead of at it.
+    for lineno, record in jsonl.iter_numbered(
+        path,
+        read_code="COUNTERFACTUAL_HISTORY_UNREADABLE",
+        label="counterfactual outcomes",
+        exc_type=ToolError,
+    ):
         if not isinstance(record, dict):
             continue
         if record.get("provenance") == NATIVE_PROVENANCE:
@@ -320,7 +404,7 @@ def read_counterfactual_outcomes(root: Path | None = None) -> list[dict[str, Any
             if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
                 raise ToolError(
                     COUNTERFACTUAL_HISTORY_TAMPERED,
-                    f"counterfactual outcomes line {i + 1} fails its self-hash",
+                    f"counterfactual outcomes line {lineno} fails its self-hash",
                 )
         settlement_id = record.get("counterfactual_settlement_id")
         if isinstance(settlement_id, str) and settlement_id:
@@ -390,7 +474,33 @@ def run_counterfactual_update(
         ))
 
     opened: dict[str, Any] | None = None
-    if blocked_plan is not None and len(still_open) < MAX_OPEN_COUNTERFACTUALS:
+    # One shadow per context, because the book being shadowed holds one position per
+    # ``(symbol, timeframe)`` (`paper`, "the book is one position per (symbol, timeframe)").
+    # A shadow book that can hold sixteen positions in a context where the real book holds at
+    # most one is not measuring the real book's counterfactual.
+    #
+    # The cap above knows the mechanism — "a signal blocked by a persistent condition re-fires
+    # every cycle" — and bounds the BOOK. It does nothing about the calibration, which is where
+    # the damage is: `r_values_by_reason` and `summarize_counterfactuals` treat every closed
+    # shadow as one observation, and `dashboard.sample_verdict` builds an interval over them and
+    # gates a gate's verdict on `distinguishable_from_zero`. Sixteen repeats of one trade shrink
+    # that interval by ~4x on a sample whose true size is one.
+    #
+    # Measured 2026-08-08: 16 of the 17 open shadows were ETHUSDT 1d LONG for strategy S1735,
+    # opened one per 15-minute cycle from 2026-07-25T06:08 to 2026-07-26T13:05 while the block
+    # persisted, all still holding 13-14 of 27 bars — the same trade sixteen times.
+    #
+    # Keyed on the context alone, not on the strategy: `route_entries` picks ONE strategy per
+    # context, so two strategies blocked in the same context would still have produced at most
+    # one real position, and admitting both would reintroduce the correlation by another door.
+    duplicate_of = next(
+        (p.get("counterfactual_id") for p in still_open
+         if settles_in_context(p, symbol=str((blocked_plan or {}).get("symbol") or ""),
+                               timeframe=str((blocked_plan or {}).get("timeframe") or ""))),
+        None,
+    ) if blocked_plan is not None else None
+    if blocked_plan is not None and duplicate_of is None \
+            and len(still_open) < MAX_OPEN_COUNTERFACTUALS:
         opened = build_shadow_plan(blocked_plan, block_reasons=block_reasons, now=now)
         still_open.append(opened)
 
@@ -409,6 +519,11 @@ def run_counterfactual_update(
             for r in settled
         ],
         "opened": opened.get("counterfactual_id") if opened else None,
+        # Which shadow already held this context, when that is why nothing opened. Named
+        # rather than counted, and distinct from `opened: None` for no signal at all: "the
+        # gate is still blocking the trade we are already measuring" and "the gate stopped
+        # blocking" look identical otherwise, and they are opposite facts about the gate.
+        "duplicate_of": duplicate_of,
         "open_count": len(still_open),
         # The only durable trace of an expiry — see `expire_shadow`. Named ids rather than a
         # count, because "which shadow stopped being priceable" is the question a later reader

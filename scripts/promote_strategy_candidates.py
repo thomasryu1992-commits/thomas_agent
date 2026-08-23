@@ -43,12 +43,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL  # noqa: E402
 from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_confirmation  # noqa: E402
+from runtime.mvp_runtime.crypto import paper as paper_store  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -58,23 +61,28 @@ from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
 
-EXIT_OK = 0
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
 
 
-def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = None,
+def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
                 allow_duplicates: bool = False,
+                allow_cluster_siblings: bool = False,
+                allow_below_entry_bar: bool = False,
+                allow_family_overflow: bool = False,
+                allow_unconfirmed_holdout: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
                 allow_quarantined_derivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
-        selectors, keep_active=keep_active, now=now, repo_root=root,
+        selectors, keep_active=keep_active, live_tier=live_tier, now=now, repo_root=root,
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
         allow_duplicates=allow_duplicates,
+        allow_cluster_siblings=allow_cluster_siblings,
+        allow_below_entry_bar=allow_below_entry_bar,
+        allow_family_overflow=allow_family_overflow,
+        allow_unconfirmed_holdout=allow_unconfirmed_holdout,
         allow_quarantined_derivation=allow_quarantined_derivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
@@ -93,11 +101,14 @@ def run_request(*, selectors: list[str], keep_active: bool, root: Path | None = 
 
 def run_promotion(
     *, selectors: list[str], promoted_by: str, reason: str,
-    keep_active: bool, root: Path | None = None, now: str | None = None,
+    keep_active: bool, live_tier: str, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
-    allow_duplicates: bool = False, allow_oversized_pool: bool = False,
-    allow_quarantined_derivation: bool = False,
+    allow_duplicates: bool = False, allow_cluster_siblings: bool = False,
+    allow_below_entry_bar: bool = False, allow_family_overflow: bool = False,
+    allow_unconfirmed_holdout: bool = False,
+    allow_oversized_pool: bool = False,
+    allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -149,7 +160,7 @@ def run_promotion(
         try:
             verified_approval = promotion_mod.verify_promotion_approval(
                 approval_store.get(approval_id),
-                selectors=selectors, keep_active=keep_active, root=root, now=now,
+                selectors=selectors, keep_active=keep_active, live_tier=live_tier, root=root, now=now,
             )
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
@@ -182,8 +193,52 @@ def run_promotion(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
             )
+        # One tier below the semantic gate, same pool question, narrower claim: members of one
+        # behaviour cluster traded indistinguishably on the recorded axes, and a cluster gets
+        # ONE routing slot (Thomas 5-2, 2026-08-11) — the second member's forward record is
+        # the measurement the first is already making.
+        if not allow_cluster_siblings:
+            pool_store.assert_no_cluster_siblings(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
+            )
+        # The 5-3 entry bar and the family cap (Thomas 2026-08-11). Both charged to ENTRANTS
+        # only — a restatement of an occupying lineage is not an entry, so re-arming the
+        # pre-bar pool spends no waiver (measured before wiring: all five occupying rows are
+        # 350d/undispersed vintage, and grandfathering is what keeps the arm path usable).
+        occupying = [
+            e for e in (pool_store.load_active_pool(root).get("active_strategies") or [])
+            if e.get("status") in pool_store.OCCUPYING_STATUSES
+        ]
+        if not allow_below_entry_bar:
+            pool_store.assert_observation_entry_bar(
+                candidates,
+                occupying_candidate_ids=frozenset(
+                    str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
+                ),
+            )
+        if not allow_family_overflow:
+            selected_ids = {str(c.get("candidate_id")) for c in candidates}
+            # Add mode keeps every incumbent (all are base); a replace pool is the batch
+            # alone, so only the RESTATED incumbents still occupy after it lands.
+            pool_store.assert_family_cap(
+                candidates,
+                occupying_entries=occupying if keep_active else [
+                    e for e in occupying if str(e.get("candidate_id")) in selected_ids
+                ],
+            )
+        # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on
+        # unseen data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. This is
+        # the condition #648 disarmed the pool for, standing as a door instead of a
+        # migration; OBSERVATION installs are the tier it protects and pass untouched.
+        if live_tier == "LIVE" and not allow_unconfirmed_holdout:
+            forward_confirmation.assert_live_tier_confirmed(
+                candidates,
+                outcomes=paper_store.read_outcomes(root),
+                observed_lineages=len(occupying),
+            )
         # And last of all, the axis that is about neither the evidence nor the pool but about
-        # the ROW: what minted it. Ordered last because it is the only one of the four that
+        # the ROW: what minted it. Ordered last because it is the only one of the eight that
         # refuses nothing today — it stands here so that an experimental derivation cannot
         # reach the live pool through the ordinary door on the day someone starts minting one.
         if not allow_quarantined_derivation:
@@ -226,6 +281,11 @@ def run_promotion(
             "strategy_id": display_sid,
             "candidate_id": c["candidate_id"],
             "status": "PAPER_ACTIVE",
+            # #610 Part 1. `status` says how healthy the strategy is and the lifecycle ladder
+            # owns it; this says whether it may spend real money and ONLY the operator door
+            # writes it. Two fields because the ladder recovers WARNING back to PAPER_ACTIVE,
+            # so a tier carried in `status` would be re-granted by a demotion path.
+            pool_store.LIVE_TIER_FIELD: live_tier,
             "champion_score": c.get("champion_score"),
             "strategy_rule_hash": c.get("strategy_rule_hash"),
             "generation_id": c.get("generation_id"),
@@ -243,6 +303,11 @@ def run_promotion(
             # labels behind — the defect `pool.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.
             "regime_evidence": ((c.get("backtest_evidence") or {}).get("regime_breakdown") or {}).get("per_regime"),
+            # Same argument, same shape: the backtest's per-feature mean/std, which
+            # `distribution_gate.distribution_admits` reads off the ENTRY at route time. A
+            # reference that stays on the candidate is a gate that never fires — measured on
+            # #743, which shipped the gate with this line missing and every entry fail-open.
+            "distribution_reference": (c.get("backtest_evidence") or {}).get("distribution_reference"),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
@@ -255,6 +320,20 @@ def run_promotion(
     if not allow_oversized_pool:
         try:
             pool_store.assert_pool_within_size_cap(entries)
+        except MvpRuntimeError as exc:
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+
+    # Beside the size cap because it is the other question about the ASSEMBLED pool rather
+    # than about a candidate — and the last one, because it is the only guard here that is
+    # about the entries this install would leave BEHIND rather than the ones it adds.
+    # Replace mode rebuilds every entry with a hardcoded PAPER_ACTIVE, so re-listing the
+    # incumbents to drop one brings back everything the lifecycle had terminated. Recorded
+    # either way below, and read `pool.assert_no_silent_reactivation` for why the approval
+    # cannot cover this and the operator therefore must.
+    reactivations = pool_store.silent_reactivations(entries, root=root)
+    if not allow_reactivation:
+        try:
+            pool_store.assert_no_silent_reactivation(entries, root=root)
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -295,6 +374,10 @@ def run_promotion(
         # ledger later rather than reconstructed from whoever ran the command.
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
         "duplicate_escape": bool(allow_duplicates),
+        "cluster_siblings_escape": bool(allow_cluster_siblings),
+        "observation_entry_bar_escape": bool(allow_below_entry_bar),
+        "family_cap_escape": bool(allow_family_overflow),
+        "unconfirmed_holdout_escape": bool(allow_unconfirmed_holdout),
         "oversized_pool_escape": bool(allow_oversized_pool),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
@@ -309,6 +392,38 @@ def run_promotion(
         # leaves no trace is indistinguishable, a month later, from a door that never refused.
         "derivations": [c.get("derivation_type") for c in candidates],
         "quarantined_derivation_escape": bool(allow_quarantined_derivation),
+        # Who came back from a terminal status, and from which. Recorded whether or not the
+        # escape fired, like the bases and depths above: the reactivation is the part of the
+        # effect the approval's content hash cannot name, so the ledger is the only place it
+        # is written down at all.
+        "reactivation_escape": bool(allow_reactivation),
+        "reactivated": reactivations,
+        # Every review this promotion did NOT get, in one field.
+        #
+        # Each escape above is already recorded on its own, and individually each is a
+        # defensible operator call. What no record answered is the question an auditor
+        # actually asks — *what survived* — because answering it meant knowing all eight
+        # flags exist and reading them together. The statistical judgment (verdict, holdout,
+        # selection tier, expectancy) is deliberately not a gate here at all: it is the
+        # operator reading the ranked `--list` surface plus Thomas's approval of the exact
+        # candidate ids. So with the approval escaped as well, a promotion can reach the pool
+        # having met nothing but pool structural validation — and read, in the ledger,
+        # exactly like one that cleared everything.
+        "reviews_skipped": [
+            name for name, skipped in (
+                ("thomas_approval", without_approval and approval_id is None),
+                ("cost_basis", allow_stale_cost_basis),
+                ("evidence_depth", allow_unrecorded_evidence_depth),
+                ("semantic_duplicates", allow_duplicates),
+                ("cluster_siblings", allow_cluster_siblings),
+                ("observation_entry_bar", allow_below_entry_bar),
+                ("family_cap", allow_family_overflow),
+                ("live_confirmation", allow_unconfirmed_holdout and live_tier == "LIVE"),
+                ("pool_size_cap", allow_oversized_pool),
+                ("quarantined_derivation", allow_quarantined_derivation),
+                ("silent_reactivation", allow_reactivation and bool(reactivations)),
+            ) if skipped
+        ],
         "created_at": now,
     }
     ledger = LedgerStore((root if root is not None else ROOT) / LEDGER_REL)
@@ -326,6 +441,12 @@ def main(argv: list[str] | None = None) -> int:
                              "unambiguous strategy ids — an id shared by several "
                              "generations is refused, never resolved newest-wins")
     parser.add_argument("--keep-active", action="store_true", help="keep current pool members (add, not replace)")
+    # #610 Part 1. OBSERVATION is the default because arming a strategy for real money is the
+    # decision, and a decision is something an operator types. A default of LIVE would arm every
+    # promotion by omission — which is precisely the state this flag exists to end.
+    parser.add_argument("--live-tier", choices=("OBSERVATION", "LIVE"), default="OBSERVATION",
+                        help="OBSERVATION (default): occupies a slot and papers, cannot open real "
+                             "positions. LIVE: may open real positions. Part of the approval hash.")
     parser.add_argument("--promoted-by", help="operator identity")
     parser.add_argument("--reason", help="operator reason (the report)")
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
@@ -334,6 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
+    parser.add_argument("--allow-cluster-siblings", action="store_true",
+                        help="explicit escape: give a behaviour cluster (lineages whose recorded "
+                             "trading is indistinguishable) more than its one routing slot")
+    parser.add_argument("--allow-below-entry-bar", action="store_true",
+                        help="explicit escape: admit an ENTRANT below the observation entry bar "
+                             "(FULL current-basis evidence, >=50 closes, positive expectancy at "
+                             "current rates, holdout thin or better)")
+    parser.add_argument("--allow-family-overflow", action="store_true",
+                        help="explicit escape: let a strategy_family hold more than its two "
+                             "occupied slots")
+    parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
+                        help="explicit escape: arm LIVE although no confirmation was earned on "
+                             "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
+                             "paper record) — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")
@@ -349,6 +484,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: promote a candidate minted by a derivation the "
                              "live pool does not take (recorded as such). Refuses nothing on "
                              "today's store — every derivation minted so far is promotable.")
+    parser.add_argument("--allow-reactivation", action="store_true",
+                        help="explicit escape: let this install return terminally SUSPENDED / "
+                             "ARCHIVED members to trading (recorded, with who and from what). "
+                             "Replace mode rebuilds every entry as PAPER_ACTIVE, so re-listing "
+                             "the incumbents to drop one reactivates the rest; the approval's "
+                             "content hash cannot name that, which is why the operator must.")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -493,14 +634,16 @@ def main(argv: list[str] | None = None) -> int:
             print("      the promotion door refuses these (CANDIDATE_SEMANTIC_DUPLICATE):")
             for g in dupes[:8]:
                 print(f"        {'/'.join(g['strategy_ids'])}  matched on {g['match']}")
-        # And the ones it will NOT refuse, because they are a judgement rather than a proof:
-        # same window, same trade counts, R differing in the last decimals. Almost certainly
-        # one strategy wearing two rules — but "almost" is why this reports instead of gating.
+        # The tier below proof: same window, same trade counts, R differing in the last
+        # decimals. Existence and a single promotion stay unrefused — what the door refuses
+        # (Thomas 5-2, 2026-08-11) is two members of one cluster co-occupying slots
+        # (CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED, escape --allow-cluster-siblings).
         near = pool_store.near_duplicate_groups(candidates)
         if near:
             print(f"      {len(near)} group(s) traded ALMOST identically (same window, same "
                   "trade counts,")
-            print("      R differing only in the last decimals) — not refused, worth a look:")
+            print("      R differing only in the last decimals) — one slot per cluster at "
+                  "the door:")
             # Collapsed by display name: strategy_id restarts every generation, so several
             # distinct lineage PAIRS routinely render as the same "S005/S006" line. Printing
             # it four times reads like a bug; the count says what is actually there.
@@ -562,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not args.strategy_ids:
-        print("BLOCKED: --candidate-ids is required (or use --list)")
+        print("USAGE: --candidate-ids is required (or use --list)")
         return EXIT_USAGE
     selectors = [s.strip() for s in args.strategy_ids.split(",") if s.strip()]
 
@@ -578,10 +721,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.request:
         try:
             prepared = run_request(
-                selectors=selectors, keep_active=args.keep_active,
+                selectors=selectors, keep_active=args.keep_active, live_tier=args.live_tier,
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
                 allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
                 allow_duplicates=args.allow_duplicates,
+                allow_cluster_siblings=args.allow_cluster_siblings,
+                allow_below_entry_bar=args.allow_below_entry_bar,
+                allow_family_overflow=args.allow_family_overflow,
+                allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
                 allow_quarantined_derivation=args.allow_quarantined_derivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
@@ -595,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     if not (args.promoted_by and args.reason):
-        print("BLOCKED: --promoted-by and --reason are required to execute a promotion")
+        print("USAGE: --promoted-by and --reason are required to execute a promotion")
         return EXIT_USAGE
     if not args.confirm:
         print("BLOCKED: promotion requires --confirm (a good backtest is never auto-promotion)")
@@ -604,17 +751,36 @@ def main(argv: list[str] | None = None) -> int:
     summary = run_promotion(
         selectors=selectors,
         promoted_by=args.promoted_by, reason=args.reason, keep_active=args.keep_active,
+        live_tier=args.live_tier,
         approval_id=args.approval_id, without_approval=args.without_approval,
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
         allow_duplicates=args.allow_duplicates,
+        allow_cluster_siblings=args.allow_cluster_siblings,
+        allow_below_entry_bar=args.allow_below_entry_bar,
+        allow_family_overflow=args.allow_family_overflow,
+        allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
+        allow_reactivation=args.allow_reactivation,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"
     print(f"PROMOTED: {summary['promoted_candidate_ids']} "
           f"({summary['promoted_strategy_ids']}) -> active pool "
           f"({summary['pool_size']} strategies) [door: {door}]")
+    # The ledger has carried every escape separately for a while; what nobody could read off
+    # it was the total. Printed at the moment of the install rather than only recorded,
+    # because the operator holding the argv is the last reader who can still stop.
+    if summary["reactivated"]:
+        print(f"NOTE: returned {len(summary['reactivated'])} terminal member(s) to trading — "
+              + ", ".join(f"{r['strategy_id']} (was {r['from_status']})"
+                          for r in summary["reactivated"]))
+    if summary["reviews_skipped"]:
+        print(f"NOTE: this promotion skipped {len(summary['reviews_skipped'])} review(s): "
+              + ", ".join(summary["reviews_skipped"])
+              + ". Recorded on the ledger; the statistical judgment (verdict, holdout, "
+                "selection tier, expectancy) is never a gate here — it is the ranked --list "
+                "surface plus Thomas's approval of the exact candidate ids.")
     # Said here because this is the moment the pool's directional composition changes, and
     # because the consequence is invisible everywhere else until positions fail to open: with
     # one routable strategy per context, a spec's direction is fixed at promotion time, so a

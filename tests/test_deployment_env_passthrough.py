@@ -37,7 +37,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from runtime.mvp_runtime import consumption, frontdesk, operator, providers, tools, workspace
+from runtime.mvp_runtime import (
+    consumption,
+    frontdesk,
+    naver_research,
+    operator,
+    providers,
+    tools,
+    workspace,
+)
 from runtime.mvp_runtime.crypto import account, live_execution, live_order, live_pnl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +136,35 @@ LIVE_TRADING_SURFACE = {
 }
 
 
+# The Naver research lane (2026-08-09; placement settled 2026-08-10 by the plane separation,
+# docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). Forwarded to the PIPELINE-WORKER only —
+# the engine that runs the `research`/`content` kinds and the container a `--naver-keywords`
+# CLI run must exec in. Withheld from the OPERATOR, from the SCHEDULER (PR-B removed #650's
+# transitional copy), and from the DISPATCH-BRIDGE: the door that parses the assistant's
+# frames holds no credential at all.
+#
+# Withheld rather than merely unneeded, and the reason is the credential, not the capability.
+# The lane's USE is read-only — keyword volumes, a trend series, a competition count. The KEY
+# is not: `NAVER_SEARCHAD_SECRET_KEY` signs against the ad account and the same signature
+# reaches campaign-management endpoints that can change spend. So "it only reads" is a
+# property of this code, not of the credential — the same shape as the live-trading note
+# above, where `account.py` is read-only by construction while its key carries futures
+# permission at the venue.
+#
+# And forwarding is a capability here, not a cost: `MVP_NAVER_RESEARCH` is the WHOLE gate
+# (no mounted grant), so naming it in a service's block plus a value in `.env` is the entire
+# difference between that service reading mocks and reaching Naver with the operator's ad
+# credential. Adding a service to the list is that decision, made here.
+NAVER_RESEARCH_SURFACE = {
+    naver_research.NAVER_RESEARCH_ENV: "the whole gate — no grant behind it",
+    naver_research.SEARCHAD_CUSTOMER_ID_ENV: "the ad account's customer id",
+    naver_research.SEARCHAD_API_KEY_ENV: "the Search Ad access licence",
+    naver_research.SEARCHAD_SECRET_KEY_ENV: "the signing secret — account-wide, not read-only",
+    naver_research.APIHUB_KEY_ID_ENV: "the API HUB key id (search trend + blog search)",
+    naver_research.APIHUB_KEY_ENV: "the API HUB key",
+}
+
+
 def _service_environment(service: str) -> dict:
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
     return compose["services"][service].get("environment") or {}
@@ -148,20 +185,21 @@ def test_operator_service_receives_every_capability_selector(env_var, what):
 def test_deliberately_undeployed_selectors_stay_undeployed():
     """These are operator acts, not service settings. If one is ever added to a service,
     that is a governance decision and this test is where it gets made deliberately."""
-    for service in ("operator", "scheduler"):
+    for service in ("operator", "scheduler", "scheduler-maint"):
         environment = _service_environment(service)
         for env_var, reason in NOT_DEPLOYED.items():
             assert env_var not in environment, f"{env_var} must stay manual: {reason}"
 
 
 def test_the_front_desk_is_operator_only():
-    """The scheduler holds no conversation — giving it a front-desk provider would put a
-    conversational LLM on a service with no one to talk to and no channel to answer on."""
+    """Neither scheduler lane holds a conversation — giving one a front-desk provider would
+    put a conversational LLM on a service with no one to talk to and no channel to answer on."""
     assert frontdesk.FRONTDESK_PROVIDER_ENV not in _service_environment("scheduler")
+    assert frontdesk.FRONTDESK_PROVIDER_ENV not in _service_environment("scheduler-maint")
 
 
 @pytest.mark.parametrize("env_var", REMOVED_PREDMARKET_SELECTORS)
-@pytest.mark.parametrize("service", ["scheduler", "operator"])
+@pytest.mark.parametrize("service", ["scheduler", "scheduler-maint", "operator", "pipeline-worker"])
 def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
     """The lane was removed 2026-08-02 (Korean domestic regulation) and must not come back
     by accident. Compose forwards only what its `environment:` block names, so a name here
@@ -171,6 +209,168 @@ def test_no_service_is_handed_a_prediction_market_selector(service, env_var):
     either way, so only a test says which state the deployment is in."""
     assert env_var not in _service_environment(service), \
         f"{service} is still handed {env_var}; the prediction-market lane was removed"
+
+
+@pytest.mark.parametrize("env_var, what", sorted(NAVER_RESEARCH_SURFACE.items()))
+def test_the_naver_lane_reaches_the_one_service_that_runs_it(env_var, what):
+    """Without this the lane is unreachable on the server however correct `.env` is — and
+    nothing errors, it just keeps returning mock keyword volumes.
+
+    One service, by decision (plane separation PR-B): the pipeline-worker is the lane's only
+    holder, settled before the Search Ad licence ever mints a value."""
+    environment = _service_environment("pipeline-worker")
+    assert env_var in environment, (
+        f"{env_var} ({what}) is not in the pipeline-worker service's compose environment, so "
+        f"a value in .env never reaches the container and the lane stays silently on mocks"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
+@pytest.mark.parametrize("env_var", sorted(NAVER_RESEARCH_SURFACE))
+@pytest.mark.parametrize("service", ["operator", "scheduler", "scheduler-maint"])
+def test_no_other_service_is_handed_the_naver_ad_credential(service, env_var):
+    """The withholding, pinned so it is a decision to reverse rather than a drift.
+
+    The operator loop is not a lane consumer, and the scheduler stopped being its holder in
+    the plane separation's PR-B: #666's keyword brief is CLI-opt-in (`--naver-keywords`), and
+    that run belongs in the worker container, which holds the env — in this pair it degrades
+    to Mock rows by design. Putting the Search Ad secret back on either service would put an
+    account-wide, spend-capable credential beside the operator's channel or the Binance keys,
+    which is the trade the live-trading block above declines for the same reason.
+    (dispatch-bridge is covered by its exact-shape test above.)"""
+    assert env_var not in _service_environment(service), (
+        f"{service} is handed {env_var}; the Naver lane runs in pipeline-worker only and the "
+        f"Search Ad secret is account-wide, not the read-only key its read-only use suggests"
+    )
+
+
+# --- the plane separation: the door holds nothing, the worker holds the engine env ------
+
+# The engine surface the plane separation moved out of dispatch-bridge verbatim. Selector
+# names come from the code's own constants; the API-key names are literals for the same
+# reason the removed-predmarket block's are — the modules keep them private, and the point
+# here is the compose block, not the code.
+PIPELINE_WORKER_ENGINE_SURFACE = {
+    providers.HOSTED_PROVIDER_ENV: "the specialist's model provider chain",
+    providers.VALIDATOR_PROVIDER_ENV: "the independent validator's own provider",
+    providers.OPENROUTER_MODEL_ENV: "the exact OpenRouter model slug",
+    "GOOGLE_AI_STUDIO_API_KEY": "the Google AI Studio key",
+    "GROQ_API_KEY": "the Groq key",
+    "OPENROUTER_API_KEY": "the OpenRouter key — shared with the operator's assistant",
+    tools.SEARCH_TOOL_ENV: "the read-only search tool",
+    "TAVILY_API_KEY": "the search key",
+}
+
+
+@pytest.mark.parametrize("env_var, what", sorted(PIPELINE_WORKER_ENGINE_SURFACE.items()))
+def test_the_pipeline_worker_receives_the_engine_surface(env_var, what):
+    """The other half of stripping the door: the worker must actually receive what execution
+    needs, or every dispatch silently degrades to the mock pipeline with no error anywhere —
+    this file's founding failure, on a brand-new service."""
+    environment = _service_environment("pipeline-worker")
+    assert env_var in environment, (
+        f"{env_var} ({what}) is not in the pipeline-worker service's compose environment, so "
+        f"a value in .env never reaches the engine and every dispatch runs the mock"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
+def test_the_dispatch_door_carries_only_the_peer_variables():
+    """The point of the split, pinned as an exact shape rather than a denial list: the door
+    that parses the assistant's frames holds the two socket-peer variables and NOTHING else —
+    the same silhouette as the read and switch doors. A denial list would go quiet the day a
+    new credential is invented; an exact allowlist refuses it by construction."""
+    environment = _service_environment("dispatch-bridge")
+    assert set(environment) == {"MVP_BRIDGE_CLIENT_GID", "MVP_BRIDGE_CLIENT_UID"}, (
+        f"dispatch-bridge's environment is {sorted(environment)}; the door must carry the two "
+        f"peer variables only — execution env belongs to pipeline-worker"
+    )
+
+
+@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+def test_the_pipeline_worker_receives_none_of_the_live_surface(env_var, what):
+    """The worker holds model, search, and Naver env by design — and must never hold money.
+    A compromised worker can spend quota and reach research APIs; it must not be able to
+    place an order. Same reasoning, same per-variable pin, as the operator's denial below."""
+    assert env_var not in _service_environment("pipeline-worker"), (
+        f"the pipeline-worker service would receive {env_var} ({what}); the engine runs "
+        f"non-trading P3 kinds only and the money path stays scheduler-only"
+    )
+
+
+def test_the_pipeline_worker_socket_peers_are_the_runtime_itself():
+    """Literals, not `${...}` interpolations, and pinned as such: a host `.env` that points
+    the doors' gid at the assistant must not be able to point the engine's peers anywhere.
+    10001 is the image's fixed runtime user; the dispatch door is this socket's only
+    legitimate client and SO_PEERCRED enforces it."""
+    environment = _service_environment("pipeline-worker")
+    assert environment["MVP_BRIDGE_CLIENT_GID"] == "10001"
+    assert environment["MVP_BRIDGE_CLIENT_UID"] == "10001"
+
+
+# The analysis chain and the search tool, removed from the SCHEDULER by PR-C of the plane
+# separation Phase 2 and pinned absent here. Their only consumer on that service was an
+# `analysis_task` fire, which now runs in the pipeline-worker; what stays is
+# `MVP_VALIDATOR_PROVIDER` + `GROQ_API_KEY`, which `crypto_propose` and `crypto_data_review`
+# still read in-process (`select_validator_provider` never falls back to the chain below,
+# which is what let these two lists separate at all).
+#
+# Named as literals rather than from `providers`/`tools` constants on purpose: this is a
+# prohibition, and a constant that got renamed would empty the list it guards — the same
+# reason the removed prediction-market block above spells its five out.
+SCHEDULER_WITHHELD_ENGINE_SURFACE = {
+    "MVP_HOSTED_PROVIDER": "the analysis provider chain",
+    "OPENROUTER_API_KEY": "the OpenRouter key — the assistant's own container spends from it",
+    "GOOGLE_AI_STUDIO_API_KEY": "the Google AI Studio key",
+    "MVP_OPENROUTER_MODEL": "the OpenRouter model slug",
+    "MVP_SEARCH_TOOL": "the read-only search tool selector",
+    "TAVILY_API_KEY": "the search key",
+}
+
+
+@pytest.mark.parametrize("env_var, what", sorted(SCHEDULER_WITHHELD_ENGINE_SURFACE.items()))
+def test_the_scheduler_is_not_handed_the_analysis_chain_or_the_search_tool(env_var, what):
+    """The service that holds the Binance account and order keys must not also hold a model
+    credential it does not use. Checked per variable because per-service drift is the failure
+    this file exists for, and because re-adding one is a decision that belongs here."""
+    assert env_var not in _service_environment("scheduler"), (
+        f"the scheduler is handed {env_var} ({what}); an analysis_task fire runs in the "
+        f"pipeline-worker now, so this is blast radius with no consumer"
+    )
+
+
+@pytest.mark.parametrize("env_var", ["MVP_VALIDATOR_PROVIDER", "GROQ_API_KEY"])
+def test_the_scheduler_holds_no_model_credential_at_all(env_var):
+    """D6 finished what D4 started. These two were the last model credentials on the service
+    that also holds the Binance account and order keys; their consumers — `crypto_propose`
+    and `crypto_data_review` — now delegate their model call to the pipeline worker.
+
+    Kept as its own test rather than folded into the list above because the reason differs:
+    those six were never used here, these two were, and re-adding either would be a decision
+    about where model responses get parsed rather than a passthrough oversight."""
+    assert env_var not in _service_environment("scheduler"), (
+        f"the scheduler is handed {env_var}; both of its model callers delegate now, so a "
+        f"provider credential here is blast radius beside the venue keys with no consumer"
+    )
+
+
+def test_no_service_but_the_worker_holds_a_model_credential():
+    """The end state of the plane separation, as one assertion over the whole file: exactly
+    one service selects a model provider, and it is the one that holds no money variable.
+    The operator is the deliberate exception — it runs the conversational front desk and its
+    own analyses, which is a different plane from either of these."""
+    import yaml as _yaml
+
+    compose = _yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    model_vars = {"MVP_HOSTED_PROVIDER", "MVP_VALIDATOR_PROVIDER", "MVP_FRONTDESK_PROVIDER"}
+    holders = {
+        name for name, spec in compose["services"].items()
+        if model_vars & set(spec.get("environment") or {})
+    }
+    assert holders == {"pipeline-worker", "operator"}, (
+        f"services selecting a model provider are {sorted(holders)}; expected the worker and "
+        f"the operator only — the scheduler holds the venue keys and must hold no model key"
+    )
 
 
 # --- the live-trading surface must reach neither service --------------------------------
@@ -199,7 +399,7 @@ def test_the_operator_receives_none_of_it(env_var, what):
     )
 
 
-@pytest.mark.parametrize("service", ("operator", "scheduler"))
+@pytest.mark.parametrize("service", ("operator", "scheduler", "scheduler-maint", "pipeline-worker"))
 def test_no_service_bulk_forwards_the_environment(service):
     """The bypass the list above cannot see.
 
@@ -226,7 +426,7 @@ def test_the_list_covers_the_whole_live_surface():
 
 # --- the candle archive's own axis ---------------------------------------------------------
 
-def test_the_scheduler_receives_the_candle_archive_switch():
+def test_the_maintenance_lane_receives_the_candle_archive_switch():
     """The whole gate, so a missing line here is the whole failure.
 
     Every other selector in this file fails closed twice — the env var AND a mounted grant —
@@ -237,16 +437,104 @@ def test_the_scheduler_receives_the_candle_archive_switch():
     archives nothing, while the window it exists to outrun keeps moving.
 
     That is not hypothetical: the code shipped in #486 and this block did not name the
-    variable until #512.
+    variable until #512. The lane split moved it here from the scheduler service — the
+    archive fire is a MAINTENANCE kind, so this is the service whose loop runs it.
     """
-    environment = _service_environment("scheduler")
+    environment = _service_environment("scheduler-maint")
     assert "MVP_CANDLE_ARCHIVE" in environment, (
-        "the scheduler never receives MVP_CANDLE_ARCHIVE, so archiving cannot be switched on"
+        "scheduler-maint never receives MVP_CANDLE_ARCHIVE, so archiving cannot be switched on"
     )
     assert environment["MVP_CANDLE_ARCHIVE"] == "${MVP_CANDLE_ARCHIVE:-}"
 
 
-def test_the_operator_does_not_receive_the_candle_archive_switch():
-    """Scheduler-only, like every other collection selector. The operator loop reads no market
-    data; handing it an archive switch would add egress for nothing."""
-    assert "MVP_CANDLE_ARCHIVE" not in _service_environment("operator")
+@pytest.mark.parametrize("service", ["operator", "scheduler"])
+def test_no_other_service_receives_the_candle_archive_switch(service):
+    """The operator reads no market data, and the RISK-lane scheduler stopped being the
+    archive's runner in the lane split — a name whose only consumer moved out is pure blast
+    radius on the service that kept the venue keys. Pinned in both directions so the move
+    cannot half-happen: the variable reaching the wrong service reads as configured and
+    archives nothing."""
+    assert "MVP_CANDLE_ARCHIVE" not in _service_environment(service)
+
+
+# --- the maintenance lane (SCHEDULER_LANE_SPLIT_V0.1 §4): audited env, and no money -------
+
+# The in-process consumers of the maintenance lane's fires: factory and null_control read
+# the collection selectors; the archive its own axis (above); notification is outbound-only.
+# analysis_task / report / propose / data_review delegate to the pipeline-worker, so no
+# model credential belongs here — and none of the money surface ever does.
+MAINTENANCE_LANE_SELECTORS = {
+    "MVP_MARKET_DATA": "the factory/null_control candle collector",
+    "MVP_LIQUIDATION_FEED": "their liquidation feed leg",
+    "COINALYZE_API_KEY": "the liquidation feed's key",
+    operator.OPERATOR_CHANNEL_ENV: "outbound-only failure/recovery notification",
+}
+
+
+@pytest.mark.parametrize("env_var, what", sorted(MAINTENANCE_LANE_SELECTORS.items()))
+def test_the_maintenance_lane_receives_its_audited_selectors(env_var, what):
+    """Without these the lane runs mocks and mines evidence-free noise — silently, which is
+    this file's founding failure, on the second brand-new service it has had to guard."""
+    environment = _service_environment("scheduler-maint")
+    assert env_var in environment, (
+        f"{env_var} ({what}) is not in scheduler-maint's compose environment, so a value in "
+        f".env never reaches the lane that fires its consumer"
+    )
+    assert environment[env_var] == "${%s:-}" % env_var
+
+
+def test_the_maintenance_lane_notifies_on_the_schedulers_bot():
+    """The same fallback shape as the risk lane, asserted verbatim: notifications land where
+    the operator is already looking, and this service never calls getUpdates, which is the
+    property that makes sharing the bot safe."""
+    environment = _service_environment("scheduler-maint")
+    assert environment["TELEGRAM_BOT_TOKEN"] == (
+        "${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+    )
+    assert environment["TELEGRAM_BOT_TOKEN"] == _service_environment("scheduler")["TELEGRAM_BOT_TOKEN"]
+
+
+@pytest.mark.parametrize("env_var, what", sorted(LIVE_TRADING_SURFACE.items()))
+def test_the_maintenance_lane_receives_none_of_the_live_surface(env_var, what):
+    """The split's credential point, pinned per variable: the service that runs 6-minute
+    fires does not sit next to money. Every maintenance consumer of these is zero — the
+    account read, the readiness board, and the order path all live on the risk lane."""
+    assert env_var not in _service_environment("scheduler-maint"), (
+        f"scheduler-maint would receive {env_var} ({what}); the maintenance lane has no "
+        f"money-path consumer and must hold no money-path credential"
+    )
+
+
+@pytest.mark.parametrize("env_var", sorted(SCHEDULER_WITHHELD_ENGINE_SURFACE)
+                         + ["MVP_VALIDATOR_PROVIDER", "GROQ_API_KEY"])
+def test_the_maintenance_lane_holds_no_model_credential(env_var):
+    """Its model-calling kinds (analysis, report, propose, data review) all delegate to the
+    pipeline-worker, exactly as they did from the unsplit scheduler — so a provider
+    credential here would be the same no-consumer blast radius the plane separation removed
+    from its sibling."""
+    assert env_var not in _service_environment("scheduler-maint"), (
+        f"scheduler-maint is handed {env_var}; every model call in this lane delegates to "
+        f"the pipeline-worker"
+    )
+
+
+def test_the_lane_wiring_matches_the_heartbeat_each_service_probes():
+    """The drift this closes: a lane flag and a healthcheck that disagree fail SLOWLY — the
+    loop ticks one lane while Docker probes the other lane's heartbeat, and the container
+    goes unhealthy minutes after a deploy that looked clean. Command and probe are pinned
+    together, per service, from the compose file both are defined in."""
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    wiring = {
+        "scheduler": ("risk", "scheduler-risk"),
+        "scheduler-maint": ("maintenance", "scheduler-maintenance"),
+    }
+    for service, (lane, heartbeat_name) in wiring.items():
+        spec = compose["services"][service]
+        command = spec["command"]
+        assert command[command.index("--lane") + 1] == lane, (
+            f"{service} ticks --lane {command[command.index('--lane') + 1]!r}, expected {lane!r}"
+        )
+        assert spec["healthcheck"]["test"][-1] == heartbeat_name, (
+            f"{service}'s healthcheck probes {spec['healthcheck']['test'][-1]!r}, "
+            f"expected {heartbeat_name!r}"
+        )

@@ -12,6 +12,8 @@ measure" never renders as "nothing beat its null".
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from runtime.mvp_runtime.crypto import factory, null_control
@@ -143,3 +145,165 @@ def test_the_scheduler_admits_the_kind():
     from runtime.mvp_runtime import scheduler
 
     assert scheduler.KIND_NULL_CONTROL in scheduler.KINDS
+
+
+def test_the_scheduled_fire_replays_the_frame_the_factory_MINED(tmp_path, monkeypatch):
+    """The fire must enrich its frame with all five legs, not just the price feeds.
+
+    The defect this pins: the fire attached `attach_feeds` alone, so every htf_*,
+    ref_*/rel_strength_*, xs_* and positioning_* column was None down the whole window and
+    `measure_spec` answered `unsuppliable` — for good, since the gap was in the collection
+    rather than in the spec. 65 of the 798 selected specs in the store read one of those
+    columns on 2026-08-08, and they are the non-price families the pool most needs judged.
+
+    Asserted on the frame rather than on a status because `too_young` is checked first and is
+    the answer for every cell until ~2026-08-23, which is precisely why this went unseen.
+
+    ETHUSDT because BTCUSDT *is* `REFERENCE_SYMBOL` and the reference leg correctly skips
+    itself; 4h because 1d has no higher timeframe to attach.
+    """
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.crypto import features
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import ScheduleStore, build_schedule, run_due
+
+    seen: list[factory.ReplayFrame] = []
+    real_build = factory.build_replay_frame
+    monkeypatch.setattr(
+        factory, "build_replay_frame",
+        lambda snapshot, **kw: seen.append(real_build(snapshot, **kw)) or seen[-1],
+    )
+    schedule = build_schedule(kind=scheduler.KIND_NULL_CONTROL, request="ETHUSDT 4h",
+                              interval_seconds=86400, created_by="op", now="2026-07-22T10:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                      repo_root=tmp_path)
+
+    assert summary["fired"] == 1
+    assert seen, "the fire never built a replay frame"
+    rows = seen[0].rows
+    for column in ("htf_market_regime", "rel_strength_roc_4", "xs_rank_pct"):
+        assert any(row.get(column) is not None for row in rows), f"{column} never supplied"
+    # The whole vocabulary each leg owns, so a leg that lands half-attached is caught too.
+    for group in (features.HTF_COLUMNS, features.REFERENCE_COLUMNS, features.XS_NUMERIC_COLUMNS):
+        for column in group:
+            assert column in rows[0], f"{column} missing from the frame entirely"
+
+
+# --- the calendar pre-check: pay for a collection only when it can measure --------
+
+def _seed_candidate(root, *, created_at_utc, candidate_id="cand_test",
+                    timeframe="4h", symbol="ETHUSDT", expectancy=0.05):
+    """One eligible row in the candidate store. No `record_sha256` on purpose — rows from
+    before the store stamped hashes are the documented unverified class, and they are the
+    cheapest honest fixture."""
+    from runtime.mvp_runtime.crypto import pool
+
+    path = pool.candidates_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "candidate_id": candidate_id,
+        "created_at_utc": created_at_utc,
+        "strategy_spec": {
+            "timeframe": timeframe, "symbol_scope": [symbol], "strategy_family": "test_family",
+        },
+        "backtest_evidence": {"expectancy": expectancy},
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def _fire_null_control(tmp_path):
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import ScheduleStore, build_schedule, run_due
+
+    schedule = build_schedule(kind=scheduler.KIND_NULL_CONTROL, request="ETHUSDT 4h",
+                              interval_seconds=86400, created_by="op", now="2026-07-22T10:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    return run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
+                   repo_root=tmp_path)
+
+
+def test_the_calendar_bound_proves_one_way_only():
+    """Young proves young; everything unprovable answers None and forces a collection."""
+    floor = null_control.min_post_mint_bars("4h")
+    young = null_control.calendar_bars_bound(
+        "2026-07-20T00:00:00Z", timeframe="4h", now="2026-07-23T00:00:00Z")
+    assert young == 3 * 6 + 1 and young < floor
+    old = null_control.calendar_bars_bound(
+        "2026-01-01T00:00:00Z", timeframe="4h", now="2026-07-23T00:00:00Z")
+    assert old is not None and old >= floor
+    for unprovable in (
+        null_control.calendar_bars_bound("garbage", timeframe="4h", now="2026-07-23T00:00:00Z"),
+        null_control.calendar_bars_bound("", timeframe="4h", now="2026-07-23T00:00:00Z"),
+        null_control.calendar_bars_bound(
+            "2026-07-20T00:00:00Z", timeframe="bogus", now="2026-07-23T00:00:00Z"),
+        null_control.calendar_bars_bound(
+            "2099-01-01T00:00:00Z", timeframe="4h", now="2026-07-23T00:00:00Z"),
+    ):
+        assert unprovable is None
+
+
+def test_the_bound_dominates_what_any_frame_can_hold():
+    """The skip is sound only if the bound is an upper bound on `measure_spec`'s `available`."""
+    mint = CANDLES[10]["open_time"]
+    start = null_control.post_mint_index(CANDLES, mint)
+    available = len(CANDLES) - start
+    bound = null_control.calendar_bars_bound(mint, timeframe="1d", now=CANDLES[-1]["open_time"])
+    assert bound is not None and bound >= available
+
+
+def test_a_provably_young_store_skips_the_collection_but_keeps_the_record(tmp_path, monkeypatch):
+    """The waste this ends: 99.1% of the kind's ledger spend went to fires whose every cell
+    was decidable from the mint stamp alone. The record still lands — "no spec was old
+    enough" is a fact the accumulating series keeps — under its own status, so a calendar
+    verdict is never dressed as a frame measurement."""
+    from runtime.mvp_runtime.crypto import market_data
+
+    _seed_candidate(tmp_path, created_at_utc="2026-07-20T00:00:00Z")  # 3 days < 30
+
+    def _must_not_collect(*args, **kwargs):
+        raise AssertionError("a provably empty fire must not pay for a collection")
+
+    monkeypatch.setattr(market_data, "collect_market_data", _must_not_collect)
+    summary = _fire_null_control(tmp_path)
+    assert summary["fired"] == 1
+    status = summary["results"][0]["status"]
+    assert "measured=0" in status and "too_young_calendar=1" in status
+
+
+def test_one_spec_past_the_floor_forces_the_collection(tmp_path, monkeypatch):
+    """A single old-enough spec forfeits the skip for the whole fire."""
+    from runtime.mvp_runtime.crypto import market_data
+    from runtime.mvp_runtime.errors import ToolBlocked
+
+    _seed_candidate(tmp_path, created_at_utc="2026-07-20T00:00:00Z", candidate_id="cand_young")
+    _seed_candidate(tmp_path, created_at_utc="2026-01-01T00:00:00Z", candidate_id="cand_old")
+
+    def _collection_sentinel(*args, **kwargs):
+        raise ToolBlocked("TOOL_ERROR", "collection sentinel")
+
+    monkeypatch.setattr(market_data, "collect_market_data", _collection_sentinel)
+    summary = _fire_null_control(tmp_path)
+    assert summary["results"][0]["status"] == "skipped_market_data_degraded"
+
+
+def test_an_unprovable_stamp_forfeits_the_skip(tmp_path, monkeypatch):
+    """A stamp the calendar cannot read collects as before and lets `measure_spec` answer
+    on the record, rather than being silently skipped on a guess."""
+    from runtime.mvp_runtime.crypto import market_data
+    from runtime.mvp_runtime.errors import ToolBlocked
+
+    _seed_candidate(tmp_path, created_at_utc="not-a-timestamp")
+
+    def _collection_sentinel(*args, **kwargs):
+        raise ToolBlocked("TOOL_ERROR", "collection sentinel")
+
+    monkeypatch.setattr(market_data, "collect_market_data", _collection_sentinel)
+    summary = _fire_null_control(tmp_path)
+    assert summary["results"][0]["status"] == "skipped_market_data_degraded"

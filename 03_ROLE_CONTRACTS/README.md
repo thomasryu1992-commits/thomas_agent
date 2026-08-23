@@ -51,8 +51,8 @@ docs/runtime-contracts/
 | `ROLE_DEFINITION_TEMPLATE.yaml` | Machine-readable Role Definition template |
 | `ROLE_REGISTRY.yaml` | Current Role version, status, routability, lookup metadata, hashes, and Candidate trial policy |
 | `ROLE_ASSIGNMENT_CONTRACT.md` | Exact Task-specific Role objective, capability subset, authority, permission, Memory, resources, validation, and budget |
-| `ROLES/ACTIVE/` | Roles available for normal Runtime routing |
-| `ROLES/CANDIDATES/` | Roles unavailable for normal routing; explicit isolated trial only |
+| `ROLES/ACTIVE/` | The two founding MVP roles. Directory placement records origin, **not** current status |
+| `ROLES/CANDIDATES/` | Roles that started as candidates. Four are now active (Thomas, 2026-07-27) — files stay where they were born; `ROLE_REGISTRY.yaml` is the sole authority on status and routability |
 
 ## 4. Core Concept
 

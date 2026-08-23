@@ -1,14 +1,26 @@
-# Thomas Agent MVP — the two-service deployment (operator + scheduler).
+# Thomas Agent MVP — the deployment (operator + the two scheduler lanes).
 #
-# One image, two long-lived processes sharing ONE state volume:
-#   - operator:  Telegram poll -> verify -> pipeline -> reply (+ emergency console)
-#   - scheduler: the tick loop firing due schedules (analysis, crypto cycle/factory,
-#     memory prune). Without this service NOTHING scheduled ever runs — the operator
-#     loop does not tick schedules.
+# One image, long-lived processes sharing ONE state volume:
+#   - operator:        Telegram poll -> verify -> pipeline -> reply (+ emergency console)
+#   - scheduler:       the RISK-lane tick loop (crypto_pipeline / breaker / route watch —
+#     the money path's cadence). `--lane risk` fires RISK_KINDS and nothing else.
+#   - scheduler-maint: the MAINTENANCE-lane tick loop (factory, null_control, archive,
+#     analysis, prune, rotate, report, propose, data review). Split so that no fire of any
+#     kind can stand in front of a due risk kind — the factory child (#726) moved compute
+#     out of the pass and the very next day the pipeline was still 1,181s late behind the
+#     in-pass fetch; a lane is the class fix (docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md).
+#   Without a scheduler lane NOTHING its kinds schedule ever runs — the operator loop does
+#   not tick schedules, and each lane leaves the other lane's schedules strictly alone.
 #
-# Run at most ONE scheduler service per state volume. Concurrent stores are
-# cross-process locked (claim_due prevents a double-claim), but the deployment
-# contract is a single tick process — parallel crypto workers are out of scope.
+# Run at most ONE tick service PER LANE per state volume. Concurrent stores are
+# cross-process locked (claim_due prevents a double-claim) and the lanes' kind sets are
+# disjoint by construction, but the deployment contract is one process per lane —
+# parallel crypto workers are out of scope.
+#
+# DEPLOY COUPLING (lane split): `--lane` exists only from #733 on. This compose file with
+# an OLDER image crash-loops both lanes on an unknown flag — so never `compose up -d` after
+# merging this without first promoting an image that carries #733. The safe order is the
+# candidate-tag flow in CLAUDE.md: build+verify+promote `latest`, then `compose up -d`.
 #
 # Secrets come from the environment (compose reads an optional gitignored `.env`
 # next to this file); per-machine governance state is mounted, never baked in. A
@@ -96,35 +108,84 @@ services:
       - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
       - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     # Same liveness rule as the operator: the tick loop's own heartbeat. A scheduler
-    # wedged on a provider call used to report healthy indefinitely.
+    # wedged on a provider call used to report healthy indefinitely. The probe names the
+    # LANE's heartbeat — each lane stamps its own file, because a shared one would let a
+    # live maintenance loop keep a dead risk loop reading FRESH.
     healthcheck:
-      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler"]
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler-risk"]
       interval: 60s
       timeout: 20s
       retries: 3
       start_period: 30s
+    # `--lane risk`: this service — the one holding the venue keys — fires RISK_KINDS and
+    # nothing else. Its name, env, and mounts deliberately did not move in the lane split:
+    # the money path stays put, the maintenance kinds moved out (scheduler-maint below).
     command:
       - python
       - -m
       - runtime.mvp_runtime.scheduler_cli
       - tick
+      - --lane
+      - risk
       - --max-ticks
       - "0"
       - --interval-seconds
       - "30"
+    # DEPLOY ORDER: `pipeline-worker` must never be OLDER than this service. Since the Phase 2
+    # delegation an `analysis_task` fire forwards a frame carrying `actor_profile`, and a
+    # worker built before that key existed refuses the whole frame (ARGUMENT_NOT_ACCEPTED,
+    # its key set is closed) — so a scheduler recreated onto a new image while the worker
+    # still runs an old one fails every delegated fire. The reverse lags safely: the key is
+    # optional, so a new worker serves an old scheduler unchanged.
+    #
+    # A whole-project `compose up -d` satisfies this by construction. A PARTIAL deploy does
+    # not, and partial deploys happen here — sparing the money path while updating the doors
+    # is a reasonable thing to want, and it is exactly the shape that breaks this. Verified
+    # 2026-08-10 against the running containers: the pre-Phase-2 worker refused an
+    # `actor_profile` frame with ARGUMENT_NOT_ACCEPTED.
     environment:
-      MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
-      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
-      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
-      # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
-      # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
-      MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
-      MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # The ANALYSIS provider chain and the search tool are deliberately absent
+      # (MVP_HOSTED_PROVIDER, OPENROUTER_API_KEY, GOOGLE_AI_STUDIO_API_KEY,
+      # MVP_OPENROUTER_MODEL, MVP_SEARCH_TOOL, TAVILY_API_KEY — removed by PR-C of
+      # docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md). Their only consumer here
+      # was an `analysis_task` fire, and that now runs in `pipeline-worker`, which holds them.
+      # This is the service that also holds the Binance account and order keys, so a model
+      # credential it does not use is pure blast radius — the OpenRouter key most of all,
+      # since the assistant's own container spends from that same key.
+      #
+      # The removal is safe only BECAUSE the delegation landed with it: an env-less scheduler
+      # that still ran the pipeline in-process would silently produce mock analyses and report
+      # them COMPLETED. `scheduler.delegate_analysis_task` has no such fallback — an
+      # unreachable worker is a recorded failed fire.
+      #
+      # `MVP_VALIDATOR_PROVIDER` and `GROQ_API_KEY` are gone too, as of D6 — **this service
+      # now holds no model credential of any kind.** Its last two consumers were
+      # `crypto_data_review` (D5) and `crypto_propose` (D6), and both delegate their model
+      # call to `pipeline-worker` now.
+      #
+      # The D6 deferral this block used to describe rested on a mistake worth recording, since
+      # it is the kind that repeats: the proposer's signature is
+      # `propose_strategy_families(snapshot, provider=…)`, from which the proposal concluded
+      # that delegating it needed the market frame on the far side — either a second collector
+      # (against C9's one-feature-source rule) or a serialized 5-leg snapshot. Reading the body
+      # rather than the signature showed `build_proposal_prompt` never touches the snapshot;
+      # the frame is used only by the judging half, which invokes no model. So the split needed
+      # neither: the family list crosses, the frame stays here, and the verdicts are still
+      # computed beside the market data they came from.
+      #
+      # `test_the_scheduler_selects_no_model_provider_at_all` is what keeps it that way — it
+      # reads the whole module, not one branch, so a new model consumer anywhere here fails
+      # rather than quietly putting a credential back beside the Binance keys.
+      # The six Naver variables (MVP_NAVER_RESEARCH + the Search Ad and API HUB credentials)
+      # were forwarded here from #650 until the plane separation's PR-B
+      # (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md) removed them: `pipeline-worker`
+      # is the lane's only holder now. Deliberately absent rather than left "harmlessly" —
+      # Compose forwards only what this block names, and MVP_NAVER_RESEARCH is the WHOLE gate
+      # (no grant behind it), so a name here plus a value in `.env` would put the ad account's
+      # spend-capable signing secret back on the service that also holds the Binance keys.
+      # Consequence for the CLI: a `--naver-keywords` run must exec in thomas-pipeline-worker,
+      # not here — in this container the brief silently degrades to Mock rows.
+      # The weekly ideation schedule (blog lane Phase 3, unbuilt) executes via the worker.
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
       # or was left overdue while this service was down. Same `telegram` grant and the
       # same registered chat as the operator service — the scheduler never reads
@@ -153,16 +214,11 @@ services:
       MVP_PAPER_TRADING: ${MVP_PAPER_TRADING:-}
       MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
       COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
-      # The candle archive's own axis, and it has to be its own: MVP_MARKET_DATA names the
-      # single venue the PIPELINE collects from, so pointing that at Hyperliquid to start
-      # archiving would take the crypto pipeline off Binance — including the leg that can
-      # place a real order. Unlike its neighbours above, this one needs no grant: Thomas
-      # moved it to the env-only gate on 2026-08-04 (#496), because a 30-day TTL cannot
-      # bound a job that races a rolling window for months. So THIS line is the whole gate,
-      # which is exactly why forgetting it is the failure it was: the code shipped in #486
-      # and this block did not name the variable, so setting it in `.env` reached nothing
-      # and archiving would have stayed silently off while reading as configured.
-      MVP_CANDLE_ARCHIVE: ${MVP_CANDLE_ARCHIVE:-}
+      # MVP_CANDLE_ARCHIVE moved to `scheduler-maint` with the lane split: the archive fire
+      # is a MAINTENANCE kind, so this lane has no consumer for it — and this block's own
+      # doctrine is that an unconsumed name here is pure blast radius, not a convenience.
+      # Deliberately absent rather than left "harmlessly"; the drift gate
+      # (`tests/test_deployment_env_passthrough.py`) pins the move in both directions.
       # Five prediction-market selectors (Kalshi / Polymarket / Binance, plus that venue's
       # signed key pair) were forwarded here until 2026-08-02, when the lane was removed —
       # `docs/BUILD_HISTORY.md`. Deliberately NOT left in place "harmlessly": Compose
@@ -203,6 +259,77 @@ services:
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
+
+  # The MAINTENANCE-lane tick loop (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): factory,
+  # null_control, candle archive, analysis, prune, rotate, report, propose, data review —
+  # every kind whose lateness costs freshness rather than money. Its fires are the long ones
+  # (a factory fetch+ablation morning runs minutes), which is exactly why they live in a
+  # process the risk lane never waits on.
+  #
+  # Its env is the AUDITED consumer set and nothing more (SCHEDULER_LANE_SPLIT_V0.1 §4):
+  # collection selectors for the factory/null_control legs, the archive's own venue axis,
+  # and outbound-only notification. NO venue account or order key, NO MVP_LIVE_*, NO model
+  # credential — the service that runs 6-minute fires does not sit next to money. The drift
+  # gate (`tests/test_deployment_env_passthrough.py`) pins every one of these absences.
+  #
+  # The pipeline-worker deploy-order rule on the scheduler service applies here unchanged —
+  # since the lane split it is THIS lane whose analysis_task/report/propose/data_review
+  # fires delegate into the worker, so `pipeline-worker` must never be OLDER than this
+  # service either. A whole-project `compose up -d` satisfies it by construction.
+  scheduler-maint:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-scheduler-maint
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    # Its own heartbeat, probed by its own name: a shared file would let this loop keep a
+    # dead risk loop reading FRESH (or the reverse). Same thresholds as its sibling.
+    healthcheck:
+      test: ["CMD", "python", "-m", "runtime.mvp_runtime.heartbeat_cli", "scheduler-maintenance"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.scheduler_cli
+      - tick
+      - --lane
+      - maintenance
+      - --max-ticks
+      - "0"
+      - --interval-seconds
+      - "30"
+    environment:
+      # The collection selectors the factory and null_control fires read in-process
+      # (`select_market_data_collector` / `select_liquidation_feed`). Same fail-closed
+      # shape as everywhere: env alone selects, unset = the inert mock.
+      MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
+      MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
+      COINALYZE_API_KEY: ${COINALYZE_API_KEY:-}
+      # The candle archive's own venue axis, moved here from the scheduler service with the
+      # lane split — the archive fire is a maintenance kind. The whole gate is this line
+      # (env-only since #496): an unforwarded name does not fail loudly, it archives nothing
+      # while reading as configured on the host, which is the failure that got it written
+      # down the first time.
+      MVP_CANDLE_ARCHIVE: ${MVP_CANDLE_ARCHIVE:-}
+      # Outbound-only notification, exactly like the risk lane: this loop TELLS Thomas when
+      # a schedule fails, recovers, or was left overdue while it was down. It never reads
+      # inbound messages, so the shared-bot token swap below is as safe here as there — and
+      # both lanes de-dup their own alerts, so a shared failure alerts once per lane, which
+      # is honest: two loops, two restarts, two diagnoses.
+      MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
+      TELEGRAM_BOT_TOKEN: ${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency
@@ -265,18 +392,20 @@ services:
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
   # that run the ordinary pipeline at permission P3. `runtime/mvp_runtime/dispatch_bridge.py`
   # caps this in code: a closed set of non-trading request kinds, no `write_path`, the kill
-  # switch checked before every run, every task attributed to `assistant_bridge`. A test
+  # switch checked before every dispatch, every task attributed to `assistant_bridge`. A test
   # asserts the kind set stays those four and that none of them reaches the money path.
   #
-  # Unlike switch-bridge and read-bridge this service RUNS the pipeline, so it is the one door
-  # that *could* invoke a model. It deliberately carries no provider key here: with none, the
-  # Safety-Flag Gate fails closed and the door dispatches through the deterministic mock
-  # pipeline. Enabling real model execution means forwarding the model provider env
-  # (GOOGLE_AI_STUDIO_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY / MVP_HOSTED_PROVIDER) — a
-  # deliberate step, because it stands up a second model-key-bearing container and OPENROUTER
-  # is shared with the operator's assistant. Absent regardless of that choice: every money
-  # variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key. The kinds it runs never
-  # touch them.
+  # Since the plane separation (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md, Thomas
+  # 2026-08-10) this door VALIDATES AND FORWARDS; execution lives in `pipeline-worker` below,
+  # reached over an internal socket the assistant's container cannot traverse to. So this
+  # service carries the same environment as the read and switch doors — the two peer variables
+  # and nothing else. No provider key, no search key, no Naver variable: the process that
+  # parses the assistant's frames holds no credential, which is the point of the split. And as
+  # always no money variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key.
+  #
+  # No Core mounts either: binding a Task needs them and binding happens in the worker now,
+  # so the #380 failure signature (BRIDGE_ERROR on a missing THOMAS_CORE path) moved with it —
+  # if a dispatch fails that way, look at thomas-pipeline-worker's mounts, not this service's.
   dispatch-bridge:
     image: thomas-agent-runtime
     build: .
@@ -290,11 +419,6 @@ services:
         max-file: "3"
     volumes:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
-      # Unlike switch/read-bridge this door RUNS the pipeline, which will not bind a task
-      # without an active approved Core — so it needs the Core activation/approval records
-      # read-only, exactly as the operator and scheduler do.
-      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
-      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
       interval: 60s
@@ -312,13 +436,62 @@ services:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
       # See read-bridge for the uid gate this leaves unset by default.
       MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
-      # Model providers ONLY. This is the one door that runs the pipeline, so it needs the
-      # provider chain to return a real analysis instead of the mock. Each member still needs
-      # its own mounted safety-flag grant (via the state volume) — the env var alone fails
-      # closed. NOTHING from the money path is here: no BINANCE_*, no MVP_LIVE_*, no venue or
-      # order key. The kinds this door dispatches never reach it. NB: OPENROUTER_API_KEY is
-      # shared with the operator's assistant, so assistant-dispatched spend rides the same
-      # free-tier quota — the assistant_dispatch spend alert ($50/day) is what watches it.
+
+  # The dispatch door's engine (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). This is
+  # the process that runs `pipeline.run_task` for the four P3 kinds, so it is where the
+  # credential env lives: the model provider chain, the search key, and the Naver lane's
+  # variables. Each provider still needs its mounted safety-flag grant (via the state volume) —
+  # the env var alone fails closed. Deliberately absent: everything from the money path — no
+  # BINANCE_*, no MVP_LIVE_*, no venue or order key; the kinds this worker runs never reach it,
+  # and `test_deployment_env_passthrough` pins that per variable. NB: OPENROUTER_API_KEY is
+  # shared with the operator's assistant, so assistant-dispatched spend rides the same
+  # free-tier quota — the assistant_dispatch spend alert ($50/day) is what watches it.
+  #
+  # This is NOT an assistant door, and its socket is deliberately not in `bridge/`: that
+  # directory is group-owned by the assistant's gid and mounted into the assistant's
+  # container, and an engine socket there would be reachable past every cap the door
+  # enforces. It lives under `internal/` instead, and the two literals below pin its peers to
+  # the runtime's own uid/gid (10001, the image's fixed user) — the dispatch door is this
+  # socket's only legitimate client, and SO_PEERCRED is what refuses everything else. The
+  # worker refuses to listen at all without a uid allowlist. Literals, not ${...}
+  # interpolations, so a host `.env` that points the doors' gid at the assistant cannot also
+  # point the engine's peers anywhere.
+  pipeline-worker:
+    image: thomas-agent-runtime
+    build: .
+    container_name: thomas-pipeline-worker
+    restart: unless-stopped
+    # A model run in flight deserves the operator/scheduler grace, not the doors' 10s: a
+    # SIGTERM mid-analysis should let the task settle into the ledger where it can.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      # The pipeline will not bind a task without an active approved Core — the Core mounts
+      # moved here from dispatch-bridge with the execution itself (#380's gotcha, relocated:
+      # a BRIDGE_ERROR naming a THOMAS_CORE path means THESE mounts were dropped).
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
+    healthcheck:
+      test: ["CMD", "test", "-S", "/app/.runtime_governance_state/internal/pipeline.sock"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.pipeline_worker_cli
+    environment:
+      # The engine's peers are the runtime itself — see the header comment for why these are
+      # literals. No group_add: the socket's group is the process's own.
+      MVP_BRIDGE_CLIENT_GID: "10001"
+      MVP_BRIDGE_CLIENT_UID: "10001"
+      # Model providers and search, moved verbatim from dispatch-bridge with the execution.
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
@@ -328,6 +501,22 @@ services:
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Naver keyword research for the blog content lane (optional). The `research`/`content`
+      # kinds run HERE now, so this service is where the lane's credentials belong — and after
+      # PR-B removes the scheduler's copy, the only place they exist at all.
+      #
+      # Unlike every other gate in this block, MVP_NAVER_RESEARCH is the WHOLE gate: there is
+      # no mounted grant behind it (Thomas, 2026-08-09). Naming it here is therefore an
+      # enablement path, not merely a passthrough, and the credentials below are what it
+      # enables. The Search Ad secret signs against the AD ACCOUNT and reaches
+      # campaign-management endpoints — it is not the read-only key its read-only use makes it
+      # look like, which is why no assistant-facing service is given these.
+      MVP_NAVER_RESEARCH: ${MVP_NAVER_RESEARCH:-}
+      NAVER_SEARCHAD_CUSTOMER_ID: ${NAVER_SEARCHAD_CUSTOMER_ID:-}
+      NAVER_SEARCHAD_API_KEY: ${NAVER_SEARCHAD_API_KEY:-}
+      NAVER_SEARCHAD_SECRET_KEY: ${NAVER_SEARCHAD_SECRET_KEY:-}
+      NAVER_APIHUB_KEY_ID: ${NAVER_APIHUB_KEY_ID:-}
+      NAVER_APIHUB_KEY: ${NAVER_APIHUB_KEY:-}
 
   # The knowledge door (K1). The assistant's fourth lane, and the first that ACCUMULATES:
   # switch-bridge stops and starts, read-bridge looks, dispatch-bridge starts bounded work

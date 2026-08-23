@@ -553,12 +553,71 @@ def plan_pass(
     reintroducing the starvation this exists to prevent. The urgency ordering that does matter
     is kept exactly where the deadline is real: the first fills.
 
-    The offset advances one book per minute, so with a window of ``books_per_pass`` the
-    consecutive windows of any cadence up to that many minutes OVERLAP rather than leaving
-    gaps, and a full sweep takes ``ceil(len / cadence_minutes)`` passes — four hours or so at
-    the registered hourly cadence. Minutes rather than a per-pass counter for the reason the
-    symbol rotation uses them: a counter would need state, and an hour-derived index is
-    identical for every pass of any sub-hourly schedule.
+    The offset is ``minutes % len(refreshes)``. **While the universe is stable AND the passes
+    are evenly spaced** that advances one book per minute, so consecutive windows of any cadence
+    up to ``books_per_pass`` minutes overlap rather than leaving gaps, and a full sweep takes
+    ``ceil(len / cadence_minutes)`` passes — six at the registered hourly cadence, enumerated
+    against the live store 2026-08-08 at 376 books: 376 of 376 touched, max inter-refresh gap
+    exactly 6 passes. Minutes rather than a per-pass counter for the reason the symbol rotation
+    uses them: a counter would need state, and an hour-derived index is identical for every pass
+    of any sub-hourly schedule.
+
+    **The second condition is the one that does not hold, and the first paragraph is where a
+    reader stops.** The offset is a function of the CLOCK, not of the pass count, so an
+    irregular gap between passes moves the window by an irregular number of books: two hours
+    between fires advances the offset 120 while the window is 100 wide, and the 20 books in
+    between are skipped for a whole lap. The scheduler does not fire hourly on the hour — it
+    fires when a maintenance pass finds the schedule due, and measured over the 88 real fires
+    from 2026-08-04T14:59Z to 2026-08-08T06:59Z the spacing runs **49.1 to 120.0 minutes**
+    (median 60.1).
+
+    Enumerating `plan_pass` over those actual fire times rather than over an idealised hourly
+    grid: coverage still holds — **376 of 376, none never-reached** — but the inter-refresh gap
+    is **max 12.0h, p90 7.0h, median 6.0h, with 35 of 376 books over 7h.** So the sweep bound is
+    a property of the CADENCE, not of the rotation, and the honest figure is twice the tiling
+    arithmetic. `TSLA.4h` was observed 17.4h stale on 2026-08-07 with the same symbol's 15m and
+    1h books current, which is this and not a fault.
+
+    Nothing is lost — a refresh sizes itself from the newest bar it holds, so a gap shorter than
+    the venue's ceiling self-heals, and 12h is far inside the tightest (52 days at 15m). What
+    the understatement costs is **monitoring**: freshness alerting calibrated to the ~6h in the
+    paragraph above false-alarms on a third of the store, and — the expensive direction — a real
+    per-book stall under 12h is indistinguishable from ordinary rotation.
+
+    Not "fixed" by making the spacing regular. Uniform gaps need a per-pass counter, which needs
+    state, which is the trade this rotation already declined for the reason stated above.
+
+    **The universe is not stable, and the sweep is therefore a rotation rather than a tiling.**
+    ``len(refreshes)`` changes whenever the venue lists a symbol or a first fill becomes a
+    refresh, and the modulus moves with it — a one-book change in ``len`` moves ``minutes %
+    len`` by an arbitrary amount, because ``minutes`` is ~29.6 million. Measured 2026-08-05,
+    when the venue listed three symbols in three hours (88 → 91): the observed windows were
+    4h-heavy, then 15m/1h, then 1h, then 15m again, which is not the ``+cadence`` walk the
+    paragraph above describes and which an earlier version of this docstring claimed without
+    qualification.
+
+    That is not a defect and it is deliberately not "fixed" — coverage is what this rotation
+    owes. Enumerated against the live store the same day, every window of six consecutive
+    hourly passes covers **364 of 364 books, 0 never reached**; twelve and twenty-four passes
+    likewise. What the jumping costs is the *sequential* reading — successive passes are not
+    adjacent slices, so "the next pass picks up where this one stopped" is not true and
+    ``deferred`` must not be read that way.
+
+    **Coverage is conditional, though, and the condition is a race worth naming.** A new symbol
+    inserts its books into the 15m region and pushes every later book forward; the offset
+    advances one book per minute. Coverage holds while the offset outruns the growth, and fails
+    when it does not — measured, not assumed: at one listing per five minutes (0.8 books/min
+    against 1.0) eight of eighty books went unreached across eighty passes. At the registered
+    hourly cadence the margin is 60 books per pass against 4 per listing, and the observed rate
+    is about one listing an hour — 15x. `test_coverage_survives_a_universe_that_keeps_growing`
+    pins the realistic side; the failing rate is recorded here rather than in a test because
+    what matters operationally is the margin, and the margin is a fact about the venue.
+
+    **Do not measure this by watching a timeframe's candle count.** A 1d book refreshed at
+    17:00 returns nothing because no 1d bar has closed since 00:00 UTC, so `1d: +0` is what
+    both a healthy sweep and a starved one produce — that conflation cost a wrong "needs
+    investigating" call on 2026-08-05. Enumerate ``plan_pass`` against the store instead; it
+    answers directly and is what found the #544 defect in the first place.
 
     Existence is a `stat`, deliberately not `newest_open_time` — that parses and hashes a whole
     book, and 352 of them at the top of every pass would cost more than the pass.

@@ -164,11 +164,11 @@ def test_select_liquidation_feed_defaults_to_none(monkeypatch):
     assert isinstance(select_liquidation_feed(), NoLiquidationFeed)
 
 
-def test_select_coinalyze_env_alone_fails_closed(monkeypatch, tmp_path):
+def test_select_coinalyze_env_alone_opens_the_feed(monkeypatch, tmp_path):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
+    feed — no grant record backs it; revocation is unsetting the variable."""
     monkeypatch.setenv(LIQUIDATION_FEED_ENV, COINALYZE)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_liquidation_feed(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    assert isinstance(select_liquidation_feed(now=NOW, root=tmp_path), CoinalyzeLiquidationFeed)
 
 
 def test_select_coinalyze_with_activation(monkeypatch, tmp_path):
@@ -207,13 +207,16 @@ def test_attach_feeds_ok_and_absent():
     # Open interest rides the same feed object, so the null feed reports it absent too.
     # The derivative price series report absent for a different reason: this snapshot has no
     # candles and no timeframe, so there is no grid to request them at or join them onto.
-    # `positioning` reports not_accumulating rather than a status, because this call did not opt
-    # into durable accumulation — the routing-marks rule: a caller that keeps no state keeps no
-    # store either. See test_mvp_runtime_crypto_positioning_store.py for the opted-in path.
+    # `positioning` and `orderbook` report not_accumulating rather than a status, because this
+    # call did not opt into durable accumulation — the routing-marks rule: a caller that keeps no
+    # state keeps no store either. Both are asserted here rather than only the older one, because
+    # this call passes no `root`: a store that wrote on the default path would put real state in
+    # the repo's own state directory, and this assertion is the closest thing to a guard against
+    # that. See the per-store test files for the opted-in paths.
     assert status == {
         "funding": "ok", "liquidations": "absent", "open_interest": "absent",
         "mark_prices": "absent", "index_prices": "absent", "premium_index": "absent",
-        "positioning": "not_accumulating",
+        "positioning": "not_accumulating", "orderbook": "not_accumulating",
     }
     assert "funding" in snapshot
     assert "liquidations" not in snapshot and "open_interest" not in snapshot

@@ -247,6 +247,7 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
         "strategy_spec": dict(_SPEC),
         "backtest_evidence": {
             "closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000,
+            "robustness": {"holdout_status": "CONFIRMED"},
             "regime_breakdown": {"regimes_traded": sorted(per_regime),
                                  "profitable_regime_count": 1,
                                  "per_regime": per_regime},
@@ -262,8 +263,11 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False,
+        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
+        # The fixture is deliberately minimal (24 closes, shallow window); the 5-3 bar is
+        # not the subject here — regime evidence propagation is.
+        allow_below_entry_bar=True,
     )
     entry = installed["active_strategies"][0]
     assert entry["regime_evidence"] == per_regime
@@ -282,7 +286,8 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
         "candidate_id": "cand_old", "strategy_id": "S001", "generation_id": "GEN-001",
         "champion_score": 0.5, "strategy_rule_hash": "hash_old",
         "strategy_spec": dict(_SPEC),
-        "backtest_evidence": {"closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000},
+        "backtest_evidence": {"closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000,
+                              "robustness": {"holdout_status": "CONFIRMED"}},
     }
     monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [candidate])
     monkeypatch.setattr(prom.pool_store, "assert_promotable_cost_basis", lambda records: None)
@@ -293,8 +298,9 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False,
+        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
         root=tmp_path, now=NOW, without_approval=True,
+        allow_below_entry_bar=True,
     )
     entry = installed["active_strategies"][0]
     assert entry["regime_evidence"] is None

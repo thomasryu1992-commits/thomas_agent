@@ -48,6 +48,7 @@ from .authority import (
 )
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
+from .naver_research import BRIEF_TOOL_ID
 from .tools import SEARCH_TOOL_ID
 from .workspace import WORKSPACE_REL, WRITE_TOOL_ID
 
@@ -71,6 +72,12 @@ MVP_TTL_MINUTES = 30
 # Governance scope + least-privilege authority level for the R3 read-only search action.
 SEARCH_PERMISSION_SCOPE = "INTERNAL_READ"
 SEARCH_REQUIRED_PERMISSION_LEVEL = "P1"  # READ — a read-only lookup, one level below ANALYZE
+# The Naver keyword brief is the search's effect class exactly — a read-only public lookup
+# feeding evidence into the prompt — so it acts at the same scope and level. Named constants
+# of its own anyway: a future divergence (say, the brief gaining a paid API HUB tier) should
+# be a one-line change here, not a hunt for which "search" constant the brief was borrowing.
+KEYWORD_PERMISSION_SCOPE = SEARCH_PERMISSION_SCOPE
+KEYWORD_REQUIRED_PERMISSION_LEVEL = SEARCH_REQUIRED_PERMISSION_LEVEL
 
 # Governance scope + level for the R7 independent validation action. A distinct ALLOW-tier
 # scope (SIMULATION_VALIDATION) both matches the action semantically and keeps the validator's
@@ -365,8 +372,23 @@ class _FixedGrant:
     action: "_ActionSpec"
 
 
+_KEYWORD_ACTION = _ActionSpec(
+    action_type="internal.read.keyword_research",
+    target_suffix="keyword_research",
+    tool_id=BRIEF_TOOL_ID,
+    data_scope=("task.request", "web.public.read"),
+    normalized_parameters={"result_scope": "naver.keyword_demand", "visibility": "internal"},
+    risk_reason="Read-only Naver keyword-demand lookup; no external write, publication, financial, or runtime effect.",
+    authority_reason="Read-only information lookup within the assigned Task scope and authority ceiling.",
+    decision_reason="Authority is sufficient and the keyword brief is a reversible, read-only information lookup.",
+    constraint="Read-only keyword research; no external write, publication, tool/program execution, or runtime mutation.",
+)
+
 _FIXED_GRANTS: dict[str, _FixedGrant] = {
     "search": _FixedGrant(SEARCH_PERMISSION_SCOPE, SEARCH_REQUIRED_PERMISSION_LEVEL, _SEARCH_ACTION),
+    "keyword_research": _FixedGrant(
+        KEYWORD_PERMISSION_SCOPE, KEYWORD_REQUIRED_PERMISSION_LEVEL, _KEYWORD_ACTION
+    ),
     "triage": _FixedGrant(TRIAGE_PERMISSION_SCOPE, TRIAGE_REQUIRED_PERMISSION_LEVEL, _TRIAGE_ACTION),
     "validation": _FixedGrant(
         VALIDATION_PERMISSION_SCOPE, VALIDATION_REQUIRED_PERMISSION_LEVEL, _VALIDATION_ACTION
@@ -773,6 +795,30 @@ def build_search_permission_decision(
     )
 
 
+def build_keyword_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    role_permission_ceiling: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Build the ALLOW PermissionDecision for the Naver keyword brief.
+
+    The ``keyword_research`` row of :data:`_FIXED_GRANTS` — the search's effect class at the
+    search's level (``INTERNAL_READ``, P1), with the brief's own action identity. Planned
+    only for runs that will brief (the pipeline asks when ``keyword_seeds`` was given), the
+    ``controlled_write`` precedent: a decision is built for an action that will be attempted,
+    never as standing furniture on every plan. Before this existed the brief ran under no
+    decision at all and left no audit event — found by an external review, 2026-08-10, the
+    one claim of six that survived verification intact."""
+    return _build_fixed(
+        "keyword_research", bound_task, role_permission_ceiling=role_permission_ceiling,
+        now=now, actor_id=actor_id, ttl_minutes=ttl_minutes, repo_root=repo_root,
+    )
+
+
 def build_triage_permission_decision(
     bound_task: Mapping[str, Any],
     *,
@@ -1057,6 +1103,105 @@ def build_nonfinancial_resume_permission_decision(
         permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
         required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_slippage_probe_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    batch_id: str,
+    params: Mapping[str, Any],
+    content_sha256: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas for ONE stop-slippage
+    probe batch (proposal §5, approved 2026-08-11 — R9 wiring per §4-3: one ask per batch).
+
+    Mirrors the trading-switch builder's shape: same scope (RUNTIME_GOVERNANCE — no policy
+    edit, no new scope), same P4 level, RED risk text. P4 and not P5 for the switch
+    builder's own reason read here: the approval authorizes writing the batch PLAN, an
+    internal record — each probe order still passes the P5 live-order gate, the final
+    guard, the breakers and the live-trading opt-in at fire time, none of which this
+    record touches. The batch identity (N, symbols, stop width, regime rule, timeout,
+    budget cap) rides in ``content_sha256`` and ``normalized_parameters``, so an approval
+    of THIS batch cannot be re-pointed at a wider one
+    (``invalidated_by_any_material_field_change``). Building this record performs
+    nothing; the operator confirm door VERIFIES the approval against the same content
+    hash and never consumes it — the promotion door's pre-R10 posture.
+    """
+    if not (isinstance(batch_id, str) and batch_id):
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must carry its batch id")
+    if not (isinstance(content_sha256, str) and content_sha256.startswith("sha256:")):
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must carry its content hash")
+    symbols = [str(s) for s in (params.get("symbols") or [])]
+    if not symbols:
+        raise PlannerBlocked("INVALID_PROBE_BATCH", "a probe ask must name its symbols")
+
+    worst_case = (
+        float(params.get("n") or 0)
+        * float(params.get("per_probe_notional_cap_usdt") or 0.0)
+        * float(params.get("worst_case_loss_fraction") or 0.0)
+    )
+    action = _ActionSpec(
+        action_type="crypto.probe.stop_slippage_batch",
+        target_suffix="stop_slippage_probe",
+        tool_id=None,
+        data_scope=("crypto.stop_slippage_probe_plan", "crypto.registered_trading_budget"),
+        # Decimal STRINGS for every fractional figure: the action fingerprint forbids
+        # floats (they do not canonicalize deterministically), same as the live order's
+        # notional. The full-precision identity is `content_sha256`.
+        normalized_parameters={
+            "batch_id": batch_id,
+            "n": int(params.get("n") or 0),
+            "symbols": sorted(symbols),
+            "direction": str(params.get("direction") or ""),
+            "stop_bps": f"{float(params.get('stop_bps') or 0.0):.1f}",
+            "regime_rule": (
+                f"{params.get('regime_feature')}@{params.get('regime_timeframe')}"
+                f" split {float(params.get('regime_split') or 0.0):.2f}"
+            ),
+            "repeats": int(params.get("repeats") or 0),
+            "timeout_minutes": int(params.get("timeout_minutes") or 0),
+            "per_probe_notional_cap_usdt": f"{float(params.get('per_probe_notional_cap_usdt') or 0.0):.2f}",
+            "budget_cap_usdt": f"{float(params.get('budget_cap_usdt') or 0.0):.2f}",
+        },
+        risk_reason=(
+            f"Authorizes {int(params.get('n') or 0)} REAL venue-minimum orders "
+            f"({', '.join(sorted(symbols))}) placed one at a time by the operator to buy the "
+            f"stop-slippage sample the cost model lacks. Worst case ~{worst_case:.2f} USDT, "
+            f"capped at {float(params.get('budget_cap_usdt') or 0.0):.2f} USDT. No strategy is "
+            "armed and no probe row can reach forward confirmation."
+        ),
+        authority_reason="Prime may prepare a probe-batch ask for Thomas review; the decision is Thomas's.",
+        decision_reason=(
+            "RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a batch of "
+            "real probe orders."
+        ),
+        constraint=(
+            "One batch only: the confirm door verifies this approval (never consumes it) and "
+            "writes the batch plan; every probe order additionally passes the live-trading "
+            "opt-in, the final order guard, the breakers and the P5 order gate at fire time. "
+            "A changed parameter set is a different hash and refuses."
+        ),
+        target_ref=f"stop_slippage_probe:{batch_id}",
+        content_sha256=content_sha256,
+        risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=STRATEGY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
         now=now,
         actor_id=actor_id,
         ttl_minutes=ttl_minutes,

@@ -285,23 +285,20 @@ def select_writer(*, now: str | None = None, root: Path | None = None) -> Worksp
     """Choose the workspace writer — the enforced Safety-Flag Gate chokepoint.
 
     Defaults to :class:`DryRunWriter` (no gate needed; it touches nothing). The real
-    disk-writing writer is returned ONLY when both (a) the caller opts in via
-    ``MVP_WORKSPACE_WRITER=real`` AND (b) the Safety-Flag Gate authorizes
-    ``filesystem_write`` against a local, integrity-checked activation record. The env var
-    alone is NOT sufficient: with no valid activation this fails closed
-    (:class:`SafetyGateBlocked`) rather than silently opening a write path.
+    disk-writing writer is returned ONLY behind ``MVP_WORKSPACE_WRITER=real`` — the
+    environment is the gate (Thomas 2026-08-10; no per-machine grant record backs it),
+    and an unset or different value selects the dry-run writer, never a write path.
 
     The writer analog of ``providers.select_provider`` and ``tools.select_search_tool``;
-    all four share ``safety_gate.select_gated``, which is what makes "authorize before the
-    capable thing is constructed" structural rather than remembered.
+    all four share ``safety_gate.select_env_gated``, which is what makes "authorize before
+    the capable thing is constructed" structural rather than remembered.
     """
-    return safety_gate.select_gated(
+    del now, root  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=WRITER_ENV,
         opt_in_value=REAL_WRITER,
         flags=_WRITE_FLAGS,
         provider_id=WRITE_TOOL_ID,
         default_factory=DryRunWriter,
         gated_factory=lambda authorization: RealWorkspaceWriter(authorization=authorization),
-        now=now,
-        root=root,
     )

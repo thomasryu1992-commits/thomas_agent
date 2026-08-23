@@ -1087,9 +1087,113 @@ The pattern is now specific enough to design against: **a module that writes sta
 leg owns, read by a door the autonomous leg cannot reach, is a counter that counts nothing.** Both
 #246 and #247 are exactly that, and neither had a test because both halves worked.
 
+### Three live closes on 2026-08-18 came from the Binance mobile app, not from this runtime — recorded 2026-08-18
+
+`venue_external_close` is defined in `crypto/live_leg.py` as the close this runtime did not send and
+no bracket leg performed. Three rows carry it on 2026-08-18, and the venue names their origin: each
+one is a `reduceOnly` `MARKET` order whose `clientOrderId` carries Binance's **`ios_`** prefix — the
+marker for an order placed by hand from the mobile app.
+
+| position | strategy | opened | venue close | detected | close order | entry → exit | realized |
+|---|---|---|---|---|---|---|---|
+| `live_position_a73ca2db540ec074991a` | S005-GEN-833 (`cand_3b14f39ffeb1f246ce7b`) | 2026-08-17T23:59:11Z | **02:54:47Z** | 04:44:12Z | `ios_r0kk5Z07by52itCR0vX1` | 64521.0 → 64090.1 | +1.2927 USDT |
+| `live_position_72764f6ca0d6063bef1e` | `PROBE-probe_batch_bbca200a67aae9570a36` | 03:23:25Z | **04:30:19Z** | 04:44:12Z | `ios_aZLlW33qFedZgYX2qlVe` | 75.37 → 75.69 | +0.0224 USDT |
+| `live_position_a5c59aacb777bcebb801` | `PROBE-probe_batch_bbca200a67aae9570a36` | 06:32:37Z | **07:12:49Z** | 07:14:13Z | `ios_UUfL5f4VrL4jLMzGWkh7` | 75.94 → 76.09 | +0.0105 USDT |
+
+**All three closes are Thomas's own, stated 2026-08-18.** This record is that statement, because the
+outcome row cannot carry it: no tool writes an operator's reason onto a close.
+`scripts/record_unreported_live_order.py` is narrow to a canary order's missing audit append and
+refuses a general operator-note verb by construction, so §C is where it goes. What the ledger does
+get right on its own is the exclusion — `venue_external_close` is deliberately kept out of the names
+that feed a strategy's R statistics, so the +1.2927 does not credit S005-GEN-833 for a human's exit.
+
+**Nothing here is unexplained venue behaviour.** The two probe closes were first reported as not
+made by hand and then confirmed as Thomas's own within the same session; the venue's `ios_` marker
+is the whole account of all three. The batch's poor sample yield on 2026-08-18 therefore has one
+cause, and it is not the probe: a hand close ends the position before its stop can be touched, and a
+stop that is never touched is the one thing this instrument cannot measure. Neither probe cost the
+batch a cell — `resolve_open_cell` returns any non-`stop_loss` close to `EMPTY` — so what they cost
+is the fire, not the sample slot.
+
+**Read `closed_at_utc` as the detection pass, not the fill.** The gap ran 14 minutes on the probes
+and **1h49m** on BTCUSDT. Same reading the 2026-08-06 pair above already required, now with the
+venue's own `time` beside it to size the lag.
+
+#### The position-mode switch this sits inside — and it has not taken effect
+
+Thomas set the account to hedge (양방향) mode by hand at the venue. **It did not apply.** Read back
+read-only from `GET /fapi/v1/positionSide/dual`, 2026-08-18:
+
+    {"dualSidePosition": false}
+
+The venue refuses a position-mode change while any position or open order exists, and BTCUSDT has
+held a position plus two resting bracket legs continuously since 04:59:11Z. Consistent with that,
+every entry in the window — the 04:59 BTCUSDT strategy entry, the 06:32 SOLUSDT probe — was accepted
+without a `positionSide` parameter, which hedge mode rejects as `-4061`.
+
+**If it ever does take, this runtime breaks.** `positionSide` and `dualSidePosition` appear nowhere
+in the codebase; every order is built for one-way mode. `tunables.py` already names the exposure:
+`MAX_LIVE_POSITIONS_PER_SYMBOL` is classified `VENUE` on the stated ground *"the venue nets per
+symbol in one-way mode, so a second book cannot exist"*, with *"hedge mode, which would make this a
+choice rather than a fact"* as what would reopen it. The per-symbol position store
+(`live_positions/<SYMBOL>.json`, one book per symbol) rests on the same assumption. Hedge mode is
+therefore a code change, not a venue setting — and until it is one, the setting must stay off.
+
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
+
+### One live outcome row is wrong and there is no way to correct it — recorded 2026-08-23
+
+`live_out_e56cf310dcc07d9c6edd` (BTCUSDT, closed 2026-08-21T09:03:43Z) records
+`realized_pnl_usdt 77.5357` / `result_R 398.02720739` for a trade that lost **0.1728 USDT,
+-0.887R**. It is the only one of the 28 rows in `live_outcomes.jsonl` that does not satisfy
+`(exit - entry) * qty` under its own sign convention; the other 27 match to eight decimals.
+
+The recorded figure is exactly `0.002 * 77708.50 - 0.001 * 77881.30` — a close twice the size
+of the open, priced against the book's entry quote. The stop leg is a `closePosition`
+STOP_MARKET and the venue treats that as Close-All, so it closed what was actually open; the
+book held half of it. Four and a half minutes earlier the cycle had halted the symbol with
+`LIVE_ROUTING_BOOK_DRIFT` and `live_settled=null`, which is that same disagreement seen from
+the other side. **The recurrence is fixed** (#752 gives the bracket-leg settlement the quantity
+check its two sibling paths already had) and **the board no longer vouches for the row** (#753).
+This entry is about the row itself, which both of those leave in place.
+
+**There is no correction mechanism, and building one is the open item.** `live_pnl.py` has no
+supersede path; re-appending the same `settlement_id` is rejected; two rows sharing an
+`outcome_id` raise `LIVE_HISTORY_DUPLICATE`, which fails **every** live-history read closed —
+the breakers, the risk guard and the promotion board at once. The ledger is fsync append-only.
+And the row passes its own `record_sha256`, because the corruption happened before the hash was
+taken, so no integrity check will ever flag it. A correction therefore needs a designed record
+type (void / supersede) with its own schema and governance, not an edit.
+
+**Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
+and it would leave no record that anyone changed a money figure — on the one ledger whose whole
+purpose is to be the thing nobody can quietly change.
+
+**What the row still costs, after #752 and #753:**
+
+| consumer | effect |
+|---|---|
+| daily / weekly loss breakers | **none, from 2026-08-24T00:00Z** — `_pnl_since` windows on `exit_time`, so the row leaves the weekly window at rollover and left the daily one on 08-22 |
+| drawdown breaker | under-reports by **0.887R** against a 10R limit, permanently. The phantom entered `equity` and `peak` together, so it did not inflate the gap — it anchored the peak on itself and erased a real 0.887R drawdown |
+| consecutive-loss breaker | none — `PROBE-` lineage is skipped in both directions |
+| lifecycle / promotion / retirement / `live_allowance` | none — they read paper outcomes |
+| scheduled dashboard report | none — paper only |
+| `live_promotion` evidence board | flagged and excluded from its pass count by #753 |
+
+**`drawdown_excluded_strategy_ids` is not the answer, and it was measured rather than assumed.**
+That mechanism exists for a lineage an operator deliberately retired, and it fails three ways
+here: it is semantically wrong (this is a bad number, not a retired strategy); it would drop the
+17 other rows of the same probe batch; and it does not even produce the true figure — excluding
+the batch gives a current drawdown of **-2.9901R** against a truth of **-0.8871R**, which is
+further from correct than leaving it alone.
+
+So the row stays, and the standing cost is 0.887R of drawdown headroom that is not real. **Do
+not "fix" it by widening a limit**, and do not read any all-time live P&L total without
+subtracting it — cumulative realized reads +80.88 USDT where the truth is +3.17.
+
+---
 
 ---
 
@@ -1380,29 +1484,136 @@ same answer.
       | crypto fan-out interval (target 900s), n=727 | median **+4s**, p99 **+44s** |
       | over 2 minutes late | **3 / 727 (0.4%)**, worst +438s |
       | scheduler events | 12,554 |
-      | abandoned runs (process died mid-fire) | **0** |
+      | abandoned runs (process died mid-fire) | **0** — reads unpaired-right-now, not ever; see below |
       | fire failures, all kinds, all time | **1** (`RemoteDisconnected`) |
 
-      **One number is deliberately absent and its absence is the finding.** How often the
-      maintenance budget actually bit cannot be answered: a deferral does not claim its
-      occurrence, so no event is written, and the count lives only in `run_due`'s return value.
-      The mechanism that bounds risk-kind latency leaves no durable trace of having acted, so
-      "the budget works" above is *inferred from the latency distribution*, not observed. If
-      this box is ever reopened, recording the deferral is the first cheap step — it converts
-      the main claim here from an inference into a measurement.
+      **The number that was absent is now on the ledger, and it says the budget bound five
+      times.** When the above was written a deferral wrote nothing durable — it claims no
+      occurrence, so the count lived in `run_due`'s return value and the container log, and
+      neither outlives a recreation. #596 gave the deferral its own action; #598 put the pass
+      **spend** and the budget it was spending against on the row, because a count alone cannot
+      tell a budget sitting on its boundary from one that is not the lever. Re-read 2026-08-09
+      across the whole ledger (12 files, 14,319 events, 2026-07-22 → 2026-08-09; deferral rows
+      begin 08-08, the event being younger than the budget):
+
+      | | |
+      |---|---|
+      | deferral rows / occurrences / passes that bound | **27 / 13 / 5** |
+      | occurrences lost | **0** — each ran on a later pass |
+      | by kind | `crypto_null_control` **25**, `crypto_factory` **2** |
+      | pass spend where it bound (budget 60s) | min **62.6s**, median **70.1s**, max **98.8s** |
+      | first deferral → serving fire | min **71s**, median **161s**, max **231s** |
+
+      **Two of those rows change how the number should be read.** The dominant consumer is
+      `crypto_null_control`, not the factory the budget was sized against: fifteen of its
+      schedules fall due within seconds of each other and clear over three consecutive passes.
+      And the largest bind is **1.65× the budget** — the "one group is longer than any budget
+      worth setting" shape rather than a boundary case, so raising 60 would not stop it binding.
+      The per-pass guarantee holds either way; what a deferred occurrence gets is not a one-tick
+      slip but up to ~4 minutes.
+
+      **Rows are not occurrences, and the difference is 2×.** A deferral leaves the schedule due,
+      so an occurrence behind a burst is deferred again on every pass it waits: 27 rows are 13
+      occurrences (five waited three passes, four waited two, four a single pass).
+      `tests/test_mvp_runtime_scheduler.py` pins this, and a row count read as occurrences
+      overstates what the budget cost.
+
+      **And "the budget works" is observed now rather than inferred.** Counting a
+      `crypto_pipeline` fire — a `RISK_KINDS` member, i.e. the thing the budget exists to protect
+      — late when the gap to the previous one exceeded 960s against its 900s cadence, over 2,006
+      gaps, with gaps beyond three cadences excluded as outages rather than lateness: **8 of the
+      13 days before the budget had a late fire; the five days since have none, worst 923s**,
+      which is tick jitter.
+
+      **Three of the eleven late gaps are not lateness, and the first reading of this said they
+      were.** The three largest — 1,854s / 1,830s / 1,806s — each *contain* an `abandoned`
+      recovery row, so each spans a scheduler restart rather than a slow pass. Drop them and the
+      worst genuine gap is **1,338s**, while the eight that remain cluster at 07:55–08:20Z, which
+      is the factory morning burst the budget was built for. The mechanism reads *better* after
+      the correction than before it, which is the reason to make it rather than leave the larger
+      number standing: quoting 1,854s credits the budget with having fixed a container restart.
+
+      **It stays observational, and the confound is real:** the factory rotation was cut in the
+      same week (15m dropped 08-04, 1h frozen 08-06), which shortens passes on its own, and 08-04
+      was already clean one day *before* the budget went live. The two changes are not separable
+      from this data.
+
+      **The `0` in the table above answers a different question than its label.** The ledger
+      holds **15** `abandoned` rows inside that window (2026-07-25 → 08-06): 10 `pm_scan` from the
+      since-deleted predmarket lane, 3 `crypto_pipeline`, 1 `crypto_propose`, 1 `candle_archive`.
+      A live `find_abandoned_runs()` call returns 0 anyway, and correctly — `abandoned` is itself
+      a terminal action, so recovery *pairs* the run it recovers and the helper reports only what
+      is still unpaired **right now**. "Nothing is currently unrecovered" is not "no process ever
+      died mid-fire", and the row's label promises the second. **Consequence for the condition
+      below: the reopen test must read `action == "abandoned"` rows, not the helper**, which by
+      construction cannot ever satisfy it. What the ledger cannot say is *why* a run died — the
+      row is rebuilt from the orphaned `started` and carries no cause — and on a host that
+      recreates containers several times a day a deploy is the likelier reading than the OOM the
+      condition is aimed at. Likelier is not established, so this is written down rather than
+      dismissed.
 
       **The one exposure the in-process design cannot close**, stated so the deferral is not
       read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
       running is deliberately never interrupted (cutting a factory or archive mid-write trades a
       latency problem for a torn record). So a single hung fire blocks everything behind it in
-      that pass, without limit. Fifteen days say it has not happened — the worst observed is
-      +438s — but no in-process change can make it impossible.
+      that pass, without limit. ~~Fifteen days say it has not happened — the worst observed is
+      +438s~~ — no in-process change can make it impossible, and **it has now happened: twice in
+      four days, attributed to the second, measured 2026-08-15.**
+
+      #704 (merged 2026-08-12) added mint-time ablation, and on the days the drawn conjunctions
+      make it expensive the 4h cohort factory fire runs ~6.5 minutes where it ran ~75s. Both
+      times, `crypto_pipeline` — a `RISK_KINDS` member — was due mid-fire and fired the second
+      the factory fire ended:
+
+      | day | 4h factory fire | pipeline gap (960s = late) | attribution |
+      |---|---|---|---|
+      | 2026-08-12 | 391s, ended 08:19:10 | 1,202s, fired **08:19:10** | exact to the second |
+      | 2026-08-15 | 402s, ended 08:19:44 | 1,225s, fired **08:19:44** | exact to the second |
+
+      Three notes so this is read at its true size and no larger. The cost is ~5 minutes of
+      entry/bookkeeping latency on a 4h path whose protective bracket rests at the venue —
+      bounded, not an unprotected position. The long fires are the day's conjunction mix, not a
+      new floor: 08-13/08-14 ran 72–124s and were clean. And the same window produced two more
+      "late" gaps that the restart check above **discards**: 08-11's 1,799s contains an
+      `abandoned` recovery row (a restart — exactly the check this item prescribes), and
+      08-15's overnight 1,806s gap has no marker and no factory fire in its window, so it stays
+      unattributed rather than counted.
 
       **What reopens this:** one fire that hangs rather than merely running long; one abandoned
-      run (the process dying mid-fire, which OOM would cause and `except Exception` cannot
-      catch); or the p99 above moving from seconds into minutes. Any of the three makes the
-      separation a fix rather than an investment, and the measurement above is the thing to
-      re-run first.
+      run **that no container restart explains** (the process dying mid-fire, which OOM would
+      cause and `except Exception` cannot catch — read the `abandoned` rows, not
+      `find_abandoned_runs()`, and check each against a restart before counting it); the p99 above
+      moving from seconds into minutes; or **a day that shows late risk-kind fires and deferrals
+      together** — the deferral rows now make that a query
+      (`read_scheduler_events()` filtered to `action == "deferred"`, grouped by `created_at` for
+      passes) rather than a judgement. Deferrals alone do not qualify and that is the point of
+      recording them: the clustering above cost maintenance up to four minutes while
+      `crypto_pipeline` held its cadence, so it is cosmetic, and the schedules should be left
+      alone until the two appear on the same day.
+
+      **The fourth condition is now met — 2026-08-12 and again 2026-08-15, the table above.**
+      Both days also deferred maintenance (the 1d cohort fire waited two passes behind its 4h
+      sibling), so "late risk-kind fires and deferrals together" holds literally. One precision
+      that matters for the remedy: the deferrals those days were the factory's own sibling and
+      the morning `crypto_null_control` burst, but the *lateness* was caused by fire
+      **duration**, not by the burst — so the `--first-run-at` / reschedule capability this
+      item's companion report points at targets the wrong mechanism for this instance, and the
+      candidate remedies are duration-shaped (a duration-aware budget, splitting the ablation
+      fire, or the process separation this item parked). Per this item's own closing sentence,
+      one of those is now a fix rather than an investment. **Which, and whether — that is a
+      Thomas decision; this paragraph records the evidence and decides nothing.**
+
+      **Decided (Thomas 2026-08-17): process separation.** By then the re-measurement had
+      moved the frequency from "twice in four days" to four of the last six (08-16 337s and
+      08-17 384s joined, each with the same second-exact pipeline gap), so the exposure is
+      the daily cost of lattice-era mints, not a bad-day tail. The duration-aware budget and
+      the ablation-fire split were passed over, not refuted. Design and its own open
+      decisions: `docs/proposals/FACTORY_FIRE_PROCESS_SEPARATION_V0.1.md` — the compute
+      already has a pure seam (`run_factory`), the child writes nothing but a spool, and the
+      scheduler stays the single writer. §3 was approved as proposed the same day and the
+      separation is implemented: the fetch stays in-pass, the pure compute forks, and
+      `_collect_factory_child` closes the bracket on a later pass. The exposure this item
+      measured ends when an image carrying it is deployed.
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
@@ -2360,12 +2571,41 @@ its worst. `_fold_into_bounds` reflects instead: **both halves to 0.0%**, median
 3.12 → 3.03 and 3.22 → 3.25, median R:R 2.14 → 2.08 and 2.13 → 2.18 — inside the 0.05R nothing
 in this store resolves.
 
-**What is owed.** A mint-time change is judged over generations, not days (the `#420` error), and
-this one is placed against a store whose 1,507 non-fade rows carry the old draw. The check is the
-next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
-fall from ~12% toward zero, and the elite centres those rows become should stop reproducing it.
-Nothing about edge is claimed or expected — 0 of 1,140 candidates confirm out of sample and a
-random entry loses 0.13R here. What this buys is that the search covers the space it is given.
+**What was owed.** A mint-time change is judged over generations, not days (the `#420` error), and
+this one was placed against a store whose 1,507 non-fade rows carried the old draw. The check was
+the next fires' parameter distribution: the share of minted rows sitting exactly on a bound should
+fall from ~12% toward zero. Nothing about edge was claimed or expected — 0 of 1,140 candidates
+confirm out of sample and a random entry loses 0.13R here. What it buys is that the search covers
+the space it is given.
+
+#### Paid off — measured 2026-08-08, ~25 generations after the deploy
+
+Every stored row's exit triple checked against its own family's space (the fold shipped
+2026-08-05 and the containers restarted onto it at 15:54 UTC):
+
+| generation block | rows | on a bound | share |
+|---|---|---|---|
+| GEN 600–779 | 923 | 136 | **14.7%** |
+| GEN ≥ 780 | 199 | 6 | **3.0%** |
+
+**And the residual six are all explained, none of them a pin.** Four are seeded rows from
+GEN-781/782/783 — generations that fired *before* the containers restarted. One (GEN-804) is
+`max_holding_bars` landing on 12, an integer taking a value it may legitimately take rather than a
+pile-up; the test added with the fold allows integer parameters an 0.08 share for exactly this.
+One (GEN-793) is a **crossover**, and that one is the clamp doing its documented job.
+
+**From GEN-784 onward, zero seeded rows sit on a continuous bound** — 0 of ~190.
+
+**The fusion path was checked and is NOT the same defect, which is worth stating because it
+looks like it.** `_fused_exit_param` still clamps where `mutate_params` now folds — but a fused
+value is the MIDPOINT of two parents, and a midpoint of two in-space parents is in-space by
+convexity (the note on `test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from` says so
+directly). The clamp therefore fires only when a parent was minted under an OLDER space, which is
+the GEN-793 row, and pinning a stale parent to the nearest legal value is the right operation
+there — folding it would place it at an arbitrary interior point instead. **What is stale is the
+docstring**, which still says *"Same clamp and same constants as `mutate_params`, so a fused
+parameter and a mutated one can never land in different places"*; that stopped being true when the
+fold landed, and the sentence is corrected in the same change as this note.
 
 ### F6. The regime label folds volatility over trend, and one live family still pays for it — audited 2026-08-05
 
@@ -2416,7 +2656,8 @@ label excludes, is **37.9%**.
 rather than `mean_reversion`'s RSI — so "how a fade performs in HIGH_VOLATILITY" is measured on
 different entries than the one that would move.
 
-**The proposal, and it is not shipped.** Replace the label with the trend test it folds, at
+**The proposal that was tested — and rejected, see below.** Replace the label with the trend
+test it folds, at
 **identical `free_parameters`** — `count_free_parameters` charges one literal either way
 (verified: `literals = sum(1 for c in conditions if c.value is not None)`), and both `adx` and
 `atr_percentile` are already in `NUMERIC_FEATURES`:
@@ -2431,13 +2672,40 @@ This gives the search the 20.0 the label hard-codes and drops the volatility fol
 `volatility_squeeze_*` / #497 precedent it would REPLACE rather than add, since a family is
 +1 hypothesis charged to `selection_adjusted_z` for every other family in the store.
 
-**What is missing is the measurement that would justify it**, and it is the same one #497 ran:
-paired draws, exits from their own rng so the entry rule is the only difference between arms,
-`backtest_spec_pooled` across the cohort at 4h and 1h. **It needs venue frames this host does
-not hold** — `candle_archive` carries hyperliquid equity perps only and has "no consumer in the
-feature or backtest path" by design — so running it means adding fetch volume to the IP the live
-cycle trades on, which F4 records producing an HTTP 429. Not run for that reason, not for want
-of a method.
+#### The replay was run 2026-08-05, and it says no
+
+Method as #497's: 12 paired draws × long/short × both arms at 4h and 1h, `backtest_spec_pooled`
+over the 5-symbol cohort, `rsi` and the exit triple each drawn from their own rng keyed by draw
+index so the second entry condition is the only difference between arms. 100 venue reads at
+`ARCHIVE_REQUEST_INTERVAL_SECONDS` pacing, 2m55s wall, no `TOOL_RATE_LIMITED`. Read-only, in a
+one-off container with every `MVP_LIVE_*` blanked; nothing appended to any store.
+
+| | A `== RANGE` judgeable | B `adx <= p` judgeable | A HO exp | B HO exp |
+|---|---|---|---|---|
+| 4h long | **1/12** | **7/12** | +0.1605 *(n=1)* | −0.0295 |
+| 4h short | **1/12** | **8/12** | −0.0521 *(n=1)* | +0.1913 |
+| 1h long | 12/12 | 9/12 | −0.0826 | **−0.2112** |
+| 1h short | 12/12 | 10/12 | +0.0784 | +0.0745 |
+
+**The judgeability claim is confirmed and the change still fails its own bar.** At 4h the current
+rule reaches `MIN_HOLDOUT_TRADES` in 1 draw of 12 — the store-based estimate (median 3.5 closed
+trades) was right, and the family genuinely cannot earn a verdict there. B reaches it in 7 and 8.
+The 4h expectancy columns are **not a comparison**: A's are single observations, which is the
+defect rather than a result.
+
+The pre-registered rule was *ship only if 4h judgeability rises AND 1h holdout expectancy does
+not fall by more than 0.05R*. **1h long falls 0.1286R** — above the floor this store resolves,
+so the rule stops it. 1h judgeability also drops (12/12 → 9/12 and 10/12): `adx <= p` draws
+below 20 are stricter than the label's own `adx < 20`, so B is not uniformly the wider gate.
+
+Nothing clears anything: best `t max` is +1.62 (4h short, arm B) against a selection-adjusted
+bar near 2.87 at this attempt count. No edge was expected and none appeared.
+
+**So `mean_reversion_*` keeps its gate, and this is the same answer F3 reached for the pullback
+half** — helps at 4h, hurts at 1h, do not ship. What the item becomes is the one thing both
+measurements agree on: the family is unjudgeable at 4h and 1d for a reason that is about SAMPLE,
+which makes it evidence for the pooled-mint experiment F2 defers rather than for another template
+edit. Re-open this only against a rule that does not cost the 1h leg, or once minting is pooled.
 
 ### F7. The hold is drawn in bars and the retiming only swaps the label — measured 2026-08-06, 86 rows
 
@@ -2607,7 +2875,59 @@ and there are no open positions left to close. **The only path that fills this i
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
 
-### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **awaiting a Thomas decision**
+
+#### The ask, in one screen — everything below this subsection is the working
+
+`backtest_spec_pooled` is finished, carries eight tests, and **has no caller but the
+single-symbol path**. Whether the rotation moves onto it is the decision. It is not a code
+question — the effort is five items, all small (*What wiring it takes*, below) — it is a
+**portfolio-shape** question, and no further measurement narrows it.
+
+**What is settled, so it need not be re-litigated.** At 4h a single-symbol row closes a median
+**9** trades against a floor of 25, so those families are unjudgeable *permanently* — rows do not
+pool across generations and waiting adds nothing. Pooled, the same family was judged in an
+afternoon. **And the judgement was negative**: the one result that ever cleared a
+selection-adjusted bar (`oi_unwind_short`, t up to 5.16) decays to **−0.23…−0.31R** in earlier
+adjacent windows, in **16 of 16 draws** across two seed namespaces. So the honest expected value
+is *"finds out faster"*, never *"earns more"* — against a store whose holdout gross edge is
+~0.012R and whose random-entry control loses 0.13R.
+
+**Judgement 1 — what shape.** The live pool routes **5 strategies** (94 entries; the rest are in
+non-occupying statuses): 1 at 1h, 4 at 4h. A pooled spec occupies every symbol context of its
+timeframe in **one direction**, and `min(contexts, 2·min(long,short) + 4)` then decides the book:
+
+| | contexts | long / short | fillable |
+|---|---|---|---|
+| today | 5 | 1 / 4 | **5** (100%) |
+| 4h pooled **short** | 6 | 0 / 6 | **4** (67%) |
+| 4h pooled **long** | 6 | 5 / 1 | **6** (100%) |
+
+Direction is fixed at promotion and the pooled spec *is* the tier, so this cannot be tuned
+afterwards; directional control drops from one lever per context to one per timeframe.
+
+- **A — all timeframes pooled.** Reaches the lifecycle window ~5× sooner (the direct cause of
+  today's 89 inert entries), and pays the table above plus one demotion emptying a whole tier.
+- **B — 4h and 1d only.** Treats where the defect is; 1h already runs 12/12 judgeable
+  single-symbol. Half the directional exposure, and 1h keeps buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Portfolio shape unchanged entirely; pays in
+  bookkeeping instead (a row carrying pooled evidence under a single-symbol scope). **Not in the
+  original wiring list** — it is the option that separates judging from routing.
+
+**Judgement 2 — what the door does with a window-test sign flip.** Wiring the window test is
+*not* optional: without it the row described above is promotable on its face, and `period_r` does
+not substitute for it (it partitions the tail; the reversal is 2,000+ bars earlier, and all ten
+slices read positive). What is open is the response — **refuse**, **rank below a stable row**, or
+**record and surface**. The last is the cheapest honest start and matches
+`assert_promotable_evidence_depth`, which refuses only the unreadable case and ranks the rest.
+
+**Doing nothing is also a choice**, and its cost is the status quo: 4h and 1d families stay
+unjudgeable and the promotion door keeps yielding zero — F1's mechanism, unaddressed.
+
+*A reading, marked as one rather than derived: **B is the smaller default and C the real
+alternative**; A pays the whole directional lever for most of what B buys.*
+
+---
 
 F7 closes 1d's structural half and says outright that it does not touch 4h's, where the ceiling
 is 109 against a floor of 25 and only 22% of it is used. F2 already measured the lever that moves
@@ -2662,6 +2982,58 @@ now** (BTCUSDT 1h, and BTCUSDT/ETHUSDT/SOLUSDT/DOGEUSDT at 4h), so a pooled 4h s
 them vacated before it can route at all. None of this is a measurement — it is a portfolio-shape
 decision, and it is the thing to decide rather than to derive.
 
+#### The decision in numbers — read off the live pool 2026-08-08
+
+Stated so the choice is made against arithmetic rather than against an impression. Nothing below
+changes what the code does; it is what the code already does, applied to the pool as it stands.
+
+**The live pool is five strategies, not ninety-four.** `OCCUPYING_STATUSES` is `PAPER_ACTIVE` /
+`PROBATION` / `WARNING`; 89 of the 94 entries are in none of them and occupy nothing.
+
+| id | tf | direction | symbol | family |
+|---|---|---|---|---|
+| S008 | 1h | short | BTCUSDT | `bollinger_breakdown_short+breakdown_short` |
+| S005-GEN-700 | 4h | short | ETHUSDT | `breakdown_short` |
+| S004-GEN-706 | 4h | short | SOLUSDT | `session_trend_short` |
+| S005-GEN-697 | 4h | **long** | BTCUSDT | `breakout+macd_momentum` |
+| S002-GEN-709 | 4h | short | DOGEUSDT | `xs_momentum_short` |
+
+BNBUSDT 4h is unoccupied, so a pooled 4h spec picks up a context nothing fills today.
+
+**The arithmetic that decides it** is `routable_directional_capacity`'s own:
+`reachable = min(contexts, 2·min(long, short) + MAX_DIRECTIONAL_SKEW)`, with the cap at 4.
+
+| configuration | contexts | long / short | reachable | utilisation |
+|---|---|---|---|---|
+| today | 5 | 1 / 4 | **5** | 100% |
+| pooled 4h **short**, 1h unchanged | 6 | 0 / 6 | **4** | **67%** |
+| pooled 4h **long**, 1h unchanged | 6 | 5 / 1 | **6** | 100% |
+
+**So the tier's direction becomes a portfolio-level choice worth a third of the book, and it
+cannot be adjusted afterwards** — `direction` is fixed at promotion and the pooled spec *is* the
+tier. The general form is the part that outlives these five rows: directional control drops from
+one lever per context (up to 15) to one per timeframe (3).
+
+**Three shapes, not two.**
+
+- **A — fully pooled per timeframe.** Buys judgeability: a pooled spec accrues trades ~5× faster
+  and reaches `lifecycle.DEFAULT_WINDOWS[0]` (20 trades) ~5× sooner, which is the direct cause of
+  today's 89 inert entries. Costs the directional arithmetic above, and one auto-demotion empties
+  a whole tier.
+- **B — pooled at 4h and 1d only, 1h left single-symbol.** Treats where the defect is: F2 measured
+  1h single-symbol at 12/12 judgeable already, and it is 4h and 1d whose tails are too thin. Halves
+  the directional exposure and keeps an opposite-direction 1h leg buying slots back.
+- **C — pooled EVIDENCE, single-symbol routing.** Mint pooled to get a judgeable holdout, then
+  promote the winning parameter set as one spec per symbol. **The portfolio shape does not change
+  at all** — same contexts, same directional arithmetic, same demotion granularity. The cost is
+  bookkeeping rather than shape: a row would carry pooled evidence under a single-symbol scope,
+  and `evidence_depth_of` / `symbols_replayed` have to say so, because the unit the door judges
+  and the unit it routes stop being the same. **This option is not in the four wiring items
+  above**, and it is the one that separates the two things pooling has been treated as one thing.
+
+**B is the smaller default and C is the real alternative; A pays the whole directional lever for
+what B buys most of.** That reading is a judgement, not a measurement, and it is recorded as one.
+
 **One statistical consequence that will read as a discount and is not.** `search_context_key` is
 `(symbol_scope tuple, timeframe)`, so a pooled spec lands in a context no single-symbol spec
 shares. `attempts_by_context` starts near zero there and `selection_adjusted_z` therefore starts
@@ -2671,11 +3043,182 @@ exactly the same `sqrt(2 ln N)` — but a reader meeting a pooled row beside a s
 will see two different thresholds and the difference has to be written where they meet it, not
 only here.
 
-**What it does not buy, and this is the whole caveat.** Pooling makes rows judgeable; F2's own
-table says what the judgement was — CONFIRMED 0 → 0, CONTRADICTED 9 → 12. #566 sharpens it: after
-the selection correction the promotion gate can only confirm effects of **+0.48R or larger**
-against a real target near +0.05R, and of the 463 rows judgeable today **462 are CONTRADICTED**.
-So the honest claim for this lever is *"finds out faster"*, never *"earns more"*.
+**What it does not buy — and this paragraph cited the wrong experiment until 2026-08-07.** The
+table above is F2's **re-score**: existing single-symbol specs re-scoped to five symbols and
+replayed. Its CONFIRMED 0 → 0 is a fact about specs fitted on one symbol and then asked to
+transfer. F2 ran a second experiment for exactly this question — a pooled **mint** batch — and it
+did not read 0. Quoting only the re-score left a reader of this section concluding that pooled
+minting has never confirmed anything, which the record two subsections up contradicts.
+
+#566 still sharpens what a confirmation is worth: after the selection correction the promotion
+gate can only confirm effects of **+0.48R or larger** against a real target near +0.05R, and of
+the 463 rows judgeable today **462 are CONTRADICTED**.
+
+#### The pooled mint distribution, which F2 never published — re-run 2026-08-07
+
+F2 reported 11 CONFIRMED of 272 at 4h and 4 of 272 at 1h and said they "concentrate in the `oi_*`
+families" without giving the per-family split. That split is the whole question: 9 confirmations
+sprinkled over 34 families is noise, and 5 in one family is not. Re-run at 8 draws per family,
+pooled over the 5-symbol cohort, **all five legs attached** and post-`_fold_into_bounds` draws:
+
+| status over 272 pooled specs | 4h | 1h |
+|---|---|---|
+| CONTRADICTED | 222 | 260 |
+| INSUFFICIENT | 41 | 11 |
+| **CONFIRMED** | **9** | **1** |
+
+| family | 4h | 1h |
+|---|---|---|
+| `oi_unwind_short` | **5/8** | 1/8 |
+| `htf_pullback_short` | 3/8 | 0/8 |
+| `premium_fade_short` | 1/8 | 0/8 |
+
+**It concentrates, and that is not a chance pattern.** Under a null of 9 confirmations spread
+uniformly over 34 families, one family taking ≥5 has probability **8.5 × 10⁻⁵** — about 1 in
+11,700. The earlier reading of F2's summary (that ~1 family confirming at both timeframes is what
+chance predicts) was the right calculation on the wrong input; with the split in hand the
+concentration is real.
+
+**And four draws clear the selection-adjusted bar, which F2 said nothing did.** At 272 attempts
+the bar is z = 3.740. Four `oi_unwind_short` draws are above it — t = 5.16, 4.50, 4.28, 4.18 at
+holdout expectancies +0.44 to +0.70R over 33–141 trades. F2's best was 3.34 against the same bar.
+This is the first time anything in this record has cleared a corrected bar.
+
+**Three reasons to hold that at arm's length, in order of how much they could cost.**
+
+1. **The open-interest column is a DAILY series held constant across the day — measured
+   2026-08-08, and it is the one that matters.** The window was never the problem: coverage is
+   100% over all 6,000 4h rows and all 24,000 1h rows, on every cohort symbol, train and holdout
+   alike. What the coverage check found instead is the *resolution*. The feed returns **1,020
+   records stamped at midnight** (`2023-10-23T00:00:00Z`, `2023-10-24T00:00:00Z`, …), and
+   `build_feature_rows` carries each across the bars of its day:
+
+   | | values | distinct | run length |
+   |---|---|---|---|
+   | 4h `open_interest_zscore` | 6,000 | **1,000** (16.7%) | **6** (998 of 1,000 runs) |
+   | 1h `open_interest_zscore` | 24,000 | **1,000** (4.2%) | **24** (998 of 1,000 runs) |
+
+   The run length is exactly bars-per-day at each timeframe. **Three consequences, and they
+   compound:**
+
+   - The `oi_*` families mine a threshold on **~1,000 independent observations**, not 6,000 or
+     24,000. The other families in the same batch mine per-bar columns.
+   - The entry is a **STATE, not an event** — once the daily value crosses, the condition is true
+     for all six (or twenty-four) bars of that day. That is precisely the defect `macd_momentum` /
+     `_short` were RETIRED for on 2026-08-04: *"a state family re-fires on every bar of a move
+     rather than on the bar the relationship changed"*.
+   - The third consequence is the one everybody will reach for — that the trades inside a day are
+     near-duplicates, so `expectancy_t` divides by an inflated `sqrt(n)` and the clearance is an
+     artifact. **Measured 2026-08-08: it is false.** Recorded because it is the natural inference
+     and it does not survive contact.
+
+   **The trades are not clustered inside days.** Distinct `(symbol, UTC day)` pairs behind each
+   confirming draw, from trade stamps kept out of the same `_replay` the holdout uses and
+   cross-checked against `holdout.closed_count`:
+
+   | draw | n | symbol-days | market days | t | t·√(sym-days/n) | t·√(days/n) |
+   |---|---|---|---|---|---|---|
+   | 0 | 61 | 60 | 45 | +5.16 | **5.12** | **4.43** |
+   | 1 | 49 | 47 | 35 | +3.70 | 3.62 | 3.13 |
+   | 3 | 56 | 55 | 38 | +4.50 | **4.46** | 3.71 |
+   | 4 | 33 | 33 | 26 | +4.28 | **4.28** | **3.80** |
+   | 6 | 142 | 140 | 85 | +4.15 | **4.12** | 3.21 |
+
+   n ≈ symbol-days almost exactly — 61 trades on 60 symbol-days, 33 on 33. **The mechanism the
+   inference missed is that a position occupies the day it opens.** A fade holds 4–16 bars, so a
+   state condition that stays true cannot re-fire inside the day it is already trading in. The
+   `macd_momentum` analogy does not transfer, and the daily column does not inflate `n`.
+
+   **So that correction leaves the clearance standing, and the stricter one splits it.** Against
+   z = 3.740, 4 of 5 confirmed draws clear on the symbol-day unit. On the **market-day** unit —
+   cross-symbol trades on one day share a market period, which is the unit this record's own
+   effective-sample argument uses — only **2 of 5** clear (4.43 and 3.80), one is marginal at
+   3.71, and two fall to 3.21 and 3.13.
+
+   Where it stands: **not an artifact of the denominator, and not a clean clearance either.**
+   `htf_pullback_short` is unaffected on any unit — it clusters more (117 trades on 107
+   symbol-days, 65 market days) and its best t was 2.93, never near the bar.
+2. **1h barely agrees.** 1/8 at t = 2.44, below the bar. The cross-timeframe replication F2
+   leaned on is one draw here, not a second result.
+3. **+0.44 to +0.70R per trade is enormous** against a store whose holdout gross edge is ~0.012R
+   and whose random-entry control loses 0.13R. An effect that large is more often an instrument
+   than an edge — and item 1 names the instrument.
+
+#### It does not reproduce — measured 2026-08-08, and this closes the question
+
+**The rotation cannot answer this and never will, which is worth stating before the measurement
+that can.** "Wait for generations and see if `oi_unwind_short` holds" is the obvious plan and it
+is void: `run_factory` mints single-symbol, so no store generation is ever the pooled hypothesis,
+and at 4h this family's stored rows close a **median 9** trades against a floor of 25. Nine of
+nine are unjudgeable. Rows do not pool across generations — each is its own hypothesis with its
+own tail — so accumulating more never makes one judgeable. Waiting buys nothing here.
+
+**What the store CAN judge says no.** Across the 18 stored `oi_unwind_short` rows:
+
+| timeframe | rows | judgeable | median judgeable HO exp | positive |
+|---|---|---|---|---|
+| 15m | 3 | 2 | −0.2832 | **0/2** |
+| 1h | 6 | 2 | −0.2184 | **0/2** |
+| 4h | 9 | **0** | — | — |
+
+Everywhere it can be judged it is judgeably negative, and that **agrees with the pooled 1h
+result** (1/8, t = 2.44, below the bar). The two methods only diverge at 4h, where one has
+evidence and the other structurally cannot.
+
+**So the question goes to F3's instrument**, which is the one available: truncate the series by
+0.7 each step so window *k+1*'s tail ends exactly where window *k*'s begins. Same five confirming
+draws, same cohort, adjacent and non-overlapping:
+
+| holdout window (4h) | draw 0 | draw 1 | draw 3 | draw 4 | draw 6 |
+|---|---|---|---|---|---|
+| `[4200,6000)` — the batch's own | **+0.62** (t 5.16) | +0.49 (3.70) | **+0.54** (4.50) | **+0.70** (4.28) | **+0.43** (4.15) |
+| `[2940,4200)` | **+0.53** (4.51) | +0.20 (1.49) | +0.42 (3.48) | +0.62 (3.55) | +0.31 (3.04) |
+| `[2058,2940)` | −0.03 | −0.06 | −0.06 | +0.00 | −0.02 |
+| `[1440,2058)` | −0.31 | −0.25 | −0.23 | −0.25 | −0.25 |
+
+**All five draws decay monotonically and cross zero in the same window.** The effect lives in the
+newest ~3,000 bars (~500 days) and reverses before them. That is not one strong window — it is
+two — but it is a *time gradient*, which is the same finding in a worse form: a rule whose sign
+depends on when you look is not a rule the promotion door should take. OI coverage is not the
+explanation; the feed starts 2023-10-23 and spans every window here.
+
+**Those five were a SELECTED sample, and re-seeding removes the caveat rather than the finding —
+measured 2026-08-08.** They were the draws that confirmed on window 0, which is the very window
+the gradient starts from, so the pattern could have belonged to them rather than to the family.
+Two arms settle it: the same eight original seeds (including the three that did *not* confirm),
+and eight freshly seeded draws from the same space.
+
+| arm | CONFIRMED on w0 | w0−w3 slope | oldest window |
+|---|---|---|---|
+| original 8 | 5/8 | median **+0.854**, positive **8/8** | median −0.247, negative 7/8 |
+| fresh 8 | **7/8** | median **+0.869**, positive **8/8** | median −0.320, negative **8/8** |
+
+**16 of 16 draws slope the same way and 15 of 16 end negative**, and the fresh arm confirms at a
+*higher* rate than the batch did — so 5/8 was not a lucky draw either. The gradient is a property
+of the family over this cohort and period, not of the rows selected for confirming. What it is
+still not is evidence about any other cohort or period: both arms draw the same family from the
+same space, which is what this question needed and is all it answers.
+
+**So F9's conclusion stands, and now on evidence rather than on a citation.** Pooling *finds out
+faster* — it turned a family the rotation could never judge at 4h into one judged in an afternoon,
+and the judgement is that its confirmation is a property of the recent period. What is **not**
+established, and what nothing here supports, is that pooled minting earns more. The remaining
+honest use for the `oi_unwind_short` result is as a worked example of why the pooled door needs
+the window test wired beside it, not as a candidate.
+
+**One method correction worth more than the numbers.** `attach_feeds` reads OPEN INTEREST off the
+`liquidation_feed` argument (`cycle.py`: `snapshot["open_interest"] =
+liquidation_feed.open_interest_history(...)`), so passing `None` — which the name invites —
+silently blanks all four `oi_*` families. The first run of this batch did exactly that and would
+have reported "0 confirmations at 1h, 4 at 4h, none in `oi_*`". `unsuppliable_features`, called
+per spec, named the four families instead of letting them fall into INSUFFICIENT. **That is the
+same failure F2's first pass published as a finding**, caught this time only because the guard was
+called; `backtest_spec_pooled` on its own walks around it.
+
+**And F2's closing cost is already spent at the timeframes that matter.** F2 warns that
+lengthening the replay window removes the `oi_*` families, citing `DERIVATIVE_HISTORY_DAYS = 520`.
+It is **1020** now, against `FACTORY_DEPTH_DAYS` 1000 — the two moved together on 2026-08-04 — so
+the gate binds at 1d only. `_oi_feed_reaches`'s own docstring still says 520 and is stale.
 
 **What wiring it takes** — recorded so the decision is about the portfolio shape rather than about
 unknown effort:
@@ -2688,6 +3231,91 @@ unknown effort:
 4. All five frames must carry one `CostModel`. `backtest_spec_pooled` already fails closed on a
    mismatch, and #556 made the cost model venue-aware — so that refusal is the **first** thing to
    exercise, not an afterthought.
+5. **A window test wired beside the door**, and this one is not optional — see below.
+
+#### Why item 5 exists, and why `period_r` is not it
+
+The pooled door's first real output was five `oi_unwind_short` draws clearing a selection-adjusted
+bar at 4h, and the window test above showed all five reversing sign two windows back. **A pooled
+door without that test promotes exactly that row.** The value of pooling is that it makes rows
+judgeable fast; wiring it without the instrument that judges *stability* turns a find-out-faster
+lever into a promote-recent-regimes-faster one.
+
+**The obvious reuse fails, measured 2026-08-08.** `period_r` / `period_trades` already split the
+holdout into `HOLDOUT_PERIODS` slices, which reads like the same instrument. It is not: it
+partitions the **tail**, and the reversal is 2,000+ bars before the tail begins. On the five
+confirming draws every slice is positive —
+
+| draw | per-trade R across the 10 holdout slices (oldest → newest) |
+|---|---|
+| 0 | +1.29 −0.05 +0.18 +1.05 +0.85 +0.52 +0.16 +0.94 +0.70 +1.33 |
+| 6 | +0.80 +0.34 +0.01 +1.35 +0.87 +0.29 +0.03 +1.04 +0.07 +0.75 |
+
+— so `period_r` hands a clean bill of health to a spec whose sign flips outside its window. The
+two answer different questions: *"was the tail uniform"* and *"does the tail's answer hold before
+it"*.
+
+**What the test is**, concretely, since the shape is already proven: truncate the series by
+`1 - HOLDOUT_FRACTION` each step so window *k+1*'s tail ends exactly where window *k*'s begins
+(F3's construction), and score the same spec on three earlier windows. Reach is ~4× the tail.
+
+**Where it belongs.** Computed at mint beside the holdout and stored on the candidate's evidence,
+the way `period_r` is — never inside `backtest_spec_pooled`, whose docstring is explicit that it
+decides nothing. The promotion door then reads a recorded fact instead of re-deriving one, the
+same separation `holdout` already has.
+
+**What it costs, and it is smaller than it looks.** The truncated frames are spec-INDEPENDENT, so
+a batch pays three extra `build_replay_frame` calls in total, not three per spec — the property
+that made the 272-spec batch affordable. Replay is ~1.5× the single-window cost (0.7 + 0.49 + 0.34
+of the series). **No extra venue reads at all**: every window is a prefix of candles already
+fetched.
+
+**What to do with the answer is a decision, not a derivation.** A sign flip across adjacent
+windows could refuse at the door, rank below a stable row, or only be recorded and surfaced.
+Recorded-and-surfaced is the cheapest honest start and matches how a shallow window is already
+handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
+rest.
+
+#### F9c. Pooling turned the crossover path off, and nothing recorded that as a decision — measured 2026-08-15
+
+**The state.** Since the first pooled fire (2026-08-10T08:12:38Z) **every** factory fire has been
+pooled, and `run_factory` skips fusion on a pooled fire (`if fusion_pairs > 0 and not pooled`).
+So the crossover path has produced **zero children for six days, from zero attempted pairs** —
+not a thin yield, an off switch. Before it, fusion was minting ~0.2 children per fire (~3.9 before
+#523/#525 tightened it) and crossover rows were **26% of the eligible parent pool** while being
+26% of all rows, at a 15.5% parent-eligibility rate against seeded's 9.0% and a 9.0% ROBUST rate
+against seeded's 2.8%.
+
+**The skip itself is right and is not the item.** #633's comment states it: `_fuse_batch`
+re-scores each parent on this window through the one-frame `backtest_spec`, so a pooled child
+would be scored on one leg while claiming five — and `fuse_specs` would pair pooled parents
+happily, since their scopes match and `symbol_scope_mismatch` never fires. That is the wrong-number
+shape the rest of the file exists to prevent. **What is missing is that the consequence was never
+priced.** The skip arrived inside a PR about holdout windows; no line anywhere says "the crossover
+path is now off", and F9's own decision screen does not count it among what pooling costs.
+
+**Why it went unnoticed for six days, which is the transferable part.** `fused_count: 0` with an
+empty `fusion_rejected` is exactly what a **dry parent pool** produces, so the record could not
+distinguish "fusion ran and the store had no pair" from "fusion never ran". A weekly watch built
+to catch a dry pool read straight past it — and its three triggers were all green at the time
+(pool 205 distinct hashes and growing ~7/day, crossover share 26%, seeded pass rate 12–62%).
+`fusion_skipped` (added alongside this entry) now names the reason, so the two are separable.
+
+**The decision, which is Thomas's.** Either pooled fusion is a wanted increment or the crossover
+path is retired in favour of pooled seeding — and if it is retired, #523's child bar and #525's
+parent filter are governing a path that no longer runs and should be reconsidered on those terms.
+
+**What the increment costs if it is wanted.** One thing: `_fuse_batch` has to score children and
+re-score parents through `backtest_spec_pooled` over the fire's legs rather than `backtest_spec`
+over one frame. The pieces already exist — `backtest_spec_pooled` is the scorer, and the parent
+replays are already memoised per rule hash, so the cohort cost is paid once per parent per fire,
+not once per pair. `fuse_specs` needs no change: pooled parents share a scope, so the union is
+already well-defined. The materials are there too — pooled candidates are accumulating at 8/fire,
+and two pooled parents in one bucket is all a pair needs.
+
+**What NOT to do.** Do not re-enable fusion on pooled fires without moving the scorer first. The
+guard is load-bearing exactly as written; removing it mints children whose evidence claims a
+cohort it never replayed.
 
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 
@@ -2766,6 +3394,12 @@ version of this test.
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
 
 ### F11. The regime diagnosis for the biggest losing family cannot be made — measured 2026-08-06
+
+> **Every count below is the 2026-08-06 store (1,721 rows); it was 2,169 on 08-23 and the
+> partition will have moved with it.** The finding this section carries is not a count — it is
+> that `breakdown_short`'s regime profile inverts its own premise because §F6 folds volatility
+> over trend, and that survives a re-measure or is refuted by one. Re-derive before quoting a
+> number; read the argument as it stands.
 
 The promotion door reads **0 promotable** over 1,721 rows, and the partition says where they go:
 `already_active` 148, `cost_basis` 546, `holdout_insufficient` 574, **`holdout_contradicted` 453**.
@@ -2846,7 +3480,12 @@ parameter draws whose thresholds differ; `1d` reads +0.33 on **8 rows** and shou
 and `breakdown_short` was `ok` on F10's entry-rate test at 4h (4.00%), so this is a signal-quality
 axis and not the judgeability one the rest of section F is about.
 
-## G. Codebase review backlog — measured 2026-08-02; **G1 sliced, G2 done, G3 done**
+## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**, G5 profiled
+
+> G1 sliced twice, G2 removed, G3 indexed and twice corrected, G4a/b/c done. What is left is the
+> three rejections and a three-site residue, both stated exactly at the end of this section, plus
+> G5 (the scheduler profile). Read
+> "The refactoring backlog is exhausted" before starting anything here.
 
 A whole-codebase review for over-engineering, bottlenecks and improvement targets. Recorded
 here rather than in a chat log because **this is the file that travels between machines**, and
@@ -2864,7 +3503,17 @@ Three of the review's findings are already closed and are named so they are not 
   events / 2.7 MB / ~20 ms and grows ~20 events a day. Do not "fix" this; it would take years to
   matter and the no-rotation rule is load-bearing.
 
-### G1. Crypto tunables have no owner — 602 constants across 42 modules ⚠️ highest value
+### G1. Crypto tunables have no owner — ~~602 constants across 42 modules~~ ⚠️ highest value
+
+> **The struck-through count was this item's own headline and it was wrong by about four**, which
+> the second slice found and which is worth more than the number that replaced it. The grep below
+> counts every upper-case module-level assignment; **most of them are strings** — reason codes,
+> status labels, provenance markers, the package's vocabulary — not numbers that decide anything.
+>
+> No corrected figure is pinned here on purpose. The population moves (§G1 already records it
+> growing by 54 in four days), so a precise count in a header is a claim that rots, which is
+> exactly how the original got here. "Second slice done 2026-08-08" carries the measurement with
+> the date it was taken, and the coverage test is what stays true between measurements.
 
 ```
 grep -rhcE '^[A-Z_]{4,} *[:=]' runtime/mvp_runtime/crypto/*.py | paste -sd+ | bc
@@ -2907,6 +3556,38 @@ never examined against this runtime's own record — while the cost model, the l
 promotion door have each been re-measured more than once. That is not a bug and no number is
 obviously wrong; it is that the halt thresholds are the least-examined values in the package,
 and nothing said so before. A test pins the finding so it cannot stop being true silently.
+
+**Second slice done 2026-08-08 — the sweep is the whole package now, and the headline was wrong.**
+
+The first slice's boundary was twelve modules, named in the test so the rest was a decision rather
+than an oversight. Closing it turned out to be small: across the other **31** modules there were
+**29** decision-shaped constants with no owner, and **21 of those modules had none at all**. Twelve
+are decisions and are indexed with provenance (index: 55 → **67**); seventeen are estimator warm-up
+floors, collection budgets, display thresholds and output caps, and are named in `MECHANICS` with a
+reason apiece.
+
+`SWEPT_MODULES` is now **derived from the package** rather than hand-listed, with an `UNSWEPT` dict
+where an exclusion would have to be argued in writing. A hand-maintained list was the right shape
+while the answer was "some of them"; once the answer is "all of them" it is only a way to forget a
+module, and a new module now arrives swept.
+
+**And the item's own headline overstates it by a factor of four.** §G1's grep
+(`^[A-Z_]{4,} *[:=]`) counts every upper-case module-level assignment; it reads **681** today. By
+AST, **387 of those are strings** — reason codes, status labels, provenance markers, the package's
+vocabulary — and only **155 are numeric**. So "602 constants across 42 modules … the numbers that
+decide money" was mostly not numbers. Of the 155, the index now owns 67 and `MECHANICS` names the
+rest of the decision-shaped ones. This is the same correction §G3 made to its own count, from the
+same cause: a grep over upper-case names measures naming convention, not the thing being counted.
+
+```
+grep -rhcE '^[A-Z_]{4,} *[:=]' runtime/mvp_runtime/crypto/*.py | paste -sd+ | bc   # 681, of which
+                                                                                  # 155 are numeric
+```
+
+**What stays true.** No value moved, again. The four INHERITED breakers below are still the
+least-examined numbers in the package, and the second slice adds two more of the same shape to the
+list of things nobody here has re-decided: `ADX_TREND_THRESHOLD` (the cutoff every regime label
+turns on, carried from the source's `entry_policy`) and the digest's `±0.1R` trend band.
 
 **The teeth are a coverage test, not the index.** A decision-shaped constant appearing in a swept
 module must be indexed with its provenance or named in `MECHANICS` with a reason — so a new
@@ -3048,9 +3729,359 @@ drops entries that stop being shared, so the declaration cannot outlive its code
 Not placed in `generated/`: that tree is governed by `GENERATED_ARTIFACT_INDEX.yaml` and
 registering there is a governance surface a reading aid does not need.
 
+#### The index was counting 27 English sentences as reason codes — fixed 2026-08-09
+
+Found while acting on §G4's note about `SpecParseError` and `FusionRefused`. That note said neither
+appeared here; both did, and how they appeared was the defect. Those classes take a **message** as
+their first positional argument, so the walk filed the message in the code column:
+
+```
+| `created_by must be a non-empty string` | `SpecParseError` | crypto/strategy.py | 373 | … |
+```
+
+**An entry whose key nobody can look up is worse than a missing one.** §G3 exists to answer "a code
+came out of the runtime — where is it raised", and no operator greps an English sentence. Each also
+counted as a distinct code, so the vocabulary was overstated by 27.
+
+**The rule is that a code has no spaces**, and it splits the surface with nothing left over —
+measured across every literal the walk finds: **751 `SCREAMING_CASE`, 9 `lower_snake`, 27
+sentences**, and no fourth shape. The nine lowercase ones stay: `too_many_conditions`,
+`holdout_unjudgeable` and seven `*_mismatch` names are `FusionRefused`'s mint-refusal vocabulary,
+which §F already tabulates by name. A rule keyed on `SCREAMING_CASE` would have dropped all nine.
+
+| | before | after |
+|---|---:|---:|
+| distinct codes | 456 | **429** |
+| indexed sites | 787 | 760 |
+| built at runtime, not indexable | 113 | 113 |
+| **carry a message where a code goes** | counted as codes | **27, counted apart** |
+
+The 27 are **counted, not dropped silently** — and counted *separately* from the 113, because they
+are different gaps: a site that builds its code can be given one, while a site that raises with a
+message has no code to find. Collapsing them would claim the index is missing 140 codes when 27 of
+those paths do not have a code at all. Six of the 27 are in `read_only_kernel/`, so the never-modify
+rule puts them permanently in that column.
+
+**Not fixed here: giving `SpecParseError` a code vocabulary.** Its 34 raise sites are spec-parse
+validation whose audience is the factory, not an operator diagnosing production — the same shape as
+the tunables index's `MECHANICS`, where something looking like a decision is not one. Deciding that
+is a separate item from making the index stop mislabelling it.
+
 **What is not done:** near-duplicate detection (`ARCHIVE_NOT_ENABLED` against a future
 `ARCHIVE_NOT_ENABLED_YET`) needs a similarity rule and a judgement about what counts as too
 close, which is a different item from the exact-collision check landed here.
+
+### G4. Which live code hand-rolls a helper it could import — measured 2026-08-08, `main` = `8e0dcb6`
+
+*Reuse first — one concept = one authority = one source of truth* is enforced hard for contracts,
+schemas and registries, and **had never been measured for the package's own helpers.** This is that
+measurement: an AST walk over all 230 production modules (`runtime/` + `scripts/`, tests excluded)
+counting sites that do locally what an existing shared module already owns, reported beside how many
+files import that module — so a zero-adoption authority is visible rather than inferred.
+
+| authority | bypass sites | crypto | runtime core | scripts | kernel | importers |
+|---|---:|---:|---:|---:|---:|---:|
+| `paths.repo_root` | 59 | 0 | **0** | 59 | 0 | 44 |
+| `jsonl.*` | 44 | **35** | 4 | 5 | 0 | 9 |
+| `integrity.sha256_*` | 35 | 4 | 1 | 30 | 0 | 64 |
+| `timeutil.*` | 23 | 1 | **0** | 20 | 2 | 57 |
+| `cli_common.EXIT_*` | 20 | 0 | **0** | 20 | 0 | 23 |
+| `errors.MvpRuntimeError` | 18 | 2 | 1 | 11 | 4 | 110 |
+| `schema_cache` | 16 | 0 | 0 | 16 | 0 | 15 |
+| `filelock.locked` | **0** | 0 | 0 | 0 | 0 | 24 |
+
+**The result is where the zeros are.** `runtime/mvp_runtime/*.py` — the core — kept the bargain each
+authority's docstring records ("this lived twice; it lives here now"): zero repo-root hand-rolls,
+zero timestamp hand-rolls, zero lock hand-rolls, four JSONL sites. **The two that did not are
+`crypto/` and `scripts/`, and they want opposite fixes**, which is the reason this section splits
+them rather than filing one "reduce duplication" item.
+
+#### G4a. `crypto/` never adopted `jsonl` — 35 sites, 15 modules, **0 importers** — **reads done 2026-08-08**
+
+> **Closed for the read half.** All five readers fold, one PR each in the order this section set:
+> `counterfactual` (#623), `pool` (#626), then `paper` / `live_pnl` / `live_promotion` together
+> once the decisions below were settled and the remaining three were the identical transformation.
+> `grep -rn 'for i, line in enumerate(lines):' runtime/mvp_runtime/crypto/` now returns **0**.
+> The write half stays hand-rolled on purpose — see the fsync paragraph below; a test in
+> `test_mvp_runtime_crypto_paper.py` now fails if any of the three loses its `os.fsync`, so the
+> "tidy-up" this section warns about cannot land quietly.
+>
+> **That grep was too narrow, and two readers hid behind it — corrected 2026-08-09.** It matches
+> only the `enumerate` form. `oi_store.py` and `positioning_store.py` iterate `for line in lines:`
+> over the same `read_text().splitlines()`, so they read as "0 hand-rolled readers" while being
+> exactly the shape this item is about. **A claim checked with one spelling of a pattern is a claim
+> about the spelling** — the reliable check is
+> `grep -rn 'read_text(encoding="utf-8").splitlines()' runtime/mvp_runtime/crypto/`, which names
+> the defect rather than one way of writing the loop after it.
+>
+> **They are fixed, and they are still not `jsonl` adoptions.** Both must **degrade** — the
+> docstring says the reader answers with less rather than refusing, and `except ValueError:
+> continue` is how — while `jsonl.iter_objects` fails closed on a bad line, correctly, for the
+> outcome stores the breaker reads. So the fix is the streaming half alone, with the per-line
+> tolerance untouched, and two tests pin the degrade contract because that is the property which
+> stops the next reader of this section from "finishing the job" by folding them.
+>
+> **The win is real and modest, and the first measurement of it was wrong.** A micro-benchmark
+> that discarded rows reported peak 9.71 MB → 0.16 MB; the real `read_rows` keeps all 16,899, and
+> that dict is ~18 MB whatever the reader does. Measured on the live 4.5 MB store through the
+> actual function: **peak 24.80 MB → 20.88 MB (−3.91 MB, 16%)**, 0.307s → 0.295s. The saving is
+> the file's two transient copies and scales with the file; the floor is the rows the caller asked
+> for. Row set and row content are identical across 16,899 and 13,356 real rows.
+>
+> These are the **second and third** largest crypto stores, not the largest — `strategy_candidates.jsonl`
+> is 6.8 MB and `pool.read_candidates` was folded in #626.
+>
+> **What the fold turned up, and it outlives this item.** Delegating a read moves the reason code
+> into a *parameter*, which `DIAGNOSTIC_CODE_INDEX.md` could not see — so #623 taught the
+> extractor to read `read_code=` / `write_code=` / `exc_type=`, and that surfaced **~30 codes
+> that had never been indexed**, `LEDGER_UNREADABLE` and `LEDGER_WRITE_FAILED` — the audit
+> ledger's own failures — among them.
+>
+> ~~**What is still not indexed, and this is the residue worth picking up.**~~ **Done 2026-08-08.**
+> A code passed as a *module-level constant* rather than a string literal was skipped:
+> `LIVE_HISTORY_TAMPERED`, `LIVE_HISTORY_UNREADABLE` and `CANARY_HISTORY_UNREADABLE` were absent
+> from the index and had been absent before this work too, counted among the sites the index
+> reported as "built at runtime". They are not built at runtime — `NAME = "LITERAL"` at module
+> scope has exactly one value, readable without executing anything, and those three are the live
+> P&L ledger's and the canary registry's own tamper codes.
+>
+> The extractor now resolves them: **456 codes across 787 sites, and the not-indexable count falls
+> 192 → 113.** Verified by running the old and new extractors over the same tree — **+81 rows, −0**,
+> and every added row traces to a module constant whose name is written at the call.
+>
+> **The 113 that remain are genuinely built at runtime** and stay uncounted rather than guessed:
+> 79 f-strings, 13 attribute references, 10 locals inside the delegating primitives (already
+> indexed at their call sites), 8 call results, 2 starred. Two resolutions are refused on purpose —
+> a name reassigned at module scope with a different value, and a name also bound inside some
+> function — because either could make the index name the wrong code with full confidence, which
+> is worse than the gap it replaces. Both refusals are pinned by
+> `test_resolution_refuses_a_name_it_cannot_be_certain_of`.
+
+```
+grep -rn 'json.loads(line)\|json.loads(row)\|json.loads(raw)' runtime/mvp_runtime/crypto/ | wc -l   # 21 reads
+grep -rn 'from \.\. import.*jsonl\|from \.\.jsonl import' runtime/mvp_runtime/crypto/ | wc -l        # 0
+```
+
+`crypto/` reuses the rest of the package — `timeutil` in 24 files, `filelock` 13, `paths` 9,
+`coerce` 8, `errors` 16 — and imports `jsonl` from **none of its 45 modules**. The 35 sites are 21
+per-line reads and 14 per-line writes. `live_promotion.py:362` states it outright: *"answering it
+meant opening the jsonl by hand."*
+
+**Only the 21 reads are duplication. The 14 writes are not, and folding them would be a
+regression** — this is the first thing to know about this item, and it is not visible from the
+count:
+
+```
+grep -rn 'os.fsync' runtime/mvp_runtime/crypto/ | wc -l   # 5 — paper, counterfactual,
+grep -n 'fsync' runtime/mvp_runtime/jsonl.py              # 0   live_pnl, live_promotion, live_position
+```
+
+Five crypto stores `flush()` + `os.fsync()` every appended outcome; `jsonl.append_lines` does not,
+and the audit ledger that uses it has never needed to. The crypto writes are therefore
+`append_lines` **plus a durability guarantee it does not offer**, and the code says why —
+`paper.py:1353`: *"A trade outcome is the one record the risk guard and feedback learn from;
+leaving it in an OS buffer means a power loss can drop a trade that the position file already says
+is closed."* `live_pnl.py:565` is blunter: *"…breaker forget a real loss across a crash. Force it
+down."*
+
+**Nothing would catch this.** fsync has no observable behavior except across a power loss or a
+container kill, so a swap to `append_lines` passes every test, reviews as a tidy-up, and silently
+downgrades the durability of the five stores the breakers read. The write side is either left
+alone or handled by adding an opt-in `fsync=` to `append_lines` — a separate decision from the
+reads, taken separately.
+
+Five modules — `paper`, `live_pnl`, `pool`, `counterfactual`, `live_promotion` — carry the same
+reader byte-for-byte apart from two arguments:
+
+```python
+except OSError as exc:
+    raise ToolError("<CODE>", f"<label> unreadable: {exc.strerror}") from exc
+for i, line in enumerate(lines):
+    if not line.strip():
+        continue
+    try:
+        record = json.loads(line)
+```
+
+That is `iter_objects(path, read_code=..., label=...)` with its arguments spelled out by hand, on
+top of a `read_text().splitlines()` that holds two full copies of the store in memory — the exact
+shape `iter_objects` was written to retire, and the one the crypto board was OOM-killed on.
+`state_dir()` is duplicated verbatim in `paper.py:991` and `live_pnl.py:91` on top of it.
+
+**Two things the reads carry that `jsonl` does not, and neither is cosmetic.** They raise
+`ToolError` where `jsonl` raises `PersistenceError` (both descend from `MvpRuntimeError`, so an
+`exc_type=` parameter is the small move); and every message names the offending **line index**,
+which `jsonl` cannot produce — `iter_objects` yields objects, not positions. The line number is not
+decoration here: it is how an operator finds the bad row in a 100k-line store, and the same index
+is reused by the tamper and duplicate checks that follow the parse. **Folding the reads means
+`iter_objects` grows an enumerate, or the callers keep their own counter and only the parse moves.**
+That is the decision this item exists to make, and it should be made once, on the first module.
+
+**One module per PR, and take `counterfactual` first** — it is purely observational by construction
+(its own docstring: *"nothing here feeds a gate decision"*), so the error-type and line-index
+decisions are settled entirely off the money path before `pool`, then `paper` and `live_pnl`, are
+touched.
+
+What this is **not**: the list below rejects `live_*` decomposition and splitting the 300-line
+functions, both on money-path risk. This re-opens neither. It replaces a read body with a call —
+it moves no boundary and re-cuts no module.
+
+#### G4b. `scripts/` has no repo-root or timestamp authority of its own — 79 sites
+
+```
+grep -rn 'Path(__file__).resolve().parents\[' scripts/ | wc -l                              # 59
+grep -rn 'datetime.now(timezone.utc)' scripts/ | wc -l                                      # 17, of which
+grep -rnF 'datetime.now(timezone.utc).replace(microsecond=0).isoformat()' scripts/ | wc -l  # 10 four-call chains
+```
+
+59 scripts open with their own `ROOT = Path(__file__).resolve().parents[1]`. Ten more carry
+`datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")` — output
+byte-identical to `timeutil.utc_now_iso()`, via a four-call chain whose failure mode is silent: drop
+`.replace(microsecond=0)` and the value gains microseconds the runtime's lexicographic expiry
+compares are not correct for. That is the footgun `timeutil` exists to have removed once.
+
+**But importing `runtime/` is the wrong fix here.** `runtime/mvp_runtime/_scripts_bridge.py` already
+puts `scripts/` on `sys.path` so the runtime can reach `scripts/lib`. Having the 66 scripts that do
+not already import `runtime` start doing so makes that dependency **bidirectional** — and most of
+them are `validate_*` gates whose job is to validate the runtime. A gate importing what it gates is
+a worse property than a duplicated two-line helper.
+
+**So this one is a `scripts/lib` helper, not an import of `runtime/`** — the opposite conclusion
+from G4a, reached from the same table.
+
+##### Done 2026-08-08 for the timestamps. **The repo-root half is withdrawn, and the reason is the point.**
+
+`scripts/lib/utctime.py` is the timestamp authority now. **Thirteen copies existed, twelve
+collapsed into it, one is kept on purpose** — and the count above said *ten*, which is worth
+recording because of how it was wrong. `scripts/lib/gate_runner.py` and
+`scripts/lib/runtime_promotion_readiness.py` each carried their own *inside `scripts/lib` already*
+— the tell that what was missing was a home, not a helper — and `gate_runner`'s copy is invisible
+to the one-line grep in the block above, because it wraps the same four calls across five lines.
+A measurement written as a single-line pattern undercounts exactly the copies that were reformatted.
+
+Two of the twelve call sites went to `runtime.mvp_runtime.timeutil` instead, and the split is
+principled rather than pragmatic: `promote_memory_candidate.py` (8 runtime imports) and
+`activate_safety_flag.py` (5) are **runtime-adjacent CLIs, not gates**. The dependency-direction
+argument above is about gates importing what they gate; a script that already imports
+`runtime.mvp_runtime.store` has no such constraint, and giving it a *second* timestamp authority
+when the runtime's own is already in scope would be the reuse violation, not the fix.
+`tests/test_scripts_utctime.py` pins the two halves to the same output so the duplication cannot
+become two formats.
+
+**The 59 repo-root sites are not consolidatable, and "79 sites" above overstated the item.**
+Measured before touching anything:
+
+* **18 of the 59 use `ROOT` to bootstrap `sys.path`** (`sys.path.insert(0, str(ROOT))`) before their
+  other imports run. A helper cannot supply the value that makes importing the helper possible.
+* The remaining 41 could take an import, but **22 are standalone** — no `lib`, no `runtime`, no
+  `sys.path` patch — and adding `from lib.…` costs them the ability to run under
+  `python -m scripts.<name>`, which is the form CLAUDE.md mandates for state-writing CLIs. Verified,
+  not assumed: `python -m scripts.activate_core_release` exits 1 with
+  `ModuleNotFoundError: No module named 'lib'` while `python scripts/activate_core_release.py` exits 0,
+  because `scripts/` has no `__init__.py` and the flat `from lib.x` spelling needs `scripts/` on the
+  path. The repo runs scripts directly in 38 places and by module form in 5.
+* And `ROOT = Path(__file__).resolve().parents[1]` has **no silent failure mode**. All 59 are
+  `parents[1]`; a wrong depth fails immediately and loudly. The timestamp chain was worth removing
+  because dropping one call changes the *value*; this changes nothing.
+
+So the repo-root duplication stays. It is the case where the count is large and the risk is zero,
+and the fix would trade a self-evident one-liner for an import coupling plus a lost invocation mode.
+
+**One thing found on the way, not fixed here.** `scripts/lib/` modules are imported under **two
+spellings** — `from lib.x` (44 uses) and `from scripts.lib.x` (6) — and they are not
+interchangeable. `from scripts.lib.runtime_promotion_readiness import …` with only the repo root on
+`sys.path` fails on **unmodified `main`**, at that module's own `from lib.safe_io import …`; its
+three callers only work because they run in the direct form *and* insert `ROOT`, so both spellings
+resolve at once. The two `scripts/lib` modules touched here use a **relative** `from .utctime import`,
+which resolves under either spelling; the rest of `scripts/lib` still does not.
+
+#### G4c. The exit-code slot means three different things — **fixed 2026-08-08**
+
+| owner | code 2 | code 3 |
+|---|---|---|
+| `runtime/mvp_runtime/cli_common.py` (the authority) | `EXIT_BLOCKED` | `EXIT_USAGE` |
+| 7 scripts (`promote_strategy_candidates`, `retire_strategies`, `import_crypto_history`, …) | `EXIT_USAGE` | `EXIT_BLOCKED` |
+| `scripts/clear_bracket_breaker.py` | `EXIT_REFUSED` | — |
+
+**Inverted, not merely divergent.** `clear_bracket_breaker.py` is the sharpest case: it imports
+`force_utf8_io` *from* `cli_common`, then defines its own code-2 constant under a third name.
+
+**Nothing consumes this across the boundary today, and that is checked rather than assumed.** The two
+CI assertions that hard-code an exit value (`.github/workflows/docker-image.yml:86,97`, `-eq 2`) both
+run a **runtime CLI**, where 2 is `EXIT_BLOCKED` — correct. `scripts/lib/gate_runner.py` only tests
+`!= 0`. So this is a hazard with no current victim: the day a script is wired into a check that reads
+2 as "blocked", it reports a usage error as a fail-closed block and both sides are individually
+right.
+
+##### Fixed 2026-08-08 — and re-measuring first found it was worse than this table said
+
+Eight scripts, not seven. Slot **2** meant `EXIT_BLOCKED` (runtime), `EXIT_USAGE` (six scripts) and
+`EXIT_REFUSED` (one); slot **3** meant `EXIT_USAGE` (runtime), `EXIT_BLOCKED` (six) and
+`EXIT_REJECTED` (one); and `list_resting_orders.py` skipped 2 altogether, putting `EXIT_BLOCKED` on
+3 and a finding on 4.
+
+`cli_common` is the fixed point and the scripts moved, because two things outside them already
+depend on its numbers: `.github/workflows/docker-image.yml:86,97` asserts `-eq 2` for a fail-closed
+runtime CLI, and `tests/test_place_canary_order_audit_report.py` imports `EXIT_BLOCKED` by name. All
+eight already import `runtime.mvp_runtime.*`, so taking `EXIT_*` from `cli_common` costs them no new
+coupling — the §G4b dependency-direction argument is about *gates* importing what they gate, and
+none of these is one.
+
+**Script-specific codes stay, above the shared range.** `EXIT_REJECTED` and `EXIT_UNOWNED` are
+*findings* — the command ran and reports what it saw — which is a different claim from "refused to
+act". `EXIT_REJECTED` moved 3 → 4 so it cannot be read as a refusal; `EXIT_UNOWNED` was already 4.
+
+**`clear_bracket_breaker.py` was not just a naming problem.** Its single `EXIT_REFUSED` covered
+*both* a missing `--cleared-by`/`--reason` **and** a caught `MvpRuntimeError` — and the second
+branch literally prints `BLOCKED:` while the first is an operator typo. Those are now `EXIT_BLOCKED`
+and `EXIT_USAGE`, and the fail-closed branch has a test it never had.
+
+**Five operator messages said the wrong word too.** `print("BLOCKED: --candidate-ids is required")`
+on a branch returning a usage code is the same confusion one layer up; they say `USAGE:` now.
+Checked for consumers first — nothing greps them.
+
+`tests/test_scripts_exit_codes.py` keeps it: no script may redefine a `cli_common` name, and no
+script-specific code may land on a shared number. Structural rather than value assertions, because
+restating the values would just be a second copy of the thing that diverged.
+
+#### Measured and deliberately **excluded** from the actionable list
+
+- **`schema_cache`, 16 sites — not a bypass.** The `validate_*` gates build
+  `Draft202012Validator(schema, format_checker=FormatChecker())`; `schema_cache` builds it *with a
+  `Registry`* that resolves `$ref` across the schema directory. Different operation — and its
+  process-lifetime cache buys nothing in a script that validates once and exits. Two validators exist
+  on purpose; what is missing is a line saying so, not a merge.
+- **`integrity`, 35 sites — three file-hash conventions, and folding them would be wrong.**
+  `integrity.sha256_file` normalizes `\r\n`→`\n` and prefixes `sha256:`;
+  `registry_resolution.raw_file_sha256` is raw and bare; the scripts' `hashlib.sha256(read_bytes())`
+  is raw and prefixed. Moving any site to another convention **changes stored digests**. This is a
+  naming gap — the raw case has an owner nobody imports — and gets documented, not swept. The repo
+  has already paid once for a cross-platform I/O assumption (#572, path separator).
+- **`errors`, 18 classes — 16 are out of scope by rule or convention.** Four are in
+  `read_only_kernel/` (never modify); eleven are one-per-module in `scripts/lib`, a separate package
+  that does not carry `reason_code`; one is `registry_resolution`'s. The genuine gaps are **two**:
+  `crypto/strategy.py:45` `SpecParseError` (raised 34×) and `crypto/factory.py:3344` `FusionRefused`,
+  both plain `ValueError` — so *"every failure path raises a typed error with a stable
+  `reason_code`"* is not true of them, and ~~neither appears in `DIAGNOSTIC_CODE_INDEX.md`~~ —
+  **wrong, and the truth was worse; corrected 2026-08-09.** Both appeared, 11 rows and 9. Because
+  they take a *message* as their first argument, the extractor filed the message in the code
+  column: `created_by must be a non-empty string`. Not a missing entry — an entry whose key
+  nobody can look up. See §G3.
+
+#### Two notes on the instrument, because both would have closed a question wrongly
+
+**The first run reported `paths`: 0** — a clean bill of health for the single most-duplicated snippet
+in `scripts/`. The AST chain-walker dropped its accumulated attributes when a chain bottomed out in a
+call, so `Path(__file__).resolve().parents` read as `Path().resolve` and matched nothing. A
+measurement that silently returns zero is worse than no measurement: it closes the question. **Every
+zero above was cross-checked by grep before being believed.**
+
+**And `filelock`'s zero is true but narrower than it reads.** All five `fcntl.flock`/`msvcrt.locking`
+sites are inside `filelock.py` itself, so nobody hand-rolls that lock. What the detector cannot see
+is that `scripts/lib/safe_io.exclusive_lock` is a **second lock authority with a different
+mechanism** — `O_EXCL` + polling + stale-lock expiry, against `filelock`'s advisory `flock`. Two
+locking implementations, neither hand-rolled, and no document saying which is for what. That is a
+`scripts/lib`-vs-`runtime` boundary question of the same shape as G4b, not a duplication to remove.
 
 ### Considered and deliberately NOT recommended
 
@@ -3064,12 +4095,118 @@ close, which is a different item from the exact-collision check landed here.
   or deferred capability). `ARCHITECTURE_REVIEW_RECORD.md` finding C parked exactly this and the
   reason still holds: the gates genuinely read it, so it is dormant-but-governed, not dead.
 
-### One number that changed and should not be misread
+### One number that changed and should not be misread — re-measured 2026-08-09
 
-`runtime/` is 53,806 LOC, of which `crypto/` is 24,642 and the read-only kernel — the
-"governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* — is
-**1,938**. The description has not matched the shape for some time. That is an observation about
-the doc, not a proposal to restructure the code.
+| | 2026-08-02 | 2026-08-09 | |
+|---|---:|---:|---|
+| `runtime/` | 53,806 | **61,506** | +14% |
+| of which `crypto/` | 24,642 | **32,006** | +30% |
+| read-only kernel | 1,938 | **1,938** | unchanged |
+
+The "governance core" of CLAUDE.md's *"strong governance core, thin deterministic runtime"* has
+not moved by a line in a week while the runtime around it grew by 7,700. The description has not
+matched the shape for some time and now matches it less. Still an observation about the doc, not
+a proposal to restructure the code — but the direction is worth watching, because the gap widens
+on its own.
+
+**The description was aligned 2026-08-10 (#677), Thomas-approved.** CLAUDE.md now says
+"policy-thin" and states what keeps the *core* thin while lanes grow — application-of-chokepoints,
+zero domain modules in the core import graph (module-level domain imports only in a lane's own
+door, `knowledge_bridge*.py`), lanes removable whole. The import property was measured before it
+was written down and is pinned both ways by `tests/test_mvp_runtime_domain_isolation.py`, so this
+paragraph's successor is a red suite rather than another stale sentence. The number above stays
+worth watching; what no longer drifts with it is the doc.
+
+### G5. The scheduler was profiled, and its hot path must not be optimised — measured 2026-08-09
+
+Read off the production record rather than a benchmark: `scheduler_events.jsonl` carries
+`duration_ms` on every `fired` event. ~2,490 completed fires over 2026-08-01 → 08-09, read at
+08-09T08:1x. **The ledger is live, so re-running this moves the counts** — the shares and the p50s
+are what matter and they are stable.
+
+**Current window (from 08-05, after the PM lane's removal stopped `pm_scan`):**
+
+| kind | fires | p50 | p95 | per day | share |
+|---|---:|---:|---:|---:|---:|
+| `candle_archive` | 103 | **125.1s** | 129.1s | **~49 min** | **~64%** |
+| `crypto_pipeline` | 416 | 14.9s | 22.3s | ~21 min | ~28% |
+| `crypto_factory` | 50 | 12.6s | 47.4s | ~3 min | ~4% |
+| `crypto_null_control` | 45 | 7.3s | 49.2s | ~3 min | ~3% |
+| everything else | ~400 | ≤3.1s | — | <1 min | <1% |
+
+The scheduler works about **76 minutes a day**, and one job is two thirds of it.
+
+Re-measure with the walk in this section's commit message, or just:
+`jq -s 'map(select(.action=="fired" and .duration_ms))' scheduler_events.jsonl` — except jq is not
+on this host, so use Python. **`pm_scan` at 40% of the whole 8-day record is not a finding**: that
+lane was removed 2026-08-02 and its last fire is 08-02T15:35Z. Windowing matters here.
+
+**Do not optimise it.** `ARCHIVE_BOOKS_PER_PASS` (100) × `ARCHIVE_REQUEST_INTERVAL_SECONDS`
+(1.1) = **110 of those 125 seconds are deliberate sleeping**, and both numbers are load-bearing:
+
+* The pace is **the venue's own wall, measured**. On the first real pass (2026-08-04) the loop
+  issued 352 reads as fast as it could; roughly 70 answered and **282 came back
+  `TOOL_RATE_LIMITED`**. Going faster does not archive more, it archives less.
+* The per-pass cap exists to **protect the live position path**. `run_due` runs due schedules
+  sequentially, so a full 352-book pass would hold the tick — the same tick the live leg's
+  `_settle_or_protect` runs on — for ~6.5 minutes. The cap trades archive latency (hours,
+  against a window that rolls at 52 days) for tick latency (minutes, against an open position).
+
+Both trades are already argued in the code beside each constant. This section records only that
+someone went looking for the runtime's biggest cost, found it, and confirmed the cost is the
+point. Same disposition as §G's audit-chain tip scan: **investigated, not a problem, do not fix.**
+
+**What the profiling did find is a governance gap, and it is the reason this subsection exists.**
+None of the three constants governing 64% of the scheduler's work appeared in the tunables index,
+because the coverage test's name pattern had no `_CEILING`, `_INTERVAL_SECONDS` or `_PER_PASS`.
+Neither did **`live_budget.HARD_CEILING_USDT`** — the number bounding what a registered budget may
+declare on the live money path, which Thomas set to 200 at bring-up and raised to 500 on
+2026-08-08. A pattern that misses a ceiling and a pace misses the two shapes an operator most
+often reaches for. Pattern extended, four constants indexed (67 → **71**), four page budgets named
+in `MECHANICS`. **`HARD_CEILING_USDT` is the find worth naming**: the tunables index exists so a
+number that decides money carries its provenance, and the one bounding live order size did not.
+
+### The refactoring backlog is exhausted — closed 2026-08-09
+
+Every item above is measured and dispositioned: **G1** sliced twice (the sweep is the whole
+package), **G2** removed, **G3** indexed and then corrected twice, **G4a/b/c** done. What remains
+is the three rejections below and a residue small enough to state exactly, so nobody re-derives it.
+
+**The residue, measured rather than estimated.** CLAUDE.md says every failure path raises a typed
+error with a stable `reason_code`. Twelve sites in `runtime/` raise a builtin directly:
+
+```
+ast walk over runtime/**/*.py for `raise ValueError|TypeError|RuntimeError|KeyError|OSError(...)`
+```
+
+| | n | |
+|---|---:|---|
+| in `read_only_kernel/` | 3 | never-modify rule |
+| a documented design decision | 1 | `timeutil.parse_iso` — its docstring says callers catch it and re-raise their own |
+| argument validation / programming error | 5 | a dataclass `__post_init__` invariant, `authority_invariant_holds`' P0–P6 check |
+| **genuine candidates** | **3** | `live_governance` ×2, `factory`'s cost-model-mismatch guard |
+
+**And the three are a diagnostics gap, not a safety one** — checked, not assumed: the live route
+already wraps these calls in `except Exception  # noqa: BLE001 — the order is at the venue;
+report, never raise`, so a bare `ValueError` does not escape a handler designed for
+`MvpRuntimeError`. What is lost is the named code in the record, not the containment.
+
+**What would re-open this section.** A new crypto module arriving unswept (the tunables test
+fails), a decision-shaped constant with no provenance (same test), a reason code that is really a
+message (the index test), a reader that hand-rolls a store read
+(`grep -rn 'read_text(encoding="utf-8").splitlines()' runtime/mvp_runtime/crypto/`), or a script
+minting its own `EXIT_*`. Each of those is a test now rather than a thing to remember, which is
+the actual output of this section — the greps that found them are in the subsections above and
+every one of them has since been kept true by a test instead.
+
+**The pattern worth carrying, because it cost the most to learn.** Three times the obvious
+consolidation was wrong and only measurement said so: the crypto **writes** must keep an `fsync`
+that `jsonl.append_lines` does not do; `scripts/`' 59 repo-root snippets are 18 bootstrap paradoxes
+and 22 lost invocation modes for a one-liner with no failure mode; and a code that vanished from
+the diagnostic index wanted the extractor fixed, not the index overwritten. Two of this section's
+own headline counts were also wrong by roughly four (§G1's constants, §G3's codes) — both because
+a grep over upper-case names measures naming convention rather than the thing being counted. **Do
+not act on a count in this file without re-running the command beside it.**
 
 ---
 ## H. Equity-perp lane (Hyperliquid HIP-3) — **S1 is running as of 2026-08-04**; next is S2
@@ -3204,9 +4341,104 @@ were "minutes" was right about the keystrokes and wrong about the work: the two 
 minutes and the three defects they exposed took a day (H0).
 
 **What is left in this lane is S2, not S1.** S1 — the venue seam and the read-only collector —
-is running. S2 is the reproducibility gate (`EQUITY_PERP_LANE_V0.1.md` §8b), and nothing in it
-is built. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
+is running. S3 and later stay shut on S0's provisional strength, enforced by the budget schema
 rather than by anything in this lane; that mechanism is unchanged and described below.
+
+**S2 splits into a part that is buildable and a part that is a clock, and the split matters
+more than the label.** §8b is the authority; the measured state as of 2026-08-08:
+
+**(a) cost re-derivation — DONE 2026-08-09.** All three legs are measured: funding and the order
+book off the venue, the deployer configuration off `perpDexs`, and the base fee table from
+Hyperliquid's published schedule. What (a) produced is not a pass mark — see the floor check
+below.
+
+**Fees, and the multiplier that decides them.** Published Tier 0 is **taker `0.045%` / maker
+`0.015%`** (4.5 / 1.5 bp). The HIP-3 scaling is in the docs' own formula:
+
+```
+scaleIfHip3 = deployerFeeScale < 1 ? deployerFeeScale + 1 : deployerFeeScale * 2
+```
+
+`xyz` runs `deployerFeeScale = 1.0`, so the scale is **exactly 2** and the effective rates a
+trader pays are **taker 9.0 bp / maker 3.0 bp**. Costing this venue at the base table halves it.
+
+**The tight spread does not make this venue cheap — the multiplier dominates it:**
+
+| | TP exit (maker) | stop exit (taker both legs) |
+|---|---|---|
+| HIP-3 effective | **12.1 – 12.5 bp** | **18.3 – 18.9 bp** |
+| Binance model today | 10.0 bp | 16.0 bp |
+
+**Floor check against `MAX_ENTRY_COST_R = 0.25`**, with R = `stop_atr` 1.45 × the archive's
+measured median ATR (1h 47 bp / 4h 128 bp / 1d 463 bp):
+
+| `max_holding_bars` | 1h | 4h | 1d |
+|---|---|---|---|
+| 12 | 0.193 – 0.205 | 0.088 – 0.099 | 0.056 – 0.072 |
+| **24 (base)** | **0.209 – 0.227** | 0.111 – 0.132 | 0.093 – 0.126 |
+| 48 (the space's ceiling) | **0.240 – 0.271 ⚠︎** | 0.156 – 0.196 | 0.168 – 0.233 |
+
+**The floor check passes** — §8b stops the lane only if *every* timeframe fails it, and 4h and
+1d clear it with room even at the ceiling. **But 1h has no margin and breaches under two
+conditions that are both real:** `max_holding_bars = 48`, which `_EXIT_PARAMS` actually permits
+and the search can select; and `assetToFundingMultiplier` going 0.5 → 1.0, which doubles carry
+and breaches at the *base* holding period (0.271) — a setting of exactly the kind the deployer
+changed on 2026-08-06.
+
+So (a)'s output is a constraint rather than a verdict: **on this venue 1h cannot use the top of
+its own parameter space, and what pins that is deployer configuration, not the strategy.**
+
+| | Binance USD-M (the model today) | Hyperliquid HIP-3 (measured) |
+|---|---|---|
+| funding settlements | 3/day | **24.1/day** |
+| rate per settlement, \|r\| | 0.37 – 0.58 bp | **0.088 – 0.124 bp** |
+| **daily carry** | **1.1 – 1.7 bp/day** | **2.1 – 3.0 bp/day (~1.8x)** |
+| spread | — | **0.26 – 0.91 bp** |
+| depth within 5 bp | — | **$8.6k – $268k** |
+
+The headline is a correction: **§8b's "24 settlements a day" is right and the 8x it implies is
+not.** Eight times the settlements at a fifth of the rate is ~1.8x the carry. Costing this venue
+by settlement count overstates it fivefold; the daily carry is what binds. Constants are
+deliberately NOT changed — `cost.py` is Binance-scoped, the budget schema blocks any equity
+order, so there is no consumer, and editing them now would only disturb the basis crypto
+evidence was scored under.
+
+> **Two corrections to the paragraph above, both made 2026-08-09, and the second matters more.**
+>
+> **The deployer fee share is NOT unobtainable.** This file said it "cannot be derived from code
+> or a public endpoint". `perpDexs` — which `live_symbols` already calls — carries the whole
+> configuration: `deployerFeeScale` (1.0), `feeRecipient`, `deployer`,
+> `assetToFundingMultiplier`, `assetToFundingInterestRate`. The claim was made without looking
+> at the response's keys; looking cost one call. What genuinely remains outside is only the base
+> schedule that `deployerFeeScale` multiplies, which needs Hyperliquid's published fee table.
+>
+> **The 1.8x is a setting, not a property of the venue.** `assetToFundingMultiplier` is **0.5**
+> on 107 of `xyz`'s 108 assets, and the measured carry already has that 0.5 in it. If the
+> deployer raises it to 1.0 the carry doubles and the ratio becomes **3.6x, not 1.8x**. These
+> are levers the deployer holds and uses: `xyz`'s scale changed at **2026-08-06T15:08:37** —
+> two days after this archive started — `para`'s on 2026-08-07, and `hyna` runs a scale of
+> 0.1111. Same axis as §6's counterparty items. Every number in the table above is a reading
+> with a timestamp, not a constant, and S3 must re-read rather than inherit them.
+
+**(b) the reproducibility gate — unevaluable, and not by a margin that code can close.**
+
+| tf | deepest book | median | vs the 500-day gate | reaches 500 |
+|---|---|---|---|---|
+| 15m | 56d | 56d | 11% | ~2027-10 |
+| 1h | **212d** | 121d | 42% | ~2027-05 |
+| 4h | 298d | 121d | 60% | ~2027-02 |
+| 1d | 299d | 120d | 60% | ~2027-02 |
+
+**1h has passed the venue's 208-day ceiling** — the first hard evidence that archiving earns
+what §2 claimed for it, four days in. But what holds the gate shut is **symbol age, not the
+archive**: history that never existed cannot be collected, and depth grows one day per day. The
+dates above are for the single deepest symbol; on the median they are late 2027.
+
+**Do not shorten it by minting on shallow data.** The coverage-gate comment in `factory.py`
+spells out the mechanism: a shallow window puts every trade in the newest walk-forward slice,
+`temporal_consistency` is 0 by construction, and the family retires as FRAGILE — blamed for a
+window that had no data in it. Early evaluation does not produce a weak answer, it produces a
+wrong one.
 
 **The clock is the reason this order matters.** `candleSnapshot` serves at most 5,000 candles
 and nothing behind them, so 15m history older than ~52 days and 1h older than ~208 is
@@ -3343,11 +4575,16 @@ A fresh machine has the code but not the local runtime state (gitignored, per CL
 *run* the agent there, re-do the local activation once:
 
 - Core activation pointer: `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml`
-- Safety-flag grants: `.runtime_governance_state/safety_flag_activations/*.json`
+- Capability opt-ins in the deploy `.env` — since 2026-08-10 the environment is the gate
+  (grants retired); see the `_GATE_ENV_VARS` roster in `tests/conftest.py` for the full list
 - Control state + ledger + schedules under `.runtime_governance_state/`
 
 None of this is "planned work" — it is per-machine state you re-establish with the CLAUDE.md
-"Core activation" steps + `scripts/activate_safety_flag.py`.
+"Core activation" steps + the `.env`. One piece of planned work does follow from 2026-08-10:
+the retired grant machinery (`safety_gate.authorize` / `select_gated*` /
+`build_activation_record`, `scripts/activate_safety_flag.py`, and the unit tests that mint
+activation records) has zero runtime callers — the containment test enforces that — and
+awaits deletion as its own reviewed change.
 
 **What the 2026-08-02 live incident leaves on the Docker host and nowhere else.** A fresh machine
 cannot investigate it — it has the code but none of the evidence, and it is not armed to reproduce
@@ -3374,15 +4611,15 @@ So: **do the live-order investigation on the Docker host, and use another machin
 docs and factory work.** Section F and the promotion/economics questions travel fine; this one
 does not.
 
-**What the current deployment machine has, as of 2026-08-03** — so a new machine knows what it is
-missing rather than discovering it one fail-closed error at a time. Twelve grants:
-`google_ai_studio`, `groq`, `openrouter` (the provider chain), `tavily_search`, `telegram`,
-`binance_futures`, `binance_futures_account`, `coinalyze_market_data`, `paper_trading`,
-`live_trading`, `approval_consumption`, `workspace.writer`. **A grant is per-machine and
-per-provider, and an env var alone fails closed** — so a new machine reads mocks until each one it
-needs is minted locally, and nothing errors to tell you that. Three prediction-venue grants
-(`kalshi_market_data`, `polymarket_market_data`, `binance_prediction`) were **deleted** 2026-08-02
-with section A's lane and must not be re-minted.
+**What the current deployment machine has** — so a new machine knows what it is missing rather
+than discovering it one inert mock at a time. Until 2026-08-10 this meant twelve per-machine
+grants; since then (Thomas) **the environment is the gate**: a new machine reads mocks until
+each opt-in var it needs is set in the deploy `.env`, and nothing errors to tell you that — an
+unset opt-in is indistinguishable from a deliberate mock by design. Copy the `MVP_*` opt-ins
+(and their key vars) off the running machine's `.env`, not from memory. Leftover
+`safety_flag_activations/*.json` files are inert either way. The three prediction-venue
+capabilities (`kalshi_market_data`, `polymarket_market_data`, `binance_prediction`) were
+**deleted** 2026-08-02 with section A's lane and must not be re-enabled.
 
 Twenty-two schedules are registered here: `crypto_pipeline` (15 min), sixteen `crypto_factory`
 (daily — fifteen are one per symbol × timeframe over BTC/ETH/BNB/SOL/DOGE × 15m/1h/4h, and the

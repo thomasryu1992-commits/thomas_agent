@@ -126,15 +126,15 @@ installed here:
 .venv/bin/python -c "import json; [print(r['created_at'], r['event']['event_summary']) for r in map(json.loads, open('.runtime_governance_state/runtime_ledger/audit_events.jsonl'))]"
 ```
 
-Fail-closed probes that work from the surface:
+Fail-closed probes that work from the surface (the environment is the gate since 2026-08-10 —
+an opt-in var alone SELECTS the capability, so the fail-closed directions to probe are the
+unset/unknown ones, not a missing grant):
 - Empty/whitespace request → `BLOCKED EMPTY_REQUEST`, exit 3.
-- `MVP_HOSTED_PROVIDER=google_ai_studio` without an activation record →
-  `BLOCKED ACTIVATION_MISSING`, exit 2 (safety gate).
-- A hand-written `.runtime_governance_state/safety_flag_activations/<provider_id>.json` (one
-  grant per provider) with a bad field (e.g. `authority_level: "P9"`) →
-  `BLOCKED ACTIVATION_MALFORMED`. A BOM is itself rejected; a plain write from any Linux tool
-  is BOM-less, so nothing special is needed. Delete the file after the probe, and write it as
-  uid 10001 (`docker exec`) or chown it afterwards.
+- `MVP_HOSTED_PROVIDER` unset (or a single unrecognized value, e.g. `googel_ai_studio`) →
+  the deterministic MockProvider serves; no network path exists to open.
+- A multi-member chain with a typo (`MVP_HOSTED_PROVIDER=google_ai_studio,grok`) →
+  `BLOCKED UNKNOWN_PROVIDER` at startup (a chain never silently shrinks); a duplicate member
+  → `BLOCKED DUPLICATE_PROVIDER`.
 
 ## Read-only status verbs
 

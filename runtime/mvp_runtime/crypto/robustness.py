@@ -8,14 +8,30 @@ that clearing it is not evidence. Scoring only: it ranks and warns; nothing here
 blocks or promotes.
 
 Inputs this port cannot measure score ZERO, never full credit — the module's own rule
-("absence of evidence, not evidence of stability"):
+("absence of evidence, not evidence of stability"). One term is still in that state; one
+has left it, and this header went on claiming otherwise:
 
-- ``temporal_stability`` is not computed (the source's walk-forward module was not
-  ported); the factory supplies only the in-backtest window pass rate, so the
-  ``insufficient_walk_forward_evidence`` warning rides on every candidate.
-- The cost model was not ported, so ``cost_robustness`` inputs are withheld and the
-  term scores 0 with its warning — uniformly for every candidate, which preserves the
-  ranking while never crediting an unmeasured property.
+- ``temporal_stability`` is still ``None`` on every candidate, but the reason has changed:
+  its INPUTS now exist. The factory subtotals the scored region into equal-bar periods
+  (``walk_forward.period_r`` / ``period_trades`` — the tail's ``HOLDOUT_PERIODS`` treatment
+  applied to the train span, ``factory.WALK_FORWARD_PERIODS``) and deliberately withholds
+  the judgment until the store's own occupancy and discrimination numbers say the subtotals
+  mean something (``scripts/walk_forward_stability_report.py`` reads them; the decision gate
+  is ``docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md``). Until that decision the
+  ``insufficient_walk_forward_evidence`` warning still rides on every candidate — now as a
+  statement of a pending decision rather than of a missing port.
+- ``cost_robustness`` **is live**, and has been since the factory's cost model landed.
+  This paragraph used to read "the cost model was not ported, so the term scores 0 with
+  its warning — uniformly for every candidate", which is the opposite of what runs:
+  `factory` passes real ``total_net_r`` / ``fee_cost_r`` / ``slippage_cost_r`` /
+  ``funding_cost_r`` and the term computes what fraction of the pre-cost edge survives
+  them. A reader coming here to learn what the 0.10-weight term measures was told it
+  measures nothing.
+
+  The zero it once returned uniformly is now the answer to one specific question, stated
+  at :func:`_cost_robustness`: a record predating the carry has no ``total_net_r`` to
+  divide, and `pool.cost_basis_rank` refuses such evidence outright rather than letting
+  it read as merely slightly better than it was.
 """
 
 from __future__ import annotations

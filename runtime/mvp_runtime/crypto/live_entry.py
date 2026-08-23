@@ -62,6 +62,7 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
+from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -84,6 +85,11 @@ BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
+# #610 Part 1. Two codes, not one, because they are different operator problems: the strategy is
+# deliberately not armed for live (expected, and cleared at the promotion door), versus the
+# runtime could not read which strategies are armed (a fault, and the pool read is where to look).
+NOT_LIVE_ROUTABLE = "LIVE_ENTRY_STRATEGY_NOT_LIVE_ROUTABLE"
+LIVE_TIER_UNKNOWN = "LIVE_ENTRY_LIVE_TIER_UNKNOWN"
 BRACKET_UNPRICEABLE = "LIVE_ENTRY_BRACKET_UNPRICEABLE"
 COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # A plan whose stop MOVES after entry, which this leg cannot execute.
@@ -101,9 +107,32 @@ COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # a live protective order on every bar, which is a change to the money path and a separate
 # decision with its own approval.
 MANAGED_EXIT_REFUSED = "LIVE_ENTRY_MANAGED_EXIT_UNSUPPORTED"
+SPREAD_REFUSED = "LIVE_ENTRY_SPREAD_TOO_WIDE"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
+LIQUIDATION_REFUSED = "LIVE_ENTRY_STOP_BEYOND_LIQUIDATION"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
+
+# A dislocation breaker, NOT a cost control — kept at 50 deliberately, Thomas 2026-08-22, after
+# the number was measured and found to be ~15x the widest spread this venue has shown.
+#
+# The measurement (3,806 book samples over the six-symbol universe) is what makes the choice a
+# decision rather than an oversight: per-symbol medians run 0.015 bps (BTCUSDT) to 1.42 bps
+# (DOGEUSDT) — a hundredfold spread — while each symbol's own max sits only 1.5-3.3x above its
+# median, and the widest reading anywhere was 3.2 bps. So no absolute limit between 5 and 50
+# would have refused a single entry, and the reason to prefer the loose end is that **entry
+# economics are already owned elsewhere**: `MAX_ENTRY_COST_R` prices the friction against the R
+# being risked and refuses on that basis. A second, tighter cost door here would be a competing
+# authority over one question, which is the failure this package warns about everywhere else.
+#
+# What is left for this door is the case the cost model cannot see: a book so wide that the
+# quote is not a market. At 50 bps every symbol above is 15x-3000x its own normal, so a reading
+# that trips this is a liquidity event on any of them.
+#
+# Reopens when: a symbol whose ordinary spread is a material fraction of 50 bps joins the
+# universe — the hundredfold span above is the warning that one could — or realized slippage on
+# live entries shows the cost door letting through fills this would have caught.
+MAX_ENTRY_SPREAD_BPS = 50.0
 
 # Which venue price the protective orders trigger on. MARK_PRICE rather than the last
 # traded price: a stop that triggers on a single wick print on one venue's tape is the
@@ -184,6 +213,9 @@ def plan_live_entry(
     # closed, and it was worse in one way: the test helper omitted it too, so the untested
     # branch was the *guarded* one. A missing or malformed verdict now refuses.
     verdict: Mapping[str, Any],
+    # #610 Part 1 — the ids the pool says may open a REAL position. No default, and `None`
+    # refuses: see the door at 2a.
+    live_routable_strategy_ids: set[str] | None,
     # How many live entries in a row filled and could not be protected. No default, for the two
     # reasons above and one of its own: this door exists because the runtime placed two live
     # entries whose protective stop was refused and re-entered on the next signal regardless.
@@ -196,6 +228,7 @@ def plan_live_entry(
     allowed_symbols: Sequence[str] = (),
     filters_reason: str | None = None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
+    spread_bps: float | None = None,
 ) -> dict[str, Any]:
     """Decide one live entry, or refuse it. Pure: no I/O, no venue, no order.
 
@@ -225,6 +258,29 @@ def plan_live_entry(
         "timeframe": plan.get("timeframe"),
         "max_holding_bars": plan.get("max_holding_bars"),
     }
+
+    # 2a. **May THIS strategy spend money?** The question slot 2b used to ask, asked in a form
+    # that can be satisfied. Gate 0 was a pool-wide aggregate and was unsatisfiable; this is a
+    # per-strategy permission the operator grants at the promotion door and nothing else can
+    # move — see `pool.live_routable_strategy_ids` for why it is a field rather than a status.
+    #
+    # `None` refuses. A caller that could not determine the live-routable set is a caller that
+    # does not know whether this strategy may trade, and the parameter has no default for the
+    # same reason `verdict` has none: the last time a door here was skippable-when-absent, the
+    # test helper omitted it too and the untested branch was the guarded one.
+    #
+    # Placed with the accumulating doors rather than before them so an operator reading a
+    # refusal sees every closed door at once, and placed AFTER the plan exists so a strategy
+    # with no route is still reported as NO_ROUTE rather than as a permission problem.
+    strategy_id = str(plan.get("strategy_id") or "")
+    if live_routable_strategy_ids is None:
+        reasons.append(LIVE_TIER_UNKNOWN)
+    elif strategy_id not in live_routable_strategy_ids:
+        reasons.append(NOT_LIVE_ROUTABLE)
+        detail["live_tier"] = {
+            "strategy_id": strategy_id or None,
+            "live_routable_count": len(live_routable_strategy_ids),
+        }
 
     # 2-4. The cheap doors, accumulated so a refusal names every closed one at once.
     if not isinstance(verdict, Mapping) or not bool(verdict.get("allow_new_position")):
@@ -277,6 +333,11 @@ def plan_live_entry(
         reasons.append(MANAGED_EXIT_REFUSED)
         detail["managed_exit"] = managed
 
+    if spread_bps is not None and spread_bps > MAX_ENTRY_SPREAD_BPS:
+        reasons.append(SPREAD_REFUSED)
+        detail["spread_bps"] = round(spread_bps, 6)
+        detail["spread_limit_bps"] = MAX_ENTRY_SPREAD_BPS
+
     if reasons:
         return _decision(STATUS_REFUSED, reasons, symbol=symbol, now=now, **detail)
 
@@ -289,6 +350,14 @@ def plan_live_entry(
             STATUS_REFUSED, [bracket_reason or BRACKET_UNPRICEABLE], symbol=symbol, now=now, **detail
         )
     detail["bracket"] = bracket
+
+    # 5a. The liquidation guard, on the rounded bracket stop — the price the venue will use.
+    liq_refusal = stop_beyond_liquidation_refusal(
+        {**dict(plan), "stop_loss": bracket["stop_loss"]},
+    )
+    if liq_refusal is not None:
+        detail["liquidation_refusal"] = liq_refusal
+        return _decision(STATUS_REFUSED, [LIQUIDATION_REFUSED], symbol=symbol, now=now, **detail)
 
     # 5b. The economics door, and it belongs HERE rather than beside the cheap checks above:
     #     the friction is a share of the risk, and the risk that will actually apply is the

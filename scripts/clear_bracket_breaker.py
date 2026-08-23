@@ -4,8 +4,9 @@
     python -m scripts.clear_bracket_breaker --cleared-by thomas \
         --reason "venue returned -2021 order-would-immediately-trigger; stop distance fixed in #NNN"
 
-The breaker counts live entries that filled and could not be protected. Two in a row and it
-refuses new entries — see ``live_order.MAX_CONSECUTIVE_BRACKET_FAILURES`` for why two, and
+The breaker counts live entries that filled and could not be protected. Enough in a row and it
+refuses new entries — see ``live_order.MAX_CONSECUTIVE_BRACKET_FAILURES`` for the count and what
+has moved it, and
 ``live_entry.plan_live_entry`` for the door it closes. It does not expire, and the daily order
 budget's midnight refill does not touch it, so this script is the only way back apart from a
 protective bracket actually resting at the venue.
@@ -33,7 +34,7 @@ import sys
 from pathlib import Path
 
 from runtime.mvp_runtime import timeutil
-from runtime.mvp_runtime.cli_common import force_utf8_io
+from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io
 from runtime.mvp_runtime.crypto.live_order import (
     bracket_breaker_status,
     select_live_bracket_breaker,
@@ -41,8 +42,6 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.errors import MvpRuntimeError
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run
 
-EXIT_OK = 0
-EXIT_REFUSED = 2
 
 
 def _render(status: dict[str, object]) -> str:
@@ -89,7 +88,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.cleared_by or not args.reason:
             print("--cleared-by and --reason are both required. Try --show first.", file=sys.stderr)
-            return EXIT_REFUSED
+            # USAGE, not BLOCKED: the operator mistyped the command; the runtime refused nothing.
+            return EXIT_USAGE
 
         assert_not_foreign_root_run(root)
 
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except MvpRuntimeError as exc:
         print(f"BLOCKED: {getattr(exc, 'reason_code', 'UNKNOWN')}: {exc}", file=sys.stderr)
-        return EXIT_REFUSED
+        return EXIT_BLOCKED
 
     print(_render(bracket_breaker_status(root)))
     print("cleared. The next live signal may open a position again.")

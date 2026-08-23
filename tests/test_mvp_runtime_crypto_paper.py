@@ -342,6 +342,48 @@ def test_read_outcomes_tampered_native_record_raises(tmp_path):
     assert exc.value.reason_code == "OUTCOME_HISTORY_TAMPERED"
 
 
+def test_a_corrupt_outcome_line_keeps_this_stores_error_class_and_line_number(tmp_path):
+    """§G4a's last slice. Three money-path readers now stream through ``jsonl.iter_numbered``;
+    what must not move is which class comes out and which line it names. The breaker, the
+    lifecycle demoter and the C6 feedback report all read this store through handlers that catch
+    ToolError, so adopting jsonl's default PersistenceError would fail past them.
+
+    The **write** side is deliberately not folded: it flushes and fsyncs, which
+    ``jsonl.append_lines`` does not, and fsync has no observable behaviour except across a power
+    loss — so the swap would pass every test and silently downgrade durability."""
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "paper_outcomes.jsonl").write_text(
+        json.dumps({"outcome_id": "o1"}) + "\n\n{not json\n", encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        read_outcomes(tmp_path)
+    assert exc.value.reason_code == "OUTCOME_HISTORY_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
+
+
+def test_every_money_path_append_still_fsyncs():
+    """The durability guarantee the read fold must not have removed, pinned across all three
+    stores so a later 'tidy-up' to ``jsonl.append_lines`` fails here rather than on a power loss.
+    `paper.py`: 'leaving it in an OS buffer means a power loss can drop a trade that the position
+    file already says is closed.' `jsonl.append_lines` does not fsync and the audit ledger that
+    uses it has never needed to — which is exactly why the swap looks harmless."""
+    import inspect
+
+    from runtime.mvp_runtime.crypto import live_pnl, live_promotion
+
+    for owner, method in (
+        (paper.RealPaperStore, "append_outcome"),
+        (live_pnl.RealLiveLedger, "append_outcome"),
+        (live_promotion.RealCanaryRegistry, "append_canary_order"),
+    ):
+        source = inspect.getsource(getattr(owner, method))
+        assert "os.fsync" in source and "flush" in source, f"{owner.__name__}.{method} lost its fsync"
+
+
 def test_read_outcomes_native_roundtrip_verifies(tmp_path):
     path = paper.state_dir(tmp_path)
     path.mkdir(parents=True)
@@ -394,11 +436,11 @@ def test_select_store_defaults_to_dry_run(monkeypatch):
     assert isinstance(select_paper_store(), DryRunPaperStore)
 
 
-def test_env_alone_fails_closed(monkeypatch, tmp_path):
+def test_env_alone_opens_the_real_store(monkeypatch, tmp_path):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the
+    durable store — no grant record backs it; revocation is unsetting the variable."""
     monkeypatch.setenv(PAPER_ENV, "real")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_paper_store(now=NOW, root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    assert isinstance(select_paper_store(now=NOW, root=tmp_path), paper.RealPaperStore)
 
 
 def test_activation_enables_real_store(monkeypatch, tmp_path):
@@ -1221,3 +1263,183 @@ def test_the_costed_r_reaches_the_risk_guard():
     verdict = run_risk_guard(outs, now=NOW)
     assert verdict["daily_pnl_r"] < -3.0                  # worse than the gross -3.0
     assert verdict["allow_new_position"] is False
+
+
+# --- post-stop-loss cooldown --------------------------------------------------
+
+class TestCooldownMarkStore:
+    """CooldownMarkStore — per-context cooldown state, analogous to RoutingMarkStore."""
+
+    def test_no_cooldown_by_default(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        assert store.is_cooling_down("binance_futures:BTCUSDT:1h", "2026-07-22T05:00:00Z") is False
+
+    def test_record_stoploss_arms_cooldown(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        key = "binance_futures:BTCUSDT:1h"
+        store.record_stoploss(key, "2026-07-22T06:00:00Z")
+        assert store.is_cooling_down(key, "2026-07-22T05:00:00Z") is True
+        assert store.is_cooling_down(key, "2026-07-22T05:59:59Z") is True
+        assert store.is_cooling_down(key, "2026-07-22T06:00:00Z") is False
+        assert store.is_cooling_down(key, "2026-07-22T07:00:00Z") is False
+
+    def test_never_regresses(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        key = "binance_futures:BTCUSDT:1h"
+        store.record_stoploss(key, "2026-07-22T08:00:00Z")
+        store.record_stoploss(key, "2026-07-22T06:00:00Z")  # earlier: ignored
+        assert store.is_cooling_down(key, "2026-07-22T07:00:00Z") is True
+
+    def test_different_contexts_are_independent(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        store.record_stoploss("binance_futures:BTCUSDT:1h", "2026-07-22T06:00:00Z")
+        assert store.is_cooling_down("binance_futures:ETHUSDT:1h", "2026-07-22T05:00:00Z") is False
+
+    def test_none_candle_time_stays_blocked(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        key = "binance_futures:BTCUSDT:1h"
+        store.record_stoploss(key, "2026-07-22T06:00:00Z")
+        assert store.is_cooling_down(key, None) is True
+
+    def test_corrupt_file_fails_open(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        store = CooldownMarkStore(tmp_path)
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        store.path.write_text("NOT JSON", encoding="utf-8")
+        assert store.is_cooling_down("any:key:here", "2026-07-22T05:00:00Z") is False
+
+
+class TestPaperCooldownIntegration:
+    """run_paper_update blocks re-entry after a stop-loss when cooldown_marks is provided."""
+
+    def _make_store(self, tmp_path):
+        (tmp_path / ".runtime_governance_state" / "crypto" / "positions" / CTX.key).mkdir(
+            parents=True, exist_ok=True
+        )
+        store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+        return store
+
+    def _make_control(self, tmp_path):
+        (tmp_path / ".runtime_governance_state").mkdir(parents=True, exist_ok=True)
+        cs = ControlStore(tmp_path)
+        cs.save(ControlState(mode="ACTIVE"))
+        return cs
+
+    def _open_position(self, store, *, sl_price=103.0):
+        pos = open_position({
+            "venue": "binance_futures", "symbol": "BTCUSDT", "timeframe": "1d",
+            "direction": "LONG", "entry_price": 105.0,
+            "stop_loss": sl_price, "take_profit": 110.0,
+            "risk": abs(105.0 - sl_price), "max_holding_bars": 10,
+            "strategy_id": "S1", "strategy_rule_hash": "deadbeef",
+        }, now="2026-07-21T00:00:00Z")
+        store.save_position(pos)
+        return pos
+
+    def test_cooldown_blocks_entry_after_stoploss(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        from runtime.mvp_runtime.crypto.paper import STOP_LOSS_COOLDOWN
+
+        store = self._make_store(tmp_path)
+        cs = self._make_control(tmp_path)
+        cooldown = CooldownMarkStore(tmp_path)
+        self._open_position(store, sl_price=104.0)
+
+        # First cycle: stop-loss triggers
+        candle_sl = {
+            "open_time": "2026-07-21T00:00:00Z", "open": 105.0, "high": 106.0,
+            "low": 103.0, "close": 103.5, "volume": 10.0,
+            "close_time": "2026-07-22T00:00:00Z",
+        }
+        snap1 = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle_sl]}
+        verdict = {"allow_new_position": True}
+        summary1, _ = run_paper_update(
+            snap1, ROW, _pool(_pool_entry()), verdict,
+            store=store, now=NOW, root=tmp_path, control_store=cs,
+            cooldown_marks=cooldown,
+        )
+        assert summary1["settled"] is not None
+        assert summary1["settled"]["close_reason"] == "stop_loss"
+
+        # Second cycle: fresh candle, but cooldown should block
+        candle_next = {
+            "open_time": "2026-07-22T00:00:00Z", "open": 104.0, "high": 107.0,
+            "low": 103.0, "close": 106.0, "volume": 10.0,
+            "close_time": "2026-07-23T00:00:00Z",
+        }
+        snap2 = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle_next]}
+        row2 = {**ROW, "timestamp": "2026-07-23T00:00:00Z", "close": 106.0}
+        summary2, _ = run_paper_update(
+            snap2, row2, _pool(_pool_entry()), verdict,
+            store=store, now="2026-07-23T00:00:00Z", root=tmp_path, control_store=cs,
+            cooldown_marks=cooldown,
+        )
+        assert summary2["opened"] is None
+        assert summary2["open_refused"] is not None
+        assert summary2["open_refused"]["reason_code"] == STOP_LOSS_COOLDOWN
+
+    def test_cooldown_lifts_after_window(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+        from runtime.mvp_runtime.crypto.paper import COOLDOWN_BARS_AFTER_STOPLOSS
+
+        store = self._make_store(tmp_path)
+        cs = self._make_control(tmp_path)
+        cooldown = CooldownMarkStore(tmp_path)
+        self._open_position(store, sl_price=104.0)
+
+        candle_sl = {
+            "open_time": "2026-07-21T00:00:00Z", "open": 105.0, "high": 106.0,
+            "low": 103.0, "close": 103.5, "volume": 10.0,
+            "close_time": "2026-07-22T00:00:00Z",
+        }
+        snap1 = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle_sl]}
+        verdict = {"allow_new_position": True}
+        run_paper_update(
+            snap1, ROW, _pool(_pool_entry()), verdict,
+            store=store, now=NOW, root=tmp_path, control_store=cs,
+            cooldown_marks=cooldown,
+        )
+        # After COOLDOWN_BARS_AFTER_STOPLOSS days, the cooldown should lift.
+        # Cooldown = 2 bars * 1440 min = 2 days. close_time of "2026-07-24" is at or past expiry.
+        candle_after = {
+            "open_time": "2026-07-23T00:00:00Z", "open": 104.0, "high": 107.0,
+            "low": 103.0, "close": 106.0, "volume": 10.0,
+            "close_time": "2026-07-24T00:00:00Z",
+        }
+        snap_after = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle_after]}
+        row_after = {**ROW, "timestamp": "2026-07-24T00:00:00Z", "close": 106.0}
+        summary_after, _ = run_paper_update(
+            snap_after, row_after, _pool(_pool_entry()), verdict,
+            store=store, now="2026-07-24T00:00:00Z", root=tmp_path, control_store=cs,
+            cooldown_marks=cooldown,
+        )
+        assert summary_after["open_refused"] is None or summary_after["open_refused"].get("reason_code") != "STOP_LOSS_COOLDOWN"
+
+    def test_no_cooldown_on_take_profit(self, tmp_path):
+        from runtime.mvp_runtime.crypto.cooldown import CooldownMarkStore
+
+        store = self._make_store(tmp_path)
+        cs = self._make_control(tmp_path)
+        cooldown = CooldownMarkStore(tmp_path)
+        self._open_position(store, sl_price=100.0)
+
+        # TP hit: high reaches 110
+        candle_tp = {
+            "open_time": "2026-07-21T00:00:00Z", "open": 105.0, "high": 111.0,
+            "low": 104.0, "close": 110.0, "volume": 10.0,
+            "close_time": "2026-07-22T00:00:00Z",
+        }
+        snap = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [candle_tp]}
+        verdict = {"allow_new_position": True}
+        summary, _ = run_paper_update(
+            snap, ROW, _pool(_pool_entry()), verdict,
+            store=store, now=NOW, root=tmp_path, control_store=cs,
+            cooldown_marks=cooldown,
+        )
+        assert summary["settled"]["close_reason"] == "take_profit"
+        assert cooldown.expiry(CTX.key) is None

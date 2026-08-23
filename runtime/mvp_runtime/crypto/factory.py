@@ -74,8 +74,12 @@ from .cost import (
     round_trip_cost_r,
 )
 from .feedback import summarize_outcomes
+from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
-from .paper import settle_trade_plan
+from .paper import (
+    ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
+    settle_trade_plan, stop_is_beyond_liquidation,
+)
 from .pool import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
@@ -149,6 +153,29 @@ _FUNDING_SOURCE_STRENGTH = {
 # 500-day window, so nothing about a slice's internal composition changes; there are simply
 # twice as many of them.
 HOLDOUT_PERIODS = 10
+
+# The SCORED region subtotalled the way the tail above already is, so temporal stability can
+# one day be judged on market periods rather than on trades — the independence unit the
+# 2026-08-04/06 measurements above established. Twenty is width-matched to the tail, not
+# count-matched: the train span is 70% of the window against the tail's 30%, so twenty slices
+# give ~35 days each — the '30 slices / 33 days' row of the autocorrelation table above
+# (mildly mean-reverting, i.e. conservative), well clear of the 50-67-day band that table
+# flags as hardest to reason about.
+#
+# **This increment records; it does not judge.** `walk_forward.temporal_stability` stays None
+# until the store's own occupancy and discrimination numbers say the subtotals mean something
+# (`scripts/walk_forward_stability_report.py` is the reader; the decision gate is
+# `docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md`) — the same measured-then-moved
+# order `HOLDOUT_PERIODS` itself followed off 5. Until then the scorer keeps reading absent
+# evidence, so nothing about any score or verdict moves.
+WALK_FORWARD_PERIODS = 20
+# Below this many JUDGED periods (≥1 closed trade) stability may never be claimed — the field
+# stays None, not 0: a spec whose feed covers only the newest quarter of the window must read
+# "cannot measure", never "unstable" (the `_oi_feed_reaches` lesson below, where structurally
+# empty older slices retired a family for a window that had no data in it). Eight carries the
+# resolution argument `robustness.MIN_HOLDOUT_PERIODS` made, and it is what stops a spec that
+# traded one hot month from buying full credit off three slices.
+WALK_FORWARD_MIN_PERIODS = 8
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -641,6 +668,37 @@ def _htf_pullback_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _htf_reversal_long_entry(p: dict) -> list[dict]:
+    # The higher timeframe's own MOMENTUM, which no minted family has ever read. Every htf_*
+    # family above enters on where the slow leg is pointing — `htf_ma20_distance_ma50` for the
+    # strength pair, `htf_market_regime` for the pullback pair — and both are statements about
+    # TREND. `htf_rsi` and `htf_adx` have been on the row since the HTF leg was wired on
+    # 2026-07-25 and are read by nothing, so "the slow leg is stretched" is a question this
+    # search has never been able to ask.
+    #
+    # The premise: the higher timeframe is washed out while the traded one has already turned.
+    # That ordering is what separates it from `mean_reversion` — a local RSI of 30 says this bar
+    # is stretched, and says nothing about whether the move it is stretched against is a dip in
+    # something larger or the whole of it.
+    #
+    # Mirrored around 50 through ONE edge per leg rather than through four independent bounds,
+    # the `htf_sep_min` convention: a draw that is a weak long signal is an equally weak short
+    # one, and the two legs stay disjoint by construction at every value in the range (the
+    # `xs_rank_edge` argument — at the loosest draw the long needs htf_rsi <= 40 and the short
+    # htf_rsi >= 60).
+    return [
+        {"feature": "htf_rsi", "comparison": "<=", "value": 50.0 - p["htf_rsi_edge"]},
+        {"feature": "rsi", "comparison": ">=", "value": 50.0 + p["rsi_edge"]},
+    ]
+
+
+def _htf_reversal_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "htf_rsi", "comparison": ">=", "value": 50.0 + p["htf_rsi_edge"]},
+        {"feature": "rsi", "comparison": "<=", "value": 50.0 - p["rsi_edge"]},
+    ]
+
+
 def _oi_squeeze_long_entry(p: dict) -> list[dict]:
     # Position building ahead of a move: open interest climbing while the market has not
     # yet confirmed a trend in this direction is crowding, and the release tends to
@@ -895,6 +953,36 @@ def _taker_absorption_short_entry(p: dict) -> list[dict]:
     ]
 
 
+def _taker_flow_fade_long_entry(p: dict) -> list[dict]:
+    # The single bar's print, faded — and it is the column `_taker_flow_long_entry`'s own note
+    # argues AGAINST reading, which is the reason this family is worth a slot rather than the
+    # reason it is not. That note is right that "one bar's imbalance is mostly that bar's own
+    # move restated"; the flow families it justifies therefore all read the part that PERSISTED
+    # (`taker_flow_ma`, or the z-score against a rolling norm). Nothing reads the restatement
+    # itself, so `taker_flow_imbalance` is on the row unmined.
+    #
+    # A move restated by its own aggressor flow is exactly what an exhaustion print is: the
+    # signed form means a draw of 0.20 reads "sellers took 60% of the bar's volume" on BTC and
+    # on DOGE alike (see `features`: imbalance is 2 x ratio - 1), and pairing it with a washed
+    # out RSI asks for the bar where heavy one-way aggression has already spent the move.
+    #
+    # Distinct from `taker_absorption_long` in the SIGN, and the two are opposite premises on
+    # one variable rather than variations: absorption buys heavy BUY aggression into a washed
+    # out RSI (someone is taking the supply), this buys heavy SELL aggression into the same RSI
+    # (the supply is finished). Both cannot be right, which is the point of minting them.
+    return [
+        {"feature": "taker_flow_imbalance", "comparison": "<=", "value": -p["flow_edge"]},
+        {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _taker_flow_fade_short_entry(p: dict) -> list[dict]:
+    return [
+        {"feature": "taker_flow_imbalance", "comparison": ">=", "value": p["flow_edge"]},
+        {"feature": "rsi", "comparison": ">=", "value": p["rsi_min"]},
+    ]
+
+
 def _session_label(p: dict) -> str:
     """The session this spec trades, chosen by the seeded mutation rather than by hand.
 
@@ -936,6 +1024,37 @@ def _funding_fade_long_entry(p: dict) -> list[dict]:
     return [
         {"feature": "funding_zscore", "comparison": "<=", "value": p["funding_z_max"]},
         {"feature": "rsi", "comparison": "<=", "value": p["rsi_max"]},
+    ]
+
+
+def _funding_momentum_long_entry(p: dict) -> list[dict]:
+    # The OTHER sign of the same variable. Both funding families above fade the crowd, so the
+    # search has spent every funding slot it has on one direction of one hypothesis and has
+    # never asked the opposite one: that carry PERSISTS, and unusual funding beside a trend is
+    # the crowd being early rather than wrong.
+    #
+    # `funding_z_min` deliberately reuses `funding_fade_short`'s range and base rather than a
+    # tuned pair. The whole value of this family is that its threshold is the fade family's, so
+    # a difference in outcome is attributable to the entry SHAPE — the `ma_cross_*` argument,
+    # which kept the filters of the state families it mirrors for exactly this reason. Confirmed
+    # by trend rather than by RSI because the premise is continuation, and an RSI bound would
+    # be quietly asking for a pullback inside it.
+    #
+    # This is the cheapest genuinely new hypothesis available in this vocabulary — one column,
+    # already collected, already gated, whose accumulated evidence to date is all on the other
+    # side. Nothing here predicts it works; the fade side has not either.
+    return [
+        {"feature": "funding_zscore", "comparison": ">=", "value": p["funding_z_min"]},
+        {"feature": "close", "comparison": ">", "value_from": "ma20"},
+    ]
+
+
+def _funding_momentum_short_entry(p: dict) -> list[dict]:
+    # The sign on the VALUE, not on the comparison — `htf_trend_strength_short`'s convention,
+    # so one range describes both legs.
+    return [
+        {"feature": "funding_zscore", "comparison": "<=", "value": -p["funding_z_min"]},
+        {"feature": "close", "comparison": "<", "value_from": "ma20"},
     ]
 
 
@@ -1168,6 +1287,77 @@ TEMPLATES: tuple[StrategyTemplate, ...] = (
     # in RETIRED_FAMILIES below. The param range is bounded by what leaves a sample behind
     # rather than by a preference: a percentile floor above 0.9 selects a tenth of the bars,
     # which is how a family arrives FRAGILE for want of trades rather than for want of edge.
+    # Three pairs added to widen the SEARCH SPACE rather than to back a hypothesis — measured
+    # 2026-08-08 over this file, across 60 parameter draws per template rather than the base
+    # params alone: of the 56 columns in `NUMERIC_FEATURES`, the 38 minted families between them
+    # read **21**, and the rotation had never conditioned on the other 35. Two of those are
+    # reached here (`htf_rsi`, `taker_flow_imbalance`); the third pair reads an already-read
+    # column at a sign the library holds no family at (`funding_zscore` above zero). Every one is
+    # already collected, already classified in `_FEATURE_FEED`, and already gated by an existing
+    # set — so what is new here is which questions get asked, not what gets fetched or what may
+    # route.
+    #
+    # (The count is of MINTABLE NUMERIC columns. The families reference 24 distinct feature
+    # names in total, which is the same measurement plus three categoricals — a number worth
+    # naming here because conflating the two is how this comment first read 24/56.)
+    #
+    # **The cost is dilution and it is real.** `DEFAULT_BATCH_SIZE` is 4 per fire whatever the
+    # library holds, so a context's revisit interval stretches: measured per context,
+    # 34 -> 40 families at BTC 1h/4h (**+17.6%**), 36 -> 42 at the non-proxy symbols (+16.7%),
+    # and 22 -> 24 at 1d (+9.1%, where the htf and funding pairs are gated out). That is
+    # slower evidence accrual for every existing family, against an effective sample already
+    # measured in market periods rather than trades. Worth taking only for premises the search
+    # cannot otherwise reach, which is why the squeeze/contraction proposals that arrived beside
+    # these were NOT ported: they re-propose `volatility_squeeze_*`, retired 2026-08-04 on a
+    # measurement, and re-listing that pair is a one-line reversal nobody needs a new family for.
+    StrategyTemplate("htf_reversal_long", "long", "1h",
+                     {"htf_rsi_edge": ParamSpec(10.0, 30.0),
+                      "rsi_edge": ParamSpec(2.0, 20.0), **_FADE_EXIT_PARAMS},
+                     {"htf_rsi_edge": 20.0, "rsi_edge": 8.0, **_FADE_EXIT_BASE},
+                     _htf_reversal_long_entry),
+    StrategyTemplate("htf_reversal_short", "short", "1h",
+                     {"htf_rsi_edge": ParamSpec(10.0, 30.0),
+                      "rsi_edge": ParamSpec(2.0, 20.0), **_FADE_EXIT_PARAMS},
+                     {"htf_rsi_edge": 20.0, "rsi_edge": 8.0, **_FADE_EXIT_BASE},
+                     _htf_reversal_short_entry),
+    # The fade exit space, because the entry is a reversal claim: it says the slow leg is
+    # stretched and the fast one has turned, and that claim is COMPLETE when the stretch
+    # unwinds. The mechanism-class rule the two spaces were split on, not a preference.
+    StrategyTemplate("funding_momentum_long", "long", "1h",
+                     {"funding_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, **_EXIT_BASE}, _funding_momentum_long_entry),
+    StrategyTemplate("funding_momentum_short", "short", "1h",
+                     {"funding_z_min": ParamSpec(1.0, 2.5), **_EXIT_PARAMS},
+                     {"funding_z_min": 1.5, **_EXIT_BASE}, _funding_momentum_short_entry),
+    # `flow_edge` is the single-bar imbalance, so its range is wider than `taker_flow_long`'s
+    # 0.02-0.20 on the ROLLING MEAN of the same series — a mean is narrower than its inputs by
+    # construction. The bounds are read off the definition rather than off a measurement: the
+    # signed form puts 0.10 at "one side took 55% of the bar" and 0.40 at 70%, and above 70% the
+    # family selects a tail thin enough to arrive unjudgeable, which is the `vol_pct_min` ceiling
+    # argument. Nothing has measured this distribution; the search moves the bound.
+    #
+    # **The risk that carries, named rather than hidden.** The one installed family whose entry
+    # is a RAW-SCALE flow threshold is the one that produces nothing: measured 2026-08-08 over
+    # the candidate store, `taker_flow_long` has a median `closed_count` of **0** with 14 of its
+    # 15 stored specs taking zero trades (`taker_flow_short` 7.5). The feed itself is not the
+    # problem — `taker_absorption_*`, reading the z-score of this same series, medians 40 and 43
+    # with no zero-trade spec at all — so the failure sits in thresholding a raw flow level. This
+    # pair thresholds a raw flow level. What argues the other way is only mechanical: the
+    # single-bar print has strictly wider dispersion than its own rolling mean, so the same
+    # numeric bound selects far more bars. That was NOT confirmed on data — no archived candle
+    # carries the aggressor split (`taker_buy_base` is null on every hyperliquid row), so the
+    # distribution could not be measured offline. If the pair arrives FRAGILE for want of trades,
+    # the bound is where to look first, and the z-score form is the sibling that works.
+    StrategyTemplate("taker_flow_fade_long", "long", "1h",
+                     {"flow_edge": ParamSpec(0.10, 0.40),
+                      "rsi_max": ParamSpec(20.0, 40.0), **_FADE_EXIT_PARAMS},
+                     {"flow_edge": 0.20, "rsi_max": 30.0, **_FADE_EXIT_BASE},
+                     _taker_flow_fade_long_entry),
+    StrategyTemplate("taker_flow_fade_short", "short", "1h",
+                     {"flow_edge": ParamSpec(0.10, 0.40),
+                      "rsi_min": ParamSpec(60.0, 80.0), **_FADE_EXIT_PARAMS},
+                     {"flow_edge": 0.20, "rsi_min": 70.0, **_FADE_EXIT_BASE},
+                     _taker_flow_fade_short_entry),
     StrategyTemplate("volatility_expansion_long", "long", "1h",
                      {"vol_pct_min": ParamSpec(0.5, 0.9), **_EXIT_PARAMS},
                      {"vol_pct_min": 0.7, **_EXIT_BASE}, _volatility_expansion_long_entry),
@@ -1273,7 +1463,8 @@ OI_FAMILIES = frozenset({"oi_squeeze_long", "oi_squeeze_short",
 # named only the OI series. Caught before it cost anything: the store holds 44 `funding_fade_*`
 # candidates and **none at 1d** — 1d rejoined the rotation on 2026-08-04 and the cursor has not
 # reached this block yet, which it would have within ~9 fires.
-FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
+FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short",
+                              "funding_momentum_long", "funding_momentum_short"})
 
 # Families whose entry rules read HTF columns — mintable only where a higher
 # timeframe exists to read (see ``market_data.HIGHER_TIMEFRAME``).
@@ -1284,7 +1475,8 @@ FUNDING_FAMILIES = frozenset({"funding_fade_long", "funding_fade_short"})
 # pair out would silently un-gate it the day somebody re-listed it.
 HTF_FAMILIES = frozenset({"htf_trend_long", "htf_trend_short",
                           "htf_trend_strength_long", "htf_trend_strength_short",
-                          "htf_pullback_long", "htf_pullback_short"})
+                          "htf_pullback_long", "htf_pullback_short",
+                          "htf_reversal_long", "htf_reversal_short"})
 
 # Families whose entry rules read ``session`` — mintable only where a bar is short enough
 # for the label to describe the market during it rather than just its opening instant.
@@ -2057,8 +2249,38 @@ def holdout_permits_centring(record: Mapping[str, Any]) -> bool:
     return expectancy >= 0
 
 
+def _matches_context(
+    spec: Mapping[str, Any], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
+) -> bool:
+    """Is this stored row a prior fire of the context being mined?
+
+    **Membership when mining one symbol, exact equality when mining a cohort**, and the
+    difference is a decision rather than a detail. A pooled hypothesis fitted across five
+    symbols and a single-symbol one are not the same search: F2 measured that transferring a
+    single-symbol fit to five is strictly harder than searching for parameters that hold across
+    five from the start, so a single-symbol elite is the wrong centre to hand a pooled draw, and
+    a single-symbol fire is not a step of the pooled rotation. `pool.search_context_key` already
+    keys the selection correction the same way — `(symbol_scope tuple, timeframe)`.
+
+    The cost is stated rather than discovered: a pooled context starts with NO centre and no
+    rotation history, so its first fires draw from the template base. That is what
+    `elite_base_params`'s fallback already does for any new context, and F2's own pooled batch
+    was unsteered anyway.
+    """
+    if spec.get("timeframe") != timeframe:
+        return False
+    row_scope = spec.get("symbol_scope")
+    if not isinstance(row_scope, (list, tuple)):
+        return False
+    if scope is not None:
+        return tuple(str(s) for s in row_scope) == tuple(str(s) for s in scope)
+    return symbol in row_scope
+
+
 def _best_mint_params(
     candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The most ROBUST prior candidate's ``mint_params``, per family, in ONE pass.
 
@@ -2082,9 +2304,7 @@ def _best_mint_params(
         family = spec.get("strategy_family")
         if not isinstance(family, str) or not family:
             continue
-        if spec.get("timeframe") != timeframe:
-            continue
-        if symbol not in (spec.get("symbol_scope") or []):
+        if not _matches_context(spec, symbol=symbol, timeframe=timeframe, scope=scope):
             continue
         params = record.get("mint_params")
         if not isinstance(params, Mapping) or not params:
@@ -2121,7 +2341,7 @@ def _project(best: Mapping[str, Any] | None, fallback: Mapping[str, float]) -> d
 
 def elite_base_params(
     candidates: list[Mapping[str, Any]], *, family: str, symbol: str, timeframe: str,
-    fallback: dict[str, float],
+    fallback: dict[str, float], scope: Sequence[str] | None = None,
 ) -> dict[str, float]:
     """The params of the most ROBUST prior candidate for this family and context.
 
@@ -2136,13 +2356,13 @@ def elite_base_params(
     :func:`elite_centres`, which answers the same question for every family at once and reads
     the store once to do it.
     """
-    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe, scope=scope)
     return _project(best.get(family), fallback)
 
 
 def elite_centres(
     candidates: list[Mapping[str, Any]], templates: Sequence[StrategyTemplate], *,
-    symbol: str, timeframe: str,
+    symbol: str, timeframe: str, scope: Sequence[str] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Every template's search centre, keyed by family, from ONE pass over the store.
 
@@ -2156,7 +2376,7 @@ def elite_centres(
     build its centres from an unnarrowed `templates_for_timeframe`, which returned families
     `generate_batch` would never reach for that symbol.
     """
-    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe)
+    best = _best_mint_params(candidates, symbol=symbol, timeframe=timeframe, scope=scope)
     return {t.family: _project(best.get(t.family), t.base_params) for t in templates}
 
 
@@ -2220,6 +2440,7 @@ def build_spec_dict(
 
 def context_rotation_index(
     existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
+    scope: Sequence[str] | None = None,
 ) -> int:
     """How many times THIS ``(symbol, timeframe)`` has already been mined.
 
@@ -2248,8 +2469,7 @@ def context_rotation_index(
             continue
         if str(spec.get("timeframe")) != str(timeframe):
             continue
-        scope = spec.get("symbol_scope")
-        if not isinstance(scope, (list, tuple)) or symbol not in scope:
+        if not _matches_context(spec, symbol=symbol, timeframe=timeframe, scope=scope):
             continue
         for value in (record.get("generation_id"), spec.get("generation_id")):
             if isinstance(value, str) and value:
@@ -2349,8 +2569,14 @@ def generate_batch(
     rotation_index: int | None = None,
     elite_params: Mapping[str, Mapping[str, float]] | None = None,
     venue: str = market_data.BINANCE_FUTURES,
+    symbol_scope: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
+
+    ``symbol_scope`` widens the minted specs from ``[symbol]`` to a cohort — one hypothesis at
+    N symbols' data rather than N hypotheses at one symbol's each. ``symbol`` still selects the
+    rotation slice and the templates (`templates_for_timeframe` narrows for the market proxy),
+    so it stays the cohort's first member rather than becoming meaningless.
 
     ``known_rule_hashes`` extends the duplicate guard across the existing pool and
     candidate store, so a batch never re-mints a strategy that already exists.
@@ -2440,7 +2666,8 @@ def generate_batch(
         params = mutate_params(centre, template.param_space, rng)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
-                                    generation_id=generation_id, symbol=symbol, venue=venue)
+                                    generation_id=generation_id, symbol=symbol, venue=venue,
+                                    symbol_scope=list(symbol_scope) if symbol_scope else None)
         try:
             spec = StrategySpec.from_dict(spec_dict)
         except SpecParseError as exc:
@@ -2596,7 +2823,7 @@ def funding_charges_per_bar(
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
-) -> tuple[list[dict[str, Any]], float, float, float, float, int]:
+) -> tuple[list[dict[str, Any]], float, float, float, float, int, int, int]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
     Extracted so the scored window and the holdout run through **exactly** the same
@@ -2614,6 +2841,9 @@ def _replay(
     # whose evidence is thin because most of its setups were uneconomic is a different fact
     # from one that simply did not fire, and only the count can tell them apart.
     uneconomic_entries = 0
+    liquidation_refused = 0
+    cooldown_skipped = 0
+    cooldown_remaining = 0
     charges = funding if funding is not None else [0.0] * len(rows)
 
     for i, row in enumerate(rows):
@@ -2636,7 +2866,8 @@ def _replay(
                 total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
                 total_funding_cost_r += breakdown.funding_cost_r
-                outcomes.append({
+                resolution = position.get("exit_resolution") or "unambiguous"
+                outcome: dict[str, Any] = {
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
                     "gross_R": breakdown.gross_r,
@@ -2649,10 +2880,25 @@ def _replay(
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
                     "closed_at_bar": offset + i,
-                })
+                    "exit_resolution": resolution,
+                }
+                if resolution == "pessimistic_sl_first":
+                    direction = position["direction"]
+                    entry = float(position["entry_price"])
+                    tp = float(position["take_profit"])
+                    risk = float(position["risk"])
+                    alt_gross_r = (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
+                    outcome["ambiguous_gap_r"] = round(alt_gross_r - breakdown.gross_r, 8)
+                outcomes.append(outcome)
                 position = None
                 entry_regime = None
+                if reason == "stop_loss":
+                    cooldown_remaining = COOLDOWN_BARS_AFTER_STOPLOSS
         if position is None:
+            if cooldown_remaining > 0:
+                cooldown_remaining -= 1
+                cooldown_skipped += 1
+                continue
             close, atr = row.get("close"), row.get("atr")
             if not (isinstance(close, (int, float)) and isinstance(atr, (int, float)) and close > 0 and atr > 0):
                 continue
@@ -2682,6 +2928,10 @@ def _replay(
             ) > MAX_ENTRY_COST_R:
                 uneconomic_entries += 1
                 continue
+            stop_price = close - stop_distance if long else close + stop_distance
+            if stop_is_beyond_liquidation(float(close), stop_price, long):
+                liquidation_refused += 1
+                continue
             position = {
                 "direction": "LONG" if long else "SHORT",
                 "entry_price": float(close),
@@ -2704,7 +2954,7 @@ def _replay(
             }
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-            total_funding_cost_r, uneconomic_entries)
+            total_funding_cost_r, uneconomic_entries, cooldown_skipped, liquidation_refused)
 
 
 # A feature the rows never supply, and why minting on one is not merely wasteful.
@@ -2745,6 +2995,101 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
     return missing
 
 
+# How many EARLIER tails a spec is scored on beside its own, each ending exactly where the
+# previous one begins. Three reaches back about four times the holdout's own depth.
+#
+# **Why this exists at all.** `REMAINING_WORK.md` §F9 records the first result the pooled door
+# ever produced: five `oi_unwind_short` draws clearing a selection-adjusted bar at 4h, t up to
+# 5.16, holdout expectancy +0.62R. Walked backwards into adjacent windows, **16 of 16 draws
+# across two seed namespaces** decayed to −0.23…−0.31R. The effect was a property of the newest
+# ~500 days, not of the rule. A promotion door reading only the newest tail takes that row on
+# its face.
+#
+# **And the field that looks like it already covers this does not.** `period_r` partitions the
+# holdout INTO slices, and the reversal is 2,000+ bars before the holdout begins; measured
+# 2026-08-08 on those same draws, all ten slices read positive. The two answer different
+# questions — *"was the tail uniform"* and *"does the tail's answer hold before it"*.
+#
+# **It is cheap, which is the reason it can sit on the mint path.** Every FEATURE is a
+# trailing-window computation (`rolling_percentile` over `PERCENTILE_WINDOW`, the z-scores over
+# their own), so a prefix of a built frame carries exactly the values those bars had in the full
+# series. This is the **lookahead guard**: it ensures no feature at bar i depends on bars
+# after i, which is what makes replay-live parity hold on differently-sized candle windows.
+# Pinned by two tests:
+#   - `test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding`
+#     (OHLCV + funding + taker_flow, the original 200-bar verification)
+#   - `test_prefix_invariance_holds_with_htf_and_external_series`
+#     (adds close-time-keyed HTF columns and backward-asof liquidation events)
+# No `build_feature_rows` call, no refetch; every earlier window is a prefix of candles already
+# in hand, and only the replay repeats, over 0.7 + 0.49 + 0.34 of the series.
+#
+# **The funding series is the one exception and it is one bar wide.** `funding_charges_per_bar`
+# spreads settlements across the bars they fall in, so the FINAL bar of a prefix was charged
+# knowing the series continued past it; rebuilding from clipped candles gives that bar a
+# different charge. Measured on a 200-bar fixture: identical at every index except the last.
+# It is left rather than repaired because repairing it needs the raw funding events, which a
+# `ReplayFrame` deliberately does not carry — and because the bar in question is the one a
+# position cannot settle on anyway, there being no bar after it to settle against. A/B against
+# the rebuild on the live 5-symbol cohort produced identical R and identical trade counts in
+# every window.
+PRIOR_WINDOWS = 3
+
+
+def _prefix_frame(frame: "ReplayFrame", keep: int) -> "ReplayFrame | None":
+    """The same frame over its first ``keep`` bars, or ``None`` if that leaves no holdout.
+
+    ``split`` is recomputed by :func:`holdout_split_index` rather than scaled, so the prefix is
+    split by the same rule the full frame was — which is what makes window *k+1*'s tail end
+    exactly where window *k*'s begins.
+
+    **Rows are exact; the last bar's funding charge is not** — see the note above
+    :data:`PRIOR_WINDOWS`. A test pins both halves of that, so the day it stops being one bar
+    wide is a red suite rather than a drift in the numbers.
+    """
+    if keep < MIN_BARS_FOR_HOLDOUT or keep > len(frame.rows):
+        return None
+    split = holdout_split_index(keep)
+    if split >= keep:                       # everything trains, nothing is held out
+        return None
+    return ReplayFrame(
+        rows=frame.rows[:keep], candles=frame.candles[:keep], funding=frame.funding[:keep],
+        funding_source=frame.funding_source, split=split, cost=frame.cost,
+    )
+
+
+def _prior_window_evidence(
+    spec: StrategySpec, frames: Sequence["ReplayFrame"], *, cost: CostModel,
+    windows: int = PRIOR_WINDOWS,
+) -> tuple[list[float], list[int]]:
+    """(R summed, trades) per earlier tail, newest first. Shorter lists mean the series ran out.
+
+    Reports rather than judges — like `period_r`, and for the same reason: what a sign flip
+    across these windows should DO at the promotion door is a decision, and a measurement that
+    pre-empts it is harder to argue with than one that states itself.
+    """
+    r_by_window: list[float] = []
+    n_by_window: list[int] = []
+    keep = min(len(f.rows) for f in frames) if frames else 0
+    for _ in range(windows):
+        keep = holdout_split_index(keep) if keep >= MIN_BARS_FOR_HOLDOUT else 0
+        prefixes = [p for p in (_prefix_frame(f, keep) for f in frames) if p is not None]
+        if len(prefixes) != len(frames) or not prefixes:
+            break                            # a leg ran out; a partial cohort is a different pool
+        total_r = 0.0
+        closed = 0
+        for prefix in prefixes:
+            part, *_ = _replay(spec, prefix.rows[prefix.split:], prefix.candles[prefix.split:],
+                               cost=cost, funding=prefix.funding[prefix.split:],
+                               offset=prefix.split)
+            for outcome in part:
+                if outcome.get("outcome_closed"):
+                    total_r += float(outcome.get("result_R") or 0.0)
+                    closed += 1
+        r_by_window.append(round(total_r, 8))
+        n_by_window.append(closed)
+    return r_by_window, n_by_window
+
+
 def _holdout_evidence(
     spec: StrategySpec, frames: Sequence["ReplayFrame"],
     *, cost: CostModel, funding_source: str = FUNDING_SOURCE_VENUE,
@@ -2775,7 +3120,7 @@ def _holdout_evidence(
     period_r = [0.0] * HOLDOUT_PERIODS
     period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, _cd, _liq = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
             cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
         )
@@ -2798,6 +3143,7 @@ def _holdout_evidence(
     results = [float(o["result_R"]) for o in outcomes]
     total_r = round(sum(results), 8)
     closed = len(outcomes)
+    prior_r, prior_n = _prior_window_evidence(spec, frames, cost=cost)
     return {
         "bars": min(bars) if bars else 0,
         # Absent on every block minted before pooling existed, and 1 is what those mean —
@@ -2830,6 +3176,12 @@ def _holdout_evidence(
         # See `HOLDOUT_PERIODS` for why the count is what it is.
         "period_r": [round(value, 8) for value in period_r],
         "period_trades": period_trades,
+        # The same spec on EARLIER tails, newest first — see `PRIOR_WINDOWS`. Sibling of the two
+        # fields above and deliberately not folded into them: `period_r` cuts the holdout up,
+        # this asks whether the holdout's answer survives before it. A shorter list than
+        # `PRIOR_WINDOWS` means the series ran out, which is information, not an error.
+        "prior_window_r": prior_r,
+        "prior_window_trades": prior_n,
         # The holdout runs the same door as the scored window — a confirmation measured over a
         # wider population than the score would not be confirming the same thing.
         "refused_entries": uneconomic,
@@ -2851,6 +3203,11 @@ def _holdout_evidence(
             "taker_fee_bps": cost.taker_fee_bps,
             "maker_fee_bps": cost.maker_fee_bps,
             "slippage_bps": cost.slippage_bps,
+            # Stamped since Thomas's 2026-08-11 direction: the stop leg's own rate joined
+            # `pool.cost_basis_rank`'s comparison, and a row that does not say what its
+            # stops paid is judged on its general slippage (the pre-split identity) — so a
+            # 12bps-scored row MUST carry the field or it reads OPTIMISTIC forever.
+            "stop_slippage_bps": cost.stop_slippage_bps,
             "funding_bps_per_interval": cost.funding_bps_per_interval,
             "funding_source": funding_source,
         },
@@ -2992,10 +3349,12 @@ def backtest_spec_pooled(
     outcomes: list[dict[str, Any]] = []
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
     uneconomic_entries = 0
+    cooldown_entries = 0
+    liquidation_entries = 0
     scored_bars: list[int] = []
     for frame in frames:
         split = frame.split
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown, part_liq = _replay(
             spec, frame.rows[:split], frame.candles[:split],
             cost=cost, funding=frame.funding[:split],
         )
@@ -3005,6 +3364,8 @@ def backtest_spec_pooled(
         total_slippage_cost_r += part_slip
         total_funding_cost_r += part_carry
         uneconomic_entries += part_uneconomic
+        cooldown_entries += part_cooldown
+        liquidation_entries += part_liq
         scored_bars.append(split)
     holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
@@ -3035,13 +3396,22 @@ def backtest_spec_pooled(
         },
     }
 
+    # Intrabar ambiguity: trades where a single bar touched both SL and TP. The
+    # pessimistic SL-first assumption applies to all of them in the backtest, and the
+    # gap is the maximum R a more favourable resolution could have added.
+    ambiguous_exits = sum(
+        1 for o in outcomes if o.get("exit_resolution") == "pessimistic_sl_first"
+    )
+    ambiguous_gap_r = round(sum(
+        float(o.get("ambiguous_gap_r") or 0.0) for o in outcomes
+    ), 8)
+
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
-    # with enough trades. temporal_stability stays None (the source walk-forward
-    # module was not ported) — the scorer treats that as absent evidence, not skip.
-    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
-    # into the last window rather than opening a window the other legs never reached. Bar *i*
-    # is the same calendar window on every leg — that is the one-timeframe precondition above,
-    # and it is what makes pooling by `closed_at_bar` mean anything.
+    # with enough trades. The shallowest leg sets the slice width, so a trade closing late on
+    # a longer leg clamps into the last window rather than opening a window the other legs
+    # never reached. Bar *i* is the same calendar window on every leg — that is the
+    # one-timeframe precondition above, and it is what makes pooling by `closed_at_bar`
+    # mean anything.
     window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
@@ -3049,6 +3419,21 @@ def backtest_spec_pooled(
             outcome["result_R"]
         )
     counted = [values for values in window_r.values() if len(values) >= MIN_TRADES_PER_WINDOW]
+    # The scored region subtotalled the way `_holdout_evidence` subtotals the tail — same
+    # field names, same clamp rule, and net R like everything here (`result_R` is costed).
+    # These are `temporal_stability`'s INPUTS, recorded so the store can measure whether they
+    # discriminate before anything judges on them; the field itself stays None until that
+    # decision is taken on the store's own numbers (see WALK_FORWARD_PERIODS). The scorer
+    # reads None as absent evidence, so this block moves no score and no verdict — and the
+    # holdout suite's "changing only the tail leaves walk_forward identical" test now pins
+    # these subtotals to the scored region for free.
+    wf_width = max(1, min(scored_bars) // WALK_FORWARD_PERIODS)
+    wf_period_r = [0.0] * WALK_FORWARD_PERIODS
+    wf_period_trades = [0] * WALK_FORWARD_PERIODS
+    for outcome in outcomes:
+        index = min(outcome["closed_at_bar"] // wf_width, WALK_FORWARD_PERIODS - 1)
+        wf_period_r[index] += float(outcome["result_R"])
+        wf_period_trades[index] += 1
     walk_forward = {
         "walk_forward_pass_rate": (
             sum(1 for values in counted if sum(values) > 0) / len(counted) if counted else None
@@ -3056,6 +3441,10 @@ def backtest_spec_pooled(
         "temporal_stability": None,
         "windows": BACKTEST_WINDOWS,
         "windows_counted": len(counted),
+        "period_r": [round(value, 8) for value in wf_period_r],
+        "period_trades": wf_period_trades,
+        "periods": WALK_FORWARD_PERIODS,
+        "periods_judged": sum(1 for n in wf_period_trades if n > 0),
     }
 
     # C12: total_net_r is the sum of costed R over every closed trade — the
@@ -3124,6 +3513,22 @@ def backtest_spec_pooled(
             # arrive on bars too quiet to pay for themselves.
             "refused_entries": uneconomic_entries,
         },
+        "cooldown_door": {
+            "applied": True,
+            "cooldown_bars": COOLDOWN_BARS_AFTER_STOPLOSS,
+            "skipped_entries": cooldown_entries,
+        },
+        "intrabar_gap": {
+            "ambiguous_exits": ambiguous_exits,
+            "total_gap_r": ambiguous_gap_r,
+            "gap_per_trade_r": round(ambiguous_gap_r / ambiguous_exits, 4) if ambiguous_exits else 0.0,
+        },
+        "liquidation_guard": {
+            "applied": True,
+            "assumed_leverage": ASSUMED_LEVERAGE,
+            "maintenance_margin_rate": MAINTENANCE_MARGIN_RATE,
+            "refused_entries": liquidation_entries,
+        },
         "cost_summary": {
             "total_net_r": total_net_r,
             "total_fee_cost_r": round(total_fee_cost_r, 8),
@@ -3144,6 +3549,7 @@ def backtest_spec_pooled(
                 "taker_fee_bps": cost.taker_fee_bps,
                 "maker_fee_bps": cost.maker_fee_bps,
                 "slippage_bps": cost.slippage_bps,
+                "stop_slippage_bps": cost.stop_slippage_bps,
                 "funding_bps_per_interval": cost.funding_bps_per_interval,
                 # Which quality of evidence the carry is: the venue's own settlements over this
                 # window, or the modelled base rate because the series was missing.
@@ -3151,6 +3557,9 @@ def backtest_spec_pooled(
             },
         },
         "regime_breakdown": regime_breakdown,
+        "distribution_reference": compute_distribution_reference(
+            [row for frame in frames for row in frame.rows[:frame.split]]
+        ),
         "walk_forward": walk_forward,
         "holdout": holdout,
         "robustness": robustness,
@@ -3169,11 +3578,200 @@ def backtest_spec_pooled(
     }
 
 
+# --- ablation lattice: a conjunction must beat its own parts ------------------
+#
+# `docs/proposals/FACTORY_ABLATION_V0.1.md` §3, approved as proposed (Thomas 2026-08-12).
+# The generator searched "how many conditions make the score better", and that search
+# passes stacked luck: of the 592 stored rows whose holdout could be judged at all, 592
+# read CONTRADICTED. The lattice decomposes the luck at mint time — a full conjunction
+# that cannot strictly beat its own best proper subset on the TRAIN segment is fit, not
+# edge, and the best proper subset registers in its place.
+
+# §3-1: k <= 3, so the lattice is at most 2^3 - 1 = 7 members. A hypothesis with MORE
+# conditions stays on the existing path UNCHANGED: the seeded library mints up to k = 4
+# today (the `oi_squeeze_*` pair below 1d) and a fused union may carry up to
+# `MAX_FUSION_ENTRY_CONDITIONS` = 7 — a k = 4 lattice is 15 members, and §3-1 priced that
+# as a cadence reallocation this increment deliberately does not take.
+ABLATION_MAX_CONDITIONS = 3
+
+# k = 1 skips the lattice entirely: a single condition has no proper subset to beat.
+ABLATION_MIN_CONDITIONS = 2
+
+
+def _train_frame(frame: ReplayFrame) -> ReplayFrame:
+    """The frame's train segment as a frame of its own — the holdout bars are NOT in it.
+
+    This is what makes the lattice's train-only rule structural rather than a convention
+    (proposal §1-3): selection code handed this object cannot read a holdout bar, because
+    the object does not contain one. Choosing a subset on the shared holdout would replay
+    the A2 failure (holdout reuse) amplified by the lattice size, so the bars are removed
+    at the door instead of avoided by discipline. ``split`` stays the full frame's, which
+    after truncation equals ``len(rows)``: everything trains, nothing is held out.
+
+    Deliberately NOT :func:`_prefix_frame`, which re-splits its prefix by
+    :func:`holdout_split_index` and would carve a second holdout out of the train segment."""
+    split = frame.split
+    return ReplayFrame(
+        rows=frame.rows[:split], candles=frame.candles[:split],
+        funding=frame.funding[:split], funding_source=frame.funding_source,
+        split=split, cost=frame.cost,
+    )
+
+
+def _subset_spec(spec: StrategySpec, indices: tuple[int, ...]) -> StrategySpec:
+    """``spec`` carrying only the entry conditions at ``indices`` — all else identical.
+
+    The stored rule hash is dropped so ``from_dict`` recomputes it: the conditions changed,
+    so the identity did, and a subset that kept the hypothesis's hash would be refused as
+    tampered."""
+    as_dict = spec.to_dict()
+    conditions = as_dict["entry_rules"]["conditions"]
+    as_dict["entry_rules"] = {
+        "operator": "AND", "conditions": [conditions[i] for i in indices],
+    }
+    as_dict.pop("strategy_rule_hash", None)
+    return StrategySpec.from_dict(as_dict)
+
+
+def _train_net_expectancy(spec: StrategySpec, train_frames: Sequence[ReplayFrame]) -> float:
+    """Net expectancy of one lattice member over the train frames, pooled across legs.
+
+    The same costed replay the scored window runs (`_replay` under each frame's own cost
+    model — fees, slippage, funding carry), so the number a subset is selected on is the
+    same KIND of number the winner is later scored on. 0.0 over zero closed trades,
+    matching ``backtest_spec_pooled``'s convention for ``expectancy``."""
+    total = 0.0
+    closed = 0
+    for frame in train_frames:
+        outcomes, *_ = _replay(
+            spec, frame.rows, frame.candles, cost=frame.cost, funding=frame.funding,
+        )
+        for outcome in outcomes:
+            total += float(outcome["result_R"])
+            closed += 1
+    return round(total / closed, 8) if closed else 0.0
+
+
+def ablate_hypothesis(
+    spec: StrategySpec, frames: Sequence[ReplayFrame],
+) -> tuple[StrategySpec, dict[str, Any]] | None:
+    """Run the train-only ablation lattice over one drawn hypothesis.
+
+    ``None`` when there is no lattice to run: k outside
+    [:data:`ABLATION_MIN_CONDITIONS`, :data:`ABLATION_MAX_CONDITIONS`] (a single condition
+    has nothing to ablate; a wider conjunction stays on the existing path by §3-1), or an
+    OR hypothesis — dropping an OR member makes the rule STRICTER, the opposite of what a
+    proper subset means under AND, so the lattice's reasoning does not transfer.
+
+    Otherwise ``(winner, ablation_block)``. The selection rule is §3-2 as approved: the
+    full conjunction wins only if its train net expectancy strictly beats EVERY proper
+    subset's; otherwise the best proper subset wins, ties broken toward fewer conditions
+    and then toward the enumeration order (sizes ascending, index-lexicographic within a
+    size — deterministic, so a re-run selects identically). The winner is ``spec`` itself
+    when the full conjunction wins, so its rule hash — the one the draw's duplicate guard
+    already cleared — is untouched.
+
+    Holdout bars cannot enter the selection by construction: every member is replayed over
+    :func:`_train_frame` truncations, objects that do not contain the holdout. The winner's
+    holdout is spent exactly once, by the ordinary full backtest the caller runs next.
+
+    Consumes no randomness — the enumeration, the replays and the tie-breaks are pure
+    functions of the spec and the frames, so the seeded draws after a lattice are the same
+    draws they would have been without one."""
+    conditions = spec.entry_rules.conditions
+    k = len(conditions)
+    if not (ABLATION_MIN_CONDITIONS <= k <= ABLATION_MAX_CONDITIONS):
+        return None
+    if spec.entry_rules.operator != "AND":
+        return None
+    if not frames:
+        raise ValueError("an ablation lattice needs at least one frame to replay")
+    cost = frames[0].cost
+    for frame in frames:
+        if frame.cost != cost:
+            raise ValueError(
+                "ablation frames were built under different cost models; a lattice mixing "
+                "rates would select on numbers no one book was charged"
+            )
+    train = [_train_frame(frame) for frame in frames]
+    # Every non-empty subset, the full set last: sizes ascending, index-lexicographic
+    # within a size. This order is the tie-break of last resort below and the key order
+    # of the evidence map, so it is the one deterministic enumeration, stated once.
+    members = [combo for size in range(1, k + 1) for combo in combinations(range(k), size)]
+    scores = {
+        indices: _train_net_expectancy(
+            spec if len(indices) == k else _subset_spec(spec, indices), train
+        )
+        for indices in members
+    }
+    full = members[-1]
+    proper = members[:-1]
+    full_beats = all(scores[full] > scores[indices] for indices in proper)
+    if full_beats:
+        winner_indices, winner = full, spec
+    else:
+        winner_indices = min(proper, key=lambda indices: (-scores[indices], len(indices), indices))
+        winner = _subset_spec(spec, winner_indices)
+    return winner, {
+        "lattice_size": len(members),
+        "hypothesis_conditions": [c.to_dict() for c in conditions],
+        "winner_conditions": [c.to_dict() for c in winner.entry_rules.conditions],
+        "full_beat_subsets": full_beats,
+        # Keyed by "+"-joined indices into ``hypothesis_conditions``, in enumeration
+        # order — compact, and enough to reconstruct which grid the winner survived.
+        "train_net_expectancy_by_subset": {
+            "+".join(str(i) for i in indices): scores[indices] for indices in members
+        },
+    }
+
+
+def _lattice_winner(
+    hypothesis: StrategySpec, frames: Sequence[ReplayFrame], *,
+    seen_hashes: set[str], stats: dict[str, int],
+) -> tuple[StrategySpec, dict[str, Any] | None, str | None]:
+    """One drawn hypothesis through the lattice, returning what may register.
+
+    ``(winner, ablation_block, refusal)``. The winner is the hypothesis untouched when
+    there was no lattice to run (block and refusal both None). A swapped-in subset winner
+    is re-checked here for the two guards its draw cleared with DIFFERENT conditions: the
+    duplicate guard — the hash `generate_batch`/`fuse_specs` deduplicated was the full
+    conjunction's, and a subset that already exists in the store must be refused, never
+    re-minted (`known_rule_hashes`' own rule) — and the validator, unreachable for a
+    subset of a validated AND conjunction (per-condition checks over fewer conditions,
+    exits untouched) but kept because a typed refusal is cheaper than being wrong about
+    "unreachable". On refusal nothing registers: the hypothesis already lost the lattice,
+    and minting it anyway would register the exact spec the selection said was fit.
+
+    ``stats`` counts what ablation did (fires report it): every lattice run, and every
+    full conjunction that failed to strictly beat its best proper subset — counted at
+    selection time, so a later refusal of the winner does not un-count the finding."""
+    lattice = ablate_hypothesis(hypothesis, frames)
+    if lattice is None:
+        return hypothesis, None, None
+    winner, block = lattice
+    stats["lattices"] += 1
+    if not block["full_beat_subsets"]:
+        stats["luck_filtered"] += 1
+    if winner.strategy_rule_hash != hypothesis.strategy_rule_hash:
+        if winner.strategy_rule_hash in seen_hashes:
+            return winner, block, "ablation_winner_duplicate_rule_hash"
+        if not validate_strategy(winner)["approved_for_backtest"]:
+            return winner, block, "ablation_winner_failed_validation"
+    return winner, block, None
+
+
 # --- fusion: crossover of two proven lineages ---------------------------------
 
 # How many top-ranked lineages the pair search may draw from. A ceiling, not a
 # quota: the caller's ``fusion_pairs`` decides how many children are actually minted.
 FUSION_PARENT_POOL = 6
+
+# Why a fire produced no fused children WITHOUT the fusion path having run. `run_factory` reports
+# one of these in ``fusion_skipped``, or ``None`` when the path did execute — see the comment at
+# the dispatch for why "it ran and found nothing" has to be distinguishable from "it never ran".
+FUSION_NOT_REQUESTED = "not_requested"   # the caller passed fusion_pairs <= 0
+FUSION_POOLED_FIRE = "pooled_fire"       # a pooled mint: `_fuse_batch` scores on one frame
+FUSION_SKIP_REASONS = frozenset({FUSION_NOT_REQUESTED, FUSION_POOLED_FIRE})
 
 
 class FusionRefused(ValueError):
@@ -3211,8 +3809,15 @@ _EXIT_LEGAL_RANGE = {
 def _fused_exit_param(name: str, first: float, second: float) -> float | int:
     """The parents' midpoint, held inside the space the factory currently explores.
 
-    Same clamp and same constants as :func:`mutate_params`, so a fused parameter and a
-    mutated one can never land in different places.
+    Same constants as :func:`mutate_params`, and since 2026-08-05 deliberately NOT the same
+    operation: that function FOLDS at the bound (:func:`_fold_into_bounds`) because a draw of
+    ``base +/- span`` systematically overshoots one, and stacking the overshoot on the edge is a
+    delta rather than a bound. A fused value is a MIDPOINT, and a midpoint of two in-space parents
+    is in-space by convexity — see
+    ``test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from`` — so this clamp fires
+    only when a parent was minted under an OLDER space. Pinning such a parent to the nearest legal
+    value is the right answer there; reflecting it would move it to an arbitrary interior point
+    the search never chose. The two paths differ because the inputs differ.
 
     **The clamp is a preference applied to legal inputs, and it must never rescue an illegal
     one.** ``_EXIT_PARAMS`` is strictly inside the validator's range — stop_atr [1.2, 2.0]
@@ -3693,7 +4298,7 @@ def _fusion_improvement(
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
-    frame: ReplayFrame | None = None,
+    frame: ReplayFrame | None = None, ablation_stats: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
 
@@ -3712,10 +4317,24 @@ def _fuse_batch(
     :data:`FUSION_IMPROVEMENT_METRICS` for the bar and why the parents are replayed here
     rather than read from their stored rows. That refusal is ordered last because it is the
     only one costing a replay, so the cheap structural checks drop the pairs that would
-    waste it; and it costs no mint, because the pair stream simply draws again."""
+    waste it; and it costs no mint, because the pair stream simply draws again.
+
+    A fused union of :data:`ABLATION_MIN_CONDITIONS`..:data:`ABLATION_MAX_CONDITIONS`
+    conditions runs the ablation lattice before its backtest — the winner (the union, or
+    its best proper subset) is what every gate after it judges and what registers. Wider
+    unions, up to ``MAX_FUSION_ENTRY_CONDITIONS`` = 7, stay on the existing path
+    unchanged: §3-1 of the ablation proposal priced the k = 4 lattice (15 members) as a
+    cadence decision and declined it. ``ablation_stats`` shares the caller's counters so
+    a fire reports seeded and fused lattices as one number."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     replayed: dict[str, dict[str, Any]] = {}
+    # Built once when the caller did not hand one over: the lattice needs a frame to slice
+    # its train segment from, and every child/parent backtest below reuses it. A frame is a
+    # pure function of (snapshot, cost model), so results are unchanged — only rebuilds go.
+    if frame is None:
+        frame = build_replay_frame(snapshot)
+    stats = ablation_stats if ablation_stats is not None else {"lattices": 0, "luck_filtered": 0}
 
     def on_this_window(spec: StrategySpec) -> dict[str, Any]:
         """This parent's evidence on the CHILD's snapshot, replayed once per fire."""
@@ -3744,6 +4363,17 @@ def _fuse_batch(
         if child.strategy_rule_hash in seen_hashes:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
             continue
+        # The ablation lattice sits between the union and its backtest: the winner is what
+        # the no-trades and improvement gates below judge, and what registers. A subset
+        # winner facing those gates is the point rather than a leniency — it must still
+        # improve on BOTH parents to be worth storing as a crossover, and a union whose
+        # value was all in one parent's conditions now fails exactly there.
+        child, ablation, refusal = _lattice_winner(
+            child, [frame], seen_hashes=seen_hashes, stats=stats,
+        )
+        if refusal is not None:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
+            continue
         evidence = backtest_spec(child, snapshot, frame=frame)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
@@ -3754,6 +4384,10 @@ def _fuse_batch(
         if refusal is not None:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
             continue
+        if ablation is not None:
+            # The grid this winner survived, on the record (§1-5). Stored FACT — how many
+            # were tried — which `pool.attempts_by_context` expands at read time.
+            evidence["ablation"] = ablation
         seen_hashes.add(child.strategy_rule_hash)
         record = {
             "strategy_id": child.strategy_id,
@@ -3799,6 +4433,20 @@ def next_generation_id(existing: list[Mapping[str, Any]]) -> str:
     return f"GEN-{highest + 1:03d}"
 
 
+# Which timeframes mint POOLED, once a caller supplies a cohort. `REMAINING_WORK.md` §F9 lays
+# out three shapes; this is B, and the reason it is not A is measured rather than preferred:
+# F2 found 1h single-symbol already 12/12 judgeable, while 4h closes a median 9 trades against a
+# floor of 25 and 1d is floored at bars rather than days. Pooling where the tails are thin buys
+# the judgeability; pooling 1h as well would spend the directional lever for nothing — a pooled
+# spec occupies every context of its timeframe in ONE direction, and `routable_directional_
+# capacity` then caps the book at 4 of 6 rather than 6 of 6 (F9 has the arithmetic).
+#
+# Naming the timeframes here rather than in the scheduler keeps the policy where the reasoning
+# is; the caller still decides whether to hand over a cohort at all, and a caller that does not
+# gets exactly today's behaviour.
+POOLED_TIMEFRAMES = frozenset({"4h", "1d"})
+
+
 def run_factory(
     snapshot: Mapping[str, Any],
     *,
@@ -3808,6 +4456,7 @@ def run_factory(
     count: int = DEFAULT_BATCH_SIZE,
     fusion_pairs: int = 0,
     positioning_eligible: bool = False,
+    cohort_snapshots: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
@@ -3828,7 +4477,17 @@ def run_factory(
 
     Whatever fusion does NOT mint of that allocation is drawn again as seeded specs from this
     fire's own rotation slice, so a dry parent pool costs the fire nothing — see the comment
-    over the shortfall draw for the measurement and for why it takes nothing from fusion."""
+    over the shortfall draw for the measurement and for why it takes nothing from fusion.
+
+    ``cohort_snapshots`` are the OTHER legs of a pooled mint — one spec scored across all of
+    them, ``symbol_scope`` set to the whole cohort. Ignored unless ``snapshot``'s timeframe is in
+    :data:`POOLED_TIMEFRAMES`, so a caller cannot pool 1h by accident. Absent (the default) is
+    exactly today's single-symbol behaviour, down to the seed.
+
+    Every drawn hypothesis of 2..:data:`ABLATION_MAX_CONDITIONS` entry conditions — seeded,
+    topped-up, or fused — passes the train-only ablation lattice before registration
+    (:func:`ablate_hypothesis`); the result's ``ablated_count`` / ``luck_filtered_count``
+    say what the lattice did."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -3837,11 +4496,26 @@ def run_factory(
         ) if isinstance(h, str) and h
     )
     generation_id = next_generation_id([*pool_entries, *existing_candidates])
-    candles_sha = integrity.sha256_record({"candles": snapshot.get("candles") or []})
+    timeframe = str(snapshot.get("timeframe") or "1d")
+    # Pooling is opt-in per fire AND fenced by the policy above, so neither half alone turns it
+    # on. `legs` is every snapshot the spec will be scored across, primary first.
+    legs: list[Mapping[str, Any]] = [snapshot]
+    if cohort_snapshots and timeframe in POOLED_TIMEFRAMES:
+        legs.extend(s for s in cohort_snapshots if s is not snapshot)
+    pooled = len(legs) > 1
+    # The seed reads EVERY leg, not just the primary. Two cohorts sharing a first symbol would
+    # otherwise draw the same parameters, which is the reproducibility rule (`same seed, same
+    # batch`) quietly meaning something narrower than it says.
+    candles_sha = integrity.sha256_record(
+        {"candles": [leg.get("candles") or [] for leg in legs]} if pooled
+        else {"candles": snapshot.get("candles") or []}
+    )
     seed = int(candles_sha.split(":", 1)[1][:8], 16)
 
     symbol = str(snapshot.get("symbol") or "BTCUSDT")
-    timeframe = str(snapshot.get("timeframe") or "1d")
+    # Sorted so the cohort is one context however the caller ordered its fetches — this tuple is
+    # what `_matches_context` and `pool.search_context_key` compare on.
+    scope = sorted({str(leg.get("symbol") or "") for leg in legs} - {""}) if pooled else None
     # Read off the snapshot for the same reason as the two above: it is a property of the
     # data this run is mining, not a claim by whoever called. It was briefly a parameter,
     # which meant the venue an env var selected at collection and the venue the factory
@@ -3866,13 +4540,14 @@ def run_factory(
         ),
         symbol=symbol,
         timeframe=timeframe,
+        scope=scope,
     )
     # Counted from the store this function was already given — the rotation steps on
     # THIS context's fire count, not on the global generation number. Hoisted out of the call
     # below because the shortfall draw after fusion has to pass the SAME cursor: see there for
     # why it re-draws this fire's slice rather than stepping to the next one.
     rotation_index = context_rotation_index(
-        existing_candidates, symbol=symbol, timeframe=timeframe,
+        existing_candidates, symbol=symbol, timeframe=timeframe, scope=scope,
     )
     batch = generate_batch(
         generation_id, seed=seed, count=count,
@@ -3883,15 +4558,30 @@ def run_factory(
         positioning_eligible=positioning_eligible,
         venue=venue,
         rotation_index=rotation_index,
+        symbol_scope=scope,
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and
     # the calendar, not of any spec, and `build_feature_rows` alone is 6.0s at the 48,000-bar 15m
     # window — so rebuilding it per candidate cost ~30s a fire on a sequential scheduler.
     frame = build_replay_frame(snapshot)
+    frames = [frame, *(build_replay_frame(leg) for leg in legs[1:])] if pooled else [frame]
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
+    ablation_refused: list[dict[str, Any]] = []
+    # Every hash this fire may not register again: the store and pool (`known_hashes`)
+    # plus everything registered by this fire so far. An ablation winner is the one kind
+    # of spec that reaches registration WITHOUT its hash having passed the draw's own
+    # duplicate guard — the conditions changed after the draw — so the guard re-runs at
+    # the registration door, against this one running set.
+    fire_hashes: set[str] = set(known_hashes)
+    # What ablation did this fire, for the result and the operator's status line:
+    # `lattices` = hypotheses that ran one (2 <= k <= ABLATION_MAX_CONDITIONS), and
+    # `luck_filtered` = full conjunctions that failed to strictly beat their own best
+    # proper subset on train net expectancy — the stacked luck the lattice exists to
+    # catch, counted at selection time whether or not the subset then registered.
+    ablation_stats = {"lattices": 0, "luck_filtered": 0}
 
     def _score_draw(specs: Sequence[Mapping[str, Any]], params: Mapping[str, Any]) -> None:
         """Backtest one seeded draw, appending survivors to ``candidates``.
@@ -3904,12 +4594,40 @@ def run_factory(
             # Before scoring, because scoring it is the waste: a spec naming a feature these
             # rows never supply cannot enter here, and evidence saying otherwise would be
             # evidence for a trade this runtime cannot reproduce. See `unsuppliable_features`.
-            starved = unsuppliable_features(spec, frame.rows)
+            # Every leg, not just the primary. A pooled figure whose fourth symbol supplied
+            # none of the columns the rule names is a four-leg pool wearing a five-leg label,
+            # and `_holdout_evidence` would report `symbols: 5` over it. Fail closed on ANY leg
+            # — the guard F2's first pass walked around cost that batch its whole finding.
+            #
+            # And before the lattice, for the same reason in the other direction: ablation
+            # must not rescue a starved hypothesis by dropping its dead condition — the
+            # refusal is about the DRAW naming an unsupplied feature, and a subset minted
+            # from it would be a hypothesis nobody drew.
+            starved = sorted({f for fr in frames for f in unsuppliable_features(spec, fr.rows)})
             if starved:
                 starved_specs.append({"strategy_family": spec.strategy_family,
                                       "reason": UNSUPPLIABLE_FEATURE, "features": starved})
                 continue
-            evidence = backtest_spec(spec, snapshot, frame=frame)
+            # The ablation lattice (proposal §3, approved as proposed): between the draw and
+            # registration, on the train segment only. The winner — the full conjunction if
+            # it strictly beat every proper subset, else the best proper subset — is what
+            # runs the ordinary full backtest below and registers. Exactly one winner per
+            # hypothesis; k = 1 and k > ABLATION_MAX_CONDITIONS pass through untouched.
+            spec, ablation, refusal = _lattice_winner(
+                spec, frames, seen_hashes=fire_hashes, stats=ablation_stats,
+            )
+            if refusal is not None:
+                ablation_refused.append({"strategy_family": spec.strategy_family,
+                                         "reason": refusal})
+                continue
+            evidence = (backtest_spec_pooled(spec, [], frames=frames) if pooled
+                        else backtest_spec(spec, snapshot, frame=frame))
+            if ablation is not None:
+                # The grid this winner survived, on the record (§1-5). `lattice_size` is
+                # stored FACT — how many members were tried — and `pool.attempts_by_context`
+                # expands it at read time, so the unregistered siblings still pay the
+                # multiple-testing charge.
+                evidence["ablation"] = ablation
             record = {
                 "strategy_id": spec.strategy_id,
                 "strategy_rule_hash": spec.strategy_rule_hash,
@@ -3934,27 +4652,67 @@ def run_factory(
             # Stored id == derived id: strategy_id restarts every generation, so the
             # lineage-derived candidate_id is the only key promotions may use.
             record["candidate_id"] = derive_candidate_id(record)
+            fire_hashes.add(spec.strategy_rule_hash)
             candidates.append(record)
 
     _score_draw(batch["specs"], batch["params"])
 
     fused: list[dict[str, Any]] = []
     fusion_rejected: list[dict[str, Any]] = []
-    if fusion_pairs > 0:
+    # **A pooled fire does not fuse, and that is a boundary rather than an oversight.**
+    # `_fuse_batch` re-scores each parent on THIS window through `backtest_spec`, which takes one
+    # frame; handing it a cohort is a second increment. `fuse_specs` would pair pooled parents
+    # happily (their scopes match, so `symbol_scope_mismatch` never fires), so the child would be
+    # minted and scored on one leg while claiming five — the exact shape of wrong number this
+    # file spends most of its guards preventing.
+    #
+    # **`fusion_skipped` names WHY the path did not run, because `fused_count: 0` cannot.**
+    # Three unrelated situations produced an identical record — the caller never asked, the fire
+    # was pooled, or fusion ran and no bucket held a pair — and only the last is a fact about the
+    # candidate store. Measured 2026-08-15: every fire since the first pooled one
+    # (2026-08-10T08:12:38Z) reported `fused_count: 0` with an empty `fusion_rejected`, which is
+    # byte-identical to a dry parent pool, and the crossover path being off went unnoticed for six
+    # days. `pooled: true` was on the record and implied it, but implying is not saying — a reader
+    # has to already know this boundary exists to read it that way, and a watch built to catch a
+    # dry pool looked straight past it.
+    fusion_skipped = None if fusion_pairs > 0 else FUSION_NOT_REQUESTED
+    if fusion_pairs > 0 and pooled:
+        fusion_skipped = FUSION_POOLED_FIRE
+    if fusion_pairs > 0 and not pooled:
         fused, fusion_rejected = _fuse_batch(
-            fusion_parent_buckets(
-                existing_candidates,
-                symbol=str(snapshot.get("symbol") or ""),
-                timeframe=str(snapshot.get("timeframe") or ""),
-            ),
+            # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
+            # lines answered the same question and disagreed about the default — `run_factory`
+            # falls back to BTCUSDT, this fell back to "" — so a snapshot without a symbol
+            # would mint BTCUSDT specs while `fusion_parent_buckets` filtered on "" and dropped
+            # every parent (`symbol not in scope`), yielding no bucket and no children, in
+            # silence. Unreachable through the scheduler, which always sets it; one fact, one
+            # default, is the point.
+            fusion_parent_buckets(existing_candidates, symbol=symbol, timeframe=timeframe),
             snapshot,
             generation_id=generation_id,
-            start_index=len(candidates) + 1,
+            # Ids RESERVED by the seeded draw, never survivors of it. `generate_batch` numbers
+            # S001..S00count as it mints, and `_score_draw` then drops the specs whose features
+            # this frame never supplies — so with one starved spec `len(candidates) + 1` points
+            # at an id already issued, and the first fused child is minted under a name a stored
+            # seeded row already holds. Two different strategies, one `(generation_id,
+            # strategy_id)`: promotions key on the lineage-derived `candidate_id` so nothing
+            # mis-promotes, but `resolve_candidates` refuses the pair as ambiguous and any
+            # display surface shows one name over two rules.
+            #
+            # `count`, not `len(batch["specs"])`, so a draw that accepted fewer than it asked
+            # for leaves a GAP in the numbering rather than risking an overlap — and it is the
+            # same convention the shortfall draw below already uses.
+            start_index=count + 1,
             pairs=fusion_pairs,
-            seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
+            # The fire's own running set — `known_hashes` plus everything registered so far
+            # (the same contents the literal union here used to build). `_fuse_batch` adds
+            # each minted child to it, so the shortfall draw below and its ablation winners
+            # are deduplicated against the fused children without a second convention.
+            seen_hashes=fire_hashes,
             evidence_sha=candles_sha,
             frame=frame,
             now=now,
+            ablation_stats=ablation_stats,
         )
 
     # --- the half of the budget fusion declined ----------------------------------------
@@ -4017,14 +4775,14 @@ def run_factory(
             symbol=symbol,
             timeframe=timeframe,
             elite_params=centres,
-            known_rule_hashes=frozenset({
-                *known_hashes,
-                *(c["strategy_rule_hash"] for c in candidates),
-                *(c["strategy_rule_hash"] for c in fused),
-            }),
+            # The fire's running set again: store + pool + this fire's seeded rows and fused
+            # children — the identical contents the literal union here used to spell out,
+            # now including any ablation winner whose hash the draw itself never saw.
+            known_rule_hashes=frozenset(fire_hashes),
             positioning_eligible=positioning_eligible,
             venue=venue,
             rotation_index=rotation_index,
+            symbol_scope=scope,
         )
         kept = topup["specs"][:topup_requested]
         topup_accepted = len(kept)
@@ -4035,6 +4793,12 @@ def run_factory(
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
         "seed": seed,
+        # What this fire actually mined, so a reader of the result never has to infer it from the
+        # rows. `symbol_scope` on a candidate says what the spec covers; these say what the FIRE
+        # was, which is the thing a scheduler log and a later audit ask about — and a pooled fire
+        # that fused nothing looks identical to a dry parent pool without it.
+        "pooled": pooled,
+        "pooled_symbols": list(scope) if pooled else [],
         # Both counts describe the FIRE rather than the first draw, which is what they already
         # claimed to mean and what the scheduler's `generated=N/M` reads: a fire that asked for
         # eight and minted eight is complete, and one that asked for four is a fire fusion
@@ -4049,9 +4813,16 @@ def run_factory(
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
-        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs],
+        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs, *ablation_refused],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
+        # What the ablation lattice did this fire — seeded and fused hypotheses together,
+        # since `_fuse_batch` shares the counter. `ablated_count` is lattices RUN;
+        # `luck_filtered_count` is how many full conjunctions failed to strictly beat their
+        # own best proper subset, i.e. how much stacked luck the grid caught. The scheduler's
+        # status line forwards both, so the budget a lattice spends is legible per fire.
+        "ablated_count": ablation_stats["lattices"],
+        "luck_filtered_count": ablation_stats["luck_filtered"],
         # How much of the fusion allocation the shortfall draw re-spent, at MINT time — the
         # same basis as `accepted_count`, so the two decompose without a second convention.
         # Zero on a fire fusion filled, which is the only reading that says "nothing was
@@ -4059,6 +4830,9 @@ def run_factory(
         # itself was complete.
         "seeded_topup_count": topup_accepted,
         "fusion_rejected": fusion_rejected,
+        # ``None`` exactly when the fusion path executed, so an empty ``fusion_rejected`` beside a
+        # ``None`` here is the one reading that means "fusion looked and the store had no pair".
+        "fusion_skipped": fusion_skipped,
         "evidence_input_sha256": candles_sha,
         "created_at": now,
     }

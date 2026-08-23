@@ -34,17 +34,18 @@ def ledger(tmp_path):
 
 
 @pytest.fixture
-def captured_run_task(monkeypatch):
-    """The door's pipeline call, captured. How many times it lands here IS the claim in most of
-    what follows, so the counter is the assertion and not scaffolding."""
+def captured_execute():
+    """The door's forward to the pipeline worker, captured. How many times it lands here IS
+    the claim in most of what follows, so the counter is the assertion and not scaffolding."""
     calls: list[dict] = []
 
-    def _fake(raw_request, **kwargs):
-        calls.append({"raw_request": raw_request, **kwargs})
-        return {"status": "COMPLETED", "final_response": "ok", "task_id": f"task-{len(calls)}"}
+    def _execute(text, kind, reason, naver_keywords):
+        calls.append({"request": text, "kind": kind, "reason": reason})
+        return {"ok": True, "kind": kind, "task_id": f"task-{len(calls)}",
+                "final_response": "ok", "actor": "assistant_bridge"}
 
-    monkeypatch.setattr(dispatch_bridge, "run_task", _fake)
-    return calls
+    _execute.calls = calls
+    return _execute
 
 
 def _halt(store, *, now=NOW):
@@ -191,17 +192,17 @@ def test_the_record_carries_no_payload(ledger):
 
 # --- the dispatch door ------------------------------------------------------------
 
-def test_a_dispatch_without_an_id_still_runs(tmp_path, captured_run_task):
+def test_a_dispatch_without_an_id_still_runs(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     out = dispatch_bridge.apply_dispatch(
         {"request": "analyze this", "kind": "analysis", "reason": "asked"},
-        control_store=store, ledger=LedgerStore(tmp_path), now=NOW,
+        control_store=store, ledger=LedgerStore(tmp_path), execute=captured_execute, now=NOW,
     )
     assert out["ok"] is True
-    assert len(captured_run_task) == 1
+    assert len(captured_execute.calls) == 1
 
 
-def test_a_repeated_dispatch_runs_once(tmp_path, captured_run_task):
+def test_a_repeated_dispatch_runs_once(tmp_path, captured_execute):
     """The failure this closes: a client that timed out re-sends, and a second analysis is
     billed to a quota shared with the operator's own assistant."""
     store = ControlStore(tmp_path)
@@ -209,10 +210,12 @@ def test_a_repeated_dispatch_runs_once(tmp_path, captured_run_task):
     frame = {"request": "analyze this", "kind": "analysis", "reason": "asked",
              "request_id": "req-abc"}
 
-    first = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, now=NOW)
-    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, now=LATER)
+    first = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger,
+                                           execute=captured_execute, now=NOW)
+    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger,
+                                            execute=captured_execute, now=LATER)
 
-    assert len(captured_run_task) == 1, "the pipeline ran twice for one request"
+    assert len(captured_execute.calls) == 1, "the worker ran twice for one request"
     assert first["ok"] is True
     assert first["request_id"] == "req-abc"
     assert "replayed" not in first
@@ -221,24 +224,24 @@ def test_a_repeated_dispatch_runs_once(tmp_path, captured_run_task):
     assert second["outcome"]["task_id"] == first["task_id"]
 
 
-def test_a_dispatch_id_reused_for_a_different_request_is_blocked(tmp_path, captured_run_task):
+def test_a_dispatch_id_reused_for_a_different_request_is_blocked(tmp_path, captured_execute):
     store = ControlStore(tmp_path)
     ledger = LedgerStore(tmp_path)
     dispatch_bridge.apply_dispatch(
         {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "r1"},
-        control_store=store, ledger=ledger, now=NOW,
+        control_store=store, ledger=ledger, execute=captured_execute, now=NOW,
     )
     with pytest.raises(ControlBlocked) as exc:
         dispatch_bridge.apply_dispatch(
             {"request": "something else", "kind": "analysis", "reason": "asked",
              "request_id": "r1"},
-            control_store=store, ledger=ledger, now=LATER,
+            control_store=store, ledger=ledger, execute=captured_execute, now=LATER,
         )
     assert exc.value.reason_code == "REQUEST_ID_REUSED"
-    assert len(captured_run_task) == 1
+    assert len(captured_execute.calls) == 1
 
 
-def test_a_refused_dispatch_never_burns_its_id(tmp_path, captured_run_task):
+def test_a_refused_dispatch_never_burns_its_id(tmp_path, captured_execute):
     """The claim is taken after validation, so a frame that was going to be refused anyway
     leaves its id usable — otherwise a typo would cost the caller an id it never spent."""
     store = ControlStore(tmp_path)
@@ -246,16 +249,39 @@ def test_a_refused_dispatch_never_burns_its_id(tmp_path, captured_run_task):
     with pytest.raises(ControlBlocked):
         dispatch_bridge.apply_dispatch(
             {"request": "  ", "kind": "analysis", "reason": "asked", "request_id": "r2"},
-            control_store=store, ledger=ledger, now=NOW,
+            control_store=store, ledger=ledger, execute=captured_execute, now=NOW,
         )
     out = dispatch_bridge.apply_dispatch(
         {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "r2"},
-        control_store=store, ledger=ledger, now=NOW,
+        control_store=store, ledger=ledger, execute=captured_execute, now=NOW,
     )
     assert out["ok"] is True
 
 
-def test_a_killed_runtime_refuses_before_the_id_is_claimed(tmp_path, captured_run_task):
+def test_a_worker_refusal_never_burns_its_id_either(tmp_path, captured_execute):
+    """New with the split: a refusal envelope from the worker (its kill-switch re-check, a
+    BRIDGE_BUSY) means nothing ran, so the claim is released and the same id retries cleanly
+    once the cause clears — the same contract an in-process refusal always had."""
+    store = ControlStore(tmp_path)
+    ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked",
+             "request_id": "r-worker"}
+
+    def _busy(text, kind, reason, naver_keywords):
+        return {"ok": False, "reason_code": "BRIDGE_BUSY", "reason": "retry shortly"}
+
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger,
+                                       execute=_busy, now=NOW)
+    assert exc.value.reason_code == "BRIDGE_BUSY"
+
+    out = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger,
+                                         execute=captured_execute, now=LATER)
+    assert out["ok"] is True
+    assert len(captured_execute.calls) == 1
+
+
+def test_a_killed_runtime_refuses_before_the_id_is_claimed(tmp_path, captured_execute):
     """The kill switch is not a spent id: a dispatch refused by a halt must be retriable with
     the same id once the runtime is resumed."""
     store = ControlStore(tmp_path)
@@ -264,16 +290,17 @@ def test_a_killed_runtime_refuses_before_the_id_is_claimed(tmp_path, captured_ru
              "request_id": "r3"}
     with pytest.raises(ControlBlocked):
         dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=LedgerStore(tmp_path),
-                                       now=NOW)
+                                       execute=captured_execute, now=NOW)
 
     control.apply_command(store, control.CMD_RESUME, actor="test", now=LATER, reason="go")
     out = dispatch_bridge.apply_dispatch(frame, control_store=store,
-                                         ledger=LedgerStore(tmp_path), now=LATER)
+                                         ledger=LedgerStore(tmp_path),
+                                         execute=captured_execute, now=LATER)
     assert out["ok"] is True
-    assert len(captured_run_task) == 1
+    assert len(captured_execute.calls) == 1
 
 
-def test_a_dispatch_id_without_a_ledger_fails_closed(tmp_path, captured_run_task):
+def test_a_dispatch_id_without_a_ledger_fails_closed(tmp_path, captured_execute):
     """Honouring the request while dropping the guarantee gives the caller the duplicate it
     was trying to avoid, silently."""
     store = ControlStore(tmp_path)
@@ -281,10 +308,10 @@ def test_a_dispatch_id_without_a_ledger_fails_closed(tmp_path, captured_run_task
         dispatch_bridge.apply_dispatch(
             {"request": "analyze this", "kind": "analysis", "reason": "asked",
              "request_id": "r4"},
-            control_store=store, ledger=None, now=NOW,
+            control_store=store, ledger=None, execute=captured_execute, now=NOW,
         )
     assert exc.value.reason_code == "IDEMPOTENCY_UNAVAILABLE"
-    assert captured_run_task == []
+    assert captured_execute.calls == []
 
 
 # --- the switch door's enable -----------------------------------------------------

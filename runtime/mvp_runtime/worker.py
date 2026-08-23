@@ -274,6 +274,42 @@ def _search_context(search_hits: list[Mapping[str, Any]] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _keyword_context(keyword_rows: list[Mapping[str, Any]] | None) -> str:
+    """Measured Naver keyword demand appended to the prompt. Empty when no brief ran.
+
+    Numbers only, no advice: the rows are evidence the specialist cites ([K#]), and the
+    block states their provenance so the model treats them as measurements rather than
+    suggestions. ``competing_posts`` renders only where the lookup landed — an absent
+    column stays absent, because "0 competing posts" is a claim this block must not invent.
+    """
+    if not keyword_rows:
+        return ""
+    # Mock rows (env gate closed -> deterministic fixtures) must announce themselves HERE,
+    # where the model reads, not only in the ledger record. Before this label the block's
+    # header asserted "Measured ... demand" over fabricated volumes, and the model had no
+    # way to know the difference — the one surviving sliver of an external review's
+    # mock/degraded claim (2026-08-10). Mock and live never mix within one brief (one tool
+    # serves all rows), so the label is per-block, not per-row.
+    mock = any(str(row.get("source", "")).startswith("mock.") for row in keyword_rows)
+    if mock:
+        lines = ["\nMOCK keyword fixtures (research gate closed — deterministic test data, "
+                 "NOT measured demand; never present these numbers as real; cite by [K#]):"]
+    else:
+        lines = ["\nMeasured Naver keyword demand (monthly search counts; cite by [K#]):"]
+    for index, row in enumerate(keyword_rows, start=1):
+        competing = (
+            f", competing blog posts {row['competing_posts']:,}"
+            if "competing_posts" in row else ""
+        )
+        low = " (low-volume estimate)" if row.get("low_volume") else ""
+        lines.append(
+            f"[K{index}] {row.get('keyword', '')} — total {row.get('monthly_total', 0):,}/mo "
+            f"(PC {row.get('monthly_pc', 0):,} / mobile {row.get('monthly_mobile', 0):,}), "
+            f"ad competition {row.get('competition', 'unknown')}{competing}{low}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _memory_context(memory_entries: list[Mapping[str, Any]] | None) -> str:
     """A prior-working-memory block appended to the prompt. Empty when none was retrieved."""
     if not memory_entries:
@@ -337,6 +373,7 @@ def build_role_prompt(
     memory_entries: list[Mapping[str, Any]] | None = None,
     validated_entries: list[Mapping[str, Any]] | None = None,
     revision_requests: list[str] | None = None,
+    keyword_rows: list[Mapping[str, Any]] | None = None,
 ) -> str:
     """The prompt for a routable Role that is NOT the business analyst (§8.5).
 
@@ -370,6 +407,7 @@ def build_role_prompt(
         f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
+        f"{_keyword_context(keyword_rows)}"
         f"{_revision_context(revision_requests)}"
         f"In the SAME JSON object, additionally include these role-specific keys: {keys_desc}.\n"
         "Separate facts (with evidence) from inferences, disclose assumptions and uncertainty, "
@@ -384,6 +422,7 @@ def build_prompt(
     memory_entries: list[Mapping[str, Any]] | None = None,
     validated_entries: list[Mapping[str, Any]] | None = None,
     revision_requests: list[str] | None = None,
+    keyword_rows: list[Mapping[str, Any]] | None = None,
 ) -> str:
     scope = task.get("scope", {})
     role_scope = assignment.get("role_scope", {})
@@ -401,6 +440,7 @@ def build_prompt(
         f"{_validated_context(validated_entries)}"
         f"{_memory_context(memory_entries)}"
         f"{_search_context(search_hits)}"
+        f"{_keyword_context(keyword_rows)}"
         f"{_revision_context(revision_requests)}"
         "Return a structured, read-only analysis. Separate facts (with evidence) from "
         "inferences, disclose assumptions and uncertainty, and do not propose external actions.\n"
@@ -412,10 +452,12 @@ def _build_evidence(
     search_hits: list[Mapping[str, Any]] | None,
     memory_entries: list[Mapping[str, Any]] | None = None,
     validated_entries: list[Mapping[str, Any]] | None = None,
+    keyword_rows: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Evidence backing the output: the model's own reasoning, each read-only search hit
-    (source-attributed), each prior working-memory candidate, and each VALIDATED memory
-    entry the run drew on — so what the output leaned on is auditable."""
+    (source-attributed), each prior working-memory candidate, each VALIDATED memory
+    entry, and each measured keyword-demand row the run drew on — so what the output
+    leaned on is auditable."""
     evidence: list[dict[str, Any]] = [{"ref": "model:analysis", "type": "model_reasoning"}]
     for entry in validated_entries or []:
         validated_id = entry.get("validated_memory_id")
@@ -444,6 +486,16 @@ def _build_evidence(
             "ref": f"working_memory:{candidate_id}",
             "type": "working_memory",
             "candidate_type": entry.get("candidate_type", ""),
+        })
+    for index, row in enumerate(keyword_rows or [], start=1):
+        keyword = row.get("keyword")
+        if not isinstance(keyword, str) or not keyword:
+            continue
+        evidence.append({
+            "ref": f"keyword:{row.get('source', 'naver')}:{index}",
+            "type": "keyword_demand",
+            "keyword": keyword,
+            "monthly_total": row.get("monthly_total", 0),
         })
     return evidence
 
@@ -565,6 +617,7 @@ def run_analysis_worker(
     search_hits: list[Mapping[str, Any]] | None = None,
     memory_entries: list[Mapping[str, Any]] | None = None,
     validated_entries: list[Mapping[str, Any]] | None = None,
+    keyword_rows: list[Mapping[str, Any]] | None = None,
     repo_root: Path | None = None,
     prompt_override: str | None = None,
     revision_requests: list[str] | None = None,
@@ -603,7 +656,8 @@ def run_analysis_worker(
         raise WorkerBlocked("NO_MODEL_BUDGET", "assignment grants no model call")
 
     prompt = prompt_override if prompt_override is not None else build_prompt(
-        task, assignment, search_hits, memory_entries, validated_entries, revision_requests
+        task, assignment, search_hits, memory_entries, validated_entries, revision_requests,
+        keyword_rows,
     )
     try:
         result = provider.generate(
@@ -668,7 +722,7 @@ def run_analysis_worker(
         "goal": task.get("scope", {}).get("primary_objective") or task.get("request", {}).get("normalized_goal", ""),
         "summary": analysis["summary"],
         "facts": _normalize_facts(analysis.get("facts")),
-        "evidence": _build_evidence(search_hits, memory_entries, validated_entries),
+        "evidence": _build_evidence(search_hits, memory_entries, validated_entries, keyword_rows),
         "inferences": _normalize_inferences(analysis.get("inferences")),
         "assumptions": _str_list(analysis.get("assumptions")),
         "uncertainty": _str_list(analysis.get("uncertainty")),

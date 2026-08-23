@@ -18,6 +18,8 @@ import math
 import pytest
 
 from runtime.mvp_runtime.crypto.pool import (
+    attempt_context_key,
+    pooled_context_keys,
     attempts_by_context,
     candidate_quality,
     rank_candidates,
@@ -191,3 +193,79 @@ def test_rank_candidates_counts_attempts_over_the_population_it_sorts():
     ranked = [r["candidate_id"] for r in rank_candidates(crowded + [lonely])]
     # Identical evidence; the only difference is how many siblings it was chosen out of.
     assert ranked[0] == "eth_1"
+
+
+# --- the attempt follows the bars it was scored against (F9 topup omission) ------
+
+COHORT = ("BNBUSDT", "BTCUSDT", "DOGEUSDT", "ETHUSDT", "SOLUSDT")
+
+
+def _pooled(cid, *, timeframe="4h", cohort=COHORT, **kw):
+    row = _candidate(cid, timeframe=timeframe, **kw)
+    row["strategy_spec"]["symbol_scope"] = list(cohort)
+    row["backtest_evidence"]["symbols_replayed"] = len(cohort)
+    return row
+
+
+def _mislabelled(cid, *, symbol="BTCUSDT", timeframe="4h", symbols=5, in_holdout=False, **kw):
+    """The F9 topup shape: single-symbol scope, cohort-scored evidence (fixed by #712)."""
+    row = _candidate(cid, symbol=symbol, timeframe=timeframe, **kw)
+    if in_holdout:
+        row["backtest_evidence"]["holdout"] = {"symbols": symbols, "closed_count": 30}
+    else:
+        row["backtest_evidence"]["symbols_replayed"] = symbols
+    return row
+
+
+def test_a_scope_mismatched_row_charges_the_cohort_it_was_scored_on():
+    """An attempt charges the bars it was scored against. A topup row minted single-scope but
+    scored pooled was never an attempt against the single-symbol bars — leaving it there
+    understated the pooled context's burden (the anti-conservative direction the audit
+    measured: bar 3.49 where the true count says 3.64) and inflated the single context's."""
+    rows = [
+        _pooled("pooled_1"),
+        _mislabelled("mis_1"),
+        _mislabelled("mis_2", in_holdout=True),
+        _candidate("single_1", timeframe="4h"),
+    ]
+    counts = attempts_by_context(rows)
+    pooled_key = (COHORT, "4h")
+    assert counts[pooled_key] == 3
+    assert counts[(("BTCUSDT",), "4h")] == 1
+
+
+def test_the_mismatched_row_is_judged_against_the_key_it_charges():
+    """Counting and lookup must move together: a row judged against a key it does not charge
+    would face a bar computed without its own attempt in it."""
+    rows = [_pooled("pooled_1"), _mislabelled("mis_1"), _candidate("single_1", timeframe="4h")]
+    pooled_keys = pooled_context_keys(rows)
+    assert attempt_context_key(rows[1], pooled_keys=pooled_keys) == (COHORT, "4h")
+    assert attempt_context_key(rows[2], pooled_keys=pooled_keys) == (("BTCUSDT",), "4h")
+
+
+def test_reattribution_needs_an_unambiguous_cohort():
+    """Two same-size cohorts on one timeframe make the move unprovable, and an unprovable
+    move stays home: the stored key is the pre-existing behavior, and today it carries the
+    LARGER count, so falling back can only raise the bar, never lower it."""
+    other = ("ADAUSDT", "BTCUSDT", "LINKUSDT", "XRPUSDT", "LTCUSDT")
+    rows = [_pooled("pooled_1"), _pooled("pooled_2", cohort=other), _mislabelled("mis_1")]
+    pooled_keys = pooled_context_keys(rows)
+    assert ("4h", 5) not in pooled_keys
+    assert attempt_context_key(rows[2], pooled_keys=pooled_keys) == (("BTCUSDT",), "4h")
+
+
+def test_a_symbol_outside_the_cohort_stays_home():
+    """Membership is part of the proof: a single-scope row whose symbol the cohort does not
+    contain cannot have been one of its draws."""
+    rows = [_pooled("pooled_1"), _mislabelled("mis_1", symbol="XRPUSDT")]
+    pooled_keys = pooled_context_keys(rows)
+    assert attempt_context_key(rows[1], pooled_keys=pooled_keys) == (("XRPUSDT",), "4h")
+
+
+def test_a_store_with_no_cohort_counts_exactly_as_before():
+    """Pre-F9 stores (and every single-symbol row in any store) are untouched: the
+    evidence-aware key is the stored key whenever nothing pooled exists to move to."""
+    rows = [_candidate(f"c_{i}") for i in range(4)] + [_mislabelled("mis_1")]
+    counts = attempts_by_context(rows)
+    assert counts[(("BTCUSDT",), "1h")] == 4
+    assert counts[(("BTCUSDT",), "4h")] == 1  # the mismatched row stayed on its stored key

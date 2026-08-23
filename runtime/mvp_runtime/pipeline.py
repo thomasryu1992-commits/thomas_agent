@@ -48,6 +48,7 @@ from .memory import (
 from .prime import plan_task
 from .programization import ProgramizationStore, observe_completed_run
 from .store import LedgerStore
+from . import naver_research
 from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
 from .validation import validate_agent_output
@@ -193,6 +194,16 @@ def render_response(
     evidence actually was."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
+    # The content role's deliverable IS the draft. This renderer special-cases the analysis
+    # keys (key_findings, perspectives) and dropped every other role's own product — so a
+    # content.general run wrote a complete draft into the ledger while the delivered reply
+    # showed only the meta-analysis around it, and the caller reasonably concluded the run
+    # "produced an analysis instead of a draft" (measured 2026-08-10, the lane's first
+    # draft_content dispatch). Rendered FIRST because it is what was asked for; the analysis
+    # sections that follow are the review of it.
+    draft = rso.get("content_draft")
+    if isinstance(draft, str) and draft.strip():
+        lines += ["## Draft", "", draft.strip(), ""]
     findings = rso.get("key_findings", [])
     if findings:
         lines.append("## Key findings")
@@ -324,7 +335,8 @@ def _planned_allocation(
     return base_agents + (2 if revise else 0), (1 if auto_policy else 0)
 
 
-def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path: bool) -> None:
+def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *,
+                 wrote_path: bool, briefed: bool = False) -> None:
     """Put the plan's governance records on the run's record set.
 
     The conditional halves are the point: a validator assignment exists only when one was
@@ -342,6 +354,8 @@ def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path
         records["validator_assignment"] = plan["validator_assignment"]
     if wrote_path:
         records["write_permission_decision"] = plan["write_permission_decision"]
+    if briefed:
+        records["keyword_permission_decision"] = plan["keyword_permission_decision"]
 
 
 def _settle_reviewer(
@@ -673,6 +687,7 @@ def _revise_once(
     search_hits: list[dict[str, Any]],
     memory_entries: list[dict[str, Any]],
     validated_entries: list[dict[str, Any]],
+    keyword_rows: list[dict[str, Any]],
     working_memory: WorkingMemoryStore | None,
     now: str,
     repo_root: Path | None,
@@ -699,11 +714,12 @@ def _revise_once(
 
     role_prompt, role_output_keys = _role_execution(
         plan, search_hits=search_hits, memory_entries=memory_entries,
-        validated_entries=validated_entries, revision_requests=revision_requests)
+        validated_entries=validated_entries, revision_requests=revision_requests,
+        keyword_rows=keyword_rows)
     agent_output, invocation = run_analysis_worker(
         plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
         search_hits=search_hits, memory_entries=memory_entries,
-        validated_entries=validated_entries, repo_root=repo_root,
+        validated_entries=validated_entries, keyword_rows=keyword_rows, repo_root=repo_root,
         revision_requests=revision_requests,
         prompt_override=role_prompt, role_output_keys=role_output_keys,
     )
@@ -755,6 +771,7 @@ def run_task(
     *,
     provider: Provider | None = None,
     search_tool: SearchTool | None = None,
+    keyword_seeds: str | None = None,
     working_memory: WorkingMemoryStore | None = None,
     programization: ProgramizationStore | None = None,
     now: str | None = None,
@@ -785,6 +802,16 @@ def run_task(
     ``search_tool`` runs a read-only web search whose hits become source-attributed
     evidence on the output (default ``MockSearchTool`` — deterministic, no network; a real
     network tool is chosen via the Safety-Flag Gate by the caller).
+
+    ``keyword_seeds`` (opt-in) runs one Naver keyword brief — measured monthly demand,
+    competition counts, and a trend series for the given comma-separated seeds — whose rows
+    become ``[K#]`` evidence the same way search hits become ``[S#]``. Explicit rather than
+    derived from the request text: the Search Ad API wants short keyword seeds, and a
+    sentence-shaped goal fed to it would measure garbage while looking like research. Same
+    enrichment posture as search — the brief's tools come from the env-only gate
+    (deterministic Mocks until ``MVP_NAVER_RESEARCH=enabled``), a backend failure degrades
+    the run rather than blocking it, and the use is recorded (``keyword_research``) either
+    way. Omitted (None) = no brief, byte-identical to before the lane existed.
 
     ``working_memory`` (opt-in) makes prior working-memory candidates and operator-promoted
     VALIDATED memory available as context and accumulates this run's candidates for later
@@ -900,9 +927,11 @@ def run_task(
             task, now=now, repo_root=repo_root,
             independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
+            keyword_research=keyword_seeds is not None,
             request_kind=request_kind,
         )
-        _record_plan(plan, records, wrote_path=write_path is not None)
+        _record_plan(plan, records, wrote_path=write_path is not None,
+                     briefed=keyword_seeds is not None)
 
         validate_run, triage_result, triage_invocation = _settle_reviewer(
             plan, records, auto_policy=auto_policy,
@@ -932,6 +961,19 @@ def run_task(
             tool_use = degraded_search_record(search_tool, query, exc.reason_code, now=now)
         records["tool_use"] = tool_use
 
+        # The Naver keyword brief (opt-in, blog content lane): measured demand as [K#]
+        # evidence, exactly the search tool's posture — enrichment that degrades, never
+        # blocks, and is recorded either way. Unlike run_search it does NOT raise on
+        # failure: every leg (including an unusable seed) degrades internally and the
+        # record's `degraded_legs` says which failed and why, so there is no except arm
+        # here on purpose — one would be dead code guarding a contract the brief already
+        # keeps.
+        keyword_rows: list[dict[str, Any]] = []
+        if keyword_seeds is not None:
+            keyword_rows, keyword_record = naver_research.run_keyword_brief(
+                keyword_seeds, now=now)
+            records["keyword_research"] = keyword_record
+
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
         # A corrupt store fails closed here (BLOCK), like the ledger.
         memory_entries = (
@@ -950,12 +992,12 @@ def run_task(
 
         role_prompt, role_output_keys = _role_execution(
             plan, search_hits=search_hits, memory_entries=memory_entries,
-            validated_entries=validated_entries)
+            validated_entries=validated_entries, keyword_rows=keyword_rows)
         _progress(on_progress, STEP_ANALYSIS_WORKER)
         agent_output, invocation = run_analysis_worker(
             plan["task"], plan["role_assignment"], provider=specialist_provider, created_at=now,
             search_hits=search_hits, memory_entries=memory_entries,
-            validated_entries=validated_entries, repo_root=repo_root,
+            validated_entries=validated_entries, keyword_rows=keyword_rows, repo_root=repo_root,
             prompt_override=role_prompt, role_output_keys=role_output_keys,
         )
         records["agent_output"] = agent_output
@@ -1016,7 +1058,8 @@ def run_task(
                 validate_run=validate_run,
                 specialist_provider=specialist_provider, validator_provider=validator_provider,
                 search_hits=search_hits, memory_entries=memory_entries,
-                validated_entries=validated_entries, working_memory=working_memory,
+                validated_entries=validated_entries, keyword_rows=keyword_rows,
+                working_memory=working_memory,
                 now=now, repo_root=repo_root,
             )
             # A revision REPLACES the first attempt's output, validation and review.
@@ -1094,6 +1137,8 @@ def run_task(
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
             now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
+            keyword_use=records.get("keyword_research"),
+            keyword_permission_decision=plan.get("keyword_permission_decision"),
             triage_result=triage_result,
             triage_invocation=triage_invocation,
             triage_permission_decision=plan.get("triage_permission_decision"),

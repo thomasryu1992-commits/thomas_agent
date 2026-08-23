@@ -34,6 +34,7 @@ from runtime.mvp_runtime.crypto.factory import (
 )
 from runtime.mvp_runtime.crypto.strategy import StrategySpec, evaluate_spec
 from runtime.mvp_runtime.errors import ToolBlocked
+from runtime.mvp_runtime import scheduler as scheduler_mod
 from runtime.mvp_runtime.scheduler import (
     FACTORY_FUSION_PAIRS,
     KIND_FACTORY,
@@ -89,12 +90,20 @@ def _funding_series(candles, *, hours=8):
     return events
 
 
-def _trending_snapshot(n=200, *, funding=True):
+def _trending_snapshot(n=200, *, funding=True, taker_flow=True):
     """Rising closes with a mid-series dip: entries and both exit kinds occur.
 
     ``funding`` defaults ON because a production snapshot always carries it. Pass False for the
     tests that are ABOUT an unsourced carry — see :func:`_funding_series` for why the default
     had to move.
+
+    ``taker_flow`` defaults ON for the same reason and it is the stronger case: the aggressor
+    legs arrive in every klines response the collector makes, so a snapshot WITHOUT them is a
+    shape production never produces. It defaulted off only because nothing had needed it, and
+    what that cost was invisible until the rotation grew — a fire whose block lands on the flow
+    families mints nothing at all against a snapshot missing their columns
+    (``unsuppliable_features``), so the fixture silently decided which families these tests
+    could see. Pass False for a test that is about the absence itself.
     """
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
@@ -104,12 +113,25 @@ def _trending_snapshot(n=200, *, funding=True):
         drift = 1.0 if (i // 20) % 3 != 2 else -1.5  # two up-blocks, one down-block
         price = max(10.0, price + drift)
         close_time = last_close - (n - 1 - i) * step
-        candles.append({
+        volume = 10.0 + (i % 7)
+        candle = {
             "open_time": timeutil.format_iso(close_time - step),
             "open": price - drift, "high": price + 1.5, "low": price - 1.5,
-            "close": price, "volume": 10.0 + (i % 7),
+            "close": price, "volume": volume,
             "close_time": timeutil.format_iso(close_time),
-        })
+        }
+        if taker_flow:
+            # The aggressor split swings with the block's drift, so the flow columns carry
+            # signal rather than a constant — a constant would leave every flow family at
+            # zero trades, which is the same blindness by a different route.
+            buy_share = 0.62 if drift > 0 else 0.38
+            candle.update({
+                "taker_buy_base": volume * buy_share,
+                "taker_buy_quote": volume * buy_share * price,
+                "quote_volume": volume * price,
+                "trade_count": 40.0 + (i % 11),
+            })
+        candles.append(candle)
     snapshot = {"symbol": "BTCUSDT", "timeframe": "1d", "candles": candles,
                 "is_synthetic": False}
     if funding:
@@ -774,14 +796,17 @@ def _volatility_regime_snapshot(n=600):
     step = timedelta(days=1)
     last_close = NOW_DT - timedelta(hours=1)
     candles = []
-    price = 100.0
+    # Prices scaled so ATR (±span) is a realistic fraction of price (~0.5-1.5%),
+    # not the 4% that price=100 / span=4 produces — at 20x leverage the liquidation
+    # guard correctly refuses stops wider than ~4.6% of entry.
+    price = 5000.0
     for i in range(n):
         violent = (i // 25) % 2 == 1
-        drift = 2.0 if violent else 0.25
-        span = 4.0 if violent else 0.4
+        drift = 20.0 if violent else 2.5
+        span = 40.0 if violent else 4.0
         if (i // 25) % 4 == 3:  # one falling violent block, so the short legs can enter
             drift = -drift
-        price = max(10.0, price + drift)
+        price = max(500.0, price + drift)
         close_time = last_close - (n - 1 - i) * step
         candles.append({
             "open_time": timeutil.format_iso(close_time - step),
@@ -987,6 +1012,71 @@ def test_a_pooled_backtest_needs_something_to_replay():
         factory.backtest_spec_pooled(spec, [])
 
 
+# --- walk-forward period subtotals: temporal_stability's inputs, recorded before judged ------
+#
+# The scored region cut the way `_holdout_evidence` cuts the tail — same field names, same
+# clamp rule — so the store can measure whether the subtotals discriminate BEFORE anything
+# scores on them (`scripts/walk_forward_stability_report.py` reads them; the decision gate is
+# `docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md`). The holdout suite's
+# "changing only the tail leaves walk_forward identical" test already pins these to the
+# scored region, so what is left to pin here is the accounting and the withheld judgment.
+
+
+def test_walk_forward_periods_subtotal_the_scored_region_exactly():
+    """Every closed trade lands in exactly one period: the subtotals are a partition of the
+    scored net R, never a resample of it."""
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), _trending_snapshot(400))
+    assert evidence["closed_count"] > 0, "fixture must trade, or this pins nothing"
+    wf = evidence["walk_forward"]
+    assert len(wf["period_r"]) == factory.WALK_FORWARD_PERIODS
+    assert len(wf["period_trades"]) == factory.WALK_FORWARD_PERIODS
+    assert wf["periods"] == factory.WALK_FORWARD_PERIODS
+    assert sum(wf["period_trades"]) == evidence["closed_count"]
+    assert sum(wf["period_r"]) == pytest.approx(
+        evidence["cost_summary"]["total_net_r"], abs=1e-6)
+    assert wf["periods_judged"] == sum(1 for n in wf["period_trades"] if n > 0)
+
+
+def test_temporal_stability_is_recorded_as_inputs_but_not_yet_judged():
+    """This increment records and withholds: the field stays None, the scorer keeps reading
+    absent evidence, and stripping the new subtotals moves nothing — so no score and no
+    verdict can differ between a record minted before and after this landed. The judgment
+    is PR-2's, taken on the store's own measured occupancy and discrimination (the
+    `HOLDOUT_PERIODS` order: measured, then moved)."""
+    evidence = backtest_spec(StrategySpec.from_dict(_spec_dict()), _trending_snapshot(400))
+    walk_forward = evidence["walk_forward"]
+    assert walk_forward["temporal_stability"] is None
+    assert "insufficient_walk_forward_evidence" in evidence["robustness"]["warnings"]
+
+    spec = StrategySpec.from_dict(_spec_dict())
+    metrics = {"trade_count": evidence["closed_count"],
+               "total_net_r": evidence["cost_summary"]["total_net_r"],
+               "fee_cost_r": evidence["cost_summary"]["total_fee_cost_r"],
+               "slippage_cost_r": evidence["cost_summary"]["total_slippage_cost_r"],
+               "funding_cost_r": evidence["cost_summary"]["total_funding_cost_r"]}
+    stripped = {key: value for key, value in walk_forward.items()
+                if key not in {"period_r", "period_trades", "periods", "periods_judged"}}
+    with_inputs = robustness.score_robustness(
+        spec, metrics, walk_forward, evidence["regime_breakdown"], holdout=evidence["holdout"])
+    without = robustness.score_robustness(
+        spec, metrics, stripped, evidence["regime_breakdown"], holdout=evidence["holdout"])
+    assert with_inputs["robustness_score"] == without["robustness_score"]
+    assert with_inputs["verdict"] == without["verdict"]
+
+
+def test_a_pooled_leg_closing_late_clamps_into_the_last_period_and_loses_no_trade():
+    """The shallowest leg sets the period width (the `window_r` rule, kept): a trade closing
+    beyond the short leg's span clamps into the last period rather than falling off the
+    partition."""
+    spec = StrategySpec.from_dict(_spec_dict())
+    pooled = factory.backtest_spec_pooled(
+        spec, [_trending_snapshot(200), _shifted_snapshot(120)])
+    wf = pooled["walk_forward"]
+    assert sum(wf["period_trades"]) == pooled["closed_count"]
+    assert sum(wf["period_r"]) == pytest.approx(
+        pooled["cost_summary"]["total_net_r"], abs=1e-6)
+
+
 def test_the_mint_scope_still_defaults_to_the_symbol_being_mined():
     """Every one of the stored candidates carries a single-symbol scope, and `run_factory`
     is untouched — widening is a caller's decision, never a default."""
@@ -1055,6 +1145,292 @@ def test_a_partial_leg_weakens_a_pooled_carry_without_collapsing_it_to_modelled(
     assert pooled["cost_summary"]["cost_model"]["funding_source"] == factory.FUNDING_SOURCE_PARTIAL
 
 
+# --- prior windows: does the tail's answer hold before the tail? ----------------
+#
+# `REMAINING_WORK.md` §F9: the pooled door's first result was five `oi_unwind_short` draws
+# clearing a selection-adjusted bar at 4h, and 16 of 16 draws across two seed namespaces decayed
+# to −0.23…−0.31R in adjacent earlier windows. A door reading only the newest tail takes that row
+# on its face, and `period_r` does not catch it — it partitions the holdout, and the reversal is
+# thousands of bars before the holdout begins.
+
+def _spec_for_prior_windows():
+    return StrategySpec.from_dict(_spec_dict())
+
+
+def test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding():
+    """**The claim `_prefix_frame` rests on**, and the reason the measurement is cheap enough to
+    sit on the mint path: every FEATURE is a trailing-window computation, so row *i* carries the
+    same values whether the series ran to the end or stopped after it.
+
+    The funding series is the exception and this pins how wide it is. `funding_charges_per_bar`
+    spreads settlements across the bars they fall in, so the final bar of a prefix was charged
+    knowing the series continued. One bar — and asserting *that*, rather than asserting equality
+    and deleting the check when it fails, is what keeps the exception from quietly growing."""
+    snapshot = _trending_snapshot(n=200)
+    full = factory.build_replay_frame(snapshot)
+    keep = factory.holdout_split_index(len(full.rows))
+    sliced = factory._prefix_frame(full, keep)
+    rebuilt = factory.build_replay_frame(
+        {**snapshot, "candles": list(snapshot["candles"])[:keep], "candle_count": keep})
+
+    assert sliced is not None
+    assert sliced.split == rebuilt.split
+    assert len(sliced.rows) == len(rebuilt.rows) == keep
+    assert sliced.rows == rebuilt.rows, "a feature stopped being trailing-window"
+    assert sliced.candles == rebuilt.candles
+    assert sliced.funding[:-1] == rebuilt.funding[:-1], (
+        "the funding difference has spread past the final bar"
+    )
+
+
+def test_prefix_invariance_holds_with_htf_and_external_series():
+    """The lookahead guard, beyond OHLCV: HTF columns and asof-aligned external series
+    (liquidations) are also trailing-window after alignment, so a prefix of the built
+    frame must carry exactly the values those bars had in the full series.
+
+    The existing test above pins this for the basic OHLCV + funding + taker_flow fixture.
+    This test adds the two alignment code paths the basic fixture does not exercise:
+    close-time-keyed HTF columns (_htf_columns) and backward as-of liquidation events.
+    If either alignment leaks a future value into an earlier bar, this fails."""
+    step = timedelta(hours=1)
+    n = 200
+    last_close = NOW_DT - timedelta(hours=1)
+    candles = []
+    price = 100.0
+    for i in range(n):
+        drift = 1.0 if (i // 20) % 3 != 2 else -1.5
+        price = max(10.0, price + drift)
+        close_time = last_close - (n - 1 - i) * step
+        volume = 10.0 + (i % 7)
+        candles.append({
+            "open_time": timeutil.format_iso(close_time - step),
+            "open": price - drift, "high": price + 1.5, "low": price - 1.5,
+            "close": price, "volume": volume,
+            "close_time": timeutil.format_iso(close_time),
+            "taker_buy_base": volume * 0.55,
+            "taker_buy_quote": volume * 0.55 * price,
+            "quote_volume": volume * price,
+            "trade_count": 40.0 + (i % 11),
+        })
+
+    # HTF candles: one every 4 bars, keyed by close_time (the first instant known).
+    htf_candles = []
+    for j in range(0, n, 4):
+        block = candles[j : j + 4]
+        if len(block) < 4:
+            break
+        htf_candles.append({
+            "open_time": block[0]["open_time"],
+            "close_time": block[-1]["close_time"],
+            "open": block[0]["open"], "close": block[-1]["close"],
+            "high": max(c["high"] for c in block),
+            "low": min(c["low"] for c in block),
+            "volume": sum(c["volume"] for c in block),
+        })
+
+    # Liquidation events: one every 3 bars, backward-asof aligned.
+    liq_events = []
+    for k in range(0, n, 3):
+        liq_events.append({
+            "timestamp": candles[k]["open_time"],
+            "long_liquidation": 1000.0 + k * 10,
+            "short_liquidation": 500.0 + k * 5,
+        })
+
+    snapshot = {
+        "symbol": "BTCUSDT", "timeframe": "1h", "candles": candles,
+        "is_synthetic": False, "htf_candles": htf_candles,
+        "funding": _funding_series(candles, hours=8),
+        "liquidations": liq_events,
+    }
+
+    full = factory.build_replay_frame(snapshot)
+    keep = factory.holdout_split_index(len(full.rows))
+    sliced = factory._prefix_frame(full, keep)
+    rebuilt = factory.build_replay_frame(
+        {**snapshot, "candles": candles[:keep], "candle_count": keep})
+
+    assert sliced is not None
+    assert len(sliced.rows) == len(rebuilt.rows) == keep
+    assert sliced.rows == rebuilt.rows, (
+        "a feature stopped being trailing-window — the lookahead guard tripped"
+    )
+
+
+def test_the_earlier_windows_are_adjacent_and_do_not_overlap():
+    """Window *k+1*'s tail must end exactly where window *k*'s begins — F3's construction. Any
+    overlap would score the same bars twice and read as agreement between windows."""
+    frame = factory.build_replay_frame(_trending_snapshot(n=200))
+    keep, bounds = len(frame.rows), [(frame.split, len(frame.rows))]
+    for _ in range(factory.PRIOR_WINDOWS):
+        keep = factory.holdout_split_index(keep)
+        prefix = factory._prefix_frame(frame, keep)
+        if prefix is None:
+            break
+        bounds.append((prefix.split, keep))
+    assert len(bounds) > 1, "the fixture is too short to exercise a single earlier window"
+    for newer, older in zip(bounds, bounds[1:]):
+        assert older[1] == newer[0], f"{older} does not end where {newer} begins"
+
+
+def test_the_holdout_block_carries_the_earlier_windows():
+    """Reported beside `period_r`, never folded into it: the two answer different questions."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) == len(holdout["prior_window_trades"])
+    assert len(holdout["prior_window_r"]) <= factory.PRIOR_WINDOWS
+    assert "period_r" in holdout, "the sibling field must still be there"
+
+
+def test_a_series_too_short_yields_fewer_windows_rather_than_an_error():
+    """Absence of an earlier window is information — the series ran out — and a caller reading a
+    short list learns that. Raising would make a shallow candidate unscoreable instead."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=70))]
+    holdout = factory.backtest_spec_pooled(
+        _spec_for_prior_windows(), [], frames=frames)["holdout"]
+    assert len(holdout["prior_window_r"]) < factory.PRIOR_WINDOWS
+
+
+def test_a_leg_that_runs_out_stops_the_whole_window_rather_than_shrinking_the_pool():
+    """A pooled figure over four legs where the others had five is a different pool, and
+    comparing it to the holdout would be comparing two populations."""
+    frames = [factory.build_replay_frame(_trending_snapshot(n=200)),
+              factory.build_replay_frame(_shifted_snapshot(n=70))]
+    r, n = factory._prior_window_evidence(
+        _spec_for_prior_windows(), frames, cost=frames[0].cost)
+    assert len(r) == len(n) < factory.PRIOR_WINDOWS
+
+
+# --- pooled minting (F9 shape B: 4h and 1d, 1h left single-symbol) --------------
+
+def _pooled_run(snapshot, cohort, **kwargs):
+    return run_factory(snapshot, active_pool={"active_strategies": []},
+                       existing_candidates=[], now=NOW, cohort_snapshots=cohort, **kwargs)
+
+
+def test_no_cohort_is_exactly_todays_behaviour():
+    """The default has to be unchanged down to the seed, or every stored row's lineage moves."""
+    snapshot = _trending_snapshot()
+    plain = run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW)
+    empty = _pooled_run(snapshot, None)
+    assert plain["seed"] == empty["seed"]
+    assert plain["pooled"] is False and empty["pooled"] is False
+    assert [c["strategy_rule_hash"] for c in plain["candidates"]] == \
+           [c["strategy_rule_hash"] for c in empty["candidates"]]
+
+
+def test_a_cohort_mints_one_hypothesis_over_every_leg():
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is True
+    assert result["pooled_symbols"] == ["BTCUSDT", "ETHUSDT"]
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
+        # `symbols` is what `_holdout_evidence` counted, so it proves the legs were replayed
+        # rather than merely named on the spec.
+        assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
+
+
+def test_the_policy_fences_a_timeframe_it_does_not_pool():
+    """1h is 12/12 judgeable single-symbol (F2); pooling it would spend the directional lever
+    for nothing. A caller handing over a cohort anyway gets the single-symbol fire."""
+    snapshot = {**_trending_snapshot(), "timeframe": "1h"}
+    result = _pooled_run(snapshot, [_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is False
+    assert all(c["strategy_spec"]["symbol_scope"] == ["BTCUSDT"] for c in result["candidates"])
+
+
+def test_two_cohorts_sharing_a_first_leg_do_not_draw_the_same_batch():
+    """The seed reads every leg. Sharing the primary used to be enough to reproduce a batch,
+    which made "same seed, same batch" mean something narrower than it says."""
+    primary = _trending_snapshot()
+    a = _pooled_run(primary, [_shifted_snapshot(symbol="ETHUSDT", scale=2.0)])
+    b = _pooled_run(primary, [_shifted_snapshot(symbol="SOLUSDT", scale=3.0)])
+    assert a["seed"] != b["seed"]
+
+
+def test_a_pooled_fire_does_not_fuse():
+    """`_fuse_batch` re-scores parents through the one-frame `backtest_spec`; a fused child of a
+    pooled fire would be scored on one leg while claiming the cohort."""
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
+                         fusion_pairs=4)
+    assert all((c.get("derivation_type") or "seeded_template") == "seeded_template"
+               for c in result["candidates"])
+    # With fusion declined, the whole fusion budget re-fires as the seeded topup — the second
+    # `generate_batch` call site. Its rows must carry the cohort too: a topup row scoped
+    # `[symbol]` would wear pooled evidence over a single-symbol label (and split
+    # `pool.search_context_key` attempt counts).
+    assert result["seeded_topup_count"] > 0, "the topup path must actually fire here"
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
+        assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
+
+
+def test_a_pooled_fire_says_it_skipped_fusion_rather_than_looking_dry():
+    """`fused_count: 0` with an empty `fusion_rejected` is what a DRY PARENT POOL looks like, so
+    a pooled fire reporting the same thing is indistinguishable from one whose store had no pair.
+
+    Measured on the live ledger 2026-08-15: every fire from the first pooled one
+    (2026-08-10T08:12:38Z) onward carried exactly that record, and the crossover path being off
+    went unnoticed for six days. `pooled: true` implied it; a reader had to already know this
+    boundary existed to read it that way."""
+    result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
+                         fusion_pairs=4)
+    assert result["pooled"] is True
+    assert result["fused_count"] == 0 and result["fusion_rejected"] == []
+    assert result["fusion_skipped"] == factory.FUSION_POOLED_FIRE
+
+
+def test_a_caller_that_never_asked_for_fusion_is_not_a_dry_pool_either():
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=[], now=NOW)
+    assert result["fusion_skipped"] == factory.FUSION_NOT_REQUESTED
+
+
+def test_a_fire_that_ran_fusion_reports_no_skip_reason(tmp_path):
+    """``None`` is the load-bearing value: it is the only reading under which an empty
+    ``fusion_rejected`` means the store genuinely offered no pair."""
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    assert result["fusion_skipped"] is None
+    assert result["fused_count"] >= 1
+
+
+def test_every_skip_reason_is_a_declared_one():
+    """A stable vocabulary, so a reader (or a watch) can enumerate the cases rather than
+    pattern-match strings that drift."""
+    for kwargs, cohort in (({}, None),
+                           ({"fusion_pairs": 4}, [_shifted_snapshot(symbol="ETHUSDT")])):
+        result = _pooled_run(_trending_snapshot(), cohort, **kwargs)
+        assert result["fusion_skipped"] in factory.FUSION_SKIP_REASONS
+
+
+def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
+    """Fail closed on ANY leg: a pooled figure whose fourth symbol supplied none of the columns
+    the rule names is a four-leg pool reporting five."""
+    bare = _shifted_snapshot(symbol="ETHUSDT")
+    bare["candles"] = [{k: v for k, v in c.items() if k != "taker_buy_base"}
+                       for c in bare["candles"]]
+    result = _pooled_run(_trending_snapshot(), [bare])
+    starved = [r for r in result["rejected"] if r.get("reason") == factory.UNSUPPLIABLE_FEATURE]
+    assert starved or result["candidates"], "the fire produced neither candidates nor a reason"
+
+
+def test_a_pooled_context_does_not_inherit_a_single_symbol_centre():
+    """Membership when mining one symbol, exact equality when mining a cohort. A single-symbol
+    elite is a centre fitted on one symbol, and F2 measured transferring one as strictly harder
+    than searching the cohort from the start."""
+    single = {"strategy_spec": {"symbol_scope": ["BTCUSDT"], "timeframe": "4h"}}
+    assert factory._matches_context(single["strategy_spec"], symbol="BTCUSDT", timeframe="4h")
+    assert not factory._matches_context(
+        single["strategy_spec"], symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+    cohort = {"symbol_scope": ["BTCUSDT", "ETHUSDT"], "timeframe": "4h"}
+    assert factory._matches_context(
+        cohort, symbol="BTCUSDT", timeframe="4h", scope=["BTCUSDT", "ETHUSDT"])
+
+
 # --- run_factory --------------------------------------------------------------
 
 def test_run_factory_produces_evidence_backed_candidates():
@@ -1103,16 +1479,34 @@ def test_generation_number_advances_past_pool_and_candidates():
 
 # --- scheduler template -------------------------------------------------------
 
-def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path, monkeypatch):
-    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
+@pytest.fixture(autouse=True)
+def _no_leftover_factory_child():
+    # The factory fire spawns a child since the #705 process separation; module state
+    # must not leak one test's child into the next.
+    yield
+    scheduler_mod._reset_factory_child()
+
+
+def _fire_and_collect(store, ledger, tmp_path, *, spawn_at, collect_at):
+    """One scheduled factory occurrence, end to end: spawn pass, child, collect pass."""
+    spawn = run_due(store, now=spawn_at, control_store=ControlStore(tmp_path),
+                    ledger=ledger, repo_root=tmp_path)
+    assert spawn["spawned"] == 1, spawn["results"]
+    assert scheduler_mod.factory_child_join(300), "the factory child never finished"
+    return run_due(store, now=collect_at, control_store=ControlStore(tmp_path),
+                   ledger=ledger, repo_root=tmp_path)
+
+
+def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path):
     schedule = build_schedule(kind=KIND_FACTORY, request="", interval_seconds=86400,
                               created_by="op", now="2026-07-22T10:00:00Z")
     store = ScheduleStore(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.add(schedule)
     ledger = LedgerStore(tmp_path / LEDGER_REL)
-    summary = run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
-                      ledger=ledger, repo_root=tmp_path)
+    summary = _fire_and_collect(store, ledger, tmp_path,
+                                spawn_at="2026-07-23T11:00:00Z",
+                                collect_at="2026-07-23T11:01:00Z")
     assert summary["fired"] == 1
     assert summary["results"][0]["status"].startswith("generated=")
     candidates = pool.read_candidates(tmp_path)
@@ -1123,6 +1517,10 @@ def test_scheduler_factory_fire_appends_candidates_and_ledgers(tmp_path, monkeyp
     # (mock collector data is fine for MINING, not for trading)
     assert len(candidates) == 8
     assert summary["results"][0]["status"].startswith("generated=8/8 fused=0 topup=4")
+    # What ablation did rides the same line: the lattice spends replays with no cadence
+    # change, and the status line is where that spend and its yield are legible per fire.
+    assert " ablated=" in summary["results"][0]["status"]
+    assert " luck_filtered=" in summary["results"][0]["status"]
     rows = [json.loads(line) for line in
             (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
     assert any(r["kind"] == "crypto_factory" for r in rows)
@@ -1135,7 +1533,6 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     fused child was ever minted. Deterministic either way it lands: the recorded
     factory result carries fused children (parent lineage attached) or explicit
     ``fusion_rejected`` reasons — dormant fusion produced neither."""
-    monkeypatch.delenv("MVP_MARKET_DATA", raising=False)
     # This test is about the WIRING — does a scheduled fire reach the fusion path at all.
     # `holdout_permits_parenting` is a separate rule with its own tests, and no first-fire
     # candidate on this synthetic history survives it (they close too few holdout trades, and
@@ -1148,10 +1545,11 @@ def test_scheduled_factory_fire_attempts_fusion_over_durable_parents(tmp_path, m
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.add(schedule)
     ledger = LedgerStore(tmp_path / LEDGER_REL)
-    run_due(store, now="2026-07-23T11:00:00Z", control_store=ControlStore(tmp_path),
-            ledger=ledger, repo_root=tmp_path)          # fire 1: parents become durable
-    summary = run_due(store, now="2026-07-24T12:00:00Z", control_store=ControlStore(tmp_path),
-                      ledger=ledger, repo_root=tmp_path)  # fire 2: fusion draws on them
+    _fire_and_collect(store, ledger, tmp_path,               # fire 1: parents become durable
+                      spawn_at="2026-07-23T11:00:00Z", collect_at="2026-07-23T11:01:00Z")
+    summary = _fire_and_collect(store, ledger, tmp_path,     # fire 2: fusion draws on them
+                                spawn_at="2026-07-24T12:00:00Z",
+                                collect_at="2026-07-24T12:01:00Z")
     assert summary["fired"] == 1
     assert "fused=" in summary["results"][0]["status"]
     rows = [json.loads(line) for line in
@@ -1180,8 +1578,9 @@ def test_promotion_installs_selected_candidates(tmp_path):
     # that the door installs what was selected, and the escape keeps it that.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, root=tmp_path, now=NOW, without_approval=True,
-                            allow_oversized_pool=True)
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            allow_oversized_pool=True, allow_below_entry_bar=True,
+                            allow_unconfirmed_holdout=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -1194,10 +1593,12 @@ def test_promotion_installs_selected_candidates(tmp_path):
 def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
-                  keep_active=False, root=tmp_path, now=NOW, without_approval=True)
+                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, root=tmp_path, now=NOW, without_approval=True,
-                  allow_oversized_pool=True)   # same context as the incumbent; see above
+                  keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  allow_oversized_pool=True,   # same context as the incumbent; see above
+                  allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
 
@@ -1212,7 +1613,7 @@ def test_promotion_refused_while_killed(tmp_path):
     )
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
     assert "BLOCKED" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
@@ -1221,7 +1622,7 @@ def test_promotion_refuses_unknown_candidate(tmp_path):
     _seed_candidates(tmp_path)
     with pytest.raises(SystemExit):
         run_promotion(selectors=["S_NOPE"], promoted_by="Thomas", reason="r",
-                      keep_active=False, root=tmp_path, now=NOW)
+                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW)
 
 
 # --- candidate lineage (fusion groundwork) ------------------------------------
@@ -1721,7 +2122,14 @@ def test_fusion_is_deterministic(tmp_path):
 
 
 def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
-    """rsi <= 5 AND rsi >= 95 parses, validates, and can never trade."""
+    """rsi <= 5 AND rsi >= 95 parses, validates, and can never trade.
+
+    The refusal reason moved when the ablation lattice landed in front of the no-trades
+    gate: a zero-trade union scores a train expectancy of 0.0, ties its zero-trade
+    subsets, a tie hands the win to the simpler side, and the winning subset carries the
+    parents' shared exits — so it IS a durable parent and falls to the duplicate guard.
+    Either way nothing is stored, which is the property this test pins; `no_trades` still
+    guards the registered spec for any winner that reaches its own backtest."""
     _durable_parent(tmp_path, "cand-lo",
                     _parent_spec("S1", [{"feature": "rsi", "comparison": "<=", "value": 5.0}]), 9.0)
     _durable_parent(tmp_path, "cand-hi",
@@ -1731,7 +2139,8 @@ def test_unsatisfiable_union_is_refused_rather_than_stored(tmp_path):
                          count=1, fusion_pairs=1)
     assert result["fused_count"] == 0
     assert result["fusion_rejected"] == [
-        {"parent_candidate_ids": ["cand-hi", "cand-lo"], "reason": "no_trades"}
+        {"parent_candidate_ids": ["cand-hi", "cand-lo"],
+         "reason": "ablation_winner_duplicate_rule_hash"}
     ]
 
 
@@ -1867,14 +2276,24 @@ def test_no_parent_to_compare_against_is_unmeasurable_not_a_pass():
 def test_a_child_that_does_not_out_earn_its_parents_is_refused_rather_than_stored(tmp_path):
     """The ordinary pair, and the whole reason for the bar: the union of two profitable trend
     conditions earns +0.092R over 6 trades where the better parent earned +0.574R over 17.
-    Before the bar this was appended, ranked, and available to parent a further generation."""
+    Before the bar this was appended, ranked, and available to parent a further generation.
+
+    Since the ablation lattice, the refusal comes one gate EARLIER and says something
+    sharper: on the train segment the union fails to strictly beat its own best proper
+    subset, that subset carries the parents' shared exits and so IS one of the durable
+    parents, and re-minting a stored rule is what the duplicate guard exists to refuse.
+    The property this test pins — this union is refused, never stored — is unchanged;
+    `no_expectancy_gain` remains the refusal for a union that WINS its lattice and then
+    fails to out-earn its parents (the `_fusion_improvement` unit tests carry the bar
+    itself)."""
     parents = _two_durable_parents(tmp_path)
     result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
                          existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
     assert result["fused_count"] == 0
     assert not [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
     assert result["fusion_rejected"] == [
-        {"parent_candidate_ids": ["cand-aaa", "cand-bbb"], "reason": "no_expectancy_gain"}
+        {"parent_candidate_ids": ["cand-aaa", "cand-bbb"],
+         "reason": "ablation_winner_duplicate_rule_hash"}
     ]
 
 
@@ -1895,6 +2314,31 @@ def test_every_minted_child_records_beating_both_parents_on_one_window(tmp_path)
                 >= max(p["champion_score"] for p in comparison["parents"].values()))
         # The recorded child figures are the child's own evidence, not a second measurement.
         assert comparison["child"]["expectancy"] == child["backtest_evidence"]["expectancy"]
+
+
+def test_a_fused_conjunction_runs_the_lattice_and_registers_with_its_grid(tmp_path):
+    """The ablation lattice sits on the fusion path too, and §3-3 as approved: the winner
+    registers through the EXISTING path — ``derivation_type`` stays ``crossover``, and the
+    grid it survived rides in ``backtest_evidence.ablation``. On this fixture the union
+    (rsi >= 50 AND rsi <= 60) genuinely beats both one-sided parts on the train segment
+    (+0.116R against -0.54R and -0.48R), so the full conjunction is what mints — the
+    interaction case, measured through the real mint path with the improvement gate live."""
+    parents = _two_improving_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1)
+    fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert len(fused) == 1
+    child = fused[0]
+    ablation = child["backtest_evidence"]["ablation"]
+    assert ablation["lattice_size"] == 3
+    assert ablation["full_beat_subsets"] is True
+    assert ablation["winner_conditions"] == ablation["hypothesis_conditions"]
+    assert ablation["winner_conditions"] == child["strategy_spec"]["entry_rules"]["conditions"]
+    full_key = "0+1"
+    scores = ablation["train_net_expectancy_by_subset"]
+    assert all(scores[full_key] > scores[key] for key in scores if key != full_key)
+    # The fire's counters see the fused lattice alongside the seeded one.
+    assert result["ablated_count"] >= 1
 
 
 def test_the_bar_is_the_parents_replayed_here_not_the_row_they_were_stored_with(tmp_path):
@@ -1925,7 +2369,13 @@ def test_a_parent_is_replayed_once_per_fire_however_many_pairs_cite_it(monkeypat
         return original(spec, snapshot, **kwargs)
 
     monkeypatch.setattr(factory, "backtest_spec", counting)
-    specs = [_parent_spec(f"S{i}", [{"feature": "adx", "comparison": ">=", "value": 20.0 + i}])
+    # Distinct exits per parent, so an ablation winner — a single-condition subset carrying
+    # the pair's MIDPOINT exits — can never hash-collide with a parent and show up in the
+    # spy's parent filter as a spurious re-replay. What this test counts is the parent
+    # memoisation, and the fixture has to keep the two populations separable to count it.
+    specs = [_parent_spec(f"S{i}", [{"feature": "adx", "comparison": ">=", "value": 20.0 + i}],
+                          exit_rules={"stop_model": "atr", "stop_atr": 1.5 + 0.1 * i,
+                                      "target_atr": 2.0, "max_holding_bars": 10})
              for i in range(4)]
     bucket = [{"candidate_id": f"cand-{i}", "strategy_spec": s.to_dict(), "champion_score": 1.0}
               for i, s in enumerate(specs)]
@@ -2399,6 +2849,9 @@ def test_hyperliquid_drops_the_families_whose_feeds_it_lacks():
         "premium_fade_long", "premium_fade_short",
         "taker_absorption_long", "taker_absorption_short",
         "taker_flow_long", "taker_flow_short",
+        # Reads `taker_flow_imbalance`, so it drops on a venue with no aggressor split for the
+        # same reason the three flow families above it do.
+        "taker_flow_fade_long", "taker_flow_fade_short",
     }
     # Funding rides a real series here, so the funding families survive — the gate is about
     # the feed each family needs, not about which venue is the familiar one.
@@ -2536,6 +2989,11 @@ _FADE_FAMILIES = frozenset({
     "mean_reversion", "mean_reversion_short", "funding_fade_long", "funding_fade_short",
     "premium_fade_long", "premium_fade_short", "oi_unwind_long", "oi_unwind_short",
     "taker_absorption_long", "taker_absorption_short",
+    # 2026-08-08. Both are reversal claims — "the slow leg is stretched and the fast one has
+    # turned", "one-way aggression has spent the move" — so both are COMPLETE when the stretch
+    # unwinds, which is the whole rule this split encodes.
+    "htf_reversal_long", "htf_reversal_short",
+    "taker_flow_fade_long", "taker_flow_fade_short",
 })
 
 
@@ -2887,3 +3345,352 @@ def test_an_adverse_elite_centre_no_longer_spends_a_batch_on_refusals():
     )
 
 
+
+
+# --- id numbering: reserved, not survived --------------------------------------
+
+def test_a_fused_child_starts_after_every_id_the_seeded_draw_RESERVED(monkeypatch):
+    """`generate_batch` numbers S001..S00count as it mints; `_score_draw` then drops the specs
+    whose features the frame never supplies. So survivors < ids issued the moment anything
+    starves, and a fusion cursor counted off survivors points back into the seeded block.
+
+    The first fused child is then minted under a name a stored seeded row already holds — two
+    different strategies sharing one `(generation_id, strategy_id)`. Promotions key on the
+    lineage-derived `candidate_id`, so nothing mis-promotes; `resolve_candidates` refuses the
+    pair as ambiguous and any display surface shows one name over two rules.
+
+    Asserted on the cursor rather than on a minted collision, because reaching one needs a
+    rotation slice that both starves a spec AND has durable fusable parents — a condition the
+    live store has not hit, which is exactly why this went unnoticed rather than why it is fine.
+    """
+    from runtime.mvp_runtime.crypto import factory
+
+    real_unsuppliable = factory.unsuppliable_features
+    starved_one: list[str] = []
+
+    def starve_the_first(spec, rows):
+        if not starved_one:
+            starved_one.append(spec.strategy_id)
+            return ["a_column_this_frame_never_supplies"]
+        return real_unsuppliable(spec, rows)
+
+    captured: dict[str, int] = {}
+    real_fuse = factory._fuse_batch
+
+    def spy(*args, **kwargs):
+        captured["start_index"] = kwargs["start_index"]
+        return real_fuse(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "unsuppliable_features", starve_the_first)
+    monkeypatch.setattr(factory, "_fuse_batch", spy)
+    factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+
+    assert starved_one, "the fixture must actually starve a spec"
+    assert captured["start_index"] == factory.DEFAULT_BATCH_SIZE + 1, (
+        "the fusion cursor counted survivors, so it points at an id the seeded draw already "
+        "issued"
+    )
+
+
+def test_the_shortfall_draw_starts_after_fusion_on_the_same_convention(monkeypatch):
+    """The inverse pin, and the reason `count` is the right cursor rather than
+    `len(batch["specs"])`: both draws reserve blocks, so a draw that accepted fewer than it
+    asked for leaves a GAP in the numbering instead of risking an overlap."""
+    from runtime.mvp_runtime.crypto import factory
+
+    captured: list[int] = []
+    real_generate = factory.generate_batch
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get("start_index", 1))
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "generate_batch", spy)
+    result = factory.run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                                 existing_candidates=[], now=NOW, fusion_pairs=2)
+    # Seeded block first at 1; the shortfall draw, if it ran, after the seeded block AND
+    # whatever fusion minted.
+    assert captured[0] == 1
+    if len(captured) > 1:
+        assert captured[1] == factory.DEFAULT_BATCH_SIZE + result["fused_count"] + 1
+
+
+def test_fusion_reads_the_symbol_run_factory_resolved(monkeypatch):
+    """One fact, one default. `run_factory` falls back to BTCUSDT; the fusion call used to
+    re-read the snapshot with a `""` fallback, so a snapshot without a symbol would mint
+    BTCUSDT specs while `fusion_parent_buckets` filtered on `""` and dropped every parent —
+    no bucket, no children, no reason recorded. Unreachable through the scheduler, which
+    always sets it."""
+    from runtime.mvp_runtime.crypto import factory
+
+    seen: dict[str, str] = {}
+    real_buckets = factory.fusion_parent_buckets
+
+    def spy(records, *, symbol, timeframe):
+        seen["symbol"] = symbol
+        return real_buckets(records, symbol=symbol, timeframe=timeframe)
+
+    monkeypatch.setattr(factory, "fusion_parent_buckets", spy)
+    snapshot = {k: v for k, v in _trending_snapshot().items() if k != "symbol"}
+    factory.run_factory(snapshot, active_pool={"active_strategies": []},
+                        existing_candidates=[], now=NOW, fusion_pairs=2)
+    assert seen["symbol"] == "BTCUSDT", "the two fallbacks for one fact disagree again"
+
+
+# --- post-stop-loss cooldown --------------------------------------------------
+
+class TestReplayCooldown:
+    """The backtest replay must skip re-entry for COOLDOWN_BARS_AFTER_STOPLOSS bars
+    after a stop-loss, matching the live paper path's cooldown gate."""
+
+    def _make_rows_and_candles(self, n=50):
+        """A series where a breakout spec enters and stops out repeatedly."""
+        step = timedelta(days=1)
+        last_close = NOW_DT - timedelta(hours=1)
+        rows = []
+        candles = []
+        price = 100.0
+        for i in range(n):
+            drift = 1.0 if (i // 10) % 2 == 0 else -1.0
+            price = max(10.0, price + drift)
+            close_time = last_close - (n - 1 - i) * step
+            atr = 3.0
+            candle = {
+                "open_time": timeutil.format_iso(close_time - step),
+                "open": price - drift,
+                "high": price + 2.0,
+                "low": price - 2.0,
+                "close": price,
+                "volume": 10.0,
+                "close_time": timeutil.format_iso(close_time),
+            }
+            candles.append(candle)
+            rows.append({
+                "close": price, "atr": atr, "ma20": price - 1.0,
+                "market_regime": "TREND_UP",
+            })
+        return rows, candles
+
+    def test_cooldown_skips_entries_after_stoploss(self):
+        """After a stop-loss, the replay must skip COOLDOWN_BARS_AFTER_STOPLOSS bars
+        before allowing a new entry on the same series."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 0.5, "target_atr": 5.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = self._make_rows_and_candles(n=80)
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        outcomes = result[0]
+        cooldown_skipped = result[6]
+        stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
+        if len(stop_losses) >= 1:
+            assert cooldown_skipped >= 1, (
+                "stop-losses occurred but no cooldown skips were recorded"
+            )
+
+    def test_cooldown_counter_is_returned_in_replay_tuple(self):
+        """The return tuple carries cooldown_skipped (index 6)."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory._replay(spec, [], [], cost=CostModel())
+        assert len(result) == 8
+        assert result[6] == 0
+
+    def test_cooldown_does_not_fire_on_take_profit_or_time_exit(self):
+        """Only stop_loss triggers cooldown; take_profit and time_exit do not."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 5.0, "target_atr": 0.3,
+                        "max_holding_bars": 3},
+        ))
+        rows, candles = self._make_rows_and_candles(n=80)
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        outcomes = result[0]
+        cooldown_skipped = result[6]
+        stop_losses = [o for o in outcomes if o["close_reason"] == "stop_loss"]
+        if not stop_losses:
+            assert cooldown_skipped == 0, (
+                "cooldown fired without any stop-losses"
+            )
+
+    def test_backtest_evidence_carries_cooldown_door_block(self):
+        """backtest_spec_pooled records a cooldown_door block in its output."""
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "cooldown_door" in result
+        assert result["cooldown_door"]["applied"] is True
+        assert result["cooldown_door"]["cooldown_bars"] == 2
+
+
+class TestIntrabarGapMeasurement:
+    """When a single bar touches both SL and TP, the backtest assumes SL-first
+    (pessimistic). The intrabar_gap block measures how often this happens and
+    the maximum R the assumption could have cost."""
+
+    def _ambiguous_candles(self, n=60):
+        """Bars wide enough that both SL and TP are touched on the same candle."""
+        step = timedelta(days=1)
+        last_close = NOW_DT - timedelta(hours=1)
+        rows = []
+        candles = []
+        price = 100.0
+        for i in range(n):
+            close_time = last_close - (n - 1 - i) * step
+            atr = 2.0
+            candles.append({
+                "open_time": timeutil.format_iso(close_time - step),
+                "open": price,
+                "high": price + 20.0,
+                "low": price - 20.0,
+                "close": price,
+                "volume": 10.0,
+                "close_time": timeutil.format_iso(close_time),
+            })
+            rows.append({
+                "close": price, "atr": atr, "ma20": price - 1.0,
+                "market_regime": "TREND_UP",
+            })
+        return rows, candles
+
+    def test_ambiguous_exits_are_counted(self):
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 1.0, "target_atr": 2.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = self._ambiguous_candles()
+        outcomes, *_ = factory._replay(spec, rows, candles, cost=CostModel())
+        ambiguous = [o for o in outcomes if o.get("exit_resolution") == "pessimistic_sl_first"]
+        assert len(ambiguous) >= 1, "expected at least one ambiguous exit"
+        for o in ambiguous:
+            assert "ambiguous_gap_r" in o
+            assert o["ambiguous_gap_r"] > 0, "gap should be positive (TP_R > SL_R)"
+
+    def test_unambiguous_exits_have_no_gap(self):
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 0.5, "target_atr": 5.0,
+                        "max_holding_bars": 20},
+        ))
+        rows, candles = TestReplayCooldown()._make_rows_and_candles(n=80)
+        outcomes, *_ = factory._replay(spec, rows, candles, cost=CostModel())
+        unambiguous = [o for o in outcomes if o.get("exit_resolution") == "unambiguous"]
+        for o in unambiguous:
+            assert "ambiguous_gap_r" not in o
+
+    def test_backtest_evidence_carries_intrabar_gap_block(self):
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "intrabar_gap" in result
+        gap = result["intrabar_gap"]
+        assert "ambiguous_exits" in gap
+        assert "total_gap_r" in gap
+        assert "gap_per_trade_r" in gap
+        assert gap["ambiguous_exits"] >= 0
+        assert isinstance(gap["total_gap_r"], float)
+
+
+class TestLiquidationGuard:
+    """A stop placed beyond the liquidation price never triggers — the position is
+    liquidated first. The guard refuses such entries in backtest, paper, and live."""
+
+    def test_stop_beyond_liquidation_is_refused(self):
+        """At 20x leverage with ATR wide enough, the stop exceeds liquidation distance."""
+        from runtime.mvp_runtime.crypto.paper import (
+            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
+            liquidation_price, stop_is_beyond_liquidation,
+            stop_beyond_liquidation_refusal,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "LONG")
+        # liq ≈ 100 * (1 - 0.05 + 0.004) = 95.4 — a stop at 94 is below it
+        assert liq == pytest.approx(95.4, abs=0.01)
+        assert stop_is_beyond_liquidation(entry, 94.0, True)
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "LONG", "entry_price": entry, "stop_loss": 94.0,
+        })
+        assert refusal is not None
+        assert refusal["reason_code"] == "STOP_BEYOND_LIQUIDATION"
+        assert refusal["liquidation_price"] == pytest.approx(liq, abs=0.01)
+
+    def test_stop_within_liquidation_is_admitted(self):
+        """A stop safely above the liquidation price passes."""
+        from runtime.mvp_runtime.crypto.paper import stop_beyond_liquidation_refusal
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "LONG", "entry_price": 100.0, "stop_loss": 97.0,
+        })
+        assert refusal is None
+
+    def test_short_direction(self):
+        """SHORT: liquidation is above entry; stop above liquidation is refused."""
+        from runtime.mvp_runtime.crypto.paper import (
+            liquidation_price, stop_is_beyond_liquidation, stop_beyond_liquidation_refusal,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "SHORT")
+        # liq ≈ 100 * (1 + 0.05 - 0.004) = 104.6
+        assert liq == pytest.approx(104.6, abs=0.01)
+        assert stop_is_beyond_liquidation(entry, 106.0, False)
+        assert not stop_is_beyond_liquidation(entry, 103.0, False)
+        refusal = stop_beyond_liquidation_refusal({
+            "direction": "SHORT", "entry_price": entry, "stop_loss": 106.0,
+        })
+        assert refusal is not None
+
+    def test_low_leverage_admits_wide_stop(self):
+        """At 5x leverage, the liquidation distance is ~19.6% — most stops fit."""
+        from runtime.mvp_runtime.crypto.paper import (
+            liquidation_price, stop_is_beyond_liquidation,
+        )
+        entry = 100.0
+        liq = liquidation_price(entry, "LONG", leverage=5.0)
+        # liq ≈ 100 * (1 - 0.2 + 0.004) = 80.4
+        assert liq == pytest.approx(80.4, abs=0.01)
+        assert not stop_is_beyond_liquidation(entry, 90.0, True, leverage=5.0)
+
+    def test_high_leverage_refuses_normal_stop(self):
+        """At 125x, the liquidation distance is ~0.4% — even a 1-ATR stop exceeds it."""
+        from runtime.mvp_runtime.crypto.paper import stop_is_beyond_liquidation
+        entry = 100.0
+        # At 125x: liq ≈ 100 * (1 - 0.008 + 0.004) = 99.6 — stop at 98 is way below
+        assert stop_is_beyond_liquidation(entry, 98.0, True, leverage=125.0)
+
+    def test_replay_counts_liquidation_refusals(self):
+        """_replay returns a liquidation_refused count as the 8th element.
+
+        At 20x leverage the liquidation distance is ~4.6% of entry. A stop_atr of 5.0
+        with ATR=3.0 on a ~100 price puts the stop ~15% away — well beyond liquidation."""
+        from runtime.mvp_runtime.crypto.cost import CostModel
+
+        spec = StrategySpec.from_dict(_spec_dict(
+            exit_rules={"stop_model": "atr", "stop_atr": 5.0, "target_atr": 6.0,
+                        "max_holding_bars": 10},
+        ))
+        rows, candles = TestReplayCooldown()._make_rows_and_candles(n=80)
+        result = factory._replay(spec, rows, candles, cost=CostModel())
+        assert len(result) == 8
+        liq_refused = result[7]
+        assert liq_refused >= 1, "expected at least one liquidation refusal at stop_atr=5.0"
+
+    def test_backtest_evidence_carries_liquidation_guard_block(self):
+        """backtest_spec_pooled records a liquidation_guard block in its output."""
+        snapshot = _trending_snapshot()
+        frame = factory.build_replay_frame(snapshot)
+        spec = StrategySpec.from_dict(_spec_dict())
+        result = factory.backtest_spec_pooled(spec, [snapshot], frames=[frame])
+        assert "liquidation_guard" in result
+        guard = result["liquidation_guard"]
+        assert guard["applied"] is True
+        assert guard["assumed_leverage"] == 20
+        assert guard["maintenance_margin_rate"] == 0.004
+        assert guard["refused_entries"] >= 0

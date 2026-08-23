@@ -799,14 +799,16 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
     """Choose the operator channel — the enforced Safety-Flag Gate chokepoint.
 
     Defaults to the network-free ``MockOperatorChannel`` (no gate needed). A real
-    ``TelegramChannel`` is returned ONLY when both ``MVP_OPERATOR_CHANNEL=telegram`` AND the
-    Safety-Flag Gate authorizes ``network_access`` against a local activation record. The env
-    var alone fails closed (``SafetyGateBlocked``), never silently opening a network path.
+    ``TelegramChannel`` is returned ONLY behind ``MVP_OPERATOR_CHANNEL=telegram`` — the
+    environment is the gate (Thomas 2026-08-10; no per-machine grant record backs it), and
+    an unset or different value selects the Mock, never a network path.
 
-    Shares ``safety_gate.select_gated`` with the provider, search tool, and writer — one
-    place decides that the capable implementation is never built before the gate opens."""
+    Shares ``safety_gate.select_env_gated`` with the provider, search tool, and writer —
+    one place decides that the capable implementation is never built before the gate
+    opens."""
     state_path = (root if root is not None else _repo_root()) / OFFSET_STATE_REL
-    return safety_gate.select_gated(
+    del now  # the environment is the gate (Thomas 2026-08-10)
+    return safety_gate.select_env_gated(
         env_var=OPERATOR_CHANNEL_ENV,
         opt_in_value=TELEGRAM,
         flags=_NETWORK_FLAGS,
@@ -815,8 +817,6 @@ def select_operator_channel(*, now: str | None = None, root: Path | None = None)
         gated_factory=lambda authorization: TelegramChannel(
             authorization=authorization, state_path=state_path,
         ),
-        now=now,
-        root=root,
     )
 
 

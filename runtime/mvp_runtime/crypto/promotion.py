@@ -17,7 +17,7 @@ grant. Widening R10 consumption to this scope stays a separate explicit decision
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -28,22 +28,61 @@ from ..errors import ApprovalBlocked, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
+from . import forward_confirmation
+from . import paper as paper_store
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
-PROMOTION_HASH_VERSION = "strategy_promotion.v2"
+# v4, and the jump past v3 is deliberate. TWO material fields landed independently and both
+# called themselves v3: the reactivation set (#619, merged first) and the live tier (#610 Part 1,
+# this one). A hash version that means two different things is worse than either change, so the
+# merged shape takes the next number and carries both.
+#
+# The tier has to be in here for the same reason the reactivation set does: installing a strategy
+# that may spend real money and installing one that may only paper are different asks, and an
+# approval granted for the second must not be spendable on the first.
+PROMOTION_HASH_VERSION = "strategy_promotion.v4"
 
 
-def promotion_content_sha256(candidate_ids: list[str], rule_hashes: list[str], keep_active: bool) -> str:
-    """The material identity of one promotion: which candidate lineages, which exact
-    rules, add or replace. Any change mints a different hash — and therefore a
-    different approval (``invalidated_by_any_material_field_change``). v2: keyed by
-    globally unique ``candidate_id``, never the per-generation ``strategy_id``."""
+def promotion_content_sha256(
+    candidate_ids: list[str], rule_hashes: list[str], keep_active: bool, live_tier: str,
+    reactivated_candidate_ids: Sequence[str] = (),
+) -> str:
+    """The material identity of one promotion: which candidate lineages, which exact rules, add
+    or replace, **into which tier**, and **who comes back from a terminal status**. Any change
+    mints a different hash — and therefore a different approval
+    (``invalidated_by_any_material_field_change``).
+
+    v2: keyed by globally unique ``candidate_id``, never the per-generation ``strategy_id``.
+
+    **The reactivation set, because the signature was honest about a smaller effect than the one
+    it authorized.** Replace mode rebuilds every entry with a hardcoded ``PAPER_ACTIVE``, so
+    re-listing the incumbents to drop one returns everything the lifecycle had terminated —
+    `BUILD_HISTORY` records it simulated against a copy of the real pool on 2026-07-29: 16
+    reactivated, 57 lifecycle counters reset. The door was made to refuse it
+    (`pool.assert_no_silent_reactivation`), which makes the act deliberate; this makes the
+    approval NAME it. Empty is the ordinary answer and costs nothing.
+
+    **The live tier, because arming a strategy for real money is a different ask.** Required
+    rather than defaulted: a default would be a decision about real money made by an argument
+    list, and the one direction it could fail in silently is the permissive one.
+
+    Both are facts about the LIVE POOL rather than about the selectors, so a change between the
+    ask and the execution invalidates the approval. That is intended — the effect being
+    authorized really did change.
+    """
+    if live_tier not in pool_store.LIVE_TIERS:
+        raise ApprovalBlocked(
+            "PROMOTION_TIER_INVALID",
+            f"live_tier {live_tier!r} is not one of {sorted(pool_store.LIVE_TIERS)}",
+        )
     return integrity.sha256_value({
         "hash_version": PROMOTION_HASH_VERSION,
         "candidate_ids": sorted(candidate_ids),
         "rule_hashes": sorted(rule_hashes),
         "keep_active": bool(keep_active),
+        "live_tier": live_tier,
+        "reactivated_candidate_ids": sorted(reactivated_candidate_ids),
     })
 
 
@@ -107,6 +146,11 @@ def request_promotion(
     selectors: list[str],
     *,
     keep_active: bool,
+    # #610 Part 1 — which tier this promotion installs into. No default: the whole point of the
+    # split is that arming a strategy for real money is a decision somebody makes, and a default
+    # would make it for them. OBSERVATION installs a strategy that occupies its slot and papers;
+    # LIVE additionally lets it open real positions.
+    live_tier: str,
     now: str | None = None,
     ttl_minutes: int | None = None,
     repo_root: Path | None = None,
@@ -114,6 +158,10 @@ def request_promotion(
     allow_stale_cost_basis: bool = False,
     allow_unrecorded_evidence_depth: bool = False,
     allow_duplicates: bool = False,
+    allow_cluster_siblings: bool = False,
+    allow_below_entry_bar: bool = False,
+    allow_family_overflow: bool = False,
+    allow_unconfirmed_holdout: bool = False,
     allow_quarantined_derivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
@@ -149,9 +197,69 @@ def request_promotion(
             )
         except ToolError as exc:
             raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # One tier down, same shape: a behaviour cluster gets one routing slot (Thomas 5-2,
+    # 2026-08-11). Checked at the ask for the reason every gate above is — the install door
+    # refuses it too, and an ask that cannot execute only spends Thomas's answer.
+    if not allow_cluster_siblings:
+        try:
+            pool_store.assert_no_cluster_siblings(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # The 5-3 entry bar and the family cap (Thomas 2026-08-11), at the ask for the same
+    # reason as every gate above. Both are charged to ENTRANTS only: a restatement of an
+    # occupying lineage is not an entry, so re-arming the pre-bar pool spends no waiver.
+    occupying = [
+        e for e in (pool_store.load_active_pool(store_root).get("active_strategies") or [])
+        if e.get("status") in pool_store.OCCUPYING_STATUSES
+    ]
+    occupying_ids = frozenset(
+        str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
+    )
+    if not allow_below_entry_bar:
+        try:
+            pool_store.assert_observation_entry_bar(
+                candidates, occupying_candidate_ids=occupying_ids,
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    if not allow_family_overflow:
+        selected_ids = {str(c.get("candidate_id")) for c in candidates}
+        # Add mode keeps every incumbent, so all of them are base; a replace pool is the
+        # batch alone, so only the RESTATED incumbents still occupy after it lands.
+        base_entries = occupying if keep_active else [
+            e for e in occupying if str(e.get("candidate_id")) in selected_ids
+        ]
+        try:
+            pool_store.assert_family_cap(candidates, occupying_entries=base_entries)
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
+    # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on unseen
+    # data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. OBSERVATION installs
+    # are exactly the tier that gate exists to protect, so they pass untouched; checked at
+    # the ask because an ask the install door refuses only spends Thomas's answer.
+    if live_tier == "LIVE" and not allow_unconfirmed_holdout:
+        try:
+            forward_confirmation.assert_live_tier_confirmed(
+                candidates,
+                outcomes=paper_store.read_outcomes(store_root),
+                observed_lineages=len(occupying),
+            )
+        except ToolError as exc:
+            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
-    content = promotion_content_sha256(candidate_ids, rule_hashes, keep_active)
+    # Read here rather than passed in: the set is a fact about the pool as it stands, which is
+    # exactly what the approval must bind. `store_root` is the candidates root, so the pool
+    # comes from `root` — the same place the install door will read it from.
+    reactivated = pool_store.reactivated_candidate_ids(
+        candidate_ids, keep_active=keep_active, root=root,
+    )
+    content = promotion_content_sha256(
+        candidate_ids, rule_hashes, keep_active, live_tier, reactivated,
+    )
 
     display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
     task = build_task(
@@ -184,6 +292,7 @@ def verify_promotion_approval(
     *,
     selectors: list[str],
     keep_active: bool,
+    live_tier: str,
     root: Path | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -224,14 +333,22 @@ def verify_promotion_approval(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a promotion"
         )
     candidates = _resolve_identity(selectors, root)
+    candidate_ids = [c["candidate_id"] for c in candidates]
+    # Recomputed from the pool as it stands NOW, deliberately not read back off the snapshot:
+    # a set carried over from the ask would let the reactivation change between the two and
+    # still verify, which is the whole gap this field closes. A lifecycle transition in
+    # between is therefore a refusal, and the right one — the effect being authorized changed.
     expected = promotion_content_sha256(
-        [c["candidate_id"] for c in candidates],
+        candidate_ids,
         [c["strategy_rule_hash"] for c in candidates],
         keep_active,
+        live_tier,
+        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
     )
     if snapshot.get("content_sha256") != expected:
         raise ApprovalBlocked(
             "APPROVAL_CONTENT_MISMATCH",
-            "the approval binds a different promotion (ids, rules, or add/replace mode changed)",
+            "the approval binds a different promotion (ids, rules, add/replace mode, or which "
+            "terminal members it returns to trading changed)",
         )
     return dict(approval)

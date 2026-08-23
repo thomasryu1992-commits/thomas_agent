@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.crypto.cost import (
+    DEFAULT_STOP_SLIPPAGE_BPS,
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
@@ -169,6 +170,7 @@ def _scored(cid, **model):
 def _current(cid="cand_now"):
     return _scored(cid, taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
                    slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                   stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
                    funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
                    funding_source=FUNDING_SOURCE_VENUE)
 
@@ -195,6 +197,7 @@ def test_a_pre_maker_record_at_the_right_taker_rate_is_conservative_not_optimist
     verdict.
     """
     record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
                      funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
                      funding_source=FUNDING_SOURCE_VENUE)
     assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
@@ -237,6 +240,7 @@ def test_a_dearer_funding_rate_is_conservative():
     """Same direction rule as every other axis: an error that runs against the candidate promotes."""
     record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
                      slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
                      funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL * 2,
                      funding_source=FUNDING_SOURCE_VENUE)
     assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
@@ -291,6 +295,7 @@ def test_the_promotion_door_admits_current_and_conservative_evidence():
     """The gate has to let the safe direction through, or it is just an off switch."""
     conservative = _scored("cand_pre_maker", taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
                            slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                           stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
                            funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
                            funding_source=FUNDING_SOURCE_VENUE)
     assert_promotable_cost_basis([_current(), conservative])  # does not raise
@@ -306,3 +311,36 @@ def test_cheaper_evidence_ranks_below_dearer_evidence_whatever_its_score():
     real = {**_current("cand_real"), "champion_score": 0.10}
 
     assert [c["candidate_id"] for c in rank_candidates([cheap, real])] == ["cand_real", "cand_cheap"]
+
+
+# --- the stop axis (Thomas 2026-08-11: a cheaper stop rate reads as OPTIMISTIC) ---------------
+
+def test_a_record_scored_before_the_stop_split_is_conservative_now():
+    """After the 2026-08-21 repricing (12.0 -> 1.4 bps), a pre-split record without
+    stop_slippage_bps is judged on its own general slippage (3.0 > 1.4) -> CONSERVATIVE.
+    Before the repricing 3.0 < 12.0 made it OPTIMISTIC; the measured rate inverted it."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                     funding_source=FUNDING_SOURCE_VENUE)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
+
+
+def test_a_dearer_stop_rate_is_conservative_and_the_string_names_it():
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS, stop_slippage_bps=23.5,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                     funding_source=FUNDING_SOURCE_VENUE)
+    assert cost_basis_rank(record) == COST_BASIS_RANK_CONSERVATIVE
+    assert "+stop_23.5bps" in cost_basis_of(record)
+
+
+def test_a_legacy_basis_string_is_byte_identical():
+    """The maker rule again: a record scored before the split keeps the exact basis string it
+    has always reported — the store stays legible as its vintages, and only stamped rows say
+    what their stops paid."""
+    record = _scored("c", taker_fee_bps=DEFAULT_TAKER_FEE_BPS, maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+                     slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                     funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
+                     funding_source=FUNDING_SOURCE_VENUE)
+    assert "stop_" not in cost_basis_of(record)

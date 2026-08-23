@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, oi_store, pool, positioning_store
+from . import feedback, oi_store, orderbook_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -64,8 +64,10 @@ from .market_data import (
     collect_market_data,
     degraded_market_data_record,
 )
+from .cooldown import CooldownMarkStore
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
+from .live_allowance import evaluate_live_allowance
 from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
 from .live_route import (
     DEFAULT_TIMING_CONTEXT,
@@ -101,6 +103,10 @@ HTF_DEGRADED = "HTF_DEGRADED"
 # it. Surfaced rather than silent: the money is still in the daily-loss breaker, but a row the
 # streak logic never saw is something an operator should know about.
 LIVE_OUTCOMES_EXCLUDED = "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD"
+# #615 §5 — at least one live-armed lineage spent its allowance this cycle and left the live
+# tier. Not a failure and not a verdict on the strategy: the amount we were willing to risk on
+# an unproven lineage is gone, and it keeps papering.
+LIVE_ALLOWANCE_SPENT = "LIVE_ALLOWANCE_SPENT"
 
 # Funding events fetched per cycle: ≥3/day covers the deepest replay window.
 #
@@ -213,8 +219,19 @@ def attach_feeds(
             symbol=symbol, collector=collector, now=now, root=root,
         )
         status["positioning"] = str(positioning["status"])
+        # The resting book, same flag and same reason, one difference: this vendor keeps no
+        # history at all, so the accumulation is not merely ahead of the feature that will read
+        # it — it is the only copy that will ever exist. `accumulate_orderbook_cohort` is what
+        # covers the fan-out; this covers the operator's single-symbol cycle, which has one
+        # context and no sweep. The overlap costs nothing — the store's period throttle answers
+        # the second asker `skipped_fresh` without opening a socket.
+        orderbook = orderbook_store.record_orderbook(
+            symbol=symbol, collector=collector, now=now, root=root,
+        )
+        status["orderbook"] = str(orderbook["status"])
     else:
         status["positioning"] = "not_accumulating"
+        status["orderbook"] = "not_accumulating"
 
     if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
         try:
@@ -436,6 +453,72 @@ def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) ->
         snapshot["positioning"] = rows
 
 
+def attach_mining_legs(
+    snapshot: dict[str, Any],
+    *,
+    collector: MarketDataCollector,
+    timeframe: str,
+    now: str,
+    root: Path | None = None,
+    liquidation_feed: Any | None = None,
+    candle_target: Any = None,
+) -> None:
+    """Every leg **the factory mines on**, in one place. Mutating, degrade-only, never raises.
+
+    The five attaches above are individually correct and were individually copied. That is the
+    defect this function exists to end rather than a tidiness preference: a caller that assembles
+    four of the five gets a frame where the fifth family's columns are None down the whole
+    window, and the failure is silent in the worst way — the spec does not error, it scores as a
+    no-trade spec and is judged for it. The same mistake has now been made twice on two different
+    call sites (the null control, and the family proposer), both times by writing `attach_feeds`
+    and stopping, and both times invisible until somebody counted the None columns.
+
+    So the rule is stated once here: **anything that BACKTESTS or REPLAYS a spec must build its
+    frame with this function.** ``run_crypto_cycle`` deliberately does not — the live cycle
+    attaches its own legs with ``accumulate=True`` and its own live-depth limits, because it is
+    routing rather than mining.
+
+    ``candle_target`` is ``market_data.factory_candle_target`` passed in rather than imported,
+    so this module keeps its current import surface and a caller mining at a different depth
+    stays able to say so. ``None`` means "live defaults", which is what a caller with no replay
+    span wants.
+
+    Every leg degrades rather than raises: a leg that cannot be read leaves its columns None,
+    which is the state a caller who never called it would have had anyway.
+
+    **Why each leg is here** — carried over from the factory block these lines were extracted
+    from, because it is the reasoning a future caller needs in order not to drop one:
+
+    - ``attach_feeds`` (C9): the factory backtests on the same feed-enriched frame the router
+      evaluates. One feature source for backtest and live — the source rule.
+    - ``attach_htf``: mining ``htf_*`` families over a frame with no higher timeframe scores
+      every one of them as a no-trade spec. The window must cover the replay span, so the
+      depth is the HIGHER timeframe's own target rather than this one's.
+    - ``attach_reference``: same rule for the cross-asset leg — a ``rel_strength_*`` family
+      mined over a frame with no reference series scores as a no-trade spec. Same timeframe as
+      the frame being mined, so the same depth.
+    - ``attach_cross_section``: same again, and **the most expensive of the four** — the cohort
+      is five peers at the replay span, so it pages roughly five times what the frame itself
+      did. Paid on the factory's own schedule rather than the 15-minute one. The alternative is
+      scoring ``xs_*`` families over a frame where every rank is None, which does not produce a
+      cheap verdict, it produces a WRONG one (no trades, FRAGILE, retired).
+    - ``attach_positioning``: a LOCAL read of what this runtime has accumulated — no request,
+      no grant. Attached unconditionally because the columns are honest at any coverage
+      (absent = None); whether a positioning family may be MINTED against them is the separate
+      ``positioning_store.coverage_summary`` question, which the CALLER measures and passes to
+      ``run_factory``. This function does not answer it and must not be read as doing so.
+    """
+    attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
+                 now=now, root=root, accumulate=False)
+    depth = candle_target(timeframe) if candle_target is not None else None
+    higher = HIGHER_TIMEFRAME.get(timeframe)
+    attach_htf(snapshot, collector=collector, now=now,
+               limit=candle_target(higher) if (candle_target is not None and higher) else None)
+    attach_reference(snapshot, collector=collector, now=now, limit=depth)
+    attach_cross_section(snapshot, collector=collector, now=now, limit=depth)
+    attach_positioning(snapshot, root=root)
+
+
 def run_crypto_cycle(
     *,
     collector: MarketDataCollector,
@@ -448,6 +531,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
     candle_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
@@ -531,13 +615,26 @@ def run_crypto_cycle(
     # Empty would say "every retired lineage is confirmed retired" and release the entire
     # exclusion; None says "I cannot tell" and keeps every loss in the window. The one failure
     # that could clear a breaker is the one that must not.
+    #
+    # `live_routable_ids` takes the same None-on-failure shape for the mirror-image reason
+    # (#610 Part 1). Both the empty set and None refuse every live entry, so the money path is
+    # safe either way — but they are different operator problems, and the reason code has to
+    # say which: "no strategy is armed for live" is the expected state after this shipped,
+    # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
+    live_routable_ids: set[str] | None
+    # #615 §5. Read alongside the breaker's own read below; `readable` stays False on any path
+    # that did not produce a trustworthy history, and the allowance treats that as a breach.
+    live_readable: list[dict[str, Any]] = []
+    live_history_readable = False
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
+        live_routable_ids = pool.live_routable_strategy_ids(active_pool)
     except ToolError as exc:
         active_pool = {"active_strategies": []}
         routable_ids = None
+        live_routable_ids = None
         reason_codes.append(exc.reason_code)
 
     # The breaker limits themselves: the registered per-machine record when one is registered
@@ -595,6 +692,7 @@ def run_crypto_cycle(
             # closed on that store — through the check that actually reads it, rather than through
             # a breaker that no longer does.
             live_readable, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+            live_history_readable = True
             if live_excluded:
                 reason_codes.append(LIVE_OUTCOMES_EXCLUDED)
             risk = run_risk_guard(
@@ -624,6 +722,7 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, paper_verdict,
         store=store, now=now, root=root, control_store=control_store,
         intrabar_collector=collector, routing_marks=routing_marks,
+        cooldown_marks=cooldown_marks,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
@@ -742,7 +841,64 @@ def run_crypto_cycle(
     # only reachable state was the override. `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`
     # has the measurement; `live_entry`'s docstring records the removal at the door itself.
 
-    # 4c) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
+    # 4c) the LIVE PERMISSION phase — the per-lineage allowance (#615 §5). It runs BEFORE the leg
+    # below, and the ordering is the control: a lineage whose allowance is already spent must not
+    # be able to open one more real position because the permission was recomputed too late.
+    #
+    # **What it judges is the history read at step 3**, which holds every outcome a PREVIOUS cycle
+    # settled. An outcome settled by THIS cycle's leg is not in it and does not need to be:
+    # `live_route` returns ROUTE_SETTLED before it reaches its entry block, so a cycle that closes
+    # a position never opens one, and the next cycle re-reads that file at step 3 with the new row
+    # in it. That short-circuit is what makes "settle, then re-read, then decide permission, then
+    # enter" hold across two cycles without splitting this leg in half.
+    #
+    # This block used to sit AFTER the leg, on the argument that a settlement made this cycle
+    # would then be visible to it. It was not: `live_readable` is read at step 3 either way, so
+    # the placement bought nothing it claimed and cost the one thing that mattered — the leg had
+    # already run, on the un-narrowed set, so a spent allowance still got one more live entry.
+    #
+    # It is not a verdict. At this sample size no test can say a strategy is bad; what this says
+    # is that the amount we were willing to risk on an unproven lineage is spent. The effect is a
+    # TIER move, so the lineage keeps its slot and keeps papering — and `disarm_live_tier` has no
+    # argument for a target tier, so this can only ever take permission away.
+    #
+    # Additive to the pool-wide breaker, never a replacement (#615 §5.3): a targeted stop that
+    # let the portfolio brake relax would leave more trading running than today, which is a
+    # money-door widening and a separate approval.
+    live_allowance: dict[str, Any] | None = None
+    if live_routable_ids:
+        live_allowance = evaluate_live_allowance(
+            # None when the history could not be read, which reports every armed lineage as
+            # breached — the conservative direction, and the one the docstring argues for.
+            live_readable if live_history_readable else None,
+            live_routable_strategy_ids=live_routable_ids,
+            pool=active_pool,
+        )
+        breached = sorted({b["strategy_id"] for b in live_allowance["breached"]})
+        if breached:
+            # **The refusal is in memory, and it does not wait for the write.** Narrowing the set
+            # handed to the leg is what actually stops the entry; persisting the tier move is a
+            # separate, best-effort step below. A breach detected but not persistable — a dry-run
+            # store, a locked pool, a raising writer — therefore still refuses this cycle. The
+            # money path must not need the disk to hold a limit it has already measured as spent,
+            # and "some other gate probably catches it" is not a property this door may rely on.
+            live_routable_ids = {sid for sid in live_routable_ids if sid not in breached}
+            live_allowance["blocked_from_live_this_cycle"] = breached
+            reason_codes.append(LIVE_ALLOWANCE_SPENT)
+            # `disarmed` is None when the durable move did not land: not attempted (dry-run
+            # store), or attempted and refused. The two are told apart by the reason code a
+            # refusal appends — the in-cycle block above is identical either way.
+            live_allowance["disarmed"] = None
+            if getattr(store, "filesystem_write", False):
+                try:
+                    live_allowance["disarmed"] = pool.disarm_live_tier(
+                        breached, root=root, now=now,
+                        reasons=sorted({r for b in live_allowance["breached"] for r in b["reasons"]}),
+                    )
+                except ToolError as exc:
+                    reason_codes.append(exc.reason_code)
+
+    # 4d) the live leg (LP5.3 step 3) — the one step that can move real money, behind the one
     # module that may. On a machine that has not opted in this returns DISABLED having read
     # nothing, so the whole branch costs one env check. It runs AFTER the paper
     # step so it can share that step's routing result rather than re-evaluating the pool.
@@ -770,6 +926,11 @@ def run_crypto_cycle(
     # from "no live activity".
     live = run_live_leg(
         route=shared_route,
+        # #610 Part 1 — read from the SAME pool object the ladder just ran on, so the live door
+        # and the lifecycle cannot disagree about which strategies exist. Occupying a slot is no
+        # longer the same fact as being allowed to spend money; `live_routable_strategy_ids` is
+        # the narrower of the two and an entry has to say so explicitly to be in it.
+        live_routable_strategy_ids=live_routable_ids,
         feature_row=feature_row,
         verdict=live_verdict,
         symbol=symbol,
@@ -876,6 +1037,9 @@ def run_crypto_cycle(
         # count below says how many were evaluated in total, so nothing is unaccounted for.
         "lifecycle_decisions": lifecycle_noteworthy,
         "lifecycle_unchanged": lifecycle_unchanged,
+        # #615 §5. Present even when nothing breached, so a reader can tell "evaluated, nothing
+        # spent" from "never evaluated" — the distinction `lifecycle_evaluated` exists for.
+        "live_allowance": live_allowance,
         "lifecycle_evaluated": len(lifecycle_decisions),
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,
@@ -1071,6 +1235,46 @@ def accumulate_open_interest_cohort(
     }
 
 
+def accumulate_orderbook_cohort(
+    *,
+    collector: Any,
+    now: str,
+    root: Path | None,
+    contexts: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Snapshot the resting book for the DECLARED cohort. The third store on the same rule.
+
+    Written on the cohort footing from its first line rather than being moved onto it later, and
+    that is the whole reason this function exists at all instead of a flag on
+    :func:`attach_feeds`. Both stores above were shipped per-context and both had to be rescued:
+    positioning on 2026-08-04 with ``BNBUSDT`` frozen for 31 days and ``XRPUSDT`` permanently
+    empty, hourly OI the same day with the identical XRP footprint. The lesson generalises —
+    a retention store's scope cannot be a side effect of routing — and the cost of relearning it
+    here is strictly higher than it was there: those vendors serve 84 and 30 days, so a symbol
+    found late could still be backfilled to the retention wall. This venue serves **nothing**.
+    A cohort member missed on the day this ships is a hole in 2029's window that no later run,
+    no repair path and no amount of money can close.
+
+    Cost is the store's own 15-minute throttle, not this call: at most one request per symbol per
+    period whoever asks, so the cohort costs six requests a fire and 1,152 request-weight a day
+    against a 2,400-per-minute cap. Never raises — ``record_orderbook`` reports per-symbol status
+    instead, because a collection miss must not cost a fire its cycles.
+
+    Runs after the context loop and after a ``live_halt``, on
+    :func:`accumulate_positioning_cohort`'s reasoning: the halt stops this runtime *acting* on a
+    picture of real money it no longer trusts, while this opens no order path, writes only a local
+    append-only store, and loses its data permanently if skipped.
+    """
+    return {
+        symbol: str(
+            orderbook_store.record_orderbook(
+                symbol=symbol, collector=collector, now=now, root=root,
+            )["status"]
+        )
+        for symbol in retention_cohort(contexts)
+    }
+
+
 def run_pool_cycle(
     *,
     collector: MarketDataCollector,
@@ -1083,6 +1287,7 @@ def run_pool_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
 ) -> dict[str, Any]:
     """Fan one governed pass out over every context the pool trades. Returns a summary.
 
@@ -1147,7 +1352,8 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks, candle_cache=candle_cache,
+                routing_marks=routing_marks, cooldown_marks=cooldown_marks,
+                candle_cache=candle_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -1171,6 +1377,11 @@ def run_pool_cycle(
     open_interest_1h = accumulate_open_interest_cohort(
         liquidation_feed=liquidation_feed, now=now, root=root, contexts=contexts,
     )
+    # Third store, same rule, one period rather than one hour — this one's throttle IS the fan-out
+    # cadence, because the venue serves no history to catch up from.
+    orderbook = accumulate_orderbook_cohort(
+        collector=collector, now=now, root=root, contexts=contexts,
+    )
 
     summary = {
         "pool_cycle_version": POOL_CYCLE_VERSION,
@@ -1181,6 +1392,7 @@ def run_pool_cycle(
         "unvisited": unvisited,
         "positioning": positioning,
         "open_interest_1h": open_interest_1h,
+        "orderbook": orderbook,
         "created_at": now,
     }
     summary["pool_cycle_id"] = integrity.short_id(
@@ -1269,19 +1481,89 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     )
     if degraded:
         head += f" positioning-degraded={','.join(degraded)}"
+    # The same line for the order book, and the argument above applies with the one softening
+    # clause removed: "an hour missed here is not retryable, the vendor serves 30 days" was the
+    # reason positioning earns a place on the status line, and this venue serves none. A period
+    # lost here cannot be recovered by any later fire, so it reaches the operator now or never.
+    book_degraded = sorted(
+        symbol for symbol, status in (summary.get("orderbook") or {}).items()
+        if status == "degraded"
+    )
+    if book_degraded:
+        head += f" orderbook-degraded={','.join(book_degraded)}"
+    # The marker `pool_cycle_is_stalled` reads back off `last_status` on the next fire, so its
+    # threshold and the predicate's are the same number by construction. `degraded=N/M` rides
+    # alongside for the operator: "6/11" and "11/11" are different incidents and the token that
+    # arms the switch cannot say which.
+    cycle_degraded = sum(1 for c in cycles if c.get("degraded"))
+    if cycle_degraded:
+        head += f" degraded={cycle_degraded}/{len(cycles)}"
+    if cycles and 2 * cycle_degraded >= len(cycles):
+        head += " majority_degraded"
+    if cycles and cycle_degraded == len(cycles):
+        head += " all_degraded"
     parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
     parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)
     return " | ".join(parts)
 
 
+PIPELINE_STALLED = "PIPELINE_STALLED"
+
+
+def cycle_is_stalled(record: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether THIS degraded cycle follows one that also degraded — a stalled pipeline.
+
+    Same pattern as ``data_review.review_loop_is_stalled``: the first degraded fire stays
+    quiet (delivered on the status line), the second consecutive one raises onto the failure
+    alert. At a 15-minute cadence two consecutive degraded fires is 30 minutes of a pipeline
+    producing nothing — long enough to be a real problem rather than a transient venue hiccup.
+    """
+    if not record.get("degraded"):
+        return False
+    previous = str(previous_status or "")
+    return previous.startswith("degraded") or PIPELINE_STALLED in previous
+
+
+def pool_cycle_is_stalled(summary: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether a MAJORITY of this pool fire's contexts degraded, twice in a row.
+
+    **Majority rather than the original `all`**, Thomas 2026-08-22. `all` over the eleven
+    contexts the pool runs meant ten dead feeds and one alive stayed silent indefinitely; the
+    argument for tightening is that the cost of doing so is only alert noise, and the evidence
+    says there is none to spend: across 909 terminal fires over nine days **no context degraded
+    even once**, so `any`, `majority` and `all` would each have fired exactly zero times. Half
+    is the point where "the pool is not working" beats "one venue feed is flaky".
+
+    What this does NOT do is stop trading, and that asymmetry is why widening it is cheap:
+    `run_pool_cycle` has already run and its records are already on the ledger by the time this
+    is consulted (see `scheduler._execute`). Raising only re-labels the fire `failed` and puts
+    it on the operator's alert — the next fire runs the full cycle exactly as before.
+    """
+    cycles = summary.get("cycles") or []
+    if not cycles:
+        return False
+    if 2 * sum(1 for c in cycles if c.get("degraded")) < len(cycles):
+        return False
+    previous = str(previous_status or "")
+    # `all_degraded` is accepted alongside `majority_degraded` for one reason only: a fire
+    # recorded by the deployed-but-older image writes the former and this one reads the latter,
+    # so the pair keeps a stall that straddles a deploy from silently restarting its count.
+    return ("majority_degraded" in previous or "all_degraded" in previous
+            or PIPELINE_STALLED in previous)
+
+
 __all__ = [
+    "PIPELINE_STALLED",
     "accumulate_open_interest_cohort",
+    "accumulate_orderbook_cohort",
     "accumulate_positioning_cohort",
     "attach_cross_section",
     "attach_positioning",
+    "cycle_is_stalled",
     "cycle_status_line",
     "pool_cycle_contexts",
+    "pool_cycle_is_stalled",
     "pool_cycle_status_line",
     "retention_cohort",
     "run_crypto_cycle",

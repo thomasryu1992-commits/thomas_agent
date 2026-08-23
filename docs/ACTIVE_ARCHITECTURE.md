@@ -2,7 +2,7 @@
 
 **Status:** Architecture Slimming sequence completed through PR #11; Post-Slimming Consistency Hardening through Fix #4
 **Baseline:** I0.5.5
-**Runtime-authoritative execution: Disabled** — this names the deferred *runtime-authoritative entry* lane (`runtime/read_only_entry/`), which remains inert. It does **not** mean nothing runs: the live agent is `runtime/mvp_runtime/`, and it invokes models, searches, writes into `workspace/`, and can place a live order behind per-machine grants. See Safety State below for where each of those answers actually lives.
+**Runtime-authoritative execution: Disabled** — this names the deferred *runtime-authoritative entry* lane (`runtime/read_only_entry/`), which remains inert. It does **not** mean nothing runs: the live agent is `runtime/mvp_runtime/`, and it invokes models, searches, writes into `workspace/`, and can place a live order behind per-machine environment opt-ins (grants retired 2026-08-10). See Safety State below for where each of those answers actually lives.
 **Document responsibility:** Final current architecture, authority ownership, repository boundaries, and canonical Gate entrypoints. **Not status** — this document names owners, and asks each owner rather than restating what it says.
 
 ## Architecture on One Screen
@@ -131,7 +131,8 @@ The live executor. Same authority chain, one process, no kernel modification.
 Entry / control      cli.py · operator.py · scheduler.py · frontdesk.py · console_cli.py · control.py
                      socket_door.py (shared unix-socket transport for the bridge doors)
                      read_bridge.py (read-only door; console renders, never a mutating verb)
-                     dispatch_bridge.py (dispatch door; bounded P3 analysis kinds, never the money path)
+                     dispatch_bridge.py (dispatch door; validates + forwards bounded P3 kinds, never the money path)
+                     pipeline_worker.py (the dispatch door's AND the scheduler's engine; holds the model/search/Naver env neither of them does, internal socket, runtime-uid peers only, attribution declared per caller)
                      switch_bridge.py (trading switch; disable free, enable only on a single-use Thomas grant)
                      knowledge_bridge.py (knowledge door; append + two reads, no delete verb exists)
 Planning             intake.py · binding.py · planner.py · prime.py · assignment.py · triage.py
@@ -250,7 +251,7 @@ and the copy that drifts is the one nobody is asked to update. Ask an owner inst
 | Question | Authority |
 |---|---|
 | What effects may the Runtime have at all? | `governance/GOVERNANCE_POLICY.yaml` → `runtime_effect` (`mode: REVIEW_ONLY`, every grant flag false) |
-| Is a model / network / disk / trading capability live **on this machine**? | the per-machine grant at `.runtime_governance_state/safety_flag_activations/<provider_id>.json`, re-verified at every egress by `runtime/mvp_runtime/safety_gate.py`. Gitignored, so it never travels with the repo |
+| Is a model / network / disk / trading capability live **on this machine**? | the process environment (the deploy `.env` / each service's `environment:` block — read it with `docker inspect <svc> --format '{{json .Config.Env}}'`), re-verified at every egress by `runtime/mvp_runtime/safety_gate.py`'s env re-read. Grants retired 2026-08-10; leftover activation files under `.runtime_governance_state/safety_flag_activations/` are inert |
 | Can this machine place a live order right now? | `python -m runtime.mvp_runtime.crypto.live_readiness` — computed from the real import graph and the real grants, never prose |
 | What has been built, and what is left? | `docs/BUILD_HISTORY.md` and `docs/REMAINING_WORK.md` |
 

@@ -105,6 +105,39 @@ _GATE_ENV_VARS = (
     # and, for anything that reaches egress, holding a genuine authorization. The operator's
     # own machine is exactly where both this variable and this suite get run.
     "MVP_LIVE_TRADING",
+    # Added 2026-08-09 for the same reason as MVP_LIVE_TRADING above: the Naver research lane
+    # is the second capability gated by the environment alone, so inheriting this var means
+    # the suite constructs the REAL adapters. Milder than the trading case — they are
+    # read-only and would still need credentials to reach egress — but "would still need"
+    # is not a property to rest a suite on when the operator's machine has both.
+    "MVP_NAVER_RESEARCH",
+    # Added 2026-08-10 after a verified probe showed the first two INHERITED: with the
+    # operator's opt-ins exported, every var above read as None while
+    # MVP_CANDLE_ARCHIVE='hyperliquid' and MVP_MARKET_DATA='binance_futures' came through.
+    # The archive is the third env-only capability, so inheriting it hands any test that
+    # reaches `select_candle_archive_collector` a REAL egress-capable collector holding a
+    # genuine authorization. The rest open only through a per-machine grant, which contains
+    # nothing here: the operator's machine is exactly where the grants exist, so an
+    # inherited opt-in selects the capable implementation there — or fails closed where CI
+    # would have returned the inert default. Either way, not the same suite.
+    #
+    # The last four were not in the probe; they are the same class, found by sweeping every
+    # selector call site. `test_the_suite_isolates_every_gate_opt_in_env_var` now derives
+    # this list's floor from those call sites, so the next gated capability cannot ship
+    # without its entry.
+    "MVP_CANDLE_ARCHIVE",
+    "MVP_MARKET_DATA",
+    "MVP_VALIDATOR_PROVIDER",
+    "MVP_PAPER_TRADING",
+    "MVP_LIQUIDATION_FEED",
+    "MVP_ACCOUNT_FEED",
+    # 2026-08-10, later the same day: Thomas retired per-machine grants entirely — every
+    # gated capability is env-only now, so the "grants contain nothing here" softening
+    # above applies to no var in this roster; each opt-in alone selects the capable
+    # implementation. MVP_OPENROUTER_TIERS arrived with that change: the M2 tiers'
+    # explicit opt-in list, replacing their per-tier grants (without it, retiring grants
+    # would have silently armed all three tiers — their fallback is degrade, not block).
+    "MVP_OPENROUTER_TIERS",
 )
 
 

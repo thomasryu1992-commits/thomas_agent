@@ -41,10 +41,19 @@ LIVE_BUDGET_SCHEMA_VERSION = "live_trading_budget.v0.1"
 LIVE_BUDGET_SCHEMA_FILE = "live_trading_budget.v0.1.schema.json"
 LIVE_BUDGET_FILENAME = "live_trading_budget.json"
 
-# The absolute ceiling a per-order cap can never exceed (Thomas, 2026-07-23). The schema
-# pins the same 200 on ``absolute_max_notional_usdt``; the builder checks it too so the
-# refusal names the offending number rather than emitting a raw schema error.
-HARD_CEILING_USDT = 200.0
+# The absolute ceiling a per-order cap can never exceed. 200.0 at first live bring-up
+# (Thomas, 2026-07-23); raised to 500.0 on Thomas's instruction 2026-08-08, after the live
+# path had earned its 4 clean canary orders and 2 completed round trips. The schema pins the
+# same number on ``absolute_max_notional_usdt``; the builder checks it too so the refusal
+# names the offending number rather than emitting a raw schema error, and
+# ``test_schema_and_code_agree_on_the_hard_ceiling`` fails if the two ever drift.
+#
+# Raising this widens nothing on its own. It is the ceiling a *registered budget* may declare,
+# not a cap any order is judged against: the guard reads
+# ``min(max_order_notional_usdt, absolute_max_notional_usdt)`` off the registered record, so
+# until an operator registers a budget carrying a larger number, every order is still judged
+# against the caps already registered.
+HARD_CEILING_USDT = 500.0
 SUPPORTED_VENUE = "binance_futures"
 
 BUDGET_INVALID = "LIVE_BUDGET_INVALID"
@@ -84,8 +93,8 @@ def build_live_trading_budget_record(
     """Build a self-hashed, schema-valid live-trading budget record. Fail-closed.
 
     Raises ``ToolError(BUDGET_INVALID)`` on any violation — an unsupported venue, a missing or
-    non-positive cap, a per-order cap above its absolute ceiling, an absolute ceiling above the
-    200 USDT hard ceiling, an empty symbol allowlist, or a validity window that does not open
+    non-positive cap, a per-order cap above its absolute ceiling, an absolute ceiling above
+    ``HARD_CEILING_USDT``, an empty symbol allowlist, or a validity window that does not open
     before it closes. Every refusal names what is wrong; a budget that cannot be built is never
     written."""
     if venue != SUPPORTED_VENUE:

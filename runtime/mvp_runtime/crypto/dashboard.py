@@ -33,7 +33,8 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
-    account, counterfactual, digest, feedback, lifecycle, oi_store, paper, pool, positioning_store,
+    account, counterfactual, digest, feedback, lifecycle, oi_store, orderbook_store, paper, pool,
+    positioning_store,
 )
 # "Can this sample tell the sign of its own edge" is one question with one answer in this
 # runtime. `robustness` owns the multiplier because it is the module that judges whether an
@@ -85,19 +86,10 @@ def _read_cycle_records(root: Path, limit: int) -> tuple[list[dict[str, Any]], s
     return list(recent), None
 
 
-def _grants(root: Path) -> list[dict[str, Any]]:
-    grants_dir = root / ".runtime_governance_state" / "safety_flag_activations"
-    rows: list[dict[str, Any]] = []
-    if not grants_dir.is_dir():
-        return rows
-    for path in sorted(grants_dir.glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-            rows.append({"provider_id": record.get("provider_id", path.stem),
-                         "expires_at": record.get("expires_at")})
-        except (OSError, ValueError):
-            rows.append({"provider_id": path.stem, "expires_at": "UNREADABLE"})
-    return rows
+# The grants section lived here until 2026-08-10, when Thomas retired per-machine grants
+# and their renewal (the environment is the gate). Any activation files still on disk are
+# inert leftovers, so surfacing their expiries would be the board claiming a bound that
+# nothing enforces — the reason `env_only_authorization` refuses to encode a fake one.
 
 
 def build_status(root: Path | None = None, *, now: str | None = None, cycles: int = 12) -> dict[str, Any]:
@@ -253,6 +245,16 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         positioning = None
         warnings.append(f"positioning store unreadable ({exc.reason_code})")
 
+    # The order-book store, on the same footing and for the same reason: it feeds no feature, so
+    # this number is the entire visible output of the accumulation. Also without a warning on a
+    # shortfall — its shortfall will be true every morning until 2029, which is the clearest case
+    # yet of the rule the OI and positioning lines above carry.
+    try:
+        orderbook = orderbook_store.coverage_summary(root, symbols=pool_symbols)
+    except MvpRuntimeError as exc:
+        orderbook = None
+        warnings.append(f"order-book store unreadable ({exc.reason_code})")
+
     inbound = operator_mod.last_inbound_at(root)
     silent_days = _days_since(inbound["at"], now) if inbound else None
     if inbound is None:
@@ -346,6 +348,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
         "positioning": positioning,
+        "orderbook": orderbook,
         "fusion_parents": fusion_parents,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
@@ -404,7 +407,6 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # Per gate: can its blocked trades tell the sign of what they would have returned?
         "counterfactual_verdicts": cf_verdicts,
         "counterfactual_closed": sum(1 for r in cf_records if r.get("outcome_closed") is True),
-        "grants": _grants(root),
         "warnings": warnings,
     }
 
@@ -502,9 +504,7 @@ _GATE_EARNING = "이익"
 # Neither, and saying so: the blocked trades cannot tell the sign of what they would have
 # returned. A gate here is not "fine" — it is unmeasured, which is a different instruction.
 _GATE_UNDECIDED = "판단 불가"
-# Grants are nine lines of noise until one is near expiry, and then they are the only
-# lines that matter.
-GRANT_EXPIRY_WARNING_DAYS = 7
+# (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
 
 
 def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
@@ -707,21 +707,24 @@ def render_status_text(status: dict[str, Any]) -> str:
         # 2026-08-04: 474 candidates at the current cost basis, every one of them stopped at the
         # holdout gate, and the daily report said nothing about any of it.
         #
-        # The top TWO axes, not the largest one, and the second is doing real work. Measured
-        # 2026-08-04 the largest is `cost_basis` at 546 — legacy mints that drain on their own
-        # as the factory re-scores — and a line naming only it reads as "old evidence, it will
-        # clear", while the second (`holdout_insufficient`, 409) is the whole of the CURRENT
-        # basis failing forward. One axis would have been true and would have pointed away
-        # from the finding.
+        # EVERY nonzero axis, not a top-N. This line started as the largest axis alone, grew a
+        # second because one was true-but-misleading (measured 2026-08-04: `cost_basis` 546 —
+        # legacy mints that drain on their own — over `holdout_insufficient` 409, the whole of
+        # the CURRENT basis failing forward; naming only the first read as "old evidence, it
+        # will clear"), and the same argument does not stop at two: any truncation reintroduces
+        # a silent axis, one axis later. The partition sums to `candidates_read` (pinned in the
+        # pool tests), so the full breakdown is the one rendering that cannot point away from a
+        # finding — the daily question this line answers is not "is the queue zero" but "WHY is
+        # it zero", and Thomas asked for the whole answer (2026-08-11).
         #
-        # Ties break on `BACKLOG_REFUSAL_AXES` order — the door's own order — so the line does
+        # Size order, ties on `BACKLOG_REFUSAL_AXES` order — the door's own — so the line does
         # not flip between two equal axes from one morning to the next.
         refused = backlog.get("refused") or {}
         ranked = sorted(
             (axis for axis in pool.BACKLOG_REFUSAL_AXES if refused.get(axis)),
             key=lambda axis: (-refused[axis], pool.BACKLOG_REFUSAL_AXES.index(axis)),
         )
-        detail = "".join(f" · {axis} {refused[axis]}건" for axis in ranked[:2])
+        detail = "".join(f" · {axis} {refused[axis]}건" for axis in ranked)
         lines.append(
             f"       승격 대기 0 (판정 후보 {backlog['candidates_read']}건{detail})"
         )
@@ -754,6 +757,16 @@ def render_status_text(status: dict[str, Any]) -> str:
         lines.append(
             f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
             f"({state}, 최소 커버 셀 기준 · 피처 미연결)"
+        )
+    orderbook = status.get("orderbook") or {}
+    if orderbook.get("cells"):
+        state = "적격" if orderbook.get("eligible") else "축적 중"
+        # "복구 불가" rather than the other rows' silence about gaps. The two lines above describe
+        # stores whose holes the next refresh closes; this one's are permanent, and a reader who
+        # learned the format on those rows would carry the wrong assumption onto this one.
+        lines.append(
+            f"       호가창 {orderbook.get('min_covered_days')}/{orderbook.get('required_days')}일 "
+            f"({state}, 최소 커버 셀 기준 · 피처 미연결 · 결손 복구 불가)"
         )
     lines.append("")
 
@@ -832,28 +845,7 @@ def render_status_text(status: dict[str, Any]) -> str:
             lines.append(line)
         lines.append("")
 
-    # --- grants ------------------------------------------------------------------
-    grants = status.get("grants") or []
-    if grants:
-        soonest = min(grants, key=lambda g: str(g.get("expires_at") or ""))
-        expiry = str(soonest.get("expires_at") or "")
-        days = _days_until(expiry, status.get("created_at"))
-        urgent = days is not None and days <= GRANT_EXPIRY_WARNING_DAYS
-        summary = (f"권한   {len(grants)}건 · 가장 이른 만료 {expiry[:10]} "
-                   f"({soonest.get('provider_id')})")
-        lines.append(summary + (f" ⚠ {days}일 남음" if urgent else
-                                (f" — {days}일 남음" if days is not None else "")))
-        if urgent:
-            for grant in sorted(grants, key=lambda g: str(g.get("expires_at") or "")):
-                lines.append(f"       {grant['provider_id']:24} {str(grant['expires_at'])[:10]}")
     return "\n".join(lines).rstrip()
-
-
-def _days_until(expires_at: str, now: Any) -> int | None:
-    try:
-        return int((timeutil.parse_iso(expires_at) - timeutil.parse_iso(str(now))).total_seconds() // 86400)
-    except (MvpRuntimeError, TypeError, ValueError):
-        return None
 
 
 def _days_since(stamp: str, now: Any) -> int | None:

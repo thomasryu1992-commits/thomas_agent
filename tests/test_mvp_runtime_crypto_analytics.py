@@ -141,13 +141,60 @@ def test_shadow_settles_on_the_plan_time_exit_not_the_table(tmp_path):
 
 
 def test_shadow_book_is_capped(tmp_path):
+    """One context per shadow now, so the cap can only be reached ACROSS contexts.
+
+    This used to pile `MAX_OPEN_COUNTERFACTUALS + 5` plans into BTCUSDT 1d under different
+    strategy ids — the exact shape the per-context rule exists to refuse, and one the runtime
+    cannot produce anyway, since `route_entries` picks ONE strategy per context. Rewritten to
+    the reachable scenario so it still tests the cap rather than testing the bug.
+
+    The real fan-out is 5 symbols x 4 timeframes = 20 contexts, so the cap is now unreachable
+    in production. It stays as the backstop it always was."""
     for i in range(counterfactual.MAX_OPEN_COUNTERFACTUALS + 5):
         counterfactual.run_counterfactual_update(
-            blocked_plan=_plan(entry=100.0 + i, strategy_id=f"S{i}"), block_reasons=["x"],
-            last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
+            blocked_plan={**_plan(), "symbol": f"SYM{i}USDT"}, block_reasons=["x"],
+            last_candle=None, last_close=None, symbol=f"SYM{i}USDT", timeframe="1d",
             now=f"2026-07-22T{i % 24:02d}:00:00Z", root=tmp_path,
         )
     assert len(counterfactual.load_open_counterfactuals(tmp_path)) == counterfactual.MAX_OPEN_COUNTERFACTUALS
+
+
+def test_a_second_shadow_in_one_context_is_refused_not_stacked(tmp_path):
+    """The book being shadowed holds ONE position per (symbol, timeframe). A shadow book that
+    can hold sixteen in a context where the real book holds at most one is not measuring the
+    real book's counterfactual.
+
+    Measured 2026-08-08: 16 of the 17 open shadows were ETHUSDT 1d LONG for strategy S1735,
+    opened one per 15-minute cycle from 07-25T06:08 to 07-26T13:05 while the block persisted,
+    all still holding 13-14 of 27 bars — the same trade sixteen times. `MAX_OPEN_COUNTERFACTUALS`
+    knows the mechanism and bounds the BOOK; the damage is in the calibration, where
+    `r_values_by_reason` counts each closed shadow as one observation and
+    `dashboard.sample_verdict` gates a gate's verdict on an interval built over them.
+    """
+    first = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["daily_loss_limit_breached"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        root=tmp_path,
+    )
+    again = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(entry=101.0, strategy_id="S2"),
+        block_reasons=["daily_loss_limit_breached"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
+        now="2026-07-22T12:15:00Z", root=tmp_path,
+    )
+    assert again["opened"] is None
+    # Named, not counted: "the gate is still blocking the trade we are already measuring" and
+    # "the gate stopped blocking" are opposite facts and `opened: None` says both.
+    assert again["duplicate_of"] == first["opened"]
+    assert again["open_count"] == 1
+
+    # A different context is a different position in the real book, so it still opens.
+    other = counterfactual.run_counterfactual_update(
+        blocked_plan={**_plan(), "symbol": "ETHUSDT"}, block_reasons=["x"],
+        last_candle=None, last_close=None, symbol="ETHUSDT", timeframe="1d",
+        now="2026-07-22T12:30:00Z", root=tmp_path,
+    )
+    assert other["opened"] is not None and other["duplicate_of"] is None
 
 
 def test_a_shadow_whose_clock_froze_expires_instead_of_holding_a_cap_slot(tmp_path):
@@ -292,6 +339,25 @@ def test_a_tampered_native_shadow_outcome_is_refused(tmp_path):
     with pytest.raises(Exception) as exc:
         counterfactual.read_counterfactual_outcomes(tmp_path)
     assert exc.value.reason_code == "COUNTERFACTUAL_HISTORY_TAMPERED"
+
+
+def test_a_corrupt_shadow_line_still_raises_this_readers_own_error_class(tmp_path):
+    """The reader now streams through ``jsonl.iter_numbered`` instead of parsing by hand, and the
+    thing that must NOT move is which class comes out: the tool chokepoints above catch ToolError,
+    so adopting jsonl's default PersistenceError would fail past the caller instead of at it. The
+    reason code and the file line number are the operator's two handles; both survive."""
+    from runtime.mvp_runtime.errors import PersistenceError, ToolError
+
+    path = paper.state_dir(tmp_path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "counterfactual_outcomes.jsonl").write_text(
+        '{"counterfactual_id": "cf1"}\n\n{not json\n', encoding="utf-8")
+
+    with pytest.raises(ToolError) as exc:
+        counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert exc.value.reason_code == "COUNTERFACTUAL_HISTORY_UNREADABLE"
+    assert not isinstance(exc.value, PersistenceError)
+    assert "line 3" in str(exc.value)  # the file line, not the second object
 
 
 def test_imported_shadow_rows_skip_the_hash_recompute(tmp_path):
@@ -649,15 +715,14 @@ def test_the_board_still_renders_a_status_written_before_the_lean_existed():
     assert "지금" in text and "편중" not in text
 
 
-def test_grants_collapse_to_one_line_until_one_is_near_expiry():
-    far = [{"provider_id": "groq", "expires_at": "2026-08-20T01:56:34Z"},
-           {"provider_id": "telegram", "expires_at": "2026-08-18T10:13:20Z"}]
-    text = render_status_text(_board(grants=far))
-    assert len([l for l in text.splitlines() if "권한" in l or "groq" in l]) == 1
-
-    soon = [{"provider_id": "groq", "expires_at": "2026-07-28T01:56:34Z"}]
-    urgent = render_status_text(_board(grants=soon))
-    assert "⚠" in urgent and "groq" in urgent
+def test_the_grants_section_left_with_the_grants():
+    """2026-08-10: Thomas retired per-machine grants, and the board's 권한 section went
+    with them — a legacy status dict still carrying a `grants` key must render NO grant
+    line, because surfacing leftover activation files' expiries would be the board
+    claiming a bound nothing enforces."""
+    legacy = [{"provider_id": "groq", "expires_at": "2026-07-28T01:56:34Z"}]
+    text = render_status_text(_board(grants=legacy))
+    assert "권한" not in text and "groq" not in text
 
 
 def test_warnings_surface_in_the_headline():

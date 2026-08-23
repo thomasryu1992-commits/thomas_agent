@@ -596,3 +596,82 @@ def resolve_socket_path(env_var: str, relative: str, root: Path | None = None) -
     from .paths import repo_root
 
     return (root if root is not None else repo_root()) / relative
+
+
+# How large a reply the client half will read. A dispatch reply carries a rendered analysis,
+# which is orders of magnitude past a console frame; the ceiling exists against a runaway
+# peer, not as a contract, and a reply that hits it is treated as malformed, never truncated —
+# a truncated JSON object silently dropping fields is the quiet mismatch these doors refuse
+# everywhere else.
+MAX_REPLY_BYTES = 1 << 20
+
+
+def call_door(
+    path: Path,
+    request: dict[str, Any],
+    *,
+    deadline_seconds: float,
+    max_reply_bytes: int = MAX_REPLY_BYTES,
+) -> Any:
+    """The client half of a door's contract: one frame out, one reply in, connection closed.
+
+    Written for door-to-engine forwarding (the dispatch door hands validated work to
+    ``pipeline_worker``); the assistant-side shims speak the same protocol from outside this
+    repo. Two failure kinds, kept apart on purpose:
+
+    - **Transport** — nothing listening, connect/read failed, deadline elapsed, or what
+      answered was not a door speaking JSON. These raise (``DOOR_UNREACHABLE`` /
+      ``DOOR_REPLY_MALFORMED``): the caller got no answer to act on.
+    - **Refusal** — the far door answered with a typed error envelope. That is a *reply*, and
+      it is returned like any other: whether to relay, translate, or retry a refusal is the
+      caller's decision, not the transport's.
+
+    The deadline is per socket operation rather than a wall clock over the whole exchange,
+    matching the server side; the slow part of a forwarded dispatch is the far door's apply,
+    during which this end sits in a single ``recv``.
+    """
+    if not UNIX_SOCKETS_AVAILABLE or not hasattr(socket, "AF_UNIX"):
+        raise ControlBlocked(
+            "UNIX_SOCKETS_UNAVAILABLE",
+            "this platform has no AF_UNIX; the bridge doors speak over a unix socket only",
+        )
+    frame = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(deadline_seconds)
+        client.connect(str(path))
+        client.sendall(frame)
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > max_reply_bytes:
+                raise ControlBlocked(
+                    "DOOR_REPLY_MALFORMED",
+                    f"the reply from {path} exceeded {max_reply_bytes} bytes; refusing to "
+                    f"parse a truncation as an answer",
+                )
+            if b"\n" in chunk:
+                break
+    except OSError as exc:
+        raise ControlBlocked(
+            "DOOR_UNREACHABLE",
+            f"no door answered at {path} ({type(exc).__name__}: {exc})",
+        ) from exc
+    finally:
+        client.close()
+    raw = b"".join(chunks).split(b"\n", 1)[0]
+    if not raw:
+        raise ControlBlocked(
+            "DOOR_UNREACHABLE", f"the door at {path} closed without answering",
+        )
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ControlBlocked(
+            "DOOR_REPLY_MALFORMED", f"the reply from {path} is not JSON: {exc}",
+        ) from exc

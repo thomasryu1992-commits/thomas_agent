@@ -75,9 +75,11 @@ from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
 from . import live_execution, live_governance, live_leg, live_promotion
-from .account import read_account
+from .account import read_account, select_account_feed
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
+from .market_data import ORDER_BOOK_LEVELS
+from .orderbook_store import summarize_book
 from .live_order import (
     bracket_breaker_status,
     count_today,
@@ -231,6 +233,12 @@ def live_position_contexts(
 def run_live_leg(
     *,
     route: Mapping[str, Any] | None,
+    # #610 Part 1 — which strategies the pool says may open a REAL position. Threaded from the
+    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and a
+    # second read is a second chance for the two to disagree about the same fact. `None` refuses
+    # every entry (see `live_entry`'s door 2a); closes are decided above the entry block and are
+    # never affected by it.
+    live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
     symbol: str,
@@ -276,6 +284,7 @@ def run_live_leg(
             record,
             adapter=adapter,
             route=route,
+            live_routable_strategy_ids=live_routable_strategy_ids,
             feature_row=feature_row,
             verdict=verdict,
             symbol=symbol,
@@ -309,6 +318,7 @@ def _run_gated_live_leg(
     *,
     adapter: Any,
     route: Mapping[str, Any] | None,
+    live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
     symbol: str,
@@ -371,6 +381,35 @@ def _run_gated_live_leg(
             now=now, root=root, timeout_seconds=timeout_seconds,
         )
 
+    # A position the venue has ALREADY closed settles in whichever context runs first,
+    # whatever its symbol. That settlement sends nothing — the MISSING_AT_VENUE branch of
+    # `_settle_or_protect` reads the fill and writes the book — and it is the only thing
+    # that can clear the drift judged below. Scoping it to the position's own context
+    # deadlocked on 2026-08-18 (~02:59Z): a probe position (`timeframe: None`) put ITS
+    # symbol's 1d context first in the fan-out, the account-wide drift halted the pass
+    # there, and the drifted symbol's context — the only one that would have settled it —
+    # never ran. #631's one-cycle settle had only ever worked because the drifted symbol's
+    # context happened to run before anything halted; this makes that property structural.
+    # Other drift kinds (side, quantity, untracked-at-venue) are deliberately NOT visited
+    # here: they are venue states bookkeeping cannot repair, and the halt below is still
+    # exactly what they mean. Empty candle_ts/context: a foreign context holds no timing
+    # authority and must not touch the position's clock (`_time_exit_or_hold` already
+    # times nothing for a caller that names no context) — unreachable on the MISSING
+    # branch, load-bearing if these reasons ever widen.
+    books = reconciliation.get("books") or {}
+    for position in local_positions:
+        other = position_symbol(position)
+        if other == symbol:
+            continue  # settled above, with the context's full leg semantics
+        if DRIFT_MISSING_AT_VENUE in ((books.get(other) or {}).get("reasons") or ()):
+            _settle_or_protect(
+                record, position,
+                adapter=adapter, position_store=position_store, ledger=ledger,
+                reconciliation=reconciliation, limits=limits, candle_ts=None,
+                context_timeframe="",
+                now=now, root=root, timeout_seconds=timeout_seconds,
+            )
+
     # A book that still disagrees with the venue AFTER settlement is the dangerous kind: the
     # normal bracket-closed drift resolved itself just above, so what remains is a position
     # this runtime cannot account for. Entries are already refused per symbol; the halt is
@@ -400,6 +439,13 @@ def _run_gated_live_leg(
 
     filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
 
+    spread_bps: float | None = None
+    try:
+        raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
+        spread_bps = summarize_book(raw_book)["spread_bps"]
+    except Exception:  # noqa: BLE001 — fail-open: an unreadable book must not refuse the entry
+        record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
+
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
     # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
     # measures late is a breaker that does not bound today (#247).
@@ -423,6 +469,7 @@ def _run_gated_live_leg(
     decision = plan_live_entry(
         plan,
         symbol=symbol,
+        live_routable_strategy_ids=live_routable_strategy_ids,
         reconciliation=reconciliation,
         # The book as read at the top of this leg, not a second read. Every path that could
         # have changed it returned above (anything that settled, or failed to), so a re-read
@@ -449,6 +496,7 @@ def _run_gated_live_leg(
         equity_usdt=_f(getattr(snapshot, "available_balance", None)) or 0.0,
         verdict=verdict,
         now=now,
+        spread_bps=spread_bps,
     )
     record["live_decision"] = {
         "status": decision["status"],
@@ -525,9 +573,17 @@ def _settle_or_protect(
     reasons = list(book.get("reasons") or [])
 
     if DRIFT_MISSING_AT_VENUE in reasons:
-        # The venue's own bracket closed it. Nothing to send — read what it filled at.
+        # Something at the venue closed it. Nothing to send — read what it filled at.
+        #
+        # `account_feed` is the fallback for the case the bracket cannot answer: the position
+        # was flattened by something other than its own legs (an operator closing at the venue),
+        # so both legs EXPIRE unfilled and there is nothing to price. Resolved here rather than
+        # held on the route, because it is only ever needed on this branch and the gate returns
+        # an inert feed when live account reads are not authorized — which then reads as
+        # `LIVE_FILL_HISTORY_UNAVAILABLE`, the honest answer, rather than as a missing argument.
         settled = live_leg.settle_venue_closed_position(
             position, adapter=adapter, position_store=position_store, ledger=ledger,
+            account_feed=select_account_feed(now=now, root=root),
             now=now, timeout_seconds=timeout_seconds,
         )
         record["live_settled"] = settled

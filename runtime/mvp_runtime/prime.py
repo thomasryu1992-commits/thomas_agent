@@ -33,6 +33,7 @@ from .paths import repo_root as _repo_root
 from .permission import (
     MVP_TTL_MINUTES,
     WORKSPACE_WRITE_RISK_LEVEL,
+    build_keyword_permission_decision,
     build_permission_decision,
     build_search_permission_decision,
     build_triage_permission_decision,
@@ -123,6 +124,7 @@ def plan_task(
     repo_root: Path | None = None,
     independent_validation: bool | str = False,
     controlled_write: bool = False,
+    keyword_research: bool = False,
     request_kind: str | None = None,
 ) -> dict[str, Any]:
     """Plan a RECEIVED task end-to-end. Returns a dict with the coherent records.
@@ -259,6 +261,18 @@ def plan_task(
             repo_root=root,
         )
 
+    # The Naver keyword brief (opt-in): same conditional shape as the write above — a
+    # decision is planned only for a run that will brief, so a run without seeds carries no
+    # authorization for an action it never attempts.
+    keyword_permission_decision = None
+    if keyword_research:
+        keyword_permission_decision = build_keyword_permission_decision(
+            bound,
+            role_permission_ceiling=role["permission_ceiling"],
+            now=now,
+            repo_root=root,
+        )
+
     planned = _apply_plan_to_task(
         bound, decision, role, permission_decision, role_assignment,
         now=now, validator_assignment=validator_assignment,
@@ -276,6 +290,7 @@ def plan_task(
         "binding": binding,
         "permission_decision": permission_decision,
         "search_permission_decision": search_permission_decision,
+        "keyword_permission_decision": keyword_permission_decision,
         "role_assignment": role_assignment,
         "decision": decision,
         "role": role,
