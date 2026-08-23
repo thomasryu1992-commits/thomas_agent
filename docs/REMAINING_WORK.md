@@ -1143,6 +1143,58 @@ therefore a code change, not a venue setting — and until it is one, the settin
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
 
+### One live outcome row is wrong and there is no way to correct it — recorded 2026-08-23
+
+`live_out_e56cf310dcc07d9c6edd` (BTCUSDT, closed 2026-08-21T09:03:43Z) records
+`realized_pnl_usdt 77.5357` / `result_R 398.02720739` for a trade that lost **0.1728 USDT,
+-0.887R**. It is the only one of the 28 rows in `live_outcomes.jsonl` that does not satisfy
+`(exit - entry) * qty` under its own sign convention; the other 27 match to eight decimals.
+
+The recorded figure is exactly `0.002 * 77708.50 - 0.001 * 77881.30` — a close twice the size
+of the open, priced against the book's entry quote. The stop leg is a `closePosition`
+STOP_MARKET and the venue treats that as Close-All, so it closed what was actually open; the
+book held half of it. Four and a half minutes earlier the cycle had halted the symbol with
+`LIVE_ROUTING_BOOK_DRIFT` and `live_settled=null`, which is that same disagreement seen from
+the other side. **The recurrence is fixed** (#752 gives the bracket-leg settlement the quantity
+check its two sibling paths already had) and **the board no longer vouches for the row** (#753).
+This entry is about the row itself, which both of those leave in place.
+
+**There is no correction mechanism, and building one is the open item.** `live_pnl.py` has no
+supersede path; re-appending the same `settlement_id` is rejected; two rows sharing an
+`outcome_id` raise `LIVE_HISTORY_DUPLICATE`, which fails **every** live-history read closed —
+the breakers, the risk guard and the promotion board at once. The ledger is fsync append-only.
+And the row passes its own `record_sha256`, because the corruption happened before the hash was
+taken, so no integrity check will ever flag it. A correction therefore needs a designed record
+type (void / supersede) with its own schema and governance, not an edit.
+
+**Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
+and it would leave no record that anyone changed a money figure — on the one ledger whose whole
+purpose is to be the thing nobody can quietly change.
+
+**What the row still costs, after #752 and #753:**
+
+| consumer | effect |
+|---|---|
+| daily / weekly loss breakers | **none, from 2026-08-24T00:00Z** — `_pnl_since` windows on `exit_time`, so the row leaves the weekly window at rollover and left the daily one on 08-22 |
+| drawdown breaker | under-reports by **0.887R** against a 10R limit, permanently. The phantom entered `equity` and `peak` together, so it did not inflate the gap — it anchored the peak on itself and erased a real 0.887R drawdown |
+| consecutive-loss breaker | none — `PROBE-` lineage is skipped in both directions |
+| lifecycle / promotion / retirement / `live_allowance` | none — they read paper outcomes |
+| scheduled dashboard report | none — paper only |
+| `live_promotion` evidence board | flagged and excluded from its pass count by #753 |
+
+**`drawdown_excluded_strategy_ids` is not the answer, and it was measured rather than assumed.**
+That mechanism exists for a lineage an operator deliberately retired, and it fails three ways
+here: it is semantically wrong (this is a bad number, not a retired strategy); it would drop the
+17 other rows of the same probe batch; and it does not even produce the true figure — excluding
+the batch gives a current drawdown of **-2.9901R** against a truth of **-0.8871R**, which is
+further from correct than leaving it alone.
+
+So the row stays, and the standing cost is 0.887R of drawdown headroom that is not real. **Do
+not "fix" it by widening a limit**, and do not read any all-time live P&L total without
+subtracting it — cumulative realized reads +80.88 USDT where the truth is +3.17.
+
+---
+
 ---
 
 ## D. Architecture design-vs-implementation gaps
