@@ -5,10 +5,26 @@ the authority table below.
 
 ## What this project is
 
-A governance-first autonomous agent. **Strong governance core, thin deterministic runtime**:
-behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime only
-executes validated inputs in order. Nothing is active until an explicit, versioned, audited
-approval turns it on.
+A governance-first autonomous agent. **Strong governance core, policy-thin deterministic
+runtime**: behavior is defined by contracts (YAML/Markdown + closed JSON Schemas); the runtime
+only executes validated inputs in order. Nothing is active until an explicit, versioned,
+audited approval turns it on.
+
+"Thin" is a claim about **policy, not size**. The domain packages have outgrown the core and
+keep growing while the kernel does not move (§G of `docs/REMAINING_WORK.md` re-measures this —
+and has already priced and declined restructuring, so do not "fix" the growth). What keeps the
+core thin while lanes grow, stated as rules:
+
+- A domain package (`crypto/`, `knowledge/`) is an **application of the core's chokepoints**
+  (PermissionDecision, Safety-Flag Gate, audit chain — `docs/ACTIVE_ARCHITECTURE.md`), never a
+  parallel runtime.
+- The core import graph loads **zero** domain modules. A domain package appears at module
+  level only in its own door modules (today `knowledge_bridge*.py`); everywhere else the core
+  dispatches into a lane with function-local imports at the dispatch sites (`scheduler.py`,
+  `domain_console.py`). `tests/test_mvp_runtime_domain_isolation.py` pins both properties;
+  widening the door list is a decision to record there, not a convenience.
+- A lane earns its size with evidence or is removed **whole** (`predmarket/`, 2026-08-02, is
+  the precedent). Lanes are removable units, never core accretion.
 
 ## Guardrails (do not violate without explicit Thomas approval)
 
@@ -23,25 +39,30 @@ approval turns it on.
   record you produce; the schema is authoritative.
 - **Secrets are metadata-only.** Never store/log/audit secret values.
   `execution_budget.cost_currency` is a 3-letter code, never null.
-- **Safety flags are OFF, enforced in code.** `model_invocation` / `network_access` need Thomas
-  approval + a versioned governance update + audit before enabling. Selection goes through
-  `safety_gate.select_gated(...)`, which constructs the capable implementation only after
-  `authorize()` verifies a local integrity-checked grant (one per provider, gitignored,
-  per-machine). An env var alone (`MVP_HOSTED_PROVIDER`) fails closed. A passing test is never
-  an approval for the next capability. Mechanics: `runtime/mvp_runtime/safety_gate.py`.
-  **Three capabilities are exceptions and open on the environment alone** — `select_env_gated`,
-  not `select_gated`, with no grant record anywhere: live trading (`MVP_LIVE_TRADING=real`,
-  2026-07-28), the candle archive (2026-08-04) and the Naver research lane
-  (`MVP_NAVER_RESEARCH=enabled`, 2026-08-09). All three were moved off grants because
-  `activate_safety_flag.py` caps a grant at 30 days and expiry hurt more than it bought — for
-  trading, an expiry could block the CLOSE path and trap an open position; for the other two, a
-  renewal gap is a silent hole in a long-running collection. Egress still re-checks, but it
-  re-reads the **env var**, so revoking any of them means unsetting the var and restarting the
-  container — deleting a file revokes nothing here. Adding a fourth is a Thomas decision, not a
-  pattern to follow: every new capability starts on a grant, and
-  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` fails until the new call
-  site is listed with its reasoning. Any test that could inherit one of these vars from the
-  operator's machine is isolated in `tests/conftest.py` (`_GATE_ENV_VARS`).
+- **Safety flags are OFF, enforced in code — and the environment is the gate.** Enabling a
+  `model_invocation` / `network_access` capability needs Thomas approval + a versioned
+  governance update + audit; a passing test is never an approval for the next capability.
+  Since **Thomas 2026-08-10**, every gated capability opens on its **environment opt-in
+  alone**: selection goes through `safety_gate.select_env_gated(...)` (or its `_chain` /
+  `_optional` variants), which constructs the capable implementation only behind the opt-in
+  and hands it its `Authorization`; every egress re-check re-reads the env var. The
+  per-machine grant records and their 30-day renewal are **retired** — on capabilities meant
+  to run indefinitely the renewal bought too little: live trading left grants first
+  (2026-07-28; an expiry could block the CLOSE path and trap an open position), the candle
+  archive (2026-08-04) and the Naver lane (2026-08-09) followed (a renewal gap is a silent
+  hole in a long-running collection), and 2026-08-10 retired the rest on the same ledger.
+  **What that gives up, on the record:** the second factor, the expiry, the per-machine
+  audited scope/authority record, and file-deletion revocation — revoking a capability now
+  means unsetting the var and **restarting the container**. What it does not give up: an
+  unset/unknown value still selects the inert default, and an unknown or duplicate chain
+  member still fails the whole chain closed.
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` enforces both
+  directions — zero callers of the retired grant selectors, and an exact enumeration of the
+  env-gated call sites, so a new capability still cannot ship ungoverned. Every opt-in var is
+  stripped per-test in `tests/conftest.py` (`_GATE_ENV_VARS`), floor-checked by
+  `test_the_suite_isolates_every_gate_opt_in_env_var`. Leftover
+  `safety_flag_activations/*.json` files are inert (delete freely, as uid 10001). Mechanics:
+  `runtime/mvp_runtime/safety_gate.py`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
@@ -170,6 +191,10 @@ then deliver or BLOCK), `--write-output PATH`, `--naver-keywords "SEED[, SEED...
 gated Naver keyword brief; rows become [K#] evidence). Any unknown `--flag` → `EXIT_USAGE`, never
 folded into the request text. The CLI takes **no** pointer argument — it reads
 `.runtime_governance_state/CURRENT_CORE_RELEASE.yaml` by default.
+**A `--naver-keywords` run execs in `thomas-pipeline-worker`, not the scheduler** — since the
+plane separation that container is the only one holding the Naver env, and in any other the
+brief silently degrades to Mock rows (`docker exec thomas-pipeline-worker python -m
+runtime.mvp_runtime.cli "…" --naver-keywords "…"`). Keyword-less CLI runs are unaffected.
 
 First-time setup, local Core activation, and end-to-end verification: use the `verify` skill.
 
@@ -193,8 +218,8 @@ MVP use case = "analyze this business idea"; MVP role = `general.specialist`; th
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
 (`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
-prepended Thomas 2026-07-24 with its own P4 grant — 8bde1f9, 4da8118): each member needs its own
-per-machine grant, a chain with an unknown/unauthorized member fails closed **entirely**
+prepended Thomas 2026-07-24 — 8bde1f9, 4da8118; grants retired Thomas 2026-08-10, the env
+names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
 member's own retry) — never on timeout or 4xx.
 

@@ -52,12 +52,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .. import safety_gate, timeutil
+from .. import timeutil
 from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import live_promotion
+from . import live_promotion, pool
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
@@ -274,6 +274,56 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # re-arm — and this board exists so an operator does not have to guess which.
     checks.append(_check("trading_armed", trading_armed, armed_detail))
 
+    # 5c. The armed strategies — 5b's question again, one level down. `trading_armed` says
+    #     whether this RUNTIME's entries are armed; this row says how many STRATEGIES are, and
+    #     the two are independent doors on the same path. Since #610 Part 1 (#648) an entry may
+    #     open a real position only if its pool entry is occupying AND carries
+    #     `live_tier: LIVE`, and absence reads as OBSERVATION — so the migration deliberately
+    #     disarmed every entry promoted before the field existed. On 2026-08-10 that left this
+    #     board READY over an EMPTY armed set: every row was green, no strategy could open
+    #     anything, and the operator found out from the absence of positions. A fact that
+    #     decides whether READY ever produces an entry belongs on the board.
+    #
+    #     Zero armed is informational; an unreadable pool FAILS. That is the split the entry
+    #     door itself makes with two reason codes — "no strategy is armed" is the expected
+    #     steady state, "the pool could not be read" is a fault whose fix is elsewhere — and
+    #     the board keeps them apart for the door's own reason: an operator chasing one should
+    #     not be handed the other. `ready` keeps meaning "may this RUNTIME trade", because
+    #     arming is a per-strategy operator decision at the promotion door, and a board that
+    #     failed on zero would alarm on the deliberate safe state. Fail-closed both ways: an
+    #     unreadable pool reports UNREADABLE, never a comfortable "0 armed".
+    try:
+        active_pool = pool.load_active_pool(root)
+    except MvpRuntimeError as exc:
+        pool_error = getattr(exc, "reason_code", "UNKNOWN")
+        armed_strategies: dict[str, Any] = {
+            "known": False, "armed": None, "occupying": None, "error": pool_error,
+        }
+        armed_strategies_ok = False
+        armed_strategies_detail = (
+            f"UNREADABLE ({pool_error}) - the entry door refuses on this too, so no strategy "
+            "can open a live position until the pool is repaired"
+        )
+    else:
+        armed_ids = pool.live_routable_strategy_ids(active_pool)
+        occupying_ids = pool.routable_strategy_ids(active_pool)
+        armed_strategies = {
+            "known": True, "armed": len(armed_ids), "occupying": len(occupying_ids),
+            "error": None,
+        }
+        armed_strategies_ok = True
+        if armed_ids:
+            armed_strategies_detail = (
+                f"{len(armed_ids)} armed of {len(occupying_ids)} occupying (live_tier=LIVE)"
+            )
+        else:
+            armed_strategies_detail = (
+                f"0 armed of {len(occupying_ids)} occupying - NO strategy may open a real "
+                "position; arming is the operator promotion door "
+                "(scripts/promote_strategy_candidates.py --live-tier LIVE)"
+            )
+    checks.append(_check("live_armed_strategies", armed_strategies_ok, armed_strategies_detail))
+
     # Whether an account feed is configured at all. Computed here rather than at row 8 because
     # row 6's loss breaker needs the same answer first: it is what decides whether this board
     # reads the venue or stays offline.
@@ -408,30 +458,21 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # 8b. Market data — a canary PRECONDITION since the declared-notional check landed, not a
     #     nicety. `place_canary_order` verifies `--notional` against the venue's own last close
     #     and refuses when there is no usable price, so a machine without this feed cannot place
-    #     the canaries that row 7 is counting. Checked as env AND grant — this feed KEPT its
-    #     per-machine grant when live trading lost one (2026-07-28), so the two rows above and
-    #     here now legitimately differ, and the difference is not drift. The env var alone
-    #     selects the mock, whose synthesised price the check rejects.
+    #     the canaries that row 7 is counting. Checked as the env opt-in alone since 2026-08-10
+    #     — this feed kept its per-machine grant longer than live trading did (2026-07-28), and
+    #     the grant went when Thomas retired grant renewal outright; the env var selects, and
+    #     without it the mock's synthesised price is what the check rejects.
     #     Stated here because #201's lesson was that a precondition only a document knows about
     #     is discovered by an operator standing at a terminal with real keys.
-    market_data_opted_in = (
+    market_data_ready = (
         os.environ.get(MARKET_DATA_ENV, "").strip().lower() == BINANCE_FUTURES
     )
-    market_data_grant_error: str | None = None
-    try:
-        safety_gate.authorize(
-            (safety_gate.NETWORK_ACCESS,), provider_id=BINANCE_FUTURES, now=now, root=root
-        )
-    except MvpRuntimeError as exc:
-        market_data_grant_error = exc.reason_code
-    market_data_ready = market_data_opted_in and market_data_grant_error is None
     checks.append(_check(
         "market_data_visibility",
         market_data_ready,
         "live market data configured (the declared-notional check has a real price)"
         if market_data_ready
-        else (f"grant: {market_data_grant_error or 'ok'}; "
-              f"{MARKET_DATA_ENV}={'set' if market_data_opted_in else 'unset'} "
+        else (f"{MARKET_DATA_ENV} unset "
               f"- without it a canary is refused, so no canary evidence can be earned"),
     ))
 
@@ -516,6 +557,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "ready": all(c["ok"] for c in checks),
         "checks": checks,
         "recorded_gate": _recorded_gate(root, now=now),
+        # The armed set as data, beside its check row — the render needs the count (the WIRED
+        # note below qualifies itself on it), and a JSON consumer should not parse prose.
+        "live_armed_strategies": armed_strategies,
         "guard_dry_run": guard,
         # Which order the dry-run judged. A symbol-scoped block is unreadable without it: the
         # operator cannot tell "my budget excludes this symbol" from "this symbol is blocked".
@@ -549,6 +593,47 @@ def contradicts_recorded_gate(status: Mapping[str, Any]) -> bool:
     )
 
 
+# The rows computed from ``os.environ``. On a process that carries no live-trading environment
+# every one of them fails for a single reason — the environment is absent — and the failure is a
+# fact about that container, never about the system. Named here so the renderer can say so on the
+# ROW, which is the part a reader keeps.
+ENV_SCOPED_CHECKS = frozenset({
+    "live_trading_opt_in",
+    "confirmation_phrase",
+    "account_visibility",
+    "market_data_visibility",
+})
+
+# What those rows are marked instead of FAIL while the banner is up. Four characters, so the
+# columns still line up under `[PASS]` / `[FAIL]` on an 80-column console.
+OUT_OF_SCOPE_MARK = "n/a "
+
+# ...and what they say instead of their own detail. The detail is REPLACED, not annotated: the
+# text `live_trading_opt_in` carries out of here is "MVP_LIVE_TRADING is not 'real' (live trading
+# off)", which is the exact sentence that reached the operator as a system claim. A suffix leaves
+# it in the row for a summariser to lift; substitution does not. The env var names are dropped
+# with it and that is the right trade — they describe a container that is not the money path, and
+# the banner above names the command that renders the one that is.
+OUT_OF_SCOPE_DETAIL = "not observable from this container - see the banner and live_gate_recorded"
+
+
+def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]:
+    """``(mark, detail)`` — ``n/a`` plus a scoped detail for an env row this process cannot see.
+
+    Only ever downgrades a **failure**, and only while :func:`contradicts_recorded_gate` holds —
+    which needs the trading process's own non-stale record saying the gate is OPEN. Where the
+    money path actually runs the env is present, the predicate is False, and every row reads
+    exactly as it did before. ``status["ready"]`` and ``status["checks"]`` are untouched: this is
+    what the board SAYS, not what it permits, and a console that cannot see the environment still
+    is not READY.
+    """
+    if check["ok"]:
+        return "PASS", check["detail"]
+    if env_out_of_scope and check["check"] in ENV_SCOPED_CHECKS:
+        return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+    return "FAIL", check["detail"]
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -572,7 +657,16 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     # first. #382 — the operator console and the assistant read door both ran this board in
     # containers with no MVP_LIVE_*, and both told a reader live trading was off while the
     # scheduler held an open gate.
-    if contradicts_recorded_gate(status):
+    #
+    # The banner was not enough. Measured 2026-08-10, three times in one hour: the assistant read
+    # this exact board — banner at the top, "(THIS PROCESS ONLY)" in the verdict, and a tool
+    # description telling it how to read both — and still reported "MVP_LIVE_TRADING is not 'real'
+    # so live trading is disabled" to the operator while the scheduler held an OPEN gate. Prose
+    # around a row does not beat the row: `[FAIL] live_trading_opt_in ... (live trading off)` is
+    # the thing a summariser carries out, so the scope now lives ON it. Prose is what a careful
+    # reader reads; the mark is what every reader takes.
+    env_out_of_scope = contradicts_recorded_gate(status)
+    if env_out_of_scope:
         recorded = status["recorded_gate"]
         lines.append("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
         lines.append(f"   the trading process recorded the gate OPEN at {recorded['recorded_at']}")
@@ -582,27 +676,44 @@ def render_readiness_text(status: dict[str, Any]) -> str:
                      ".live_readiness")
         lines.append("")
     for check in status["checks"]:
-        mark = "PASS" if check["ok"] else "FAIL"
-        lines.append(f"[{mark}] {check['check']:24} {check['detail']}")
+        mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
+        lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
     lines.append(f"guard dry-run ({probe} at the configured cap): {guard['status']}")
-    for block in guard.get("blocks") or []:
-        lines.append(f"  BLOCK  : {block}")
-    for repair in guard.get("repairs") or []:
-        lines.append(f"  REPAIR : {repair}")
+    if env_out_of_scope:
+        # The dry-run puts the REAL guard against THIS process's environment, so its blocks read
+        # back the absent env as a refusal — "live trading is not enabled (MVP_LIVE_TRADING is
+        # not 'real')", the same sentence the rows above just stopped printing. Listing them here
+        # would hand it straight back. The blocks are withheld rather than filtered because
+        # deciding which of them is env-derived means matching on their wording, and a message
+        # that gets reworded would silently start leaking again.
+        blocked = len(guard.get("blocks") or ()) + len(guard.get("repairs") or ())
+        lines.append(f"  SCOPE  : this container cannot run the guard for real - {blocked} "
+                     "line(s) withheld; they")
+        lines.append("           describe this process's environment, not the system. For the "
+                     "real dry-run")
+        lines.append("           use the authoritative board named above.")
+    else:
+        for block in guard.get("blocks") or []:
+            lines.append(f"  BLOCK  : {block}")
+        for repair in guard.get("repairs") or []:
+            lines.append(f"  REPAIR : {repair}")
     if status.get("counter_error"):
         lines.append(f"WARNING : daily order counter unreadable ({status['counter_error']})")
     lines.append("")
     if status["ready"]:
         lines.append("READY")
-    elif contradicts_recorded_gate(status):
+    elif env_out_of_scope:
         # Unqualified "NOT READY" here would be the same false statement the banner exists to
-        # prevent, in the one line a hurried reader keeps.
+        # prevent, in the one line a hurried reader keeps. The second line used to say only what
+        # this verdict is NOT evidence of; a reader who takes one line away deserves the fact
+        # instead, so it now states what IS known — the trading process's own record.
         lines.append("NOT READY (THIS PROCESS ONLY) - it carries no live-trading environment;")
-        lines.append("           this says nothing about whether the system is trading")
+        lines.append("           the system's own gate was recorded OPEN at "
+                     f"{status['recorded_gate']['recorded_at']}")
     else:
         lines.append("NOT READY - every FAIL above must clear first")
     if status["order_path_implemented"]:
@@ -615,6 +726,15 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             # the runbook first.
             lines.append("NOTE  : autonomous routing is WIRED - a scheduled crypto run on this")
             lines.append("        machine opens and closes REAL positions once every FAIL clears")
+            # The sentence above is the one a reader believed on 2026-08-10 while the armed set
+            # was empty. When nothing is armed the qualification goes HERE, where the promise is
+            # made — a PASS row further up does not outweigh a NOTE that says positions will
+            # appear.
+            armed_fact = status.get("live_armed_strategies") or {}
+            if armed_fact.get("known") and armed_fact.get("armed") == 0:
+                lines.append("NOTE  : ...but 0 strategies are armed - no autonomous entry will OPEN")
+                lines.append("        even with every FAIL clear; open positions still close. To arm")
+                lines.append("        one: python -m scripts.promote_strategy_candidates ... --live-tier LIVE")
             # The stop instruction changed with the gate (2026-07-28): there is no grant file to
             # delete any more. `console_cli kill` is what replaces it and is strictly the better
             # instruction — it writes control state, so it lands on the RUNNING scheduler at its

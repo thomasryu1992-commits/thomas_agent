@@ -9,12 +9,18 @@ The MVP deploys as **two services from one image**, sharing one mounted state vo
 - **operator** — the control-channel loop (`runtime/mvp_runtime/operator_cli.py`): poll
   Telegram → verify the registered operator → run the single-agent pipeline → reply. The same
   emergency console (`/pause` `/kill` `/resume` `/status`) governs the running service.
-- **scheduler** — the tick loop (`runtime/mvp_runtime/scheduler_cli.py tick`): fires due
-  schedules (scheduled analysis, the crypto pipeline cycle, the strategy factory, memory
-  prune). **Without this service nothing scheduled ever runs** — the operator loop does not
-  tick schedules. Run at most ONE scheduler per state volume (the deployment contract is a
-  single tick process; the stores are cross-process locked, but parallel crypto workers are
-  out of scope).
+- **scheduler** — the RISK-lane tick loop (`scheduler_cli.py tick --lane risk`): fires the
+  money path's kinds (crypto pipeline cycle, breaker watch, route watch) and nothing else.
+  This is the service that holds the venue keys; the lane split kept it in place.
+- **scheduler-maint** — the MAINTENANCE-lane tick loop (`tick --lane maintenance`): factory,
+  null_control, candle archive, scheduled analysis, prune, rotate, report, propose, data
+  review — the long fires, in a process the risk lane never waits on
+  (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`). Holds no venue, live, or model credential.
+
+  **Without its lane's service nothing that lane schedules ever runs** — the operator loop
+  does not tick schedules. Run at most ONE tick service PER LANE per state volume (the
+  stores are cross-process locked and the lanes' kind sets are disjoint, but parallel
+  crypto workers are out of scope).
 
 ## What the image contains — and deliberately does not
 
@@ -29,10 +35,12 @@ Core Release, role/registry contracts, the governance policy). It never contains
   `THOMAS_CORE/approvals|activations/`. The `.dockerignore` keeps all of these out of the build
   context.
 
-This is what makes the Safety-Flag Gate meaningful in production: a freshly built image has no
-activation record, so the real Telegram transport and the hosted model provider **fail closed**
-(`ACTIVATION_MISSING`). Network capabilities turn on only when a valid, mounted activation
-authorizes them — never because the image was built or an env var was set.
+This is what makes the Safety-Flag Gate meaningful in production: a freshly built image carries
+no opt-ins, so the real Telegram transport and the hosted model provider stay **inert** until
+the operator names them in the deploy `.env`. Since 2026-08-10 (Thomas) the environment IS the
+gate — the per-machine grant records and their 30-day renewal are retired — so setting a
+capability's opt-in var is the deliberate governance step, and revoking it means unsetting the
+var and restarting the service. An unset or unrecognized value still selects the inert default.
 
 ## Build
 
@@ -50,15 +58,18 @@ or a registration). To process real requests, provide the same local state a wor
   chat id). Without it the loop exits `REGISTRATION_MISSING`.
 - `CURRENT_CORE_RELEASE.yaml` + the referenced `THOMAS_CORE/activations|approvals/` records —
   the active approved Core the pipeline binds each task to.
-- `safety_flag_activations/<provider_id>.json` — **one grant per provider**, each required to
-  enable that provider: `telegram` for the real control-channel transport, `google_ai_studio`
-  for the hosted model, `tavily_search` (or `brave_search`) for real search, `workspace.writer`
-  for real writes. Real search is selected with `MVP_SEARCH_TOOL=tavily_search` +
-  `TAVILY_API_KEY`; a backend failure at run time degrades the run (audited), never blocks it.
-  Build each with `scripts/activate_safety_flag.py --provider-id ...`; the referenced
-  `safety_flag_evidence/` file must be mounted too, since the gate verifies it exists.
-  Granting one provider never grants another — a bare image still fails closed on every
-  capability you did not explicitly activate.
+- Capability opt-ins in the `.env` — since 2026-08-10 the environment is the gate, one var
+  per capability: `MVP_OPERATOR_CHANNEL=telegram` for the real control-channel transport,
+  `MVP_HOSTED_PROVIDER=...` for the model chain, `MVP_SEARCH_TOOL=tavily_search` (+
+  `TAVILY_API_KEY`) for real search, `MVP_WORKSPACE_WRITER=real` for real writes, and the
+  crypto opt-ins: `MVP_MARKET_DATA=binance_futures`,
+  `MVP_ACCOUNT_FEED=binance_futures_account`, `MVP_LIQUIDATION_FEED=coinalyze_market_data`,
+  `MVP_PAPER_TRADING=real`, `MVP_CANDLE_ARCHIVE=hyperliquid`, `MVP_LIVE_TRADING=real` (the
+  live one needs its confirmation phrases too — see the live section). A search-backend failure at
+  run time degrades the run (audited), never blocks it. Naming one capability never names
+  another — a bare image stays inert on every capability you did not explicitly opt in.
+  Leftover `safety_flag_activations/*.json` grant files from before 2026-08-10 are inert:
+  they grant nothing and block nothing, and you can delete them.
 - The `runtime_ledger/` and control state are created on first write.
 
 Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
@@ -68,8 +79,9 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 ## Run (compose — the one deployment path)
 
 **Compose is the only way this is deployed. Do not `docker run` the services and do not
-build private `thomas-agent-operator:<tag>` images to deploy from.** The two services own
-the fixed names `thomas-operator` and `thomas-scheduler`; a hand-run container claiming
+build private `thomas-agent-operator:<tag>` images to deploy from.** The services own
+the fixed names `thomas-operator`, `thomas-scheduler`, and `thomas-scheduler-maint`; a
+hand-run container claiming
 either name blocks the next `docker compose up` with a name conflict, and two people
 deploying by different routes on one host means each redeploy silently replaces the
 other's containers. One host, one deploy command, run from a checkout on the commit you
@@ -82,7 +94,7 @@ docker compose up -d --build
 This is safe to run from any session: it rebuilds `thomas-agent-runtime` from the current
 checkout and recreates both services in place. The mounted state volume is untouched, so
 no history is lost. If a name conflict is reported, an out-of-band container exists —
-`docker rm -f thomas-operator thomas-scheduler` and re-run compose (their state is on the
+`docker rm -f thomas-operator thomas-scheduler thomas-scheduler-maint` and re-run compose (their state is on the
 bind mount, not in the container). Confirm the commit you are on is a superset of whatever
 the running image carried before removing anything.
 
@@ -125,8 +137,8 @@ Three things must line up, and each fails closed loudly rather than degrading qu
 
 1. the variable reaches the **operator** service (it is in that service's `environment:`
    block — the scheduler holds no conversation and must not get it);
-2. the named provider has its own mounted safety-flag grant
-   (`model_invocation,network_access`), like every provider;
+2. every chain member it names is a known provider (an unknown or duplicate member fails the
+   whole selection closed — the environment is the gate since 2026-08-10);
 3. `conversation.frontdesk` is **active** in `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml`, with a
    matching definition hash — the env var is a request, the registry entry is the grant.
 
@@ -168,11 +180,11 @@ important/high-risk requests — the R7.1 policy). To change that, edit the oper
 service's `command:` in `docker-compose.yml` — not a `docker run` flag.
 
 `MVP_HOSTED_PROVIDER` also accepts an ordered failover chain (`openrouter,google_ai_studio,groq`
-— put every member's API key in the `.env` too). Every member needs its own safety-flag activation
-on the mounted state volume; a chain with an unknown or unauthorized member fails closed
-at startup rather than silently shrinking. The next member is tried only when the previous
+— put every member's API key in the `.env` too). The environment is the gate (2026-08-10):
+naming the chain IS the authorization, and a chain with an unknown or duplicate member fails
+closed at startup rather than silently shrinking. The next member is tried only when the previous
 one answers 503/429 even after its own retry. Set `MVP_VALIDATOR_PROVIDER` (e.g. `groq`)
-to run the R7.1 reviewer on its own gated provider/quota — same grant rules. **These env
+to run the R7.1 reviewer on its own gated provider/quota — same chain rules. **These env
 vars belong to the scheduler service too** (both `environment:` blocks list them); a key
 present for the operator but missing for the scheduler is the failure mode where scheduled
 work silently degrades while interactive work is fine.
@@ -288,16 +300,11 @@ defaults, which is the supported steady state. Two things to know before registe
 python -m scripts.register_crypto_risk_limits --show   # read-only: what the guard judges on now
 ```
 
-**One grant is still required** — the read-only account feed. The `live_trading` grant that used
-to sit beside it was removed on 2026-07-28 (Thomas); `MVP_LIVE_TRADING=real` above replaces it
-entirely. If you have an old `live_trading` activation file on a machine, it is now inert: it
-grants nothing and blocks nothing, and you can delete it.
-
-```bash
-python scripts/activate_safety_flag.py --provider-id binance_futures_account \
-    --flags network_access --authority-level P2 \
-    --reason "read-only account visibility" --ttl-minutes 43200
-```
+**No grant is required** — since 2026-08-10 (Thomas) the account feed, like every capability,
+opens on its env opt-in alone: `MVP_ACCOUNT_FEED=binance_futures_account` plus the two key vars
+above. Any old activation files (`live_trading` from before 2026-07-28,
+`binance_futures_account` or others from before 2026-08-10) are inert: they grant nothing and
+block nothing, and you can delete them.
 
 Verify before spending anything — both commands are read-only and place no order:
 
@@ -362,7 +369,8 @@ all on a **bare image with no secrets and no provisioned state**:
 
 - both compose services exist (an operator-only deploy runs no schedules);
 - the scheduler ticks cleanly on an empty mounted volume, proving uid 10001 can write it;
-- a provider env var **alone** refuses to open a network path (`ACTIVATION_MISSING`);
+- a typo'd provider chain refuses **outright** (`UNKNOWN_PROVIDER`) instead of silently
+  shrinking — and a bare image with no opt-ins stays inert (the empty-tick step);
 - the operator refuses to act with no registration (`REGISTRATION_MISSING`);
 - a `kill` survives the container that issued it, and a corrupt control state reads as
   `KILLED`, never as "go";

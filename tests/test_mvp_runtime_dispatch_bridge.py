@@ -7,8 +7,9 @@ role, and that ``write_path`` — the one input that would lift a run above that
 smuggled in.
 
 Since the plane separation the door validates and FORWARDS rather than running the pipeline
-itself, so these capture the ``execute`` call it makes — exactly the three validated fields —
-and exercise every refusal that precedes it. The engine's own contract (attribution, provider
+itself, so these capture the ``execute`` call it makes — exactly the validated fields
+(request, kind, reason, and the optional ``naver_keywords``) — and exercise every refusal
+that precedes it. The engine's own contract (attribution, provider
 caps, the reply shape) is tested in ``test_mvp_runtime_pipeline_worker``.
 """
 
@@ -50,8 +51,9 @@ def captured_execute():
     plus the relayed reply, so the capture list is the assertion and not scaffolding."""
     calls: list[dict] = []
 
-    def _execute(text, kind, reason):
-        calls.append({"request": text, "kind": kind, "reason": reason})
+    def _execute(text, kind, reason, naver_keywords):
+        calls.append({"request": text, "kind": kind, "reason": reason,
+                      "naver_keywords": naver_keywords})
         return {"ok": True, "kind": kind, "task_id": "task-1",
                 "final_response": "ok", "actor": ASSISTANT_ACTOR}
 
@@ -171,20 +173,58 @@ def test_a_valid_dispatch_forwards_validated_fields_and_relays_the_reply(tmp_pat
     assert out["final_response"] == "ok"
     assert out["task_id"] == "task-1"
     assert out["actor"] == ASSISTANT_ACTOR
-
-    # Exactly the three validated fields cross the boundary — no write_path, no writer, no
+    # Exactly the validated fields cross the boundary — no write_path, no writer, no
     # requester override, nothing the frame carried that the door did not validate.
+    # `naver_keywords` is None here (not sent), and the real forwarder omits the key on
+    # None, so the socket frame stays byte-identical to the pre-lane contract.
     assert captured_execute.calls == [{
         "request": "analyze this idea", "kind": "analysis",
-        "reason": "operator asked for a market read",
+        "reason": "operator asked for a market read", "naver_keywords": None,
     }]
+
+
+# --- the naver_keywords key (the lane's door surface) -------------------------
+
+def test_keyword_seeds_are_validated_then_forwarded(captured_execute, tmp_path):
+    out = dispatch_bridge.apply_dispatch(
+        _valid(kind="research", naver_keywords="  미리캔버스, 포스터제작  "),
+        control_store=ControlStore(tmp_path), execute=captured_execute,
+    )
+    assert out["ok"] is True
+    assert captured_execute.calls[0]["naver_keywords"] == "미리캔버스, 포스터제작"
+
+
+@pytest.mark.parametrize("bad", [42, "", "   ", ["미리캔버스"], "x" * 201])
+def test_unusable_seeds_are_refused_at_the_door_not_degraded_downstream(bad, tmp_path, captured_execute):
+    """A too-long list would not fail the run — it would DEGRADE the brief, silently costing
+    the caller the evidence it asked for. The door refuses where the caller can still fix it."""
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(
+            _valid(naver_keywords=bad),
+            control_store=ControlStore(tmp_path), execute=captured_execute,
+        )
+    assert exc.value.reason_code == "MALFORMED_REQUEST"
+    assert captured_execute.calls == []  # refused before the forward, so nothing ran
+
+
+def test_seeds_ride_every_kind_because_refusals_here_mean_effect(tmp_path, captured_execute):
+    """Admitted on all four kinds on purpose: the brief is read-only evidence and lifts
+    nothing, and a kind-based refusal would encode taste as a security boundary — after
+    which a refusal from this door no longer reliably means 'effect'."""
+    for kind in sorted(dispatch_bridge._ALLOWED_KINDS):
+        out = dispatch_bridge.apply_dispatch(
+            _valid(kind=kind, naver_keywords="포스터제작"),
+            control_store=ControlStore(tmp_path), execute=captured_execute,
+        )
+        assert out["ok"] is True
+    assert [c["naver_keywords"] for c in captured_execute.calls] == ["포스터제작"] * 4
 
 
 def test_a_pipeline_block_is_relayed_not_swallowed(tmp_path):
     """A BLOCK ran the pipeline and carries its task_id — a real answer, relayed as-is."""
     store = ControlStore(tmp_path)
 
-    def _blocked(text, kind, reason):
+    def _blocked(text, kind, reason, naver_keywords):
         return {"ok": False, "kind": kind, "task_id": "task-9",
                 "reason_code": "NO_ROUTABLE_ROLE", "reason": "none", "actor": ASSISTANT_ACTOR}
 
@@ -200,7 +240,7 @@ def test_a_worker_refusal_surfaces_under_the_workers_own_reason_code(tmp_path):
     refusal so the assistant sees the worker's reason, not a generic failure."""
     store = ControlStore(tmp_path)
 
-    def _refused(text, kind, reason):
+    def _refused(text, kind, reason, naver_keywords):
         return {"ok": False, "reason_code": "KILLED",
                 "reason": "runtime is KILLED; new work is blocked"}
 
@@ -222,7 +262,7 @@ def test_a_door_without_a_forwarder_fails_closed_never_running_in_process(tmp_pa
 def test_a_transport_failure_from_the_forward_propagates_typed(tmp_path):
     store = ControlStore(tmp_path)
 
-    def _down(text, kind, reason):
+    def _down(text, kind, reason, naver_keywords):
         raise ControlBlocked("WORKER_UNAVAILABLE", "the pipeline worker is not answering")
 
     with pytest.raises(ControlBlocked) as exc:

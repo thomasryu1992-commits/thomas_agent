@@ -246,6 +246,27 @@ def test_two_resting_legs_read_as_protected():
     assert live_leg.read_bracket_legs(_position(), adapter=adapter)["status"] == live_leg.PROTECTED
 
 
+def test_a_partially_filled_target_reads_as_protected_not_lost():
+    """A partial fill of the sized reduceOnly LIMIT target is an ordinary market event: the
+    remainder is still working on the book, and the closePosition stop beside it covers
+    whatever remains by construction. Reading it as UNPROTECTED sent rule 2's taker
+    force-close at the book's stale full quantity against a still-stop-protected position —
+    guaranteed MISMATCH, EXIT_NOT_CONFIRMED, and a portfolio-wide halt with the book OPEN.
+    The quantity drift a partial fill creates is reconciliation's fact to report
+    (BOOK_DRIFT), not this classifier's to punish."""
+    adapter = _Adapter(orders={
+        "sl-1": _venue_order("NEW"),
+        "tp-1": _venue_order("PARTIALLY_FILLED", qty=0.001),
+    })
+    read = live_leg.read_bracket_legs(_position(), adapter=adapter)
+    assert read["status"] == live_leg.PROTECTED
+    target = next(leg for leg in read["legs"] if leg["client_order_id"] == "tp-1")
+    assert target["resting"] is True
+    # A partial fill is not "this leg executed": the settle path must not price an exit off
+    # a position that is still open at the venue.
+    assert target["filled"] is False
+
+
 def test_a_leg_the_venue_says_is_gone_reads_as_unprotected():
     """``fetch_order`` returning None is the venue *answering* — "no such order" — not a
     failed read. A position with a missing stop is genuinely unprotected."""
@@ -734,3 +755,78 @@ def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):
     )
     assert record["live_settled"] is not None
     assert record["live_opened"] is None, "a settling cycle opened a position"
+
+
+def test_a_venue_closed_position_settles_from_whichever_context_runs_first(tmp_path, monkeypatch):
+    """The 2026-08-18 deadlock, pinned: an operator hand-closed BTCUSDT while an ETH probe
+    was in flight. The probe's `timeframe: None` put the ETH 1d context first in the
+    fan-out, the account-wide drift halted the pass THERE, and the BTCUSDT context — the
+    only one that settled its drift — never ran. #631's one-cycle settle only ever worked
+    because the drifted symbol's context happened to run first.
+
+    The property now: a MISSING_AT_VENUE position is settled by whichever context runs
+    first, whatever its symbol — so the drift clears, the pass continues, and the halt
+    stays what it means (a disagreement settlement could NOT repair)."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    eth_local = {"symbol": "ETHUSDT", "position_id": "probe-eth", "status": "OPEN",
+                 "direction": "LONG", "quantity": 0.002}
+    btc_local = {"symbol": "BTCUSDT", "position_id": "s005-btc", "status": "OPEN",
+                 "direction": "SHORT", "quantity": 0.003}
+    eth_venue = AccountPosition(symbol="ETHUSDT", side="LONG", quantity=0.002,
+                                entry_price=4600.0, mark_price=4600.0, unrealized_pnl=0.0,
+                                leverage=1.0, notional=9.2)
+    monkeypatch.setattr(live_route, "read_account",
+                        lambda **kw: (_snapshot(positions=[eth_venue]), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [eth_local, btc_local])
+
+    settled_positions = []
+
+    def _settle(record, position, **kw):
+        settled_positions.append(position["position_id"])
+        if position["symbol"] == "BTCUSDT":
+            # The MISSING branch settles it (sends nothing) and the record says so.
+            record["live_settled"] = {
+                "status": "SETTLED", "outcome": {"result_R": 0.4}, "reason_codes": [],
+            }
+
+    monkeypatch.setattr(live_route, "_settle_or_protect", _settle)
+
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
+        route=None, feature_row={"timestamp": NOW}, verdict={"allow_new_position": True},
+        symbol="ETHUSDT", collector=object(), now=NOW, root=tmp_path,
+    )
+    assert "s005-btc" in settled_positions, (
+        "the ETH context never settled the venue-closed BTC position — the deadlock is back")
+    assert record["halt"] is False
+    assert live_route.BOOK_DRIFT not in record["live_reason_codes"]
+
+
+def test_drift_that_bookkeeping_cannot_repair_still_halts_from_any_context(tmp_path, monkeypatch):
+    """The other half of the fix's scope: a quantity mismatch is a venue state settlement
+    cannot repair, so a context that is not the drifted symbol's own must NOT touch the
+    position — and the halt still fires exactly as before."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    btc_local = {"symbol": "BTCUSDT", "position_id": "s005-btc", "status": "OPEN",
+                 "direction": "SHORT", "quantity": 0.003}
+    btc_venue = AccountPosition(symbol="BTCUSDT", side="SHORT", quantity=0.005,
+                                entry_price=64000.0, mark_price=64000.0, unrealized_pnl=0.0,
+                                leverage=1.0, notional=320.0)
+    monkeypatch.setattr(live_route, "read_account",
+                        lambda **kw: (_snapshot(positions=[btc_venue]), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: [btc_local])
+    monkeypatch.setattr(
+        live_route, "_settle_or_protect",
+        lambda record, position, **kw: pytest.fail(
+            "a foreign context touched a position whose drift bookkeeping cannot repair"),
+    )
+
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"},
+        route=None, feature_row={"timestamp": NOW}, verdict={"allow_new_position": True},
+        symbol="ETHUSDT", collector=object(), now=NOW, root=tmp_path,
+    )
+    assert record["halt"] is True
+    assert live_route.BOOK_DRIFT in record["live_reason_codes"]
+    assert record["live_route_status"] == live_route.ROUTE_INCIDENT

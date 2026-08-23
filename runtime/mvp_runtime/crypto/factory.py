@@ -74,8 +74,12 @@ from .cost import (
     round_trip_cost_r,
 )
 from .feedback import summarize_outcomes
+from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
-from .paper import settle_trade_plan
+from .paper import (
+    ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
+    settle_trade_plan, stop_is_beyond_liquidation,
+)
 from .pool import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
@@ -149,6 +153,29 @@ _FUNDING_SOURCE_STRENGTH = {
 # 500-day window, so nothing about a slice's internal composition changes; there are simply
 # twice as many of them.
 HOLDOUT_PERIODS = 10
+
+# The SCORED region subtotalled the way the tail above already is, so temporal stability can
+# one day be judged on market periods rather than on trades — the independence unit the
+# 2026-08-04/06 measurements above established. Twenty is width-matched to the tail, not
+# count-matched: the train span is 70% of the window against the tail's 30%, so twenty slices
+# give ~35 days each — the '30 slices / 33 days' row of the autocorrelation table above
+# (mildly mean-reverting, i.e. conservative), well clear of the 50-67-day band that table
+# flags as hardest to reason about.
+#
+# **This increment records; it does not judge.** `walk_forward.temporal_stability` stays None
+# until the store's own occupancy and discrimination numbers say the subtotals mean something
+# (`scripts/walk_forward_stability_report.py` is the reader; the decision gate is
+# `docs/proposals/WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md`) — the same measured-then-moved
+# order `HOLDOUT_PERIODS` itself followed off 5. Until then the scorer keeps reading absent
+# evidence, so nothing about any score or verdict moves.
+WALK_FORWARD_PERIODS = 20
+# Below this many JUDGED periods (≥1 closed trade) stability may never be claimed — the field
+# stays None, not 0: a spec whose feed covers only the newest quarter of the window must read
+# "cannot measure", never "unstable" (the `_oi_feed_reaches` lesson below, where structurally
+# empty older slices retired a family for a window that had no data in it). Eight carries the
+# resolution argument `robustness.MIN_HOLDOUT_PERIODS` made, and it is what stops a spec that
+# traded one hot month from buying full credit off three slices.
+WALK_FORWARD_MIN_PERIODS = 8
 
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
@@ -2796,7 +2823,7 @@ def funding_charges_per_bar(
 def _replay(
     spec: StrategySpec, rows: list[dict[str, Any]], candles: list[Mapping[str, Any]],
     *, cost: CostModel, funding: list[float] | None = None, offset: int = 0,
-) -> tuple[list[dict[str, Any]], float, float, float, float, int]:
+) -> tuple[list[dict[str, Any]], float, float, float, float, int, int, int]:
     """One pass of the live components over ``rows``. Pure; returns (outcomes, fees, slip).
 
     Extracted so the scored window and the holdout run through **exactly** the same
@@ -2814,6 +2841,9 @@ def _replay(
     # whose evidence is thin because most of its setups were uneconomic is a different fact
     # from one that simply did not fire, and only the count can tell them apart.
     uneconomic_entries = 0
+    liquidation_refused = 0
+    cooldown_skipped = 0
+    cooldown_remaining = 0
     charges = funding if funding is not None else [0.0] * len(rows)
 
     for i, row in enumerate(rows):
@@ -2836,7 +2866,8 @@ def _replay(
                 total_maker_fee_cost_r += breakdown.maker_fee_cost_r
                 total_slippage_cost_r += breakdown.slippage_cost_r
                 total_funding_cost_r += breakdown.funding_cost_r
-                outcomes.append({
+                resolution = position.get("exit_resolution") or "unambiguous"
+                outcome: dict[str, Any] = {
                     "outcome_closed": True,
                     "result_R": breakdown.net_r,
                     "gross_R": breakdown.gross_r,
@@ -2849,10 +2880,25 @@ def _replay(
                     "strategy_id": spec.strategy_id,
                     "entry_regime": entry_regime,
                     "closed_at_bar": offset + i,
-                })
+                    "exit_resolution": resolution,
+                }
+                if resolution == "pessimistic_sl_first":
+                    direction = position["direction"]
+                    entry = float(position["entry_price"])
+                    tp = float(position["take_profit"])
+                    risk = float(position["risk"])
+                    alt_gross_r = (tp - entry) / risk if direction == "LONG" else (entry - tp) / risk
+                    outcome["ambiguous_gap_r"] = round(alt_gross_r - breakdown.gross_r, 8)
+                outcomes.append(outcome)
                 position = None
                 entry_regime = None
+                if reason == "stop_loss":
+                    cooldown_remaining = COOLDOWN_BARS_AFTER_STOPLOSS
         if position is None:
+            if cooldown_remaining > 0:
+                cooldown_remaining -= 1
+                cooldown_skipped += 1
+                continue
             close, atr = row.get("close"), row.get("atr")
             if not (isinstance(close, (int, float)) and isinstance(atr, (int, float)) and close > 0 and atr > 0):
                 continue
@@ -2882,6 +2928,10 @@ def _replay(
             ) > MAX_ENTRY_COST_R:
                 uneconomic_entries += 1
                 continue
+            stop_price = close - stop_distance if long else close + stop_distance
+            if stop_is_beyond_liquidation(float(close), stop_price, long):
+                liquidation_refused += 1
+                continue
             position = {
                 "direction": "LONG" if long else "SHORT",
                 "entry_price": float(close),
@@ -2904,7 +2954,7 @@ def _replay(
             }
             entry_regime = row.get("market_regime")
     return (outcomes, total_fee_cost_r, total_maker_fee_cost_r, total_slippage_cost_r,
-            total_funding_cost_r, uneconomic_entries)
+            total_funding_cost_r, uneconomic_entries, cooldown_skipped, liquidation_refused)
 
 
 # A feature the rows never supply, and why minting on one is not merely wasteful.
@@ -2963,9 +3013,15 @@ def unsuppliable_features(spec: StrategySpec, rows: list[dict[str, Any]]) -> lis
 # **It is cheap, which is the reason it can sit on the mint path.** Every FEATURE is a
 # trailing-window computation (`rolling_percentile` over `PERCENTILE_WINDOW`, the z-scores over
 # their own), so a prefix of a built frame carries exactly the values those bars had in the full
-# series — verified column-by-column over 4,200 rows, not assumed. No `build_feature_rows` call,
-# no refetch; every earlier window is a prefix of candles already in hand, and only the replay
-# repeats, over 0.7 + 0.49 + 0.34 of the series.
+# series. This is the **lookahead guard**: it ensures no feature at bar i depends on bars
+# after i, which is what makes replay-live parity hold on differently-sized candle windows.
+# Pinned by two tests:
+#   - `test_slicing_a_built_frame_equals_rebuilding_it_except_the_last_bars_funding`
+#     (OHLCV + funding + taker_flow, the original 200-bar verification)
+#   - `test_prefix_invariance_holds_with_htf_and_external_series`
+#     (adds close-time-keyed HTF columns and backward-asof liquidation events)
+# No `build_feature_rows` call, no refetch; every earlier window is a prefix of candles already
+# in hand, and only the replay repeats, over 0.7 + 0.49 + 0.34 of the series.
 #
 # **The funding series is the one exception and it is one bar wide.** `funding_charges_per_bar`
 # spreads settlements across the bars they fall in, so the FINAL bar of a prefix was charged
@@ -3064,7 +3120,7 @@ def _holdout_evidence(
     period_r = [0.0] * HOLDOUT_PERIODS
     period_trades = [0] * HOLDOUT_PERIODS
     for frame in frames:
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, _cd, _liq = _replay(
             spec, frame.rows[frame.split:], frame.candles[frame.split:],
             cost=cost, funding=frame.funding[frame.split:], offset=frame.split,
         )
@@ -3147,6 +3203,11 @@ def _holdout_evidence(
             "taker_fee_bps": cost.taker_fee_bps,
             "maker_fee_bps": cost.maker_fee_bps,
             "slippage_bps": cost.slippage_bps,
+            # Stamped since Thomas's 2026-08-11 direction: the stop leg's own rate joined
+            # `pool.cost_basis_rank`'s comparison, and a row that does not say what its
+            # stops paid is judged on its general slippage (the pre-split identity) — so a
+            # 12bps-scored row MUST carry the field or it reads OPTIMISTIC forever.
+            "stop_slippage_bps": cost.stop_slippage_bps,
             "funding_bps_per_interval": cost.funding_bps_per_interval,
             "funding_source": funding_source,
         },
@@ -3288,10 +3349,12 @@ def backtest_spec_pooled(
     outcomes: list[dict[str, Any]] = []
     total_fee_cost_r = total_maker_fee_cost_r = total_slippage_cost_r = total_funding_cost_r = 0.0
     uneconomic_entries = 0
+    cooldown_entries = 0
+    liquidation_entries = 0
     scored_bars: list[int] = []
     for frame in frames:
         split = frame.split
-        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic = _replay(
+        part, part_fees, part_maker, part_slip, part_carry, part_uneconomic, part_cooldown, part_liq = _replay(
             spec, frame.rows[:split], frame.candles[:split],
             cost=cost, funding=frame.funding[:split],
         )
@@ -3301,6 +3364,8 @@ def backtest_spec_pooled(
         total_slippage_cost_r += part_slip
         total_funding_cost_r += part_carry
         uneconomic_entries += part_uneconomic
+        cooldown_entries += part_cooldown
+        liquidation_entries += part_liq
         scored_bars.append(split)
     holdout = _holdout_evidence(spec, frames, cost=cost, funding_source=funding_source)
 
@@ -3331,13 +3396,22 @@ def backtest_spec_pooled(
         },
     }
 
+    # Intrabar ambiguity: trades where a single bar touched both SL and TP. The
+    # pessimistic SL-first assumption applies to all of them in the backtest, and the
+    # gap is the maximum R a more favourable resolution could have added.
+    ambiguous_exits = sum(
+        1 for o in outcomes if o.get("exit_resolution") == "pessimistic_sl_first"
+    )
+    ambiguous_gap_r = round(sum(
+        float(o.get("ambiguous_gap_r") or 0.0) for o in outcomes
+    ), 8)
+
     # Walk-forward-lite: equal-bar slices of the replay; a slice's sign counts only
-    # with enough trades. temporal_stability stays None (the source walk-forward
-    # module was not ported) — the scorer treats that as absent evidence, not skip.
-    # The shallowest leg sets the slice width, so a trade closing late on a longer leg clamps
-    # into the last window rather than opening a window the other legs never reached. Bar *i*
-    # is the same calendar window on every leg — that is the one-timeframe precondition above,
-    # and it is what makes pooling by `closed_at_bar` mean anything.
+    # with enough trades. The shallowest leg sets the slice width, so a trade closing late on
+    # a longer leg clamps into the last window rather than opening a window the other legs
+    # never reached. Bar *i* is the same calendar window on every leg — that is the
+    # one-timeframe precondition above, and it is what makes pooling by `closed_at_bar`
+    # mean anything.
     window_bars = max(1, min(scored_bars) // BACKTEST_WINDOWS)
     window_r: dict[int, list[float]] = {}
     for outcome in outcomes:
@@ -3345,6 +3419,21 @@ def backtest_spec_pooled(
             outcome["result_R"]
         )
     counted = [values for values in window_r.values() if len(values) >= MIN_TRADES_PER_WINDOW]
+    # The scored region subtotalled the way `_holdout_evidence` subtotals the tail — same
+    # field names, same clamp rule, and net R like everything here (`result_R` is costed).
+    # These are `temporal_stability`'s INPUTS, recorded so the store can measure whether they
+    # discriminate before anything judges on them; the field itself stays None until that
+    # decision is taken on the store's own numbers (see WALK_FORWARD_PERIODS). The scorer
+    # reads None as absent evidence, so this block moves no score and no verdict — and the
+    # holdout suite's "changing only the tail leaves walk_forward identical" test now pins
+    # these subtotals to the scored region for free.
+    wf_width = max(1, min(scored_bars) // WALK_FORWARD_PERIODS)
+    wf_period_r = [0.0] * WALK_FORWARD_PERIODS
+    wf_period_trades = [0] * WALK_FORWARD_PERIODS
+    for outcome in outcomes:
+        index = min(outcome["closed_at_bar"] // wf_width, WALK_FORWARD_PERIODS - 1)
+        wf_period_r[index] += float(outcome["result_R"])
+        wf_period_trades[index] += 1
     walk_forward = {
         "walk_forward_pass_rate": (
             sum(1 for values in counted if sum(values) > 0) / len(counted) if counted else None
@@ -3352,6 +3441,10 @@ def backtest_spec_pooled(
         "temporal_stability": None,
         "windows": BACKTEST_WINDOWS,
         "windows_counted": len(counted),
+        "period_r": [round(value, 8) for value in wf_period_r],
+        "period_trades": wf_period_trades,
+        "periods": WALK_FORWARD_PERIODS,
+        "periods_judged": sum(1 for n in wf_period_trades if n > 0),
     }
 
     # C12: total_net_r is the sum of costed R over every closed trade — the
@@ -3420,6 +3513,22 @@ def backtest_spec_pooled(
             # arrive on bars too quiet to pay for themselves.
             "refused_entries": uneconomic_entries,
         },
+        "cooldown_door": {
+            "applied": True,
+            "cooldown_bars": COOLDOWN_BARS_AFTER_STOPLOSS,
+            "skipped_entries": cooldown_entries,
+        },
+        "intrabar_gap": {
+            "ambiguous_exits": ambiguous_exits,
+            "total_gap_r": ambiguous_gap_r,
+            "gap_per_trade_r": round(ambiguous_gap_r / ambiguous_exits, 4) if ambiguous_exits else 0.0,
+        },
+        "liquidation_guard": {
+            "applied": True,
+            "assumed_leverage": ASSUMED_LEVERAGE,
+            "maintenance_margin_rate": MAINTENANCE_MARGIN_RATE,
+            "refused_entries": liquidation_entries,
+        },
         "cost_summary": {
             "total_net_r": total_net_r,
             "total_fee_cost_r": round(total_fee_cost_r, 8),
@@ -3440,6 +3549,7 @@ def backtest_spec_pooled(
                 "taker_fee_bps": cost.taker_fee_bps,
                 "maker_fee_bps": cost.maker_fee_bps,
                 "slippage_bps": cost.slippage_bps,
+                "stop_slippage_bps": cost.stop_slippage_bps,
                 "funding_bps_per_interval": cost.funding_bps_per_interval,
                 # Which quality of evidence the carry is: the venue's own settlements over this
                 # window, or the modelled base rate because the series was missing.
@@ -3447,6 +3557,9 @@ def backtest_spec_pooled(
             },
         },
         "regime_breakdown": regime_breakdown,
+        "distribution_reference": compute_distribution_reference(
+            [row for frame in frames for row in frame.rows[:frame.split]]
+        ),
         "walk_forward": walk_forward,
         "holdout": holdout,
         "robustness": robustness,
@@ -3465,11 +3578,200 @@ def backtest_spec_pooled(
     }
 
 
+# --- ablation lattice: a conjunction must beat its own parts ------------------
+#
+# `docs/proposals/FACTORY_ABLATION_V0.1.md` §3, approved as proposed (Thomas 2026-08-12).
+# The generator searched "how many conditions make the score better", and that search
+# passes stacked luck: of the 592 stored rows whose holdout could be judged at all, 592
+# read CONTRADICTED. The lattice decomposes the luck at mint time — a full conjunction
+# that cannot strictly beat its own best proper subset on the TRAIN segment is fit, not
+# edge, and the best proper subset registers in its place.
+
+# §3-1: k <= 3, so the lattice is at most 2^3 - 1 = 7 members. A hypothesis with MORE
+# conditions stays on the existing path UNCHANGED: the seeded library mints up to k = 4
+# today (the `oi_squeeze_*` pair below 1d) and a fused union may carry up to
+# `MAX_FUSION_ENTRY_CONDITIONS` = 7 — a k = 4 lattice is 15 members, and §3-1 priced that
+# as a cadence reallocation this increment deliberately does not take.
+ABLATION_MAX_CONDITIONS = 3
+
+# k = 1 skips the lattice entirely: a single condition has no proper subset to beat.
+ABLATION_MIN_CONDITIONS = 2
+
+
+def _train_frame(frame: ReplayFrame) -> ReplayFrame:
+    """The frame's train segment as a frame of its own — the holdout bars are NOT in it.
+
+    This is what makes the lattice's train-only rule structural rather than a convention
+    (proposal §1-3): selection code handed this object cannot read a holdout bar, because
+    the object does not contain one. Choosing a subset on the shared holdout would replay
+    the A2 failure (holdout reuse) amplified by the lattice size, so the bars are removed
+    at the door instead of avoided by discipline. ``split`` stays the full frame's, which
+    after truncation equals ``len(rows)``: everything trains, nothing is held out.
+
+    Deliberately NOT :func:`_prefix_frame`, which re-splits its prefix by
+    :func:`holdout_split_index` and would carve a second holdout out of the train segment."""
+    split = frame.split
+    return ReplayFrame(
+        rows=frame.rows[:split], candles=frame.candles[:split],
+        funding=frame.funding[:split], funding_source=frame.funding_source,
+        split=split, cost=frame.cost,
+    )
+
+
+def _subset_spec(spec: StrategySpec, indices: tuple[int, ...]) -> StrategySpec:
+    """``spec`` carrying only the entry conditions at ``indices`` — all else identical.
+
+    The stored rule hash is dropped so ``from_dict`` recomputes it: the conditions changed,
+    so the identity did, and a subset that kept the hypothesis's hash would be refused as
+    tampered."""
+    as_dict = spec.to_dict()
+    conditions = as_dict["entry_rules"]["conditions"]
+    as_dict["entry_rules"] = {
+        "operator": "AND", "conditions": [conditions[i] for i in indices],
+    }
+    as_dict.pop("strategy_rule_hash", None)
+    return StrategySpec.from_dict(as_dict)
+
+
+def _train_net_expectancy(spec: StrategySpec, train_frames: Sequence[ReplayFrame]) -> float:
+    """Net expectancy of one lattice member over the train frames, pooled across legs.
+
+    The same costed replay the scored window runs (`_replay` under each frame's own cost
+    model — fees, slippage, funding carry), so the number a subset is selected on is the
+    same KIND of number the winner is later scored on. 0.0 over zero closed trades,
+    matching ``backtest_spec_pooled``'s convention for ``expectancy``."""
+    total = 0.0
+    closed = 0
+    for frame in train_frames:
+        outcomes, *_ = _replay(
+            spec, frame.rows, frame.candles, cost=frame.cost, funding=frame.funding,
+        )
+        for outcome in outcomes:
+            total += float(outcome["result_R"])
+            closed += 1
+    return round(total / closed, 8) if closed else 0.0
+
+
+def ablate_hypothesis(
+    spec: StrategySpec, frames: Sequence[ReplayFrame],
+) -> tuple[StrategySpec, dict[str, Any]] | None:
+    """Run the train-only ablation lattice over one drawn hypothesis.
+
+    ``None`` when there is no lattice to run: k outside
+    [:data:`ABLATION_MIN_CONDITIONS`, :data:`ABLATION_MAX_CONDITIONS`] (a single condition
+    has nothing to ablate; a wider conjunction stays on the existing path by §3-1), or an
+    OR hypothesis — dropping an OR member makes the rule STRICTER, the opposite of what a
+    proper subset means under AND, so the lattice's reasoning does not transfer.
+
+    Otherwise ``(winner, ablation_block)``. The selection rule is §3-2 as approved: the
+    full conjunction wins only if its train net expectancy strictly beats EVERY proper
+    subset's; otherwise the best proper subset wins, ties broken toward fewer conditions
+    and then toward the enumeration order (sizes ascending, index-lexicographic within a
+    size — deterministic, so a re-run selects identically). The winner is ``spec`` itself
+    when the full conjunction wins, so its rule hash — the one the draw's duplicate guard
+    already cleared — is untouched.
+
+    Holdout bars cannot enter the selection by construction: every member is replayed over
+    :func:`_train_frame` truncations, objects that do not contain the holdout. The winner's
+    holdout is spent exactly once, by the ordinary full backtest the caller runs next.
+
+    Consumes no randomness — the enumeration, the replays and the tie-breaks are pure
+    functions of the spec and the frames, so the seeded draws after a lattice are the same
+    draws they would have been without one."""
+    conditions = spec.entry_rules.conditions
+    k = len(conditions)
+    if not (ABLATION_MIN_CONDITIONS <= k <= ABLATION_MAX_CONDITIONS):
+        return None
+    if spec.entry_rules.operator != "AND":
+        return None
+    if not frames:
+        raise ValueError("an ablation lattice needs at least one frame to replay")
+    cost = frames[0].cost
+    for frame in frames:
+        if frame.cost != cost:
+            raise ValueError(
+                "ablation frames were built under different cost models; a lattice mixing "
+                "rates would select on numbers no one book was charged"
+            )
+    train = [_train_frame(frame) for frame in frames]
+    # Every non-empty subset, the full set last: sizes ascending, index-lexicographic
+    # within a size. This order is the tie-break of last resort below and the key order
+    # of the evidence map, so it is the one deterministic enumeration, stated once.
+    members = [combo for size in range(1, k + 1) for combo in combinations(range(k), size)]
+    scores = {
+        indices: _train_net_expectancy(
+            spec if len(indices) == k else _subset_spec(spec, indices), train
+        )
+        for indices in members
+    }
+    full = members[-1]
+    proper = members[:-1]
+    full_beats = all(scores[full] > scores[indices] for indices in proper)
+    if full_beats:
+        winner_indices, winner = full, spec
+    else:
+        winner_indices = min(proper, key=lambda indices: (-scores[indices], len(indices), indices))
+        winner = _subset_spec(spec, winner_indices)
+    return winner, {
+        "lattice_size": len(members),
+        "hypothesis_conditions": [c.to_dict() for c in conditions],
+        "winner_conditions": [c.to_dict() for c in winner.entry_rules.conditions],
+        "full_beat_subsets": full_beats,
+        # Keyed by "+"-joined indices into ``hypothesis_conditions``, in enumeration
+        # order — compact, and enough to reconstruct which grid the winner survived.
+        "train_net_expectancy_by_subset": {
+            "+".join(str(i) for i in indices): scores[indices] for indices in members
+        },
+    }
+
+
+def _lattice_winner(
+    hypothesis: StrategySpec, frames: Sequence[ReplayFrame], *,
+    seen_hashes: set[str], stats: dict[str, int],
+) -> tuple[StrategySpec, dict[str, Any] | None, str | None]:
+    """One drawn hypothesis through the lattice, returning what may register.
+
+    ``(winner, ablation_block, refusal)``. The winner is the hypothesis untouched when
+    there was no lattice to run (block and refusal both None). A swapped-in subset winner
+    is re-checked here for the two guards its draw cleared with DIFFERENT conditions: the
+    duplicate guard — the hash `generate_batch`/`fuse_specs` deduplicated was the full
+    conjunction's, and a subset that already exists in the store must be refused, never
+    re-minted (`known_rule_hashes`' own rule) — and the validator, unreachable for a
+    subset of a validated AND conjunction (per-condition checks over fewer conditions,
+    exits untouched) but kept because a typed refusal is cheaper than being wrong about
+    "unreachable". On refusal nothing registers: the hypothesis already lost the lattice,
+    and minting it anyway would register the exact spec the selection said was fit.
+
+    ``stats`` counts what ablation did (fires report it): every lattice run, and every
+    full conjunction that failed to strictly beat its best proper subset — counted at
+    selection time, so a later refusal of the winner does not un-count the finding."""
+    lattice = ablate_hypothesis(hypothesis, frames)
+    if lattice is None:
+        return hypothesis, None, None
+    winner, block = lattice
+    stats["lattices"] += 1
+    if not block["full_beat_subsets"]:
+        stats["luck_filtered"] += 1
+    if winner.strategy_rule_hash != hypothesis.strategy_rule_hash:
+        if winner.strategy_rule_hash in seen_hashes:
+            return winner, block, "ablation_winner_duplicate_rule_hash"
+        if not validate_strategy(winner)["approved_for_backtest"]:
+            return winner, block, "ablation_winner_failed_validation"
+    return winner, block, None
+
+
 # --- fusion: crossover of two proven lineages ---------------------------------
 
 # How many top-ranked lineages the pair search may draw from. A ceiling, not a
 # quota: the caller's ``fusion_pairs`` decides how many children are actually minted.
 FUSION_PARENT_POOL = 6
+
+# Why a fire produced no fused children WITHOUT the fusion path having run. `run_factory` reports
+# one of these in ``fusion_skipped``, or ``None`` when the path did execute — see the comment at
+# the dispatch for why "it ran and found nothing" has to be distinguishable from "it never ran".
+FUSION_NOT_REQUESTED = "not_requested"   # the caller passed fusion_pairs <= 0
+FUSION_POOLED_FIRE = "pooled_fire"       # a pooled mint: `_fuse_batch` scores on one frame
+FUSION_SKIP_REASONS = frozenset({FUSION_NOT_REQUESTED, FUSION_POOLED_FIRE})
 
 
 class FusionRefused(ValueError):
@@ -3996,7 +4298,7 @@ def _fusion_improvement(
 def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
-    frame: ReplayFrame | None = None,
+    frame: ReplayFrame | None = None, ablation_stats: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
 
@@ -4015,10 +4317,24 @@ def _fuse_batch(
     :data:`FUSION_IMPROVEMENT_METRICS` for the bar and why the parents are replayed here
     rather than read from their stored rows. That refusal is ordered last because it is the
     only one costing a replay, so the cheap structural checks drop the pairs that would
-    waste it; and it costs no mint, because the pair stream simply draws again."""
+    waste it; and it costs no mint, because the pair stream simply draws again.
+
+    A fused union of :data:`ABLATION_MIN_CONDITIONS`..:data:`ABLATION_MAX_CONDITIONS`
+    conditions runs the ablation lattice before its backtest — the winner (the union, or
+    its best proper subset) is what every gate after it judges and what registers. Wider
+    unions, up to ``MAX_FUSION_ENTRY_CONDITIONS`` = 7, stay on the existing path
+    unchanged: §3-1 of the ablation proposal priced the k = 4 lattice (15 members) as a
+    cadence decision and declined it. ``ablation_stats`` shares the caller's counters so
+    a fire reports seeded and fused lattices as one number."""
     minted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     replayed: dict[str, dict[str, Any]] = {}
+    # Built once when the caller did not hand one over: the lattice needs a frame to slice
+    # its train segment from, and every child/parent backtest below reuses it. A frame is a
+    # pure function of (snapshot, cost model), so results are unchanged — only rebuilds go.
+    if frame is None:
+        frame = build_replay_frame(snapshot)
+    stats = ablation_stats if ablation_stats is not None else {"lattices": 0, "luck_filtered": 0}
 
     def on_this_window(spec: StrategySpec) -> dict[str, Any]:
         """This parent's evidence on the CHILD's snapshot, replayed once per fire."""
@@ -4047,6 +4363,17 @@ def _fuse_batch(
         if child.strategy_rule_hash in seen_hashes:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "duplicate_rule_hash"})
             continue
+        # The ablation lattice sits between the union and its backtest: the winner is what
+        # the no-trades and improvement gates below judge, and what registers. A subset
+        # winner facing those gates is the point rather than a leniency — it must still
+        # improve on BOTH parents to be worth storing as a crossover, and a union whose
+        # value was all in one parent's conditions now fails exactly there.
+        child, ablation, refusal = _lattice_winner(
+            child, [frame], seen_hashes=seen_hashes, stats=stats,
+        )
+        if refusal is not None:
+            rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
+            continue
         evidence = backtest_spec(child, snapshot, frame=frame)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
@@ -4057,6 +4384,10 @@ def _fuse_batch(
         if refusal is not None:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
             continue
+        if ablation is not None:
+            # The grid this winner survived, on the record (§1-5). Stored FACT — how many
+            # were tried — which `pool.attempts_by_context` expands at read time.
+            evidence["ablation"] = ablation
         seen_hashes.add(child.strategy_rule_hash)
         record = {
             "strategy_id": child.strategy_id,
@@ -4151,7 +4482,12 @@ def run_factory(
     ``cohort_snapshots`` are the OTHER legs of a pooled mint — one spec scored across all of
     them, ``symbol_scope`` set to the whole cohort. Ignored unless ``snapshot``'s timeframe is in
     :data:`POOLED_TIMEFRAMES`, so a caller cannot pool 1h by accident. Absent (the default) is
-    exactly today's single-symbol behaviour, down to the seed."""
+    exactly today's single-symbol behaviour, down to the seed.
+
+    Every drawn hypothesis of 2..:data:`ABLATION_MAX_CONDITIONS` entry conditions — seeded,
+    topped-up, or fused — passes the train-only ablation lattice before registration
+    (:func:`ablate_hypothesis`); the result's ``ablated_count`` / ``luck_filtered_count``
+    say what the lattice did."""
     pool_entries = list(active_pool.get("active_strategies") or [])
     known_hashes = frozenset(
         h for h in (
@@ -4233,6 +4569,19 @@ def run_factory(
 
     candidates: list[dict[str, Any]] = []
     starved_specs: list[dict[str, Any]] = []
+    ablation_refused: list[dict[str, Any]] = []
+    # Every hash this fire may not register again: the store and pool (`known_hashes`)
+    # plus everything registered by this fire so far. An ablation winner is the one kind
+    # of spec that reaches registration WITHOUT its hash having passed the draw's own
+    # duplicate guard — the conditions changed after the draw — so the guard re-runs at
+    # the registration door, against this one running set.
+    fire_hashes: set[str] = set(known_hashes)
+    # What ablation did this fire, for the result and the operator's status line:
+    # `lattices` = hypotheses that ran one (2 <= k <= ABLATION_MAX_CONDITIONS), and
+    # `luck_filtered` = full conjunctions that failed to strictly beat their own best
+    # proper subset on train net expectancy — the stacked luck the lattice exists to
+    # catch, counted at selection time whether or not the subset then registered.
+    ablation_stats = {"lattices": 0, "luck_filtered": 0}
 
     def _score_draw(specs: Sequence[Mapping[str, Any]], params: Mapping[str, Any]) -> None:
         """Backtest one seeded draw, appending survivors to ``candidates``.
@@ -4249,13 +4598,36 @@ def run_factory(
             # none of the columns the rule names is a four-leg pool wearing a five-leg label,
             # and `_holdout_evidence` would report `symbols: 5` over it. Fail closed on ANY leg
             # — the guard F2's first pass walked around cost that batch its whole finding.
+            #
+            # And before the lattice, for the same reason in the other direction: ablation
+            # must not rescue a starved hypothesis by dropping its dead condition — the
+            # refusal is about the DRAW naming an unsupplied feature, and a subset minted
+            # from it would be a hypothesis nobody drew.
             starved = sorted({f for fr in frames for f in unsuppliable_features(spec, fr.rows)})
             if starved:
                 starved_specs.append({"strategy_family": spec.strategy_family,
                                       "reason": UNSUPPLIABLE_FEATURE, "features": starved})
                 continue
+            # The ablation lattice (proposal §3, approved as proposed): between the draw and
+            # registration, on the train segment only. The winner — the full conjunction if
+            # it strictly beat every proper subset, else the best proper subset — is what
+            # runs the ordinary full backtest below and registers. Exactly one winner per
+            # hypothesis; k = 1 and k > ABLATION_MAX_CONDITIONS pass through untouched.
+            spec, ablation, refusal = _lattice_winner(
+                spec, frames, seen_hashes=fire_hashes, stats=ablation_stats,
+            )
+            if refusal is not None:
+                ablation_refused.append({"strategy_family": spec.strategy_family,
+                                         "reason": refusal})
+                continue
             evidence = (backtest_spec_pooled(spec, [], frames=frames) if pooled
                         else backtest_spec(spec, snapshot, frame=frame))
+            if ablation is not None:
+                # The grid this winner survived, on the record (§1-5). `lattice_size` is
+                # stored FACT — how many members were tried — and `pool.attempts_by_context`
+                # expands it at read time, so the unregistered siblings still pay the
+                # multiple-testing charge.
+                evidence["ablation"] = ablation
             record = {
                 "strategy_id": spec.strategy_id,
                 "strategy_rule_hash": spec.strategy_rule_hash,
@@ -4280,6 +4652,7 @@ def run_factory(
             # Stored id == derived id: strategy_id restarts every generation, so the
             # lineage-derived candidate_id is the only key promotions may use.
             record["candidate_id"] = derive_candidate_id(record)
+            fire_hashes.add(spec.strategy_rule_hash)
             candidates.append(record)
 
     _score_draw(batch["specs"], batch["params"])
@@ -4291,8 +4664,20 @@ def run_factory(
     # frame; handing it a cohort is a second increment. `fuse_specs` would pair pooled parents
     # happily (their scopes match, so `symbol_scope_mismatch` never fires), so the child would be
     # minted and scored on one leg while claiming five — the exact shape of wrong number this
-    # file spends most of its guards preventing. Recorded in the result so a fire that wanted
-    # fusion and got none says so.
+    # file spends most of its guards preventing.
+    #
+    # **`fusion_skipped` names WHY the path did not run, because `fused_count: 0` cannot.**
+    # Three unrelated situations produced an identical record — the caller never asked, the fire
+    # was pooled, or fusion ran and no bucket held a pair — and only the last is a fact about the
+    # candidate store. Measured 2026-08-15: every fire since the first pooled one
+    # (2026-08-10T08:12:38Z) reported `fused_count: 0` with an empty `fusion_rejected`, which is
+    # byte-identical to a dry parent pool, and the crossover path being off went unnoticed for six
+    # days. `pooled: true` was on the record and implied it, but implying is not saying — a reader
+    # has to already know this boundary exists to read it that way, and a watch built to catch a
+    # dry pool looked straight past it.
+    fusion_skipped = None if fusion_pairs > 0 else FUSION_NOT_REQUESTED
+    if fusion_pairs > 0 and pooled:
+        fusion_skipped = FUSION_POOLED_FIRE
     if fusion_pairs > 0 and not pooled:
         fused, fusion_rejected = _fuse_batch(
             # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
@@ -4319,10 +4704,15 @@ def run_factory(
             # same convention the shortfall draw below already uses.
             start_index=count + 1,
             pairs=fusion_pairs,
-            seen_hashes={*known_hashes, *(c["strategy_rule_hash"] for c in candidates)},
+            # The fire's own running set — `known_hashes` plus everything registered so far
+            # (the same contents the literal union here used to build). `_fuse_batch` adds
+            # each minted child to it, so the shortfall draw below and its ablation winners
+            # are deduplicated against the fused children without a second convention.
+            seen_hashes=fire_hashes,
             evidence_sha=candles_sha,
             frame=frame,
             now=now,
+            ablation_stats=ablation_stats,
         )
 
     # --- the half of the budget fusion declined ----------------------------------------
@@ -4385,14 +4775,14 @@ def run_factory(
             symbol=symbol,
             timeframe=timeframe,
             elite_params=centres,
-            known_rule_hashes=frozenset({
-                *known_hashes,
-                *(c["strategy_rule_hash"] for c in candidates),
-                *(c["strategy_rule_hash"] for c in fused),
-            }),
+            # The fire's running set again: store + pool + this fire's seeded rows and fused
+            # children — the identical contents the literal union here used to spell out,
+            # now including any ablation winner whose hash the draw itself never saw.
+            known_rule_hashes=frozenset(fire_hashes),
             positioning_eligible=positioning_eligible,
             venue=venue,
             rotation_index=rotation_index,
+            symbol_scope=scope,
         )
         kept = topup["specs"][:topup_requested]
         topup_accepted = len(kept)
@@ -4423,9 +4813,16 @@ def run_factory(
         # produce so few candidates" must not have to know which loop dropped them. Kept as a
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
-        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs],
+        "rejected": [*batch["rejected"], *topup_rejected, *starved_specs, *ablation_refused],
         "candidates": [*candidates, *fused],
         "fused_count": len(fused),
+        # What the ablation lattice did this fire — seeded and fused hypotheses together,
+        # since `_fuse_batch` shares the counter. `ablated_count` is lattices RUN;
+        # `luck_filtered_count` is how many full conjunctions failed to strictly beat their
+        # own best proper subset, i.e. how much stacked luck the grid caught. The scheduler's
+        # status line forwards both, so the budget a lattice spends is legible per fire.
+        "ablated_count": ablation_stats["lattices"],
+        "luck_filtered_count": ablation_stats["luck_filtered"],
         # How much of the fusion allocation the shortfall draw re-spent, at MINT time — the
         # same basis as `accepted_count`, so the two decompose without a second convention.
         # Zero on a fire fusion filled, which is the only reading that says "nothing was
@@ -4433,6 +4830,9 @@ def run_factory(
         # itself was complete.
         "seeded_topup_count": topup_accepted,
         "fusion_rejected": fusion_rejected,
+        # ``None`` exactly when the fusion path executed, so an empty ``fusion_rejected`` beside a
+        # ``None`` here is the one reading that means "fusion looked and the store had no pair".
+        "fusion_skipped": fusion_skipped,
         "evidence_input_sha256": candles_sha,
         "created_at": now,
     }

@@ -50,12 +50,25 @@ class FakeLedger:
 @pytest.fixture
 def captured_run_task(monkeypatch):
     """Replace the pipeline call with a capture so the worker's contract is tested without a
-    Core or a model. Returns the list the worker's one call lands in."""
+    Core or a model. Returns the list the worker's one call lands in.
+
+    **The reply mirrors `run_task`'s real shape, ids and all**, and that is load-bearing
+    rather than tidiness: this fake used to answer with a top-level ``task_id``, which the
+    real pipeline has never returned — it carries the ids on the received-task record. So the
+    worker read ``result["task_id"]``, every dispatch reply carried ``task_id: null``, and the
+    test suite could not see it because the fake was the only thing that ever put one there.
+    """
     calls: list[dict] = []
 
     def _fake(raw_request, **kwargs):
         calls.append({"raw_request": raw_request, **kwargs})
-        return {"status": "COMPLETED", "final_response": "ok", "task_id": "task-1"}
+        return {
+            "status": "COMPLETED",
+            "final_response": "ok",
+            "records": {
+                "received_task": {"identity": {"task_id": "task-1", "trace_id": "trace-1"}},
+            },
+        }
 
     monkeypatch.setattr(pipeline_worker, "run_task", _fake)
     return calls
@@ -137,10 +150,34 @@ def test_a_valid_dispatch_runs_capped_and_attributed(tmp_path, captured_run_task
     assert call["requester_type"] == "agent"
     assert call["channel"] == "agent"
     assert call["authenticated"] is True
+    assert call["keyword_seeds"] is None  # no seeds sent -> the run carries none
     assert "operator asked for a market read" in call["source_ref"]
     # the escalation inputs are never passed
     assert "write_path" not in call
     assert "writer" not in call
+
+
+# --- the naver_keywords key (the lane, through the worker) --------------------
+
+def test_forwarded_seeds_reach_run_task_as_keyword_seeds(tmp_path, captured_run_task):
+    out = pipeline_worker.apply_work(
+        _valid(kind="research", naver_keywords=" 미리캔버스, 포스터제작 "),
+        control_store=ControlStore(tmp_path),
+    )
+    assert out["ok"] is True
+    assert captured_run_task[0]["keyword_seeds"] == "미리캔버스, 포스터제작"
+
+
+@pytest.mark.parametrize("bad", [42, "", "   ", ["미리캔버스"], "x" * 201])
+def test_seeds_the_door_would_have_refused_are_refused_here_too(bad, tmp_path, captured_run_task):
+    """Defence in depth, same rule as the door: a frame failing this did not come from the
+    door, and the worker does not guess at what it meant."""
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            _valid(naver_keywords=bad), control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "MALFORMED_REQUEST"
+    assert captured_run_task == []
 
 
 def test_a_pipeline_block_is_shaped_as_an_answer_with_its_kind(tmp_path, monkeypatch):
@@ -232,6 +269,7 @@ def test_a_dispatch_travels_door_to_worker_and_back(tmp_path, monkeypatch, captu
         )
         assert reply["ok"] is True
         assert reply["task_id"] == "task-1"
+        assert reply["trace_id"] == "trace-1"
         assert reply["actor"] == ASSISTANT_ACTOR
         assert len(captured_run_task) == 1
         assert captured_run_task[0]["requester_id"] == ASSISTANT_ACTOR
@@ -266,3 +304,260 @@ def test_a_dead_worker_answers_worker_unavailable_with_no_path_in_the_reply(tmp_
     finally:
         door.shutdown()
         door.server_close()
+
+
+# --- attribution: two callers, and only one of them can be the scheduler ------
+
+def test_the_default_profile_is_the_assistant(tmp_path, captured_run_task):
+    """The door sends no profile, so absence must keep meaning what it meant before the
+    scheduler existed as a caller."""
+    pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path))
+    call = captured_run_task[0]
+    assert call["requester_id"] == ASSISTANT_ACTOR
+    assert call["requester_type"] == "agent"
+    assert call["channel"] == "agent"
+
+
+def test_the_scheduler_profile_records_the_scheduler_not_the_assistant(tmp_path, captured_run_task):
+    """The whole point of the profile: a delegated schedule fire must not land in the ledger
+    as assistant-initiated work, because an operator reads that column to tell the two apart."""
+    out = pipeline_worker.apply_work(
+        _valid(actor_profile=pipeline_worker.SCHEDULER_PROFILE, reason="scheduler:sched_abc"),
+        control_store=ControlStore(tmp_path),
+    )
+    call = captured_run_task[0]
+    assert call["requester_id"] == "mvp.scheduler"
+    assert call["requester_type"] == "scheduler"
+    assert call["channel"] == "scheduler"
+    assert out["actor"] == "mvp.scheduler"
+    # Verbatim, so the row reads exactly as an in-process scheduled run's did before the
+    # delegation — no `assistant_bridge:dispatch:` prefix on scheduler work.
+    assert call["source_ref"] == "scheduler:sched_abc"
+    assert ASSISTANT_ACTOR not in call["source_ref"]
+
+
+@pytest.mark.parametrize("bogus", ["operator", "thomas", "", "  ", 42, ["scheduler"]])
+def test_an_unknown_profile_is_refused_never_defaulted(tmp_path, bogus, captured_run_task):
+    """Defaulting an unrecognised profile to the assistant would file work under an actor its
+    caller did not name — the ledger-honesty failure this field exists to prevent."""
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            _valid(actor_profile=bogus), control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "ACTOR_PROFILE_NOT_PERMITTED"
+    assert not captured_run_task
+
+
+def test_the_assistant_cannot_express_the_scheduler_profile(tmp_path):
+    """The property the attribution split rests on, asserted at the door rather than argued.
+
+    Both callers run as uid 10001, so SO_PEERCRED cannot separate them and a second socket
+    would not either. What keeps the assistant out of the scheduler's identity is that the
+    door's key set is closed: a frame carrying `actor_profile` is refused before it is ever
+    forwarded, so the string cannot reach the worker from the assistant's side."""
+    assert "actor_profile" not in dispatch_bridge._ALLOWED_KEYS
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(
+            {"request": "analyze", "kind": "analysis", "reason": "x",
+             "actor_profile": pipeline_worker.SCHEDULER_PROFILE},
+            control_store=ControlStore(tmp_path), execute=lambda *a, **k: {"ok": True},
+        )
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+@unix_only
+def test_a_request_through_the_door_is_attributed_to_the_assistant(tmp_path, monkeypatch,
+                                                                   captured_run_task):
+    """The other half, end to end rather than by inspection: work that arrives through the
+    door is recorded as the assistant's, because the door sends no profile and the worker's
+    default is the assistant. Driven through both real sockets, so it would catch a door that
+    started sending one."""
+    monkeypatch.delenv(socket_door.CLIENT_GID_ENV, raising=False)
+    worker_path = tmp_path / "internal" / "pipeline.sock"
+    monkeypatch.setenv(socket_door.CLIENT_UID_ENV, str(os.getuid()))
+    worker = pipeline_worker.open_door(
+        worker_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
+    )
+    monkeypatch.delenv(socket_door.CLIENT_UID_ENV, raising=False)
+    door_path = tmp_path / "bridge" / "dispatch.sock"
+    door = dispatch_bridge.open_door(
+        door_path, control_store=ControlStore(tmp_path), ledger=LedgerStore(tmp_path),
+        worker_socket=worker_path,
+    )
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (worker, door)]
+    for t in threads:
+        t.start()
+    try:
+        reply = socket_door.call_door(
+            door_path, _valid(reason="whose work is this"), deadline_seconds=10.0,
+        )
+        assert reply["actor"] == ASSISTANT_ACTOR
+        assert captured_run_task[0]["requester_id"] == ASSISTANT_ACTOR
+        assert captured_run_task[0]["requester_type"] == "agent"
+    finally:
+        for server in (door, worker):
+            server.shutdown()
+            server.server_close()
+
+
+# --- the job surface (Phase 2 D5: the model call, not the fire) ---------------
+
+def _inventory():
+    from runtime.mvp_runtime.crypto.data_review import build_data_inventory
+    return build_data_inventory([], [])
+
+
+def test_a_job_runs_the_model_call_and_returns_the_whole_record(tmp_path):
+    """The record travels whole: the scheduler appends it, renders the operator sheet from
+    it, and judges the stall on it. Summarising here would make the worker the authority on
+    a record it does not own."""
+    from runtime.mvp_runtime.crypto.data_review import (
+        DATA_REVIEW_RECORD_TYPE, MockDataReviewProvider,
+    )
+    out = pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory(),
+         "reason": "scheduler:crypto_data_review"},
+        control_store=ControlStore(tmp_path),
+        providers={"validator_provider": MockDataReviewProvider()},
+    )
+    assert out["ok"] is True
+    assert out["job"] == pipeline_worker.JOB_DATA_REVIEW
+    assert out["record"]["record_type"] == DATA_REVIEW_RECORD_TYPE
+    assert out["record"]["review_id"]
+
+
+def test_a_job_never_runs_the_pipeline(tmp_path, captured_run_task):
+    """A job is not a Task: no Role, no P3 binding, no `run_task`. What it shares with the
+    dispatch path is the credentials and the kill switch, and nothing else."""
+    from runtime.mvp_runtime.crypto.data_review import MockDataReviewProvider
+    pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()},
+        control_store=ControlStore(tmp_path),
+        providers={"validator_provider": MockDataReviewProvider()},
+    )
+    assert captured_run_task == []
+
+
+@pytest.mark.parametrize("bogus", ["crypto_backtest", "anything", "", 42, ["x"]])
+def test_an_unnamed_job_is_refused(tmp_path, bogus):
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": bogus, "inventory": _inventory()}, control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "JOB_NOT_PERMITTED"
+
+
+def test_a_job_frame_carrying_a_dispatch_is_refused(tmp_path, captured_run_task):
+    """Two requests in one frame: guessing which was meant is how a caller gets the other."""
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory(),
+             "request": "analyze this", "kind": "analysis"},
+            control_store=ControlStore(tmp_path),
+        )
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+    assert captured_run_task == []
+
+
+@pytest.mark.parametrize("bad", [None, {}, "not an object", 42])
+def test_a_job_without_an_inventory_is_refused(tmp_path, bad):
+    """The worker collects nothing — the caller owns the state reads, and an empty inventory
+    would produce a review of nothing that still reads like a review."""
+    frame = {"job": pipeline_worker.JOB_DATA_REVIEW}
+    if bad is not None:
+        frame["inventory"] = bad
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "INVENTORY_REQUIRED"
+
+
+def test_a_job_is_refused_while_killed(tmp_path):
+    """A job spends model quota, so it is new work and a halt stops it."""
+    from runtime.mvp_runtime.crypto.data_review import MockDataReviewProvider
+    store = ControlStore(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="test", now=NOW,
+                          reason="halt", ledger=FakeLedger())
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(
+            {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()},
+            control_store=store, providers={"validator_provider": MockDataReviewProvider()},
+        )
+    assert exc.value.reason_code == store.load().refusal_reason_code()
+
+
+def test_the_assistant_cannot_express_a_job(tmp_path):
+    """Same property the actor profile rests on: the door's key set is closed, so `job`
+    cannot reach the worker from the assistant's side at all."""
+    assert "job" not in dispatch_bridge._ALLOWED_KEYS
+    assert "inventory" not in dispatch_bridge._ALLOWED_KEYS
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(
+            {"request": "x", "kind": "analysis", "reason": "y",
+             "job": pipeline_worker.JOB_DATA_REVIEW},
+            control_store=ControlStore(tmp_path), execute=lambda *a, **k: {"ok": True},
+        )
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+def test_the_worker_states_a_frame_ceiling_the_inventory_fits_in():
+    """A job frame carries an INPUT, not a sentence. The measured inventory was ~3.3 KB on
+    the live host and grows with the venue's vocabulary; the shared 8 KiB console default
+    fails as a dropped connection, which reads as the worker being down."""
+    import json
+    assert pipeline_worker.MAX_FRAME_BYTES > socket_door.MAX_FRAME_BYTES
+    frame = json.dumps({"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": _inventory()})
+    assert len(frame.encode()) < pipeline_worker.MAX_FRAME_BYTES
+
+
+# --- the proposer job (D6): the model half only ------------------------------
+
+def test_the_proposer_job_returns_the_model_half_and_never_a_verdict(tmp_path):
+    """What crosses back is the generation, not a record: the verdicts need the market frame,
+    which this worker never sees. A worker that judged would need the frame and would put a
+    second feature source beside the one the router reads."""
+    out = pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+         "proposal_inputs": {"existing_families": ["trend_break"], "focus": None}},
+        control_store=ControlStore(tmp_path),
+    )
+    assert out["ok"] is True
+    assert set(out["generation"]) == {"raw", "invocation", "degraded"}
+    assert "proposals" not in out and "record" not in out
+
+
+def test_the_proposer_job_needs_no_market_frame(tmp_path):
+    """The finding that unblocked D6, pinned: the prompt is built from scalars, so the job
+    input carries no snapshot and the frame stays in the caller."""
+    frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+             "proposal_inputs": {"existing_families": [], "focus": "mean reversion"}}
+    out = pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert out["ok"] is True
+    assert "snapshot" not in str(frame)
+
+
+@pytest.mark.parametrize("inputs", [
+    None, "not an object", {"existing_families": "trend_break"},
+    {"existing_families": [1, 2]}, {"existing_families": ["x"] * 201},
+    {"existing_families": [], "focus": 42},
+])
+def test_malformed_proposal_inputs_are_refused(tmp_path, inputs):
+    frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE}
+    if inputs is not None:
+        frame["proposal_inputs"] = inputs
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "PROPOSAL_INPUTS_REQUIRED"
+
+
+def test_the_two_jobs_do_not_accept_each_others_input(tmp_path):
+    """A frame carrying the other job's input is a caller that believed it would be used."""
+    for job, wrong in ((pipeline_worker.JOB_CRYPTO_PROPOSE, {"inventory": {"a": 1}}),
+                       (pipeline_worker.JOB_DATA_REVIEW, {"proposal_inputs": {"a": 1}})):
+        frame = {"job": job, **wrong}
+        if job == pipeline_worker.JOB_CRYPTO_PROPOSE:
+            frame["proposal_inputs"] = {"existing_families": []}
+        else:
+            frame["inventory"] = {"venue": "binance"}
+        with pytest.raises(ControlBlocked) as exc:
+            pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+        assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"

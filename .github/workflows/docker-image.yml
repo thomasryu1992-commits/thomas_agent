@@ -42,9 +42,10 @@ jobs:
           set -euo pipefail
           services=$(docker compose config --services | sort)
           echo "services:"; echo "${services}"
-          # Both halves of the deployment must exist: an operator-only deploy runs no
-          # schedules at all, which is exactly the bug L3b fixed.
-          for required in operator scheduler; do
+          # Every half of the deployment must exist: an operator-only deploy runs no
+          # schedules at all (the bug L3b fixed), and a one-lane deploy silently never
+          # fires the other lane's kinds — same failure, half the size.
+          for required in operator scheduler scheduler-maint; do
             echo "${services}" | grep -qx "${required}" || {
               echo "compose is missing the '${required}' service"; exit 1; }
           done
@@ -76,16 +77,41 @@ jobs:
           # Proves uid 10001 could actually write to the mounted volume.
           test -d ci-state/runtime_ledger || { echo "state volume was not written"; exit 1; }
 
-      - name: A provider env var alone must NOT open a network path
+      - name: A typo'd provider chain must fail closed, never shrink
         run: |
           set -euo pipefail
+          # This step asserted "MVP_HOSTED_PROVIDER alone must not open a network path", via
+          # `scheduler_cli tick`, expecting exit 2 + ACTIVATION_MISSING. Two merges on
+          # 2026-08-10 each independently falsified one half of that, so both the command and
+          # the expectation move:
+          #
+          #   #673 (credential plane separation Phase 2) — the scheduler no longer selects an
+          #     analysis provider at all; a delegated `analysis_task` runs in pipeline-worker.
+          #     So MVP_HOSTED_PROVIDER now reaches nothing here and the tick exits 0. This is
+          #     also why #675's proposed replacement, which kept `scheduler_cli`, does not
+          #     work: measured on an image built from 68b5111, a typo'd chain still exits 0
+          #     through that entrypoint.
+          #   #675 (grants retired) — the environment IS the gate, so a known single value
+          #     SELECTS the capable provider and there is no activation record left to be
+          #     missing. ACTIVATION_MISSING is gone by decision, not by accident.
+          #
+          # What survives both is the refusal that still matters: a chain naming an unknown
+          # member must refuse the WHOLE selection rather than quietly serve the links it
+          # recognizes. The one-shot CLI is the entrypoint that still reaches the selection —
+          # and reaches it BEFORE the Core check, which is why the grep is the discriminator
+          # rather than the exit code (a bare image exits 2 for CORE_NOT_ACTIVATED too).
+          #
+          # That a bare image with no opt-in stays inert is proven by the empty-tick step
+          # above, so this step is free to be about the chain rule alone. Verified against
+          # images built from both 68b5111 and the pre-#673 tree: exit 2 + UNKNOWN_PROVIDER
+          # on each, so this does not depend on which of the two merges a checkout has.
           code=0
-          out=$(docker run --rm -e MVP_HOSTED_PROVIDER=google_ai_studio thomas-agent-runtime \
-                python -m runtime.mvp_runtime.scheduler_cli tick --max-ticks 1 --interval-seconds 0 2>&1) || code=$?
+          out=$(docker run --rm -e MVP_HOSTED_PROVIDER=google_ai_studio,grok thomas-agent-runtime \
+                python -m runtime.mvp_runtime.cli "Analyze this business idea: a smoke test" 2>&1) || code=$?
           echo "${out}"
           [ "${code}" -eq 2 ] || { echo "expected fail-closed exit 2, got ${code}"; exit 1; }
-          echo "${out}" | grep -q "ACTIVATION_MISSING" || {
-            echo "expected ACTIVATION_MISSING"; exit 1; }
+          echo "${out}" | grep -q "UNKNOWN_PROVIDER" || {
+            echo "expected UNKNOWN_PROVIDER"; exit 1; }
 
       - name: The operator refuses to act with no registered operator
         run: |
@@ -135,26 +161,34 @@ jobs:
           out=$(state status); echo "${out}"
           echo "${out}" | grep -q "mode: ACTIVE" || { echo "resume did not clear the kill"; exit 1; }
 
-      - name: The scheduler service starts from its compose definition
+      - name: The scheduler lanes start from their compose definitions
         run: |
           set -euo pipefail
-          # Only the scheduler: the operator correctly fails closed without a registration,
-          # so it would crash-loop here — that refusal is asserted above instead.
-          docker compose up -d scheduler
-          for _ in $(seq 1 30); do
-            sleep 2
-            if docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking"; then
-              break
-            fi
+          # Both lanes, not the operator: the operator correctly fails closed without a
+          # registration, so it would crash-loop here — that refusal is asserted above
+          # instead. Starting both lanes is the deploy-coupling check in one move — a
+          # compose file whose `--lane` the image does not know crash-loops right here.
+          docker compose up -d scheduler scheduler-maint
+          for service in scheduler scheduler-maint; do
+            for _ in $(seq 1 30); do
+              sleep 2
+              if docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking"; then
+                break
+              fi
+            done
+            docker compose logs "${service}"
+            docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking" || {
+              echo "the ${service} service never started ticking"; exit 1; }
           done
-          docker compose logs scheduler
-          docker compose logs scheduler 2>&1 | grep -q "SCHEDULER: ticking" || {
-            echo "the scheduler service never started ticking"; exit 1; }
-          state=$(docker inspect -f '{{.State.Status}}' thomas-scheduler)
-          [ "${state}" = "running" ] || { echo "scheduler is ${state}, not running"; exit 1; }
-          # The compose healthcheck command itself must answer — and it now asserts the
-          # loop actually turned, not merely that a state file parses.
-          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler
+          for pair in thomas-scheduler thomas-scheduler-maint; do
+            state=$(docker inspect -f '{{.State.Status}}' "${pair}")
+            [ "${state}" = "running" ] || { echo "${pair} is ${state}, not running"; exit 1; }
+          done
+          # The compose healthcheck commands themselves must answer — each lane by its OWN
+          # heartbeat name, which is the split's whole liveness point: one lane being fresh
+          # must say nothing about the other.
+          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk
+          docker compose exec -T scheduler-maint python -m runtime.mvp_runtime.heartbeat_cli scheduler-maintenance
 
       - name: Tear down
         if: always()

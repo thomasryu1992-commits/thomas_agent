@@ -715,15 +715,14 @@ def test_the_board_still_renders_a_status_written_before_the_lean_existed():
     assert "지금" in text and "편중" not in text
 
 
-def test_grants_collapse_to_one_line_until_one_is_near_expiry():
-    far = [{"provider_id": "groq", "expires_at": "2026-08-20T01:56:34Z"},
-           {"provider_id": "telegram", "expires_at": "2026-08-18T10:13:20Z"}]
-    text = render_status_text(_board(grants=far))
-    assert len([l for l in text.splitlines() if "권한" in l or "groq" in l]) == 1
-
-    soon = [{"provider_id": "groq", "expires_at": "2026-07-28T01:56:34Z"}]
-    urgent = render_status_text(_board(grants=soon))
-    assert "⚠" in urgent and "groq" in urgent
+def test_the_grants_section_left_with_the_grants():
+    """2026-08-10: Thomas retired per-machine grants, and the board's 권한 section went
+    with them — a legacy status dict still carrying a `grants` key must render NO grant
+    line, because surfacing leftover activation files' expiries would be the board
+    claiming a bound nothing enforces."""
+    legacy = [{"provider_id": "groq", "expires_at": "2026-07-28T01:56:34Z"}]
+    text = render_status_text(_board(grants=legacy))
+    assert "권한" not in text and "groq" not in text
 
 
 def test_warnings_surface_in_the_headline():

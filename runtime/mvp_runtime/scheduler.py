@@ -17,8 +17,11 @@ Governance and safety:
   advances `next_run_at` before the fire, so a second claimant finds nothing due. Saying
   "single-process" instead named a premise that had stopped being true — the same stale premise
   let `reconcile_stale_running` abandon this service's live runs from the operator's startup.
-- Each scheduled task runs through the **full pipeline** (`run_task`) — same intake, planning,
-  permission, budget, and audit as an operator request; the scheduler grants no new authority.
+- Each scheduled task runs through the **full pipeline** — same intake, planning, permission,
+  budget, and audit as an operator request; the scheduler grants no new authority. Since the
+  credential plane separation Phase 2 it runs that pipeline in the `pipeline-worker` service
+  rather than in this process (`delegate_analysis_task`), so this service holds no model or
+  search key; see that function for what the delegation does and does not change.
 - Maintenance kinds do only what their module already allows unattended: `memory_prune`
   deletes expired working-memory candidates (R5 retention), `ledger_rotate` archives ledger
   rows and can delete nothing at all (LEDGER_RETENTION_V0.1).
@@ -30,22 +33,24 @@ schedules live in `.runtime_governance_state/schedules.jsonl`.
 
 from __future__ import annotations
 
+import json
+import multiprocessing
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
-from . import jsonl, memory, retention, task_registry, timeutil
+from . import jsonl, memory, retention, socket_door, task_registry, timeutil
 from .events import stamped_event
 from .control import ControlStore
 from .errors import MvpRuntimeError, SchedulerBlocked, ToolBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
-from .pipeline import run_task
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore
 
@@ -263,6 +268,46 @@ MAINTENANCE_KINDS: frozenset[str] = frozenset({
 # `read_scheduler_events()` filtered to that action is the evidence — how often it binds, and
 # whether the spend clusters at the boundary or far past it. See the deferral branch in `run_due`.
 MAINTENANCE_PASS_BUDGET_SECONDS = 60.0
+
+# --- lanes: the tick loop can run one side of the partition -----------------------------------
+#
+# `docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`, approved Thomas 2026-08-19 (D1–D3). The
+# factory-child separation above fixed the one fire that had been measured holding the pass;
+# the week after it was approved, `crypto_null_control` fires of ~4 minutes produced the same
+# late `crypto_pipeline` by the same mechanism (2026-08-17 04:48Z, three of them back to
+# back). Any kind can grow a long fire, so the durable fix is the class one: a deployment may
+# run TWO tick processes, one per side of the partition, and then no fire of any kind can
+# stand in front of a due risk kind.
+#
+# The lane boundary is the partition above — reused, not restated. A kind's budget
+# classification IS its lane assignment, so the forcing tests that keep every kind classified
+# (`test_every_kind_is_classified_as_risk_or_maintenance` and its siblings) already keep every
+# kind laned, and a new kind cannot land in no lane or in two.
+#
+# `LANE_ALL` is the single-process deployment and the default everywhere: a caller that names
+# no lane gets exactly the behavior this module had before lanes existed.
+LANE_RISK = "risk"
+LANE_MAINTENANCE = "maintenance"
+LANE_ALL = "all"
+LANES = frozenset({LANE_RISK, LANE_MAINTENANCE, LANE_ALL})
+
+
+def lane_kinds(lane: str) -> frozenset[str] | None:
+    """The kind set a lane fires; ``None`` means every kind (the single-process deployment).
+
+    Fail-closed on an unknown lane: a typo'd ``--lane`` must refuse to tick rather than
+    quietly run everything — a lane that silently widened would put a 6-minute fire back in
+    front of the money path with nothing recording that it had."""
+    if lane == LANE_ALL:
+        return None
+    if lane == LANE_RISK:
+        return RISK_KINDS
+    if lane == LANE_MAINTENANCE:
+        return MAINTENANCE_KINDS
+    raise SchedulerBlocked(
+        "SCHEDULER_UNKNOWN_LANE",
+        f"{lane!r} is not a lane; expected one of {sorted(LANES)}",
+    )
 
 # Guard against runaway cadences; a scheduled analysis task is not a tight loop.
 MIN_INTERVAL_SECONDS = 60
@@ -753,10 +798,187 @@ def find_abandoned_runs(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]
     return [event for run_id, event in started.items() if run_id not in terminal]
 
 
+# How long a delegated fire waits for the worker's answer. A real analysis on the shared
+# free-tier chain is minute-plus, and a scheduled fire has no client timeout behind it — the
+# tick is the only thing waiting. Generous rather than tight for that reason: a deadline that
+# expires mid-run abandons a task that still completes and lands in the ledger, which is the
+# confusing half of a timeout rather than the useful half.
+WORKER_DEADLINE_SECONDS = 900.0
+
+# The kind a scheduled `analysis_task` runs as. `run_task(request_kind=None)` and
+# `request_kind="analysis"` resolve to the SAME capabilities and therefore the same Role
+# (`planner.classify_task` returns the analysis set for both), so naming it explicitly here
+# changes no routing — it is what lets the request cross a socket whose kind set is closed.
+# A schedule wanting a different Role is a new schedule kind, not a field on this one.
+DELEGATED_REQUEST_KIND = "analysis"
+
+
+def delegate_analysis_task(
+    request_text: str,
+    *,
+    source_ref: str,
+    now: str | None = None,
+    repo_root: Path | None = None,
+    **_unused: Any,
+) -> dict[str, Any]:
+    """Run one scheduled analysis in the pipeline worker and answer in ``run_task``'s shape.
+
+    The default ``executor`` for `run_due`. It keeps that seam's signature — including the
+    ``provider``/``search_tool``/store arguments it now ignores — so every test that injects a
+    fake executor keeps working, and so the KIND_TASK branch below reads the same as before.
+    The ignored arguments are the point of the change rather than an oversight: this service no
+    longer selects a provider or a search tool, because it no longer holds the keys for either
+    (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`). The worker selects both,
+    through the same Safety-Flag Gate, from the same per-machine grants.
+
+    **What does not change.** The run is still the full pipeline at the same P3 ceiling, still
+    attributed ``mvp.scheduler`` with ``source_ref = scheduler:<schedule_id>`` (the worker
+    stamps it from this call's own ``source_ref``, verbatim), and still synchronous — the fire
+    holds the tick for its duration exactly as an in-process run did, so the pass budget,
+    deferral, and at-most-once semantics are untouched.
+
+    **No fallback, deliberately.** A worker that cannot be reached raises, which `run_due`
+    records as a failed fire. Falling back to an in-process run would need this service to hold
+    a provider key again — and with no key it would silently run the deterministic mock and
+    report COMPLETED, which is the "reads as configured, does nothing" failure this deployment
+    has closed twice (#512, #650).
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {
+            "request": request_text,
+            "kind": DELEGATED_REQUEST_KIND,
+            "reason": source_ref,
+            "actor_profile": pipeline_worker.SCHEDULER_PROFILE,
+        },
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict):
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE", "the pipeline worker's reply was not an object",
+        )
+    if "kind" not in reply and not reply.get("ok"):
+        # A refusal envelope, not a run — the worker's own kill-switch or shape re-check, or
+        # the transport's BRIDGE_BUSY. Nothing ran, so this is a failed fire rather than a
+        # BLOCKED result: the distinction is the same one the dispatch door draws, and it is
+        # what keeps "the runtime refused this work" separate from "the work never started".
+        raise SchedulerBlocked(
+            str(reply.get("reason_code") or "WORKER_UNAVAILABLE"),
+            str(reply.get("reason") or "the pipeline worker refused this fire"),
+        )
+    # Answer in the shape the caller reads: status plus the identity it closes its
+    # task-registry entry with. Deliberately not the whole `run_task` result — the report is
+    # in the ledger, and copying it back through a socket to be discarded is the payload a
+    # bridge reply should never carry.
+    identity = {"task_id": reply.get("task_id"), "trace_id": reply.get("trace_id")}
+    if reply.get("ok"):
+        return {"status": "COMPLETED", "records": {"received_task": {"identity": identity}}}
+    return {
+        "status": "BLOCKED",
+        "records": {"received_task": {"identity": identity}},
+        "block": {
+            "reason_code": reply.get("reason_code", "BLOCKED"),
+            "message": reply.get("reason", ""),
+        },
+    }
+
+
+def delegate_data_review(
+    inventory: dict[str, Any], *, now: str | None, repo_root: Path | None,
+) -> dict[str, Any]:
+    """Run the data-gap review's model call in the pipeline worker and return its record.
+
+    The narrowest possible cut, and the reason it is narrow: everything this fire does EXCEPT
+    the model call needs no credentials and belongs where it already is. The inventory is
+    built from the ledger and the pool here; the record is appended, rendered and judged here.
+    Only the one step that needs a provider key crosses, which is what takes an LLM response
+    out of the process holding the Binance account and order keys.
+
+    **This removes no credential**, and saying so is the honest accounting: `crypto_propose`
+    still calls a model in this process, so `MVP_VALIDATOR_PROVIDER` and its key stay on the
+    scheduler either way. What it buys is one fewer model response parsed beside them
+    (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md` §7, D5).
+
+    Fail-closed with no fallback, exactly as `delegate_analysis_task`: an unreachable worker
+    raises and `run_due` records a failed fire. The in-process fallback that used to stand
+    here — a `MockDataReviewProvider` when no provider was authorized — now lives in the
+    worker, so a degraded review is still a real record and an absent worker is still a
+    visible failure. Those two must not collapse into each other.
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {"job": pipeline_worker.JOB_DATA_REVIEW, "inventory": inventory,
+         "reason": "scheduler:crypto_data_review"},
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise SchedulerBlocked(
+            str((reply or {}).get("reason_code") or "WORKER_UNAVAILABLE")
+            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
+            str((reply or {}).get("reason") or "the pipeline worker did not run the data review")
+            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
+        )
+    record = reply.get("record")
+    if not isinstance(record, dict) or not record.get("review_id"):
+        # A reply that is "ok" but carries no usable record would otherwise be appended to the
+        # ledger as evidence of a review that did not happen.
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE",
+            "the pipeline worker returned no data-review record; nothing was appended",
+        )
+    return record
+
+
+def delegate_proposal_generation(
+    *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
+) -> dict[str, Any]:
+    """Run the family proposer's model call in the pipeline worker and return its output.
+
+    The last model call this service made. With it delegated, nothing here selects a provider
+    any more — which is what lets the scheduler drop `MVP_VALIDATOR_PROVIDER` and its key and
+    hold no model credential at all beside the Binance ones.
+
+    Only the model half crosses. The proposals are judged here by `assemble_proposal_record`,
+    against the market snapshot this process collected, so the "one feature source" rule is
+    untouched: the frame never leaves, and no second collector exists to disagree with it.
+
+    Fail-closed with no fallback, like the other two delegations: the `MockProposerProvider`
+    that used to stand in when no provider was authorized now lives in the worker, so a
+    degraded proposal is still a real record while an unreachable worker is a failed fire.
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus},
+         "reason": "scheduler:crypto_propose"},
+        deadline_seconds=WORKER_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise SchedulerBlocked(
+            str(reply.get("reason_code") or "WORKER_UNAVAILABLE")
+            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
+            str(reply.get("reason") or "the pipeline worker did not run the proposer")
+            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
+        )
+    generation = reply.get("generation")
+    if not isinstance(generation, dict) or "raw" not in generation:
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE",
+            "the pipeline worker returned no proposer output; nothing was judged",
+        )
+    return generation
+
+
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
-    provider: Any, search_tool: Any, repo_root: Path | None, executor: Callable[..., dict[str, Any]],
-    registry: Any = None,
+    repo_root: Path | None, executor: Callable[..., dict[str, Any]],
+    registry: Any = None, run_id: str | None = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
 
@@ -810,6 +1032,66 @@ def _execute(
         parts = schedule.request.split()
         symbol = parts[0] if parts and parts[0] else "BTCUSDT"
         timeframe = parts[1] if len(parts) >= 2 else "4h"
+
+        # The store first, the venue second. `too_young` is decidable from the mint stamp
+        # alone, and until the oldest eligible spec has lived `MIN_POST_MINT_DAYS` this fire
+        # paid a factory-depth collection to measure nothing — 99.1% of the kind's ledger
+        # spend (4,901s of 4,945s to 2026-08-16), one 259s fire of which made a RISK_KIND
+        # neighbour 1,057s late on 2026-08-12. The filters here are the measure loop's own,
+        # minus the spec parse: a record that would fail to parse is a superset entry, and a
+        # superset can only forfeit a skip, never claim a wrong one.
+        eligible: list[tuple[dict[str, Any], Mapping[str, Any]]] = []
+        for record in crypto_pool.read_candidates(repo_root):
+            spec_dict = record.get("strategy_spec")
+            if not isinstance(spec_dict, Mapping):
+                continue
+            if str(spec_dict.get("timeframe")) != timeframe:
+                continue
+            if symbol not in (spec_dict.get("symbol_scope") or []):
+                continue
+            # Selected strategies only. The store keeps every mint and roughly three quarters of
+            # them were negative in their own scored window, so an unfiltered sample answers a
+            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
+            # is the error the first run of this measurement made.
+            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
+                continue
+            eligible.append((record, spec_dict))
+
+        # Skip the collection only when the calendar PROVES the answer for every eligible
+        # spec — an unprovable stamp collects as before, and an EMPTY cell collects as
+        # before (a fresh machine's "no specs" record should come from the ordinary path,
+        # which is also the path the five-leg frame test pins). The record still lands:
+        # "no spec was old enough" is a fact the accumulating series must keep, and
+        # `too_young_calendar` keeps it distinct from a frame-measured `too_young`.
+        floor_bars = null_control.min_post_mint_bars(timeframe)
+        bounds = [
+            null_control.calendar_bars_bound(
+                str(record.get("created_at_utc") or ""), timeframe=timeframe, now=now)
+            for record, _ in eligible
+        ]
+        if eligible and all(bound is not None and bound < floor_bars for bound in bounds):
+            result = null_control.build_record(
+                [{
+                    "symbol": symbol, "timeframe": timeframe,
+                    "measurements": [
+                        {
+                            "candidate_id": record.get("candidate_id"),
+                            "strategy_family": spec_dict.get("strategy_family"),
+                            "status": "too_young_calendar",
+                            "post_mint_bars_bound": bound,
+                        }
+                        for (record, spec_dict), bound in zip(eligible, bounds)
+                    ],
+                }],
+                now=now, symbol=symbol, timeframe=timeframe,
+            )
+            if ledger is not None:
+                ledger.append_records(
+                    f"NULLCTL-{integrity.short_id('null_control', {'at': now, 's': symbol, 't': timeframe})}",
+                    {null_control.LEDGER_KIND: result},
+                )
+            return null_control.status_line(result)
+
         collector = select_market_data_collector(now=now, root=repo_root)
         try:
             snapshot, _ = collect_market_data(
@@ -841,20 +1123,7 @@ def _execute(
             {"candles": snapshot.get("candles") or []}).split(":", 1)[1][:8], 16)
 
         measurements: list[dict[str, Any]] = []
-        for record in crypto_pool.read_candidates(repo_root):
-            spec_dict = record.get("strategy_spec")
-            if not isinstance(spec_dict, Mapping):
-                continue
-            if str(spec_dict.get("timeframe")) != timeframe:
-                continue
-            if symbol not in (spec_dict.get("symbol_scope") or []):
-                continue
-            # Selected strategies only. The store keeps every mint and roughly three quarters of
-            # them were negative in their own scored window, so an unfiltered sample answers a
-            # much weaker question — "does an arbitrary rule beat an arbitrary rule" — and that
-            # is the error the first run of this measurement made.
-            if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
-                continue
+        for record, spec_dict in eligible:
             try:
                 spec = StrategySpec.from_dict(dict(spec_dict))
             except SpecParseError:
@@ -969,7 +1238,10 @@ def _execute(
         # every open position) so no strategy is symbol-starved — the default that
         # actually covers the pool. Each sub-cycle rides the ledger on its own id.
         from .crypto.cycle import (
+            PIPELINE_STALLED,
+            cycle_is_stalled,
             cycle_status_line,
+            pool_cycle_is_stalled,
             pool_cycle_status_line,
             run_crypto_cycle,
             run_pool_cycle,
@@ -980,6 +1252,7 @@ def _execute(
             select_market_data_collector,
         )
         from .crypto.paper import select_paper_store
+        from .crypto.cooldown import CooldownMarkStore
         from .crypto.routing_marks import RoutingMarkStore
 
         # Wrapped for the length of THIS fire only. A fan-out asks the venue the same
@@ -994,6 +1267,7 @@ def _execute(
         # every tick. Marks persist only when the paper store is live (dry run keeps
         # none), so this changes nothing for a dry-run cycle.
         routing_marks = RoutingMarkStore(repo_root)
+        cooldown_marks = CooldownMarkStore(repo_root)
 
         parts = schedule.request.split()
         if parts and parts[0]:
@@ -1002,20 +1276,35 @@ def _execute(
                 kwargs["timeframe"] = parts[1]
             record = run_crypto_cycle(
                 collector=collector, store=store, liquidation_feed=liquidation_feed,
-                now=now, root=repo_root, routing_marks=routing_marks, **kwargs,
+                now=now, root=repo_root, routing_marks=routing_marks,
+                cooldown_marks=cooldown_marks, **kwargs,
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            return cycle_status_line(record)
+            status = cycle_status_line(record)
+            if cycle_is_stalled(record, schedule.last_status):
+                raise SchedulerBlocked(PIPELINE_STALLED, (
+                    f"crypto pipeline has degraded for two consecutive fires; "
+                    f"this one: {record.get('reason_codes')}. "
+                    f"Previous status: {schedule.last_status!r}. {status}"
+                ))
+            return status
 
         summary = run_pool_cycle(
             collector=collector, store=store, liquidation_feed=liquidation_feed,
             now=now, root=repo_root, routing_marks=routing_marks,
+            cooldown_marks=cooldown_marks,
         )
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        return pool_cycle_status_line(summary)
+        status = pool_cycle_status_line(summary)
+        if pool_cycle_is_stalled(summary, schedule.last_status):
+            raise SchedulerBlocked(PIPELINE_STALLED, (
+                f"crypto pipeline has degraded across all contexts for two consecutive fires; "
+                f"Previous status: {schedule.last_status!r}. {status}"
+            ))
+        return status
     if schedule.kind == KIND_FACTORY:
         # One factory run (C8): generate + backtest candidates over a deep candle
         # window, append them to the candidates store. ALLOW-tier record creation —
@@ -1080,31 +1369,28 @@ def _execute(
         positioning_eligible = bool(positioning_store.coverage_summary(
             repo_root, symbols=symbols or [symbol],
         )["eligible"])
-        result = run_factory(
-            snapshot,
-            active_pool=crypto_pool.load_active_pool(repo_root),
-            existing_candidates=crypto_pool.read_candidates(repo_root),
-            now=now,
-            fusion_pairs=FACTORY_FUSION_PAIRS,
-            positioning_eligible=positioning_eligible,
-            cohort_snapshots=cohort or None,
+        # The fetch above stayed in this process; the ~400s of pure compute leaves it (#705
+        # remedy — see the factory-child section above `run_due`). The reads passed as inputs
+        # (active pool, existing candidates) happen HERE, parent-side, so the child receives a
+        # frozen view and touches no store. The occurrence's bracket stays open: `run_due`
+        # sees :data:`STATUS_FACTORY_SPAWNED` and leaves the terminal event to
+        # `_collect_factory_child` on the pass that finds the result.
+        if run_id is None:
+            raise SchedulerBlocked("FACTORY_RUN_ID_MISSING",
+                                   "a factory fire needs its schedule_run_id to spool")
+        return _spawn_factory_child(
+            run_factory,
+            (snapshot,),
+            dict(
+                active_pool=crypto_pool.load_active_pool(repo_root),
+                existing_candidates=crypto_pool.read_candidates(repo_root),
+                now=now,
+                fusion_pairs=FACTORY_FUSION_PAIRS,
+                positioning_eligible=positioning_eligible,
+                cohort_snapshots=cohort or None,
+            ),
+            run_id=run_id, schedule=schedule, repo_root=repo_root, now=now,
         )
-        crypto_pool.append_candidates(result["candidates"], root=repo_root)
-        if ledger is not None:
-            ledger.append_records(result["generation_id"], {"crypto_factory": result})
-        # `generated=N/M` rather than `generated=N`: a fire that fell short of what it asked for
-        # recorded the shortfall in the ledger and said nothing here, so the only operator-facing
-        # number read as a quantity. A stuck family is the one way to reach it (see
-        # `factory._MAX_ATTEMPTS_PER_SPEC`) and it has never happened; the point is that it would
-        # be legible if it did.
-        # `topup=` because `requested_count` is no longer the constant `DEFAULT_BATCH_SIZE`:
-        # it grows by whatever fusion left unspent, so `generated=8/8 fused=0` and
-        # `generated=4/4 fused=4` are both complete fires and the denominator alone cannot say
-        # which. Without it a shortfall draw that itself fell short would read as the stuck
-        # family `_MAX_ATTEMPTS_PER_SPEC` exists to expose.
-        return (f"generated={result['accepted_count']}/{result['requested_count']} "
-                f"fused={result.get('fused_count', 0)} "
-                f"topup={result.get('seeded_topup_count', 0)} gen={result['generation_id']}")
     if schedule.kind == KIND_PROPOSER:
         # M4b: the LLM strategy-family proposer on a schedule — reversing the "manual CLI
         # only" decision, so it is gated on the unreviewed-backlog cap. Once too many
@@ -1123,7 +1409,6 @@ def _execute(
             select_liquidation_feed,
             select_market_data_collector,
         )
-        from .providers import select_validator_provider
 
         installed = [t.family for t in crypto_factory.TEMPLATES]
         # Archives included, because `BACKLOG_WINDOW_DAYS` is a SPAN and the active ledger's
@@ -1203,10 +1488,15 @@ def _execute(
             snapshot, collector=collector, timeframe=timeframe, now=now, root=repo_root,
             liquidation_feed=select_liquidation_feed(now=now, root=repo_root),
         )
-        provider = (select_validator_provider(now=now, root=repo_root)
-                    or crypto_proposer.MockProposerProvider())
-        record = crypto_proposer.propose_strategy_families(
-            snapshot, provider=provider, now=now, existing_families=installed, focus=focus,
+        # The model call runs in `pipeline-worker` (Phase 2 D6); the verdicts stay here,
+        # beside the market frame they are computed from. What crosses is the family list and
+        # the focus — `build_proposal_prompt` never read the snapshot, which is why this
+        # needed neither a second market-data path nor a serialized frame.
+        generation = delegate_proposal_generation(
+            existing_families=installed, focus=focus, repo_root=repo_root,
+        )
+        record = crypto_proposer.assemble_proposal_record(
+            snapshot, generation=generation, focus=focus, now=now,
         )
         if ledger is not None:
             ledger.append_records(record["proposal_id"], {crypto_proposer.PROPOSAL_LEDGER_KIND: record})
@@ -1226,7 +1516,6 @@ def _execute(
         from .crypto import pool as crypto_pool
         from .crypto.cycle import pool_cycle_contexts
         from .crypto.paper import read_outcomes
-        from .providers import select_validator_provider
 
         try:
             # A bounded window over a stream, not a filtered copy of the whole ledger.
@@ -1246,9 +1535,12 @@ def _execute(
         inventory = crypto_data_review.build_data_inventory(
             cycle_rows, outcomes, contexts=pool_cycle_contexts(repo_root),
         )
-        provider = (select_validator_provider(now=now, root=repo_root)
-                    or crypto_data_review.MockDataReviewProvider())
-        record = crypto_data_review.review_data_gaps(inventory, provider=provider, now=now)
+        # The model call runs in `pipeline-worker`, not here (Phase 2 D5). Everything around
+        # it stays: this process builds the inventory (pure state reads), appends the record,
+        # sends the operator's sheet, and judges the stall. What crosses is one frame of
+        # ~3 KB and what comes back is the record — so an LLM response is parsed in a process
+        # that holds no venue key. See `delegate_data_review` for the failure posture.
+        record = delegate_data_review(inventory, now=now, repo_root=repo_root)
         if ledger is not None:
             ledger.append_records(
                 record["review_id"], {crypto_data_review.DATA_REVIEW_LEDGER_KIND: record})
@@ -1349,7 +1641,7 @@ def _execute(
         requester_id=f"mvp.scheduler:{schedule.schedule_id}", now=now,
     )
     result = executor(
-        schedule.request, provider=provider, search_tool=search_tool, working_memory=working_memory,
+        schedule.request, working_memory=working_memory,
         programization=programization,
         now=now, store=ledger, repo_root=repo_root, channel="scheduler", requester_type="scheduler",
         requester_id="mvp.scheduler", authenticated=True, source_ref=f"scheduler:{schedule.schedule_id}",
@@ -1369,6 +1661,292 @@ def _execute(
     return status
 
 
+# --- the factory fire leaves the pass (#705 remedy: process separation) ----------------------
+#
+# Approved Thomas 2026-08-17, as proposed (`docs/proposals/FACTORY_FIRE_PROCESS_SEPARATION_V0.1.md`
+# §3): boundary = the parent keeps the fetch and stays the single writer; concurrency = 1;
+# timeout = 900s; scope = `crypto_factory` only. The measured exposure: a ~400s lattice-era
+# factory fire ran INSIDE the pass loop, so a RISK_KIND due mid-fire waited to the second the
+# fire ended — four of the six days before this shipped, ~4 minutes each.
+#
+# Shape: the KIND_FACTORY handler still fetches (seconds) and then hands the pure
+# `run_factory` call to a forked child that writes ONE result file and nothing else. The pass
+# continues; every later pass first calls `_collect_factory_child`, which closes the occurrence
+# bracket — the `started` event was written at claim, and the terminal `fired`/`failed` event
+# is written here, same `schedule_run_id`, with the child's whole wall-time as `duration_ms`.
+#
+# Fail direction, all closed: a child that dies, times out (killed), or writes an unreadable
+# result becomes a terminal `failed` with its reason; a scheduler restart finds the leftover
+# spool meta with no registered child and fails it (`FACTORY_CHILD_ORPHANED`) — a spooled run
+# is never resumed, because the parent that could vouch for it is gone. Candidates are appended
+# only from a complete, well-formed result, so a partial child leaves no partial store.
+#
+# Where fork is unavailable (Windows CI — production is Linux), the child runs INLINE and the
+# orchestration is identical; the pass-blocking remedy is simply not delivered there, which is
+# the platform the exposure never existed on.
+#
+# The timeout lives here, not in `crypto/tunables.py`: that index is the crypto lane's own
+# constants, and this one is core scheduler policy (§3-3 resolved this way on approval).
+FACTORY_CHILD_TIMEOUT_SECONDS = 900.0
+#: Spool under the per-machine state dir: `<run_id>.meta.json` (parent, at spawn) and
+#: `<run_id>.result.json` (child, atomically). The meta file is the restart-survivable claim.
+FACTORY_SPOOL_REL = ".runtime_governance_state/factory_spool"
+#: `_execute`'s KIND_FACTORY branch returns this to say "spawned, bracket stays open".
+STATUS_FACTORY_SPAWNED = "factory_child_spawned"
+#: `last_status` while the child computes — replaced by the real status line at collect.
+STATUS_FACTORY_RUNNING = "factory_child_running"
+
+#: At most one child (§3-2). Module state on purpose: the deployment is one long-running
+#: loop process, so this survives passes and dies with the process — exactly the lifetime
+#: the spool meta file exists to outlive.
+_factory_child: dict[str, Any] | None = None
+
+
+def _factory_spool_dir(root: Path) -> Path:
+    return root / FACTORY_SPOOL_REL
+
+
+def factory_child_busy() -> bool:
+    return _factory_child is not None
+
+
+def factory_child_join(timeout_seconds: float) -> bool:
+    """Wait for the running child (tests/ops). True when a result file exists afterwards."""
+    child = _factory_child
+    if child is None:
+        return False
+    process = child.get("process")
+    if process is not None:
+        process.join(timeout_seconds)
+    return child["result_path"].exists()
+
+
+def _reset_factory_child() -> None:
+    """Drop the in-memory registration (tests). Kills a live child first — a reset that
+    leaves the process running would let one test's child write into another's spool."""
+    global _factory_child
+    child = _factory_child
+    if child is not None and child.get("process") is not None and child["process"].is_alive():
+        child["process"].kill()
+        child["process"].join(5)
+    _factory_child = None
+
+
+def _factory_child_main(fn: Callable[..., Mapping[str, Any]], args: tuple, kwargs: dict,
+                        result_path: str, *, exit_after: bool) -> None:
+    """The whole child: run the pure compute, write ONE file, touch nothing else.
+
+    Runs forked (production) or inline (no-fork platforms); ``exit_after`` is True only in
+    the forked child, where ``os._exit`` skips the inherited interpreter teardown — the
+    parent's buffered handles must not be flushed a second time from a copy."""
+    try:
+        result = fn(*args, **kwargs)
+        payload: dict[str, Any] = {"ok": True, "result": result}
+    except BaseException as exc:  # noqa: BLE001 — the child's only job is to report, not raise
+        payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        tmp = result_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, result_path)
+    finally:
+        if exit_after:
+            os._exit(0)
+
+
+def _spawn_factory_child(
+    fn: Callable[..., Mapping[str, Any]], args: tuple, kwargs: dict, *,
+    run_id: str, schedule: Schedule, repo_root: Path | None, now: str,
+) -> str:
+    """Register + spawn one factory child; returns :data:`STATUS_FACTORY_SPAWNED`.
+
+    The meta file is written BEFORE the fork so a parent that dies immediately after still
+    leaves a claim the next process can fail closed (`_fail_orphaned_factory_spool`)."""
+    global _factory_child
+    root = repo_root if repo_root is not None else _repo_root()
+    spool = _factory_spool_dir(root)
+    spool.mkdir(parents=True, exist_ok=True)
+    meta_path = spool / f"{run_id}.meta.json"
+    result_path = spool / f"{run_id}.result.json"
+    meta = {
+        "schedule_run_id": run_id,
+        "schedule_id": schedule.schedule_id,
+        "kind": schedule.kind,
+        "spawned_at": now,
+        "timeout_seconds": FACTORY_CHILD_TIMEOUT_SECONDS,
+        "pid": None,
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    process = None
+    if "fork" in multiprocessing.get_all_start_methods():
+        ctx = multiprocessing.get_context("fork")
+        process = ctx.Process(
+            target=_factory_child_main, args=(fn, args, kwargs, str(result_path)),
+            kwargs={"exit_after": True}, daemon=False, name=f"factory-child-{run_id}",
+        )
+        process.start()
+        meta["pid"] = process.pid
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    else:
+        # No fork on this platform: run inline. Same events, same spool, same collect —
+        # only the pass-blocking remedy is undelivered, on the platform that never had
+        # the exposure (production is Linux).
+        _factory_child_main(fn, args, kwargs, str(result_path), exit_after=False)
+    _factory_child = {
+        "run_id": run_id,
+        "schedule": schedule,
+        "previous_status": schedule.last_status,
+        "process": process,
+        "spawned_monotonic": time.monotonic(),
+        "deadline_monotonic": time.monotonic() + FACTORY_CHILD_TIMEOUT_SECONDS,
+        "meta_path": meta_path,
+        "result_path": result_path,
+        "root": root,
+    }
+    return STATUS_FACTORY_SPAWNED
+
+
+def _factory_status_line(result: Mapping[str, Any]) -> str:
+    # `generated=N/M` rather than `generated=N`: a fire that fell short of what it asked for
+    # recorded the shortfall in the ledger and said nothing here, so the only operator-facing
+    # number read as a quantity. `topup=` because `requested_count` grows by whatever fusion
+    # left unspent, so `generated=8/8 fused=0` and `generated=4/4 fused=4` are both complete
+    # fires and the denominator alone cannot say which. `ablated=`/`luck_filtered=` because
+    # the lattice multiplies replays per hypothesis with no cadence change: this line is
+    # where that spend and its yield are legible per fire.
+    return (f"generated={result['accepted_count']}/{result['requested_count']} "
+            f"fused={result.get('fused_count', 0)} "
+            f"topup={result.get('seeded_topup_count', 0)} "
+            f"ablated={result.get('ablated_count', 0)} "
+            f"luck_filtered={result.get('luck_filtered_count', 0)} "
+            f"gen={result['generation_id']}")
+
+
+def _finish_factory_occurrence(
+    store: ScheduleStore, schedule: Schedule, *, action: str, status: str, run_id: str,
+    duration_ms: int, previous_status: str | None, ledger: Any, notifier: Any, now: str,
+) -> dict[str, Any]:
+    """Close one spawned occurrence's bracket: terminal event, last_status, notifier."""
+    if ledger is not None:
+        ledger.append_scheduler_event(_scheduler_event(
+            action, schedule, now=now, status=status, run_id=run_id, duration_ms=duration_ms))
+    store.record_result(schedule.schedule_id, last_run_at=now, last_status=status)
+    if notifier is not None:
+        _notify_status_change(notifier, schedule, previous_status=previous_status,
+                              status=status, failed=(action == "failed"), now=now)
+    return {"schedule_id": schedule.schedule_id, "action": action, "status": status,
+            "schedule_run_id": run_id, "duration_ms": duration_ms}
+
+
+def _fail_orphaned_factory_spool(
+    store: ScheduleStore, *, ledger: Any, notifier: Any, now: str, root: Path,
+) -> list[dict[str, Any]]:
+    """A spool meta with no registered child is a fire whose parent died: fail it, never
+    resume it — the child (if it still runs) is killed best-effort, and a result it may
+    have written is discarded WITH the failure recorded, because nobody can vouch for a
+    computation whose supervising process is gone."""
+    spool = _factory_spool_dir(root)
+    if not spool.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    by_id = {s.schedule_id: s for s in store.list()}
+    for meta_path in sorted(spool.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        pid = meta.get("pid")
+        if pid:
+            import signal
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, ValueError):
+                pass
+        run_id = str(meta.get("schedule_run_id") or meta_path.stem.replace(".meta", ""))
+        schedule = by_id.get(str(meta.get("schedule_id")))
+        try:
+            spawned = timeutil.parse_iso(str(meta.get("spawned_at")))
+            duration_ms = max(0, int((timeutil.parse_iso(now) - spawned).total_seconds() * 1000))
+        except (ValueError, TypeError):
+            duration_ms = 0
+        if schedule is not None:
+            entries.append(_finish_factory_occurrence(
+                store, schedule, action="failed", status="failed:FACTORY_CHILD_ORPHANED",
+                run_id=run_id, duration_ms=duration_ms, previous_status=schedule.last_status,
+                ledger=ledger, notifier=notifier, now=now))
+        meta_path.unlink(missing_ok=True)
+        result_path = meta_path.with_name(meta_path.name.replace(".meta.json", ".result.json"))
+        result_path.unlink(missing_ok=True)
+    return entries
+
+
+def _collect_factory_child(
+    store: ScheduleStore, *, ledger: Any, notifier: Any, now: str, repo_root: Path | None,
+) -> list[dict[str, Any]]:
+    """The pass-start check (a few ms): collect a finished child, or fail a dead/late one.
+
+    Runs regardless of the kill switch: collecting is bookkeeping of an occurrence that was
+    already authorized and claimed — ALLOW-tier record creation, no orders — and skipping it
+    would leave the bracket open and the child's work unaccounted either way."""
+    global _factory_child
+    root = repo_root if repo_root is not None else _repo_root()
+    child = _factory_child
+    if child is None:
+        return _fail_orphaned_factory_spool(store, ledger=ledger, notifier=notifier,
+                                            now=now, root=root)
+    if child["root"] != root:
+        # A different store context (only tests construct this): not ours to collect.
+        return []
+    process = child.get("process")
+    action: str | None = None
+    status = ""
+    result: Mapping[str, Any] | None = None
+    if child["result_path"].exists():
+        try:
+            payload = json.loads(child["result_path"].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {"ok": False, "error": "CORRUPT_RESULT"}
+        if payload.get("ok") and isinstance(payload.get("result"), Mapping):
+            action, result = "fired", payload["result"]
+        else:
+            action = "failed"
+            status = f"failed:FACTORY_CHILD:{str(payload.get('error'))[:160]}"
+    elif process is None or not process.is_alive():
+        exit_code = getattr(process, "exitcode", None)
+        action = "failed"
+        status = f"failed:FACTORY_CHILD_DIED:exit={exit_code}"
+    elif time.monotonic() > child["deadline_monotonic"]:
+        process.kill()
+        process.join(5)
+        action = "failed"
+        status = "failed:FACTORY_CHILD_TIMEOUT"
+    else:
+        return []  # still computing; check again next pass
+
+    if action == "fired" and result is not None:
+        # The writes the synchronous handler used to do, in the same order, same process
+        # (the parent): the single-writer invariant is a property of WHO runs this, and it
+        # is still only ever the scheduler.
+        from .crypto import pool as crypto_pool
+        crypto_pool.append_candidates(result["candidates"], root=root)
+        if ledger is not None:
+            ledger.append_records(result["generation_id"], {"crypto_factory": result})
+        status = _factory_status_line(result)
+    duration_ms = int((time.monotonic() - child["spawned_monotonic"]) * 1000)
+    entry = _finish_factory_occurrence(
+        store, child["schedule"], action=action or "failed", status=status,
+        run_id=child["run_id"], duration_ms=duration_ms,
+        previous_status=child["previous_status"], ledger=ledger, notifier=notifier, now=now)
+    if process is not None:
+        process.join(0)
+    child["meta_path"].unlink(missing_ok=True)
+    child["result_path"].unlink(missing_ok=True)
+    _factory_child = None
+    return [entry]
+
+
 def run_due(
     store: ScheduleStore,
     *,
@@ -1377,12 +1955,11 @@ def run_due(
     ledger: LedgerStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
     programization: Any | None = None,
-    provider: Any | None = None,
-    search_tool: Any | None = None,
     repo_root: Path | None = None,
-    executor: Callable[..., dict[str, Any]] = run_task,
+    executor: Callable[..., dict[str, Any]] = delegate_analysis_task,
     notifier: Callable[[str, str], None] | None = None,
     registry: Any = None,
+    kinds: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
 
@@ -1424,7 +2001,18 @@ def run_due(
     survives the container it happened in — the summary and the CLI's per-result line do not.
     A fire already running is never
     interrupted, so the guarantee is that at most ONE maintenance fire can precede a due risk
-    kind — see ``RISK_KINDS`` for the measurement that motivated it."""
+    kind — see ``RISK_KINDS`` for the measurement that motivated it. A ``crypto_factory``
+    fire no longer even holds the pass for its compute: the fetch runs here (seconds), the
+    pure ``run_factory`` call leaves for a child process, and a later pass collects it at
+    the top — the factory-child section above `run_due` is the contract.
+
+    **Lanes.** With ``kinds`` set (the lane split, `SCHEDULER_LANE_SPLIT_V0.1`), only
+    schedules of those kinds are visible to this pass at all: everything else is neither
+    fired, skipped, nor deferred — it is left due, untouched and unrecorded, because it
+    belongs to the other lane's process. That reach extends to the kill-switch branch (a
+    kill in the risk lane must not claim-and-drop maintenance occurrences the maintenance
+    lane would have dropped itself) and to the factory-child collect (see the gate below).
+    ``None`` — the default — is the whole schedule set, exactly as before lanes existed."""
     schedules = store.list()
     if control_store is None:
         control_store = ControlStore(repo_root if repo_root is not None else _repo_root())
@@ -1433,13 +2021,38 @@ def run_due(
     skipped = 0
     failed = 0
     deferred = 0
+    spawned = 0
     results: list[dict[str, Any]] = []
+
+    # A spawned factory child from an earlier pass is collected FIRST (a few ms): its
+    # terminal event closes the bracket its own pass left open, and an orphaned spool from
+    # a dead process fails closed here. See the factory-child section above.
+    #
+    # Gated on the lane owning KIND_FACTORY, and the gate is load-bearing rather than an
+    # optimization: `_collect_factory_child` with no registered child treats every spool
+    # meta as an orphan whose parent died — kills the pid, fails the occurrence, deletes
+    # the spool. The risk-lane process NEVER has a registered child (it cannot spawn one),
+    # so without this gate its every pass would execute the maintenance lane's live child
+    # as that recovery: a false `failed:FACTORY_CHILD_ORPHANED` for a fire whose parent is
+    # alive next door. Orphan recovery stays exactly as safe as before — the lane that can
+    # spawn a child is the lane that survives to fail its spool.
+    if kinds is None or KIND_FACTORY in kinds:
+        for entry in _collect_factory_child(store, ledger=ledger, notifier=notifier,
+                                            now=now, repo_root=repo_root):
+            if entry["action"] == "fired":
+                fired += 1
+            else:
+                failed += 1
+            results.append(entry)
 
     # Risk kinds first, then everything else in store order. Within a pass this changes nothing
     # about WHICH fires happen — the same set is due — only the order, so a risk kind sharing a
     # due time no longer waits behind maintenance. `sorted` is stable, so the store's own order
     # survives inside each group and a schedule cannot change its position by being re-saved.
-    due = [s for s in schedules if s.enabled and s.next_run_at <= now]
+    # The lane filter sits here, before the loop, so the other lane's schedules are invisible
+    # to every branch below — including the kill-switch skip, which claims and DROPS.
+    due = [s for s in schedules
+           if s.enabled and s.next_run_at <= now and (kinds is None or s.kind in kinds)]
     due.sort(key=lambda s: 0 if s.kind in RISK_KINDS else 1)
     pass_started = time.monotonic()
 
@@ -1514,6 +2127,21 @@ def run_due(
                                 "status": status})
                 continue
 
+        # Concurrency 1 for factory children (§3-2 of the process-separation approval):
+        # while one child computes, another due factory fire is DEFERRED — unclaimed, like
+        # the budget deferral above, so the occurrence stays due and runs after the collect.
+        # The morning's factory schedules serialize exactly as they did when they ran
+        # inline; what changed is that the pass never waits with them.
+        if schedule.kind == KIND_FACTORY and factory_child_busy():
+            deferred += 1
+            status = "deferred_factory_child_running"
+            if ledger is not None:
+                ledger.append_scheduler_event(_scheduler_event(
+                    ACTION_DEFERRED, schedule, now=now, status=status))
+            results.append({"schedule_id": schedule.schedule_id, "action": ACTION_DEFERRED,
+                            "status": status})
+            continue
+
         # Claim the occurrence durably BEFORE executing (at-most-once: a crash drops the
         # occurrence, never doubles it). claim_due re-checks the current state under the
         # store lock, so an operator disable/remove that landed after the snapshot wins
@@ -1541,7 +2169,17 @@ def run_due(
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization, registry=registry,
-                              provider=provider, search_tool=search_tool, repo_root=repo_root, executor=executor)
+                              repo_root=repo_root, executor=executor, run_id=run_id)
+            if claimed.kind == KIND_FACTORY and status == STATUS_FACTORY_SPAWNED:
+                # The bracket stays open on purpose: the terminal event belongs to the pass
+                # that collects the child (`_collect_factory_child`), under this same
+                # run_id, with the child's whole wall-time as its duration.
+                spawned += 1
+                store.record_result(claimed.schedule_id, last_run_at=now,
+                                    last_status=STATUS_FACTORY_RUNNING)
+                results.append({"schedule_id": claimed.schedule_id, "action": "spawned",
+                                "status": STATUS_FACTORY_RUNNING, "schedule_run_id": run_id})
+                continue
             action = "fired"
             fired += 1
         except MvpRuntimeError as exc:
@@ -1564,4 +2202,4 @@ def run_due(
                                   status=status, failed=(action == "failed"), now=now)
 
     return {"fired": fired, "skipped": skipped, "failed": failed, "deferred": deferred,
-            "results": results}
+            "spawned": spawned, "results": results}

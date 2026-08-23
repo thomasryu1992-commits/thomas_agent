@@ -401,6 +401,32 @@ def propose_strategy_families(
     nothing. A provider failure degrades to zero proposals with the reason recorded;
     nothing downstream depends on a proposal existing.
     """
+    generation = generate_proposals(
+        provider=provider, existing_families=existing_families, focus=focus,
+        count=count, venue=venue,
+    )
+    return assemble_proposal_record(snapshot, generation=generation, focus=focus, now=now)
+
+
+def generate_proposals(
+    *,
+    provider: Provider,
+    existing_families: Sequence[str],
+    focus: str | None = None,
+    count: int = MAX_PROPOSALS_PER_RUN,
+    venue: str = market_data.BINANCE_FUTURES,
+) -> dict[str, Any]:
+    """The model half: ask for families, parse what came back. **Touches no snapshot.**
+
+    Split out so the model call can run somewhere other than the process that judges its
+    answer (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`, D6). That the split
+    is this clean is a property of the prompt, not a refactor: ``build_proposal_prompt`` takes
+    family names, a focus, a count and a venue — it has never read the market frame. The frame
+    is used only by ``evaluate_proposal`` below, which invokes no model.
+
+    Returns the three things the record needs from the call and nothing else, so what crosses
+    a socket is a handful of strings each way rather than a 5-leg market snapshot.
+    """
     prompt = build_proposal_prompt(
         existing_families=existing_families, focus=focus, count=count, venue=venue
     )
@@ -433,6 +459,25 @@ def propose_strategy_families(
             "finish_reason": result.finish_reason,
             "network_egress": bool(getattr(provider, "network_egress", False)),
         }
+    return {"raw": raw, "invocation": invocation, "degraded": degraded}
+
+
+def assemble_proposal_record(
+    snapshot: Mapping[str, Any],
+    *,
+    generation: Mapping[str, Any],
+    focus: str | None,
+    now: str,
+) -> dict[str, Any]:
+    """The judging half: score each proposal against the frame and build the record.
+
+    Deterministic and model-free — every verdict comes from ``evaluate_proposal``, which is
+    the existing backtest machinery. This is what stays beside the market data when the model
+    call is delegated.
+    """
+    raw = list(generation.get("raw") or [])
+    invocation = generation.get("invocation")
+    degraded = generation.get("degraded")
 
     verdicts = [
         evaluate_proposal(p, snapshot, index=i)
@@ -507,5 +552,7 @@ __all__ = [
     "format_proposal_report",
     "known_features",
     "propose_strategy_families",
+    "generate_proposals",
+    "assemble_proposal_record",
     "unknown_features",
 ]

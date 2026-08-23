@@ -13,7 +13,7 @@ import pytest
 
 from runtime.mvp_runtime import control, scheduler
 from runtime.mvp_runtime.control import ControlStore
-from runtime.mvp_runtime.errors import PersistenceError, SchedulerBlocked
+from runtime.mvp_runtime.errors import MvpRuntimeError, PersistenceError, SchedulerBlocked
 from runtime.mvp_runtime.scheduler import (
 
     KIND_PROPOSER,
@@ -766,7 +766,25 @@ def test_proposer_schedule_needs_no_request():
                        created_by="op", now=T0)
     assert s.kind == KIND_PROPOSER
 
-def test_proposer_schedule_fires_and_records_a_proposal(tmp_path):
+def _worker_in_process(monkeypatch, tmp_path):
+    """Route a scheduler delegation to the worker's own job handler.
+
+    Since Phase 2 the model calls run in `pipeline-worker`, so a fire crosses a socket. The
+    fires keep being exercised whole — this replaces only the transport, so the worker's job
+    path (where the model call now lives) stays covered by the same tests.
+    """
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    from runtime.mvp_runtime.control import ControlStore as _CS
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: pipeline_worker.apply_work(
+            frame, control_store=_CS(tmp_path)),
+    )
+
+
+def test_proposer_schedule_fires_and_records_a_proposal(tmp_path, monkeypatch):
+    _worker_in_process(monkeypatch, tmp_path)
     # repo_root=tmp_path forces the mock market-data + mock proposer paths (no grants there),
     # so the fire is deterministic and never reaches the network.
     store = ScheduleStore(tmp_path / "sched")
@@ -1182,3 +1200,323 @@ def test_an_unclassified_kind_is_never_deferred(tmp_path, monkeypatch):
     assert summary["deferred"] == 0
     assert summary["fired"] == 2
     assert stray.schedule_id in {s.schedule_id for s in store.list()}
+
+
+# --- the analysis_task delegation (plane separation Phase 2) ------------------
+
+def test_the_default_executor_delegates_rather_than_running_the_pipeline():
+    """The change in one line: this service no longer holds the keys a scheduled analysis
+    needs, so its default executor is the forwarder, not `run_task`. A default that drifted
+    back would silently reintroduce the credential this deployment removed."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    default = inspect.signature(sched.run_due).parameters["executor"].default
+    assert default is sched.delegate_analysis_task
+
+
+def test_the_scheduler_selects_no_analysis_provider_or_search_tool():
+    """Both parameters are gone from the fire path, and their absence is the point: a
+    parameter that still existed would invite someone to wire a provider back in without
+    noticing that the compose block no longer carries one."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    for fn in (sched.run_due, sched._execute):
+        params = set(inspect.signature(fn).parameters)
+        assert "provider" not in params, f"{fn.__name__} still takes a provider"
+        assert "search_tool" not in params, f"{fn.__name__} still takes a search_tool"
+
+
+def test_a_delegated_fire_states_the_scheduler_profile_and_its_own_source_ref(monkeypatch):
+    """Attribution has to survive the hop: the worker records what this call declares, and a
+    scheduled run must stay `mvp.scheduler` with `scheduler:<schedule_id>` — not the
+    assistant, whose identity the worker would otherwise apply by default."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    def _fake_call(path, frame, **kwargs):
+        sent.append(frame)
+        return {"ok": True, "kind": "analysis", "task_id": "task-9", "trace_id": "trace-9"}
+
+    monkeypatch.setattr(sched.socket_door, "call_door", _fake_call)
+    out = sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+
+    assert sent[0]["actor_profile"] == pipeline_worker.SCHEDULER_PROFILE
+    assert sent[0]["reason"] == "scheduler:sched_abc"
+    assert sent[0]["kind"] == sched.DELEGATED_REQUEST_KIND == "analysis"
+    # Answered in the shape the KIND_TASK branch reads, ids included — the registry entry
+    # closes with them, and a None here would leave every scheduled run unreferenced.
+    assert out["status"] == "COMPLETED"
+    identity = out["records"]["received_task"]["identity"]
+    assert identity == {"task_id": "task-9", "trace_id": "trace-9"}
+
+
+def test_the_delegated_kind_routes_exactly_as_an_unkinded_run_did():
+    """Naming the kind is what lets the request cross a socket with a closed kind set; it
+    must not also change the Role. `classify_task` answers the analysis capabilities for both
+    None and "analysis", so the delegation is routing-neutral."""
+    from runtime.mvp_runtime import planner, scheduler as sched
+
+    assert (planner.capabilities_for_request_kind(None)
+            == planner.capabilities_for_request_kind(sched.DELEGATED_REQUEST_KIND))
+
+
+def test_an_unreachable_worker_fails_the_fire_and_never_runs_a_local_mock(monkeypatch, tmp_path):
+    """No fallback, by design. With no provider key on this service, an in-process fallback
+    would run the deterministic mock and report COMPLETED — the "reads as configured, does
+    nothing" failure (#512, #650). A raised fire is recorded failed and stays visible."""
+    from runtime.mvp_runtime import scheduler as sched
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    def _dead(path, frame, **kwargs):
+        raise ControlBlocked("DOOR_UNREACHABLE", "nothing is listening")
+
+    monkeypatch.setattr(sched.socket_door, "call_door", _dead)
+    with pytest.raises(MvpRuntimeError):
+        sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+
+
+def test_a_worker_refusal_is_a_failed_fire_not_a_blocked_result(monkeypatch):
+    """A refusal envelope carries no `kind`: nothing ran. Reporting it as BLOCKED would file
+    "the work never started" as "the runtime considered it and refused"."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: {"ok": False, "reason_code": "BRIDGE_BUSY", "reason": "later"},
+    )
+    with pytest.raises(SchedulerBlocked) as exc:
+        sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+    assert exc.value.reason_code == "BRIDGE_BUSY"
+
+
+def test_a_pipeline_block_survives_the_hop_as_a_blocked_result(monkeypatch):
+    """The other side of that line: a reply naming its kind DID run, so its refusal is the
+    run's answer and the fire records BLOCKED with the pipeline's own reason code."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: {"ok": False, "kind": "analysis", "task_id": "t1",
+                                   "trace_id": "tr1", "reason_code": "NO_ROUTABLE_ROLE",
+                                   "reason": "none"},
+    )
+    out = sched.delegate_analysis_task("분석해줘", source_ref="scheduler:sched_abc")
+    assert out["status"] == "BLOCKED"
+    assert out["block"]["reason_code"] == "NO_ROUTABLE_ROLE"
+
+
+# --- the data-review delegation (plane separation Phase 2, D5) ----------------
+
+def test_a_data_review_delegates_only_the_model_call(monkeypatch):
+    """The narrow cut: the inventory the scheduler built crosses, and the record comes back.
+    Everything else about the fire — the ledger append, the operator sheet, the stall judgement
+    — stays on this side, so the frame is one input and one record and nothing more."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"], "record": {"review_id": "rev_1"}},
+    )
+    out = sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+    assert sent[0]["job"] == pipeline_worker.JOB_DATA_REVIEW
+    assert sent[0]["inventory"] == {"venue": "binance"}
+    assert "request" not in sent[0] and "kind" not in sent[0]
+    assert out == {"review_id": "rev_1"}
+
+
+def test_an_unreachable_worker_fails_the_data_review_fire(monkeypatch):
+    """No fallback. The in-process Mock that used to stand in when no provider was authorized
+    now lives in the worker, so a degraded review is still a real record and an absent worker
+    is still a visible failure — the two must not collapse into each other."""
+    from runtime.mvp_runtime import scheduler as sched
+    from runtime.mvp_runtime.errors import ControlBlocked
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: (_ for _ in ()).throw(
+            ControlBlocked("DOOR_UNREACHABLE", "nothing is listening")),
+    )
+    with pytest.raises(MvpRuntimeError):
+        sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": False, "reason_code": "KILLED", "reason": "halted"},
+    {"ok": True, "job": "crypto_data_review", "record": {}},
+    {"ok": True, "job": "crypto_data_review"},
+    "not an object",
+])
+def test_a_reply_without_a_usable_record_is_never_ledgered(monkeypatch, reply):
+    """An `ok` reply carrying no review_id would otherwise be appended as evidence of a
+    review that did not happen."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(sched.socket_door, "call_door", lambda path, frame, **kw: reply)
+    with pytest.raises(SchedulerBlocked):
+        sched.delegate_data_review({"venue": "binance"}, now=T1, repo_root=None)
+
+
+def test_the_scheduler_selects_no_model_provider_at_all():
+    """D6 completes what D4 and D5 started: with both crypto model calls delegated, nothing
+    in this module selects a provider, which is what lets the service drop
+    MVP_VALIDATOR_PROVIDER and its key. Asserted on the module, not on one branch — a new
+    consumer added anywhere here would put a model credential back beside the Binance ones."""
+    import inspect
+
+    from runtime.mvp_runtime import scheduler as sched
+    src = inspect.getsource(sched)
+    assert "select_validator_provider" not in src
+    assert "select_provider" not in src
+    body = inspect.getsource(sched._execute)
+    review = body[body.index("KIND_DATA_REVIEW"):body.index("KIND_CANDLE_ARCHIVE")]
+    assert "delegate_data_review" in review
+    propose = body[body.index("KIND_PROPOSER"):body.index("KIND_DATA_REVIEW")]
+    assert "delegate_proposal_generation" in propose
+
+
+def test_a_proposer_fire_sends_the_family_list_and_never_the_frame(monkeypatch):
+    """The whole reason D6 turned out to be cheap: `build_proposal_prompt` never read the
+    snapshot, so what crosses is the installed-family list and a focus string. A frame on
+    this wire would mean a second feature source, which C9's source rule forbids."""
+    from runtime.mvp_runtime import pipeline_worker, scheduler as sched
+    sent: list[dict] = []
+
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"],
+            "generation": {"raw": [], "invocation": None, "degraded": None}},
+    )
+    out = sched.delegate_proposal_generation(
+        existing_families=["trend_break", "vol_expansion"], focus=None, repo_root=None,
+    )
+    assert sent[0]["job"] == pipeline_worker.JOB_CRYPTO_PROPOSE
+    assert sent[0]["proposal_inputs"]["existing_families"] == ["trend_break", "vol_expansion"]
+    for forbidden in ("snapshot", "candles", "inventory", "ohlcv"):
+        assert forbidden not in str(sent[0]).lower()
+    assert out == {"raw": [], "invocation": None, "degraded": None}
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": False, "reason_code": "KILLED", "reason": "halted"},
+    {"ok": True, "job": "crypto_propose"},
+    {"ok": True, "job": "crypto_propose", "generation": {"invocation": None}},
+    "not an object",
+])
+def test_a_proposer_reply_without_a_generation_is_never_judged(monkeypatch, reply):
+    """An `ok` reply with no `raw` would be assembled into a record reporting zero proposals
+    — indistinguishable from a model that answered and suggested nothing."""
+    from runtime.mvp_runtime import scheduler as sched
+
+    monkeypatch.setattr(sched.socket_door, "call_door", lambda path, frame, **kw: reply)
+    with pytest.raises(SchedulerBlocked):
+        sched.delegate_proposal_generation(
+            existing_families=[], focus=None, repo_root=None,
+        )
+
+
+# === lanes: the tick loop can run one side of the partition ========================
+# `docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md` (Thomas 2026-08-19, D1–D3). The factory child
+# fixed the one fire measured holding the pass; within a week `crypto_null_control` fires of
+# ~4 minutes produced the same late `crypto_pipeline` by the same mechanism (2026-08-17
+# 04:48Z, three back to back). Any kind can grow a long fire, so the durable fix is the class
+# one: two tick processes, one per side of the existing partition. These pin what a laned
+# pass may touch — and, harder, what it must leave alone.
+
+
+def test_lane_kinds_resolves_the_partition_and_fails_closed():
+    """The lane boundary is the budget partition, reused: the forcing tests above already
+    keep every kind classified, so they already keep every kind laned. An unknown lane
+    refuses to resolve — a typo that silently ran everything would put a long fire back in
+    front of the money path with nothing recording that it had."""
+    assert scheduler.lane_kinds(scheduler.LANE_ALL) is None
+    assert scheduler.lane_kinds(scheduler.LANE_RISK) is scheduler.RISK_KINDS
+    assert scheduler.lane_kinds(scheduler.LANE_MAINTENANCE) is scheduler.MAINTENANCE_KINDS
+    with pytest.raises(SchedulerBlocked) as exc:
+        scheduler.lane_kinds("riks")
+    assert exc.value.reason_code == "SCHEDULER_UNKNOWN_LANE"
+
+
+def test_a_laned_pass_fires_only_its_own_kinds_and_leaves_the_rest_untouched(tmp_path, monkeypatch):
+    """The other lane's due schedule is not fired, not skipped, not deferred — and not
+    claimed, because its own process will claim it. Untouched means no ledger event either:
+    a row would read as this process having decided something about a schedule it cannot
+    see whole."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    factory = _kind_schedule(store, scheduler.KIND_FACTORY)
+    order = []
+    _record_order(monkeypatch, order)
+
+    summary = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path), kinds=scheduler.RISK_KINDS)
+
+    assert summary["fired"] == 1 and order == [scheduler.KIND_CRYPTO]
+    row = [s for s in store.list() if s.schedule_id == factory.schedule_id][0]
+    assert row.next_run_at <= T1 and row.last_run_at is None     # still due, never claimed
+    assert all(e["kind"] != scheduler.KIND_FACTORY for e in _events(ledger))
+
+    # ...and the maintenance lane picks up exactly what the risk lane left.
+    second = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                     control_store=ControlStore(tmp_path), kinds=scheduler.MAINTENANCE_KINDS)
+    assert second["fired"] == 1 and order == [scheduler.KIND_CRYPTO, scheduler.KIND_FACTORY]
+    assert all(s.last_run_at == T1 for s in store.list())
+
+
+def test_a_kill_in_one_lane_drops_only_that_lanes_occurrences(tmp_path, monkeypatch):
+    """The kill-switch branch claims and DROPS, which is precisely why the lane filter must
+    sit in front of it: a killed risk lane consuming maintenance occurrences would drop
+    fires the maintenance lane — same kill, its own pass — was going to drop itself, and
+    the ledger would attribute the drop to the wrong process."""
+    store = ScheduleStore(tmp_path)
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    factory = _kind_schedule(store, scheduler.KIND_FACTORY)
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, control.CMD_KILL, actor="op", now=T0, reason="halt")
+    _record_order(monkeypatch, [])
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=control_store, kinds=scheduler.RISK_KINDS)
+
+    assert summary["skipped"] == 1 and summary["fired"] == 0
+    row = [s for s in store.list() if s.schedule_id == factory.schedule_id][0]
+    assert row.next_run_at <= T1                       # the other lane's occurrence survives
+
+
+def test_the_risk_lane_never_touches_the_factory_spool(tmp_path):
+    """`_collect_factory_child` with no registered child treats every spool meta as an
+    orphan whose parent died — and the risk-lane process NEVER has a registered child, so
+    ungated it would execute that recovery against the maintenance lane's LIVE fire on
+    every pass: a false `failed:FACTORY_CHILD_ORPHANED` for a run whose parent is alive
+    next door. The gate is lane ownership of KIND_FACTORY."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    s = _kind_schedule(store, scheduler.KIND_FACTORY)            # due at T1; passes run at T0
+    spool = scheduler._factory_spool_dir(tmp_path)
+    spool.mkdir(parents=True, exist_ok=True)
+    meta_path = spool / "srun_next_door.meta.json"
+    meta_path.write_text(json.dumps({
+        "schedule_run_id": "srun_next_door", "schedule_id": s.schedule_id,
+        "kind": scheduler.KIND_FACTORY, "spawned_at": T0,
+        "timeout_seconds": scheduler.FACTORY_CHILD_TIMEOUT_SECONDS, "pid": None,
+    }), encoding="utf-8")
+
+    run_due(store, now=T0, ledger=ledger, control_store=ControlStore(tmp_path),
+            repo_root=tmp_path, kinds=scheduler.RISK_KINDS)
+
+    assert meta_path.exists()                          # not this lane's to fail
+    assert _events(ledger) == []
+
+    # The lane that owns the kind fails the orphan closed, exactly as before the split.
+    run_due(store, now=T0, ledger=ledger, control_store=ControlStore(tmp_path),
+            repo_root=tmp_path, kinds=scheduler.MAINTENANCE_KINDS)
+
+    assert not meta_path.exists()
+    failed = [e for e in _events(ledger) if e["action"] == "failed"]
+    assert len(failed) == 1 and failed[0]["status"] == "failed:FACTORY_CHILD_ORPHANED"

@@ -60,6 +60,7 @@ from .cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_STOP_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_UNCHARGED,
     FUNDING_SOURCE_VENUE,
@@ -217,13 +218,18 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
+    # Present-only, the maker rule: a record scored before the stop split keeps the exact
+    # basis string it has always reported, and a stamped one says what its stops paid —
+    # which is the axis `cost_basis_rank` now refuses OPTIMISTIC rows on.
+    stop = model.get("stop_slippage_bps")
+    stop_term = f"+stop_{stop}bps" if isinstance(stop, (int, float)) else ""
     funding = model.get("funding_bps_per_interval")
     if isinstance(funding, (int, float)) and not isinstance(funding, bool):
         source = model.get("funding_source") or FUNDING_SOURCE_VENUE
         funding_term = f"+funding_{funding}bps/8h({source})"
     else:
         funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{stop_term}{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -236,6 +242,7 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "stop_slippage_bps": DEFAULT_STOP_SLIPPAGE_BPS,
         "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
         "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
@@ -288,15 +295,28 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
         # which is a property of the trade and not of the cost model this function ranks.
         return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
+    # The stop leg joined the comparison on Thomas's 2026-08-11 direction, the same evening
+    # the seam re-priced 3.0 -> 12.0: a row scored with cheaper stops overstates its edge on
+    # every stop exit exactly the way a cheaper taker did, and the safest treatment of the
+    # existing store is NOT a forced re-price but this rank — cheaper-than-current reads
+    # OPTIMISTIC, is refused at the door, and the lineage re-mints at the current model.
+    # A record with no `stop_slippage_bps` charged its stops at its own GENERAL slippage
+    # (the pre-#683 identity), so that is the figure it is judged on — the maker rule again:
+    # what the leg actually paid, never a missing field read as the current rate.
+    stop_charged = model.get("stop_slippage_bps")
+    if not _is_number(stop_charged):
+        stop_charged = slip
     if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
-            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip == DEFAULT_SLIPPAGE_BPS and stop_charged == DEFAULT_STOP_SLIPPAGE_BPS
+            and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip >= DEFAULT_SLIPPAGE_BPS and stop_charged >= DEFAULT_STOP_SLIPPAGE_BPS
+            and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 
@@ -570,7 +590,10 @@ def assert_promotable_evidence_depth(records: list[Mapping[str, Any]]) -> None:
 # Both checks below are EXACT. Neither reasons about whether a condition "looks"
 # redundant — proving a condition inert in general needs invariants this module does
 # not have, and a guess in a fail-closed gate is worse than the gap it fills. What is
-# provable is used, and the rest is reported rather than refused (`near_duplicate_groups`).
+# provable is used. The tier below proof (`near_duplicate_groups`) is reported, and since
+# Thomas's 5-2 decision (2026-08-11) it gates exactly one thing — two cluster members
+# co-occupying routing slots (`assert_no_cluster_siblings`) — on the narrower claim that
+# indistinguishable evidence cannot buy a second slot.
 
 def canonical_rule_form(record: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """What a spec DOES, independent of how its conditions happen to be ordered.
@@ -981,12 +1004,18 @@ def pool_candidate_records(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Same window, same trade counts, but not identical R — reported, never refused.
+    """Same window, same trade counts, but not identical R — a cluster, reported here.
 
     The pair this exists for: two SOLUSDT lineages that closed 82 trades each with the
     same 45/37 split and the same drawdown, differing in net R by 0.0016. Almost
     certainly one strategy wearing two rules, but "almost certainly" is a judgement,
-    and this module refuses only on what it can prove. So an operator gets told.
+    and this module refuses only on what it can prove. So an operator gets told —
+    existence in the store and a single promotion stay unrefused.
+
+    What IS refused, since Thomas's 5-2 decision (2026-08-11), is two members of one
+    cluster CO-OCCUPYING routing slots — :func:`assert_no_cluster_siblings` below, which
+    rests on the one thing this grouping does prove: on every recorded axis the two
+    evidence rows are indistinguishable, so a second slot buys no independent evidence.
     """
     buckets: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for record in records:
@@ -1009,6 +1038,195 @@ def near_duplicate_groups(records: list[Mapping[str, Any]]) -> list[dict[str, An
                 "strategy_ids": sorted({str(m.get("strategy_id")) for m in members}),
             })
     return groups
+
+
+def assert_no_cluster_siblings(
+    records: list[Mapping[str, Any]], *, incumbents: list[Mapping[str, Any]] | None = None,
+) -> None:
+    """One routing slot per behaviour cluster (Thomas 5-2, 2026-08-11).
+
+    The softer twin of :func:`assert_no_semantic_duplicates`, one tier down and with a
+    narrower claim. That gate proves two rows are the SAME strategy; this one proves only
+    that their recorded trading is indistinguishable (:func:`near_duplicate_groups` — same
+    window, same trade counts, aggregates apart in the last decimals). Indistinguishable
+    evidence cannot justify a second slot: the router picks one strategy per context, the
+    forward record the second member would accrue is the measurement the first is already
+    making, and OBSERVATION slots exist to buy independent forward evidence. So the store
+    keeps both rows, either may be promoted — what is refused is promoting BOTH, or
+    promoting one whose cluster already holds an occupying incumbent.
+
+    ``incumbents`` is the pool's own candidate records (add mode); replace mode passes
+    ``None`` and only the batch itself is checked, mirroring the semantic gate. A cluster
+    made ENTIRELY of incumbents is not this batch's to answer for and does not refuse.
+
+    Raises ``CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED`` naming each conflicting cluster.
+    """
+    pool_records = list(incumbents or [])
+    incoming_ids = {candidate_id(r) for r in records}
+    incumbent_ids = {candidate_id(r) for r in pool_records} - incoming_ids
+    conflicts: list[str] = []
+    for group in near_duplicate_groups(list(records) + pool_records):
+        ids = set(group["candidate_ids"])
+        selected = sorted(ids & incoming_ids)
+        occupied = sorted(ids & incumbent_ids)
+        if len(selected) >= 2 or (selected and occupied):
+            conflicts.append(
+                f"{'/'.join(group['strategy_ids'])} [selected: {', '.join(selected)}"
+                + (f"; occupying: {', '.join(occupied)}" if occupied else "")
+                + "]"
+            )
+    if not conflicts:
+        return
+    raise ToolError(
+        "CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED",
+        "these lineages traded indistinguishably on the recorded axes, and a behaviour "
+        f"cluster gets one routing slot: {'; '.join(conflicts)}. Promote one member per "
+        "cluster, or pass the explicit --allow-cluster-siblings escape.",
+    )
+
+
+# --- the OBSERVATION entry bar (Thomas 5-3, 2026-08-11) ---------------------------------------
+#
+# The bar selects for MEASURABILITY, not winners: in a population whose judgeable rows all
+# CONTRADICTED, a positive-expectancy pick is selection noise by construction, so what a slot
+# can honestly buy is forward evidence from a candidate whose backtest is honestly scored,
+# current, and capable of being disconfirmed. Applied to ENTRANTS only — a restatement of what
+# already occupies a slot is not an entry (the `assert_no_cluster_siblings` grandfathering
+# rule, one gate over), or every re-arm of the pre-bar pool would need two waivers forever.
+
+# Where the store's own expectancy-vs-sample table stops being inflated (`robustness.py`:
+# <20 closes +0.114R, 20-49 +0.093R, 50-199 -0.003R — the estimate converges on the truth
+# around fifty). Below it, a positive expectancy is mostly the small-sample lottery.
+OBSERVATION_MIN_BACKTEST_CLOSED = 50
+
+# Two occupying members per strategy_family. Forward evidence from a third sibling of one
+# family is mostly correlated with the first two (F1: no correlation control exists), so the
+# third slot buys diversity nowhere and multiple-testing debt everywhere.
+OBSERVATION_FAMILY_CAP = 2
+
+
+def _observation_holdout_term(record: Mapping[str, Any]) -> str | None:
+    """None when the holdout admits observation entry; else the failure, named.
+
+    Admitted: CONFIRMED (beyond the bar), and INSUFFICIENT that is merely THIN — a block
+    with fewer than `MIN_HOLDOUT_TRADES` closes, the case forward evidence exists to feed.
+    Refused: CONTRADICTED (evidence against), no block at all, and the vintage
+    INSUFFICIENT shapes (enough closes but no dispersion, or no period data) — those rows
+    cannot state their own uncertainty and their path back in is a re-mint, not a slot.
+    Branch order mirrors `robustness.holdout_status` so "thin" here is exactly the status
+    function's closed-count branch.
+    """
+    from .robustness import HOLDOUT_CONFIRMED, HOLDOUT_INSUFFICIENT, MIN_HOLDOUT_TRADES
+
+    quality_status = candidate_quality(record)["holdout_status"]
+    if quality_status == HOLDOUT_CONFIRMED:
+        return None
+    if quality_status != HOLDOUT_INSUFFICIENT:
+        return f"holdout={quality_status}"
+    evidence = record.get("backtest_evidence")
+    block = evidence.get("holdout") if isinstance(evidence, Mapping) else None
+    if not isinstance(block, Mapping):
+        return "holdout=INSUFFICIENT(no block)"
+    closed = block.get("closed_count", block.get("closed"))
+    if isinstance(closed, (int, float)) and not isinstance(closed, bool) \
+            and closed < MIN_HOLDOUT_TRADES:
+        return None  # thin: the shape observation exists to feed
+    return f"holdout=INSUFFICIENT(vintage: {closed} closes, undispersed)"
+
+
+def assert_observation_entry_bar(
+    records: list[Mapping[str, Any]], *, occupying_candidate_ids: frozenset[str] = frozenset(),
+) -> None:
+    """Every ENTRANT clears the 5-3 bar, and a refusal names every failing term.
+
+    Terms, all required: FULL depth among the RECORDED depths (SHALLOW is ranked and
+    promotable elsewhere, but a slot is spent on the current window or not at all), at
+    least `OBSERVATION_MIN_BACKTEST_CLOSED` backtest closes, positive expectancy at the
+    CURRENT rates, and a holdout that is thin or better (`_observation_holdout_term`).
+    Rows whose ``candidate_id`` is already occupying a slot are restatements, not entrants,
+    and pass untouched.
+
+    Deliberately NOT here: the cost-basis and unrecorded-depth axes, which their dedicated
+    gates already refuse with their own audited escapes. Restating them would double-charge
+    every use of those escapes — two waivers for one named decision — so this bar carries
+    only the strictness that is NEW with it.
+
+    Raises ``CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR`` listing every failing candidate with
+    every failing term — a bar that reports one term per run is a bar an operator meets
+    four times.
+    """
+    failures: list[str] = []
+    for record in records:
+        cid = candidate_id(record)
+        if cid in occupying_candidate_ids:
+            continue
+        quality = candidate_quality(record)
+        terms: list[str] = []
+        if quality["evidence_depth_rank"] == EVIDENCE_DEPTH_RANK_SHALLOW:
+            terms.append(f"depth={quality['evidence_depth']}")
+        closed = quality["closed_count"]
+        if not isinstance(closed, (int, float)) or closed < OBSERVATION_MIN_BACKTEST_CLOSED:
+            terms.append(f"closed={closed}<{OBSERVATION_MIN_BACKTEST_CLOSED}")
+        exp_now = quality["expectancy_at_current_costs"]
+        if not isinstance(exp_now, (int, float)) or not exp_now > 0:
+            terms.append(f"expectancy_at_current={exp_now}")
+        holdout_term = _observation_holdout_term(record)
+        if holdout_term is not None:
+            terms.append(holdout_term)
+        if terms:
+            failures.append(f"{quality['candidate_id']} ({record.get('strategy_id')}): "
+                            + ", ".join(terms))
+    if not failures:
+        return
+    raise ToolError(
+        "CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR",
+        "an OBSERVATION slot buys forward evidence, and these entrants cannot honestly "
+        f"supply it: {'; '.join(failures)}. Re-mint the lineage at the current window, or "
+        "pass the explicit --allow-below-entry-bar escape.",
+    )
+
+
+def assert_family_cap(
+    records: list[Mapping[str, Any]], *, occupying_entries: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    """No strategy_family holds more than `OBSERVATION_FAMILY_CAP` occupied slots.
+
+    Charged to ENTRANTS only, the same grandfathering as the entry bar: a family already
+    over the cap among incumbents alone blocks nothing until a batch tries to ADD to it —
+    the door must never refuse the promotion that is moving the pool AWAY from a
+    concentration. Occupying incumbents count toward the base; a restated incumbent in the
+    batch is counted once as base, never as an entrant.
+
+    Raises ``CANDIDATE_FAMILY_CAP_EXCEEDED`` naming each family over its cap.
+    """
+    occupying_ids = {
+        str(e.get("candidate_id")) for e in occupying_entries if e.get("candidate_id")
+    }
+    base: dict[str, int] = {}
+    for entry in occupying_entries:
+        family = str((entry.get("strategy_spec") or {}).get("strategy_family") or "?")
+        base[family] = base.get(family, 0) + 1
+    entrants: dict[str, list[str]] = {}
+    for record in records:
+        cid = candidate_id(record)
+        family = str((record.get("strategy_spec") or {}).get("strategy_family") or "?")
+        if cid in occupying_ids:
+            continue  # a restatement is already in the base
+        entrants.setdefault(family, []).append(cid)
+    over = [
+        f"{family}: {base.get(family, 0)} occupying + {len(cids)} entering "
+        f"[{', '.join(cids)}] > {OBSERVATION_FAMILY_CAP}"
+        for family, cids in sorted(entrants.items())
+        if base.get(family, 0) + len(cids) > OBSERVATION_FAMILY_CAP
+    ]
+    if not over:
+        return
+    raise ToolError(
+        "CANDIDATE_FAMILY_CAP_EXCEEDED",
+        f"a family gets {OBSERVATION_FAMILY_CAP} occupied slots — the third sibling's "
+        f"forward record is correlated with the first two, not independent: {'; '.join(over)}. "
+        "Promote into another family, or pass the explicit --allow-family-overflow escape.",
+    )
 
 
 # --- candidate identity (single source) ----------------------------------------
@@ -1599,6 +1817,96 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     return (tuple(spec.get("symbol_scope") or ()), spec.get("timeframe"))
 
 
+def _lattice_attempts(record: Mapping[str, Any]) -> int:
+    """How many hypotheses this row charges its context with — its ablation lattice size
+    when it carries one, else 1.
+
+    An ablation winner registered alone, but its ``lattice_size - 1`` unregistered siblings
+    were each scored against the same bars (``factory.ablate_hypothesis`` replays every
+    non-empty subset of the drawn conjunction); uncharged, they would be exactly the escape
+    :func:`attempts_by_context`'s docstring forbids — attempts that raise no bar. The
+    division of labour is deliberate: ``lattice_size`` is stored FACT (how many members
+    were tried, true at mint and forever), while the attempt COUNT stays computed at read
+    time here. An absent or unreadable block charges 1 — the pre-ablation meaning every
+    stored row already has — and never 0, which would be a row escaping its own charge."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    ablation = evidence.get("ablation")
+    if not isinstance(ablation, Mapping):
+        return 1
+    size = ablation.get("lattice_size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        return 1
+    return size
+
+
+def _evidence_symbols(record: Mapping[str, Any]) -> int:
+    """How many symbols this record's evidence was actually scored over, from the record.
+
+    Reads the holdout's ``symbols`` first (stamped by the pooled replay), then the top-level
+    ``symbols_replayed``. Returns 1 whenever the evidence does not positively say "pooled" —
+    absence must stay the single-symbol reading every pre-F9 row already has."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    holdout = evidence.get("holdout")
+    for value in (
+        holdout.get("symbols") if isinstance(holdout, Mapping) else None,
+        evidence.get("symbols_replayed"),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 1:
+            return value
+    return 1
+
+
+def pooled_context_keys(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, int], tuple[Any, ...]]:
+    """The store's multi-symbol context key per ``(timeframe, cohort size)`` — when unambiguous.
+
+    Read off the store rather than off a constant, because the row that needs it cannot name
+    its own cohort (that is the defect being compensated). A slot where two different cohorts
+    of the same size share a timeframe is dropped: an ambiguous reattribution would move an
+    attempt onto bars it may never have been scored against, and the fallback (charge the
+    stored key) is the behavior the store already had."""
+    keys: dict[tuple[str, int], tuple[Any, ...]] = {}
+    ambiguous: set[tuple[str, int]] = set()
+    for record in records:
+        key = search_context_key(record.get("strategy_spec") or {})
+        scope, timeframe = key
+        if len(scope) > 1:
+            slot = (str(timeframe), len(scope))
+            if slot in keys and keys[slot] != key:
+                ambiguous.add(slot)
+            keys[slot] = key
+    return {slot: key for slot, key in keys.items() if slot not in ambiguous}
+
+
+def attempt_context_key(
+    record: Mapping[str, Any], *, pooled_keys: Mapping[tuple[str, int], tuple[Any, ...]],
+) -> tuple[Any, ...]:
+    """The context whose BARS this record's attempt was scored against — evidence-aware.
+
+    For almost every row this is :func:`search_context_key` unchanged. The exception is the
+    F9 topup omission (56 rows, 2026-08-10..17, code fixed by #712): specs minted with a
+    single-symbol ``symbol_scope`` whose evidence was scored pooled over the whole cohort.
+    An attempt charges the bars it was scored against, so those rows charge — and are judged
+    against — their timeframe's pooled context, provided the store can name exactly one
+    cohort of that size (``pooled_keys``) and the stored symbol is a member of it. Anything
+    less provable falls back to the stored key, which is the pre-existing behavior and the
+    conservative direction: the single-symbol keys carry the larger counts today, so a row
+    left behind faces the higher bar, never a lower one."""
+    key = search_context_key(record.get("strategy_spec") or {})
+    scope, timeframe = key
+    symbols = _evidence_symbols(record)
+    if len(scope) == 1 and symbols > 1:
+        pooled = pooled_keys.get((str(timeframe), symbols))
+        if pooled is not None and scope[0] in pooled[0]:
+            return pooled
+    return key
+
+
 def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], int]:
     """How many candidates have been scored against each market/timeframe's bars.
 
@@ -1609,16 +1917,27 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
     same bars" is a property of the context and not of the day.
 
     Distinct candidates, not rows: the store re-appends a lineage and every append would
-    otherwise raise the bar for candidates that never moved."""
+    otherwise raise the bar for candidates that never moved.
+
+    A row minted through the ablation lattice counts as its whole lattice
+    (:func:`_lattice_attempts`): one winner registered, but every member was scored against
+    this context's bars, and the burden follows the scoring, not the storing."""
     seen: set[str] = set()
-    counts: dict[tuple[Any, ...], int] = {}
+    distinct: list[Mapping[str, Any]] = []
     for record in records:
         cid = candidate_id(record)
         if cid in seen:
             continue
         seen.add(cid)
-        key = search_context_key(record.get("strategy_spec") or {})
-        counts[key] = counts.get(key, 0) + 1
+        distinct.append(record)
+    # Two passes because the reattribution needs the whole population first: which cohort a
+    # scope-mismatched row charges is read off the store (`pooled_context_keys`), not off the
+    # row, and a single pass would answer differently depending on store order.
+    pooled_keys = pooled_context_keys(distinct)
+    counts: dict[tuple[Any, ...], int] = {}
+    for record in distinct:
+        key = attempt_context_key(record, pooled_keys=pooled_keys)
+        counts[key] = counts.get(key, 0) + _lattice_attempts(record)
     return counts
 
 
@@ -1813,10 +2132,13 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
     attempts = attempts_by_context(list(by_cid.values()))
+    # The lookup follows the same evidence-aware key the counting used: a row judged against
+    # a key it does not charge would face a bar computed without its own attempt in it.
+    pooled_keys = pooled_context_keys(list(by_cid.values()))
 
     def _key(record: Mapping[str, Any]) -> tuple[int, int, int, int, float, float, str]:
         q = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         return (q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
                 q["evidence_depth_rank"], -q["edge_quality"], -q["expectancy"],
@@ -2028,6 +2350,8 @@ def promotable_backlog(
     # in the backlog is the tier the ordering used. Recomputing it per record here instead
     # would count a different store than the one that produced the order.
     attempts = attempts_by_context(list(records))
+    # Same evidence-aware key as the counting, for the reason `rank_candidates` states.
+    pooled_keys = pooled_context_keys(list(records))
     active_hashes = {entry.get("strategy_rule_hash") for entry in active_entries}
     seen_lineages: set[tuple[Any, ...]] = {
         _lineage_key(entry.get("strategy_spec") or {}) for entry in active_entries
@@ -2058,7 +2382,7 @@ def promotable_backlog(
             refused["derivation"] += 1
             continue
         quality = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
             refused["cost_basis"] += 1

@@ -81,3 +81,14 @@ def test_cli_exits_zero_only_while_fresh(tmp_path, capsys):
 def test_cli_reports_a_service_that_never_started(tmp_path, capsys):
     assert heartbeat_main(["operator"], root=tmp_path, now=NOW) == 1
     assert "MISSING" in capsys.readouterr().err
+
+
+def test_the_lane_services_are_probeable_and_answer_separately(tmp_path):
+    """The lane split (`SCHEDULER_LANE_SPLIT_V0.1`) runs one tick process per lane, so each
+    gets its own heartbeat file and its own probe name — a shared file would let a live
+    maintenance loop keep a dead risk loop reading FRESH. One lane being fresh must say
+    nothing about the other."""
+    heartbeat.write_heartbeat(heartbeat.SCHEDULER_RISK_SERVICE,
+                              interval_seconds=30, now=NOW, root=tmp_path)
+    assert heartbeat_main(["scheduler-risk"], root=tmp_path, now=NOW) == 0
+    assert heartbeat_main(["scheduler-maintenance"], root=tmp_path, now=NOW) != 0

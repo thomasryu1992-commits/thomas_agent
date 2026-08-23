@@ -131,6 +131,13 @@ _GATE_ENV_VARS = (
     "MVP_PAPER_TRADING",
     "MVP_LIQUIDATION_FEED",
     "MVP_ACCOUNT_FEED",
+    # 2026-08-10, later the same day: Thomas retired per-machine grants entirely — every
+    # gated capability is env-only now, so the "grants contain nothing here" softening
+    # above applies to no var in this roster; each opt-in alone selects the capable
+    # implementation. MVP_OPENROUTER_TIERS arrived with that change: the M2 tiers'
+    # explicit opt-in list, replacing their per-tier grants (without it, retiring grants
+    # would have silently armed all three tiers — their fallback is degrade, not block).
+    "MVP_OPENROUTER_TIERS",
 )
 
 

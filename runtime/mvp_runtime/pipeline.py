@@ -194,6 +194,16 @@ def render_response(
     evidence actually was."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
+    # The content role's deliverable IS the draft. This renderer special-cases the analysis
+    # keys (key_findings, perspectives) and dropped every other role's own product — so a
+    # content.general run wrote a complete draft into the ledger while the delivered reply
+    # showed only the meta-analysis around it, and the caller reasonably concluded the run
+    # "produced an analysis instead of a draft" (measured 2026-08-10, the lane's first
+    # draft_content dispatch). Rendered FIRST because it is what was asked for; the analysis
+    # sections that follow are the review of it.
+    draft = rso.get("content_draft")
+    if isinstance(draft, str) and draft.strip():
+        lines += ["## Draft", "", draft.strip(), ""]
     findings = rso.get("key_findings", [])
     if findings:
         lines.append("## Key findings")
@@ -325,7 +335,8 @@ def _planned_allocation(
     return base_agents + (2 if revise else 0), (1 if auto_policy else 0)
 
 
-def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path: bool) -> None:
+def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *,
+                 wrote_path: bool, briefed: bool = False) -> None:
     """Put the plan's governance records on the run's record set.
 
     The conditional halves are the point: a validator assignment exists only when one was
@@ -343,6 +354,8 @@ def _record_plan(plan: Mapping[str, Any], records: dict[str, Any], *, wrote_path
         records["validator_assignment"] = plan["validator_assignment"]
     if wrote_path:
         records["write_permission_decision"] = plan["write_permission_decision"]
+    if briefed:
+        records["keyword_permission_decision"] = plan["keyword_permission_decision"]
 
 
 def _settle_reviewer(
@@ -914,9 +927,11 @@ def run_task(
             task, now=now, repo_root=repo_root,
             independent_validation=AUTO_VALIDATION if auto_policy else independent_validation,
             controlled_write=write_path is not None,
+            keyword_research=keyword_seeds is not None,
             request_kind=request_kind,
         )
-        _record_plan(plan, records, wrote_path=write_path is not None)
+        _record_plan(plan, records, wrote_path=write_path is not None,
+                     briefed=keyword_seeds is not None)
 
         validate_run, triage_result, triage_invocation = _settle_reviewer(
             plan, records, auto_policy=auto_policy,
@@ -1122,6 +1137,8 @@ def run_task(
         records["audit_trail"] = build_pipeline_audit(
             plan["task"], plan["permission_decision"], validation, agent_output, invocation,
             now=now, tool_use=tool_use, search_permission_decision=plan["search_permission_decision"],
+            keyword_use=records.get("keyword_research"),
+            keyword_permission_decision=plan.get("keyword_permission_decision"),
             triage_result=triage_result,
             triage_invocation=triage_invocation,
             triage_permission_decision=plan.get("triage_permission_decision"),

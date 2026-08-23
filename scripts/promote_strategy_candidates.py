@@ -50,6 +50,8 @@ from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_confirmation  # noqa: E402
+from runtime.mvp_runtime.crypto import paper as paper_store  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -64,6 +66,10 @@ PROMOTION_EVENT_TYPE = "crypto_strategy_promotion_event.v0"
 def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root: Path | None = None,
                 now: str | None = None, allow_stale_cost_basis: bool = False,
                 allow_duplicates: bool = False,
+                allow_cluster_siblings: bool = False,
+                allow_below_entry_bar: bool = False,
+                allow_family_overflow: bool = False,
+                allow_unconfirmed_holdout: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
                 allow_quarantined_derivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
@@ -73,6 +79,10 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
         allow_stale_cost_basis=allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
         allow_duplicates=allow_duplicates,
+        allow_cluster_siblings=allow_cluster_siblings,
+        allow_below_entry_bar=allow_below_entry_bar,
+        allow_family_overflow=allow_family_overflow,
+        allow_unconfirmed_holdout=allow_unconfirmed_holdout,
         allow_quarantined_derivation=allow_quarantined_derivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
@@ -94,7 +104,10 @@ def run_promotion(
     keep_active: bool, live_tier: str, root: Path | None = None, now: str | None = None,
     approval_id: str | None = None, without_approval: bool = False,
     allow_stale_cost_basis: bool = False, allow_unrecorded_evidence_depth: bool = False,
-    allow_duplicates: bool = False, allow_oversized_pool: bool = False,
+    allow_duplicates: bool = False, allow_cluster_siblings: bool = False,
+    allow_below_entry_bar: bool = False, allow_family_overflow: bool = False,
+    allow_unconfirmed_holdout: bool = False,
+    allow_oversized_pool: bool = False,
     allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
@@ -180,8 +193,52 @@ def run_promotion(
                 candidates,
                 incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
             )
+        # One tier below the semantic gate, same pool question, narrower claim: members of one
+        # behaviour cluster traded indistinguishably on the recorded axes, and a cluster gets
+        # ONE routing slot (Thomas 5-2, 2026-08-11) — the second member's forward record is
+        # the measurement the first is already making.
+        if not allow_cluster_siblings:
+            pool_store.assert_no_cluster_siblings(
+                candidates,
+                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
+            )
+        # The 5-3 entry bar and the family cap (Thomas 2026-08-11). Both charged to ENTRANTS
+        # only — a restatement of an occupying lineage is not an entry, so re-arming the
+        # pre-bar pool spends no waiver (measured before wiring: all five occupying rows are
+        # 350d/undispersed vintage, and grandfathering is what keeps the arm path usable).
+        occupying = [
+            e for e in (pool_store.load_active_pool(root).get("active_strategies") or [])
+            if e.get("status") in pool_store.OCCUPYING_STATUSES
+        ]
+        if not allow_below_entry_bar:
+            pool_store.assert_observation_entry_bar(
+                candidates,
+                occupying_candidate_ids=frozenset(
+                    str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
+                ),
+            )
+        if not allow_family_overflow:
+            selected_ids = {str(c.get("candidate_id")) for c in candidates}
+            # Add mode keeps every incumbent (all are base); a replace pool is the batch
+            # alone, so only the RESTATED incumbents still occupy after it lands.
+            pool_store.assert_family_cap(
+                candidates,
+                occupying_entries=occupying if keep_active else [
+                    e for e in occupying if str(e.get("candidate_id")) in selected_ids
+                ],
+            )
+        # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on
+        # unseen data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. This is
+        # the condition #648 disarmed the pool for, standing as a door instead of a
+        # migration; OBSERVATION installs are the tier it protects and pass untouched.
+        if live_tier == "LIVE" and not allow_unconfirmed_holdout:
+            forward_confirmation.assert_live_tier_confirmed(
+                candidates,
+                outcomes=paper_store.read_outcomes(root),
+                observed_lineages=len(occupying),
+            )
         # And last of all, the axis that is about neither the evidence nor the pool but about
-        # the ROW: what minted it. Ordered last because it is the only one of the four that
+        # the ROW: what minted it. Ordered last because it is the only one of the eight that
         # refuses nothing today — it stands here so that an experimental derivation cannot
         # reach the live pool through the ordinary door on the day someone starts minting one.
         if not allow_quarantined_derivation:
@@ -246,6 +303,11 @@ def run_promotion(
             # labels behind — the defect `pool.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.
             "regime_evidence": ((c.get("backtest_evidence") or {}).get("regime_breakdown") or {}).get("per_regime"),
+            # Same argument, same shape: the backtest's per-feature mean/std, which
+            # `distribution_gate.distribution_admits` reads off the ENTRY at route time. A
+            # reference that stays on the candidate is a gate that never fires — measured on
+            # #743, which shipped the gate with this line missing and every entry fail-open.
+            "distribution_reference": (c.get("backtest_evidence") or {}).get("distribution_reference"),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
@@ -312,6 +374,10 @@ def run_promotion(
         # ledger later rather than reconstructed from whoever ran the command.
         "stale_cost_basis_escape": bool(allow_stale_cost_basis),
         "duplicate_escape": bool(allow_duplicates),
+        "cluster_siblings_escape": bool(allow_cluster_siblings),
+        "observation_entry_bar_escape": bool(allow_below_entry_bar),
+        "family_cap_escape": bool(allow_family_overflow),
+        "unconfirmed_holdout_escape": bool(allow_unconfirmed_holdout),
         "oversized_pool_escape": bool(allow_oversized_pool),
         "cost_bases": [pool_store.cost_basis_of(c) for c in candidates],
         # The window each promoted row's evidence stands on, recorded for the same reason as
@@ -349,6 +415,10 @@ def run_promotion(
                 ("cost_basis", allow_stale_cost_basis),
                 ("evidence_depth", allow_unrecorded_evidence_depth),
                 ("semantic_duplicates", allow_duplicates),
+                ("cluster_siblings", allow_cluster_siblings),
+                ("observation_entry_bar", allow_below_entry_bar),
+                ("family_cap", allow_family_overflow),
+                ("live_confirmation", allow_unconfirmed_holdout and live_tier == "LIVE"),
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
@@ -385,6 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
+    parser.add_argument("--allow-cluster-siblings", action="store_true",
+                        help="explicit escape: give a behaviour cluster (lineages whose recorded "
+                             "trading is indistinguishable) more than its one routing slot")
+    parser.add_argument("--allow-below-entry-bar", action="store_true",
+                        help="explicit escape: admit an ENTRANT below the observation entry bar "
+                             "(FULL current-basis evidence, >=50 closes, positive expectancy at "
+                             "current rates, holdout thin or better)")
+    parser.add_argument("--allow-family-overflow", action="store_true",
+                        help="explicit escape: let a strategy_family hold more than its two "
+                             "occupied slots")
+    parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
+                        help="explicit escape: arm LIVE although no confirmation was earned on "
+                             "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
+                             "paper record) — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")
@@ -550,14 +634,16 @@ def main(argv: list[str] | None = None) -> int:
             print("      the promotion door refuses these (CANDIDATE_SEMANTIC_DUPLICATE):")
             for g in dupes[:8]:
                 print(f"        {'/'.join(g['strategy_ids'])}  matched on {g['match']}")
-        # And the ones it will NOT refuse, because they are a judgement rather than a proof:
-        # same window, same trade counts, R differing in the last decimals. Almost certainly
-        # one strategy wearing two rules — but "almost" is why this reports instead of gating.
+        # The tier below proof: same window, same trade counts, R differing in the last
+        # decimals. Existence and a single promotion stay unrefused — what the door refuses
+        # (Thomas 5-2, 2026-08-11) is two members of one cluster co-occupying slots
+        # (CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED, escape --allow-cluster-siblings).
         near = pool_store.near_duplicate_groups(candidates)
         if near:
             print(f"      {len(near)} group(s) traded ALMOST identically (same window, same "
                   "trade counts,")
-            print("      R differing only in the last decimals) — not refused, worth a look:")
+            print("      R differing only in the last decimals) — one slot per cluster at "
+                  "the door:")
             # Collapsed by display name: strategy_id restarts every generation, so several
             # distinct lineage PAIRS routinely render as the same "S005/S006" line. Printing
             # it four times reads like a bug; the count says what is actually there.
@@ -639,6 +725,10 @@ def main(argv: list[str] | None = None) -> int:
                 allow_stale_cost_basis=args.allow_stale_cost_basis,
                 allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
                 allow_duplicates=args.allow_duplicates,
+                allow_cluster_siblings=args.allow_cluster_siblings,
+                allow_below_entry_bar=args.allow_below_entry_bar,
+                allow_family_overflow=args.allow_family_overflow,
+                allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
                 allow_quarantined_derivation=args.allow_quarantined_derivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
@@ -666,6 +756,10 @@ def main(argv: list[str] | None = None) -> int:
         allow_stale_cost_basis=args.allow_stale_cost_basis,
         allow_unrecorded_evidence_depth=args.allow_unrecorded_evidence_depth,
         allow_duplicates=args.allow_duplicates,
+        allow_cluster_siblings=args.allow_cluster_siblings,
+        allow_below_entry_bar=args.allow_below_entry_bar,
+        allow_family_overflow=args.allow_family_overflow,
+        allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
         allow_reactivation=args.allow_reactivation,

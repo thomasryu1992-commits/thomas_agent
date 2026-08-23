@@ -279,13 +279,14 @@ def test_select_defaults_to_mock(monkeypatch):
     assert isinstance(select_market_data_collector(), MockMarketDataCollector)
 
 
-def test_select_real_collector_without_activation_fails_closed(monkeypatch, tmp_path):
-    # A public endpoint needs no API key, so the gate is the ONLY barrier: the env var
-    # alone must NOT open a network path.
+def test_select_real_collector_env_alone_returns_binance(monkeypatch, tmp_path):
+    # The environment is the gate (Thomas 2026-08-10): a public endpoint needs no API
+    # key, so the opt-in is the ONLY barrier — and the opt-in alone now selects the
+    # capable collector. The fail-closed direction that remains: an unset or typo'd
+    # value reaches only the Mock (test_an_unknown_venue_selects_the_inert_mock).
     monkeypatch.setenv(MARKET_DATA_ENV, BINANCE_FUTURES)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_market_data_collector(now="2026-07-22T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    collector = select_market_data_collector(now="2026-07-22T00:00:00Z", root=tmp_path)
+    assert isinstance(collector, market_data.BinanceFuturesCollector)
 
 
 def test_select_real_collector_with_activation_returns_binance(monkeypatch, tmp_path):
@@ -1048,41 +1049,17 @@ def test_hyperliquid_refuses_egress_without_authorization():
     assert exc.value.reason_code == "NOT_AUTHORIZED"
 
 
-def test_select_hyperliquid_without_activation_fails_closed(monkeypatch, tmp_path):
-    # The env var alone opens nothing — and Binance's own grant must not authorize this
-    # venue, which is what one-file-per-provider buys.
-    monkeypatch.setenv(MARKET_DATA_ENV, HYPERLIQUID)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
-
-
-def test_select_hyperliquid_with_its_own_activation(monkeypatch, tmp_path):
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/market_data_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS],
-        provider_id=HYPERLIQUID,
-        activated_at="2026-08-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel,
-        authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, HYPERLIQUID)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-
+def test_select_hyperliquid_by_its_own_opt_in_value(monkeypatch, tmp_path):
+    # One env var, two venues, still a CHOICE (env-only since 2026-08-10): the value
+    # names the venue, and each value opens only its own collector — the per-venue scope
+    # the one-file-per-provider grants used to carry now lives in the opt-in VALUE.
     monkeypatch.setenv(MARKET_DATA_ENV, HYPERLIQUID)
     collector = select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
     assert isinstance(collector, market_data.HyperliquidCollector)
 
-    # The Hyperliquid grant must not open the Binance path either — the check runs both ways.
     monkeypatch.setenv(MARKET_DATA_ENV, BINANCE_FUTURES)
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    collector = select_market_data_collector(now="2026-08-03T00:00:00Z", root=tmp_path)
+    assert isinstance(collector, market_data.BinanceFuturesCollector)
 
 
 def test_an_unknown_venue_selects_the_inert_mock(monkeypatch):

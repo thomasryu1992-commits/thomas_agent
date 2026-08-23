@@ -149,6 +149,63 @@
 > 신호 기여도 +0.0035R 위에 얹는 티어다. 동결이 실제로 유지되는지는
 > `scripts/verify_factory_tier_freeze.py`가 판정하며, 08-06 08:09Z 발사에 대해 PASS를 냈다
 > (1h 0건, 같은 창에서 4h가 08:09:38Z에 mint — 그 witness가 없으면 멈춘 스케줄러도 같은 0을 낸다).
+>
+> **갱신 (2026-08-15): 데이터 갭 리뷰 첫 정상 fire의 5건 처리 — 1건 채택(#707), 4건 기각.**
+> `data_review_246e68234b481e1cb348` (v2 프롬프트의 첫 비-degraded 산출, 5건 전부 형식 통과).
+> 형식 필터(`evaluate_suggestion`)는 필드 누락과 소스명 **완전일치** 중복만 거르므로, 5/5
+> "채택"은 실질 판정이 아니다. 실질 판정과 그 근거를 여기 남긴다.
+>
+> 기각 4건에 공통 전제 둘. 첫째, `FACTORY_DEPTH_DAYS = 1000`이라 과거 이력이 없는 소스는
+> "수집 시작"이 아니라 "수년 뒤 사용 가능"이다 — `oi_store`(시드 84일, 검토일 기준 커버 100일),
+> `positioning_store`(시드 30일, 커버 46일)가 이미 그 시간표 위에 있다. 둘째, 다섯 건 모두
+> **진입 어휘** 확장인데, 이 문서가 측정해 온 병목은 진입이 아니라 청산+비용 기하다(순
+> −0.2R/건, 무작위 진입 널 컨트롤 −0.13R). 아홉 번째 소스는 그 산수를 움직이지 않는다.
+>
+> | 제안 | 판정 | 근거 |
+> |---|---|---|
+> | `order_book_imbalance` | **채택** → #707 | 유일하게 직교성 주장이 사실 — 수집 중인 8개 소스는 전부 체결된 거래 또는 보유 포지션이고 대기 유동성은 없다. E3의 "마켓 마이크로구조 — 데이터 자체가 없음"이 겨냥한 바로 그 갭 |
+> | `cross_exchange_funding_rates` | 기각 (부분 중복) | `binance_futures_funding` + `funding_zscore`가 이미 있다. 새 정보는 거래소 간 분산뿐. 완전일치 필터가 못 거른 것이지 새로워서 통과한 게 아니다. 5건 중 비용은 가장 쌌다(Coinalyze 키 기존 보유) — 재검토한다면 이 순서 |
+> | `onchain_transaction_volume` | 기각 | 유료 프로바이더 필요 + 일 단위 해상도라 1d 티어 전용 + 대상이 퍼프 메이저 코호트라 온체인 볼륨의 대리변수 강도가 약함 |
+> | `macroeconomic_indicators` | 기각 (해상도) | 월/분기 발표 — 1,020일 리플레이에 월 관측 ~34개인데 독립성 단위는 트레이드가 아니라 시장 국면(~10개 수준, 08-04 유효표본 측정)이다. 무엇도 판별할 수 없는 해상도 |
+> | `social_media_sentiment` | 기각 | 무료 과거 이력 없음(백필 불가 소스인데 유료) + 봇/생존 편향 노이즈 |
+>
+> 채택분의 형태와 그 이유는 커밋(#707, `295d8cd`)과 `orderbook_store.py` 모듈 독스트링에
+> 있으므로 여기서는 시간표만: 직접 비용은 전부 무시할 수준(0.17 GB/1000일, weight 1,152/일,
+> 신규 스케줄 0 — 기각안이었던 1분 원본 20호가는 12.96 GB로 배제)이고, 지배 비용은 시간이다.
+> 이 소스는 벤더 보관이 **0일**이라 시드가 불가능하고, 놓친 기간은 영구 결손이다. 수집 시작
+> 2026-08-15T15:00Z, mint 가능 시점 **2029-05-11**. 그래서 2.7년을 통째로 걸지 않기 위해
+> **90일 시점(2026-11-13) IC 측정을 결정 지점**으로 박아 뒀다(1회성 클라우드 리마인더 등록):
+> IC ≈ 0이면 수집기 은퇴 제안, 유의하면 지속. ~90일은 독립 관측 ~6기간이므로 명확히 0이 아닌
+> 결과만 액션 근거다. 또한 15m 단일 스냅샷은 기간 평균이 아니라 점 표본이라는 한계를 수집
+> 시작 전에 모듈에 적어 뒀다 — 단일 행을 읽는 패밀리는 그 노이즈를 읽는다.
+>
+> 이 리뷰 루프 자체의 결함 하나도 기록한다: `already_collected`가 소스명 완전일치라
+> 2번 유형(이미 수집 중인 계열의 변주)은 매주 "신규"로 통과한다. 주 단위 케이던스라 같은
+> 종류의 제안이 반복될 것이다. 교정은 Thomas의 결정 사항으로 남긴다. E3 본문의 "데이터 자체가
+> 없음" 줄은 검토 시점 기록 원칙에 따라 그대로 두지만, 이 날부터는 "수집은 시작됐고 사용은
+> 2029년"으로 읽어야 한다.
+
+> **갱신 (2026-08-17): 기각 4건 재검토 — 전부 유지, 이번엔 격자 데이터가 근거에 추가됐다.**
+> 위 표가 "재검토한다면 이 순서"로 지목한 `cross_exchange_funding_rates`부터: #704의 절제
+> 격자 76회(08-12..08-16, `scripts/condition_effectiveness_report.py` 집계) 중
+> `funding_zscore`가 뽑힌 것은 **4회**뿐이고, 뽑힌 4회 전부 단독 승자로 살아남았다. 즉 현재
+> 병목은 펀딩 어휘의 폭이 아니라 **추첨 질량**이다(템플릿 목록 순서가 질량을 정한다 — 알파
+> 리서치 기록 "민팅 질량 배분" 절). 이미 있는 펀딩 피처가 4/76밖에 안 뽑히는 동안 두 번째
+> 펀딩 소스를 늘려도 민트 분포는 움직이지 않는다 — 기각 유지, 재론 조건은 펀딩 계열 추첨
+> 질량이 실제로 늘어난 뒤. 나머지 셋(`onchain`/`macro`/`social`)의 기각 전제는 시간 구조적
+> (벤더 이력 부재 → 수년 뒤 사용 가능, 월 단위 해상도 vs 독립 관측 ~10구간, 유료+백필 불가)
+> 이라 이틀 사이 바뀔 수 있는 종류가 아니다 — 재검토했고, 그대로 선다.
+
+> **갱신 (2026-08-17, 같은 날): `already_collected` 결함에 Thomas가 ②를 결정했고, 같은 날
+> 구현됐다.** 선택지는 ① 유사 매칭(추측으로 거른다 — fail-closed와 어긋남) / ② 구조화
+> 계열 매칭 / ③ 기각 원장(철자 변주는 못 막음) / ④ 수용이었다. 구현: `CURRENT_SOURCES`의
+> 각 소스가 `venue`/`family` 축을 선언하고, 제안은 닫힌 어휘(`DATA_FAMILIES`)에서
+> `data_family`를 선언하며, **수집 중인 계열은 이름이 무엇이든 `already_collected_family`로
+> 거부된다.** 매칭 키는 계열 하나다 — 위 표가 cross-exchange funding을 부분 중복으로 판정한
+> 그대로, 거래소가 달라도 같은 계열이면 표시되고 사람이 뒤집는다. 모르는 계열 단어는
+> 유사 추측 없이 `unknown_data_family`로 거부(fail-closed), `other`만 dedup을 영구히
+> 비켜 가는 탈출구다(진짜 새 종류의 표현용 — 형식 필터는 여전히 형식만 판정한다).
+> 프롬프트 v2→v3, 레코드 `crypto_data_review.v0`→`.v1`(빈티지 구분용).
 
 이 문서는 런타임 권한을 부여하지 않는다. 거버넌스/실행 경로가 아니라 **전략 자체의 통계적·
 경제적 타당성**을 본 기록이다. 이미 `docs/REMAINING_WORK.md`에 적힌 항목은 중복 제외했고,
@@ -718,3 +775,79 @@ maker fee 항이 추가될 때 주석만 안 따라온 것. 타입 체커를 붙
 
 A1·A2를 제대로 풀려면 결국 "이 창에서 몇 번 뽑았는가"를 후보 레코드가 알아야 한다. 그게
 이 시스템에서 가장 부족한 단일 정보다.
+
+---
+
+## 2026-08-17 — F9 topup scope 누락: 오라벨 56행의 판정과 처분 (정정 기록)
+
+**사건.** 풀드 파이어의 fusion-shortfall topup draw가 `symbol_scope`를 전달하지 않아
+(9977537이 놓친 두 번째 호출부, #712로 코드 수정), 2026-08-10~08-17 사이 풀드 파이어 산출의
+절반 — **56행** (4h 28 + 1d 28, 전부 scope `['BTCUSDT']`) — 이 **5심볼 코호트로 채점된 증거를
+단일 심볼 전략의 기록으로** 들고 있다. 저장소는 append-only + 자체 해시이므로 행은 고치지
+않는다. 이 항목이 정정 기록이고, 독자 쪽 수정(아래)이 실효 조치다.
+
+**판정 측정 (2026-08-17, 읽기 전용).**
+
+- **선별 보정 재계산:** 무장 전략 S005-GEN-833(`cand_3b14f39ffeb1f246ce7b`, oi_unwind_short
+  BTCUSDT 4h)의 t=2.027은 저장 키(N=220, bar 3.687) / 쪼개진 풀드 키(N=104, bar 3.491) /
+  **교정 풀드 키(N=184, bar 3.641)** 어느 쪽에서도 tier가 같다: `CLEARS_UNCORRECTED`(rank 1).
+  즉 버그는 문이 본 것을 tier가 바뀌는 방식으로 왜곡하지 않았다. 맥락: 측정 가능한 1,019개
+  후보 중 형제-보정 바를 넘는 것은 6개뿐 — rank 1이 이 저장소의 상태다.
+- **BTCUSDT 단독 재생 (가드 통과, 실피드, 08:25Z 종료 창):** scored −0.044R × 94거래
+  (t=−0.47), holdout **+0.522R × 26거래, t=3.89, CONFIRMED** (MIN_HOLDOUT_TRADES=25 턱걸이).
+  코호트의 in-sample 엣지는 다른 심볼들이 지고 있었고, 자기 심볼의 최근 테일은 자체 확인된다.
+  26거래 ≈ 유효 기간 몇 개라는 한계는 그대로 적용된다.
+
+**처분 — 결정됨 (Thomas, 2026-08-17): 무장 유지.** 아래 권고가 그대로 채택됐다. 해제
+트리거는 forward-confirmation(#694) 실패로 확정.
+
+**처분 (권고, 최종 결정 Thomas).** 무장 유지. 리포 자신의 두 판정 도구(보정 선별 바, 자기
+심볼 holdout 규칙)가 해제 사유를 내지 않았다. 해제의 정직한 트리거는 이 재생이 아니라
+**forward-confirmation(#694) 실패**이며, 그 시계는 무장 상태로 이미 돌고 있다.
+
+**독자 수정 (이 커밋).** 시도(attempt)는 그것이 채점된 바(bars)를 charge한다 —
+`pool.attempt_context_key`: scope는 단일인데 증거가 풀드(`symbols_replayed`/`holdout.symbols`
+> 1)인 행은, 저장소가 그 타임프레임에서 같은 크기의 코호트를 **정확히 하나** 지명할 수 있고
+심볼이 그 구성원일 때에 한해, 풀드 컨텍스트에 charge되고 같은 키로 판정받는다. 증명 불가는
+저장 키 폴백(오늘 더 큰 카운트 = 더 높은 바, 보수 방향). 카운트와 조회가 같은 키를 쓴다.
+
+**의도적으로 안 고친 것.** `factory._matches_context`는 무변경 — 단일 심볼 마이닝이 풀드
+행을 센터로 받는 것은 membership 규칙의 **설계된** 동작이고(올바른 라벨이어도 동일), 버그의
+실제 센터링 피해는 반대 방향(풀드 컨텍스트가 exact-equality에서 자기 선행 파이어를 잃는
+박탈)인데 그것은 명시된 안전 폴백(무센터 → 템플릿 베이스)이며 #712 이후 자연 치유된다.
+
+**오라벨 56행** (candidate_id / family / tf / gen):
+
+```
+cand_017af43355dfe50629c1 premium_fade_long 1d GEN-828    cand_01b25ef83292a6bd13cd oi_squeeze_long 4h GEN-831
+cand_04d317beb1787dcacae5 funding_fade_short 4h GEN-829   cand_0903bd2d650053180344 bollinger_breakout 1d GEN-836
+cand_0953b2b7198bbec0ba06 bollinger_breakout 4h GEN-827   cand_0d51705a7586f0147f34 taker_flow_long 1d GEN-826
+cand_0ec84f8f4b5a84a8c986 premium_fade_long 4h GEN-835    cand_13c40c6aa7fb6c171f1c mean_reversion_short 1d GEN-836
+cand_1c5a999e54ffac8ce7f7 taker_absorption_short 4h GEN-835  cand_1e3df246c4f8fcd87aa5 taker_absorption_short 1d GEN-838
+cand_24dbcdd5c70059ea99b1 breakdown_short 4h GEN-825      cand_2ee75d6566590f8ff900 taker_flow_fade_long 1d GEN-830
+cand_2f4c12045bbd7887877e funding_fade_long 4h GEN-829    cand_33c44a37d650ef3f1daa ma_cross_down 1d GEN-832
+cand_35ef46dcb76fdc200718 macd_cross_down 1d GEN-832      cand_3b14f39ffeb1f246ce7b oi_unwind_short 4h GEN-833 [ARMED]
+cand_3c97e5b9cdc092e911cf xs_reversion_short 4h GEN-837   cand_4261344549d9bc79f3d9 bollinger_breakdown_short 4h GEN-827
+cand_429b44807dfe0fbcd77c breakout 4h GEN-825             cand_43046ce9f3832252e098 mean_reversion 4h GEN-827
+cand_4929e603222972298c16 volatility_expansion_short 1d GEN-830  cand_51ab1a3aaf8481bdd1c6 xs_reversion_long 1d GEN-828
+cand_55ae3df372bbdf704298 session_trend_short 4h GEN-837  cand_613a567d2ef5895f20f6 oi_squeeze_short 4h GEN-831
+cand_6a803eb318d992be3773 taker_flow_fade_short 1d GEN-830  cand_72a86d1dd782d4a2e7f5 breakdown_short 1d GEN-834
+cand_75995712d6651c024e2e trend_pullback_short 4h GEN-825 cand_75d673c51ec666b91532 bollinger_breakdown_short 1d GEN-836
+cand_780436fc31ad7e389d7f taker_flow_long 4h GEN-833      cand_7c2bb234e2e3742cbdcf taker_flow_long 1d GEN-838
+cand_860e493e2985017a7b0d htf_trend_strength_short 4h GEN-829  cand_8e4fbe1f47c35390a844 htf_trend_strength_long 4h GEN-829
+cand_978181b15afcaff8f86d breakout 1d GEN-834             cand_9e8cdb4f4f76c3031773 taker_absorption_short 1d GEN-826
+cand_a40eccf6bb2a01e4720b xs_reversion_short 1d GEN-828   cand_a72c31c9af6319d2c410 taker_absorption_long 4h GEN-835
+cand_ab9b1ea6bcad88a531d2 taker_flow_short 1d GEN-826     cand_aeaf34324cfe85964795 volatility_expansion_long 1d GEN-830
+cand_af72e3faee9a219e568a ma_cross_up 1d GEN-832          cand_b4a6c61877cef98b7bfb taker_absorption_long 1d GEN-826
+cand_b5ecacc7f4338821e7e7 premium_fade_short 4h GEN-835   cand_b6b0f39c4f919d3730ea taker_absorption_long 1d GEN-838
+cand_c4b4647141b495a01247 mean_reversion_short 4h GEN-827 cand_c4eac564db358772b9f2 trend_pullback 4h GEN-825
+cand_c99aac0e674d6f7b2f12 trend_pullback 1d GEN-834       cand_cb673eae100242c72519 macd_cross_up 1d GEN-832
+cand_df19f5a41aa3722d56ce oi_unwind_long 4h GEN-831       cand_e011ddcf0e781f42d72d htf_pullback_long 4h GEN-831
+cand_e181f1426cc764450968 xs_reversion_long 4h GEN-837    cand_e4a78be20950e626850d htf_pullback_short 4h GEN-833
+cand_e76ba0f2cd4a193ccc54 session_trend_long 4h GEN-837   cand_eb47193c3ce81fd6d9ba taker_flow_short 4h GEN-833
+cand_f0ea60cd2873766a0acc premium_fade_short 1d GEN-828   cand_f4f2d6175717a022c4eb trend_pullback_short 1d GEN-834
+cand_fdf45b19eb0ff98586dd taker_flow_short 1d GEN-838     cand_ff7c69b35a59fa3c7a67 mean_reversion 1d GEN-836
+```
+
+재측정 방법: scope 길이 1 ∧ (`holdout.symbols` 또는 `symbols_replayed`) > 1 을
+`pool.read_candidates` 위에서 세면 된다. #712가 실린 이미지가 돈 뒤로 이 수는 늘지 않는다.

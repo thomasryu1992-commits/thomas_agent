@@ -324,14 +324,17 @@ def test_consume_fails_closed_when_the_flag_is_off(tmp_path, monkeypatch):
 
 
 @requires_local_core
-def test_consume_opted_in_without_activation_fails_closed(tmp_path, monkeypatch):
-    """Opted in but no activation record => SafetyGateBlocked before any consumer is built."""
+def test_consume_opted_in_env_alone_builds_the_capable_consumer(tmp_path, monkeypatch):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the
+    capable consumer — no activation record backs it, and an empty repo root contains
+    nothing that could refuse it. The refusals that remain are the un-opted-in
+    CONSUMPTION_DISABLED above and every check the consumption itself still runs
+    (hot-path revalidation, the kill switch, audit-before-write ordering — all pinned
+    by their own tests in this file)."""
+    from runtime.mvp_runtime.consumption import select_consumer
+
     monkeypatch.setenv("MVP_APPROVAL_CONSUMPTION", "on")
-    astore, wm, ledger, approval_id, _ = _approved(tmp_path)
-    with pytest.raises(SafetyGateBlocked):
-        # repo_root points at an empty tmp with no activation record.
-        consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
-                         ledger=ledger, now=LATER, repo_root=tmp_path)
+    assert isinstance(select_consumer(now=LATER, root=tmp_path), _CapableConsumer)
 
 
 # --- the kill switch -------------------------------------------------------------

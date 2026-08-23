@@ -176,11 +176,13 @@ def test_select_channel_defaults_to_mock(monkeypatch):
     assert isinstance(select_operator_channel(), MockOperatorChannel)
 
 
-def test_select_telegram_without_activation_fails_closed(monkeypatch, tmp_path):
+def test_select_telegram_env_alone_returns_channel(monkeypatch, tmp_path):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
+    channel — construction stays key-free (the token is read by name at send time), and
+    an unset or different value still reaches only the Mock."""
     monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
-    with pytest.raises(SafetyGateBlocked) as exc:
-        select_operator_channel(now="2026-07-16T00:00:00Z", root=tmp_path)
-    assert exc.value.reason_code == "ACTIVATION_MISSING"
+    channel = select_operator_channel(now="2026-07-16T00:00:00Z", root=tmp_path)
+    assert isinstance(channel, TelegramChannel)
 
 
 def test_select_telegram_with_activation_returns_channel(monkeypatch, tmp_path):

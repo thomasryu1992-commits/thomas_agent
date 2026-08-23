@@ -578,20 +578,26 @@ def test_env_gated_authorization_is_still_bound_to_its_provider_and_flags(monkey
 
 
 def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
-    """The containment test, and the reason this is a separate function rather than a flag on
-    `select_gated`. Thomas has relaxed the gate for THREE capabilities — live trading
-    (2026-07-28), the candle archive (2026-08-04) and the Naver research lane
-    (2026-08-09); a later change that quietly
-    moves model_invocation or a search tool onto the same weaker door would be invisible in
-    review. Every call site is listed here, so adding one is a decision someone has to make on
-    purpose.
+    """The containment test, inverted on 2026-08-10 without changing its job.
+
+    It was written when env-only was the exception: Thomas had relaxed the gate for three
+    capabilities (live trading 2026-07-28, the candle archive 2026-08-04, the Naver lane
+    2026-08-09) and every further relaxation had to be added HERE, on purpose. On
+    2026-08-10 Thomas retired per-machine grants and their renewal outright, so env-only
+    is now the rule — and the test's job flips accordingly, in both directions:
+
+    - the RETIRED sweep must stay empty: a new caller of the grant-backed selectors (or
+      of `authorize` itself) would quietly reintroduce a renewal requirement the decision
+      just removed — restoring grants is a deliberate, named decision or nothing;
+    - the env-only caller list stays exact: a NEW capability still cannot slip onto the
+      gate unreviewed — adding one still means editing this list, which is the decision
+      surface this test has always existed to create.
 
     Both spellings are collected, and that is not defensive padding. The first version matched
     only `ast.Attribute` — `safety_gate.select_env_gated(...)` — so a caller written
     `from ..safety_gate import select_env_gated` and then called bare is an `ast.Name` and scored
-    ZERO. That import style is the idiomatic one in this repo: `workspace.py`, `providers.py`,
-    `tools.py`, `operator.py`, `crypto/market_data.py` and `live_order.py` itself all use it.
-    A containment test the common idiom walks straight through contains nothing.
+    ZERO. That import style is the idiomatic one in this repo. A containment test the common
+    idiom walks straight through contains nothing.
 
     `env_only_authorization` is pinned by the same sweep, because it is public and a caller can
     build one directly and hand it to any capable constructor without naming `select_env_gated`
@@ -600,51 +606,62 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
     import ast
     import pathlib
 
-    watched = {"select_env_gated", "env_only_authorization"}
+    watched = {
+        "select_env_gated", "select_env_gated_optional", "select_env_gated_chain",
+        "env_only_authorization",
+    }
+    retired = {"select_gated", "select_gated_optional", "select_gated_chain", "authorize"}
     repo = pathlib.Path(__file__).resolve().parents[1]
+
+    def hits(node: object, names: set) -> bool:
+        return (
+            (isinstance(node, ast.Attribute) and node.attr in names)
+            or (isinstance(node, ast.Name) and node.id in names)
+            or (isinstance(node, ast.ImportFrom)
+                and any(a.name in names for a in node.names))
+        )
+
     callers = set()
+    grant_callers = set()
     for path in (repo / "runtime").rglob("*.py"):
         if path.name == "safety_gate.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            named = (
-                (isinstance(node, ast.Attribute) and node.attr in watched)
-                or (isinstance(node, ast.Name) and node.id in watched)
-                or (isinstance(node, ast.ImportFrom)
-                    and any(a.name in watched for a in node.names))
-            )
-            if named:
+            if hits(node, watched):
                 callers.add(path.relative_to(repo).as_posix())
+            if hits(node, retired):
+                grant_callers.add(path.relative_to(repo).as_posix())
+    assert grant_callers == set(), (
+        "the grant-backed selectors are retired (Thomas 2026-08-10); a new caller "
+        f"reintroduces a renewal requirement and must be a named decision: {sorted(grant_callers)}"
+    )
     assert callers == {
+        # The three that left grants one at a time, each with its full reasoning kept at
+        # the call site: live trading (2026-07-28 — a grant expiring while a position is
+        # OPEN blocks the CLOSE path, and a halt that traps a position is what the close
+        # exemptions exist to prevent), the candle archive (2026-08-04) and the Naver lane
+        # (2026-08-09 — a renewal gap is a silent hole in a rolling collection).
         "runtime/mvp_runtime/crypto/live_execution.py",   # the order adapter
         "runtime/mvp_runtime/crypto/live_pnl.py",         # the realized-P&L ledger
         "runtime/mvp_runtime/crypto/live_position.py",    # the position book
         "runtime/mvp_runtime/crypto/live_order.py",       # the daily submission counter
         "runtime/mvp_runtime/crypto/live_promotion.py",   # the canary evidence registry
-        # The candle archive (Thomas, 2026-08-04) — the second capability, and the first that
-        # is not live trading. Added on purpose, which is what this test exists to force.
-        #
-        # The grant's 30-day TTL cannot bound a job that must run for months against a ROLLING
-        # window: a renewal gap is not a pause, it is a hole nothing can fill. Half of live
-        # trading's argument does not transfer (nothing here can be trapped open) and neither
-        # does its compensating control (no kill switch) — but the other side of the ledger is
-        # the side live trading did not have. This reads PUBLIC candles with no key, sends
-        # nothing, orders nothing, and feeds nothing. `select_candle_archive_collector` carries
-        # the full reasoning.
-        "runtime/mvp_runtime/crypto/market_data.py",      # the candle archive collector
-        # The Naver research lane (Thomas, 2026-08-09) — the third capability, and the second
-        # that is not trading. Added on purpose, which is what this test exists to force.
-        #
-        # Closest to the candle archive's argument, not live trading's: nothing here can be
-        # trapped open, so expiry is merely disruptive rather than dangerous. What the 30-day
-        # TTL breaks is a WEEKLY schedule — one renewal gap silently costs a week of content
-        # ideas, with no error anywhere, and the operator discovers it by noticing an absence.
-        # Unlike the candle archive this one does send credentials (Naver's keyword API is not
-        # public), which is the side of the ledger that argues the other way and was weighed:
-        # the capability is read-only, orders nothing, publishes nothing, and its worst failure
-        # is a missing draft. `naver_research`'s module docstring carries the full reasoning.
+        "runtime/mvp_runtime/crypto/market_data.py",      # candle archive + market data + liquidation feed
         "runtime/mvp_runtime/naver_research.py",          # the blog content lane's research tools
+        # Everything below moved on 2026-08-10 in one decision — Thomas retired grant
+        # renewal for the rest of the roster ("다 지속적으로 돌릴 것들인데", the renewal
+        # burden bought too little on capabilities meant to run indefinitely). Listed per
+        # call site so the sweep still forces the NEXT capability to be named on purpose.
+        "runtime/mvp_runtime/providers.py",               # hosted model chain + validator + M2 tiers
+        "runtime/mvp_runtime/frontdesk.py",               # the conversational front desk's chain
+        "runtime/mvp_runtime/tools.py",                   # the search tool
+        "runtime/mvp_runtime/operator.py",                # the Telegram operator channel
+        "runtime/mvp_runtime/workspace.py",               # the workspace writer
+        "runtime/mvp_runtime/consumption.py",             # approval consumption
+        "runtime/mvp_runtime/trial.py",                   # the candidate-trial spend
+        "runtime/mvp_runtime/crypto/account.py",          # the venue account feed
+        "runtime/mvp_runtime/crypto/paper.py",            # the durable paper store
     }, callers
 
 
@@ -698,7 +715,8 @@ def test_the_suite_isolates_every_gate_opt_in_env_var():
 
     from tests import conftest as suite_conftest
 
-    selectors = {"select_gated", "select_env_gated", "select_gated_chain"}
+    selectors = {"select_gated", "select_env_gated", "select_gated_chain",
+                 "select_env_gated_chain", "select_env_gated_optional"}
     repo = pathlib.Path(__file__).resolve().parents[1]
     modules = {
         path: ast.parse(path.read_text(encoding="utf-8"))

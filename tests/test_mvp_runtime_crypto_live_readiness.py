@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness
+from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -269,8 +270,8 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
-        "manual_kill_switch", "runtime_active", "trading_armed", "daily_loss_breaker",
-        "bracket_breaker", "canary_evidence",
+        "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
+        "daily_loss_breaker", "bracket_breaker", "canary_evidence",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired",
     }
@@ -492,17 +493,23 @@ def test_market_data_is_reported_as_a_canary_precondition(tmp_path, clean_env):
     assert "canary" in row["detail"], "say what the operator loses without it"
 
 
-def test_market_data_env_alone_does_not_pass_the_row(tmp_path, clean_env, monkeypatch):
-    """The env var alone selects the MOCK, whose synthesised price the check rejects.
+def test_market_data_env_alone_passes_the_row(tmp_path, clean_env, monkeypatch):
+    """The environment is the gate (Thomas 2026-08-10): the opt-in alone passes the row.
 
-    Reporting green here would tell an operator the canary can run when it cannot — the same
-    env-var-is-not-a-grant confusion the safety gate exists to prevent.
-    """
+    The safety the old grant check bought is not lost, just relocated: without the opt-in
+    the selector returns the MOCK, whose synthesised price `place_canary_order`'s own
+    declared-notional check rejects — the test below pins that failing direction."""
     monkeypatch.setenv("MVP_MARKET_DATA", "binance_futures")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
+    assert row["ok"] is True
+
+
+def test_market_data_row_fails_when_the_opt_in_is_absent(tmp_path, clean_env):
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
     assert row["ok"] is False
-    assert "grant" in row["detail"]
+    assert "MVP_MARKET_DATA" in row["detail"]
 
 
 # === the daily-loss breaker has a source ==========================================
@@ -750,6 +757,136 @@ def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
     assert status["ready"] is True          # surfaced, not judged
 
 
+# === the armed set (#648: occupying and allowed-to-spend are two facts) =============
+# `live_tier` absent reads as OBSERVATION, so #648's migration disarmed every pre-existing
+# entry on purpose — and the board kept answering READY: on 2026-08-10 every row was green
+# while `pool.live_routable_strategy_ids` was empty, no strategy could open a position, and
+# the operator found out from the positions that never appeared. These pin the row that says
+# it, and the split it inherits from the entry door: zero armed is the expected steady state
+# (informational), an unreadable pool is a fault (FAIL, reported UNREADABLE — never 0).
+
+def _strategy_spec(sid):
+    """The minimum the pool file's fail-closed loader accepts."""
+    return {
+        "schema_version": "strategy_spec.v1",
+        "strategy_id": sid, "strategy_version": "1.0", "strategy_family": "breakout",
+        "symbol_scope": ["BTCUSDT"], "timeframe": "1d", "direction": "long",
+        "entry_rules": {"operator": "AND",
+                        "conditions": [{"feature": "close", "comparison": ">", "value": 0.0}]},
+        "exit_rules": {"stop_model": "atr", "stop_atr": 1.5, "target_atr": 2.0,
+                       "max_holding_bars": 10},
+        "risk_constraints": {"max_risk_per_trade_R": 1.0},
+    }
+
+
+def _pool_entry(sid, *, live_tier=None, status="PAPER_ACTIVE"):
+    entry = {"strategy_id": sid, "candidate_id": f"c_{sid}", "status": status,
+             "strategy_spec": _strategy_spec(sid)}
+    if live_tier is not None:
+        entry[pool_store.LIVE_TIER_FIELD] = live_tier
+    return entry
+
+
+def _write_pool(root, *entries):
+    path = pool_store.pool_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"active_strategies": list(entries)}), encoding="utf-8")
+    return path
+
+
+def _armed_row(status):
+    return next(c for c in status["checks"] if c["check"] == "live_armed_strategies")
+
+
+def test_the_armed_set_is_a_row(tmp_path, clean_env):
+    _write_pool(tmp_path,
+                _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE),
+                _pool_entry("S2"))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "1 armed of 2 occupying" in row["detail"]
+    # As data too: the render's WIRED note reads the count, and a JSON consumer must not have
+    # to parse prose.
+    assert status["live_armed_strategies"] == {
+        "known": True, "armed": 1, "occupying": 2, "error": None,
+    }
+
+
+def test_zero_armed_is_said_loudly_but_cannot_move_the_ready_verdict(tmp_path, clean_env):
+    """Zero armed is the deliberate steady state (#648's migration default), not a runtime
+    fault: `ready` keeps meaning "may this RUNTIME trade". But the detail must say what zero
+    means, because READY above an empty armed set is exactly the 2026-08-10 misread."""
+    _write_pool(tmp_path, _pool_entry("S1"), _pool_entry("S2", status="WARNING"))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "0 armed of 2 occupying" in row["detail"]
+    assert "NO strategy may open a real position" in row["detail"]
+    # Arming one strategy is a strategy-level change; the runtime-level verdict must not move
+    # in either direction.
+    _write_pool(tmp_path,
+                _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE),
+                _pool_entry("S2", status="WARNING"))
+    rearmed = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert rearmed["ready"] == status["ready"]
+
+
+def test_a_missing_pool_is_an_empty_pool_not_a_fault(tmp_path, clean_env):
+    """`load_active_pool` documents missing = empty: a fresh machine honestly has zero of
+    zero, and must not read as UNREADABLE."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is True
+    assert "0 armed of 0 occupying" in row["detail"]
+
+
+@pytest.mark.parametrize("content, code", [
+    ("not json{", "STRATEGY_POOL_UNREADABLE"),
+    (json.dumps({"active_strategies": [{"strategy_id": "S1"}]}), "STRATEGY_POOL_INVALID"),
+])
+def test_an_unreadable_pool_fails_the_row_and_never_reads_as_zero(
+    tmp_path, clean_env, content, code
+):
+    """The entry door keeps "no strategy is armed" and "the pool could not be read" apart with
+    two reason codes, and the board must not collapse them into a comfortable 0: an unreadable
+    pool refuses every live entry at the door, which is a fault with a repair — a FAIL row."""
+    path = pool_store.pool_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _armed_row(status)
+    assert row["ok"] is False
+    assert "UNREADABLE" in row["detail"] and code in row["detail"]
+    assert "0 armed" not in row["detail"]
+    assert status["live_armed_strategies"] == {
+        "known": False, "armed": None, "occupying": None, "error": code,
+    }
+    assert status["ready"] is False
+
+
+def test_the_render_qualifies_the_wired_note_when_nothing_is_armed(tmp_path, clean_env):
+    """The WIRED note promises "REAL positions once every FAIL clears" — the sentence a reader
+    believed on 2026-08-10 while the armed set was empty. The qualification must appear where
+    the promise is made, not only in a PASS row further up."""
+    _write_pool(tmp_path, _pool_entry("S1"))
+    text = live_readiness.render_readiness_text(
+        live_readiness.build_readiness(root=tmp_path, now=NOW))
+    text.encode("ascii")
+    if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        assert "0 strategies are armed" in text
+        assert "no autonomous entry will OPEN" in text
+        assert "--live-tier LIVE" in text
+
+
+def test_the_render_does_not_cry_zero_when_a_strategy_is_armed(tmp_path, clean_env):
+    _write_pool(tmp_path, _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE))
+    text = live_readiness.render_readiness_text(
+        live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert "1 armed of 1 occupying" in text
+    assert "0 strategies are armed" not in text
+
+
 # === whose environment is this board describing? (#382) ==============================
 # The board computes most rows from `os.environ`, so it answers for the process running it.
 # Once the operator console and the assistant read door started serving it from containers
@@ -789,6 +926,60 @@ def test_a_blind_process_will_not_claim_live_trading_is_off(tmp_path, clean_env)
     # The one line a hurried reader keeps must not be an unqualified system claim.
     assert "NOT READY (THIS PROCESS ONLY)" in text
     assert "NOT READY - every FAIL above must clear first" not in text
+
+
+def test_env_rows_carry_their_scope_on_the_row_while_the_process_is_blind(tmp_path, clean_env):
+    """The banner was not enough (2026-08-10): a reader that summarises the board carries the
+    ROW out of it, so `[FAIL] live_trading_opt_in ... (live trading off)` became "live trading
+    is disabled" three times in one hour while the scheduler held an OPEN gate. The scope now
+    rides the mark, which no summary can drop and keep the row."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    for check in live_readiness.ENV_SCOPED_CHECKS:
+        row = next(line for line in text.splitlines() if check in line)
+        assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), row
+        assert live_readiness.OUT_OF_SCOPE_DETAIL in row, row
+    # The sentence that actually reached the operator as a system claim is GONE, not annotated.
+    assert "live trading off" not in text
+    assert "MVP_LIVE_TRADING is not" not in text
+    # The guard dry-run refuses for the same absent env; its blocks are withheld, not echoed.
+    assert "SCOPE  : this container cannot run the guard for real" in text
+    assert "BLOCK  :" not in text
+    # The kept line states what IS known rather than only what it is not evidence of.
+    assert f"gate was recorded OPEN at {status['recorded_gate']['recorded_at']}" in text
+    # Rendering only. The record every machine consumer reads is untouched, and so is `ready`.
+    assert status["ready"] is False
+    assert all(c["ok"] is False for c in status["checks"]
+               if c["check"] in live_readiness.ENV_SCOPED_CHECKS)
+
+
+def test_a_blind_process_still_says_FAIL_for_a_failure_it_can_see(tmp_path, clean_env):
+    """The downgrade is scoped to the env rows. A check that fails for a reason this container
+    CAN observe is a real finding, and blurring it would trade one false report for another."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    own_detail = next(c["detail"] for c in status["checks"]
+                      if c["check"] == "daily_loss_breaker" and not c["ok"])
+    breaker = next(line for line in text.splitlines() if "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]"), breaker
+    assert own_detail in breaker      # its own finding, verbatim — not the scoped stand-in
+    assert live_readiness.OUT_OF_SCOPE_DETAIL not in breaker
+
+
+def test_env_rows_read_FAIL_when_nothing_says_the_system_is_trading(tmp_path, clean_env):
+    """No record, no downgrade. Absence of evidence about the gate is not permission to soften
+    the rows — the ordinary machine with no live env must still read a plain FAIL."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+
+    opt_in = next(line for line in text.splitlines() if "live_trading_opt_in" in line)
+    assert opt_in.startswith("[FAIL]"), opt_in
+    assert live_readiness.OUT_OF_SCOPE_MARK not in text
+    assert "SCOPE  : dry-run" not in text
 
 
 def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
