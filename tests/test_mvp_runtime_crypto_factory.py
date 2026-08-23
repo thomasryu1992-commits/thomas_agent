@@ -3694,3 +3694,75 @@ class TestLiquidationGuard:
         assert guard["assumed_leverage"] == 20
         assert guard["maintenance_margin_rate"] == 0.004
         assert guard["refused_entries"] >= 0
+
+
+# --- the pooled block says WHICH symbols, not just how many --------------------------------
+
+class TestPooledPerSymbolBreakdown:
+    """`symbols_replayed` counts the legs; `per_symbol` says what each one earned.
+
+    The distinction decides a promotion. A pooled candidate carries the whole cohort's
+    `symbol_scope`, so promoting it needs every one of those contexts — and §F9 recorded the
+    2026-08-23 refusal where narrowing it to the free ones had no evidence behind it, because
+    the block held a five-market average and nothing else. "The cohort earns +0.29R" and "each
+    of the five earns about +0.29R" are different claims, and only the second licenses trading
+    one of them.
+
+    Not a new measurement: the scored loop already replays one frame per symbol, and these
+    figures were computed and summed away on the next line.
+    """
+
+    def test_each_leg_is_named_and_its_own_trades_are_reported(self):
+        spec = StrategySpec.from_dict(_spec_dict())
+        first, second = _trending_snapshot(), _shifted_snapshot()
+        one, two = backtest_spec(spec, first), backtest_spec(spec, second)
+
+        pooled = factory.backtest_spec_pooled(spec, [first, second])
+        per = pooled["per_symbol"]
+        assert set(per) == {"BTCUSDT", "ETHUSDT"}
+        assert per["BTCUSDT"]["closed_count"] == one["closed_count"]
+        assert per["ETHUSDT"]["closed_count"] == two["closed_count"]
+        assert per["BTCUSDT"]["expectancy"] == pytest.approx(one["expectancy"])
+        assert per["ETHUSDT"]["expectancy"] == pytest.approx(two["expectancy"])
+
+    def test_the_legs_sum_to_the_pooled_figures(self):
+        """The breakdown must be the same trades seen differently, never a second population."""
+        spec = StrategySpec.from_dict(_spec_dict())
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _shifted_snapshot()])
+        per = pooled["per_symbol"]
+        assert sum(leg["closed_count"] for leg in per.values()) == pooled["closed_count"]
+        assert sum(leg["win_count"] for leg in per.values()) == pooled["win_count"]
+
+    def test_a_disagreeing_leg_is_visible_rather_than_averaged_away(self):
+        """The property that makes this worth recording. Two legs whose expectancies differ
+        must show that difference, or the block cannot answer the question §F9 blocked on."""
+        spec = StrategySpec.from_dict(_spec_dict())
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _shifted_snapshot(scale=5.0)])
+        legs = [leg["expectancy"] for leg in pooled["per_symbol"].values()]
+        assert len(legs) == 2
+        # Whatever the two are, the pooled average sits between them — which is exactly why
+        # the average alone cannot license trading either one.
+        assert min(legs) <= pooled["expectancy"] <= max(legs)
+
+    def test_a_single_symbol_backtest_names_its_one_leg(self):
+        spec = StrategySpec.from_dict(_spec_dict())
+        snapshot = _trending_snapshot()
+        result = backtest_spec(spec, snapshot)
+        assert set(result["per_symbol"]) == {"BTCUSDT"}
+        assert result["per_symbol"]["BTCUSDT"]["closed_count"] == result["closed_count"]
+
+    def test_a_frame_with_no_symbol_reads_as_absent_never_as_agreement(self):
+        """A caller predating `ReplayFrame.symbol` still replays correctly; it just cannot
+        contribute a labelled leg. The reader must learn "cannot say", not "the legs agreed"."""
+        spec = StrategySpec.from_dict(_spec_dict())
+        frame = factory.build_replay_frame(_trending_snapshot())
+        anonymous = factory.ReplayFrame(
+            rows=frame.rows, candles=frame.candles, funding=frame.funding,
+            funding_source=frame.funding_source, split=frame.split, cost=frame.cost,
+        )
+        assert anonymous.symbol is None
+        pooled = factory.backtest_spec_pooled(spec, [], frames=[anonymous])
+        assert pooled["per_symbol"] == {}
+        assert pooled["closed_count"] > 0, "the replay itself must be unaffected"
