@@ -256,3 +256,87 @@ def test_the_reader_reads_outcomes_and_never_the_order_path():
 
     assert "live_pnl" in imported
     assert imported & {"live_leg", "live_execution", "live_position"} == set()
+
+
+# --- does the P&L follow from the row's own prices? ---------------------------
+#
+# `size_proven` sounds like the stronger check and is the weaker one: it asks only whether a
+# quantity and an entry price are PRESENT. On 2026-08-21 a BTCUSDT row held both, printed
+# `realized 77.5357 USDT` beside `= 77.8813 USDT` notional on a 0.22% price move, and was
+# counted in "28/28 can prove their size". The true result was a 0.1728 USDT loss; the figure
+# was the arithmetic of a close twice the size of the open. Every term needed to see that is on
+# the row, so the board can check it rather than print it.
+
+
+def test_a_row_whose_pnl_does_not_follow_from_its_prices_is_flagged(monkeypatch):
+    """The 2026-08-21 row, to scale. Prices give -0.1728; the row claims +77.5357."""
+    rows = _trades(monkeypatch, [_outcome(
+        symbol="BTCUSDT", side="SELL", quantity=0.001,
+        entry_price=77881.3, exit_price=77708.5, realized_pnl_usdt=77.5357)])
+    assert rows[0]["size_proven"] is True          # it still has both figures...
+    assert rows[0]["pnl_consistent"] is False      # ...and they do not produce that P&L
+
+
+def test_the_flag_prints_what_the_prices_actually_give(monkeypatch):
+    """Naming the number the row should have carried is the difference between "something is
+    wrong here" and an operator being able to see what."""
+    rows = _trades(monkeypatch, [_outcome(
+        side="SELL", quantity=0.001, entry_price=77881.3,
+        exit_price=77708.5, realized_pnl_usdt=77.5357)])
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "P&L DOES NOT FOLLOW FROM THESE PRICES" in text
+    assert "-0.1728 USDT" in text
+    assert "0/1 have a P&L that follows from their own prices" in text
+    assert "not arm a strategy on evidence one of them is part of" in text
+
+
+def test_a_consistent_row_says_nothing_extra(monkeypatch):
+    """The control. A board that annotates every row teaches the reader to skip annotations."""
+    rows = _trades(monkeypatch, [_outcome()])
+    assert rows[0]["pnl_consistent"] is True
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "DOES NOT FOLLOW" not in text
+    assert "NOT CHECKED" not in text
+    assert "1/1 have a P&L that follows from their own prices" in text
+
+
+def test_a_short_is_checked_with_the_side_that_closed_it(monkeypatch):
+    """`side` is the CLOSING order's side, so BUY closed a SHORT and the sign flips. Getting
+    this backwards would flag every short on the board and nothing would ever be read again."""
+    rows = _trades(monkeypatch, [_outcome(
+        side="BUY", quantity=0.022, entry_price=1859.14,
+        exit_price=1904.96, realized_pnl_usdt=-1.00804)])
+    assert rows[0]["pnl_consistent"] is True
+
+
+def test_float_noise_is_not_a_disagreement(monkeypatch):
+    """Measured across the 28 rows on the live machine, the consistent ones sit within ~2e-16
+    of notional. The tolerance must clear that by orders of magnitude or the check is a
+    generator of false alarms."""
+    rows = _trades(monkeypatch, [_outcome(realized_pnl_usdt=0.18 + 1e-12)])
+    assert rows[0]["pnl_consistent"] is True
+
+
+def test_a_row_that_cannot_be_checked_is_not_counted_as_passing(monkeypatch):
+    """Three answers, not two. "No exit price" is not "the P&L is fine", and folding the two
+    together is how an unverifiable row inherits a verified row's credibility."""
+    rows = _trades(monkeypatch, [_outcome(exit_price=None)])
+    assert rows[0]["pnl_consistent"] is None
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "P&L NOT CHECKED" in text
+    assert "0/1 have a P&L that follows from their own prices" in text
+    assert "could not be checked at all" in text
+
+
+def test_the_three_verdicts_are_counted_separately(monkeypatch):
+    """One of each, so the footer cannot collapse them by accident."""
+    rows = _trades(monkeypatch, [
+        _outcome(),                                                    # consistent
+        _outcome(realized_pnl_usdt=99.0),                              # inconsistent
+        _outcome(exit_price=None),                                     # unknown
+    ])
+    assert [r["pnl_consistent"] for r in rows] == [True, False, None]
+    text = lp.render_live_trade_evidence_text(rows)
+    assert "1/3 have a P&L that follows from their own prices" in text
+    assert "1 row(s) above carry a realized P&L their own prices do not produce." in text
+    assert "1 row(s) could not be checked at all" in text
