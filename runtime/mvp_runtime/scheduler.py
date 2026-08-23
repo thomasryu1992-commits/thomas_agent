@@ -1331,6 +1331,20 @@ def _execute(
         # the request empty, the fire fans OUT over every context the pool trades (+
         # every open position) so no strategy is symbol-starved — the default that
         # actually covers the pool. Each sub-cycle rides the ledger on its own id.
+        # The account snapshot the read door serves. Here and not in a maintenance kind
+        # because this lane is the one holding the venue credentials — `scheduler-maint`
+        # carries no `MVP_ACCOUNT_FEED` or `BINANCE_ACCOUNT_*`, so a snapshot written there
+        # would be `configured: false` forever. Placed before the stall check on both paths:
+        # a pipeline that has degraded twice running is precisely when an operator wants to
+        # know the balance, and raising first would skip the refresh on exactly those fires.
+        # `refresh_snapshot` never raises and is a no-op when not due.
+        def _refresh_funds(line: str) -> str:
+            from .crypto import account_store
+
+            if not account_store.is_due(account_store.read_refresh_mark(repo_root), now):
+                return line
+            return f"{line} {account_store.refresh_snapshot(now=now, root=repo_root)}"
+
         from .crypto.cycle import (
             PIPELINE_STALLED,
             cycle_is_stalled,
@@ -1375,7 +1389,7 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            status = cycle_status_line(record)
+            status = _refresh_funds(cycle_status_line(record))
             if cycle_is_stalled(record, schedule.last_status):
                 raise SchedulerBlocked(PIPELINE_STALLED, (
                     f"crypto pipeline has degraded for two consecutive fires; "
@@ -1392,7 +1406,7 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        status = pool_cycle_status_line(summary)
+        status = _refresh_funds(pool_cycle_status_line(summary))
         if pool_cycle_is_stalled(summary, schedule.last_status):
             raise SchedulerBlocked(PIPELINE_STALLED, (
                 f"crypto pipeline has degraded across all contexts for two consecutive fires; "
