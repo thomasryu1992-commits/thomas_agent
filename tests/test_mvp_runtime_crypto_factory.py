@@ -951,6 +951,31 @@ def _shifted_snapshot(n=200, *, symbol="ETHUSDT", scale=2.0, funding=False):
     return snapshot
 
 
+def _weak_trend_snapshot(n=200, *, symbol="ETHUSDT"):
+    """`_trending_snapshot`'s shape with a shallower rise — same down-blocks, weaker up-blocks.
+
+    A genuinely DIFFERENT market, which `_shifted_snapshot` is not: that one scales the same
+    path, and ATR-relative exits are scale-invariant, so a scaled leg scores IDENTICALLY. Any
+    test about two legs disagreeing needs a market like this one. Measured against the base
+    fixture: 5 closes at +0.093R here, 15 at +0.834R there.
+
+    The rise stays positive on purpose. A market hostile enough that nothing enters (drift
+    flipping every bar; the whole trend inverted) compares nothing — the leg reports
+    `expectancy: None` and the test goes vacuous by a second route, which is the failure this
+    fixture exists to avoid rather than to swap for another one.
+    """
+    snapshot = dict(_trending_snapshot(n))
+    snapshot["symbol"] = symbol
+    candles, price = [], 100.0
+    for i, source in enumerate(snapshot["candles"]):
+        drift = 0.4 if (i // 20) % 3 != 2 else -1.5   # the base fixture's 1.0, weakened
+        price = max(10.0, price + drift)
+        candles.append({**source, "open": price - drift, "high": price + 1.5,
+                        "low": price - 1.5, "close": price})
+    snapshot["candles"] = candles
+    return snapshot
+
+
 def test_a_single_frame_pool_is_the_single_symbol_backtest():
     """`backtest_spec` delegates here, so the one-leg answer must not have moved."""
     spec = StrategySpec.from_dict(_spec_dict())
@@ -3736,15 +3761,51 @@ class TestPooledPerSymbolBreakdown:
 
     def test_a_disagreeing_leg_is_visible_rather_than_averaged_away(self):
         """The property that makes this worth recording. Two legs whose expectancies differ
-        must show that difference, or the block cannot answer the question §F9 blocked on."""
+        must show that difference, or the block cannot answer the question §F9 blocked on.
+
+        **The comparison has to be worth making, and nothing here checked that it was.** The
+        first version paired `_trending_snapshot` with `_shifted_snapshot(scale=5.0)` and
+        asserted only `min <= pooled <= max`, which holds when all three numbers are equal. It
+        did in fact separate them — by 0.0408R, and not because of the scale (ATR-relative
+        exits are scale-invariant) but because that fixture defaults `funding=False`, so the
+        legs paid different carry. A spread that arrives by accident is one fixture default
+        away from vanishing, and the assertion would have gone quiet rather than red.
+
+        So the spread is asserted first, and the pairing is a strong trend against a weak one:
+        0.834R over 15 closes against 0.093R over 5. A fixture change that collapses that —
+        or a leg that stops trading, which compares nothing by a second route — fails here.
+        """
         spec = StrategySpec.from_dict(_spec_dict())
+        # A strong trend against a weak one, both still trading — see `_weak_trend_snapshot`
+        # for why the weak one stays positive.
         pooled = factory.backtest_spec_pooled(
-            spec, [_trending_snapshot(), _shifted_snapshot(scale=5.0)])
-        legs = [leg["expectancy"] for leg in pooled["per_symbol"].values()]
+            spec, [_trending_snapshot(), _weak_trend_snapshot()])
+        legs = {name: leg["expectancy"] for name, leg in pooled["per_symbol"].items()}
         assert len(legs) == 2
-        # Whatever the two are, the pooled average sits between them — which is exactly why
-        # the average alone cannot license trading either one.
-        assert min(legs) <= pooled["expectancy"] <= max(legs)
+        scored = [v for v in legs.values() if v is not None]
+        assert len(scored) == 2, f"a leg did not trade, so nothing is being compared: {legs}"
+        assert max(scored) - min(scored) > 0, (
+            f"the two markets scored alike, so this test proves nothing: {legs}")
+        # And the pooled average sits between them — which is exactly why the average alone
+        # cannot license trading either one.
+        assert min(scored) <= pooled["expectancy"] <= max(scored)
+
+    def test_a_leg_that_never_traded_says_so_rather_than_reading_break_even(self):
+        """`summarize_outcomes` returns 0.0 expectancy for an empty population, which is right
+        for a total and wrong for a leg being compared: at 0.0 "this symbol broke even" and
+        "this symbol never entered" are the same number, and the second is the one that must
+        stop a promotion."""
+        # A condition no bar in either fixture satisfies, so both legs replay and neither enters.
+        spec = StrategySpec.from_dict(_spec_dict(entry_rules={
+            "operator": "AND",
+            "conditions": [{"feature": "rsi", "comparison": "<", "value": -1.0}],
+        }))
+        pooled = factory.backtest_spec_pooled(
+            spec, [_trending_snapshot(), _shifted_snapshot()])
+        assert set(pooled["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
+        for name, leg in pooled["per_symbol"].items():
+            assert leg["closed_count"] == 0, name
+            assert leg["expectancy"] is None, f"{name} reads break-even on zero trades"
 
     def test_a_single_symbol_backtest_names_its_one_leg(self):
         spec = StrategySpec.from_dict(_spec_dict())
