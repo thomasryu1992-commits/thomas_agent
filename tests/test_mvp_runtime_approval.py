@@ -539,3 +539,95 @@ def test_store_is_empty_before_anything_is_asked(tmp_path):
     assert store.read_all() == []
     assert store.pending() == []
     assert store.get("approval_nope") is None
+
+
+# --- the switch door's asks -------------------------------------------------------
+#
+# Until 2026-08-22 `format_request` had two branches — trial, and everything else — and the
+# switch door's asks fell into "everything else". They therefore told Thomas that approving a
+# runtime switch could not be undone because "validated memory는 지속됩니다", quoted a cost of
+# none, and closed with a paragraph about spending the grant through `approval_consumption`.
+# None of that describes a switch. The door's whole point is that Thomas sees what he is
+# deciding, so a renderer that describes a different decision defeats it.
+
+
+def _switch_permdec(*, arms: bool):
+    """A real switch-door decision, minted by the module that owns the target prefix."""
+    builder = (permission.build_trading_switch_permission_decision if arms
+               else permission.build_nonfinancial_resume_permission_decision)
+    return builder(
+        _bound(), "crypto",
+        stop_ref="stop_abc123",
+        stop_summary="the KILLED placed by local_console at 2026-07-18T10:44:41Z",
+        now=NOW,
+    )
+
+
+@requires_local_core
+def test_a_switch_grant_is_not_pointed_at_the_consume_cli():
+    """A switch grant is spent by calling the door again with the id. It is not a promotion,
+    it does not go through `approval_cli consume`, and it is not gated on the
+    `approval_consumption` safety flag — so an ask that says otherwise sends Thomas to a
+    command that will not work on it."""
+    permdec = _switch_permdec(arms=True)
+    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
+    # The claim, not the token: the ask may name `approval_consumption` — it does, to say the
+    # flag is irrelevant here — but it must not send Thomas to that step.
+    assert "`approval_cli consume`으로 쓰지 않습니다" in text
+    assert "approval_consumption 세이프티 플래그와" in text and "무관합니다" in text
+    assert "승격을 1회 수행합니다" not in text
+    assert "플래그가 켜진 기기에서만" not in text
+    assert "스위치 문을 다시 호출할 때 1회만 소비됩니다" in text
+
+
+@requires_local_core
+def test_a_switch_grant_says_stopping_needs_no_approval():
+    """The reversibility line was exactly backwards. Stopping is the cheap verb — it applies at
+    once with no approval — and that asymmetry is the reason this door exists at all."""
+    permdec = _switch_permdec(arms=True)
+    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
+    assert "validated memory는 지속됩니다" not in text
+    assert "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다" in text
+
+
+@requires_local_core
+def test_the_two_switch_grants_differ_on_the_one_thing_that_differs():
+    """`trading_switch:` re-arms live entries and `runtime_resume:` structurally cannot. That is
+    the entire difference in effect between the two, so it is the line Thomas must be able to
+    read — and the cost line follows it."""
+    arming = approval.request_message(
+        approval.build_approval_request(_switch_permdec(arms=True), now=NOW),
+        _switch_permdec(arms=True),
+    )
+    runtime_only = approval.request_message(
+        approval.build_approval_request(_switch_permdec(arms=False), now=NOW),
+        _switch_permdec(arms=False),
+    )
+    assert "승인하면 라이브 진입이 다시 무장됩니다." in arming
+    assert "예상 비용: 실주문이 다시 나갈 수 있게 되므로" in arming
+
+    assert "라이브 진입을 무장하지 않습니다" in runtime_only
+    assert "다시 무장됩니다" not in runtime_only
+    assert "예상 비용: 없음" in runtime_only
+
+
+@requires_local_core
+def test_a_switch_grant_warns_that_a_changed_stop_voids_it():
+    """`stop_ref` is derived from the whole control state, so anything that rewrites
+    `updated_at` between minting and spending refuses the grant with STOP_CHANGED. That costs a
+    re-ask, and Thomas should not learn it from a refusal."""
+    permdec = _switch_permdec(arms=False)
+    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
+    assert "STOP_CHANGED" in text
+
+
+@requires_local_core
+def test_a_memory_promotion_ask_is_unchanged():
+    """The control. The two lines above are keyed on the target prefix, so the ask this
+    renderer was written for must read exactly as it did."""
+    permdec = _permdec()
+    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
+    assert "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다" in text
+    assert "예상 비용: 없음" in text
+    assert "approval_consumption" in text
+    assert "스위치 문" not in text

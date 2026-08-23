@@ -42,7 +42,7 @@ from typing import Any, Protocol
 
 from . import (
     approval, control, domain_console, frontdesk, memory_console, operator_feedback,
-    registry_console, safety_gate, task_registry, timeutil,
+    permission, registry_console, safety_gate, task_registry, timeutil,
 )
 from .audit import build_approval_decision_audit, build_audit_gap_record
 from .budgets import clip_for_prompt
@@ -836,6 +836,139 @@ def notify_operator(channel: OperatorChannel, text: str, *, repo_root: Path | No
     """
     registration = load_operator_registration(repo_root)
     channel.send(registration.chat_id, text)
+
+
+# The switch door's asks are the only ones nobody delivers. Every other approval is minted by
+# Thomas running a script, so the id is already on his screen and the median answer comes back
+# in about a minute. The switch door's are minted by an assistant, asynchronously, and until
+# 2026-08-22 they went nowhere at all: the one real attempt (`approval_cb281753`, 2026-07-31
+# 03:25:56Z) expired fifteen minutes later unanswered, and the enable chain had never once
+# completed in production. `approval.py` has no notify path by design; this is the delivery
+# half, and it lives here because this service is also the one that READS `/approve`.
+ANNOUNCED_POINTER_REL = ".runtime_governance_state/approval_announced.json"
+
+# A batch cap, not a rate limit. If several switch asks are somehow open at once, sending three
+# and leaving the rest for the next pass keeps one bad state from filling the control channel.
+MAX_ANNOUNCEMENTS_PER_BATCH = 3
+
+
+def load_announced(repo_root: Path | None = None) -> set[str] | None:
+    """Approval ids already announced, or None when the pointer has never been written.
+
+    ``None`` and ``set()`` are different facts and the caller acts on the difference: never
+    written means a first run, which marks the backlog seen instead of sending it. A malformed
+    file is treated as never-written rather than raising — the worst case of getting this wrong
+    is re-announcing a live ask, and refusing to announce anything is the worse failure for a
+    door whose entire problem is that nothing arrives.
+    """
+    path = (repo_root if repo_root is not None else _repo_root()) / ANNOUNCED_POINTER_REL
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ids = data["announced_approval_ids"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return None
+    return set(ids)
+
+
+def record_announced(announced: set[str], *, now: str, repo_root: Path | None = None) -> None:
+    """Persist the announced-id set atomically (the Telegram-offset pattern).
+
+    Keyed on approval id and not on an ``issued_at`` watermark: two asks minted in the same
+    second would put one of them behind the mark unsent, and a batch cap makes that worse by
+    marking ids the pass never reached. The set is bounded in practice — an approval leaves
+    ``pending()`` once decided or expired — but is pruned by the caller regardless.
+    """
+    root = repo_root if repo_root is not None else _repo_root()
+    path = root / ANNOUNCED_POINTER_REL
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"announced_approval_ids": sorted(announced), "updated_at": now}),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise OperatorBlocked(
+            "ANNOUNCE_POINTER_PERSIST_FAILED",
+            f"could not persist the announced-approval pointer: {exc}",
+        ) from None
+
+
+def announce_pending_approvals(
+    channel: OperatorChannel,
+    approval_store: Any,
+    *,
+    now: str,
+    repo_root: Path | None = None,
+) -> list[str]:
+    """Push undelivered switch-door approval asks to the registered control channel.
+
+    Returns the approval ids announced on this pass (empty when there is nothing to send).
+
+    **Only the switch door's asks.** ``pending()`` returns every scope, and the rest are
+    already in front of Thomas by the flow that minted them — announcing those would put a
+    memory candidate's full text and a strategy-pool ask into the control channel for no gain.
+    The filter is the target prefix, imported from ``permission`` which mints it, because both
+    switch asks share ``RUNTIME_GOVERNANCE`` with strategy promotion and only the target says
+    what is being started.
+
+    Expired asks are never announced: a dead id cannot be approved, and sending one invites
+    Thomas to answer something that will refuse him.
+
+    On the very first run the backlog is marked seen and NOTHING is sent. Ten asks are pending
+    on this host, the oldest from 2026-07-21, all long expired — a deploy that announced its
+    backlog would open with a burst of undecidable messages.
+    """
+    try:
+        pending = approval_store.pending()
+    except MvpRuntimeError:
+        raise
+    switch_asks = [
+        a for a in pending
+        if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
+            (permission.TRADING_SWITCH_TARGET_PREFIX, permission.NONFINANCIAL_RESUME_TARGET_PREFIX)
+        )
+        and not approval.is_expired(a, now=now)
+    ]
+    live_ids = {str(a["approval_id"]) for a in switch_asks}
+
+    announced = load_announced(repo_root)
+    if announced is None:
+        # First run: adopt whatever is open as already-seen, send nothing.
+        record_announced(live_ids, now=now, repo_root=repo_root)
+        return []
+
+    # Filter BEFORE the cap, never after. Slicing first lets already-announced asks occupy the
+    # batch and starve the ones behind them — with three announced and two waiting, every
+    # subsequent pass sends nothing and the two are never reached.
+    undelivered = [a for a in switch_asks if str(a["approval_id"]) not in announced]
+
+    sent: list[str] = []
+    for ask in undelivered[:MAX_ANNOUNCEMENTS_PER_BATCH]:
+        approval_id = str(ask["approval_id"])
+        decision = approval_store.get_permission_decision(ask["permission_decision_id"])
+        if decision is None:
+            continue  # cannot render the ask honestly; leave it for a pass that can
+        # The text is built by the runtime and the destination is the one registered chat.
+        # No caller supplies either — an announcement is not a message-sending capability.
+        notify_operator(
+            channel, approval.request_message(ask, decision), repo_root=repo_root
+        )
+        announced.add(approval_id)
+        sent.append(approval_id)
+
+    # Drop ids that are no longer open so the pointer does not grow without bound. Pruning
+    # AFTER the send loop, and only against ids seen open this pass, keeps an ask that is
+    # merely unreadable this pass from being forgotten and re-announced later.
+    pruned = (announced & live_ids) | set(sent)
+    if pruned != announced or sent:
+        record_announced(pruned, now=now, repo_root=repo_root)
+    return sent
 
 
 class TelegramChannel:
