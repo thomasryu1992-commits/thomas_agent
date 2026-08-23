@@ -462,6 +462,7 @@ def attach_mining_legs(
     root: Path | None = None,
     liquidation_feed: Any | None = None,
     candle_target: Any = None,
+    candle_cache: Any | None = None,
 ) -> None:
     """Every leg **the factory mines on**, in one place. Mutating, degrade-only, never raises.
 
@@ -507,6 +508,16 @@ def attach_mining_legs(
       (absent = None); whether a positioning family may be MINTED against them is the separate
       ``positioning_store.coverage_summary`` question, which the CALLER measures and passes to
       ``run_factory``. This function does not answer it and must not be read as doing so.
+
+    ``candle_cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out, and a POOLED
+    mint is a fan-out even though it produces one candidate. The two context legs read series
+    that do not depend on which leg is asking: ``attach_reference`` always reads the constant
+    proxy, and ``attach_cross_section`` reads the same cohort universe every time. So a
+    five-symbol cohort asks for the proxy five times to get one answer, and pages the universe
+    five times over — at the factory's replay depth, which is the deepest window this runtime
+    reads. ``run_pool_cycle`` has threaded one cache through both legs since the fan-out
+    existed; this passes the same object down the mining path, which had no way to accept one.
+    Optional, and absent means exactly the previous behaviour.
     """
     attach_feeds(snapshot, collector=collector, liquidation_feed=liquidation_feed,
                  now=now, root=root, accumulate=False)
@@ -514,8 +525,8 @@ def attach_mining_legs(
     higher = HIGHER_TIMEFRAME.get(timeframe)
     attach_htf(snapshot, collector=collector, now=now,
                limit=candle_target(higher) if (candle_target is not None and higher) else None)
-    attach_reference(snapshot, collector=collector, now=now, limit=depth)
-    attach_cross_section(snapshot, collector=collector, now=now, limit=depth)
+    attach_reference(snapshot, collector=collector, now=now, limit=depth, cache=candle_cache)
+    attach_cross_section(snapshot, collector=collector, now=now, limit=depth, cache=candle_cache)
     attach_positioning(snapshot, root=root)
 
 
