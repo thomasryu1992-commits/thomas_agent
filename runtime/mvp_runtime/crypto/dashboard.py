@@ -33,7 +33,8 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
-    account, counterfactual, digest, feedback, lifecycle, oi_store, paper, pool, positioning_store,
+    account, counterfactual, digest, feedback, lifecycle, oi_store, orderbook_store, paper, pool,
+    positioning_store,
 )
 # "Can this sample tell the sign of its own edge" is one question with one answer in this
 # runtime. `robustness` owns the multiplier because it is the module that judges whether an
@@ -244,6 +245,16 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         positioning = None
         warnings.append(f"positioning store unreadable ({exc.reason_code})")
 
+    # The order-book store, on the same footing and for the same reason: it feeds no feature, so
+    # this number is the entire visible output of the accumulation. Also without a warning on a
+    # shortfall — its shortfall will be true every morning until 2029, which is the clearest case
+    # yet of the rule the OI and positioning lines above carry.
+    try:
+        orderbook = orderbook_store.coverage_summary(root, symbols=pool_symbols)
+    except MvpRuntimeError as exc:
+        orderbook = None
+        warnings.append(f"order-book store unreadable ({exc.reason_code})")
+
     inbound = operator_mod.last_inbound_at(root)
     silent_days = _days_since(inbound["at"], now) if inbound else None
     if inbound is None:
@@ -337,6 +348,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
         "positioning": positioning,
+        "orderbook": orderbook,
         "fusion_parents": fusion_parents,
         "control_channel": {
             "last_inbound_at": inbound["at"] if inbound else None,
@@ -745,6 +757,16 @@ def render_status_text(status: dict[str, Any]) -> str:
         lines.append(
             f"       포지셔닝 {positioning.get('min_covered_days')}/{positioning.get('required_days')}일 "
             f"({state}, 최소 커버 셀 기준 · 피처 미연결)"
+        )
+    orderbook = status.get("orderbook") or {}
+    if orderbook.get("cells"):
+        state = "적격" if orderbook.get("eligible") else "축적 중"
+        # "복구 불가" rather than the other rows' silence about gaps. The two lines above describe
+        # stores whose holes the next refresh closes; this one's are permanent, and a reader who
+        # learned the format on those rows would carry the wrong assumption onto this one.
+        lines.append(
+            f"       호가창 {orderbook.get('min_covered_days')}/{orderbook.get('required_days')}일 "
+            f"({state}, 최소 커버 셀 기준 · 피처 미연결 · 결손 복구 불가)"
         )
     lines.append("")
 

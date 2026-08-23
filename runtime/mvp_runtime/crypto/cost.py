@@ -96,28 +96,36 @@ DEFAULT_TAKER_FEE_BPS = 5.0
 # nothing here has measured it — a canary is a single market order, not a sample.
 DEFAULT_SLIPPAGE_BPS = 3.0
 
-# The slippage the STOP leg pays, split from the general figure — same value, separate decision.
+# The slippage the STOP leg pays, split from the general figure — and since 2026-08-11, a
+# different number: the seam's first re-pricing.
 #
 # A stop-market is not the same execution as an entry: the entry crosses a book that was not
 # moving against it in particular, while a triggered stop chases the exact move that fired it.
-# The first two live stops are the whole measured sample, and they are why this seam exists
+# The first two live stops are the whole measured sample, and they are why the seam exists
 # (2026-08-06, REMAINING_WORK §C): ETHUSDT filled **23.5 bps past its trigger** against the
-# 3.0 modelled here, DOGEUSDT filled exactly at its trigger. Two fills are not a distribution,
-# so this deliberately KEEPS the inherited value rather than averaging n=2 — changing it is a
-# re-decision that waits for the sample `live_pnl.stop_slippage_observations` now accumulates
-# (every stop close stamps `stop_slippage_bps` on its outcome row).
+# 3.0 then modelled, DOGEUSDT filled exactly at its trigger.
 #
-# What the split buys today is the seam, not a number: the stop leg can be re-priced without
-# touching the entry and time-exit legs that no observation has impeached, and
-# `pool.cost_basis_of`-style history stays honest because candidates scored before the split
-# were scored at an identical rate. When the sample is worth averaging, the direction is known:
-# raising this makes every judgement stricter (fail-closed), and `MAX_ENTRY_COST_R` prices the
-# taker exit, so a stop-heavy plan pays the honest figure at the door.
+# The split's original comment kept the inherited 3.0 — "changing it is a re-decision that
+# waits for the sample `live_pnl.stop_slippage_observations` accumulates" — and Thomas made
+# that re-decision on 2026-08-11, ahead of the sample, on two grounds the wait could not
+# answer: the sample only grows after a CONFIRMED live resumption, which now sits behind a
+# 34-to-69-week forward-confirmation clock (`forward_confirmation`), so waiting priced the
+# stop leg at a rate its only measurements contradict for a year or more; and the interim
+# error runs in the safe direction — 12.0 is the mean of the two fills (23.5, 0.0), four
+# times the inherited figure and below the worst observed, and a too-high stop rate refuses
+# marginal candidates rather than admitting one. INTERIM by construction: the re-decision
+# that replaces it is averaging `stop_slippage_observations` once that series is worth
+# averaging (or the stop-slippage probe of `docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md`,
+# which buys the sample without arming a strategy).
 #
-# A literal rather than `= DEFAULT_SLIPPAGE_BPS`, so the tunables sweep can see it; the
-# equality is pinned by `test_the_split_is_a_seam_not_a_repricing`, which is where a future
-# divergence has to announce itself.
-DEFAULT_STOP_SLIPPAGE_BPS = 3.0
+# Since the same evening (Thomas's direction), `cost_basis_rank` DOES compare this field —
+# the safest treatment of the store is not a forced re-price but the rank: a row scored at
+# a cheaper stop rate reads OPTIMISTIC, is refused at the promotion door, and its lineage
+# re-mints at the current model; a record with no stop field is judged on its own general
+# slippage (the pre-split identity). The factory stamps the field on every new mint. A literal rather than
+# `= DEFAULT_SLIPPAGE_BPS`, so the tunables sweep can see it; the divergence (and its
+# direction) is pinned by `test_the_split_is_a_seam_not_a_repricing`.
+DEFAULT_STOP_SLIPPAGE_BPS = 1.4
 
 # The maker rate, for the one leg that can earn it: the take-profit exit.
 #
@@ -143,6 +151,11 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # labels, while an import the other way would be a cycle. A market exit that is in NEITHER set
 # pays taker plus the GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
+
+# The market exits KNOWN to pay the general (non-stop) slippage: a time exit leaves on a
+# schedule, not chasing the move that closed it. Everything not named here, not a maker exit
+# and not None prices as a STOP — the pessimistic branch (see `apply_cost_model`).
+GENERAL_EXIT_REASONS = frozenset({"time_exit"})
 
 # How much of one R a round trip may cost before the entry is refused (`round_trip_cost_r`).
 #
@@ -328,13 +341,18 @@ def apply_cost_model(
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
     - a stop exit (``live_pnl.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
-      STOP leg's own slippage (``stop_slippage_bps``) — today the same number as the general
-      rate, so nothing is re-priced by the split itself; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
-    - anything else leaves at market: taker rate plus general adverse slippage, unchanged.
+      STOP leg's own slippage (``stop_slippage_bps``) — a DEARER rate since the 2026-08-11
+      interim re-pricing; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
+    - a KNOWN general market exit (``GENERAL_EXIT_REASONS``, i.e. the time exit) pays taker
+      plus general adverse slippage, unchanged.
+    - an UNRECOGNIZED reason prices as a stop. While the two rates were equal this branch
+      was invisible; the moment they diverged, "unknown pays the general rate" became a model
+      that gets CHEAPER when told nothing — the wrong way round, and exactly what
+      ``test_an_unknown_close_reason_is_charged_the_pessimistic_way`` pins against.
 
-    ``close_reason=None`` charges the taker branch. That keeps every existing caller's numbers
-    identical and makes the pessimistic case the default — a cost model that got optimistic
-    when it was told nothing would be the wrong way round.
+    ``close_reason=None`` charges the general taker branch — the planning-time convention
+    (``round_trip_cost_r`` and every entry-gate caller), pinned separately: None is "no
+    settlement happened yet", not "a settlement whose label this model does not know".
 
     ``funding_rate_sum`` is the carry over the holding window (see :func:`funding_cost_r`). It
     defaults to 0.0 — no carry — and that default is deliberately the *optimistic* one, against
@@ -350,7 +368,11 @@ def apply_cost_model(
     sign = 1.0 if direction == "LONG" else -1.0
     gross_r = sign * (exit_price - entry_price) / risk
     maker_exit = close_reason in MAKER_EXIT_REASONS
-    stop_exit = close_reason in STOP_EXIT_REASONS
+    stop_exit = (
+        close_reason is not None
+        and not maker_exit
+        and close_reason not in GENERAL_EXIT_REASONS
+    )
 
     entry_fill = cost.fill_price(entry_price, direction, "entry")
     exit_fill = exit_price if maker_exit else cost.fill_price(
@@ -617,10 +639,15 @@ VENUE_COST_DECLARATIONS: dict[str, VenueCostDeclaration] = {
         taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
         slippage_bps=DEFAULT_SLIPPAGE_BPS,
         maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
+        # Explicit rather than the its-own-general fallback: the 12.0 interim IS a Binance
+        # figure (the mean of this account's two measured stop fills), so it belongs on this
+        # declaration — the fallback rule exists for venues with no stop measurement at all.
+        stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
         funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
         funding_intervals_per_day=FUNDING_INTERVALS_PER_DAY,
         funding_multiplier=1.0,
-        note="taker measured on this account 2026-07-26; maker is the published rate.",
+        note="taker measured on this account 2026-07-26; maker is the published rate; stop "
+             "slippage is the 2026-08-11 interim (mean of the two measured stop fills).",
     ),
     # Measured against the venue 2026-08-04 (`EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`), public
     # read-only endpoints. Two fields are real numbers and three are holes, and the holes are

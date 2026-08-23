@@ -37,9 +37,13 @@ DATA_REVIEW_WORKER_VERSION = "0.1.0"
 # rather than edited in place because the two degraded records already in the ledger were
 # produced by v1, and which prompt produced a record is the first question anyone rereading
 # them asks. See `build_review_prompt`.
-DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v2"
+DATA_REVIEW_PROMPT_VERSION = "mvp_crypto_data_gap_review.v3"
 
-DATA_REVIEW_RECORD_TYPE = "crypto_data_review.v0"
+# v1 = the family vintage: suggestion verdicts carry `data_family`/`venue` and can be
+# refused `already_collected_family` / `unknown_data_family`; v0 rows carry `data_kind`
+# and were name-deduped only. The version is how a reader tells the vintages apart
+# without sniffing keys.
+DATA_REVIEW_RECORD_TYPE = "crypto_data_review.v1"
 DATA_REVIEW_LEDGER_KIND = "crypto_data_review"
 DATA_REVIEW_DEGRADED = "DATA_REVIEW_DEGRADED"
 # Raised when the fire AFTER a degraded one degrades too. See `review_loop_is_stalled`.
@@ -74,32 +78,54 @@ MAX_SUGGESTIONS_PER_RUN = 5
 # POSITIONING_FAMILIES are OFFERED (`positioning_eligible`, a coverage measurement). Saying
 # "feeds nothing" here would invite the one suggestion that is already built.
 CURRENT_SOURCES = (
-    {"source": "binance_futures_klines",
+    {"source": "binance_futures_klines", "venue": "binance_futures", "family": "candles",
      "content": "OHLCV candles + the taker aggressor split (taker_buy_base -> taker_*), "
                 "15m/1h/4h/1d, over the CROSS_SECTION_UNIVERSE cohort"},
-    {"source": "binance_futures_funding", "content": "funding-rate history (funding_rate, funding_zscore)"},
-    {"source": "coinalyze_liquidations", "content": "liquidation history (spike ratio + long/short/total)"},
-    {"source": "binance_futures_mark_index",
+    {"source": "binance_futures_funding", "venue": "binance_futures", "family": "funding",
+     "content": "funding-rate history (funding_rate, funding_zscore)"},
+    {"source": "coinalyze_liquidations", "venue": "coinalyze", "family": "liquidations",
+     "content": "liquidation history (spike ratio + long/short/total)"},
+    {"source": "binance_futures_mark_index", "venue": "binance_futures", "family": "mark_index_premium",
      "content": "mark / index / premium-index price series (mark_index_basis_bps, premium_*)"},
-    {"source": "coinalyze_open_interest",
+    {"source": "coinalyze_open_interest", "venue": "coinalyze", "family": "open_interest",
      "content": "daily open-interest history (open_interest, _change_pct, _zscore) — "
                 "what every oi_* family reads"},
-    {"source": "coinalyze_open_interest_1h",
+    {"source": "coinalyze_open_interest_1h", "venue": "coinalyze", "family": "open_interest",
      "content": "hourly open interest accumulated into oi_store, because the vendor keeps "
                 "~84 days and the factory replays 500. Feeds no feature yet: this is depth "
                 "for the series above, not a second signal"},
-    {"source": "binance_futures_positioning",
+    {"source": "binance_futures_positioning", "venue": "binance_futures", "family": "positioning",
      "content": "the three /futures/data/ long-short ratio series (top_position, top_account, "
                 "global_account) accumulated into positioning_store, because the vendor keeps "
                 "30 days. Feeds the positioning_* columns; the two families that read them stay "
                 "unminted until coverage covers the replay window"},
-    {"source": "dex_candle_archive",
+    {"source": "binance_futures_order_book", "venue": "binance_futures", "family": "order_book",
+     "content": "top-20 resting depth per side, sampled once per 15m period and reduced to "
+                "imbalance / spread_bps / mid in orderbook_store. THIS review suggested it "
+                "(2026-08-15) and it was built, which is why it is here: the endpoint serves "
+                "the current book and NO history, so unlike every other entry the store cannot "
+                "seed and a missed period is unrecoverable. Feeds no feature and cannot until "
+                "2029-05-11"},
+    {"source": "dex_candle_archive", "venue": "dex", "family": "candles",
      "content": "15m/1h/4h/1d candles for every perp the xyz DEX lists, accumulated into "
                 "candle_archive because that venue serves a rolling 5,000-candle window and "
                 "nothing behind it. Feeds no feature yet"},
 )
 
-_REQUIRED_FIELDS = ("name", "data_kind", "rationale", "expected_use")
+# The dedup axis (Thomas ②, 2026-08-17). Name-exact matching let a variation of a collected
+# series re-pass every week — `orderbook_depth_imbalance` against `binance_futures_order_book`
+# is the recorded miss — so a suggestion now declares its FAMILY from this closed vocabulary
+# and a collected family is refused deterministically, whatever the spelling. The match is
+# family-only on purpose: #708 judged same-family-different-venue (cross-exchange funding) a
+# partial duplicate, so `venue` rides along for the sheet and never keys the check. `other`
+# is the escape for a genuinely new kind and never dedups — the human judges substance, this
+# filter only refuses what the sheet already collects. A new family joins BOTH the source
+# entry above and (if genuinely new) this tuple in the PR that wires it, same discipline as
+# the list itself.
+UNCOLLECTED_FAMILIES = ("onchain", "macro", "sentiment", "other")
+DATA_FAMILIES = frozenset(s["family"] for s in CURRENT_SOURCES) | frozenset(UNCOLLECTED_FAMILIES)
+
+_REQUIRED_FIELDS = ("name", "data_family", "rationale", "expected_use")
 
 
 def _mintable(venue: str) -> frozenset[str] | None:
@@ -225,11 +251,15 @@ def build_review_prompt(inventory: Mapping[str, Any], *, count: int = MAX_SUGGES
         f"INVENTORY:\n{json.dumps(dict(inventory), ensure_ascii=False, indent=1, sort_keys=True)}\n\n"
         f"Reply with ONLY a JSON object of this shape, with at most {count} suggestions:\n"
         '{"summary": "<one line>", "key_findings": [], "facts": [], '
-        '"suggestions": [{"name": "...", "data_kind": "...", "rationale": "...", '
-        '"expected_use": "..."}]}\n'
+        '"suggestions": [{"name": "...", "data_family": "...", "venue": "...", '
+        '"rationale": "...", "expected_use": "..."}]}\n'
         "Every suggestion field is a string:\n"
         "- name: short snake_case identifier for the data series\n"
-        "- data_kind: one of market_microstructure | positioning | cross_sectional | onchain | macro | other\n"
+        f"- data_family: one of {' | '.join(sorted(DATA_FAMILIES))} — the family the series "
+        "belongs to. A family the inventory already collects is refused as a duplicate "
+        "whatever the name, so prefer families the inventory lacks; use `other` only for a "
+        "kind none of these words cover\n"
+        "- venue: which exchange or vendor serves it (informational; may be empty)\n"
         "- rationale: why this data plausibly carries edge HERE, referencing the inventory\n"
         "- expected_use: the kind of entry condition or template family it would enable\n"
     )
@@ -246,9 +276,29 @@ class MockDataReviewProvider:
     "is not" collected; that became false when the daily series shipped, and nothing
     caught it because ``already_collected`` matches the source NAME and the two spellings
     differ. So the fixture went on stating a fact about the inventory that the inventory
-    contradicted. Resting liquidity is the replacement because no collected series
-    describes it: every one is a trade or a position, none is an order that is still
-    waiting."""
+    contradicted.
+
+    **It has now happened twice, to the replacement, and that is the useful part of this
+    note.** Resting liquidity was chosen next because no collected series described it —
+    true when written, false on 2026-08-15 when ``orderbook_store`` shipped and
+    ``binance_futures_order_book`` joined the list above. The same spelling gap hid it
+    again (``orderbook_depth_imbalance`` against ``binance_futures_order_book``), so the
+    filter this fixture is meant to stay clear of would not have caught it either time.
+
+    The pattern is not bad luck: a mock suggestion is chosen for being the most obviously
+    missing thing in the inventory, which is exactly the property that makes it the most
+    likely thing to be built next. So the replacement is picked for durability rather than
+    for being the best idea. Option-implied volatility qualifies because every source above
+    is a spot-or-perp series recording what already happened, and nothing in this runtime's
+    universe of gated venues quotes an option at all — the gap is structural, not a queue
+    position. If this one goes stale too, the fix is not a third guess: it is to stop
+    sourcing the fixture from real gaps and let it name something the runtime would never
+    collect.
+
+    **The family axis (Thomas ②, 2026-08-17) is the deterministic close of both incidents
+    recorded above**: a name-variant of a collected series now declares a `data_family`
+    and is refused on it, whatever the spelling. This fixture declares `other` — the one
+    family that never joins the collected set — so it cannot go stale by that route."""
 
     model_id = "mock.data_gap_reviewer"
     model_version = "0.1.0"
@@ -262,17 +312,19 @@ class MockDataReviewProvider:
         "summary": "one usable suggestion, one malformed",
         "suggestions": [
             {
-                "name": "orderbook_depth_imbalance",
-                "data_kind": "market_microstructure",
-                "rationale": "Every collected series is a trade that happened or a position "
-                             "outstanding; none is resting liquidity, so nothing separates a "
-                             "move into a thin book from the same move into a deep one.",
-                "expected_use": "liquidity_vacuum family: take breakouts only when the book "
-                                "ahead of price is thin.",
+                "name": "option_implied_volatility",
+                "data_family": "other",
+                "venue": "",
+                "rationale": "Every collected series is a spot or perp observation of what has "
+                             "already happened; none of them is a price the market is paying "
+                             "for volatility it expects, so nothing distinguishes a quiet tape "
+                             "that is priced to stay quiet from one that is not.",
+                "expected_use": "vol_regime family: gate entries on realized volatility sitting "
+                                "below what options are charging for it.",
             },
             {
                 "name": "malformed_suggestion",
-                "data_kind": "other",
+                "data_family": "other",
                 # rationale/expected_use deliberately absent: shape rejection path.
             },
         ],
@@ -316,9 +368,15 @@ def _extract_suggestions(analysis: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def evaluate_suggestion(suggestion: Mapping[str, Any], *, index: int,
-                        known_sources: frozenset[str]) -> dict[str, Any]:
+                        known_sources: frozenset[str],
+                        known_families: frozenset[str]) -> dict[str, Any]:
     """Deterministic shape judgment. The human judges substance; this only refuses
-    what a review sheet cannot use — missing fields, or a source already collected."""
+    what a review sheet cannot use — missing fields, a source already collected, or
+    a FAMILY already collected (the axis names cannot dodge; Thomas ② 2026-08-17).
+
+    ``known_families`` comes from the inventory the review actually ran against, the
+    same way ``known_sources`` does — so a replayed old inventory without family keys
+    judges by the rules of its own vintage rather than by today's."""
     problems: list[str] = []
     for field in _REQUIRED_FIELDS:
         value = suggestion.get(field)
@@ -327,10 +385,21 @@ def evaluate_suggestion(suggestion: Mapping[str, Any], *, index: int,
     name = str(suggestion.get("name") or "").strip()
     if name and name in known_sources:
         problems.append("already_collected")
+    family = str(suggestion.get("data_family") or "").strip()
+    if family:
+        if family not in DATA_FAMILIES:
+            # Fail closed on vocabulary, never guess similarity: an unknown word is a
+            # refusal the sheet shows, not a fuzzy match the filter invents.
+            problems.append("unknown_data_family")
+        elif family != "other" and family in known_families:
+            # `other` is exempt STRUCTURALLY, not by list discipline: even if a source
+            # entry ever mislabels itself `other`, the escape for new kinds stays open.
+            problems.append("already_collected_family")
     return {
         "index": index,
         "name": name or f"unnamed_{index}",
-        "data_kind": str(suggestion.get("data_kind") or ""),
+        "data_family": family,
+        "venue": str(suggestion.get("venue") or ""),
         "rationale": str(suggestion.get("rationale") or ""),
         "expected_use": str(suggestion.get("expected_use") or ""),
         "accepted": not problems,
@@ -392,9 +461,12 @@ def review_data_gaps(
                 "network_egress": bool(getattr(provider, "network_egress", False)),
             }
 
-    known_sources = frozenset(str(s.get("source")) for s in inventory.get("current_sources") or ())
+    current = inventory.get("current_sources") or ()
+    known_sources = frozenset(str(s.get("source")) for s in current)
+    known_families = frozenset(str(s.get("family")) for s in current if s.get("family"))
     verdicts = [
-        evaluate_suggestion(s, index=i, known_sources=known_sources)
+        evaluate_suggestion(s, index=i, known_sources=known_sources,
+                            known_families=known_families)
         for i, s in enumerate(raw, start=1)
     ]
     accepted = [v for v in verdicts if v["accepted"]]
@@ -465,7 +537,8 @@ def format_review_report(record: Mapping[str, Any]) -> str:
         if not isinstance(s, Mapping):
             continue
         mark = "+" if s.get("accepted") else f"- ({','.join(s.get('problems') or [])})"
-        lines.append(f"{mark} {s.get('name')} [{s.get('data_kind')}]")
+        venue = f"@{s.get('venue')}" if s.get("venue") else ""
+        lines.append(f"{mark} {s.get('name')} [{s.get('data_family')}{venue}]")
         if s.get("accepted"):
             lines.append(f"    이유: {s.get('rationale')}")
             lines.append(f"    용도: {s.get('expected_use')}")
@@ -474,6 +547,7 @@ def format_review_report(record: Mapping[str, Any]) -> str:
 
 __all__ = [
     "CURRENT_SOURCES",
+    "DATA_FAMILIES",
     "DATA_REVIEW_LEDGER_KIND",
     "DATA_REVIEW_RECORD_TYPE",
     "MAX_SUGGESTIONS_PER_RUN",

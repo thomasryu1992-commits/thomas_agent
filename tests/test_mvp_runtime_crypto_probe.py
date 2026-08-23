@@ -6,6 +6,13 @@ regime grid, one-probe-at-a-time, and exhaustion; a probe outcome can never reac
 forward confirmation; the ask/confirm approval round-trip mirrors the promotion door's;
 and every ``--fire`` refusal path refuses with its typed code before any venue call —
 driven end to end with fakes, zero network anywhere.
+
+Since the second-batch approval (Thomas 2026-08-11) the symbol set is a request-time
+parameter, and this file also pins its compatibility surface: the DEFAULT batch's
+identity is frozen byte for byte (the live machine's batch-1 approval binds it), the
+batch-1 plan's exact on-disk shape keeps loading, N/cells/budget derive from the
+requested set, the unchanged 10 USDT cap refuses a five-symbol batch, and symbol
+validation fails closed on duplicates and malformed names.
 """
 
 from __future__ import annotations
@@ -30,6 +37,22 @@ from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolErr
 from tests._helpers import requires_local_core
 
 NOW = timeutil.utc_now_iso()
+
+# Frozen on origin/main @ 2bfd610 — the last commit BEFORE symbols became a request-time
+# parameter. The batch-1 identity (40 bps / 120 m): its approval was CONSUMED on
+# 2026-08-11, so since the 2026-08-17 parameter re-set the DEFAULTS no longer reproduce
+# it — the explicit params in `_params()` must, byte for byte, because the ledger rows
+# batch 1 minted carry this id and a drift here would orphan them.
+BATCH_ONE_CONTENT_SHA256 = "sha256:11a6109dc75131cd4998cbd251e4b590f4c5a0bada3d45946618ff69f61c1a2f"
+BATCH_ONE_BATCH_ID = "probe_batch_900fc0ad8ea51614381a"
+
+# Frozen 2026-08-17, the touch-rate re-set (stop 25 bps, timeout 240 m — measured 40/120
+# bought 27-42% low_vol fills and three timeouts in four real probes). No standing
+# approval binds the DEFAULT identity today (batch 1 consumed, batch 2 hash-bound to its
+# own params), which is the only condition under which this freeze may move; the next
+# default drift is still a deliberate act, caught here.
+DEFAULT_BATCH_CONTENT_SHA256 = "sha256:da5ece09b5f4141f1f849c6e1f6766418e6b8bb7cf0acc4a4590a2347680488d"
+DEFAULT_BATCH_BATCH_ID = "probe_batch_9e2e3f066e8dbe4376c1"
 
 
 def _params(**overrides):
@@ -90,6 +113,64 @@ def test_params_refuse_a_grid_mismatch():
     assert exc.value.reason_code == probe.PROBE_PARAMS_INVALID
 
 
+def test_the_default_batch_identity_is_frozen_for_the_live_approval():
+    """--symbols omitted must reproduce the FROZEN default identity byte for byte — a
+    quiet default drift re-mints what an operator believes they are asking for. The
+    identity moved once, deliberately: 2026-08-17, 40/120 → 25/240 off the measured
+    touch rates, at a moment no standing approval bound the default hash. The batch-1
+    identity stays reproducible from its explicit params — the ledger rows it minted
+    carry that id."""
+    params = probe.build_batch_params()
+    assert probe.probe_content_sha256(params) == DEFAULT_BATCH_CONTENT_SHA256
+    assert probe.batch_id_of(params) == DEFAULT_BATCH_BATCH_ID
+    assert params["n"] == 12 and params["symbols"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert params["stop_bps"] == 25.0 and params["timeout_minutes"] == 240
+    assert probe.probe_content_sha256(_params()) == BATCH_ONE_CONTENT_SHA256
+    assert probe.batch_id_of(_params()) == BATCH_ONE_BATCH_ID
+
+
+def test_a_two_symbol_batch_derives_n_cells_and_budget_from_its_symbols():
+    # Batch 2's shape (Thomas 2026-08-11, "2차 배치도 진행해줘"): n derives from the
+    # grid, input is normalized then sorted, and the worst case reprices to 8 x 100 x
+    # 0.0075 = 6.0 USDT — comfortably under the unchanged 10 USDT cap.
+    params = probe.build_batch_params(symbols=("dogeusdt", "BNBUSDT"))
+    assert params["n"] == 8
+    assert params["symbols"] == ["BNBUSDT", "DOGEUSDT"]
+    assert probe.worst_case_loss_usdt(params) == pytest.approx(6.0)
+    cells = probe.build_cells(params)
+    assert len(cells) == 8
+    assert {(c["symbol"], c["regime"], c["repeat"]) for c in cells} == {
+        (s, r, k) for s in ("BNBUSDT", "DOGEUSDT") for r in probe.REGIMES for k in (1, 2)
+    }
+    # A different set is a different batch — and therefore a different approval.
+    assert probe.probe_content_sha256(params) != BATCH_ONE_CONTENT_SHA256
+
+
+def test_a_five_symbol_batch_refuses_on_the_unchanged_budget_cap():
+    # 5 x 2 x 2 = 20 probes x 100 USDT x 0.0075 = 15.0 USDT > the approved 10.0 cap.
+    # Deliberately so: the cap does not stretch with the universe — a bigger batch
+    # needs a newly approved cap, never a silent widening.
+    with pytest.raises(ToolError) as exc:
+        probe.build_batch_params(
+            symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"))
+    assert exc.value.reason_code == probe.PROBE_BUDGET_EXCEEDED
+
+
+@pytest.mark.parametrize("symbols", [
+    (),                        # no symbols at all
+    ("",),                     # an empty entry refuses, never silently drops
+    ("BNBUSDT", "  "),         # whitespace is an empty entry too
+    ("BTCUSDT", "btcusdt"),    # duplicate after normalization would re-weight the grid
+    ("BNBBUSD",),              # not USDT-quoted (the caps are priced in USDT)
+    ("USDT",),                 # the bare quote asset is not a market
+    ("BNB-USDT",),             # not alphanumeric
+])
+def test_symbol_validation_fails_closed(symbols):
+    with pytest.raises(ToolError) as exc:
+        probe.build_batch_params(symbols=symbols)
+    assert exc.value.reason_code == probe.PROBE_PARAMS_INVALID
+
+
 # --- the plan store fails closed ------------------------------------------------------
 
 def test_plan_round_trips_and_tamper_fails_closed(tmp_path):
@@ -124,6 +205,59 @@ def test_plan_batch_id_must_derive_from_params(tmp_path):
     with pytest.raises(ToolError) as exc:
         probe.read_plan(tmp_path)
     assert exc.value.reason_code == probe.PROBE_PLAN_INVALID
+
+
+def _batch_one_disk_plan():
+    """The plan EXACTLY as the pre-change code wrote it to disk (the live machine's
+    ACTIVE batch-1 shape): every value a literal — no builder, no module constant — and
+    the record hash frozen from origin/main @ 2bfd610, so the fixture cannot drift with
+    the code it exists to hold still."""
+    cells = [
+        {"symbol": symbol, "regime": regime, "repeat": repeat, "status": "EMPTY",
+         "opened_at": None, "updated_at": None, "position_id": None,
+         "entry_client_order_id": None, "outcome_id": None, "close_reason": None,
+         "stop_slippage_bps": None, "note": None}
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+        for regime in ("low_vol", "high_vol")
+        for repeat in (1, 2)
+    ]
+    return {
+        "plan_version": "stop_slippage_probe_plan.v1",
+        "batch_id": BATCH_ONE_BATCH_ID,
+        "params": {
+            "n": 12, "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"], "direction": "LONG",
+            "stop_bps": 40.0, "regime_feature": "atr_percentile", "regime_split": 0.5,
+            "regime_timeframe": "4h", "repeats": 2, "timeout_minutes": 120,
+            "worst_case_loss_fraction": 0.0075, "per_probe_notional_cap_usdt": 100.0,
+            "budget_cap_usdt": 10.0,
+        },
+        "cells": cells,
+        "approval_id": "approval_batch_one",
+        "status": "ACTIVE",
+        "created_at": "2026-08-11T00:00:00Z",
+        "updated_at": "2026-08-11T00:00:00Z",
+        "record_sha256": "sha256:01a2e3e2109694e24730feb958775c36000c6153cc1b92edb2735735aa67b035",
+    }
+
+
+def test_a_plan_file_written_by_the_batch_one_code_loads_unchanged(tmp_path):
+    """Plan compatibility: the ACTIVE plan on the live machine predates symbols being a
+    request-time parameter, and its exact on-disk shape — frozen self-hash included —
+    must keep loading, selecting, and marking under the new code."""
+    raw = _batch_one_disk_plan()
+    path = probe.plan_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    plan = probe.read_plan(tmp_path)
+    assert plan == raw
+    assert plan["status"] == probe.PLAN_ACTIVE and len(plan["cells"]) == 12
+    # The new code keeps WORKING the old plan, not merely parsing it.
+    index = probe.select_cell(plan, symbol="ETHUSDT", regime=probe.REGIME_LOW)
+    assert plan["cells"][index]["symbol"] == "ETHUSDT"
+    updated = probe.mark_cell(plan, index, status=probe.CELL_OPEN, now=NOW, position_id="pos_x")
+    probe.write_plan(updated, tmp_path)
+    assert probe.read_plan(tmp_path)["cells"][index]["status"] == probe.CELL_OPEN
 
 
 # --- cell selection -------------------------------------------------------------------
@@ -292,6 +426,8 @@ def test_request_builds_decision_and_pending_approval():
     assert payload["permission_scope"] == "RUNTIME_GOVERNANCE"
     assert payload["action_type"] == probe.PROBE_ACTION_TYPE
     assert payload["content_sha256"] == prepared["content_sha256"]
+    # A default request (no symbols named) asks for exactly the frozen default identity.
+    assert prepared["content_sha256"] == DEFAULT_BATCH_CONTENT_SHA256
     assert request["status"] == "PENDING"
     assert request["approved_action_snapshot"]["content_sha256"] == prepared["content_sha256"]
 
@@ -334,6 +470,44 @@ def test_an_approval_binds_one_parameter_set_only(tmp_path):
         probe.confirm_probe_batch(
             _fake_approval(approved), params=_params(stop_bps=50.0), root=tmp_path, now=NOW)
     assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
+    # Same refusal for a different SYMBOL SET: this is why --confirm takes --symbols —
+    # a batch-2 approval can only confirm the exact set Thomas saw in the ask.
+    with pytest.raises(ApprovalBlocked) as exc:
+        probe.confirm_probe_batch(
+            _fake_approval(approved),
+            params=probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT")),
+            root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
+    assert probe.read_plan(tmp_path) is None
+
+
+def test_a_timeout_override_must_be_repeated_at_confirm(tmp_path):
+    """The batch-3 decision (Thomas 2026-08-18): 400m rides the ask as a request-time
+    parameter, exactly like --symbols — the content hash binds it, so a confirm that
+    falls back to the module default refuses rather than confirming a batch with a
+    timeout Thomas never saw."""
+    asked = probe.build_batch_params(timeout_minutes=400)
+    with pytest.raises(ApprovalBlocked) as exc:
+        probe.confirm_probe_batch(_fake_approval(asked), params=None, root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "APPROVAL_CONTENT_MISMATCH"
+    assert probe.read_plan(tmp_path) is None
+
+    plan = probe.confirm_probe_batch(_fake_approval(asked), params=asked, root=tmp_path, now=NOW)
+    assert plan["status"] == probe.PLAN_ACTIVE
+    assert plan["params"]["timeout_minutes"] == 400
+
+
+def test_cli_request_and_confirm_derive_the_same_override_params():
+    """`_override_params` is the single derivation both verbs share: a drift between the
+    request's batch and the confirm's is exactly the mismatch the hash refuses, so the
+    derivation itself is pinned here once."""
+    assert cli._override_params(None, None) is None
+    only_timeout = cli._override_params(None, 400)
+    assert only_timeout == probe.build_batch_params(timeout_minutes=400)
+    both = cli._override_params(("BNBUSDT", "DOGEUSDT"), 400)
+    assert both == probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"), timeout_minutes=400)
+    assert cli._override_params(("BNBUSDT", "DOGEUSDT"), None) == probe.build_batch_params(
+        symbols=("BNBUSDT", "DOGEUSDT"))
 
 
 def test_confirm_refuses_over_an_active_plan(tmp_path):
@@ -342,6 +516,50 @@ def test_confirm_refuses_over_an_active_plan(tmp_path):
     with pytest.raises(ToolError) as exc:
         probe.confirm_probe_batch(_fake_approval(params), params=params, root=tmp_path, now=NOW)
     assert exc.value.reason_code == probe.PROBE_PLAN_EXISTS
+
+
+def test_confirm_over_a_complete_plan_starts_the_next_batch(tmp_path):
+    """Batch 2's door, pinned: only ACTIVE blocks a confirm. A COMPLETE plan is
+    replaced — its evidence lives in the ledger, not in this file — so finishing
+    batch 1 is exactly what opens the BNBUSDT/DOGEUSDT ask."""
+    first = _active_plan(tmp_path)
+    for index in range(len(first["cells"])):
+        first = probe.mark_cell(first, index, status=probe.CELL_OPEN, now=NOW)
+        first = probe.mark_cell(first, index, status=probe.CELL_FILLED, now=NOW,
+                                outcome_id=f"out_{index}", close_reason="stop_loss",
+                                stop_slippage_bps=1.0)
+    assert first["status"] == probe.PLAN_COMPLETE
+    probe.write_plan(first, tmp_path)
+
+    second = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
+    plan = probe.confirm_probe_batch(
+        _fake_approval(second), params=second, root=tmp_path, now=NOW)
+    assert plan["status"] == probe.PLAN_ACTIVE
+    assert len(plan["cells"]) == 8
+    assert probe.read_plan(tmp_path)["batch_id"] == probe.batch_id_of(second)
+
+
+# --- the CLI surface: --symbols parsing and the status board --------------------------
+
+def test_parse_symbols_splits_and_strips_only():
+    assert cli._parse_symbols(None) is None
+    assert cli._parse_symbols("BNBUSDT, dogeusdt") == ("BNBUSDT", "dogeusdt")
+    # Empty entries survive to the builder's typed refusal — never dropped here, so a
+    # typo'd list can only fail loudly, not shrink silently.
+    assert cli._parse_symbols("") == ("",)
+    assert cli._parse_symbols("BNBUSDT,,DOGEUSDT") == ("BNBUSDT", "", "DOGEUSDT")
+
+
+def test_status_renders_the_plans_own_symbols(tmp_path, capsys):
+    """The board reads the PLAN's params, not the module defaults: a batch-2 plan must
+    show its own set and none of batch 1's."""
+    params = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
+    probe.write_plan(probe.build_plan(params, approval_id="approval_2", now=NOW), tmp_path)
+    assert cli.run_status(root=tmp_path) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "n=8 BNBUSDT/DOGEUSDT" in out
+    assert out.count("BNBUSDT") >= 5  # the params line plus its four cells
+    assert "BTCUSDT" not in out
 
 
 # --- the fire door refuses, typed, before any venue call ------------------------------
@@ -655,3 +873,97 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     # The naked close still recorded its outcome (money moved; the breaker must see it).
     assert len(ledger.outcomes) == 1
     assert ledger.outcomes[0]["close_reason"] == "naked_position_close"
+
+
+# --- abandoning a batch early (Thomas 2026-08-11) --------------------------------------
+
+def test_abandon_retires_an_active_plan_and_opens_the_next_confirm(tmp_path):
+    """The PROBE_PLAN_EXISTS refusal's own 'resolve' verb: the invariant (one plan at a
+    time) is untouched — what changes is that an operator can END a batch deliberately
+    instead of firing probes nobody wants."""
+    _active_plan(tmp_path)
+    plan = probe.abandon_plan(reason="two cells were enough", now=NOW, root=tmp_path)
+    assert plan["status"] == probe.PLAN_ABANDONED
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ABANDONED
+
+    second = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
+    replacement = probe.confirm_probe_batch(
+        _fake_approval(second), params=second, root=tmp_path, now=NOW)
+    assert replacement["status"] == probe.PLAN_ACTIVE
+    assert len(replacement["cells"]) == 8
+
+
+def test_abandon_refuses_while_a_probe_is_at_the_venue(tmp_path):
+    """An OPEN cell means a real position may be resting; the plan that tracks it must
+    not be closed out from under it."""
+    plan = _active_plan(tmp_path)
+    probe.write_plan(
+        probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_x"),
+        tmp_path,
+    )
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="r", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ACTIVE
+
+
+def test_abandon_refuses_without_a_plan_or_a_reason(tmp_path):
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="r", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_MISSING
+    _active_plan(tmp_path)
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="   ", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PARAMS_INVALID
+
+
+def test_abandon_is_terminal_not_repeatable(tmp_path):
+    _active_plan(tmp_path)
+    probe.abandon_plan(reason="done", now=NOW, root=tmp_path)
+    with pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="again", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_NOT_ACTIVE
+
+
+def test_an_abandoned_plan_still_loads_and_reports(tmp_path):
+    """ABANDONED is a first-class terminal status: the board must keep rendering the
+    batch's history (filled cells, sample rows) after the retirement."""
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_FILLED, now=NOW,
+                           outcome_id="out_1", stop_slippage_bps=0.28)
+    probe.write_plan(plan, tmp_path)
+    probe.abandon_plan(reason="sample judged sufficient", now=NOW, root=tmp_path)
+    loaded = probe.read_plan(tmp_path)
+    assert loaded["status"] == probe.PLAN_ABANDONED
+    assert loaded["cells"][0]["status"] == probe.CELL_FILLED
+    assert loaded["cells"][0]["stop_slippage_bps"] == 0.28
+
+
+def test_abandon_reconciles_a_stale_open_cell_before_refusing(tmp_path, monkeypatch):
+    """The day-one incident, pinned: the operator hand-closed the probe position at the
+    venue while --fire was dead. --abandon must run --fire's own reconcile (book clear +
+    no ledger row -> the cell returns to EMPTY) instead of refusing on a state that is
+    no longer true — without it, the only verb that could clear the cell was the one
+    that places a NEW probe."""
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_gone")
+    probe.write_plan(plan, tmp_path)
+    monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: None)
+    monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
+    assert cli.run_abandon(reason="hand-closed; moving to batch 2", root=tmp_path, now=NOW) == cli.EXIT_OK
+    loaded = probe.read_plan(tmp_path)
+    assert loaded["status"] == probe.PLAN_ABANDONED
+    assert loaded["cells"][0]["status"] == probe.CELL_EMPTY
+
+
+def test_abandon_still_refuses_while_the_position_is_genuinely_on_the_book(tmp_path, monkeypatch):
+    plan = _active_plan(tmp_path)
+    plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_live")
+    probe.write_plan(plan, tmp_path)
+    monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: {"status": "OPEN"})
+    monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        cli.run_abandon(reason="r", root=tmp_path, now=NOW)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ACTIVE

@@ -20,7 +20,7 @@ import pytest
 from runtime.mvp_runtime.crypto import live_leg as ll
 from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
-from runtime.mvp_runtime.errors import ToolError
+from runtime.mvp_runtime.errors import PersistenceError, SafetyGateBlocked, ToolError
 
 
 def _no_sleep(_seconds):
@@ -133,36 +133,50 @@ class FakeAdapter:
 
 
 class FakeStore:
-    def __init__(self, error=None):
+    """``raises`` defaults to ToolError but the REAL store never raises it — it fails through
+    `filelock.locked()` (PersistenceError), the gate re-check (SafetyGateBlocked) or the write
+    itself (OSError). The persist-failure tests script those, because the leg's catch has to be
+    proven against what the store actually throws, not the exception a fake finds convenient."""
+
+    def __init__(self, error=None, raises=ToolError, clear_error=None):
         self.saved: list[dict] = []
         self.cleared: list[str] = []
         self._error = error
+        self._raises = raises
+        self._clear_error = clear_error
 
     def save_position(self, position):
         if self._error:
-            raise ToolError(self._error, "scripted store failure")
+            raise self._raises(self._error, "scripted store failure")
         self.saved.append(dict(position))
 
     def clear_position(self, symbol):
+        if self._clear_error:
+            raise self._raises(self._clear_error, "scripted store failure")
         self.cleared.append(symbol)
 
 
 class FakeLedger:
-    def __init__(self, error=None):
+    def __init__(self, error=None, raises=ToolError):
         self.appended: list[dict] = []
         self._error = error
+        self._raises = raises
 
     def append_outcome(self, record):
         if self._error:
-            raise ToolError(self._error, "scripted ledger failure")
+            raise self._raises(self._error, "scripted ledger failure")
         self.appended.append(dict(record))
 
 
 class FakeCounter:
-    def __init__(self):
+    def __init__(self, error=None, raises=ToolError):
         self.count = 0
+        self._error = error
+        self._raises = raises
 
     def record_submission(self, *, day=None):
+        if self._error:
+            raise self._raises(self._error, "scripted counter failure")
         self.count += 1
         return self.count
 
@@ -199,6 +213,19 @@ def _exit(**kw):
         gate_open=kw.pop("gate_open", True),
         limits=kw.pop("limits", LIMITS),
         close_reason=kw.pop("close_reason", "time_exit"),
+        now=kw.pop("now", NOW),
+        **kw,
+    )
+
+
+def _settle(**kw):
+    """A venue-closed settle whose stop leg reports FILLED, so it prices and settles cleanly
+    unless the test scripts a failure into a store."""
+    return ll.settle_venue_closed_position(
+        kw.pop("position", POSITION),
+        adapter=kw.pop("adapter", FakeAdapter(statuses={"SL": "FILLED"})),
+        position_store=kw.pop("position_store", FakeStore()),
+        ledger=kw.pop("ledger", FakeLedger()),
         now=kw.pop("now", NOW),
         **kw,
     )
@@ -573,6 +600,18 @@ def test_a_resting_leg_is_placed_a_filled_one_is_not():
                                  sleep=_no_sleep)["placed"] is False
 
 
+def test_a_target_that_partially_fills_at_placement_still_counts_as_placed():
+    """A GTC target crossing part of its size the moment it lands is still a working order —
+    its remainder rests. Counting it as not-placed would run `_close_naked_position` against
+    a position the target is actively closing at profit."""
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg="TP", side="SELL", price=62000.0,
+                                     working_type="MARK_PRICE", position_seed="seed",
+                                     quantity=0.002)
+    result = ll.place_bracket_leg(intent, adapter=FakeAdapter(statuses={"TP": "PARTIALLY_FILLED"}),
+                                  sleep=_no_sleep)
+    assert result["placed"] is True
+
+
 def test_the_two_legs_get_distinct_idempotency_keys():
     sl = ll.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=59000.0,
                                  working_type="MARK_PRICE", position_seed="seed")
@@ -769,6 +808,116 @@ def test_a_book_write_failure_is_surfaced_not_swallowed():
     result = _entry(position_store=store)
     assert result["status"] == ll.ENTRY_OPENED
     assert ll.POSITION_PERSIST_FAILED in result["reason_codes"]
+
+
+# --- the REAL stores' failure modes do not escape the leg --------------------------
+#
+# The real position store and ledger never raise ToolError: they fail through
+# `filelock.locked()` (PersistenceError), the gate re-check (SafetyGateBlocked), or the write
+# itself (a raw OSError) — and the first two are SIBLINGS of ToolError under MvpRuntimeError.
+# While the persist sites caught only ToolError, those failure modes escaped to
+# `run_live_leg`'s MvpRuntimeError handler, which stamps ROUTE_BLOCKED — a status whose
+# contract is "nothing was sent" — with no halt, on a leg where money had already moved; on
+# the entry path the escape aborted BEFORE the bracket was placed or a naked fill closed,
+# leaving a filled entry unprotected and unbooked while reported as a pre-venue refusal.
+
+@pytest.mark.parametrize("raises,code,expected", [
+    (PersistenceError, "LIVE_STATE_LOCKED", "LIVE_STATE_LOCKED"),
+    (SafetyGateBlocked, "SAFETY_FLAG_DISABLED", "SAFETY_FLAG_DISABLED"),
+    (OSError, "EACCES", "UNEXPECTED_OSError"),   # no reason_code to extract, so it is named
+])
+def test_a_real_book_write_failure_is_reported_never_raised(raises, code, expected):
+    store = FakeStore(error=code, raises=raises)
+    result = _entry(position_store=store)
+    assert result["status"] == ll.ENTRY_OPENED
+    assert ll.POSITION_PERSIST_FAILED in result["reason_codes"]
+    assert expected in result["reason_codes"]
+
+
+def test_a_real_book_write_failure_fires_the_incident_vocabulary_the_route_halts_on():
+    """`live_route._INCIDENT_REASONS` halts the fan-out on POSITION_PERSIST_FAILED — but only
+    if the leg survives to report it. An escaping PersistenceError produced no leg result at
+    all, so the halt the reason code exists for was unreachable for the store's real failure."""
+    from runtime.mvp_runtime.crypto import live_route
+
+    result = _entry(position_store=FakeStore(error="LIVE_STATE_LOCKED", raises=PersistenceError))
+    assert live_route._is_incident(result)
+
+
+def test_a_counter_persist_failure_does_not_abort_before_the_bracket():
+    """The counter is written between the entry submit and the bracket placement — the worst
+    possible escape point in the whole leg. A PersistenceError there must cost a reason code,
+    never the protective bracket or the booking."""
+    counter = FakeCounter(error="LIVE_ORDER_COUNT_LOCKED", raises=PersistenceError)
+    adapter, store = FakeAdapter(), FakeStore()
+    result = _entry(adapter=adapter, position_store=store, counter=counter)
+    assert result["status"] == ll.ENTRY_OPENED
+    assert [r["type"] for r in adapter.submitted] == ["MARKET", "STOP_MARKET", "LIMIT"]
+    assert len(store.saved) == 1
+    assert "LIVE_ORDER_COUNT_LOCKED" in result["reason_codes"]
+
+
+def test_a_counter_persist_failure_does_not_abort_before_the_naked_close():
+    """Rule 2 must still run behind a failing counter store: a filled entry whose bracket was
+    refused is closed, not stranded by an exception between the two."""
+    counter = FakeCounter(error="LIVE_ORDER_COUNT_LOCKED", raises=PersistenceError)
+    adapter = FakeAdapter(missing={"TP"})
+    result = _entry(adapter=adapter, counter=counter)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    close = [r for r in adapter.submitted if r.get("reduceOnly") and r["type"] == "MARKET"]
+    assert len(close) == 1
+
+
+@pytest.mark.parametrize("raises", [PersistenceError, SafetyGateBlocked, OSError])
+def test_a_real_ledger_failure_on_exit_keeps_the_book_and_reports(raises):
+    """The same rule the ToolError twin above pins, against the exceptions the real ledger
+    actually raises: the book stays OPEN and OUTCOME_PERSIST_FAILED — an incident reason —
+    reaches the record instead of the exception reaching `run_live_leg`."""
+    from runtime.mvp_runtime.crypto import live_route
+
+    store = FakeStore()
+    ledger = FakeLedger(error="LIVE_STATE_LOCKED", raises=raises)
+    result = _exit(position_store=store, ledger=ledger)
+    assert result["status"] == ll.EXIT_NOT_CONFIRMED
+    assert ll.OUTCOME_PERSIST_FAILED in result["reason_codes"]
+    assert store.cleared == []
+    assert live_route._is_incident(result)
+
+
+def test_a_real_book_clear_failure_on_exit_still_reports_the_recorded_close():
+    """The outcome landed; only clearing the book failed. That is stale local state the next
+    reconciliation catches — reported on the record, never an exception that would rebrand a
+    recorded close as ROUTE_BLOCKED."""
+    store = FakeStore(clear_error="LIVE_STATE_LOCKED", raises=PersistenceError)
+    ledger = FakeLedger()
+    result = _exit(position_store=store, ledger=ledger)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert len(ledger.appended) == 1
+    assert "LIVE_STATE_LOCKED" in result["reason_codes"]
+
+
+def test_a_real_ledger_failure_on_a_venue_close_keeps_the_book_and_reports():
+    """`settle_venue_closed_position` owes the same posture: the venue already closed the
+    position, so a PersistenceError from the ledger must leave EXIT_UNSETTLEABLE on the record
+    (itself an incident status) rather than escape as a pre-venue refusal."""
+    from runtime.mvp_runtime.crypto import live_route
+
+    store = FakeStore()
+    ledger = FakeLedger(error="LIVE_STATE_LOCKED", raises=PersistenceError)
+    result = _settle(position_store=store, ledger=ledger)
+    assert result["status"] == ll.EXIT_UNSETTLEABLE
+    assert ll.OUTCOME_PERSIST_FAILED in result["reason_codes"]
+    assert store.cleared == []
+    assert live_route._is_incident(result)
+
+
+def test_a_real_book_clear_failure_on_a_venue_close_still_settles():
+    store = FakeStore(clear_error="LIVE_STATE_LOCKED", raises=PersistenceError)
+    ledger = FakeLedger()
+    result = _settle(position_store=store, ledger=ledger)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert len(ledger.appended) == 1
+    assert "LIVE_STATE_LOCKED" in result["reason_codes"]
 
 
 # --- the module cannot reach the venue on its own ---------------------------------

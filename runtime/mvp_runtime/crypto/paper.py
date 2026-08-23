@@ -47,6 +47,7 @@ from ..filelock import locked
 from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from . import cost as costs
+from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
@@ -136,6 +137,34 @@ SETTLEMENT_RACE_LOST = "SETTLEMENT_RACE_LOST"
 # The freshness gate held a new entry: this context was already evaluated for the
 # current closed candle, so a coarser-timeframe strategy is not re-entered every tick.
 CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
+# A stop-loss just settled on this context and the cooldown window has not elapsed.
+# The counterfactual tracker shadows the blocked signal under this reason so the
+# gate's cost is measurable via `r_values_by_reason`.
+STOP_LOSS_COOLDOWN = "STOP_LOSS_COOLDOWN"
+
+# The planned stop sits beyond the isolated-margin liquidation price, so the position
+# would be liquidated before the stop triggers. Applied identically in `_replay`
+# (backtest) and `run_paper_update` (live paper) and `plan_live_entry` (live).
+STOP_BEYOND_LIQUIDATION = "STOP_BEYOND_LIQUIDATION"
+
+# After a stop-loss, block re-entry on the same (venue, symbol, timeframe) for this
+# many bars.  Applied identically in `_replay` (backtest) and `run_paper_update`
+# (live paper) so the evidence the lifecycle reads reflects the actual trading rule.
+# 2 bars is conservative: long enough to skip the immediate reversion bar and the
+# one after it, short enough to re-enter on a genuine trend resumption.
+COOLDOWN_BARS_AFTER_STOPLOSS = 2
+
+# The leverage the liquidation guard assumes when no venue-reported leverage is
+# available (paper, backtest). Binance USDM defaults to 20x for most perpetual
+# contracts. A higher assumption makes the guard MORE restrictive (liquidation price
+# closer to entry); a lower one more permissive.
+ASSUMED_LEVERAGE = 20
+
+# Tier-1 maintenance margin rate on Binance USDM (0.4%). Using the lowest tier is
+# permissive — larger positions have higher MMR and get liquidated sooner, so a
+# stop that clears this check can still be beyond liquidation at a higher tier.
+MAINTENANCE_MARGIN_RATE = 0.004
+
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
 
 # The friction this plan would pay is too large a share of the one R it is risking, so the
@@ -373,6 +402,9 @@ def route_entries(
         admitted, regime_reason = (
             regime_admits(entry, feature_row.get("market_regime")) if result.matched else (True, None)
         )
+        di_admitted, di_reason, di_score = (
+            distribution_admits(entry, feature_row) if result.matched and admitted else (True, None, None)
+        )
         evaluation = {
             "strategy_id": entry.get("strategy_id"),
             "matched": result.matched,
@@ -381,8 +413,11 @@ def route_entries(
         if regime_reason is not None:
             evaluation["regime_excluded"] = regime_reason
             evaluation["regime"] = feature_row.get("market_regime")
+        if di_reason is not None:
+            evaluation["distribution_excluded"] = di_reason
+            evaluation["dissimilarity_index"] = di_score
         evaluations.append(evaluation)
-        if result.matched and admitted:
+        if result.matched and admitted and di_admitted:
             matches.append({
                 "strategy_id": entry.get("strategy_id"),
                 "candidate_id": entry.get("candidate_id"),
@@ -404,6 +439,10 @@ def route_entries(
         "regime_excluded_strategy_ids": sorted(
             str(e["strategy_id"]) for e in evaluations
             if e.get("regime_excluded") and e.get("strategy_id") is not None
+        ),
+        "distribution_excluded_strategy_ids": sorted(
+            str(e["strategy_id"]) for e in evaluations
+            if e.get("distribution_excluded") and e.get("strategy_id") is not None
         ),
         "regime": feature_row.get("market_regime") if feature_row else None,
         # The traded context, so a plan books under the symbol this cycle actually
@@ -594,6 +633,63 @@ def entry_cost_refusal(
         # path, which is the one path that must not crash.
         "round_trip_cost_r": round(cost_r, 6) if math.isfinite(cost_r) else "inf",
         "limit_r": max_cost_r,
+        "symbol": plan.get("symbol"),
+        "timeframe": plan.get("timeframe"),
+        "strategy_id": plan.get("strategy_id"),
+    }
+
+
+def liquidation_price(
+    entry_price: float, direction: str, *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> float:
+    """Approximate isolated-margin liquidation price for Binance USDM futures.
+
+    Isolated margin is conservative relative to cross margin: the liquidation price is
+    closer to entry (less margin backing), so a stop that clears this check is safe under
+    both modes."""
+    if direction == "LONG":
+        return entry_price * (1.0 - 1.0 / leverage + mmr)
+    return entry_price * (1.0 + 1.0 / leverage - mmr)
+
+
+def stop_is_beyond_liquidation(
+    entry_price: float, stop_price: float, is_long: bool, *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> bool:
+    """True when the stop sits on the wrong side of the liquidation price."""
+    if entry_price <= 0 or leverage <= 0:
+        return False
+    liq = liquidation_price(entry_price, "LONG" if is_long else "SHORT", leverage=leverage, mmr=mmr)
+    if is_long:
+        return stop_price <= liq
+    return stop_price >= liq
+
+
+def stop_beyond_liquidation_refusal(
+    plan: Mapping[str, Any], *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+) -> dict[str, Any] | None:
+    """Refuse a plan whose stop sits beyond the isolated-margin liquidation price. Pure.
+
+    At the refused leverage the position would be liquidated before the stop-loss order
+    triggers, making the protective stop ineffective."""
+    direction = str(plan.get("direction") or "")
+    entry = float(plan.get("entry_price") or 0.0)
+    stop = float(plan.get("stop_loss") or 0.0)
+    if entry <= 0 or leverage <= 0:
+        return None
+    is_long = direction == "LONG"
+    if not stop_is_beyond_liquidation(entry, stop, is_long, leverage=leverage, mmr=mmr):
+        return None
+    liq = liquidation_price(entry, direction, leverage=leverage, mmr=mmr)
+    return {
+        "reason_code": STOP_BEYOND_LIQUIDATION,
+        "entry_price": entry,
+        "stop_loss": stop,
+        "liquidation_price": round(liq, 8),
+        "assumed_leverage": leverage,
+        "maintenance_margin_rate": mmr,
         "symbol": plan.get("symbol"),
         "timeframe": plan.get("timeframe"),
         "strategy_id": plan.get("strategy_id"),
@@ -1428,6 +1524,7 @@ def run_paper_update(
     manual_exit: bool = False,
     intrabar_collector: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One cycle's paper step: settle the open position, then maybe open one.
 
@@ -1615,6 +1712,15 @@ def run_paper_update(
                     **({"max_hold_fallback": LEGACY_MAX_HOLD_FALLBACK} if legacy_fallback else {}),
                 }))
                 position = None
+                # Record cooldown when the exit was a stop-loss, so this context
+                # is blocked from re-entry for COOLDOWN_BARS_AFTER_STOPLOSS bars.
+                if reason == "stop_loss" and cooldown_marks is not None and getattr(store, "filesystem_write", False):
+                    candle_close = last_candle.get("close_time") if isinstance(last_candle, Mapping) else None
+                    if candle_close is not None:
+                        from .market_data import TIMEFRAMES
+                        tf_minutes = TIMEFRAMES.get(timeframe, 60)
+                        expiry = timeutil.plus_minutes(candle_close, COOLDOWN_BARS_AFTER_STOPLOSS * tf_minutes)
+                        cooldown_marks.record_stoploss(context.key, expiry)
             else:
                 store.save_position(position)  # persist advanced holding_candles
 
@@ -1640,6 +1746,14 @@ def run_paper_update(
             }
             summary["open_skipped"] = skip
             records.append(_event("open_skipped", {**skip, "read_only": True}))
+        elif cooldown_marks is not None and cooldown_marks.is_cooling_down(context.key, candle_time):
+            refusal = {
+                "reason_code": STOP_LOSS_COOLDOWN,
+                "candle_time": candle_time,
+                "cooldown_expiry": cooldown_marks.expiry(context.key),
+            }
+            summary["open_refused"] = refusal
+            records.append(_event("open_refused", {**refusal, "read_only": True}))
         else:
             plan = build_entry_plan(route, feature_row, now=now)
             # The economics door, before the portfolio lock: it is pure arithmetic on the plan
@@ -1647,9 +1761,13 @@ def run_paper_update(
             # was uneconomic would serialise cycles on a question none of them needed shared
             # state to answer.
             cost_refusal = entry_cost_refusal(plan) if plan is not None else None
+            liq_refusal = stop_beyond_liquidation_refusal(plan) if plan is not None and cost_refusal is None else None
             if cost_refusal is not None:
                 summary["open_refused"] = cost_refusal
                 records.append(_event("open_refused", {**cost_refusal, "read_only": True}))
+            elif liq_refusal is not None:
+                summary["open_refused"] = liq_refusal
+                records.append(_event("open_refused", {**liq_refusal, "read_only": True}))
             elif plan is not None:
                 portfolio_lock = positions_dir(root) / "portfolio.lock"
                 with locked(portfolio_lock, code="PAPER_STATE_LOCKED", label="paper portfolio"):

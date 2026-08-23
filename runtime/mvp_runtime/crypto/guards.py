@@ -240,6 +240,12 @@ def run_data_health_check(
     }
 
 
+#: `probe.PROBE_STRATEGY_PREFIX`, kept as a local literal so the hot cycle guard does not
+#: import the probe/live-order stack; `test_probe_prefix_matches_the_probe_module` pins the
+#: two equal so they cannot drift apart silently.
+_PROBE_STRATEGY_PREFIX = "PROBE-"
+
+
 def _closed_rows(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Closed outcomes in the source registry's shape, sorted by close time.
 
@@ -261,6 +267,7 @@ def _closed_rows(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {
             "pnl_r": _judged_r(r),
             "exit_time": r.get("created_at_utc"),
+            "is_probe": str(r.get("strategy_id") or "").startswith(_PROBE_STRATEGY_PREFIX),
         }
         for r in outcomes
         if isinstance(r, dict) and r.get("outcome_closed") is True
@@ -290,8 +297,22 @@ def _pnl_since(rows: list[dict[str, Any]], start_time: datetime) -> float:
 
 
 def _consecutive_losses(rows: list[dict[str, Any]]) -> int:
+    """Streak of STRATEGY losses; probe rows are invisible in both directions.
+
+    A probe closes at a loss by design — the stop fill IS the sample it was fired to buy —
+    so counting probe rows here turned the streak into a meter of measurement spend rather
+    than of strategy failure. Measured 2026-08-17: three probe closes tripped the pool
+    breaker and muted live routing while the armed strategy's own last close was a WIN, and
+    the arithmetic cannot be raised out of — an approved batch needs 8 stop fills against
+    `MAX_MAX_CONSECUTIVE_LOSSES` = 10. The symmetric half is equally load-bearing: a probe
+    that happens to close positive (a timeout exit at market above entry) must not RESET a
+    real strategy streak. Probes stay fully counted where money is money — the daily and
+    weekly sums and the drawdown read every closed row, probe or not.
+    """
     count = 0
     for row in reversed(rows):
+        if row.get("is_probe"):
+            continue
         if row["pnl_r"] < 0:
             count += 1
         else:

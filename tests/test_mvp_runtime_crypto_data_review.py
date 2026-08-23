@@ -14,6 +14,8 @@ import pytest
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto import market_data
 from runtime.mvp_runtime.crypto.data_review import (
+    CURRENT_SOURCES,
+    DATA_FAMILIES,
     DATA_REVIEW_DEGRADED,
     DATA_REVIEW_LEDGER_KIND,
     MAX_SUGGESTIONS_PER_RUN,
@@ -138,13 +140,18 @@ def test_a_declared_venue_still_calls_the_provider():
 
 # --- the inventory stays true -------------------------------------------------
 
-# Every series `attach_feeds` reports a status for, as of 2026-08-08. A SNAPSHOT and a
+# Every series `attach_feeds` reports a status for, as of 2026-08-15. A SNAPSHOT and a
 # decision point, the `SHARED_ACROSS_MODULES` precedent in `test_diagnostic_code_index`:
 # the list is not a second source of truth, it is the thing that makes the ninth series a
 # choice somebody makes rather than one that lands unnoticed.
+#
+# It worked. ``orderbook`` is the ninth, and this pin is what stopped it landing unnoticed —
+# `CURRENT_SOURCES` had been updated in the same change but this line had not, so the guard
+# failed on exactly the half that was forgotten rather than on the half that was done.
 COLLECTED_SERIES = frozenset({
     "funding", "mark_prices", "index_prices", "premium_index",
     "positioning", "liquidations", "open_interest", "open_interest_1h",
+    "orderbook",
 })
 
 
@@ -183,7 +190,8 @@ def test_a_new_collected_series_forces_the_inventory_to_be_revisited(tmp_path):
     # own schedule kind), so the pin above cannot see them and they are named directly.
     sources = {s["source"] for s in CURRENT_SOURCES}
     assert {"coinalyze_open_interest", "coinalyze_open_interest_1h",
-            "binance_futures_positioning", "dex_candle_archive"} <= sources
+            "binance_futures_positioning", "dex_candle_archive",
+            "binance_futures_order_book"} <= sources
 
 
 def test_an_accumulating_source_says_it_feeds_nothing_yet():
@@ -225,7 +233,7 @@ def test_mock_provider_exercises_accept_and_reject():
                               provider=MockDataReviewProvider(), now=NOW)
     assert record["suggested_count"] == 2 and record["accepted_count"] == 1
     accepted = [s for s in record["suggestions"] if s["accepted"]]
-    assert accepted[0]["name"] == "orderbook_depth_imbalance"
+    assert accepted[0]["name"] == "option_implied_volatility"
     rejected = [s for s in record["suggestions"] if not s["accepted"]]
     assert "missing_rationale" in rejected[0]["problems"]
     assert record["collection_effect"] == "NONE"
@@ -234,16 +242,59 @@ def test_mock_provider_exercises_accept_and_reject():
 
 def test_already_collected_source_is_rejected():
     verdict = evaluate_suggestion(
-        {"name": "binance_futures_funding", "data_kind": "positioning",
+        {"name": "binance_futures_funding", "data_family": "other",
          "rationale": "r", "expected_use": "u"},
-        index=1, known_sources=frozenset({"binance_futures_funding"}))
+        index=1, known_sources=frozenset({"binance_futures_funding"}),
+        known_families=frozenset())
     assert not verdict["accepted"] and "already_collected" in verdict["problems"]
+
+
+def test_a_family_variant_of_a_collected_series_is_rejected():
+    """#708's recorded miss, closed: `orderbook_depth_imbalance` passed the name filter
+    while `binance_futures_order_book` collected the same series. The family axis
+    (Thomas ②, 2026-08-17) refuses it whatever the spelling — and venue never keys the
+    check, because #708 judged same-family-different-venue a partial duplicate too."""
+    verdict = evaluate_suggestion(
+        {"name": "orderbook_depth_imbalance", "data_family": "order_book",
+         "venue": "some_other_exchange", "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset({"binance_futures_order_book"}),
+        known_families=frozenset({"order_book"}))
+    assert not verdict["accepted"]
+    assert "already_collected_family" in verdict["problems"]
+    assert "already_collected" not in verdict["problems"]  # the name filter alone missed it
+
+
+def test_an_unknown_family_is_refused_not_guessed():
+    verdict = evaluate_suggestion(
+        {"name": "resting_liquidity_snapshots", "data_family": "resting_liquidity",
+         "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset(), known_families=frozenset())
+    assert not verdict["accepted"] and "unknown_data_family" in verdict["problems"]
+
+
+def test_the_other_family_is_the_escape_and_never_dedups():
+    verdict = evaluate_suggestion(
+        {"name": "a_genuinely_new_kind", "data_family": "other",
+         "rationale": "r", "expected_use": "u"},
+        index=1, known_sources=frozenset(),
+        known_families=frozenset(s["family"] for s in CURRENT_SOURCES) | {"other"})
+    assert verdict["accepted"], verdict["problems"]
+
+
+def test_every_collected_source_declares_a_known_family_and_venue():
+    """The same-PR discipline, pinned: a source joins the list WITH its family and venue,
+    and the family is a vocabulary member — a stale or missing axis silently disarms the
+    only deterministic dedup the review has, which is how the name axis rotted."""
+    for entry in CURRENT_SOURCES:
+        assert entry["family"] in DATA_FAMILIES, entry["source"]
+        assert entry["venue"], entry["source"]
+    assert "other" not in {s["family"] for s in CURRENT_SOURCES}
 
 
 def test_suggestions_capped_per_run():
     class Flood(MockDataReviewProvider):
         _ANSWER = {"suggestions": [
-            {"name": f"s{i}", "data_kind": "other", "rationale": "r", "expected_use": "u"}
+            {"name": f"s{i}", "data_family": "other", "rationale": "r", "expected_use": "u"}
             for i in range(20)
         ]}
     record = review_data_gaps(build_data_inventory([], []), provider=Flood(), now=NOW)
@@ -278,7 +329,7 @@ def test_report_names_accepted_and_rejected():
     record = review_data_gaps(build_data_inventory([], []),
                               provider=MockDataReviewProvider(), now=NOW)
     sheet = format_review_report(record)
-    assert "orderbook_depth_imbalance" in sheet and "malformed_suggestion" in sheet
+    assert "option_implied_volatility" in sheet and "malformed_suggestion" in sheet
     assert "수집 효력 없음" in sheet
 
 
@@ -325,6 +376,47 @@ def test_scheduled_data_review_fire_ledgers_the_record(tmp_path, monkeypatch):
     reviews = [r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND]
     assert len(reviews) == 1
     assert reviews[0]["record"]["collection_effect"] == "NONE"
+
+
+def test_a_delegated_review_is_stamped_and_uniquely_identified(tmp_path, monkeypatch):
+    """A record written on the far side of the door still knows when it was written.
+
+    `build_worker_door`'s `_apply` calls `apply_work` without a `now` — so `None` is what a
+    job actually receives in production, and `_worker_in_process` above reproduces that by
+    omitting it too. The pipeline path never noticed because `run_task` resolves `None`
+    against the clock; the job path did not, and the data review stamps `created_at` from it
+    AND seeds `review_id` off it.
+
+    So the 2026-08-15 fire — the first to run through this door — wrote `created_at: null` and
+    `review_id: data_review_246e68234b481e1cb348`, which is `short_id("data_review", {"at":
+    None})`: a CONSTANT. Every weekly review after it would have been filed under the same id,
+    making the ledger's `trace_id` and the schedule's `last_status` identical week to week.
+
+    Asserted as a derivation rather than as "not that literal id": the id being a function of
+    the stamp is the property that makes it unique per fire, and it survives a change to
+    either the seed or the id format."""
+    from runtime.mvp_runtime import timeutil
+    from runtime.read_only_kernel import integrity
+
+    monkeypatch.delenv("MVP_VALIDATOR_PROVIDER", raising=False)
+    _worker_in_process(monkeypatch, tmp_path)
+    schedule = build_schedule(kind=KIND_DATA_REVIEW, request="", interval_seconds=86400,
+                              created_by="op", now="2026-07-24T06:00:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(schedule)
+    ledger = LedgerStore(tmp_path / LEDGER_REL)
+    run_due(store, now=NOW, control_store=ControlStore(tmp_path),
+            ledger=ledger, repo_root=tmp_path)
+    rows = [json.loads(line) for line in
+            (tmp_path / LEDGER_REL / RECORDS_FILE).read_text(encoding="utf-8").splitlines()]
+    record = [r for r in rows if r["kind"] == DATA_REVIEW_LEDGER_KIND][0]["record"]
+
+    created_at = record["created_at"]
+    assert created_at is not None
+    assert timeutil.FIXED_UTC_PATTERN.match(created_at), created_at
+    assert record["review_id"] == integrity.short_id("data_review", {"at": created_at})
+    assert record["review_id"] != integrity.short_id("data_review", {"at": None})
 
 
 # --- the prompt asks for a shape the provider will actually hand back ---------

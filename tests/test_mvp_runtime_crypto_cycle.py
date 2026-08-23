@@ -1302,3 +1302,294 @@ def test_an_unreadable_live_history_disarms_every_lineage_before_the_leg(tmp_pat
 
     _cycle(tmp_path, FakeExchangeCollector(), RealPaperStore(root=tmp_path, authorization=_AUTH))
     assert seen["live_routable_strategy_ids"] == set()
+
+
+# ---------------------------------------------------------------------------
+# ⑧ Pipeline stall detection (dead-man switch)
+# ---------------------------------------------------------------------------
+
+class TestCycleIsStalled:
+    """``cycle_is_stalled`` mirrors ``data_review.review_loop_is_stalled``:
+    the first degraded fire stays quiet, the second consecutive one raises."""
+
+    def test_one_degraded_cycle_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, None) is False
+        assert cycle_is_stalled(record, "verdict=ALLOW route=matched") is False
+
+    def test_two_consecutive_degraded_cycles_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD route=no_strategies") is True
+
+    def test_stalled_status_is_recognised_on_the_next_fire(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, cycle_is_stalled
+        record = {"degraded": True}
+        assert cycle_is_stalled(record, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_a_healthy_cycle_is_never_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import cycle_is_stalled
+        record = {"degraded": False}
+        assert cycle_is_stalled(record, "degraded verdict=HOLD") is False
+
+
+class TestPoolCycleIsStalled:
+    """``pool_cycle_is_stalled`` checks that ALL contexts degraded for two
+    consecutive fires — one healthy context keeps the pipeline productive."""
+
+    def test_all_degraded_after_healthy_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2") is False
+
+    def test_all_degraded_after_all_degraded_is_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
+
+    def test_a_bare_majority_is_stalled(self):
+        """Thomas 2026-08-22 moved the rule from `all` to `majority`. Half counts."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 majority_degraded") is True
+
+    def test_below_half_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] + [{"degraded": False}] * 2}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=3 majority_degraded") is False
+
+    def test_ten_of_eleven_dead_is_stalled(self):
+        """The case the `all` rule left silent, and the reason it was widened."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}] * 10 + [{"degraded": False}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=11 majority_degraded") is True
+
+    def test_an_older_images_all_degraded_marker_still_arms_the_switch(self):
+        """A stall straddling a deploy: the previous fire was recorded by the image that only
+        wrote `all_degraded`, and must not silently restart the count."""
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}, {"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, "pool_cycle contexts=2 all_degraded | ...") is True
+
+    def test_stalled_status_is_recognised(self):
+        from runtime.mvp_runtime.crypto.cycle import PIPELINE_STALLED, pool_cycle_is_stalled
+        summary = {"cycles": [{"degraded": True}]}
+        assert pool_cycle_is_stalled(summary, f"failed:{PIPELINE_STALLED}") is True
+
+    def test_empty_cycles_is_not_stalled(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_is_stalled
+        assert pool_cycle_is_stalled({"cycles": []}, "pool_cycle all_degraded") is False
+
+
+class TestPoolCycleStatusLineAllDegraded:
+    """The markers on the status line are what make two consecutive degraded fires detectable
+    from ``last_status`` alone. ``majority_degraded`` is the one the predicate arms on;
+    ``all_degraded`` and ``degraded=N/M`` ride alongside so the operator can tell a total
+    outage from a bare majority, which the arming token deliberately cannot."""
+
+    def test_all_degraded_marker_appears_when_every_context_degraded(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" in status
+
+    def test_marker_absent_when_some_contexts_healthy(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        summary = {
+            "cycles": [
+                {"degraded": True, "symbol": "BTCUSDT", "timeframe": "15m",
+                 "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                 "route_status": "no_strategies",
+                 "live_route_status": None, "reason_codes": []},
+                {"degraded": False, "symbol": "ETHUSDT", "timeframe": "15m",
+                 "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                 "route_status": "matched",
+                 "live_route_status": None, "reason_codes": []},
+            ],
+            "skipped": [], "unvisited": [],
+        }
+        status = pool_cycle_status_line(summary)
+        assert "all_degraded" not in status
+        # One of two IS a majority, so the arming token is present where `all_degraded` is not.
+        assert "majority_degraded" in status
+        assert "degraded=1/2" in status
+
+    def test_below_half_carries_the_count_but_not_the_arming_token(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+
+        def ctx(symbol, degraded):
+            return {"degraded": degraded, "symbol": symbol, "timeframe": "15m",
+                    "verdict_status": "HOLD", "paper_verdict_status": "HOLD",
+                    "route_status": "no_strategies",
+                    "live_route_status": None, "reason_codes": []}
+
+        status = pool_cycle_status_line({
+            "cycles": [ctx("BTCUSDT", True), ctx("ETHUSDT", False), ctx("SOLUSDT", False)],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=1/3" in status
+        assert "majority_degraded" not in status
+        assert "all_degraded" not in status
+
+    def test_a_healthy_fire_carries_no_degraded_token_at_all(self):
+        from runtime.mvp_runtime.crypto.cycle import pool_cycle_status_line
+        status = pool_cycle_status_line({
+            "cycles": [{"degraded": False, "symbol": "BTCUSDT", "timeframe": "15m",
+                        "verdict_status": "ALLOW", "paper_verdict_status": "ALLOW",
+                        "route_status": "matched",
+                        "live_route_status": None, "reason_codes": []}],
+            "skipped": [], "unvisited": [],
+        })
+        assert "degraded=" not in status
+        assert "majority_degraded" not in status
+
+
+# ---------------------------------------------------------------------------
+# The wiring, end to end: does a degraded fire's status line reach the NEXT fire?
+# ---------------------------------------------------------------------------
+
+class TestStallDetectionWiring:
+    """The classes above pin the two predicates against a hand-written ``previous_status``.
+    Nothing pinned the mechanism that supplies it: that ``_execute`` returns the status line,
+    that ``record_result`` stores it verbatim, and that the next fire reads it back as
+    ``schedule.last_status``. A status line that lost its marker between two fires would leave
+    the dead-man switch permanently silent, and every predicate test above would still pass.
+
+    Measured on the live schedule while writing these: across 909 terminal fires over nine days
+    no context degraded even once, so `any`, `majority` and `all` would each have fired exactly
+    zero times. Production has never exercised this path — a test is the only thing behind it.
+    """
+
+    T0 = "2026-07-16T09:00:00Z"
+    T1 = "2026-07-16T09:15:00Z"
+    T2 = "2026-07-16T09:30:00Z"
+    T3 = "2026-07-16T09:45:00Z"
+
+    @staticmethod
+    def _record(symbol="BTCUSDT", timeframe="1d", *, degraded=True):
+        return {
+            "cycle_id": f"cyc_{symbol}_{timeframe}", "symbol": symbol, "timeframe": timeframe,
+            "degraded": degraded,
+            "reason_codes": ["MARKET_DATA_DEGRADED"] if degraded else [],
+            "verdict_status": "NO_ENTRY", "route_status": "NO_ROUTE",
+        }
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        from runtime.mvp_runtime.crypto import cycle as cycle_mod
+        from runtime.mvp_runtime.crypto import market_data
+        from runtime.mvp_runtime.crypto import paper as paper_mod
+        from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule
+        from runtime.mvp_runtime.store import LedgerStore
+
+        # The three Safety-Flag chokepoints the crypto branch selects through. Stubbed to inert
+        # objects: this test is about the status string, and the cycle itself is stubbed too.
+        monkeypatch.setattr(market_data, "select_market_data_collector", lambda **kw: object())
+        monkeypatch.setattr(market_data, "select_liquidation_feed", lambda **kw: object())
+        monkeypatch.setattr(paper_mod, "select_paper_store", lambda **kw: object())
+
+        store = ScheduleStore(tmp_path)
+        store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900,
+                                 created_by="op", now=self.T0))
+        return {"store": store, "cycle_mod": cycle_mod, "monkeypatch": monkeypatch,
+                "ledger": LedgerStore(tmp_path / "ledger"), "control": ControlStore(tmp_path)}
+
+    @staticmethod
+    def _fire(env, now, notifier=None):
+        from runtime.mvp_runtime.scheduler import run_due
+        return run_due(env["store"], now=now, ledger=env["ledger"],
+                       control_store=env["control"], repo_root=None, notifier=notifier)
+
+    @staticmethod
+    def _last_status(env):
+        return env["store"].list()[0].last_status
+
+    def test_two_all_degraded_fires_stall_and_stay_stalled(self, env):
+        summary = {"cycles": [self._record("BTCUSDT"), self._record("ETHUSDT")],
+                   "skipped": [], "contexts": 2}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: summary)
+
+        first = self._fire(env, self.T1)
+        assert first["fired"] == 1 and first["failed"] == 0, "the FIRST degraded fire stays quiet"
+        assert "all_degraded" in self._last_status(env), self._last_status(env)
+
+        assert self._fire(env, self.T2)["failed"] == 1, "the SECOND consecutive one must block"
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+        # And it STAYS blocked: fire 3 reads `failed:PIPELINE_STALLED`, not a status line.
+        assert self._fire(env, self.T3)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+    def test_the_stall_reaches_the_operator(self, env):
+        """Blocking is only useful if somebody is told."""
+        summary = {"cycles": [self._record("BTCUSDT")], "skipped": [], "contexts": 1}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: summary)
+        sent: list[tuple] = []
+
+        self._fire(env, self.T1, notifier=lambda *a: sent.append(a))
+        assert sent == [], "a quiet first degraded fire must not page anyone"
+        self._fire(env, self.T2, notifier=lambda *a: sent.append(a))
+        assert len(sent) == 1
+        assert "PIPELINE_STALLED" in " ".join(str(x) for x in sent[0])
+
+    def test_a_healthy_fire_between_two_degraded_ones_resets_the_counter(self, env):
+        """CONSECUTIVE degradation, not two degraded fires ever."""
+        degraded = {"cycles": [self._record("BTCUSDT")], "skipped": [], "contexts": 1}
+        healthy = {"cycles": [self._record("BTCUSDT", degraded=False)], "skipped": [], "contexts": 1}
+
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: degraded)
+        assert self._fire(env, self.T1)["fired"] == 1
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: healthy)
+        assert self._fire(env, self.T2)["fired"] == 1
+        assert "all_degraded" not in self._last_status(env)
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: degraded)
+        assert self._fire(env, self.T3)["fired"] == 1, "degraded after healthy is the FIRST again"
+
+    def test_ten_of_eleven_contexts_dead_now_stalls(self, env):
+        """The live pool runs eleven contexts. Under the original ``all()`` rule this exact
+        shape stayed silent indefinitely; Thomas widened it to a majority on 2026-08-22."""
+        mixed = {"cycles": [self._record(f"S{i}") for i in range(10)]
+                           + [self._record("ALIVE", degraded=False)],
+                 "skipped": [], "contexts": 11}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: mixed)
+        assert self._fire(env, self.T1)["fired"] == 1, "the first one still stays quiet"
+        assert "degraded=10/11" in self._last_status(env), self._last_status(env)
+        assert self._fire(env, self.T2)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+    def test_a_minority_of_degraded_contexts_still_never_stalls(self, env):
+        """The other side of the new rule: below half is noise, however long it persists."""
+        minority = {"cycles": [self._record("DEAD")]
+                              + [self._record(f"S{i}", degraded=False) for i in range(10)],
+                    "skipped": [], "contexts": 11}
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_pool_cycle", lambda **kw: minority)
+        assert self._fire(env, self.T1)["fired"] == 1
+        assert self._fire(env, self.T2)["fired"] == 1
+        assert self._fire(env, self.T3)["fired"] == 1
+        assert "degraded=1/11" in self._last_status(env)
+
+    def test_single_symbol_override_stalls_on_two_degraded_fires(self, env, tmp_path):
+        """The ``SYMBOL TIMEFRAME`` override runs a different branch with a different prefix rule
+        (``startswith("degraded")`` rather than the pool's marker)."""
+        from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule
+
+        store = ScheduleStore(tmp_path / "single")
+        store.add(build_schedule(kind=KIND_CRYPTO, request="BTCUSDT 1d", interval_seconds=900,
+                                 created_by="op", now=self.T0))
+        env["monkeypatch"].setattr(env["cycle_mod"], "run_crypto_cycle",
+                                   lambda **kw: self._record("BTCUSDT", "1d"))
+        env["store"] = store
+
+        assert self._fire(env, self.T1)["fired"] == 1
+        assert self._last_status(env).startswith("degraded"), self._last_status(env)
+        assert self._fire(env, self.T2)["failed"] == 1
+        assert self._last_status(env) == "failed:PIPELINE_STALLED"

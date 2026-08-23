@@ -14,6 +14,11 @@ source. No new measurement code; this module only plans and judges.
 - N = 12 per batch: 3 symbols (BTCUSDT/ETHUSDT/SOLUSDT) x 2 volatility regimes
   (``atr_percentile`` above/below 0.5) x 2 repeats. Slippage is regime-dependent, so a
   sample pooled in one regime would re-distort the constant it exists to fix.
+  Since the second-batch approval (Thomas 2026-08-11, "2차 배치도 진행해줘") the symbol
+  set is a **request-time parameter**: the three above stay the defaults, N and the cell
+  grid derive from the requested set, and every set mints its own content hash — so a
+  new set is a new approval, never a re-pointing of an old one. The budget cap below
+  does NOT scale with the set.
 - Stop width 40 bps below entry, LONG probes only.
 - Unfilled-stop timeout 120 minutes, then market close. A timeout row is **not** a
   slippage sample (`STOP_EXIT_REASONS` already excludes a time exit). 120 is an
@@ -69,10 +74,20 @@ PLAN_FILENAME = "stop_slippage_probe_plan.json"
 # board and the plan resolver select probe rows by this prefix.
 PROBE_STRATEGY_PREFIX = "PROBE-"
 
-# --- the approved batch (Thomas 2026-08-11, proposal §5) -------------------------------
-PROBE_N = 12
+# --- the approved batch defaults (Thomas 2026-08-11, proposal §5; the symbol set is a
+# --- request-time parameter since the second-batch approval, same date) ----------------
+PROBE_N = 12                      # the DEFAULT grid's N; `build_batch_params` derives n
 PROBE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
-PROBE_STOP_BPS = 40.0
+# 40.0 until 2026-08-17. At 40 bps the probe mostly buys timeouts, not samples: of the
+# first four real probes, one filled and three timed out, and the touch-rate measurement
+# behind the re-set (60 days of 15m bars, regime = 4h ATR(14) percentile < 0.5, entries
+# every other bar) puts 40 bps / 120 m at a 27% (BNB) / 42% (DOGE) low_vol fill rate.
+# 25 bps / 240 m measures 58% / 73% — and 25 bps stays ~15x the majors' spread and next
+# to the strategy stops the constant serves (median 37.6 bps), so the slippage measured
+# at the probe's stop still speaks for the stops it will be applied to. Cells burned by
+# timeouts are terminal (`_TERMINAL_CELL_STATUSES`), which is what makes the fill rate
+# the economics of the whole batch, not a nuisance statistic.
+PROBE_STOP_BPS = 25.0
 PROBE_DIRECTION = "LONG"          # §5-2: LONG probes only; SHORT is out of scope
 PROBE_REPEATS = 2
 
@@ -85,13 +100,17 @@ REGIMES = (REGIME_LOW, REGIME_HIGH)
 # on. 4h is the primary live rotation tier; the split is meaningless without naming it.
 REGIME_TIMEFRAME = "4h"
 
-# Implementation default under the approval hash (§5-3 left T open; 120 minutes is the
-# default this increment ships). A timeout close is a market close and NOT a sample.
-PROBE_TIMEOUT_MINUTES = 120
+# Implementation default under the approval hash (§5-3 left T open; 120 minutes was the
+# first increment's default, re-set 2026-08-17 with the stop width above — the fill-rate
+# table is one measurement over both knobs). A timeout close is a market close and NOT a
+# sample. Doubling T doubles exposure DURATION only: the loss cap is the stop, which T
+# does not move.
+PROBE_TIMEOUT_MINUTES = 240
 
 # §3's arithmetic, kept as the approval priced it: stop 40 bps + measured-worst slippage
 # 23.5 bps (REMAINING_WORK §C, 2026-08-06) + round-trip fees ~10 bps = 73.5 bps, carried
-# as 0.75% so the cap errs upward. The per-probe notional ceiling is an implementation
+# as 0.75% so the cap errs upward — and errs further upward since the 2026-08-17 stop
+# re-set to 25 bps (58.5 bps actual); the fraction stays as the approval priced it. The per-probe notional ceiling is an implementation
 # default under the approval hash — `--fire` refuses an order the venue minimum prices
 # above it, so the approved worst case cannot be exceeded by a venue filter change.
 WORST_CASE_LOSS_FRACTION = 0.0075
@@ -113,7 +132,13 @@ _TERMINAL_CELL_STATUSES = frozenset({CELL_FILLED, CELL_TIMEOUT})
 
 PLAN_ACTIVE = "ACTIVE"
 PLAN_COMPLETE = "COMPLETE"
-PLAN_STATUSES = frozenset({PLAN_ACTIVE, PLAN_COMPLETE})
+# The operator retired the batch early (Thomas 2026-08-11: "굳이 테스트로 전부 잡을 이유는
+# 없을 것 같은데"). Terminal like COMPLETE — the sample rows already on the ledger stay, the
+# unfilled cells simply never happen, and the next confirm may proceed. The reason is a
+# required argument and lands on the control ledger, because an early retirement with no
+# recorded why would read, a month later, exactly like a batch that finished.
+PLAN_ABANDONED = "ABANDONED"
+PLAN_STATUSES = frozenset({PLAN_ACTIVE, PLAN_COMPLETE, PLAN_ABANDONED})
 
 # Refusal codes. Every refusal on the probe path is one of these, stable by name.
 PROBE_PARAMS_INVALID = "PROBE_PARAMS_INVALID"
@@ -164,7 +189,7 @@ _PLAN_KEYS = frozenset({
 
 def build_batch_params(
     *,
-    n: int = PROBE_N,
+    n: int | None = None,
     symbols: Iterable[str] = PROBE_SYMBOLS,
     stop_bps: float = PROBE_STOP_BPS,
     repeats: int = PROBE_REPEATS,
@@ -172,22 +197,48 @@ def build_batch_params(
     per_probe_notional_cap_usdt: float = PER_PROBE_NOTIONAL_CAP_USDT,
     budget_cap_usdt: float = PROBE_BUDGET_CAP_USDT,
 ) -> dict[str, Any]:
-    """The one approved batch shape, validated and budget-checked. Pure.
+    """One batch's shape, validated and budget-checked. Pure.
 
-    ``n`` must equal the grid product — the approval is for the 3x2x2 grid, and an ``n``
-    that disagrees with its own grid would make the hash describe a batch the cells do
-    not. The regime rule constants ride in the params so the approval hash pins them:
-    moving the split or the timeframe later mints a different batch.
+    ``symbols`` is the request-time parameter (second-batch approval, Thomas
+    2026-08-11); the module constants stay as the batch-1 defaults. ``n`` derives from
+    the symbols x regimes x repeats grid when omitted; an explicit ``n`` must equal it —
+    an ``n`` that disagrees with its own grid would make the hash describe a batch the
+    cells do not. The regime rule constants ride in the params so the approval hash pins
+    them: moving the split or the timeframe later mints a different batch. The budget
+    cap is NOT a function of the set: a set whose worst case exceeds it refuses below,
+    and a bigger universe therefore needs a newly approved cap, never a silent stretch.
     """
-    names = sorted({str(s).strip().upper() for s in symbols if str(s).strip()})
+    names = [str(s).strip().upper() for s in symbols]
     if not names:
         raise ToolError(PROBE_PARAMS_INVALID, "a probe batch needs at least one symbol")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ToolError(
+            PROBE_PARAMS_INVALID,
+            f"duplicate symbols {duplicates}: a repeated symbol would silently re-weight "
+            "the grid it claims to balance",
+        )
+    for name in names:
+        # Format-only validation, deliberately: no runtime module declares a canonical
+        # tradeable-symbol universe (candle_archive reads its universe from the venue by
+        # design, and `market_data.CROSS_SECTION_UNIVERSE` is the momentum-ranking
+        # cohort, which a traded symbol need not belong to). Membership is judged where
+        # it is knowable — the venue-filters read at --fire time refuses a symbol the
+        # venue does not list. USDT-quoted only, because every cap in this batch is
+        # priced in USDT.
+        if not name.endswith("USDT") or name == "USDT" or not name.isalnum():
+            raise ToolError(
+                PROBE_PARAMS_INVALID,
+                f"symbol {name!r} is not an alphanumeric USDT-quoted name (e.g. BNBUSDT)",
+            )
+    names = sorted(names)
     if int(repeats) < 1 or int(timeout_minutes) < 1:
         raise ToolError(PROBE_PARAMS_INVALID, "repeats and timeout_minutes must be positive")
     if not (float(stop_bps) > 0):
         raise ToolError(PROBE_PARAMS_INVALID, "stop_bps must be positive")
     grid = len(names) * len(REGIMES) * int(repeats)
-    if int(n) != grid:
+    n = grid if n is None else int(n)
+    if n != grid:
         raise ToolError(
             PROBE_PARAMS_INVALID,
             f"n={n} disagrees with the {len(names)} symbols x {len(REGIMES)} regimes x "
@@ -669,6 +720,44 @@ def confirm_probe_batch(
         )
     plan = build_plan(batch, approval_id=str(verified.get("approval_id")), now=now)
     return write_plan(plan, root)
+
+
+def abandon_plan(*, reason: str, now: str | None = None, root: Path | None = None) -> dict[str, Any]:
+    """Retire the ACTIVE batch early, deliberately. Returns the written plan.
+
+    The one-plan-at-a-time invariant is untouched — this is the operator verb the
+    ``PROBE_PLAN_EXISTS`` refusal always named ("finish or RESOLVE it"), not a bypass of
+    it. Two refusals guard the honesty of the act: a non-ACTIVE plan has nothing to
+    abandon, and an OPEN cell means a REAL position may be resting at the venue — the
+    probe must settle (stop, timeout, or the scheduler's fail-safe) before the plan that
+    tracks it may be closed, or the book would hold a position its instrument disowned.
+
+    The plan file records only the status flip (its key set stays closed); the WHY is the
+    caller's control-ledger event, same division as the promotion door's reasons.
+    """
+    now = now or timeutil.utc_now_iso()
+    if not isinstance(reason, str) or not reason.strip():
+        raise ToolError(PROBE_PARAMS_INVALID, "abandoning a batch requires a non-empty reason")
+    plan = read_plan(root)
+    if plan is None:
+        raise ToolError(PROBE_PLAN_MISSING, "no probe plan is confirmed; nothing to abandon")
+    if plan["status"] != PLAN_ACTIVE:
+        raise ToolError(
+            PROBE_PLAN_NOT_ACTIVE,
+            f"plan {plan['batch_id']} is {plan['status']}; only an ACTIVE plan can be abandoned",
+        )
+    open_index = open_cell_index(plan)
+    if open_index is not None:
+        cell = plan["cells"][open_index]
+        raise ToolError(
+            PROBE_CELL_OPEN,
+            f"cell {open_index} ({cell['symbol']} {cell['regime']}) is OPEN — a probe may be "
+            "resting at the venue; let it settle before abandoning the plan",
+        )
+    updated = dict(plan)
+    updated["status"] = PLAN_ABANDONED
+    updated["updated_at"] = now
+    return write_plan(updated, root)
 
 
 # --- the sample + §5-5 readiness -------------------------------------------------------

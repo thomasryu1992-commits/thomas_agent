@@ -284,7 +284,18 @@ def _keyword_context(keyword_rows: list[Mapping[str, Any]] | None) -> str:
     """
     if not keyword_rows:
         return ""
-    lines = ["\nMeasured Naver keyword demand (monthly search counts; cite by [K#]):"]
+    # Mock rows (env gate closed -> deterministic fixtures) must announce themselves HERE,
+    # where the model reads, not only in the ledger record. Before this label the block's
+    # header asserted "Measured ... demand" over fabricated volumes, and the model had no
+    # way to know the difference — the one surviving sliver of an external review's
+    # mock/degraded claim (2026-08-10). Mock and live never mix within one brief (one tool
+    # serves all rows), so the label is per-block, not per-row.
+    mock = any(str(row.get("source", "")).startswith("mock.") for row in keyword_rows)
+    if mock:
+        lines = ["\nMOCK keyword fixtures (research gate closed — deterministic test data, "
+                 "NOT measured demand; never present these numbers as real; cite by [K#]):"]
+    else:
+        lines = ["\nMeasured Naver keyword demand (monthly search counts; cite by [K#]):"]
     for index, row in enumerate(keyword_rows, start=1):
         competing = (
             f", competing blog posts {row['competing_posts']:,}"

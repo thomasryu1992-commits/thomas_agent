@@ -54,14 +54,29 @@ def _spread_outcomes(*, slices=9, per_slice=3, base=0.3, cid="cand_f", width_day
 # --- the slice width is the holdout's own -----------------------------------------------------
 
 def test_the_slice_width_is_the_holdout_derivation():
-    """tail/10 of the replay target: 60 calendar days at 1d (the 2,000-bar MIN_FACTORY_BARS
-    floor) and 30 at 4h (the 1,000-day depth). Literal on purpose: if the factory window
-    ever moves, this test moving with it is the visibility we want — and deriving instead
-    of hand-writing already caught two stale figures (the proposal doc said 42/21, from the
-    700-day window that no longer exists)."""
-    assert fc.slice_width_days("1d") == 60.0
+    """tail/10 of the CALENDAR span replayed: 30 days wherever the factory reaches its full
+    `FACTORY_DEPTH_DAYS`. Literal on purpose: if the factory window ever moves, this test
+    moving with it is the visibility we want — and deriving instead of hand-writing already
+    caught two stale figures (the proposal doc said 42/21, from the 700-day window that no
+    longer exists)."""
+    assert fc.slice_width_days("1d") == 30.0
     assert fc.slice_width_days("4h") == 30.0
+    assert fc.slice_width_days("1h") == 30.0
     assert fc.slice_width_days("2w") is None  # an untargeted timeframe cannot be sliced
+
+
+def test_the_bar_floor_does_not_widen_1d_but_the_candle_ceiling_still_narrows_1m():
+    """`factory_candle_target` clamps both ways and only one clamp belongs on a calendar gate.
+
+    1d's target is floored to MIN_FACTORY_BARS (2,000 bars = 2,000 days) to buy the BACKTEST
+    scorer trades; carrying that here would claim a 1d regime lasts twice a 4h one. 1m and 5m
+    are truncated by MAX_CANDLES to 83 and 417 days of real history, and that IS the span they
+    replay — a flat 30 would cut slices wider than 1m's entire window."""
+    assert fc.slice_width_days("1d") == fc.slice_width_days("4h")  # floor removed
+    # approx: 120,000/1440 is not binary-exact, and the verdict rounds the width anyway.
+    assert fc.slice_width_days("1m") == pytest.approx(2.5)   # 120,000 bars = 83.3d of history
+    assert fc.slice_width_days("5m") == pytest.approx(12.5)  # 120,000 bars = 416.7d
+    assert fc.slice_width_days("1m") < fc.slice_width_days("5m") < fc.slice_width_days("15m")
 
 
 # --- the judge --------------------------------------------------------------------------------
@@ -81,6 +96,42 @@ def test_a_negative_forward_record_contradicts():
 def test_a_thin_forward_record_is_insufficient_not_a_pass():
     rows = _spread_outcomes(slices=4, per_slice=3)  # 12 closes
     assert fc.judge_forward(_record(), rows)["status"] == fc.FORWARD_INSUFFICIENT
+
+
+def test_1d_uses_lower_trade_floor():
+    """1d timeframe has a 10-trade floor (Thomas 2026-08-21), not 25."""
+    assert fc.min_forward_trades("1d") == fc.MIN_FORWARD_TRADES_1D == 10
+    assert fc.min_forward_trades("4h") == fc.MIN_HOLDOUT_TRADES == 25
+    assert fc.min_forward_trades("1h") == 25
+    assert fc.min_forward_trades(None) == 25
+
+
+def test_1d_forward_confirms_at_exactly_10_trades():
+    """The 1d floor is reachable at its own value, not merely above it.
+
+    Ten closes, one per slice — the shape a 1d lineage actually produces, where a slice
+    holding two trades is the exception. A test that passed 18 would not have shown that
+    the floor `min_forward_trades` returns is a floor anything can stand on."""
+    rows = _spread_outcomes(slices=10, per_slice=1, base=0.3)
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["priceable_count"] == fc.MIN_FORWARD_TRADES_1D == 10
+    assert verdict["active_slices"] == 10
+    assert verdict["status"] == fc.FORWARD_CONFIRMED
+
+
+def test_1d_forward_is_insufficient_one_trade_below_its_floor():
+    """Nine closes refuse — the floor binds, rather than the slice count carrying it."""
+    rows = _spread_outcomes(slices=9, per_slice=1, base=0.3)
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["priceable_count"] == 9
+    assert verdict["status"] == fc.FORWARD_INSUFFICIENT
+
+
+def test_4h_forward_insufficient_at_12_trades():
+    """A 4h record with 12 priceable closes is still below the 25-trade floor."""
+    rows = _spread_outcomes(slices=4, per_slice=3)  # 12 closes
+    verdict = fc.judge_forward(_record(timeframe="4h"), rows)
+    assert verdict["status"] == fc.FORWARD_INSUFFICIENT
 
 
 def test_enough_trades_in_too_few_slices_is_insufficient():

@@ -244,6 +244,30 @@ POSITIONING_PERIOD_SECONDS: dict[str, int] = {
     "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200,
     "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400,
 }
+# --- order-book depth: the one series with no history at all ---------------------------------
+#
+# ``/fapi/v1/depth`` answers with the book as it is RIGHT NOW and nothing else. Every other feed
+# in this module can be asked about the past — funding pages back years, the positioning
+# endpoints keep 30 days, Coinalyze keeps 84. This one keeps zero, which is why the store that
+# consumes it (`orderbook_store`) cannot seed, cannot heal a gap, and starts its 1000-day climb
+# from nothing on the day it ships.
+#
+# **``ORDER_BOOK_LEVELS`` is the only constant in this module that cannot be revised later.** The
+# others describe how much of an existing history to ask for, so raising one re-fetches deeper
+# and the store catches up. This one decides what a snapshot MEANS: the imbalance is summed over
+# the top N levels, the levels themselves are never stored (that shape was priced at 12.96 GB per
+# 1000 days against 0.17 GB for this one, and declined), and the book those rows described is
+# gone the moment it is taken. Changing 20 to 50 later does not deepen the history — it starts a
+# second, incompatible series, and the first 20-level rows can never be recomputed into it.
+#
+# 20 because it is the deepest band the venue serves at request weight 2 (5/10/20/50 all cost 2;
+# 100 costs 5, 1000 costs 20), so the depth is free within the band and the next one up is not.
+ORDER_BOOK_LEVELS = 20
+# Venue-valid depth limits. A closed set for `POSITIONING_PERIOD_SECONDS`' reason: an unrecognized
+# limit is not rejected by the venue, it is silently rounded to one of these, and the store would
+# record a band other than the one its rows claim.
+ORDER_BOOK_VALID_LIMITS = frozenset({5, 10, 20, 50, 100, 500, 1000})
+
 # The venue caps these at 1000 rows per call (klines allow 1500), and they page by the
 # same exclusive ``endTime`` walk.
 DERIVATIVE_PAGE_LIMIT = 1000
@@ -699,6 +723,35 @@ class MockMarketDataCollector:
                 "short_ratio": round(1.0 - long_ratio, 6),
             })
         return rows
+
+    def order_book(self, symbol: str, *, limit: int, timeout_seconds: int) -> dict[str, Any]:
+        """A deterministic book whose imbalance is a function of the symbol alone.
+
+        Present here, unlike ``exchange_info``, and the difference is what the answer would be
+        used FOR. An invented lot step reaches live sizing, which is why the Mock refuses that
+        one. An invented book reaches an append-only store that feeds nothing, and refusing it
+        would mean the accumulation path — throttle, dedupe, coverage — could only ever be
+        exercised against a network.
+
+        The imbalance is deliberately NOT centred: a mock book that always came out balanced
+        would let a sign error through every test that reads it.
+        """
+        if int(limit) not in ORDER_BOOK_VALID_LIMITS:
+            raise ToolError(
+                "INVALID_ORDER_BOOK_LIMIT",
+                f"limit must be one of {sorted(ORDER_BOOK_VALID_LIMITS)}",
+            )
+        mid = 100.0 + 900.0 * _frac(f"{symbol}|book")
+        tick = round(mid * 0.0001, 8)
+        # Skew in (0.3, 0.7) of the total, so every mock book leans and none is degenerate.
+        skew = 0.3 + 0.4 * _frac(f"{symbol}|book|skew")
+        bids: list[tuple[float, float]] = []
+        asks: list[tuple[float, float]] = []
+        for i in range(int(limit)):
+            size = 1.0 + 9.0 * _frac(f"{symbol}|book|{i}")
+            bids.append((round(mid - tick * (i + 1), 8), round(size * skew, 8)))
+            asks.append((round(mid + tick * (i + 1), 8), round(size * (1.0 - skew), 8)))
+        return {"bids": bids, "asks": asks}
 
     def funding_history(self, symbol: str, *, records: int, timeout_seconds: int) -> list[dict[str, Any]]:
         """Deterministic 8h funding events on the same anchor grid (C9 mock feed)."""
@@ -1425,6 +1478,87 @@ class BinanceFuturesCollector:
             parsed[stamp] = {"long_ratio": long_ratio, "short_ratio": short_ratio}
         return parsed
 
+    def order_book(self, symbol: str, *, limit: int, timeout_seconds: int) -> dict[str, Any]:
+        """The current order book (public ``/fapi/v1/depth``), parsed to floats.
+
+        Same grant as candles and funding — a fourth public endpoint of the already authorized
+        provider, so no new provider, key or gate. Returns
+        ``{"bids": [(price, qty), ...], "asks": [...]}``, each side best-first.
+
+        **Returns the book, not a verdict on it.** The imbalance arithmetic lives in
+        `orderbook_store.summarize_book`, on `exchange_info`'s precedent and for its reason: that
+        parsing must be testable without a network, and it is the half that can be wrong in a way
+        a mock would happily reproduce. What this method owns is the venue's shape — string pairs
+        to floats, and the side ordering the venue documents but does not guarantee per call.
+
+        Both sides are sorted here rather than trusted. The venue sends bids descending and asks
+        ascending, and every level is summed by the caller so ORDER alone would not change the
+        imbalance — but the best bid and best ask set the spread, and a reversed side would put
+        the worst price where the caller reads the best one. Sorting costs 40 comparisons and
+        removes the assumption.
+        """
+        if int(limit) not in ORDER_BOOK_VALID_LIMITS:
+            raise ToolError(
+                "INVALID_ORDER_BOOK_LIMIT",
+                f"limit must be one of {sorted(ORDER_BOOK_VALID_LIMITS)}",
+            )
+        safety_gate.assert_authorization(
+            self._authorization, required_flags=_NETWORK_FLAGS,
+            provider_id=self.provider_id, now=timeutil.utc_now_iso(),
+        )
+        params = {"symbol": symbol, "limit": int(limit)}
+        request = urllib.request.Request(
+            f"https://fapi.binance.com/fapi/v1/depth?{urllib.parse.urlencode(params)}",
+            method="GET", headers={"Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise classify_transport_error(exc, "order-book") from None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise ToolError("MALFORMED_RESULT", "order book returned an unparseable response") from None
+        if not isinstance(payload, dict):
+            raise ToolError("MALFORMED_RESULT", "order book returned an unparseable response")
+        return {
+            "bids": self._parse_book_side(payload.get("bids"), side="bids", descending=True),
+            "asks": self._parse_book_side(payload.get("asks"), side="asks", descending=False),
+        }
+
+    @staticmethod
+    def _parse_book_side(
+        rows: Any, *, side: str, descending: bool
+    ) -> list[tuple[float, float]]:
+        """One side of the book as sorted ``(price, quantity)`` floats.
+
+        A malformed level raises rather than being dropped. Skipping it would produce a book that
+        is well-formed and WRONG — one level lighter than the venue's, in a number whose only
+        consumer sums the side — and the store would write that as durable evidence. A level at
+        or below zero in either field is malformed for the same reason: the venue does not send
+        one, so its presence means the payload is not what this method thinks it is.
+        """
+        if not isinstance(rows, list):
+            raise ToolError("MALFORMED_RESULT", f"order book {side} were not a list")
+        levels: list[tuple[float, float]] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                raise ToolError("MALFORMED_RESULT", f"order book {side} held an unreadable level")
+            try:
+                price, quantity = float(row[0]), float(row[1])
+            except (TypeError, ValueError):
+                raise ToolError("MALFORMED_RESULT", f"order book {side} held an unreadable level") from None
+            # Zero-quantity levels are how a diff stream signals a removal; this is a snapshot
+            # endpoint, which does not send them. One arriving here means the payload is a shape
+            # this parser does not understand, and guessing is the failure the store is durable
+            # enough to make permanent.
+            if not (price > 0.0 and quantity > 0.0):
+                raise ToolError("MALFORMED_RESULT", f"order book {side} held a non-positive level")
+            levels.append((price, quantity))
+        levels.sort(key=lambda level: level[0], reverse=descending)
+        return levels
+
     def exchange_info(self, *, timeout_seconds: int) -> dict[str, Any]:
         """The venue's own trading rules (public ``/fapi/v1/exchangeInfo``), raw.
 
@@ -2133,6 +2267,10 @@ class PerRunFeedCache:
     # Keyed by symbol alone at the venue, so identical across every timeframe of one fan-out.
     _MEMOIZED = frozenset({
         "funding_history", "liquidation_history", "open_interest_history", "exchange_info",
+        # Keyed by symbol alone like the rest, and it also earns the rate-limit latch: the
+        # accumulator can be asked from two places in one fire (the cohort sweep and the
+        # operator's single-symbol cycle), and one book per symbol per fire is what both want.
+        "order_book",
     })
 
     def __init__(self, inner: Any):

@@ -41,8 +41,12 @@ def _snapshot(n: int = 60, *, timeframe_minutes: int = 1440, is_synthetic: bool 
     return snap
 
 
-def _outcome(result_r: float, closed_at: str, *, closed: bool = True):
-    return {"result_R": result_r, "outcome_closed": closed, "created_at_utc": closed_at}
+def _outcome(result_r: float, closed_at: str, *, closed: bool = True,
+             strategy_id: str | None = None):
+    row = {"result_R": result_r, "outcome_closed": closed, "created_at_utc": closed_at}
+    if strategy_id is not None:
+        row["strategy_id"] = strategy_id
+    return row
 
 
 # --- data health --------------------------------------------------------------
@@ -163,6 +167,55 @@ def test_consecutive_losses_breached():
     ]
     verdict = run_risk_guard(outcomes, now=NOW)
     assert "max_consecutive_losses_breached" in verdict["problems"]
+
+
+def test_probe_losses_do_not_trip_the_consecutive_breaker():
+    """A probe closes at a loss by design — the stop fill IS the sample. Measured
+    2026-08-17: three probe closes breached the pool streak and muted live routing while
+    the armed strategy's own last close was a win. Probe rows must not count."""
+    outcomes = [
+        _outcome(0.9, "2026-07-09T10:00:00Z"),  # the strategy's last real close: a WIN
+        _outcome(-1.0, "2026-07-10T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.3, "2026-07-11T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.1, "2026-07-12T10:00:00Z", strategy_id="PROBE-probe_batch_bbb"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert "max_consecutive_losses_breached" not in verdict["problems"]
+    assert verdict["consecutive_losses"] == 0
+
+
+def test_a_probe_win_does_not_reset_a_strategy_streak():
+    """The symmetric half: a probe that happens to close positive (timeout exit above
+    entry) must not unlatch a real strategy losing streak."""
+    outcomes = [
+        _outcome(-0.3, "2026-07-10T10:00:00Z"),
+        _outcome(-0.3, "2026-07-11T10:00:00Z"),
+        _outcome(0.2, "2026-07-11T18:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-0.3, "2026-07-12T10:00:00Z"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert verdict["consecutive_losses"] == 3
+    assert "max_consecutive_losses_breached" in verdict["problems"]
+
+
+def test_probe_rows_still_count_toward_daily_loss():
+    """Invisibility is scoped to the streak alone — probe spend is real money and the
+    daily/weekly sums keep reading it."""
+    outcomes = [
+        _outcome(-1.0, "2026-07-22T08:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+        _outcome(-1.2, "2026-07-22T10:00:00Z", strategy_id="PROBE-probe_batch_aaa"),
+    ]
+    verdict = run_risk_guard(outcomes, now=NOW)
+    assert verdict["daily_pnl_r"] == -2.2
+    assert "daily_loss_limit_breached" in verdict["problems"]
+    assert "max_consecutive_losses_breached" not in verdict["problems"]
+
+
+def test_probe_prefix_matches_the_probe_module():
+    """`guards` keeps a local literal so the cycle guard does not import the live-order
+    stack; this pin is what makes that duplication safe."""
+    from runtime.mvp_runtime.crypto import probe
+    assert guards._PROBE_STRATEGY_PREFIX == probe.PROBE_STRATEGY_PREFIX
 
 
 def test_drawdown_breaker_uses_current_not_historical_max():

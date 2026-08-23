@@ -35,17 +35,19 @@ NOW = "2026-08-10T15:00:00Z"
 
 
 def test_the_split_is_a_seam_not_a_repricing():
-    """Until the sample says otherwise, the stop leg pays exactly the general rate — changing
-    `DEFAULT_STOP_SLIPPAGE_BPS` away from `DEFAULT_SLIPPAGE_BPS` must be a deliberate
-    re-decision that cites `stop_slippage_observations`, and it starts by updating this test
-    and the tunables premise."""
-    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == cost.DEFAULT_SLIPPAGE_BPS
+    """Re-priced 2026-08-21 from 12.0 to 1.4 bps after the stop-slippage probe reached
+    n=10 (median 1.07, upper quartile 1.60; Thomas chose 1.4 as the round figure).
+    Pinned: cheaper than the general slippage rate — stops fill near their trigger."""
+    assert cost.DEFAULT_STOP_SLIPPAGE_BPS == 1.4
+    assert cost.DEFAULT_STOP_SLIPPAGE_BPS < cost.DEFAULT_SLIPPAGE_BPS
 
 
-def test_a_stop_exit_prices_identically_to_before_the_split_at_the_default_rate():
+def test_a_stop_exit_prices_cheaper_than_a_market_exit_at_the_measured_rates():
+    """Post-probe: the measured stop rate (1.4 bps) is below the general rate (3.0 bps),
+    so a stop exit loses less to slippage than a time exit on the same move."""
     stop = apply_cost_model("LONG", 100.0, 97.0, 3.0, close_reason="stop_loss")
     market = apply_cost_model("LONG", 100.0, 97.0, 3.0, close_reason="time_exit")
-    assert stop == market
+    assert stop.net_r > market.net_r
 
 
 def test_a_raised_stop_rate_reprices_only_the_stop_exit():
@@ -64,9 +66,10 @@ def test_a_raised_stop_rate_reprices_only_the_stop_exit():
     assert stop_raised.net_r < stop_default.net_r
     assert stop_raised.slippage_cost_r > stop_default.slippage_cost_r
     # The entry leg still pays the GENERAL rate under the raised model: the whole delta is the
-    # exit side — the fill moved by (23.5 - 3.0) bps of the exit price, minus the taker fee no
-    # longer charged on the price the fill gave up. Nothing else may move.
-    delta_fill = 97.0 * (23.5 - 3.0) / 10000.0
+    # exit side — the fill moved by (23.5 - default) bps of the exit price, minus the taker fee
+    # no longer charged on the price the fill gave up. Symbolic in the default, so this test
+    # measures the seam and not whichever interim the constant holds. Nothing else may move.
+    delta_fill = 97.0 * (23.5 - cost.DEFAULT_STOP_SLIPPAGE_BPS) / 10000.0
     expected_delta = delta_fill * (1.0 - cost.DEFAULT_TAKER_FEE_BPS / 10000.0) / 3.0
     assert stop_default.net_r - stop_raised.net_r == pytest.approx(expected_delta, abs=1e-6)
 
@@ -95,17 +98,22 @@ def test_a_close_reason_cannot_be_both_maker_and_stop():
 # --- the venue registry keeps its own denomination ----------------------------------------
 
 
-def test_a_declared_venue_stop_rate_inherits_that_venues_general_slippage():
+def test_a_declared_venue_stop_rate_inherits_that_venues_general_slippage(monkeypatch):
     """A venue with no separate stop figure pays ITS OWN general slippage on the stop leg —
-    never the module default, which is Binance's number wearing a neutral name."""
+    never the module default, which since 2026-08-11 is Binance's measured interim wearing a
+    neutral name. Binance itself now DECLARES that figure, so the fallback is pinned on a
+    synthetic venue instead of on the one venue that no longer exercises it."""
     model = cost_model_for(cost.market_data.BINANCE_FUTURES)
-    assert model.stop_slippage_bps == model.slippage_bps
+    assert model.stop_slippage_bps == cost.DEFAULT_STOP_SLIPPAGE_BPS
 
     declared = cost.VenueCostDeclaration(
         venue="fakevenue", taker_fee_bps=4.0, slippage_bps=7.0, maker_fee_bps=1.0,
         funding_bps_per_interval=1.0, funding_intervals_per_day=3,
     )
     assert declared.missing() == ()
+    monkeypatch.setitem(cost.VENUE_COST_DECLARATIONS, "fakevenue", declared)
+    fake = cost_model_for("fakevenue")
+    assert fake.stop_slippage_bps == 7.0  # its own general rate — never Binance's 12
 
 
 def test_an_explicit_venue_stop_rate_is_carried_through(monkeypatch):

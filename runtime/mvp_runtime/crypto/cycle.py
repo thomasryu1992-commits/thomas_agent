@@ -31,7 +31,7 @@ from runtime.read_only_kernel import integrity
 
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
-from . import feedback, oi_store, pool, positioning_store
+from . import feedback, oi_store, orderbook_store, pool, positioning_store
 from .features import latest_feature_row
 from .guards import (
     RISK_LIMITS_UNUSABLE_PROBLEM,
@@ -64,6 +64,7 @@ from .market_data import (
     collect_market_data,
     degraded_market_data_record,
 )
+from .cooldown import CooldownMarkStore
 from .counterfactual import run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
@@ -218,8 +219,19 @@ def attach_feeds(
             symbol=symbol, collector=collector, now=now, root=root,
         )
         status["positioning"] = str(positioning["status"])
+        # The resting book, same flag and same reason, one difference: this vendor keeps no
+        # history at all, so the accumulation is not merely ahead of the feature that will read
+        # it — it is the only copy that will ever exist. `accumulate_orderbook_cohort` is what
+        # covers the fan-out; this covers the operator's single-symbol cycle, which has one
+        # context and no sweep. The overlap costs nothing — the store's period throttle answers
+        # the second asker `skipped_fresh` without opening a socket.
+        orderbook = orderbook_store.record_orderbook(
+            symbol=symbol, collector=collector, now=now, root=root,
+        )
+        status["orderbook"] = str(orderbook["status"])
     else:
         status["positioning"] = "not_accumulating"
+        status["orderbook"] = "not_accumulating"
 
     if liquidation_feed is not None and getattr(liquidation_feed, "feed_id", "none") != "none":
         try:
@@ -519,6 +531,7 @@ def run_crypto_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
     candle_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
@@ -709,6 +722,7 @@ def run_crypto_cycle(
         snapshot, feature_row, active_pool, paper_verdict,
         store=store, now=now, root=root, control_store=control_store,
         intrabar_collector=collector, routing_marks=routing_marks,
+        cooldown_marks=cooldown_marks,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
@@ -1221,6 +1235,46 @@ def accumulate_open_interest_cohort(
     }
 
 
+def accumulate_orderbook_cohort(
+    *,
+    collector: Any,
+    now: str,
+    root: Path | None,
+    contexts: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Snapshot the resting book for the DECLARED cohort. The third store on the same rule.
+
+    Written on the cohort footing from its first line rather than being moved onto it later, and
+    that is the whole reason this function exists at all instead of a flag on
+    :func:`attach_feeds`. Both stores above were shipped per-context and both had to be rescued:
+    positioning on 2026-08-04 with ``BNBUSDT`` frozen for 31 days and ``XRPUSDT`` permanently
+    empty, hourly OI the same day with the identical XRP footprint. The lesson generalises —
+    a retention store's scope cannot be a side effect of routing — and the cost of relearning it
+    here is strictly higher than it was there: those vendors serve 84 and 30 days, so a symbol
+    found late could still be backfilled to the retention wall. This venue serves **nothing**.
+    A cohort member missed on the day this ships is a hole in 2029's window that no later run,
+    no repair path and no amount of money can close.
+
+    Cost is the store's own 15-minute throttle, not this call: at most one request per symbol per
+    period whoever asks, so the cohort costs six requests a fire and 1,152 request-weight a day
+    against a 2,400-per-minute cap. Never raises — ``record_orderbook`` reports per-symbol status
+    instead, because a collection miss must not cost a fire its cycles.
+
+    Runs after the context loop and after a ``live_halt``, on
+    :func:`accumulate_positioning_cohort`'s reasoning: the halt stops this runtime *acting* on a
+    picture of real money it no longer trusts, while this opens no order path, writes only a local
+    append-only store, and loses its data permanently if skipped.
+    """
+    return {
+        symbol: str(
+            orderbook_store.record_orderbook(
+                symbol=symbol, collector=collector, now=now, root=root,
+            )["status"]
+        )
+        for symbol in retention_cohort(contexts)
+    }
+
+
 def run_pool_cycle(
     *,
     collector: MarketDataCollector,
@@ -1233,6 +1287,7 @@ def run_pool_cycle(
     control_store: ControlStore | None = None,
     liquidation_feed: Any | None = None,
     routing_marks: Any | None = None,
+    cooldown_marks: Any | None = None,
 ) -> dict[str, Any]:
     """Fan one governed pass out over every context the pool trades. Returns a summary.
 
@@ -1297,7 +1352,8 @@ def run_pool_cycle(
                 collector=collector, store=store, now=now,
                 symbol=symbol, timeframe=timeframe, limit=limit, root=root,
                 control_store=control_store, liquidation_feed=liquidation_feed,
-                routing_marks=routing_marks, candle_cache=candle_cache,
+                routing_marks=routing_marks, cooldown_marks=cooldown_marks,
+                candle_cache=candle_cache,
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
@@ -1321,6 +1377,11 @@ def run_pool_cycle(
     open_interest_1h = accumulate_open_interest_cohort(
         liquidation_feed=liquidation_feed, now=now, root=root, contexts=contexts,
     )
+    # Third store, same rule, one period rather than one hour — this one's throttle IS the fan-out
+    # cadence, because the venue serves no history to catch up from.
+    orderbook = accumulate_orderbook_cohort(
+        collector=collector, now=now, root=root, contexts=contexts,
+    )
 
     summary = {
         "pool_cycle_version": POOL_CYCLE_VERSION,
@@ -1331,6 +1392,7 @@ def run_pool_cycle(
         "unvisited": unvisited,
         "positioning": positioning,
         "open_interest_1h": open_interest_1h,
+        "orderbook": orderbook,
         "created_at": now,
     }
     summary["pool_cycle_id"] = integrity.short_id(
@@ -1419,19 +1481,89 @@ def pool_cycle_status_line(summary: dict[str, Any]) -> str:
     )
     if degraded:
         head += f" positioning-degraded={','.join(degraded)}"
+    # The same line for the order book, and the argument above applies with the one softening
+    # clause removed: "an hour missed here is not retryable, the vendor serves 30 days" was the
+    # reason positioning earns a place on the status line, and this venue serves none. A period
+    # lost here cannot be recovered by any later fire, so it reaches the operator now or never.
+    book_degraded = sorted(
+        symbol for symbol, status in (summary.get("orderbook") or {}).items()
+        if status == "degraded"
+    )
+    if book_degraded:
+        head += f" orderbook-degraded={','.join(book_degraded)}"
+    # The marker `pool_cycle_is_stalled` reads back off `last_status` on the next fire, so its
+    # threshold and the predicate's are the same number by construction. `degraded=N/M` rides
+    # alongside for the operator: "6/11" and "11/11" are different incidents and the token that
+    # arms the switch cannot say which.
+    cycle_degraded = sum(1 for c in cycles if c.get("degraded"))
+    if cycle_degraded:
+        head += f" degraded={cycle_degraded}/{len(cycles)}"
+    if cycles and 2 * cycle_degraded >= len(cycles):
+        head += " majority_degraded"
+    if cycles and cycle_degraded == len(cycles):
+        head += " all_degraded"
     parts = [head]
     parts.extend(f"{r['symbol']} {r['timeframe']}: {cycle_status_line(r)}" for r in cycles)
     parts.extend(f"{s['symbol']} {s['timeframe']}: skipped({s['reason_code']})" for s in skipped)
     return " | ".join(parts)
 
 
+PIPELINE_STALLED = "PIPELINE_STALLED"
+
+
+def cycle_is_stalled(record: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether THIS degraded cycle follows one that also degraded — a stalled pipeline.
+
+    Same pattern as ``data_review.review_loop_is_stalled``: the first degraded fire stays
+    quiet (delivered on the status line), the second consecutive one raises onto the failure
+    alert. At a 15-minute cadence two consecutive degraded fires is 30 minutes of a pipeline
+    producing nothing — long enough to be a real problem rather than a transient venue hiccup.
+    """
+    if not record.get("degraded"):
+        return False
+    previous = str(previous_status or "")
+    return previous.startswith("degraded") or PIPELINE_STALLED in previous
+
+
+def pool_cycle_is_stalled(summary: Mapping[str, Any], previous_status: str | None) -> bool:
+    """Whether a MAJORITY of this pool fire's contexts degraded, twice in a row.
+
+    **Majority rather than the original `all`**, Thomas 2026-08-22. `all` over the eleven
+    contexts the pool runs meant ten dead feeds and one alive stayed silent indefinitely; the
+    argument for tightening is that the cost of doing so is only alert noise, and the evidence
+    says there is none to spend: across 909 terminal fires over nine days **no context degraded
+    even once**, so `any`, `majority` and `all` would each have fired exactly zero times. Half
+    is the point where "the pool is not working" beats "one venue feed is flaky".
+
+    What this does NOT do is stop trading, and that asymmetry is why widening it is cheap:
+    `run_pool_cycle` has already run and its records are already on the ledger by the time this
+    is consulted (see `scheduler._execute`). Raising only re-labels the fire `failed` and puts
+    it on the operator's alert — the next fire runs the full cycle exactly as before.
+    """
+    cycles = summary.get("cycles") or []
+    if not cycles:
+        return False
+    if 2 * sum(1 for c in cycles if c.get("degraded")) < len(cycles):
+        return False
+    previous = str(previous_status or "")
+    # `all_degraded` is accepted alongside `majority_degraded` for one reason only: a fire
+    # recorded by the deployed-but-older image writes the former and this one reads the latter,
+    # so the pair keeps a stall that straddles a deploy from silently restarting its count.
+    return ("majority_degraded" in previous or "all_degraded" in previous
+            or PIPELINE_STALLED in previous)
+
+
 __all__ = [
+    "PIPELINE_STALLED",
     "accumulate_open_interest_cohort",
+    "accumulate_orderbook_cohort",
     "accumulate_positioning_cohort",
     "attach_cross_section",
     "attach_positioning",
+    "cycle_is_stalled",
     "cycle_status_line",
     "pool_cycle_contexts",
+    "pool_cycle_is_stalled",
     "pool_cycle_status_line",
     "retention_cohort",
     "run_crypto_cycle",

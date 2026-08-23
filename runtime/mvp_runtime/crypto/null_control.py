@@ -49,6 +49,7 @@ from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import timeutil
 from . import market_data
 from .factory import ReplayFrame, backtest_spec, unsuppliable_features
 from .strategy import SpecParseError, StrategySpec, evaluate_spec
@@ -178,6 +179,32 @@ def min_post_mint_bars(timeframe: str) -> int:
     if not minutes:
         return 1 << 30
     return max(1, int(MIN_POST_MINT_DAYS * 1440 / minutes))
+
+
+def calendar_bars_bound(created_at_utc: str, *, timeframe: str, now: str) -> int | None:
+    """An upper bound on the post-mint bars ANY collected frame could show ``measure_spec``,
+    from the calendar alone — or ``None`` when nothing can be proven.
+
+    A frame's bars sit at least ``bar_minutes`` apart and none opens after ``now``, so the
+    bars strictly after a mint number at most ``elapsed // bar_minutes + 1``. When that bound
+    is under :func:`min_post_mint_bars` the answer is ``too_young`` no matter what a
+    collection returns — which is what lets the scheduler fire skip a factory-depth
+    collection it can prove would measure nothing. The proof runs one way only: ``None``
+    (unparseable stamp, unknown timeframe, a mint in the future) means "not provable", and
+    the caller must collect and let ``measure_spec`` give the recorded answer.
+    """
+    minutes = market_data.TIMEFRAMES.get(str(timeframe))
+    if not minutes:
+        return None
+    try:
+        elapsed = (
+            timeutil.parse_iso(str(now)) - timeutil.parse_iso(str(created_at_utc))
+        ).total_seconds()
+    except ValueError:
+        return None
+    if elapsed < 0:
+        return None
+    return int(elapsed // (minutes * 60)) + 1
 
 
 def measure_spec(
@@ -311,6 +338,7 @@ __all__ = [
     "NULL_DRAWS",
     "RECORD_TYPE",
     "build_record",
+    "calendar_bars_bound",
     "measure_spec",
     "min_post_mint_bars",
     "post_mint_index",

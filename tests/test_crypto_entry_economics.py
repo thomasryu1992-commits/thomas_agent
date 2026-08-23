@@ -204,16 +204,16 @@ def _pool():
     }]}
 
 
-# 1.5 * 0.06 = 0.09 against a 60.0 close: a stop 0.15% of the price, which is what a 15m ATR
+# 1.5 * 0.1 = 0.15 against a 100.0 close: a stop 0.15% of the price, which is what a 15m ATR
 # looks like. The wide row keeps the same match conditions and only widens the stop.
-ROW_TIGHT = {"timestamp": "2026-07-22T00:00:00Z", "close": 60.0, "ma20": 50.0, "atr": 0.06}
+ROW_TIGHT = {"timestamp": "2026-07-22T00:00:00Z", "close": 100.0, "ma20": 90.0, "atr": 0.1}
 ROW_WIDE = {**ROW_TIGHT, "atr": 2.0}
 
 
 def _snapshot():
     return {"symbol": "BTCUSDT", "timeframe": "1d", "candles": [{
-        "open_time": "2026-07-21T00:00:00Z", "open": 59.0, "high": 61.0, "low": 58.0,
-        "close": 60.0, "volume": 10.0, "close_time": "2026-07-22T00:00:00Z",
+        "open_time": "2026-07-21T00:00:00Z", "open": 99.0, "high": 101.0, "low": 98.0,
+        "close": 100.0, "volume": 10.0, "close_time": "2026-07-22T00:00:00Z",
     }]}
 
 

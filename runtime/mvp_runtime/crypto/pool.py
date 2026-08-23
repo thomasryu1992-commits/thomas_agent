@@ -60,6 +60,7 @@ from .cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
+    DEFAULT_STOP_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_UNCHARGED,
     FUNDING_SOURCE_VENUE,
@@ -217,13 +218,18 @@ def cost_basis_of(record: Mapping[str, Any]) -> str:
         return EDGE_COST_BASIS_UNRECORDED
     maker = model.get("maker_fee_bps")
     maker_term = f"+maker_{maker}bps" if isinstance(maker, (int, float)) else ""
+    # Present-only, the maker rule: a record scored before the stop split keeps the exact
+    # basis string it has always reported, and a stamped one says what its stops paid —
+    # which is the axis `cost_basis_rank` now refuses OPTIMISTIC rows on.
+    stop = model.get("stop_slippage_bps")
+    stop_term = f"+stop_{stop}bps" if isinstance(stop, (int, float)) else ""
     funding = model.get("funding_bps_per_interval")
     if isinstance(funding, (int, float)) and not isinstance(funding, bool):
         source = model.get("funding_source") or FUNDING_SOURCE_VENUE
         funding_term = f"+funding_{funding}bps/8h({source})"
     else:
         funding_term = f"+funding_{FUNDING_SOURCE_UNCHARGED}"
-    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{funding_term}"
+    return f"{EDGE_COST_BASIS_NET}:taker_{taker}bps{maker_term}+slip_{slip}bps{stop_term}{funding_term}"
 
 
 def current_cost_basis() -> str:
@@ -236,6 +242,7 @@ def current_cost_basis() -> str:
         "taker_fee_bps": DEFAULT_TAKER_FEE_BPS,
         "maker_fee_bps": DEFAULT_MAKER_FEE_BPS,
         "slippage_bps": DEFAULT_SLIPPAGE_BPS,
+        "stop_slippage_bps": DEFAULT_STOP_SLIPPAGE_BPS,
         "funding_bps_per_interval": DEFAULT_FUNDING_BPS_PER_INTERVAL,
         "funding_source": FUNDING_SOURCE_VENUE,
     }}}})
@@ -288,15 +295,28 @@ def cost_basis_rank(record: Mapping[str, Any]) -> int:
         # which is a property of the trade and not of the cost model this function ranks.
         return COST_BASIS_RANK_OPTIMISTIC
     maker = model.get("maker_fee_bps")
+    # The stop leg joined the comparison on Thomas's 2026-08-11 direction, the same evening
+    # the seam re-priced 3.0 -> 12.0: a row scored with cheaper stops overstates its edge on
+    # every stop exit exactly the way a cheaper taker did, and the safest treatment of the
+    # existing store is NOT a forced re-price but this rank — cheaper-than-current reads
+    # OPTIMISTIC, is refused at the door, and the lineage re-mints at the current model.
+    # A record with no `stop_slippage_bps` charged its stops at its own GENERAL slippage
+    # (the pre-#683 identity), so that is the figure it is judged on — the maker rule again:
+    # what the leg actually paid, never a missing field read as the current rate.
+    stop_charged = model.get("stop_slippage_bps")
+    if not _is_number(stop_charged):
+        stop_charged = slip
     if (taker == DEFAULT_TAKER_FEE_BPS and maker == DEFAULT_MAKER_FEE_BPS
-            and slip == DEFAULT_SLIPPAGE_BPS and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip == DEFAULT_SLIPPAGE_BPS and stop_charged == DEFAULT_STOP_SLIPPAGE_BPS
+            and funding == DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CURRENT
     # A record with no maker rate charged its exit at the TAKER rate — that model had no maker
     # leg at all, so the honest comparison against today's maker rate is what the exit actually
     # paid, not a missing field treated as zero (which would read every legacy row as optimistic).
     maker_charged = maker if _is_number(maker) else taker
     if (taker >= DEFAULT_TAKER_FEE_BPS and maker_charged >= DEFAULT_MAKER_FEE_BPS
-            and slip >= DEFAULT_SLIPPAGE_BPS and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
+            and slip >= DEFAULT_SLIPPAGE_BPS and stop_charged >= DEFAULT_STOP_SLIPPAGE_BPS
+            and funding >= DEFAULT_FUNDING_BPS_PER_INTERVAL):
         return COST_BASIS_RANK_CONSERVATIVE
     return COST_BASIS_RANK_OPTIMISTIC
 
@@ -1797,6 +1817,96 @@ def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     return (tuple(spec.get("symbol_scope") or ()), spec.get("timeframe"))
 
 
+def _lattice_attempts(record: Mapping[str, Any]) -> int:
+    """How many hypotheses this row charges its context with — its ablation lattice size
+    when it carries one, else 1.
+
+    An ablation winner registered alone, but its ``lattice_size - 1`` unregistered siblings
+    were each scored against the same bars (``factory.ablate_hypothesis`` replays every
+    non-empty subset of the drawn conjunction); uncharged, they would be exactly the escape
+    :func:`attempts_by_context`'s docstring forbids — attempts that raise no bar. The
+    division of labour is deliberate: ``lattice_size`` is stored FACT (how many members
+    were tried, true at mint and forever), while the attempt COUNT stays computed at read
+    time here. An absent or unreadable block charges 1 — the pre-ablation meaning every
+    stored row already has — and never 0, which would be a row escaping its own charge."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    ablation = evidence.get("ablation")
+    if not isinstance(ablation, Mapping):
+        return 1
+    size = ablation.get("lattice_size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        return 1
+    return size
+
+
+def _evidence_symbols(record: Mapping[str, Any]) -> int:
+    """How many symbols this record's evidence was actually scored over, from the record.
+
+    Reads the holdout's ``symbols`` first (stamped by the pooled replay), then the top-level
+    ``symbols_replayed``. Returns 1 whenever the evidence does not positively say "pooled" —
+    absence must stay the single-symbol reading every pre-F9 row already has."""
+    evidence = record.get("backtest_evidence")
+    if not isinstance(evidence, Mapping):
+        return 1
+    holdout = evidence.get("holdout")
+    for value in (
+        holdout.get("symbols") if isinstance(holdout, Mapping) else None,
+        evidence.get("symbols_replayed"),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 1:
+            return value
+    return 1
+
+
+def pooled_context_keys(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, int], tuple[Any, ...]]:
+    """The store's multi-symbol context key per ``(timeframe, cohort size)`` — when unambiguous.
+
+    Read off the store rather than off a constant, because the row that needs it cannot name
+    its own cohort (that is the defect being compensated). A slot where two different cohorts
+    of the same size share a timeframe is dropped: an ambiguous reattribution would move an
+    attempt onto bars it may never have been scored against, and the fallback (charge the
+    stored key) is the behavior the store already had."""
+    keys: dict[tuple[str, int], tuple[Any, ...]] = {}
+    ambiguous: set[tuple[str, int]] = set()
+    for record in records:
+        key = search_context_key(record.get("strategy_spec") or {})
+        scope, timeframe = key
+        if len(scope) > 1:
+            slot = (str(timeframe), len(scope))
+            if slot in keys and keys[slot] != key:
+                ambiguous.add(slot)
+            keys[slot] = key
+    return {slot: key for slot, key in keys.items() if slot not in ambiguous}
+
+
+def attempt_context_key(
+    record: Mapping[str, Any], *, pooled_keys: Mapping[tuple[str, int], tuple[Any, ...]],
+) -> tuple[Any, ...]:
+    """The context whose BARS this record's attempt was scored against — evidence-aware.
+
+    For almost every row this is :func:`search_context_key` unchanged. The exception is the
+    F9 topup omission (56 rows, 2026-08-10..17, code fixed by #712): specs minted with a
+    single-symbol ``symbol_scope`` whose evidence was scored pooled over the whole cohort.
+    An attempt charges the bars it was scored against, so those rows charge — and are judged
+    against — their timeframe's pooled context, provided the store can name exactly one
+    cohort of that size (``pooled_keys``) and the stored symbol is a member of it. Anything
+    less provable falls back to the stored key, which is the pre-existing behavior and the
+    conservative direction: the single-symbol keys carry the larger counts today, so a row
+    left behind faces the higher bar, never a lower one."""
+    key = search_context_key(record.get("strategy_spec") or {})
+    scope, timeframe = key
+    symbols = _evidence_symbols(record)
+    if len(scope) == 1 and symbols > 1:
+        pooled = pooled_keys.get((str(timeframe), symbols))
+        if pooled is not None and scope[0] in pooled[0]:
+            return pooled
+    return key
+
+
 def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, ...], int]:
     """How many candidates have been scored against each market/timeframe's bars.
 
@@ -1807,16 +1917,27 @@ def attempts_by_context(records: Sequence[Mapping[str, Any]]) -> dict[tuple[Any,
     same bars" is a property of the context and not of the day.
 
     Distinct candidates, not rows: the store re-appends a lineage and every append would
-    otherwise raise the bar for candidates that never moved."""
+    otherwise raise the bar for candidates that never moved.
+
+    A row minted through the ablation lattice counts as its whole lattice
+    (:func:`_lattice_attempts`): one winner registered, but every member was scored against
+    this context's bars, and the burden follows the scoring, not the storing."""
     seen: set[str] = set()
-    counts: dict[tuple[Any, ...], int] = {}
+    distinct: list[Mapping[str, Any]] = []
     for record in records:
         cid = candidate_id(record)
         if cid in seen:
             continue
         seen.add(cid)
-        key = search_context_key(record.get("strategy_spec") or {})
-        counts[key] = counts.get(key, 0) + 1
+        distinct.append(record)
+    # Two passes because the reattribution needs the whole population first: which cohort a
+    # scope-mismatched row charges is read off the store (`pooled_context_keys`), not off the
+    # row, and a single pass would answer differently depending on store order.
+    pooled_keys = pooled_context_keys(distinct)
+    counts: dict[tuple[Any, ...], int] = {}
+    for record in distinct:
+        key = attempt_context_key(record, pooled_keys=pooled_keys)
+        counts[key] = counts.get(key, 0) + _lattice_attempts(record)
     return counts
 
 
@@ -2011,10 +2132,13 @@ def rank_candidates(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         cid = candidate_id(record)
         by_cid[cid] = {**record, "candidate_id": cid}
     attempts = attempts_by_context(list(by_cid.values()))
+    # The lookup follows the same evidence-aware key the counting used: a row judged against
+    # a key it does not charge would face a bar computed without its own attempt in it.
+    pooled_keys = pooled_context_keys(list(by_cid.values()))
 
     def _key(record: Mapping[str, Any]) -> tuple[int, int, int, int, float, float, str]:
         q = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         return (q["cost_basis_rank"], q["verdict_rank"], q["selection_rank"],
                 q["evidence_depth_rank"], -q["edge_quality"], -q["expectancy"],
@@ -2226,6 +2350,8 @@ def promotable_backlog(
     # in the backlog is the tier the ordering used. Recomputing it per record here instead
     # would count a different store than the one that produced the order.
     attempts = attempts_by_context(list(records))
+    # Same evidence-aware key as the counting, for the reason `rank_candidates` states.
+    pooled_keys = pooled_context_keys(list(records))
     active_hashes = {entry.get("strategy_rule_hash") for entry in active_entries}
     seen_lineages: set[tuple[Any, ...]] = {
         _lineage_key(entry.get("strategy_spec") or {}) for entry in active_entries
@@ -2256,7 +2382,7 @@ def promotable_backlog(
             refused["derivation"] += 1
             continue
         quality = candidate_quality(
-            record, attempts=attempts.get(search_context_key(record.get("strategy_spec") or {}))
+            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
         )
         if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
             refused["cost_basis"] += 1

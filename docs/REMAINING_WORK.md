@@ -1087,9 +1087,113 @@ The pattern is now specific enough to design against: **a module that writes sta
 leg owns, read by a door the autonomous leg cannot reach, is a counter that counts nothing.** Both
 #246 and #247 are exactly that, and neither had a test because both halves worked.
 
+### Three live closes on 2026-08-18 came from the Binance mobile app, not from this runtime — recorded 2026-08-18
+
+`venue_external_close` is defined in `crypto/live_leg.py` as the close this runtime did not send and
+no bracket leg performed. Three rows carry it on 2026-08-18, and the venue names their origin: each
+one is a `reduceOnly` `MARKET` order whose `clientOrderId` carries Binance's **`ios_`** prefix — the
+marker for an order placed by hand from the mobile app.
+
+| position | strategy | opened | venue close | detected | close order | entry → exit | realized |
+|---|---|---|---|---|---|---|---|
+| `live_position_a73ca2db540ec074991a` | S005-GEN-833 (`cand_3b14f39ffeb1f246ce7b`) | 2026-08-17T23:59:11Z | **02:54:47Z** | 04:44:12Z | `ios_r0kk5Z07by52itCR0vX1` | 64521.0 → 64090.1 | +1.2927 USDT |
+| `live_position_72764f6ca0d6063bef1e` | `PROBE-probe_batch_bbca200a67aae9570a36` | 03:23:25Z | **04:30:19Z** | 04:44:12Z | `ios_aZLlW33qFedZgYX2qlVe` | 75.37 → 75.69 | +0.0224 USDT |
+| `live_position_a5c59aacb777bcebb801` | `PROBE-probe_batch_bbca200a67aae9570a36` | 06:32:37Z | **07:12:49Z** | 07:14:13Z | `ios_UUfL5f4VrL4jLMzGWkh7` | 75.94 → 76.09 | +0.0105 USDT |
+
+**All three closes are Thomas's own, stated 2026-08-18.** This record is that statement, because the
+outcome row cannot carry it: no tool writes an operator's reason onto a close.
+`scripts/record_unreported_live_order.py` is narrow to a canary order's missing audit append and
+refuses a general operator-note verb by construction, so §C is where it goes. What the ledger does
+get right on its own is the exclusion — `venue_external_close` is deliberately kept out of the names
+that feed a strategy's R statistics, so the +1.2927 does not credit S005-GEN-833 for a human's exit.
+
+**Nothing here is unexplained venue behaviour.** The two probe closes were first reported as not
+made by hand and then confirmed as Thomas's own within the same session; the venue's `ios_` marker
+is the whole account of all three. The batch's poor sample yield on 2026-08-18 therefore has one
+cause, and it is not the probe: a hand close ends the position before its stop can be touched, and a
+stop that is never touched is the one thing this instrument cannot measure. Neither probe cost the
+batch a cell — `resolve_open_cell` returns any non-`stop_loss` close to `EMPTY` — so what they cost
+is the fire, not the sample slot.
+
+**Read `closed_at_utc` as the detection pass, not the fill.** The gap ran 14 minutes on the probes
+and **1h49m** on BTCUSDT. Same reading the 2026-08-06 pair above already required, now with the
+venue's own `time` beside it to size the lag.
+
+#### The position-mode switch this sits inside — and it has not taken effect
+
+Thomas set the account to hedge (양방향) mode by hand at the venue. **It did not apply.** Read back
+read-only from `GET /fapi/v1/positionSide/dual`, 2026-08-18:
+
+    {"dualSidePosition": false}
+
+The venue refuses a position-mode change while any position or open order exists, and BTCUSDT has
+held a position plus two resting bracket legs continuously since 04:59:11Z. Consistent with that,
+every entry in the window — the 04:59 BTCUSDT strategy entry, the 06:32 SOLUSDT probe — was accepted
+without a `positionSide` parameter, which hedge mode rejects as `-4061`.
+
+**If it ever does take, this runtime breaks.** `positionSide` and `dualSidePosition` appear nowhere
+in the codebase; every order is built for one-way mode. `tunables.py` already names the exposure:
+`MAX_LIVE_POSITIONS_PER_SYMBOL` is classified `VENUE` on the stated ground *"the venue nets per
+symbol in one-way mode, so a second book cannot exist"*, with *"hedge mode, which would make this a
+choice rather than a fact"* as what would reopen it. The per-symbol position store
+(`live_positions/<SYMBOL>.json`, one book per symbol) rests on the same assumption. Hedge mode is
+therefore a code change, not a venue setting — and until it is one, the setting must stay off.
+
 > Real money. The full operator go-live checklist (grants, confirmation phrase, caps, kill switches)
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
+
+### One live outcome row is wrong and there is no way to correct it — recorded 2026-08-23
+
+`live_out_e56cf310dcc07d9c6edd` (BTCUSDT, closed 2026-08-21T09:03:43Z) records
+`realized_pnl_usdt 77.5357` / `result_R 398.02720739` for a trade that lost **0.1728 USDT,
+-0.887R**. It is the only one of the 28 rows in `live_outcomes.jsonl` that does not satisfy
+`(exit - entry) * qty` under its own sign convention; the other 27 match to eight decimals.
+
+The recorded figure is exactly `0.002 * 77708.50 - 0.001 * 77881.30` — a close twice the size
+of the open, priced against the book's entry quote. The stop leg is a `closePosition`
+STOP_MARKET and the venue treats that as Close-All, so it closed what was actually open; the
+book held half of it. Four and a half minutes earlier the cycle had halted the symbol with
+`LIVE_ROUTING_BOOK_DRIFT` and `live_settled=null`, which is that same disagreement seen from
+the other side. **The recurrence is fixed** (#752 gives the bracket-leg settlement the quantity
+check its two sibling paths already had) and **the board no longer vouches for the row** (#753).
+This entry is about the row itself, which both of those leave in place.
+
+**There is no correction mechanism, and building one is the open item.** `live_pnl.py` has no
+supersede path; re-appending the same `settlement_id` is rejected; two rows sharing an
+`outcome_id` raise `LIVE_HISTORY_DUPLICATE`, which fails **every** live-history read closed —
+the breakers, the risk guard and the promotion board at once. The ledger is fsync append-only.
+And the row passes its own `record_sha256`, because the corruption happened before the hash was
+taken, so no integrity check will ever flag it. A correction therefore needs a designed record
+type (void / supersede) with its own schema and governance, not an edit.
+
+**Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
+and it would leave no record that anyone changed a money figure — on the one ledger whose whole
+purpose is to be the thing nobody can quietly change.
+
+**What the row still costs, after #752 and #753:**
+
+| consumer | effect |
+|---|---|
+| daily / weekly loss breakers | **none, from 2026-08-24T00:00Z** — `_pnl_since` windows on `exit_time`, so the row leaves the weekly window at rollover and left the daily one on 08-22 |
+| drawdown breaker | under-reports by **0.887R** against a 10R limit, permanently. The phantom entered `equity` and `peak` together, so it did not inflate the gap — it anchored the peak on itself and erased a real 0.887R drawdown |
+| consecutive-loss breaker | none — `PROBE-` lineage is skipped in both directions |
+| lifecycle / promotion / retirement / `live_allowance` | none — they read paper outcomes |
+| scheduled dashboard report | none — paper only |
+| `live_promotion` evidence board | flagged and excluded from its pass count by #753 |
+
+**`drawdown_excluded_strategy_ids` is not the answer, and it was measured rather than assumed.**
+That mechanism exists for a lineage an operator deliberately retired, and it fails three ways
+here: it is semantically wrong (this is a bad number, not a retired strategy); it would drop the
+17 other rows of the same probe batch; and it does not even produce the true figure — excluding
+the batch gives a current drawdown of **-2.9901R** against a truth of **-0.8871R**, which is
+further from correct than leaving it alone.
+
+So the row stays, and the standing cost is 0.887R of drawdown headroom that is not real. **Do
+not "fix" it by widening a limit**, and do not read any all-time live P&L total without
+subtracting it — cumulative realized reads +80.88 USDT where the truth is +3.17.
+
+---
 
 ---
 
@@ -1452,8 +1556,28 @@ same answer.
       read as "no risk": the budget bounds *starting*, never *duration*, and a fire already
       running is deliberately never interrupted (cutting a factory or archive mid-write trades a
       latency problem for a torn record). So a single hung fire blocks everything behind it in
-      that pass, without limit. Fifteen days say it has not happened — the worst observed is
-      +438s — but no in-process change can make it impossible.
+      that pass, without limit. ~~Fifteen days say it has not happened — the worst observed is
+      +438s~~ — no in-process change can make it impossible, and **it has now happened: twice in
+      four days, attributed to the second, measured 2026-08-15.**
+
+      #704 (merged 2026-08-12) added mint-time ablation, and on the days the drawn conjunctions
+      make it expensive the 4h cohort factory fire runs ~6.5 minutes where it ran ~75s. Both
+      times, `crypto_pipeline` — a `RISK_KINDS` member — was due mid-fire and fired the second
+      the factory fire ended:
+
+      | day | 4h factory fire | pipeline gap (960s = late) | attribution |
+      |---|---|---|---|
+      | 2026-08-12 | 391s, ended 08:19:10 | 1,202s, fired **08:19:10** | exact to the second |
+      | 2026-08-15 | 402s, ended 08:19:44 | 1,225s, fired **08:19:44** | exact to the second |
+
+      Three notes so this is read at its true size and no larger. The cost is ~5 minutes of
+      entry/bookkeeping latency on a 4h path whose protective bracket rests at the venue —
+      bounded, not an unprotected position. The long fires are the day's conjunction mix, not a
+      new floor: 08-13/08-14 ran 72–124s and were clean. And the same window produced two more
+      "late" gaps that the restart check above **discards**: 08-11's 1,799s contains an
+      `abandoned` recovery row (a restart — exactly the check this item prescribes), and
+      08-15's overnight 1,806s gap has no marker and no factory fire in its window, so it stays
+      unattributed rather than counted.
 
       **What reopens this:** one fire that hangs rather than merely running long; one abandoned
       run **that no container restart explains** (the process dying mid-fire, which OOM would
@@ -1465,8 +1589,31 @@ same answer.
       passes) rather than a judgement. Deferrals alone do not qualify and that is the point of
       recording them: the clustering above cost maintenance up to four minutes while
       `crypto_pipeline` held its cadence, so it is cosmetic, and the schedules should be left
-      alone until the two appear on the same day. Any of the four makes the separation a fix
-      rather than an investment, and the measurements above are the thing to re-run first.
+      alone until the two appear on the same day.
+
+      **The fourth condition is now met — 2026-08-12 and again 2026-08-15, the table above.**
+      Both days also deferred maintenance (the 1d cohort fire waited two passes behind its 4h
+      sibling), so "late risk-kind fires and deferrals together" holds literally. One precision
+      that matters for the remedy: the deferrals those days were the factory's own sibling and
+      the morning `crypto_null_control` burst, but the *lateness* was caused by fire
+      **duration**, not by the burst — so the `--first-run-at` / reschedule capability this
+      item's companion report points at targets the wrong mechanism for this instance, and the
+      candidate remedies are duration-shaped (a duration-aware budget, splitting the ablation
+      fire, or the process separation this item parked). Per this item's own closing sentence,
+      one of those is now a fix rather than an investment. **Which, and whether — that is a
+      Thomas decision; this paragraph records the evidence and decides nothing.**
+
+      **Decided (Thomas 2026-08-17): process separation.** By then the re-measurement had
+      moved the frequency from "twice in four days" to four of the last six (08-16 337s and
+      08-17 384s joined, each with the same second-exact pipeline gap), so the exposure is
+      the daily cost of lattice-era mints, not a bad-day tail. The duration-aware budget and
+      the ablation-fire split were passed over, not refuted. Design and its own open
+      decisions: `docs/proposals/FACTORY_FIRE_PROCESS_SEPARATION_V0.1.md` — the compute
+      already has a pure seam (`run_factory`), the child writes nothing but a spool, and the
+      scheduler stays the single writer. §3 was approved as proposed the same day and the
+      separation is implemented: the fetch stays in-pass, the pure compute forks, and
+      `_collect_factory_child` closes the bracket on a later pass. The exposure this item
+      measured ends when an image carrying it is deployed.
 
 ---
 ## F. The fee schedule is no longer what binds — re-measured 2026-08-04, and the answer moved
@@ -3128,6 +3275,47 @@ windows could refuse at the door, rank below a stable row, or only be recorded a
 Recorded-and-surfaced is the cheapest honest start and matches how a shallow window is already
 handled — `pool.assert_promotable_evidence_depth` refuses only the unreadable case and ranks the
 rest.
+
+#### F9c. Pooling turned the crossover path off, and nothing recorded that as a decision — measured 2026-08-15
+
+**The state.** Since the first pooled fire (2026-08-10T08:12:38Z) **every** factory fire has been
+pooled, and `run_factory` skips fusion on a pooled fire (`if fusion_pairs > 0 and not pooled`).
+So the crossover path has produced **zero children for six days, from zero attempted pairs** —
+not a thin yield, an off switch. Before it, fusion was minting ~0.2 children per fire (~3.9 before
+#523/#525 tightened it) and crossover rows were **26% of the eligible parent pool** while being
+26% of all rows, at a 15.5% parent-eligibility rate against seeded's 9.0% and a 9.0% ROBUST rate
+against seeded's 2.8%.
+
+**The skip itself is right and is not the item.** #633's comment states it: `_fuse_batch`
+re-scores each parent on this window through the one-frame `backtest_spec`, so a pooled child
+would be scored on one leg while claiming five — and `fuse_specs` would pair pooled parents
+happily, since their scopes match and `symbol_scope_mismatch` never fires. That is the wrong-number
+shape the rest of the file exists to prevent. **What is missing is that the consequence was never
+priced.** The skip arrived inside a PR about holdout windows; no line anywhere says "the crossover
+path is now off", and F9's own decision screen does not count it among what pooling costs.
+
+**Why it went unnoticed for six days, which is the transferable part.** `fused_count: 0` with an
+empty `fusion_rejected` is exactly what a **dry parent pool** produces, so the record could not
+distinguish "fusion ran and the store had no pair" from "fusion never ran". A weekly watch built
+to catch a dry pool read straight past it — and its three triggers were all green at the time
+(pool 205 distinct hashes and growing ~7/day, crossover share 26%, seeded pass rate 12–62%).
+`fusion_skipped` (added alongside this entry) now names the reason, so the two are separable.
+
+**The decision, which is Thomas's.** Either pooled fusion is a wanted increment or the crossover
+path is retired in favour of pooled seeding — and if it is retired, #523's child bar and #525's
+parent filter are governing a path that no longer runs and should be reconsidered on those terms.
+
+**What the increment costs if it is wanted.** One thing: `_fuse_batch` has to score children and
+re-score parents through `backtest_spec_pooled` over the fire's legs rather than `backtest_spec`
+over one frame. The pieces already exist — `backtest_spec_pooled` is the scorer, and the parent
+replays are already memoised per rule hash, so the cohort cost is paid once per parent per fire,
+not once per pair. `fuse_specs` needs no change: pooled parents share a scope, so the union is
+already well-defined. The materials are there too — pooled candidates are accumulating at 8/fire,
+and two pooled parents in one bucket is all a pair needs.
+
+**What NOT to do.** Do not re-enable fusion on pooled fires without moving the scorer first. The
+guard is load-bearing exactly as written; removing it mints children whose evidence claims a
+cohort it never replayed.
 
 ### F10. 4h does not signal rarely — five families do, and the rotation funds them equally — measured 2026-08-06
 

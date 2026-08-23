@@ -1418,3 +1418,105 @@ def test_a_proposer_reply_without_a_generation_is_never_judged(monkeypatch, repl
         sched.delegate_proposal_generation(
             existing_families=[], focus=None, repo_root=None,
         )
+
+
+# === lanes: the tick loop can run one side of the partition ========================
+# `docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md` (Thomas 2026-08-19, D1–D3). The factory child
+# fixed the one fire measured holding the pass; within a week `crypto_null_control` fires of
+# ~4 minutes produced the same late `crypto_pipeline` by the same mechanism (2026-08-17
+# 04:48Z, three back to back). Any kind can grow a long fire, so the durable fix is the class
+# one: two tick processes, one per side of the existing partition. These pin what a laned
+# pass may touch — and, harder, what it must leave alone.
+
+
+def test_lane_kinds_resolves_the_partition_and_fails_closed():
+    """The lane boundary is the budget partition, reused: the forcing tests above already
+    keep every kind classified, so they already keep every kind laned. An unknown lane
+    refuses to resolve — a typo that silently ran everything would put a long fire back in
+    front of the money path with nothing recording that it had."""
+    assert scheduler.lane_kinds(scheduler.LANE_ALL) is None
+    assert scheduler.lane_kinds(scheduler.LANE_RISK) is scheduler.RISK_KINDS
+    assert scheduler.lane_kinds(scheduler.LANE_MAINTENANCE) is scheduler.MAINTENANCE_KINDS
+    with pytest.raises(SchedulerBlocked) as exc:
+        scheduler.lane_kinds("riks")
+    assert exc.value.reason_code == "SCHEDULER_UNKNOWN_LANE"
+
+
+def test_a_laned_pass_fires_only_its_own_kinds_and_leaves_the_rest_untouched(tmp_path, monkeypatch):
+    """The other lane's due schedule is not fired, not skipped, not deferred — and not
+    claimed, because its own process will claim it. Untouched means no ledger event either:
+    a row would read as this process having decided something about a schedule it cannot
+    see whole."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    factory = _kind_schedule(store, scheduler.KIND_FACTORY)
+    order = []
+    _record_order(monkeypatch, order)
+
+    summary = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                      control_store=ControlStore(tmp_path), kinds=scheduler.RISK_KINDS)
+
+    assert summary["fired"] == 1 and order == [scheduler.KIND_CRYPTO]
+    row = [s for s in store.list() if s.schedule_id == factory.schedule_id][0]
+    assert row.next_run_at <= T1 and row.last_run_at is None     # still due, never claimed
+    assert all(e["kind"] != scheduler.KIND_FACTORY for e in _events(ledger))
+
+    # ...and the maintenance lane picks up exactly what the risk lane left.
+    second = run_due(store, now=T1, ledger=ledger, executor=FakeExecutor(),
+                     control_store=ControlStore(tmp_path), kinds=scheduler.MAINTENANCE_KINDS)
+    assert second["fired"] == 1 and order == [scheduler.KIND_CRYPTO, scheduler.KIND_FACTORY]
+    assert all(s.last_run_at == T1 for s in store.list())
+
+
+def test_a_kill_in_one_lane_drops_only_that_lanes_occurrences(tmp_path, monkeypatch):
+    """The kill-switch branch claims and DROPS, which is precisely why the lane filter must
+    sit in front of it: a killed risk lane consuming maintenance occurrences would drop
+    fires the maintenance lane — same kill, its own pass — was going to drop itself, and
+    the ledger would attribute the drop to the wrong process."""
+    store = ScheduleStore(tmp_path)
+    _kind_schedule(store, scheduler.KIND_CRYPTO)
+    factory = _kind_schedule(store, scheduler.KIND_FACTORY)
+    control_store = ControlStore(tmp_path)
+    control.apply_command(control_store, control.CMD_KILL, actor="op", now=T0, reason="halt")
+    _record_order(monkeypatch, [])
+
+    summary = run_due(store, now=T1, executor=FakeExecutor(),
+                      control_store=control_store, kinds=scheduler.RISK_KINDS)
+
+    assert summary["skipped"] == 1 and summary["fired"] == 0
+    row = [s for s in store.list() if s.schedule_id == factory.schedule_id][0]
+    assert row.next_run_at <= T1                       # the other lane's occurrence survives
+
+
+def test_the_risk_lane_never_touches_the_factory_spool(tmp_path):
+    """`_collect_factory_child` with no registered child treats every spool meta as an
+    orphan whose parent died — and the risk-lane process NEVER has a registered child, so
+    ungated it would execute that recovery against the maintenance lane's LIVE fire on
+    every pass: a false `failed:FACTORY_CHILD_ORPHANED` for a run whose parent is alive
+    next door. The gate is lane ownership of KIND_FACTORY."""
+    store = ScheduleStore(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    s = _kind_schedule(store, scheduler.KIND_FACTORY)            # due at T1; passes run at T0
+    spool = scheduler._factory_spool_dir(tmp_path)
+    spool.mkdir(parents=True, exist_ok=True)
+    meta_path = spool / "srun_next_door.meta.json"
+    meta_path.write_text(json.dumps({
+        "schedule_run_id": "srun_next_door", "schedule_id": s.schedule_id,
+        "kind": scheduler.KIND_FACTORY, "spawned_at": T0,
+        "timeout_seconds": scheduler.FACTORY_CHILD_TIMEOUT_SECONDS, "pid": None,
+    }), encoding="utf-8")
+
+    run_due(store, now=T0, ledger=ledger, control_store=ControlStore(tmp_path),
+            repo_root=tmp_path, kinds=scheduler.RISK_KINDS)
+
+    assert meta_path.exists()                          # not this lane's to fail
+    assert _events(ledger) == []
+
+    # The lane that owns the kind fails the orphan closed, exactly as before the split.
+    run_due(store, now=T0, ledger=ledger, control_store=ControlStore(tmp_path),
+            repo_root=tmp_path, kinds=scheduler.MAINTENANCE_KINDS)
+
+    assert not meta_path.exists()
+    failed = [e for e in _events(ledger) if e["action"] == "failed"]
+    assert len(failed) == 1 and failed[0]["status"] == "failed:FACTORY_CHILD_ORPHANED"

@@ -240,6 +240,7 @@ class BinanceFuturesAccountFeed:
         account = self._signed_get(ACCOUNT_PATH, {}, timeout_seconds=timeout_seconds)
 
         warnings: list[str] = []
+        income: Any = None
         try:
             income = self._signed_get(
                 INCOME_PATH,
@@ -251,9 +252,26 @@ class BinanceFuturesAccountFeed:
             )
         except ToolError as exc:
             # Balances and positions already succeeded. Losing the P&L history should
-            # narrow the answer, not discard the part that worked.
-            income = []
+            # narrow the answer, not discard the part that worked. Narrowing means the
+            # windows are ABSENT, never zero: a zero here would read downstream as "no
+            # loss today" on the series the daily-loss breaker meters.
             warnings.append(f"realized P&L unavailable ({exc.reason_code})")
+        else:
+            if isinstance(income, list) and len(income) >= INCOME_PAGE_LIMIT:
+                # A full page is the venue cap, and the endpoint returns rows ascending,
+                # so what fell off the end is the NEWEST income — exactly the window the
+                # daily-loss breaker measures. Like ``fill_history`` below, this call
+                # deliberately does not paginate; unlike a fee measurement, a possibly
+                # truncated P&L answer must not travel at all, because ``bucket_income``
+                # would read the missing newest rows as a comfortable zero. Withholding
+                # the windows makes ``venue_daily_realized_net`` answer ``None`` and the
+                # breaker fall back to the local ledger — the breaker can only trip
+                # earlier from this, never later.
+                income = None
+                warnings.append(
+                    f"realized P&L income page full ({INCOME_PAGE_LIMIT} rows); "
+                    "windows withheld as possibly truncated"
+                )
 
         latency_ms = int((time.monotonic() - started) * 1000)
         return self._build(account, income, latency_ms=latency_ms, warnings=warnings)
@@ -341,7 +359,13 @@ class BinanceFuturesAccountFeed:
             available_balance=_f(account.get("availableBalance")),
             unrealized_pnl=_f(account.get("totalUnrealizedProfit")),
             positions=parse_positions(account.get("positions")),
-            realized_windows=bucket_income(income, now_ms=int(time.time() * 1000)),
+            # ``None`` income means "unreadable or possibly truncated": no windows at all,
+            # so every reader must say "unknown" rather than mistake absence for zero.
+            realized_windows=(
+                bucket_income(income, now_ms=int(time.time() * 1000))
+                if income is not None
+                else {}
+            ),
             source=self.source,
             collected_at=timeutil.utc_now_iso(),
             feed_version=self.feed_version,
@@ -588,7 +612,13 @@ def render_account_text(snapshot: AccountSnapshot | None) -> str:
     ]
     for days in PNL_WINDOW_DAYS:
         key = f"{days}d"
-        bucket = snapshot.realized_windows.get(key, {})
+        bucket = snapshot.realized_windows.get(key)
+        if not isinstance(bucket, dict):
+            # Withheld (unreadable or possibly truncated income) renders as unknown.
+            # A board that prints +0.00 for a window nobody read is the confident zero
+            # the withholding exists to prevent.
+            lines.append(f"realized {key:4}: n/a (income history withheld)")
+            continue
         net = bucket.get("net", 0.0)
         pct = return_pct(net, snapshot.margin_balance)
         pct_text = "n/a" if pct is None else f"{pct:+.2f}%"
