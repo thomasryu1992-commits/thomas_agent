@@ -87,10 +87,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 |---|---|---|---|---|---|
 | `ABSOLUTE_PATH` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 173 | `resolve_target` | `candidate.is_absolute() or candidate.drive or relative_path.startswith(('/', '\\'))` |
 | `ACCEPT_REQUIRES_SHADOW_PASS` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 587 | `transition_candidate` | `action == 'accept' and shadow.get('status') != 'PASS'` |
-| `ACCOUNT_FEED_NOT_CONFIGURED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 269 | `load_funds_board` | `not body.get('configured', False)` |
-| `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 274 | `load_funds_board` | `body.get('degraded')` |
-| `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 262 | `load_funds_board` | `body is None` |
-| `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 257 | `load_funds_board` | `snapshot_path(root).is_file()` |
+| `ACCOUNT_FEED_NOT_CONFIGURED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 283 | `load_funds_board` | `not body.get('configured', False)` |
+| `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 288 | `load_funds_board` | `body.get('degraded')` |
+| `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 276 | `load_funds_board` | `body is None` |
+| `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 271 | `load_funds_board` | `snapshot_path(root).is_file()` |
 | `ACTIVATION_CHANGED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 406 | `assert_authorization` | `current != authorization.activation_sha256` |
 | `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 290 | `authorize` | `now >= str(expires_at)` |
 | `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 367 | `assert_authorization` | `now >= authorization.expires_at` |
