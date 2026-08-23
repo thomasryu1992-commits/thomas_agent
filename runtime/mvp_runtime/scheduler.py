@@ -185,10 +185,19 @@ KIND_CANDLE_ARCHIVE = "candle_archive"
 # re-reads the store and every spec's evaluable window is a day longer. See
 # `crypto/null_control.py` for the measurement that made a one-shot version untrustworthy.
 KIND_NULL_CONTROL = "crypto_null_control"
+# The blog lane's weekly package (Phase 2). Maintenance, not risk: it spends model allowance
+# and venue quota, never money, and a week that fires late costs freshness. Like
+# `crypto_data_review` it delegates the whole job to the worker rather than collecting
+# anything here — the Naver keys and the model providers are on `pipeline-worker` and on no
+# other service, so there is nothing this process could do with them if it tried.
+#
+# The `request` column carries the seed keywords, comma separated, exactly as `crypto_factory`
+# carries a symbol list there. `target=<keyword>` among them overrides the week's selection.
+KIND_CONTENT_IDEATION = "content_ideation"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL})
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -247,6 +256,7 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
+    KIND_CONTENT_IDEATION,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -469,6 +479,12 @@ def build_schedule(
     request = request.strip() if isinstance(request, str) else ""
     if kind == KIND_TASK and not request:
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
+    if kind == KIND_CONTENT_IDEATION and not request:
+        raise SchedulerBlocked(
+            "MISSING_REQUEST",
+            "a content_ideation schedule requires seed keywords in its request "
+            "(comma separated; `target=<keyword>` overrides the week's selection)",
+        )
     if not (isinstance(created_by, str) and created_by.strip()):
         raise SchedulerBlocked("MISSING_CREATOR", "a schedule requires a created_by identity")
     schedule_id = integrity.short_id(
@@ -933,6 +949,84 @@ def delegate_data_review(
     return record
 
 
+# Two governed runs plus an independent validation, against a venue and two model calls. The
+# 900s that bounds a single-run delegation is not enough, and a deadline that fires mid-package
+# would leave the research run's spend paid for and its result discarded.
+CONTENT_IDEATION_DEADLINE_SECONDS = 1500.0
+
+
+def delegate_content_ideation(
+    seeds: str, *, source_ref: str, now: str | None, repo_root: Path | None,
+) -> dict[str, Any]:
+    """Run the blog lane's weekly package in the worker and return its sheet.
+
+    Unlike `delegate_data_review` this does not build an input here first — there is nothing to
+    build that does not need a credential this process lacks. The seeds come straight off the
+    schedule's `request` column and the worker does the rest, which is why the frame is one
+    string rather than a collected inventory.
+
+    Fail-closed with no fallback, as every delegation here: an unreachable worker raises and
+    `run_due` records a failed fire. A `NO_ELIGIBLE_KEYWORD` week is NOT that — it is the
+    worker answering, and it arrives as a typed refusal in the reply rather than as silence.
+    """
+    from . import pipeline_worker
+
+    reply = socket_door.call_door(
+        pipeline_worker.socket_path(repo_root),
+        {"job": pipeline_worker.JOB_CONTENT_IDEATION,
+         "ideation_inputs": {"seeds": seeds, "source_ref": source_ref},
+         "reason": "scheduler:content_ideation"},
+        deadline_seconds=CONTENT_IDEATION_DEADLINE_SECONDS,
+    )
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise SchedulerBlocked(
+            str((reply or {}).get("reason_code") or "WORKER_UNAVAILABLE")
+            if isinstance(reply, dict) else "WORKER_UNAVAILABLE",
+            str((reply or {}).get("reason") or "the pipeline worker did not build the package")
+            if isinstance(reply, dict) else "the pipeline worker's reply was not an object",
+        )
+    if not reply.get("package_id"):
+        raise SchedulerBlocked(
+            "WORKER_UNAVAILABLE",
+            "the pipeline worker returned no package id; nothing was produced",
+        )
+    return reply
+
+
+def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
+    """The operator's weekly sheet. ASCII-safe framing; the draft's own text is not repeated.
+
+    What an operator needs here is the decision the lane made and whether the draft cleared the
+    bar — the body itself is in the package record, and pasting three thousand characters into
+    a Telegram message would bury both.
+    """
+    evidence = reply.get("keyword_evidence") or {}
+    score = reply.get("score") or {}
+    measured = score.get("measured") or {}
+    lines = [
+        "=== blog package ===",
+        "",
+        f"keyword   : {reply.get('target_keyword')}",
+        f"package   : {reply.get('package_id')}",
+        f"evidence  : {len(evidence.get('metrics') or [])} keyword(s) measured, "
+        f"as of {evidence.get('as_of')}"
+        + (f", {evidence['total_competing_posts']} competing posts"
+           if evidence.get("total_competing_posts") is not None else ""),
+        f"draft     : {measured.get('body_chars', '?')} chars, "
+        f"{measured.get('headings', '?')} headings, {measured.get('images', '?')} image cues",
+        f"standards : {'PASS' if score.get('critical_pass') else 'MISS'} "
+        f"({score.get('standards_version')})",
+    ]
+    if not score.get("critical_pass"):
+        lines += ["", "critical criteria missed — the package is recorded, not discarded:"]
+        lines += [f"  {line}" for line in (reply.get("scorecard_lines") or [])
+                  if "MISS" in line]
+    if reply.get("written") is False:
+        lines += ["", f"no file written ({reply.get('filesystem_write')});"
+                       " read the package with its id above"]
+    return "\n".join(lines)
+
+
 def delegate_proposal_generation(
     *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
 ) -> dict[str, Any]:
@@ -1237,6 +1331,20 @@ def _execute(
         # the request empty, the fire fans OUT over every context the pool trades (+
         # every open position) so no strategy is symbol-starved — the default that
         # actually covers the pool. Each sub-cycle rides the ledger on its own id.
+        # The account snapshot the read door serves. Here and not in a maintenance kind
+        # because this lane is the one holding the venue credentials — `scheduler-maint`
+        # carries no `MVP_ACCOUNT_FEED` or `BINANCE_ACCOUNT_*`, so a snapshot written there
+        # would be `configured: false` forever. Placed before the stall check on both paths:
+        # a pipeline that has degraded twice running is precisely when an operator wants to
+        # know the balance, and raising first would skip the refresh on exactly those fires.
+        # `refresh_snapshot` never raises and is a no-op when not due.
+        def _refresh_funds(line: str) -> str:
+            from .crypto import account_store
+
+            if not account_store.is_due(account_store.read_refresh_mark(repo_root), now):
+                return line
+            return f"{line} {account_store.refresh_snapshot(now=now, root=repo_root)}"
+
         from .crypto.cycle import (
             PIPELINE_STALLED,
             cycle_is_stalled,
@@ -1281,7 +1389,7 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            status = cycle_status_line(record)
+            status = _refresh_funds(cycle_status_line(record))
             if cycle_is_stalled(record, schedule.last_status):
                 raise SchedulerBlocked(PIPELINE_STALLED, (
                     f"crypto pipeline has degraded for two consecutive fires; "
@@ -1298,7 +1406,7 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        status = pool_cycle_status_line(summary)
+        status = _refresh_funds(pool_cycle_status_line(summary))
         if pool_cycle_is_stalled(summary, schedule.last_status):
             raise SchedulerBlocked(PIPELINE_STALLED, (
                 f"crypto pipeline has degraded across all contexts for two consecutive fires; "
@@ -1316,6 +1424,7 @@ def _execute(
         from .crypto import positioning_store
         from .crypto.factory import run_factory
         from .crypto.market_data import (
+            PeerCandleCache,
             collect_market_data,
             factory_candle_target,
             select_liquidation_feed,
@@ -1327,6 +1436,14 @@ def _execute(
         symbol = symbols[0]
         collector = select_market_data_collector(now=now, root=repo_root)
         liquidation_feed = select_liquidation_feed(now=now, root=repo_root)
+        # One cache for the fire, the same contract `run_pool_cycle` has always used: a pooled
+        # mint is a fan-out, and its two context legs read series that do not depend on which
+        # leg is asking. `attach_reference` reads the constant proxy once per leg — five asks
+        # for one answer on a five-symbol cohort — and `attach_cross_section` pages the same
+        # universe for every leg. Both at `factory_candle_target`, the deepest window this
+        # runtime reads, which is why it is worth caching here and not merely tidy. Built here
+        # and dropped when the fire ends, so no later fire can be served a stale bar.
+        candle_cache = PeerCandleCache(collector)
 
         def _mining_snapshot(for_symbol: str):
             """One fully-attached leg. Returns None when the venue is degraded for it."""
@@ -1345,6 +1462,7 @@ def _execute(
             crypto_cycle.attach_mining_legs(
                 built, collector=collector, timeframe=timeframe, now=now, root=repo_root,
                 liquidation_feed=liquidation_feed, candle_target=factory_candle_target,
+                candle_cache=candle_cache,
             )
             return built
 
@@ -1565,6 +1683,37 @@ def _execute(
                 f"{schedule.last_status!r}. {status}"
             ))
         return status
+    if schedule.kind == KIND_CONTENT_IDEATION:
+        # The blog lane's week. Everything happens in the worker — this branch delegates,
+        # appends nothing (the worker already wrote the package row through the same ledger),
+        # sends the operator's sheet best-effort, and reports.
+        #
+        # A `NO_ELIGIBLE_KEYWORD` week raises, deliberately. Every seed being unwinnable, too
+        # small or already written is not a quiet completion: it means the seed list has been
+        # used up, and the operator has to widen it before another fire can produce anything.
+        # `_notify_status_change` carries a FAILED fire to the channel; a summary string
+        # reaches nobody, which is exactly the wrong way round for a lane that has stopped
+        # being able to work.
+        from . import operator as operator_mod
+
+        reply = delegate_content_ideation(
+            schedule.request,
+            source_ref=f"scheduler:{schedule.schedule_id}",
+            now=now, repo_root=repo_root,
+        )
+        delivery = ""
+        try:
+            channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+            operator_mod.notify_operator(
+                channel, format_ideation_sheet(reply), repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            delivery = f" sheet_not_sent:{exc.reason_code}"
+        except Exception as exc:  # noqa: BLE001 — transport must not stop scheduling
+            delivery = f" sheet_not_sent:{type(exc).__name__}"
+        score = reply.get("score") or {}
+        return (f"content_ideation={reply.get('package_id')} "
+                f"keyword={reply.get('target_keyword')!r} "
+                f"standards={'pass' if score.get('critical_pass') else 'miss'}{delivery}")
     if schedule.kind == KIND_CANDLE_ARCHIVE:
         # Read-only, and the archive feeds nothing — so this fire cannot change what the
         # runtime trades. What it can do is fail to keep a bar that will not be offered

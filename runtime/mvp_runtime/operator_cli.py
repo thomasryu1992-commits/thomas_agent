@@ -66,6 +66,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "stricter verdict decides delivery). Bare flag or 'always' = every "
                              "request; 'auto' (R7.1) = only ORANGE/RED-risk tasks and requests "
                              "the operator marks important (!중요 / !important prefix)")
+    parser.add_argument("--revise", action="store_true",
+                        help="M3: on a REVISE verdict, allow ONE bounded regeneration before "
+                             "the run is finalised (hard cap 1). Off by default. Until this "
+                             "exists on the deployed loop the revision path has run zero "
+                             "times in production — every REVISE verdict ended FINAL_BLOCKED "
+                             "and waited for the operator to ask again")
     return parser.parse_args(argv)
 
 
@@ -200,6 +206,7 @@ def main(
                     store=store, control_store=control_store, approval_store=approval_store,
                     registry=registry, frontdesk_provider=frontdesk_provider,
                     independent_validation=_validation_policy(args.independent_validation),
+                    revise=bool(args.revise),
                     validator_provider=validator_provider, repo_root=repo_root,
                 )
             except OperatorBlocked as exc:

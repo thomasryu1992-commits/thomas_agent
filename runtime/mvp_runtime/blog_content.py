@@ -1,0 +1,419 @@
+"""One weekly blog package: research the keywords, draft against the winner, score the draft.
+
+The content lane has had every part of this since 2026-08-10 and has never once run it on its
+own. `content.general` has executed exactly once in the ledger's history, the Naver adapters
+are live and measured, `blog_content_package.v0.1` has a closed schema with no producer, and
+`schedules.jsonl` holds no content kind at all. What was missing was never a capability — it
+was the wiring that puts the capabilities in sequence without a human in the middle of each
+step.
+
+This module is that sequence, and it lives in the worker because that is where the credentials
+are: the Naver keys and the model providers are on `thomas-pipeline-worker` and nowhere else
+(`scheduler-maint` carries neither), so the scheduler delegates the whole job here rather than
+collecting anything itself — the same cut `crypto_data_review` makes for the same reason.
+
+Two governed runs, in order:
+
+1. **research** with `keyword_seeds`, which runs the Naver brief inside the run and leaves a
+   `keyword_research` record with measured monthly demand per candidate;
+2. **content** with the winning keyword as `naver_keywords`, which drafts against that
+   measured evidence rather than against a guess.
+
+Then the draft is parsed into a package, **scored against the lane's standards**, validated
+against the closed schema, and appended to the ledger.
+
+**What this does NOT do: write a file.** The package is a ledger row. `workspace.run_write` is
+behind `filesystem_write`, that flag is unset on this deployment, and opening it is a separate
+decision with its own compose change — so this module never calls the writer. The consequence
+is honest and worth stating: an operator gets the package by reading the record, not by opening
+`workspace/`. When the flag opens, the write is one call added here.
+
+**The scoring is advisory here, not a gate.** `blog_draft_score` says whether the draft cleared
+Thomas's standards and the answer rides in the record and the operator's sheet. It does not
+suppress the package: a short draft that an operator can lengthen is worth more than a fire
+that produced nothing and said why in a log line. The two drafts that prompted the scorer's
+existence were both half the minimum length and were both delivered — the fix for that is
+measuring, not discarding.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from runtime.read_only_kernel import integrity
+
+from . import blog_draft_score, timeutil
+from .errors import ToolError
+from .pipeline import run_task
+
+PACKAGE_SCHEMA_VERSION = "blog_content_package.v0.1"
+PACKAGE_RECORD_KIND = "blog_content_package"
+
+# The schema's own ceilings, mirrored here so the parser truncates deterministically instead of
+# handing the validator a draft-shaped reason to fail the whole fire. A model that emits 24
+# capture markers has produced a usable draft with too many notes, not an invalid one.
+MAX_TITLES = 5
+MAX_BODY_BLOCKS = 100
+MAX_TAGS = 30
+MAX_IMAGE_SHOTS = 20
+MAX_FACT_CHECKS = 30
+MAX_METRICS = 50
+
+# The seven fields `keyword_evidence.metrics` names, and the only seven. The brief's own rows
+# carry an eighth on their top entries — `run_keyword_brief` attaches `competing_posts` where
+# the competition leg answered (`naver_research.py`) — and the schema's item is
+# `additionalProperties: false`, so handing the rows straight through fails validation every
+# time. Nobody had hit it because nothing had ever assembled a package. The count is not
+# dropped: the schema already carries it one level up as `total_competing_posts`, which is
+# where a per-evidence total belongs anyway.
+_METRIC_FIELDS = (
+    "keyword", "monthly_pc", "monthly_mobile", "monthly_total",
+    "competition", "low_volume", "source",
+)
+
+# Competition rated this high means the first page is already owned; the lane's leverage is in
+# measured demand nobody has answered yet (proposal §2). `low_volume` rows are Search Ad's own
+# "too small to report" marker and are not a target either.
+_UNWINNABLE_COMPETITION = frozenset({"높음", "HIGH", "high"})
+
+NO_ELIGIBLE_KEYWORD = "NO_ELIGIBLE_KEYWORD"
+IDEATION_RESEARCH_BLOCKED = "IDEATION_RESEARCH_BLOCKED"
+IDEATION_CONTENT_BLOCKED = "IDEATION_CONTENT_BLOCKED"
+BLOG_PACKAGE_SCHEMA_INVALID = "BLOG_PACKAGE_SCHEMA_INVALID"
+
+__all__ = [
+    "BLOG_PACKAGE_SCHEMA_INVALID",
+    "IDEATION_CONTENT_BLOCKED",
+    "IDEATION_RESEARCH_BLOCKED",
+    "NO_ELIGIBLE_KEYWORD",
+    "PACKAGE_RECORD_KIND",
+    "build_package",
+    "parse_seeds",
+    "run_content_ideation",
+    "select_target_keyword",
+]
+
+
+def parse_seeds(request: str) -> tuple[list[str], str | None]:
+    """``"미리캔버스, 포스터제작, target=스마트스토어"`` -> (seeds, target override).
+
+    The schedule's free-text `request` column carries the seeds, exactly as `crypto_factory`
+    carries a symbol list there. `target=` is the operator's override for one fire: it skips
+    selection and drafts against the named keyword, which is what makes the automatic rule a
+    default rather than a decision the code took on its own behalf.
+    """
+    seeds: list[str] = []
+    target: str | None = None
+    for part in str(request or "").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if item.lower().startswith("target="):
+            candidate = item.split("=", 1)[1].strip()
+            if candidate:
+                target = candidate
+            continue
+        seeds.append(item)
+    return seeds, target
+
+
+def select_target_keyword(
+    metrics: Sequence[Mapping[str, Any]], *, already_written: Sequence[str] = ()
+) -> tuple[str | None, dict[str, Any]]:
+    """The most-searched keyword that is winnable and not already used. Pure and deterministic.
+
+    Returns ``(keyword, reasoning)``; the reasoning is recorded so a week's choice can be
+    argued with rather than believed. Refusing (``None``) when nothing qualifies is a real
+    outcome — a fire that drafts against a keyword the rule excluded would be worse than a
+    fire that reports it found none.
+    """
+    used = {str(k).strip() for k in already_written if str(k).strip()}
+    considered: list[dict[str, Any]] = []
+    best: tuple[int, Mapping[str, Any]] | None = None
+    for row in metrics:
+        keyword = str(row.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        total = row.get("monthly_total")
+        total = int(total) if isinstance(total, (int, float)) else 0
+        reason = None
+        if keyword in used:
+            reason = "already written"
+        elif row.get("low_volume"):
+            reason = "volume below the venue's reporting floor"
+        elif str(row.get("competition") or "") in _UNWINNABLE_COMPETITION:
+            reason = "competition high"
+        elif total <= 0:
+            reason = "no measured demand"
+        considered.append({"keyword": keyword, "monthly_total": total, "excluded_because": reason})
+        if reason is None and (best is None or total > best[0]):
+            best = (total, row)
+    reasoning = {
+        "rule": "highest measured monthly demand among winnable, unused keywords",
+        "considered": considered[:MAX_TAGS],
+    }
+    if best is None:
+        return None, reasoning
+    return str(best[1].get("keyword")).strip(), reasoning
+
+
+def _keyword_evidence(record: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The brief, in the shape the package schema names. Absent brief is an honest empty one."""
+    if not isinstance(record, Mapping):
+        return {"as_of": timeutil.utc_now_iso(), "degraded": True,
+                "degraded_reason_code": "KEYWORD_BRIEF_ABSENT", "metrics": []}
+    rows = [m for m in (record.get("metrics") or []) if isinstance(m, Mapping)]
+    # A row missing any of the seven cannot satisfy the item schema, and half a row is not
+    # evidence — it is dropped rather than emitted incomplete, which would fail the whole
+    # package on the validator and take the draft down with it.
+    metrics = [
+        {field: row[field] for field in _METRIC_FIELDS}
+        for row in rows[:MAX_METRICS]
+        if all(field in row for field in _METRIC_FIELDS)
+    ]
+    evidence: dict[str, Any] = {
+        "as_of": str(record.get("created_at") or timeutil.utc_now_iso()),
+        "degraded": bool(record.get("degraded")),
+        "metrics": metrics,
+    }
+    legs = record.get("degraded_legs")
+    if evidence["degraded"] and legs:
+        evidence["degraded_reason_code"] = f"KEYWORD_BRIEF_DEGRADED:{','.join(sorted(legs))}"
+    competing = [m.get("competing_posts") for m in rows
+                 if isinstance(m.get("competing_posts"), int)]
+    if competing:
+        evidence["total_competing_posts"] = sum(competing)
+    points = record.get("trend_points")
+    if points:
+        evidence["trend_points"] = list(points)
+    return evidence
+
+
+# The `\s+` after the hashes is load-bearing, not style. A Korean hashtag line —
+# `#미리캔버스 #포스터제작` — also begins with `#`, and without the required space this regex
+# claimed it as a heading, so every draft's tag line became a title and `tags` came back empty.
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,4}\s+(?P<text>.+?)\s*$")
+_CAPTURE_RE = re.compile(r"\[캡처:\s*(?P<what>[^\]]+)\]")
+_TAG_RE = re.compile(r"#([^\s#]{1,40})")
+
+
+def _parse_draft(draft: str) -> dict[str, Any]:
+    """Split one plain-text draft into the package's paste body and its editor instructions.
+
+    The paste body is what goes into SmartEditor, so the markers the editor cannot interpret
+    are lifted out of it and become instructions beside it: a heading line becomes a
+    `body_blocks` entry, a `[캡처: …]` marker becomes an `image_shots` entry naming the
+    paragraph it followed, and trailing `#tags` become `tags`. Everything is truncated at the
+    schema's ceiling rather than allowed to fail validation — see the constants above.
+    """
+    tags: list[str] = []
+    blocks: list[dict[str, Any]] = []
+    shots: list[dict[str, Any]] = []
+    kept: list[str] = []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", draft or "") if p.strip()]
+    for para in paragraphs:
+        captures = _CAPTURE_RE.findall(para)
+        body = _CAPTURE_RE.sub("", para).strip()
+        # Asked first: a paragraph that is only hashtags is the draft's tag line, not a
+        # paragraph and not a heading.
+        if body and not _TAG_RE.sub("", body).strip() and _TAG_RE.search(body):
+            tags.extend(_TAG_RE.findall(body))
+            continue
+        heading = _HEADING_RE.match(body)
+        if heading:
+            body = heading.group("text").strip()
+        if body:
+            kept.append(body)
+            index = len(kept) - 1
+            if heading:
+                blocks.append({"paragraph_index": index, "action": "heading"})
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+        elif captures:
+            index = max(len(kept) - 1, 0)
+            for what in captures:
+                shots.append({"after_paragraph": index, "what_to_capture": what.strip()})
+
+    # Tags may also trail the final paragraph rather than standing alone.
+    if kept:
+        trailing = _TAG_RE.findall(kept[-1])
+        if trailing and not _TAG_RE.sub("", kept[-1]).strip():
+            tags.extend(trailing)
+            kept.pop()
+
+    seen: set[str] = set()
+    unique_tags = [t for t in tags if not (t in seen or seen.add(t))]
+    return {
+        "body_paste": "\n\n".join(kept),
+        "body_blocks": blocks[:MAX_BODY_BLOCKS],
+        "image_shots": shots[:MAX_IMAGE_SHOTS],
+        "tags": unique_tags[:MAX_TAGS],
+        "paragraph_count": len(kept),
+    }
+
+
+def _title_candidates(draft: str, target_keyword: str, parsed: Mapping[str, Any]) -> list[str]:
+    """At least one title, because the schema requires it and a package without one is unusable.
+
+    The first heading is the draft's own title when it has one; the keyword is the fallback, so
+    this never returns empty for a draft that produced any text at all.
+    """
+    titles: list[str] = []
+    for para in re.split(r"\n\s*\n", draft or ""):
+        match = _HEADING_RE.match(para.strip())
+        if match:
+            text = match.group("text").strip()
+            if text and text not in titles:
+                titles.append(text)
+        if len(titles) >= MAX_TITLES:
+            break
+    if not titles:
+        first = (parsed.get("body_paste") or "").split("\n", 1)[0].strip()
+        titles = [first[:80]] if first else [target_keyword]
+    return titles[:MAX_TITLES]
+
+
+def build_package(
+    *, target_keyword: str, draft: str, keyword_record: Mapping[str, Any] | None, now: str,
+) -> dict[str, Any]:
+    """Assemble one `blog_content_package.v0.1`. Pure — no ledger, no clock, no I/O."""
+    parsed = _parse_draft(draft)
+    package: dict[str, Any] = {
+        "schema_version": PACKAGE_SCHEMA_VERSION,
+        "created_at_utc": now,
+        "target_keyword": target_keyword,
+        "keyword_evidence": _keyword_evidence(keyword_record),
+        "title_candidates": _title_candidates(draft, target_keyword, parsed),
+        "body_paste": parsed["body_paste"],
+        "body_blocks": parsed["body_blocks"],
+        "tags": parsed["tags"],
+        "image_shots": parsed["image_shots"],
+        # The draft's own sourcing is not machine-extractable from plain text, and inventing
+        # entries would be worse than an empty list the operator can see is empty.
+        "fact_checks": [],
+        "publish_state": "draft",
+    }
+    package["package_id"] = integrity.short_id("bcp", {
+        "target_keyword": target_keyword,
+        "body_paste": package["body_paste"],
+        "created_at_utc": now,
+    })
+    return package
+
+
+def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[str, Any]:
+    result = run_task(request, request_kind=kind, **kwargs)
+    if result.get("status") != "COMPLETED":
+        block = result.get("block") or {}
+        raise ToolError(
+            blocked_code,
+            f"the {kind} run did not complete: "
+            f"{block.get('reason_code') or result.get('status')}",
+        )
+    return result
+
+
+def run_content_ideation(
+    inputs: Mapping[str, Any],
+    *,
+    providers: Mapping[str, Any] | None = None,
+    ledger: Any = None,
+    working_memory: Any = None,
+    programization: Any = None,
+    now: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Research -> pick -> draft -> score -> package. Returns the sheet the scheduler renders.
+
+    Raises ``ToolError`` when a governed run blocks or no keyword qualifies; the scheduler
+    turns that into the fire's status, which is the same shape a blocked data-review fire has.
+    """
+    seeds, target_override = parse_seeds(str(inputs.get("seeds") or ""))
+    if not seeds and not target_override:
+        raise ToolError("IDEATION_INPUTS_REQUIRED", "no keyword seeds and no target= override")
+    resolved = dict(providers or {})
+    common: dict[str, Any] = {
+        "provider": resolved.get("provider"),
+        "validator_provider": resolved.get("validator_provider"),
+        "search_tool": resolved.get("search_tool"),
+        "working_memory": working_memory,
+        "programization": programization,
+        "store": ledger,
+        "repo_root": repo_root,
+        "now": now,
+        "requester_id": "thomas",
+        "requester_type": "human",
+        "channel": "api",
+        "source_ref": str(inputs.get("source_ref") or "scheduler:content_ideation"),
+        "authenticated": True,
+    }
+
+    keyword_record: Mapping[str, Any] | None = None
+    reasoning: dict[str, Any] = {"rule": "operator override", "considered": []}
+    target = target_override
+    if seeds:
+        research = _run(
+            "research",
+            "이 시드 키워드들의 측정된 검색 수요와 경쟁 강도를 정리하고, "
+            "다음 블로그 글의 주제 후보를 근거와 함께 제시해라: " + ", ".join(seeds),
+            blocked_code=IDEATION_RESEARCH_BLOCKED,
+            keyword_seeds=seeds,
+            **common,
+        )
+        keyword_record = (research.get("records") or {}).get("keyword_research")
+        if target is None:
+            metrics = (keyword_record or {}).get("metrics") or []
+            target, reasoning = select_target_keyword(
+                metrics, already_written=inputs.get("already_written") or ()
+            )
+    if not target:
+        raise ToolError(
+            NO_ELIGIBLE_KEYWORD,
+            "no seed keyword was winnable, in demand and unused; "
+            f"considered {len(reasoning.get('considered') or [])}",
+        )
+
+    content = _run(
+        "content",
+        f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. "
+        f"소제목 4~7개, 본문 1,800자 이상, 이미지 지시는 [캡처: …] 형식으로 넣어라.",
+        blocked_code=IDEATION_CONTENT_BLOCKED,
+        naver_keywords=[target],
+        **common,
+    )
+    draft = str(content.get("final_response") or "")
+
+    package = build_package(
+        target_keyword=target, draft=draft, keyword_record=keyword_record, now=now
+    )
+    # Scored on the draft the model produced, NOT on `body_paste`: the paste body has had its
+    # capture markers and tag lines lifted out, so scoring it would report zero images and zero
+    # hashtags for a draft that has both.
+    measured = blog_draft_score.measure(draft, target)
+    lines, critical_pass = blog_draft_score.scorecard(measured)
+    score = {
+        "standards_version": blog_draft_score.STANDARDS_VERSION,
+        "critical_pass": bool(critical_pass),
+        "measured": measured,
+    }
+
+    if ledger is not None:
+        ledger.append_records(package["package_id"], {PACKAGE_RECORD_KIND: package})
+
+    return {
+        "package": package,
+        "package_id": package["package_id"],
+        "target_keyword": target,
+        "selection": reasoning,
+        "score": score,
+        "scorecard_lines": lines,
+        "keyword_evidence": package["keyword_evidence"],
+        "trace_ids": [t for t in (
+            ((content.get("records") or {}).get("task") or {}).get("identity", {}).get("trace_id"),
+        ) if t],
+        "written": False,
+        "filesystem_write": "not enabled on this deployment",
+    }

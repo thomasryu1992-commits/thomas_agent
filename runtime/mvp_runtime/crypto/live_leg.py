@@ -1004,6 +1004,33 @@ def realized_pnl_usdt(
     if entry_quote is None or exit_quote is None:
         return None, detail
 
+    # The two sides of the subtraction below come from different places — the exit quote from
+    # the venue's fill, the entry quote from this runtime's book — and until 2026-08-22 nothing
+    # asked whether they describe the same amount. They did not, once: a `closePosition`
+    # STOP_MARKET is Close-All, so it closes whatever is actually open, and on
+    # 2026-08-21T09:03:43Z it closed 0.002 BTC against a book that held 0.001. The difference
+    # priced as a 77.5357 USDT profit on a trade that lost 0.1728, and `result_R` carried
+    # +398.03 into the risk guard's weekly sum. `0.002 * 77708.50 - 0.001 * 77881.30` is that
+    # number to the cent.
+    #
+    # Both sibling exit paths already refuse this: `live_execution.reconcile_order` on
+    # `abs(filled - wanted) > 1e-9` for a runtime-sent exit, and `exit_fill_from_history` on a
+    # fill that overshoots the remaining quantity. The invariant is not new here — it was
+    # present twice and absent once, and the once produced every `stop_loss` sample.
+    #
+    # Refusing returns the caller to its documented behaviour for figures it does not have:
+    # `settle_venue_closed_position` leaves the book OPEN and reports `EXIT_UNSETTLEABLE`,
+    # reconciliation then refuses new entries on the symbol, and an operator resolves it. That
+    # is the correct consequence of not knowing what closed, and this function's own docstring
+    # already says so. Tolerance mirrors `exit_fill_from_history`: what a lot-step rounding can
+    # leave behind, not a licence to accept a different size. A missing `executed_qty` is left
+    # alone rather than refused — it is a pre-existing gap, not this defect, and closing it here
+    # would refuse fills that price correctly today.
+    if exit_qty is not None and quantity > 0:
+        if abs(exit_qty - quantity) > max(quantity * 1e-9, 1e-9):
+            detail["quantity_mismatch"] = {"book": quantity, "venue_filled": exit_qty}
+            return None, detail
+
     direction = str(position.get("direction") or "").upper()
     if direction == "LONG":
         pnl = exit_quote - entry_quote

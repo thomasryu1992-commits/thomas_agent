@@ -67,6 +67,22 @@ MIN_MAX_DRAWDOWN_PCT = -25.0
 RISK_LIMITS_INVALID_PROBLEM = "risk_limits_invalid"
 RISK_LIMITS_UNUSABLE_PROBLEM = "risk_limits_unusable"
 
+# Every problem name `run_risk_guard` can put in a verdict, in one place. The names were only
+# ever string literals at the four `problems.append` sites and at the two constants above, so a
+# reader trying to answer "what can close this door?" had to find them all — and anything that
+# consumed the vocabulary (a watch classifying a stored verdict, say) had to re-spell it and
+# drift silently when a fifth was added. Owning the set here makes the drift a test failure
+# instead: `test_the_problem_vocabulary_is_the_one_the_guard_can_actually_emit` pins it.
+RISK_GUARD_PROBLEMS: frozenset[str] = frozenset({
+    "daily_loss_limit_breached",
+    "weekly_loss_limit_breached",
+    "max_consecutive_losses_breached",
+    "max_drawdown_proxy_breached",
+    RISK_LIMITS_INVALID_PROBLEM,
+    RISK_LIMITS_UNUSABLE_PROBLEM,
+    "risk_history_unreadable",
+})
+
 # ``RiskLimits.source`` values. "default" is the module constants; "registered" is a verified,
 # in-window record. There is no third value: anything else failed closed before reaching here.
 SOURCE_DEFAULT = "default"

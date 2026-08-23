@@ -15,6 +15,7 @@ speak through both, so the forward path is exercised end to end without a model.
 from __future__ import annotations
 
 import os
+import pathlib
 import threading
 
 import pytest
@@ -561,3 +562,49 @@ def test_the_two_jobs_do_not_accept_each_others_input(tmp_path):
         with pytest.raises(ControlBlocked) as exc:
             pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
         assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+# --- the two assurance policies the dispatch path never had ------------------
+#
+# `operator_cli` has had `--independent-validation` since R7 and the worker had nothing, so
+# every task the dispatch door forwarded — fifteen on record, including every blog draft — ran
+# with AUTOMATIC checks only. Not a decision anyone took: `run_task`'s defaults are False and
+# nothing passed anything else. These pin that the wiring exists AND that it stays off until a
+# deployment turns it on, because both policies cost a model call per task.
+
+
+def test_forwarded_work_runs_without_the_second_reviewer_by_default(monkeypatch):
+    """OFF is the default here as it is on the operator loop. Turning it on is a line on the
+    service's command — a deploy with a diff, not a behaviour that arrives with a rebuild."""
+    seen = {}
+
+    def _capture(text, **kwargs):
+        seen.update(kwargs)
+        return {"status": "COMPLETED", "final_response": "ok",
+                "records": {"task": {"identity": {"task_id": "t", "trace_id": "r"}}}}
+
+    monkeypatch.setattr("runtime.mvp_runtime.pipeline_worker.run_task", _capture)
+    pipeline_worker.apply_work(
+        {"request": "분석해줘", "kind": "analysis", "reason": "test"},
+        control_store=ControlStore(pathlib.Path("/tmp")), now="2026-08-23T09:00:00Z")
+    assert seen["independent_validation"] is False
+    assert seen["revise"] is False
+
+
+def test_the_policies_reach_run_task_when_the_deployment_sets_them(monkeypatch):
+    """The wiring itself. Before this the arguments did not exist on any frame or signature,
+    so the dispatch path could not have been given them even by an operator who wanted to."""
+    seen = {}
+
+    def _capture(text, **kwargs):
+        seen.update(kwargs)
+        return {"status": "COMPLETED", "final_response": "ok",
+                "records": {"task": {"identity": {"task_id": "t", "trace_id": "r"}}}}
+
+    monkeypatch.setattr("runtime.mvp_runtime.pipeline_worker.run_task", _capture)
+    pipeline_worker.apply_work(
+        {"request": "분석해줘", "kind": "analysis", "reason": "test"},
+        control_store=ControlStore(pathlib.Path("/tmp")), now="2026-08-23T09:00:00Z",
+        independent_validation="AUTO", revise=True)
+    assert seen["independent_validation"] == "AUTO"
+    assert seen["revise"] is True

@@ -49,6 +49,13 @@ SHARED_ACROSS_MODULES = frozenset({
     # shared name is the point: an operator reading either code back is looking at one contract
     # enforced at two depths.
     "KIND_NOT_PERMITTED", "REQUEST_REQUIRED",
+    # Added 2026-08-23 with the blog lane's weekly job, and it is the same shape as the two
+    # above: `pipeline_worker` checks that the delegated frame carries seeds, and
+    # `blog_content` re-checks the same requirement on arrival rather than trusting its
+    # caller — including a caller that is not the worker. One contract, two depths, and an
+    # operator reading the code back is looking at the same fact either way: the ideation job
+    # was asked to run with nothing to work from.
+    "IDEATION_INPUTS_REQUIRED",
     # Added 2026-08-10 with the scheduler's analysis_task delegation. Both callers of the
     # pipeline worker report the same thing under this code — "the engine did not answer, so
     # nothing ran" — and neither falls back to running the work itself. `dispatch_bridge`

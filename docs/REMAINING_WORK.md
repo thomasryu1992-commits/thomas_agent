@@ -4,7 +4,29 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-06** — **the live round trip is complete.** The stop refusal that headed
+Last updated: **2026-08-10** — **three sections moved and none of them said so here.** F9's
+decision was taken and shipped (#638 + #651, 2026-08-09): the rotation runs cohort schedules and
+F9 is now the working rather than an open ask. Section **G is exhausted** (2026-08-09) and states
+what would re-open it. Section **H's (a) cost re-derivation is done** (2026-08-09), leaving (b)
+waiting on symbol age rather than on code.
+
+**Read this before picking work: nothing in this file is currently an unblocked build item.**
+Surveyed 2026-08-10 — A closed, B code-complete (two operator actions), C blocked on live
+evidence that is not being produced (3 live outcomes total; nothing in the live tier), D's
+PROGRAM route explicitly not recommended yet, F's remainder a direction plus a deferred lever,
+G exhausted, H(b) a clock into 2027, I awaiting Thomas. That is a real state, not an oversight —
+but it means the next build item comes from a decision or from new evidence, not from this list.
+
+**Two of those terms have since moved, and the survey above carries its date for exactly this
+reason (2026-08-23):** F9's first fire landed, so its reading is no longer pending — 144 pooled
+rows, the pre-registered bar met, and CONFIRMED at 1/72 (4h) and 0/72 (1d); §F9 carries the
+numbers. And C's premise — *"live evidence that is not being produced"* — is spent: the live
+ledger holds 28 rows, one of which is the wrong one §C's newest subsection records. **That row
+is where the one unblocked build item now lives**: a correction record type, with its own schema
+and governance, because nothing in this runtime can amend an append-only outcome and hand-editing
+the figure is the trap rather than the shortcut.
+
+Earlier — **2026-08-06, the live round trip is complete.** The stop refusal that headed
 section C since 2026-08-02 was resolved on 08-04 (#460, the confirm race), and on 08-06T04:44Z
 the first two live trades **closed and recorded**: `live_outcomes.jsonl` exists, two rows, both
 stops, **−1.1078R** (ETHUSDT, held 52.5h) and **−1.0000R** (DOGEUSDT). The exit path is
@@ -1143,6 +1165,70 @@ therefore a code change, not a venue setting — and until it is one, the settin
 > is in `CRYPTO_LIVE_EXECUTION_V0.1.md`. Claude does not run it, does not handle real keys, and does
 > not enable live trading — every step there is Thomas's.
 
+### One live outcome row is wrong and there is no way to correct it — recorded 2026-08-23
+
+`live_out_e56cf310dcc07d9c6edd` (BTCUSDT, closed 2026-08-21T09:03:43Z) records
+`realized_pnl_usdt 77.5357` / `result_R 398.02720739` for a trade that lost **0.1728 USDT,
+-0.887R**. It is the only one of the 28 rows in `live_outcomes.jsonl` that does not satisfy
+`(exit - entry) * qty` under its own sign convention; the other 27 match to eight decimals.
+
+The recorded figure is exactly `0.002 * 77708.50 - 0.001 * 77881.30` — a close twice the size
+of the open, priced against the book's entry quote. The stop leg is a `closePosition`
+STOP_MARKET and the venue treats that as Close-All, so it closed what was actually open; the
+book held half of it. Four and a half minutes earlier the cycle had halted the symbol with
+`LIVE_ROUTING_BOOK_DRIFT` and `live_settled=null`, which is that same disagreement seen from
+the other side. **The recurrence is fixed** (#752 gives the bracket-leg settlement the quantity
+check its two sibling paths already had) and **the board no longer vouches for the row** (#753).
+This entry is about the row itself, which both of those leave in place.
+
+**There is no correction mechanism, and building one is the open item.** `live_pnl.py` has no
+supersede path; re-appending the same `settlement_id` is rejected; two rows sharing an
+`outcome_id` raise `LIVE_HISTORY_DUPLICATE`, which fails **every** live-history read closed —
+the breakers, the risk guard and the promotion board at once. The ledger is fsync append-only.
+And the row passes its own `record_sha256`, because the corruption happened before the hash was
+taken, so no integrity check will ever flag it. A correction therefore needs a designed record
+type (void / supersede) with its own schema and governance, not an edit.
+
+**That design is now written: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md`** (DRAFT,
+2026-08-23, no code). It answers the shape — a separate `live_outcome_corrections.jsonl` with its
+own closed schema, so the outcome read path's duplicate and hash checks are untouched; a
+`corrects_record_sha256` that pins each correction to the exact row it voids, so a correction
+cannot drift onto another row; and application inside `read_live_outcomes`, which is the **single
+chokepoint every consumer already passes through** (`breaker_watch`, `cycle`, `live_pnl`,
+`live_promotion`, `run_slippage_probe`), so no consumer changes. It also argues SUPERSEDE over
+VOID for this row on the evidence already in this section: voiding erases a real 0.887R loss and
+lands wrong in the other direction, which is the same trap
+`drawdown_excluded_strategy_ids` was measured falling into. Three open questions are left for
+Thomas at the end of it; the proposal is a decision to take, not work in flight.
+
+**Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
+and it would leave no record that anyone changed a money figure — on the one ledger whose whole
+purpose is to be the thing nobody can quietly change.
+
+**What the row still costs, after #752 and #753:**
+
+| consumer | effect |
+|---|---|
+| daily / weekly loss breakers | **none, from 2026-08-24T00:00Z** — `_pnl_since` windows on `exit_time`, so the row leaves the weekly window at rollover and left the daily one on 08-22 |
+| drawdown breaker | under-reports by **0.887R** against a 10R limit, permanently. The phantom entered `equity` and `peak` together, so it did not inflate the gap — it anchored the peak on itself and erased a real 0.887R drawdown |
+| consecutive-loss breaker | none — `PROBE-` lineage is skipped in both directions |
+| lifecycle / promotion / retirement / `live_allowance` | none — they read paper outcomes |
+| scheduled dashboard report | none — paper only |
+| `live_promotion` evidence board | flagged and excluded from its pass count by #753 |
+
+**`drawdown_excluded_strategy_ids` is not the answer, and it was measured rather than assumed.**
+That mechanism exists for a lineage an operator deliberately retired, and it fails three ways
+here: it is semantically wrong (this is a bad number, not a retired strategy); it would drop the
+17 other rows of the same probe batch; and it does not even produce the true figure — excluding
+the batch gives a current drawdown of **-2.9901R** against a truth of **-0.8871R**, which is
+further from correct than leaving it alone.
+
+So the row stays, and the standing cost is 0.887R of drawdown headroom that is not real. **Do
+not "fix" it by widening a limit**, and do not read any all-time live P&L total without
+subtracting it — cumulative realized reads +80.88 USDT where the truth is +3.17.
+
+---
+
 ---
 
 ## D. Architecture design-vs-implementation gaps
@@ -1317,17 +1403,30 @@ absence is compliance.
       stays gated on §13's 3-of-6 separation criteria and is **not** owed: nothing yet shows one
       agent cannot hold the three. See `BUILD_HISTORY.md`.
 
-- [ ] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
-      awaiting a Thomas decision.** `control.ControlState` has one global dimension, so the switch
-      door's `enable` has exactly one effect: `CMD_RESUME`, which restores the analysis path and
-      the live order path together. The assistant's only key to a halted runtime is therefore the
-      **RED** `runtime.trading.enable` approval — correctly labelled, and used for doors it was
-      not minted for. The design, the evidence it rests on (only two consumers of
-      `execution_allowed` gate trading; exits are already ungated by construction) and the five
-      decisions it needs are in
+- [x] **The assistant can only restart the runtime by re-arming live trading — raised 2026-08-05,
+      built 2026-08-06, exercised 2026-08-22. D1, D3 and D4 are still Thomas's to confirm.**
+      `control.ControlState` had one global dimension, so the switch door's `enable` had exactly
+      one effect: `CMD_RESUME`, restoring the analysis path and the live order path together. The
+      assistant's only key to a halted runtime was therefore the **RED** `runtime.trading.enable`
+      approval — correctly labelled, and used for doors it was not minted for. The design, the
+      evidence it rests on (only two consumers of `execution_allowed` gate trading; exits are
+      already ungated by construction) and the decisions it needs are in
       [`ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md`](runtime-contracts/ASSISTANT_RESUME_SCOPE_SPLIT_DESIGN_V0.1.md).
-      **Nothing is implemented, and nothing should be until D1–D5 are answered** — it adds a
-      dimension to the one kill switch this runtime has, on a machine that trades live.
+
+      **This entry said "Nothing is implemented, and nothing should be until D1–D5 are answered"
+      until 2026-08-22, by which point it had been implemented for sixteen days.** The design
+      record's own header has read `**Status:** IMPLEMENTED` since it was built, on the
+      *recommended* answers to D1/D3/D4 — so the two documents contradicted each other and the
+      roadmap was the wrong one. `switch_bridge.SCOPE_RUNTIME` and `_TARGET_PREFIX_ARMS` carry the
+      split, `resume_arms=False` reaches `control.apply_command`, and the assistant reaches it
+      through the `resume_runtime_only` tool. What is genuinely outstanding is narrower than "all
+      of it": **D1, D3 and D4 are unconfirmed**, each one branch point, priced in that record.
+
+      First real use: the quarterly drill on 2026-08-22 (`approval_3680ef714b828ace466e`,
+      `runtime_resume:crypto`, consumed 05:37:25Z), which is also the first time the door's
+      `enable` chain completed end to end in production at all. See
+      [`RUNBOOK_APPROVAL_PATH_DRILL.md`](RUNBOOK_APPROVAL_PATH_DRILL.md).
+
       Not the same thing as PR #535's `DOMAIN_EFFECT_MISMATCH` tripwire, which covers the
       *domain* axis of that same state and is already handled.
 
@@ -2823,7 +2922,70 @@ and there are no open positions left to close. **The only path that fills this i
 deliberately as measurement**, which is an operator action — real orders, Thomas's to place. Until
 then §F8's sensitivity stands on one stop fill, and the constant it re-prices stays INHERITED.
 
-### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **awaiting a Thomas decision**
+### F9. Symbol pooling is built, unused, and the data it needs is already being bought — audited 2026-08-06, **decided and shipped 2026-08-09**
+
+> **Status 2026-08-10 — the decision this section asks for was taken. Everything below is now
+> the working, not an open ask.** Shape B shipped on 2026-08-09: **#638** let a factory schedule
+> name a cohort (a comma is the whole opt-in) and **#651** gave the pooled-mint check its own
+> pre-registration. `run_factory` has a pooled caller, so the premise line below — *"has no
+> caller but the single-symbol path"* — is history. It is corrected here rather than deleted,
+> because the reasoning under it is still the authority for **why** the shape is what it is.
+>
+> **What is open now is the reading, not the decision.** It is pre-registered, which is the
+> whole point of #651 — read it with the script rather than by eye, and do not re-derive the
+> bar afterwards:
+>
+> ```
+> docker exec thomas-scheduler python -m scripts.pooled_mint_check
+> ```
+>
+> Run 2026-08-10T02:55Z: `store rows: 1961   pooled rows: 0` — *"the cohort schedules have not
+> fired, or were reverted."* Both readings were live at that moment; the script cannot tell them
+> apart and does not pretend to.
+>
+> **Re-run 2026-08-23: `store rows: 2169   pooled rows: 144`** (72 at 4h, 72 at 1d, `legs=[5]`),
+> so the first of those two readings was the true one and the wiring is firing. The
+> pre-registered bar is met and then some — 4h pooled holdout trades run a **median of 264**
+> against a single-symbol median of 9, and the script says so itself: *"the wiring did what it
+> was for"*. 65 of 72 clear the 25-trade floor at 4h, 50 of 72 at 1d.
+>
+> **And the bar it clears is judgeability, not survival: CONFIRMED is 1/72 at 4h and 0/72 at
+> 1d.** That is the same answer §3d of `TRADING_ALPHA_RESEARCH_RECORD.md` recorded on sixteen
+> rows, now standing on a hundred and forty-four — five crypto symbols share the same ten
+> regimes, so pooling bought the right to judge and did not move what the judgement says.
+> §3d's own instruction ("do not count selection-adjusted passes on sixteen rows; wait for the
+> population") is now answerable and has not been answered.
+>
+> **And the one that passed cannot be promoted.** Measured 2026-08-23 when a rotation tried:
+> `cand_d83674b2dff471bde90e` (S001-GEN-833, the single CONFIRMED row) carries the cohort's
+> whole `symbol_scope`, so `assert_pool_within_size_cap` refuses it with
+> `POOL_CONTEXT_CAP_EXCEEDED`. This is **structural, not a scheduling accident**, and it is the
+> next thing F9 has to answer:
+>
+> * A cohort schedule mints on `BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT`, so **every one of
+>   the 144 pooled rows has a five-symbol scope** — 72 at 4h, 72 at 1d, no exceptions.
+> * `routable_context_map` occupies one context per symbol, so a pooled candidate needs **all
+>   five** at its timeframe. Today that means retiring **4 incumbents at 4h** (one of them
+>   `S005-GEN-833`, the pool's only ROBUST/CONFIRMED member) and **5 at 1d** (the whole tier).
+> * **Narrowing the scope to the free contexts has no evidence behind it.** The pooled evidence
+>   block carries `symbols_replayed: 5` — a count. There is no per-symbol breakdown, so an
+>   expectancy earned across five symbols says nothing about any one of them, and promoting it
+>   onto BNBUSDT alone would be trading on a number that was never measured there.
+>
+> So pooling and `MAX_ROUTABLE_PER_CONTEXT = 1` are in tension **by construction**: pooling earns
+> evidence by spreading across symbols, and the cap allocates by symbol. A pooled candidate is
+> promotable only into a tier that is empty or nearly so, which incremental rotation — replace
+> one dead slot — can never produce. The three shapes worth pricing, none costed yet:
+> per-symbol figures on the pooled block (makes narrowing legitimate), a cohort-sized routing
+> slot that the cap understands as one occupant, or accepting that pooled minting feeds whole-tier
+> replacements rather than rotations.
+>
+> **Which schedules are enabled is a per-machine fact this file cannot hold**, the same rule the
+> deployed image gets at the top: `schedules.jsonl` is gitignored, so there is no repo trace and
+> no amount of reading this file answers it. On the Docker host at the 08-10 timestamp the five
+> single-symbol schedules were `enabled=False` and two cohort schedules (4h and 1d) were
+> `enabled=True`; at 08-23 two `crypto_factory` schedules remain enabled and minting daily at
+> 08:12Z. Reverting is those `enable` calls, not a code change.
 
 #### The ask, in one screen — everything below this subsection is the working
 
@@ -3340,6 +3502,93 @@ version of this test.
 
 **What pooling does and does not reach** (F9): multiplying the tail by the cohort lifts the nine
 threshold-bound families over the floor at 4h and does **nothing** for a family at 0.00%.
+
+### F11. The regime diagnosis for the biggest losing family cannot be made — measured 2026-08-06
+
+> **Every count below is the 2026-08-06 store (1,721 rows); it was 2,169 on 08-23 and the
+> partition will have moved with it.** The finding this section carries is not a count — it is
+> that `breakdown_short`'s regime profile inverts its own premise because §F6 folds volatility
+> over trend, and that survives a re-measure or is refuted by one. Re-derive before quoting a
+> number; read the argument as it stands.
+
+The promotion door reads **0 promotable** over 1,721 rows, and the partition says where they go:
+`already_active` 148, `cost_basis` 546, `holdout_insufficient` 574, **`holdout_contradicted` 453**.
+F7/F9/F10 are all about the 574. This section is about the 453, which are a different finding —
+they reached the tail, were judged, and did not clear it.
+
+**First, CONTRADICTED is not "lost money".** `holdout_status` returns it when
+`expectancy - 1.96 x stderr <= 0`, so it holds both the losers and the merely unproven. Split:
+**354 (78%) are negative, 99 (22%) are positive and unproven.** Expectancy p10/median/p90 is
+**-0.34 / -0.14 / +0.11**.
+
+**The tier orders it and nothing else does.** Direction is inert — long -0.1432 against short
+-0.1436, negative share 79% and 78%:
+
+| tf | n | median holdout expectancy | share negative |
+|---|---|---|---|
+| 15m | 20 | **-0.290** | 95% |
+| 1h | **239** | **-0.173** | 87% |
+| 4h | 178 | -0.068 | 67% |
+| 1d | 16 | **+0.026** | 50% |
+
+**53% of the bucket is 1h alone**, which is independent support for #566's freeze of that tier —
+reached from the contradicted population rather than from the null control it was decided on.
+
+#### `breakdown_short` is 86 of the 453, and its regime profile inverts its own premise
+
+The largest single contributor. Over its 228 stored specs and 25,758 in-sample trades:
+
+| regime | share of trades | R/trade |
+|---|---|---|
+| **TREND_DOWN** | **66%** | **-0.0900** |
+| HIGH_VOLATILITY | 34% | **+0.0550** |
+
+A short-breakdown family losing in downtrends and earning in high volatility. **Cost is not the
+cause** — it trades at **0.2068R** per trade against **0.2379R** for every other family, cheaper
+than average.
+
+**F6's folding is why that reads backwards.** `classify_market_regime` tests
+`atr_percentile >= 0.80` **before any trend test**, so the top volatility quintile is labelled
+HIGH_VOLATILITY whatever the trend is doing. `TREND_DOWN` therefore means *"a downtrend in the
+calmer 80%"* and HIGH_VOLATILITY absorbs the violent breakdowns. Read that way the profile is
+coherent rather than perverse: **the family works on violent breakdowns and loses on orderly
+ones** — which is a retiming or a gating claim, not a retirement one.
+
+#### Except the in-sample profile does not survive, and that is the finding
+
+At 4h both regimes are in-sample **positive** (TREND_DOWN +0.0321, HIGH_VOLATILITY +0.1732) —
+gross +0.24 and +0.38 once the cost above is added back. The holdout for the same family at the
+same tier is **-0.1661** over 91 rows:
+
+| tf | rows | median holdout expectancy |
+|---|---|---|
+| 15m | 23 | -0.2889 |
+| 1h | 72 | -0.1842 |
+| 4h | 91 | **-0.1661** |
+| 1d | 8 | +0.3296 |
+
+So the regime story is an in-sample artifact until it is measured out of sample — F1's finding
+arriving once more, in the one place a reader would most want to act on the in-sample number.
+
+**And it cannot be measured out of sample.** `_holdout_evidence` is *"compact by design — only
+the few numbers a confirmation needs"*, and a per-regime breakdown is not among them. The scored
+window carries `regime_breakdown`; the tail carries none. So the measurement that decides
+**retime versus retire** for the family contributing a fifth of the contradicted bucket is not
+producible by this runtime today.
+
+**What would settle it, and what it costs.** `_holdout_evidence` already walks the tail's
+outcomes to total them, and each outcome carries `entry_regime` — the same field the in-sample
+`regime_breakdown` is built from. Adding the breakdown is a second accumulation over a list the
+function already iterates, not a second replay. What it buys is the ability to ask of any family
+"did the regime it earns in reproduce", which is the question F6 left open for `mean_reversion`,
+F3 for the htf pair, and this section for `breakdown_short`. What it does **not** buy is any of
+those verdicts today: the field only starts describing rows minted after it lands, so this is
+another change judged over generations.
+
+**Bounds.** The regime split is in-sample and pooled over specs of one family, so it mixes
+parameter draws whose thresholds differ; `1d` reads +0.33 on **8 rows** and should not be quoted;
+and `breakdown_short` was `ok` on F10's entry-rate test at 4h (4.00%), so this is a signal-quality
+axis and not the judgeability one the rest of section F is about.
 
 ## G. Codebase review backlog — measured 2026-08-02; **exhausted 2026-08-09**, G5 profiled
 
@@ -4427,6 +4676,65 @@ PR. No new authority, no declarative form, buildable today; Thomas reviews a dif
 authoring one. **Weaker on the actual problem** — the decision is still made on one backtest, and
 review is still per-proposal, so the queue still does not drain. It removes the typing, which
 I1 argues is not what is blocking.
+
+---
+
+## J. Naver blog content lane — Phase 1 built, the cadence was not
+
+Authority for the design is `docs/proposals/NAVER_BLOG_CONTENT_LANE_V0.1.md`. This section
+exists because until 2026-08-23 this file did not track the lane **at all** — not one checkbox,
+in a document whose job is "what is still to build". The lane's own proposal carried the
+checklist, and a proposal is not a backlog.
+
+What that cost is measurable: every capability the weekly loop needs shipped by 2026-08-10, and
+`content.general` has executed **once** in the ledger's entire history (2026-08-10T13:43Z).
+`schedules.jsonl` has never held a content kind. Nothing was blocked — nothing was wired.
+
+**Built**
+
+- [x] Naver research adapters (keyword volume, trend, blog competition) behind the
+      `network_access` env gate — Thomas 2026-08-09, exercised against the real API
+- [x] Keyword brief wired into the governed run (`keyword_seeds` -> `keyword_research` record,
+      audit chain joined)
+- [x] `blog_content_package.v0.1` closed schema
+- [x] `scripts/score_blog_draft.py` — Thomas's operating standards, 2026-08-10
+- [x] `content.general` role active and routable (2026-07-27)
+- [x] **the producer and the cadence** — `content_ideation` schedule kind, the worker job, the
+      package assembler and the standards check moved into the runtime (2026-08-23)
+
+**Not built**
+
+- [ ] the package as a **file**. `workspace.run_write` is behind `filesystem_write`, which is
+      unset on this deployment and not passed to `pipeline-worker`; the package is a ledger row
+      until that opens. §4b's two paste files (`POST.md` / `PASTE.txt`) do not exist yet.
+- [ ] Phase 4 — rank tracking feeding the next keyword choice. Its prerequisite does not exist:
+      **nothing can tell the runtime a post was published.** `BlogCompetitionTool` returns
+      counts and titles, not links, so the runtime cannot observe a publication, and the
+      package schema's `published_url` has no writer. The proposal calls this the loop's one
+      weak point and it still is.
+
+**Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
+schedule row is a state write, and no row means no fire.
+
+1. **Register the schedule?** `scheduler_cli add --kind content_ideation --request "<seeds>"
+   --interval-seconds 604800`, run inside `thomas-scheduler-maint`. Registering it starts a
+   weekly fire that spends two specialist calls plus a validation.
+2. **Open `filesystem_write` on the worker?** Needs `MVP_WORKSPACE_WRITER` passed and
+   `workspace/` mounted, and `tests/test_deployment_env_passthrough.py` currently pins that
+   variable as NOT deployed on the reasoning "the loop does not write artefacts" — a premise
+   this lane reverses, so the pin needs a recorded reason, not a quiet edit.
+3. **Adopt the automatic keyword rule as the default?** The code picks the most-searched
+   winnable unused keyword and records every exclusion with its reason; `target=<keyword>` in
+   the schedule's request overrides it for one week. Adopting the default is the decision;
+   the override is why it is not already one.
+4. **How does a publication URL get back in?** A container CLI writing a second
+   `blog_content_package` row for the same `package_id` with `publish_state: published` reuses
+   the schema as written; extending an assistant door to carry it does not. Phase 4 cannot
+   start before this.
+5. **The §12–16 MVP use-case expansion judgement has not been made.** The proposal's §6 leaves
+   it unchecked and no record of it exists here or in `BUILD_HISTORY.md`. A weekly cadence
+   makes the lane a standing specialist function, which is what §14 asks the question about.
+   Decision 1 should not be taken before this one is written down.
 
 ---
 

@@ -256,6 +256,7 @@ def handle_operator_message(
     registry: Any | None = None,
     frontdesk_provider: Provider | None = None,
     independent_validation: bool | str = False,
+    revise: bool = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
     ack: Any | None = None,
@@ -610,7 +611,8 @@ def handle_operator_message(
                 registry, request_text=text, origin="TELEGRAM",
                 requester_id=registration.operator_id, now=stamp,
                 flags={"important": priority == "HIGH",
-                       "independent_validation": bool(independent_validation)},
+                       "independent_validation": bool(independent_validation),
+                       "revise": bool(revise)},
                 request_kind=request_kind,
             )
         except MvpRuntimeError as exc:
@@ -655,6 +657,7 @@ def handle_operator_message(
         store=store,
         repo_root=repo_root,
         independent_validation=independent_validation,
+        revise=revise,
         validator_provider=validator_provider,
         priority=priority,
         request_kind=request_kind,
@@ -1414,6 +1417,7 @@ def run_queued_task(
     now: str | None = None,
     store: LedgerStore | None = None,
     independent_validation: bool | str = False,
+    revise: bool = False,
     validator_provider: Provider | None = None,
     control_store: ControlStore | None = None,
     repo_root: Path | None = None,
@@ -1473,6 +1477,7 @@ def run_queued_task(
         store=store,
         repo_root=repo_root,
         independent_validation=independent_validation,
+        revise=revise,
         validator_provider=validator_provider,
         priority="HIGH" if entry.flags.get("important") else "NORMAL",
         # The kind has to come off the ENTRY, not off a message that is long gone: the drain
@@ -1606,6 +1611,7 @@ def run_operator_once(
     frontdesk_provider: Provider | None = None,
     max_queued_tasks: int = 1,
     independent_validation: bool | str = False,
+    revise: bool = False,
     validator_provider: Provider | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -1653,6 +1659,7 @@ def run_operator_once(
             approval_store=approval_store, registry=registry,
             frontdesk_provider=frontdesk_provider,
             independent_validation=independent_validation,
+        revise=revise,
             validator_provider=validator_provider, repo_root=repo_root,
             # The received-working notice, sent back on the same verified chat the request came
             # from, and swallowed on failure (the notice is a courtesy, not the job). With the
@@ -1708,6 +1715,7 @@ def run_operator_once(
         provider=provider, search_tool=search_tool, working_memory=working_memory,
         programization=programization, store=store,
         independent_validation=independent_validation,
+        revise=revise,
         validator_provider=validator_provider, repo_root=repo_root,
     )
     send_failures += drain_send_failures

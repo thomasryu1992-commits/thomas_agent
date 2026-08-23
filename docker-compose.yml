@@ -378,15 +378,25 @@ services:
       - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
-      # Optional second gate, on the peer's uid rather than its group. The socket's mode
-      # grants a GROUP, so every process in that group looks identical to `chmod` and
-      # different to SO_PEERCRED, which the kernel records at connect() and no frame can
-      # choose. Unset (the default) leaves the group as the whole check, exactly as before
-      # this existed; set it to the assistant's uid, comma-separated with the operator's if
-      # a shell needs to reach the door too. A value the door cannot check refuses to serve
-      # rather than serving unchecked. See `resolve_client_uids` in
-      # runtime/mvp_runtime/socket_door.py.
-      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
+      # The second gate, on the peer's uid rather than its group. The socket's mode grants a
+      # GROUP, so every process in that group looks identical to `chmod` and different to
+      # SO_PEERCRED, which the kernel records at connect() and no frame can choose. A value
+      # the door cannot check refuses to serve rather than serving unchecked. See
+      # `resolve_client_uids` in runtime/mvp_runtime/socket_door.py.
+      #
+      # The default was empty — group-only — until 2026-08-22, and on this deployment it
+      # stayed empty, so the doors admitted any process in the gid and the ledger recorded
+      # them all as actor `assistant_bridge`. 11 of the 15 dispatches on record were
+      # host-side deploy checks wearing the assistant's name. Defaulting to the assistant's
+      # uid makes that attribution true by construction, and matches how the GID line above
+      # has always carried its own default rather than relying on an untracked `.env`.
+      #
+      # uid 0 is deliberately NOT in the default. `docker exec hermes` runs as root, so uid 0
+      # is shared between the host operator and the assistant's own container and cannot tell
+      # them apart. Host-side checks go through `docker exec thomas-scheduler python -m
+      # runtime.mvp_runtime.cli ...` (CLAUDE.md), not through these doors. Override the whole
+      # value if a machine genuinely needs a second peer; it is comma-separated.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}
 
   # The dispatch door. The assistant's third lane: switch-bridge stops and starts the runtime, read-bridge
   # looks at it, this one *starts* bounded work — analysis/research/translation/content tasks
@@ -434,8 +444,8 @@ services:
     environment:
       # See read-bridge for why the door states the client gid rather than inheriting it.
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
-      # See read-bridge for the uid gate this leaves unset by default.
-      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
+      # See read-bridge for the uid gate and why uid 0 is not in its default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}
 
   # The dispatch door's engine (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). This is
   # the process that runs `pipeline.run_task` for the four P3 kinds, so it is where the
@@ -566,8 +576,8 @@ services:
     environment:
       # See read-bridge for why the door states the client gid rather than inheriting it.
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
-      # See read-bridge for the uid gate this leaves unset by default.
-      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
+      # See read-bridge for the uid gate and why uid 0 is not in its default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}
 
   # The trading-switch door. Same shape as the others and deliberately its own service, for
   # the reason the halt door had: the scheduler is what a stop is meant to stop, so a door
@@ -632,5 +642,5 @@ services:
       - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
-      # See read-bridge for the uid gate this leaves unset by default.
-      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-}
+      # See read-bridge for the uid gate and why uid 0 is not in its default.
+      MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}

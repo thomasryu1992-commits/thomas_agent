@@ -406,6 +406,33 @@ def render_canary_evidence_text(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _pnl_agrees_with_prices(
+    *, quantity: float | None, entry: float | None, exit_price: float | None,
+    side: Any, realized: float | None,
+) -> bool | None:
+    """Does this row's realized P&L follow from its own prices and quantity?
+
+    ``None`` when a figure is missing — "cannot check" is a third answer and must not read as
+    "checked and fine". Otherwise the row is asked to satisfy its own arithmetic:
+
+        realized == (exit - entry) * quantity, negated when the row closed a SHORT
+
+    ``side`` is the CLOSING order's side, so ``SELL`` closed a LONG. This is not a heuristic —
+    every term is on the row, so a disagreement means two of its own fields describe different
+    trades. Measured across the 28 rows on this machine, 27 satisfy it to within 2e-16 of
+    notional (float noise) and one misses by 99.8% of notional, so the tolerance below has ten
+    orders of magnitude of headroom and still catches an error a millionth the size of the one
+    that prompted it. A board that cries wolf gets ignored, which is the failure this is
+    guarding against in the first place.
+    """
+    if quantity is None or entry is None or exit_price is None or realized is None:
+        return None
+    direction = 1.0 if str(side).upper() == "SELL" else -1.0
+    expected = (exit_price - entry) * quantity * direction
+    notional = abs(quantity * entry)
+    return abs(realized - expected) <= max(notional * 1e-6, 1e-6)
+
+
 def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
     """One row per CLOSED live trade, saying whether it recorded the venue's numbers.
 
@@ -444,6 +471,8 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
     for record in read_live_outcomes(root):
         qty = _money(record.get("quantity"))
         entry = _money(record.get("entry_price"))
+        exit_price = _money(record.get("exit_price"))
+        realized = _money(record.get("realized_pnl_usdt"))
         proven = bool(qty) and bool(entry)
         rule_hash = record.get("strategy_rule_hash")
         candidate_id = record.get("candidate_id")
@@ -453,9 +482,19 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
             "side": record.get("side"),
             "quantity": qty,
             "entry_price": entry,
-            "exit_price": _money(record.get("exit_price")),
+            "exit_price": exit_price,
             "entry_notional_usdt": round(qty * entry, 8) if proven else None,
-            "realized_pnl_usdt": _money(record.get("realized_pnl_usdt")),
+            "realized_pnl_usdt": realized,
+            # Its own field, beside `size_proven`, because they answer different questions and
+            # the stronger-sounding one is the weaker check: `size_proven` asks only whether a
+            # quantity and an entry price are PRESENT. A row can hold both and still carry a
+            # P&L that does not follow from them, which is what 2026-08-21's BTCUSDT row did —
+            # `realized 77.5357 USDT` printed beside `= 77.8813 USDT` notional on a 0.22% price
+            # move, marked PROVEN, counted in "28/28 can prove their size".
+            "pnl_consistent": _pnl_agrees_with_prices(
+                quantity=qty, entry=entry, exit_price=exit_price,
+                side=record.get("side"), realized=realized,
+            ),
             "entry_order_id": record.get("entry_order_id"),
             "size_proven": proven,
             "strategy_id": record.get("strategy_id"),
@@ -490,6 +529,22 @@ def render_live_trade_evidence_text(rows: list[dict[str, Any]]) -> str:
         lines.append(f"[{mark}] {index}. {row['closed_at_utc']}  {row['symbol']} {row['side']}"
                      f"  order {row['entry_order_id']}")
         lines.append(f"           {body}   realized {row['realized_pnl_usdt']} USDT")
+        if row["pnl_consistent"] is False:
+            expected = None
+            if None not in (row["quantity"], row["entry_price"], row["exit_price"]):
+                direction = 1.0 if str(row["side"]).upper() == "SELL" else -1.0
+                expected = round(
+                    (row["exit_price"] - row["entry_price"]) * row["quantity"] * direction, 8)
+            lines.append("           ^ P&L DOES NOT FOLLOW FROM THESE PRICES — do not read the "
+                         "realized figure above.")
+            lines.append(f"             prices and quantity on this row give {expected} USDT. "
+                         "Two of its own fields")
+            lines.append("             describe different trades, so one of them is wrong and "
+                         "this board cannot say which.")
+        elif row["pnl_consistent"] is None:
+            lines.append("           ^ P&L NOT CHECKED — a price or quantity is missing, so the "
+                         "realized figure")
+            lines.append("             above stands on nothing this board can verify.")
         # The display id restarts at S001 every generation, so it names the row without
         # identifying it; the generation and the rule hash are what make it a lineage.
         rule_hash = row["strategy_rule_hash"]
@@ -504,8 +559,27 @@ def render_live_trade_evidence_text(rows: list[dict[str, Any]]) -> str:
             lines.append("             above is the whole attribution that exists for it.")
     proven = sum(1 for r in rows if r["size_proven"])
     traceable = sum(1 for r in rows if r["lineage_attributable"])
+    consistent = sum(1 for r in rows if r["pnl_consistent"] is True)
+    inconsistent = sum(1 for r in rows if r["pnl_consistent"] is False)
+    unchecked = sum(1 for r in rows if r["pnl_consistent"] is None)
     lines += ["", f"{proven}/{len(rows)} can prove their size",
+              f"{consistent}/{len(rows)} have a P&L that follows from their own prices",
               f"{traceable}/{len(rows)} can be traced to promotion evidence"]
+    if inconsistent:
+        lines += [
+            "",
+            f"{inconsistent} row(s) above carry a realized P&L their own prices do not produce.",
+            "Treat every total that includes them as unusable, this board's included — and do",
+            "not arm a strategy on evidence one of them is part of. A row like that is not a",
+            "rounding argument: it means something wrote an outcome from figures that do not",
+            "describe one round trip.",
+        ]
+    if unchecked:
+        lines += [
+            "",
+            f"{unchecked} row(s) could not be checked at all — a price or a quantity is absent.",
+            "That is a different statement from passing, and it is why it has its own count.",
+        ]
     if traceable < len(rows):
         lines += [
             "",
