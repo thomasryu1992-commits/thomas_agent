@@ -331,6 +331,10 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             "feeds": last_cycle.get("feeds"),
             "degraded": last_cycle.get("degraded"),
             "reason_codes": last_cycle.get("reason_codes"),
+            # Absent on a clean cycle and on every record written before the field existed.
+            # The renderer below treats both the same way, which is correct: neither is a
+            # cycle we can say anything about.
+            "live_outcomes_excluded": last_cycle.get("live_outcomes_excluded"),
         } if last_cycle else None,
         "open_position": open_position,
         "open_positions": open_positions,
@@ -543,18 +547,79 @@ _REASON_NOTES = {
 }
 
 
-def _reason_lines(codes: Any) -> list[str]:
-    """The `사유` line, plus a note under each code whose name reads backwards.
+def _usdt(value: Any, digits: int = 4, *, signed: bool = True) -> str:
+    """Money, at the scale that decides whether it matters. Four places because the figures
+    this renders are cents — reading `-0.0081` as `-0.01` is fine, reading it as `-0.00` is
+    the line saying nothing happened."""
+    try:
+        return f"{float(value):{'+' if signed else ''}.{digits}f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _excluded_line(digest: Any) -> str | None:
+    """What the guard actually dropped this cycle: how many rows, for how much, and why.
+
+    The note under the code says what exclusion MEANS; this says what it came to. Without it
+    the board reads the same on the day two cents of unrecorded risk are dropped and on the day
+    a material loss is, which is the whole distance between "ignore this" and "stop trading".
+
+    The gross magnitude is printed only when it differs from the net, i.e. only when the dropped
+    rows had opposite signs and a single figure would understate what moved. With one row, or
+    with rows that all fall the same way, the parenthetical would repeat the number beside it.
+    """
+    if not isinstance(digest, dict) or not digest.get("count"):
+        return None
+    parts = [f"{digest['count']}건"]
+    net, gross = digest.get("realized_pnl_usdt"), digest.get("abs_realized_pnl_usdt")
+    if net is None:
+        # `None` is "nobody could compute it", and the board says so rather than printing a 0
+        # that reads as a flat trade — the rule `_pnl_agrees_with_prices` follows.
+        parts.append("금액 확인 불가")
+    else:
+        money = f"합계 {_usdt(net)} USDT"
+        try:
+            if gross is not None and abs(float(gross) - abs(float(net))) > 5e-9:
+                money += f" (총 이동 {_usdt(gross, signed=False)})"
+        except (TypeError, ValueError):
+            pass
+        parts.append(money)
+    reasons = digest.get("reasons")
+    if isinstance(reasons, dict) and reasons:
+        # The per-reason count is dropped when one reason covers every row: it would restate the
+        # `N건` two fields to its left. It earns its place the moment a second reason appears,
+        # which is also the moment the split is the thing worth reading.
+        one = len(reasons) == 1 and sum(reasons.values()) == digest["count"]
+        parts.append(" · ".join(
+            name if one else f"{name} {count}" for name, count in sorted(reasons.items())))
+    return "       └ " + " · ".join(parts)
+
+
+def _reason_lines(codes: Any, excluded: Any = None) -> list[str]:
+    """The `사유` line, plus what the guard dropped and a note under each code whose name
+    reads backwards.
 
     Codes are deduplicated for the notes but NOT for the line itself: the line is the ledger
     row as written, and a repeated code is still one condition, so two identical notes would
     read as two findings. When more than one note fires the code is named in front of it —
     with a single note the line above is unambiguous, with two nothing says which is which.
+
+    The measured line comes before the note because it is the fact and the note is the reading:
+    an operator who already knows what the code means should not have to read past a paragraph
+    to reach this cycle's numbers.
     """
     codes = [str(code) for code in (codes or [])]
     if not codes:
         return []
     lines = [f"       사유 {', '.join(codes)}"]
+    # Keyed on the digest being there, not on the code being in the list, and the two cannot
+    # disagree: `run_cycle` sets the field in the same branch that appends the code. Checking
+    # the code as well would mean importing it from `cycle`, which pulls that module's whole
+    # dependency graph into a renderer, to re-assert something already guaranteed at the
+    # write site — and would silently drop the line if the two ever spelled it differently.
+    measured = _excluded_line(excluded)
+    if measured:
+        lines.append(measured)
     noted = [code for code in dict.fromkeys(codes) if code in _REASON_NOTES]
     for code in noted:
         prefix = f"{code} — " if len(noted) > 1 else ""
@@ -704,7 +769,7 @@ def render_status_text(status: dict[str, Any]) -> str:
         degraded = " ⚠ degraded" if last.get("degraded") else ""
         lines.append(f"       마지막 {last.get('verdict')}/{last.get('route')} · "
                      f"피드 {ok}/{len(feeds)}{degraded} · {_stamp(last.get('at'))}")
-        lines.extend(_reason_lines(last.get("reason_codes")))
+        lines.extend(_reason_lines(last.get("reason_codes"), last.get("live_outcomes_excluded")))
     else:
         lines.append("       마지막 사이클 기록 없음")
     counts = status.get("pool_status_counts") or {}
