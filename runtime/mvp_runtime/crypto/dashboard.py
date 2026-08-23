@@ -520,6 +520,48 @@ def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
         return str(value)
 
 
+# Reason codes whose plain name states the OPPOSITE of what an operator would act on.
+#
+# Measured 2026-08-23: the board read `사유 LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD` on a cycle
+# where the R-guard was reading `live_out_e56cf310dcc07d9c6edd` at +398.027R — a row whose true
+# value is -0.887R. The name says the live outcomes were excluded, so the one line an operator
+# opens this board to check reported the known-bad row as handled. It was not: exclusion keys off
+# a MISSING `result_R`, and that row has a number, so it passes. The two rows actually excluded
+# that cycle were -0.0081 and +0.0171 USDT with no recorded risk at all.
+#
+# The code itself cannot be renamed — 2,285 ledger rows already carry it, and a reason code
+# meaning one thing before a date and another after is the defect `r_basis` exists to mark. So
+# the NAME stays and the board says what it means.
+#
+# The bar for an entry here is that bar — a name whose obvious reading is wrong in the direction
+# that costs money — not "could be clearer". A note under every code is a board an operator
+# learns to scroll past.
+_REASON_NOTES = {
+    "LIVE_OUTCOMES_EXCLUDED_FROM_RISK_GUARD":
+        "R이 기록되지 않은 라이브 체결만 R 통계에서 빠졌다는 뜻 — 금액은 일간 손실 브레이커에"
+        " 그대로 있고, R이 붙은 행은 그 값이 틀려도 빠지지 않는다",
+}
+
+
+def _reason_lines(codes: Any) -> list[str]:
+    """The `사유` line, plus a note under each code whose name reads backwards.
+
+    Codes are deduplicated for the notes but NOT for the line itself: the line is the ledger
+    row as written, and a repeated code is still one condition, so two identical notes would
+    read as two findings. When more than one note fires the code is named in front of it —
+    with a single note the line above is unambiguous, with two nothing says which is which.
+    """
+    codes = [str(code) for code in (codes or [])]
+    if not codes:
+        return []
+    lines = [f"       사유 {', '.join(codes)}"]
+    noted = [code for code in dict.fromkeys(codes) if code in _REASON_NOTES]
+    for code in noted:
+        prefix = f"{code} — " if len(noted) > 1 else ""
+        lines.append(f"       └ {prefix}{_REASON_NOTES[code]}")
+    return lines
+
+
 def _stamp(value: Any) -> str:
     """``2026-07-26T03:55:33Z`` -> ``07-26 03:55``. The year is the same on every line."""
     text = str(value or "")
@@ -662,8 +704,7 @@ def render_status_text(status: dict[str, Any]) -> str:
         degraded = " ⚠ degraded" if last.get("degraded") else ""
         lines.append(f"       마지막 {last.get('verdict')}/{last.get('route')} · "
                      f"피드 {ok}/{len(feeds)}{degraded} · {_stamp(last.get('at'))}")
-        if last.get("reason_codes"):
-            lines.append(f"       사유 {', '.join(last['reason_codes'])}")
+        lines.extend(_reason_lines(last.get("reason_codes")))
     else:
         lines.append("       마지막 사이클 기록 없음")
     counts = status.get("pool_status_counts") or {}

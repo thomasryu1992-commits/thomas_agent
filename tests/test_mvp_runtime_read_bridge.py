@@ -18,7 +18,7 @@ import pytest
 
 from runtime.mvp_runtime import control, domain_console, read_bridge, socket_door
 from runtime.mvp_runtime.control import ACTIVE, KILLED, ControlStore
-from runtime.mvp_runtime.errors import ControlBlocked, MvpRuntimeError
+from runtime.mvp_runtime.errors import ControlBlocked, MvpRuntimeError, OperatorBlocked
 
 NOW = "2026-07-30T09:00:00Z"
 
@@ -249,3 +249,38 @@ def test_the_socket_is_not_world_accessible(tmp_path):
         assert not mode & stat_mod.S_IWOTH
     finally:
         server.server_close()
+
+
+# --- the funds verb ----------------------------------------------------------
+#
+# The third of Thomas's original three (position, funds, return). It is the one that could not
+# be built the obvious way: the balance is behind a signed venue call and this door holds no
+# venue credential. It reads a snapshot the scheduler wrote instead, and the two tests below
+# are what keep it that way — the second one is the design, expressed as a test.
+
+
+def test_the_funds_verb_is_a_read_that_takes_no_argument():
+    assert "crypto_funds" in read_bridge._READS
+    assert read_bridge._READS["crypto_funds"] == (read_bridge._DOMAIN, ("CRYPTO", "funds"))
+    assert "crypto_funds" not in read_bridge._TAKES_ARGUMENT
+
+
+def test_the_funds_read_never_opens_a_socket_to_the_venue(monkeypatch, tmp_path):
+    """Adding a venue credential to this door would put an order-capable key in the process the
+    assistant talks to — there is one Binance key on this host and order authority derives from
+    it. So the door must be structurally unable to ask, not merely disinclined to."""
+    def _explode(*a, **k):
+        raise AssertionError("the read door reached the venue")
+
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.account.read_account", _explode)
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.account.select_account_feed", _explode)
+
+    # No snapshot in a fresh tmp root, so it refuses — and refusing is the point: the patch
+    # above proves the refusal did not come from a failed network call. The door surfaces a
+    # console refusal as OperatorBlocked, exactly as it does for every other domain read.
+    with pytest.raises(OperatorBlocked) as exc:
+        read_bridge.apply_read(
+            {"command": "crypto_funds"},
+            control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path,
+        )
+    assert exc.value.reason_code == "ACCOUNT_SNAPSHOT_MISSING"
