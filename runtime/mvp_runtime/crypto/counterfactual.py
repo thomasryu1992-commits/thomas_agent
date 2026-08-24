@@ -42,6 +42,12 @@ OUTCOMES_FILENAME = "counterfactual_outcomes.jsonl"
 # without limit.
 MAX_OPEN_COUNTERFACTUALS = 50
 
+# A supporting shadow prices what a BENCHED LINEAGE would have done (`paper.route_entries`
+# declined its signal behind a primary or across a conflict); a gate shadow — kind absent,
+# every row written before this field existed — prices what a GATE cost the book. The kind
+# rides plan and outcome so the two books' dedupe rules and calibration never mix.
+SHADOW_KIND_SUPPORTING = "supporting"
+
 MISSED_OPPORTUNITY = "MISSED_OPPORTUNITY"
 AVOIDED_LOSS = "AVOIDED_LOSS"
 NEUTRAL_BLOCK = "NEUTRAL_BLOCK"
@@ -216,14 +222,19 @@ def context_duplicates(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     ordering is the whole basis for deciding which one is real, and a row that cannot join it
     is one this function has nothing to say about.
     """
-    by_context: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    by_context: dict[tuple[str, ...], list[Mapping[str, Any]]] = {}
     for row in rows:
         if str(row.get("status") or "") != "OPEN":
             continue
         opened = row.get("opened_at_utc")
         if not (isinstance(opened, str) and opened):
             continue
-        key = (str(row.get("symbol") or ""), str(row.get("timeframe") or ""))
+        # Supporting shadows (`shadow_kind`) are legitimately several per context — one per
+        # benched STRATEGY — so their dedupe key carries the strategy; gate rows (kind
+        # absent, including every row written before the field) keep the context-only key.
+        kind = str(row.get("shadow_kind") or "")
+        key = (str(row.get("symbol") or ""), str(row.get("timeframe") or ""), kind,
+               str(row.get("strategy_id") or "") if kind == SHADOW_KIND_SUPPORTING else "")
         by_context.setdefault(key, []).append(row)
     duplicates: list[dict[str, Any]] = []
     for group in by_context.values():
@@ -280,12 +291,15 @@ def expire_context_duplicates(
 
 
 def build_shadow_plan(
-    entry_plan: Mapping[str, Any], *, block_reasons: list[str], now: str
+    entry_plan: Mapping[str, Any], *, block_reasons: list[str], now: str,
+    shadow_kind: str | None = None,
 ) -> dict[str, Any]:
     """The shadow position a blocked-but-actionable signal would have opened.
 
     Same fields the settle math needs (the C5 plan shape) plus the block context
-    that makes per-reason calibration possible."""
+    that makes per-reason calibration possible. ``shadow_kind`` marks a supporting
+    shadow (:data:`SHADOW_KIND_SUPPORTING`); absent — every gate shadow, and every
+    row written before the field existed — means the gate book."""
     plan = {
         "status": "OPEN",
         "symbol": entry_plan.get("symbol"),
@@ -304,6 +318,7 @@ def build_shadow_plan(
         "strategy_rule_hash": entry_plan.get("strategy_rule_hash"),
         "strategy_generation_id": entry_plan.get("strategy_generation_id"),
         "block_reasons": sorted({str(r) for r in block_reasons if str(r)}),
+        **({"shadow_kind": shadow_kind} if shadow_kind else {}),
         "opened_at_utc": now,
     }
     plan["counterfactual_id"] = integrity.short_id(
@@ -335,6 +350,7 @@ def build_counterfactual_outcome_record(
         "take_profit": plan.get("take_profit"),
         "risk": plan.get("risk"),
         "block_reasons": plan.get("block_reasons") or [],
+        **({"shadow_kind": plan.get("shadow_kind")} if plan.get("shadow_kind") else {}),
         "strategy_id": plan.get("strategy_id"),
         "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
@@ -429,8 +445,15 @@ def run_counterfactual_update(
     now: str,
     root: Path | None = None,
     persist: bool = True,
+    supporting_plans: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """One cycle's shadow-book step: settle this context's shadows, then maybe open one.
+    """One cycle's shadow-book step: settle this context's shadows, then maybe open some.
+
+    ``supporting_plans`` are the signals the router declined this candle
+    (``paper.run_paper_update``'s ``supporting_plans``, each carrying its
+    ``shadow_reason``); they open as :data:`SHADOW_KIND_SUPPORTING` shadows so a benched
+    lineage still accrues judgeable evidence — one open shadow per (context, strategy),
+    under the same global cap.
 
     Only shadows whose (symbol, timeframe) match this cycle are touched — a foreign
     shadow is carried forward untouched, never judged on candles it was not opened
@@ -493,16 +516,49 @@ def run_counterfactual_update(
     # Keyed on the context alone, not on the strategy: `route_entries` picks ONE strategy per
     # context, so two strategies blocked in the same context would still have produced at most
     # one real position, and admitting both would reintroduce the correlation by another door.
+    # Gate-kind rows only (`shadow_kind` absent): a supporting shadow in this context is a
+    # different measurement and must neither suppress the gate shadow nor be suppressed by it.
     duplicate_of = next(
         (p.get("counterfactual_id") for p in still_open
-         if settles_in_context(p, symbol=str((blocked_plan or {}).get("symbol") or ""),
-                               timeframe=str((blocked_plan or {}).get("timeframe") or ""))),
+         if p.get("shadow_kind") is None
+         and settles_in_context(p, symbol=str((blocked_plan or {}).get("symbol") or ""),
+                                timeframe=str((blocked_plan or {}).get("timeframe") or ""))),
         None,
     ) if blocked_plan is not None else None
     if blocked_plan is not None and duplicate_of is None \
             and len(still_open) < MAX_OPEN_COUNTERFACTUALS:
         opened = build_shadow_plan(blocked_plan, block_reasons=block_reasons, now=now)
         still_open.append(opened)
+
+    # Supporting shadows — one open row per (context, strategy), not per context: a gate
+    # shadow prices what the GATE cost the book (one trade per context, the dedupe above),
+    # where a supporting shadow prices what a BENCHED LINEAGE would have done, and two
+    # lineages benched in one context are two different answers. The same lineage
+    # re-declined on later candles while its shadow is still open is the SAME measurement —
+    # the gate book learned that the hard way (16 copies of one trade, 2026-08-08) — so it
+    # is skipped, and the global cap still bounds everything.
+    supporting_opened: list[str] = []
+    supporting_skipped = 0
+    for splan in supporting_plans or []:
+        if len(still_open) >= MAX_OPEN_COUNTERFACTUALS:
+            supporting_skipped += 1
+            continue
+        sid = str(splan.get("strategy_id") or "")
+        if any(
+            p.get("shadow_kind") == SHADOW_KIND_SUPPORTING
+            and str(p.get("strategy_id") or "") == sid
+            and settles_in_context(p, symbol=str(splan.get("symbol") or ""),
+                                   timeframe=str(splan.get("timeframe") or ""))
+            for p in still_open
+        ):
+            supporting_skipped += 1
+            continue
+        shadow = build_shadow_plan(
+            splan, block_reasons=[str(splan.get("shadow_reason") or "")], now=now,
+            shadow_kind=SHADOW_KIND_SUPPORTING,
+        )
+        still_open.append(shadow)
+        supporting_opened.append(str(shadow["counterfactual_id"]))
 
     if persist:
         # Outcomes first, then the book: a crash between them leaves a settled shadow
@@ -519,6 +575,8 @@ def run_counterfactual_update(
             for r in settled
         ],
         "opened": opened.get("counterfactual_id") if opened else None,
+        "supporting_opened": supporting_opened,
+        "supporting_skipped": supporting_skipped,
         # Which shadow already held this context, when that is why nothing opened. Named
         # rather than counted, and distinct from `opened: None` for no signal at all: "the
         # gate is still blocking the trade we are already measuring" and "the gate stopped

@@ -852,25 +852,54 @@ def assert_no_silent_reactivation(
 # routes nor splits the evidence, and after a retirement the pool file legitimately holds
 # far more rows than these numbers (89 rows, 5 routable, the day this landed).
 #
-# MAX_ROUTABLE_PER_CONTEXT = 1 because the router's own behaviour makes a second entry
-# strictly negative: it cannot add routing capacity (`route_entries` returns `ranked[0]`),
-# it wins the slot on `champion_score` — which on this machine was ANTI-correlated with
-# realized R, the top scorers having never traded — it halves the rate at which either
-# lineage reaches a judgeable window, and if the two disagree on direction the context
-# fails closed on BLOCK_DIRECTION_CONFLICT and neither trades.
+# MAX_ROUTABLE_PER_CONTEXT: 1 on the slow timeframes, 2 on the fast ones (Thomas
+# 2026-08-24, revising the flat 1 of Thomas 5-2, 2026-08-11 — the cluster-sibling rule from
+# that decision is untouched: near-identical lineages still get one slot TOTAL; this cap is
+# about DISTINCT strategies sharing a context).
 #
-# MAX_ROUTABLE_STRATEGIES = 20 is one per context on today's 5-symbol x 4-timeframe grid.
-# It is not implied by the per-context cap: it is what still binds when the symbol set
-# grows, so widening coverage becomes a deliberate change to this number rather than a
-# silent return to a pool nothing can judge.
+# The flat cap rested on "a second entry cannot add routing capacity (`route_entries`
+# returns `ranked[0]`)" — true per BAR (the book holds one position per context) but not
+# across time: the router ranks the strategies whose conditions FIRED, so a second strategy
+# with disjoint entries adds bars the context can trade. What the flat cap actually bought
+# was judgeability, and that is per-timeframe arithmetic, not a universal:
+#
+#   outcomes/day/context (measured): 15m ~2.0, 1h ~0.7, 4h ~0.6, 1d ~0.16
+#
+# On 15m/1h a context split two ways still fills a 20-trade lifecycle window in weeks; on
+# 4h/1d a single lineage already needs ~33/~122 days, and splitting it puts auto-demotion
+# out of reach — the 2026-07-30 failure (67 routable, nothing demotable, a -13.25R family
+# living for a week) was exactly that arithmetic. So fast contexts take 2 and slow ones
+# keep the exclusive slot. Three router changes ride with this (`paper.route_entries`): a
+# same-bar tie is resolved on REALIZED expectancy before champion_score (whose anti-
+# correlation with realized R is what made score-ranked sharing strictly negative), a
+# direction conflict resolves toward a proven edge instead of always failing closed, and
+# the signals the router declines are shadow-booked (`counterfactual`) so a benched
+# lineage still accrues judgeable evidence at full rate.
+#
+# MAX_ROUTABLE_STRATEGIES = 30 is the grid-implied sum on today's 5-symbol grid:
+# 5 * (2 + 2 + 1 + 1). It is not implied by the per-context caps: it is what still binds
+# when the symbol set grows, so widening coverage becomes a deliberate change to this
+# number rather than a silent return to a pool nothing can judge.
 #
 # What these caps deliberately do NOT fix: a 1d lineage produced 0.16 outcomes/day per
 # context, so even at an exclusive slot it needs ~122 days to fill a 20-trade window (1h
 # needs ~29, 4h ~33, 15m ~10). That is a property of the timeframe, not of the pool size,
 # and no cap here can reach it — a 1d strategy is un-demotable by arithmetic. Naming it
 # here so the next reader does not mistake this guard for a complete answer.
-MAX_ROUTABLE_STRATEGIES = 20
+MAX_ROUTABLE_STRATEGIES = 30
 MAX_ROUTABLE_PER_CONTEXT = 1
+MAX_ROUTABLE_PER_CONTEXT_FAST = 2
+FAST_ROUTING_TIMEFRAMES = frozenset({"15m", "1h"})
+
+
+def max_routable_per_context(timeframe: str) -> int:
+    """The routable-slot cap for one ``(symbol, timeframe)`` context.
+
+    Fast contexts refill a 20-trade lifecycle window in days-to-weeks, so they can afford
+    to split it; slow ones cannot (the arithmetic above). Keyed on the timeframe alone —
+    the symbol does not change how often a bar closes."""
+    return MAX_ROUTABLE_PER_CONTEXT_FAST if str(timeframe) in FAST_ROUTING_TIMEFRAMES \
+        else MAX_ROUTABLE_PER_CONTEXT
 
 
 def routable_context_map(entries: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[str]]:
@@ -902,22 +931,22 @@ def routable_directional_capacity(entries: Sequence[Mapping[str, Any]]) -> dict[
     ordinary way to assemble a pool, and a refusal would forbid every order but alternating.
     So this states the consequence and leaves the judgement where it belongs.
 
-    **Why it is needed at all is an interaction, not a standalone idea.** With
-    :data:`MAX_ROUTABLE_PER_CONTEXT` at 1, every context holds exactly one strategy and a
-    spec's ``direction`` is fixed at promotion time — so *which directions the book can ever
-    hold is now a property of the pool*, where it used to be a property of the template
-    library (which is balanced 16/16). A pool of twenty long strategies can fill four of its
-    twenty slots and no more, and nothing in either cap says so on its own.
+    **Why it is needed at all is an interaction, not a standalone idea.** A spec's
+    ``direction`` is fixed at promotion time, so *which directions the book can ever hold is
+    a property of the pool*, where it used to be a property of the template library (which
+    is balanced 16/16). A pool of twenty long strategies can fill four of its twenty slots
+    and no more, and nothing in either cap says so on its own.
 
-    The arithmetic is the cap's own, so there is no second number here: ``opposing`` positions
-    buy back a slot each, so the reachable book is ``2 * min(long, short) + cap``, bounded by
-    the context count. Contexts rather than entries, because a position is per context and a
-    multi-symbol strategy occupies one per symbol — matching :func:`routable_context_map`.
+    Counted over DISTINCT contexts, because a position is per context — under the fast-context
+    cap two same-context strategies can never fill two book slots, so counting entries would
+    overstate the reachable book. A context holding both directions is *flexible*: it can
+    align with either side, so it joins whichever side is scarcer. The arithmetic is the
+    cap's own: opposing positions buy back a slot each, so the reachable book is
+    ``2 * min(long + flexible, short + flexible) + cap``, bounded by the context count.
     """
     from .paper import MAX_DIRECTIONAL_SKEW  # local: pool is imported by paper's callers
 
-    by_direction: dict[str, int] = {"LONG": 0, "SHORT": 0}
-    contexts = 0
+    directions_by_context: dict[tuple[str, str], set[str]] = {}
     for entry in entries:
         if entry.get("status") not in OCCUPYING_STATUSES or not entry.get("strategy_spec"):
             continue
@@ -927,14 +956,20 @@ def routable_directional_capacity(entries: Sequence[Mapping[str, Any]]) -> dict[
         # perfectly one-way. `strategy.evaluate_spec` normalises the same way (`is
         # Direction.SHORT`), so this reads the spec exactly as the router does.
         direction = "SHORT" if spec.direction is Direction.SHORT else "LONG"
-        for _scoped_symbol in spec.symbol_scope:
-            contexts += 1
-            by_direction[direction] += 1
-    long_contexts, short_contexts = by_direction["LONG"], by_direction["SHORT"]
-    reachable = min(contexts, 2 * min(long_contexts, short_contexts) + MAX_DIRECTIONAL_SKEW)
+        for scoped_symbol in spec.symbol_scope:
+            directions_by_context.setdefault(
+                (str(scoped_symbol), str(spec.timeframe)), set()
+            ).add(direction)
+    contexts = len(directions_by_context)
+    long_contexts = sum(1 for d in directions_by_context.values() if d == {"LONG"})
+    short_contexts = sum(1 for d in directions_by_context.values() if d == {"SHORT"})
+    flexible_contexts = contexts - long_contexts - short_contexts
+    effective = min(long_contexts + flexible_contexts, short_contexts + flexible_contexts)
+    reachable = min(contexts, 2 * effective + MAX_DIRECTIONAL_SKEW)
     return {
         "long_contexts": long_contexts,
         "short_contexts": short_contexts,
+        "flexible_contexts": flexible_contexts,
         "routable_contexts": contexts,
         "reachable_book": reachable,
         "skew_cap": MAX_DIRECTIONAL_SKEW,
@@ -971,19 +1006,19 @@ def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
         )
 
     over = {ctx: ids for ctx, ids in routable_context_map(occupying).items()
-            if len(ids) > MAX_ROUTABLE_PER_CONTEXT}
+            if len(ids) > max_routable_per_context(ctx[1])}
     if over:
         listed = "; ".join(
-            f"{sym} {tf}: {len(ids)} ({', '.join(sorted(ids))})"
+            f"{sym} {tf}: {len(ids)} over a cap of {max_routable_per_context(tf)} "
+            f"({', '.join(sorted(ids))})"
             for (sym, tf), ids in sorted(over.items())
         )
         raise ToolError(
             "POOL_CONTEXT_CAP_EXCEEDED",
-            f"more than {MAX_ROUTABLE_PER_CONTEXT} routable strategy per context — {listed}. "
-            "The router picks one per context, so the surplus cannot trade; it only halves the "
-            "rate at which either lineage reaches a judgeable window, and a direction "
-            "disagreement blocks the context outright. Retire the incumbent first, or pass the "
-            "explicit --allow-oversized-pool escape.",
+            f"more routable strategies than the context's timeframe can judge — {listed}. "
+            "A context over its cap splits outcomes faster than its timeframe refills a "
+            "judgeable window (slow contexts hold one strategy; fast ones two). Retire the "
+            "incumbent first, or pass the explicit --allow-oversized-pool escape.",
         )
 
 

@@ -662,52 +662,73 @@ def _routable(sid, *, symbol="BTCUSDT", timeframe="1d", status="PAPER_ACTIVE"):
                                         timeframe=timeframe)}
 
 
-def _one_per_context(n):
-    """``n`` routable entries, each alone in its own context — the shape the cap allows."""
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "BNBUSDT"]
-    timeframes = ["15m", "1h", "4h", "1d"]
-    out = []
-    for i in range(n):
-        sym, tf = symbols[i % len(symbols)], timeframes[i // len(symbols)]
-        out.append(_routable(f"S{i:03d}", symbol=sym, timeframe=tf))
-    return out
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "BNBUSDT"]
+
+
+def _grid_slots():
+    """Every routable slot the per-context caps admit on the 5-symbol grid, slow first."""
+    slots = [(sym, tf) for tf in ("4h", "1d") for sym in SYMBOLS]
+    for tf in ("15m", "1h"):
+        for sym in SYMBOLS:
+            slots.extend([(sym, tf)] * pool.MAX_ROUTABLE_PER_CONTEXT_FAST)
+    return slots
+
+
+def _at_cap(n):
+    """``n`` routable entries filling grid slots in order — within every per-context cap."""
+    return [_routable(f"S{i:03d}", symbol=sym, timeframe=tf)
+            for i, (sym, tf) in enumerate(_grid_slots()[:n])]
 
 
 def test_a_pool_at_the_cap_is_allowed():
-    entries = _one_per_context(pool.MAX_ROUTABLE_STRATEGIES)
-    assert len(entries) == 20
+    entries = _at_cap(pool.MAX_ROUTABLE_STRATEGIES)
+    assert len(entries) == 30                          # the grid-implied sum: 5 * (2+2+1+1)
     pool.assert_pool_within_size_cap(entries)          # exactly at the cap is fine
 
 
 def test_one_routable_strategy_too_many_is_refused():
-    entries = _one_per_context(pool.MAX_ROUTABLE_STRATEGIES)
+    entries = _at_cap(pool.MAX_ROUTABLE_STRATEGIES)
     entries.append(_routable("S_EXTRA", symbol="BTCUSDT", timeframe="30m"))
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
     assert exc.value.reason_code == "POOL_SIZE_CAP_EXCEEDED"
-    assert "21" in exc.value.reason and "--allow-oversized-pool" in exc.value.reason
+    assert "31" in exc.value.reason and "--allow-oversized-pool" in exc.value.reason
 
 
-def test_two_strategies_in_one_context_is_refused_even_well_under_the_global_cap():
-    """The failure the global cap alone cannot see: 2 entries, 1 context, 18 slots spare."""
-    entries = [_routable("S1", symbol="BTCUSDT", timeframe="15m"),
-               _routable("S2", symbol="BTCUSDT", timeframe="15m")]
+def test_two_strategies_in_one_slow_context_is_refused_even_well_under_the_global_cap():
+    """The failure the global cap alone cannot see: 2 entries, 1 slow context, 28 slots
+    spare. A 4h lineage needs ~33 days for one judgement window; split, it never judges."""
+    entries = [_routable("S1", symbol="BTCUSDT", timeframe="4h"),
+               _routable("S2", symbol="BTCUSDT", timeframe="4h")]
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
     assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
-    assert "BTCUSDT 15m" in exc.value.reason and "S1, S2" in exc.value.reason
+    assert "BTCUSDT 4h" in exc.value.reason and "S1, S2" in exc.value.reason
+
+
+def test_a_fast_context_holds_two_and_refuses_a_third():
+    """Thomas 2026-08-24: 15m/1h contexts refill a judgement window in weeks even split,
+    so they hold two — and exactly two, because the third is where the split arithmetic
+    starts to look like the slow-context failure again."""
+    two = [_routable("S1", symbol="BTCUSDT", timeframe="15m"),
+           _routable("S2", symbol="BTCUSDT", timeframe="15m")]
+    pool.assert_pool_within_size_cap(two)
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.assert_pool_within_size_cap(two + [_routable("S3", symbol="BTCUSDT", timeframe="15m")])
+    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
+    assert "BTCUSDT 15m" in exc.value.reason
 
 
 def test_a_multi_symbol_strategy_occupies_every_symbol_it_is_scoped_to():
     """Scope, not primary symbol: `route_entries` judges it on each, so the cap must too."""
-    wide = _routable("S_WIDE", timeframe="15m")
-    wide["strategy_spec"] = _spec_dict(strategy_id="S_WIDE", timeframe="15m",
+    wide = _routable("S_WIDE", timeframe="4h")
+    wide["strategy_spec"] = _spec_dict(strategy_id="S_WIDE", timeframe="4h",
                                        symbol_scope=["BTCUSDT", "ETHUSDT"])
-    entries = [wide, _routable("S_ETH", symbol="ETHUSDT", timeframe="15m")]
+    entries = [wide, _routable("S_ETH", symbol="ETHUSDT", timeframe="4h")]
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
     assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
-    assert "ETHUSDT 15m" in exc.value.reason
+    assert "ETHUSDT 4h" in exc.value.reason
 
 
 # --- what the sizing cap and the directional cap do to each other ----------------
@@ -718,23 +739,30 @@ def test_a_multi_symbol_strategy_occupies_every_symbol_it_is_scoped_to():
 # used to be a property of the template library (balanced 16 long / 16 short). Neither cap
 # says so on its own, which is the whole reason this is reported.
 
-def _directional(longs, shorts):
-    """`longs + shorts` routable entries, one per context, with the given composition."""
-    entries = _one_per_context(longs + shorts)
+def _directional_contexts(longs, shorts):
+    """One routable entry per context, ``longs + shorts`` distinct contexts, so entry
+    composition IS context composition — the shape the arithmetic is stated over."""
+    slots = [(sym, tf) for tf in ("4h", "1d", "15m", "1h") for sym in SYMBOLS]
+    entries = [_routable(f"S{i:03d}", symbol=sym, timeframe=tf)
+               for i, (sym, tf) in enumerate(slots[:longs + shorts])]
     for entry in entries[longs:]:
         entry["strategy_spec"] = {**entry["strategy_spec"], "direction": "short"}
     return entries
+
+
+GRID_CONTEXTS = 20  # 5 symbols x 4 timeframes — the distinct contexts a full grid routes
 
 
 def test_a_balanced_pool_can_fill_every_slot_it_routes():
     """The claim the directional cap is sold on — "not a concurrency cap in disguise" — and
     under the per-context cap it is CONDITIONAL, so it needs pinning at the composition where
     it holds rather than being assumed everywhere."""
-    total = pool.MAX_ROUTABLE_STRATEGIES
-    shorts = (total - paper.MAX_DIRECTIONAL_SKEW) // 2
-    capacity = pool.routable_directional_capacity(_directional(total - shorts, shorts))
-    assert capacity["routable_contexts"] == total
-    assert capacity["reachable_book"] == total
+    shorts = (GRID_CONTEXTS - paper.MAX_DIRECTIONAL_SKEW) // 2
+    capacity = pool.routable_directional_capacity(
+        _directional_contexts(GRID_CONTEXTS - shorts, shorts)
+    )
+    assert capacity["routable_contexts"] == GRID_CONTEXTS
+    assert capacity["reachable_book"] == GRID_CONTEXTS
     assert capacity["cap_binds"] is False
 
 
@@ -742,8 +770,8 @@ def test_an_all_one_way_pool_can_fill_only_the_cap_and_says_so():
     """The failure this reports: twenty long strategies fill four of twenty slots. Nothing in
     the size cap or the directional cap surfaces that on its own — the book would simply stop
     growing, and an operator would read it as "no signals"."""
-    capacity = pool.routable_directional_capacity(_directional(pool.MAX_ROUTABLE_STRATEGIES, 0))
-    assert capacity["routable_contexts"] == pool.MAX_ROUTABLE_STRATEGIES
+    capacity = pool.routable_directional_capacity(_directional_contexts(GRID_CONTEXTS, 0))
+    assert capacity["routable_contexts"] == GRID_CONTEXTS
     assert capacity["reachable_book"] == paper.MAX_DIRECTIONAL_SKEW
     assert capacity["cap_binds"] is True
 
@@ -753,16 +781,47 @@ def test_each_opposing_strategy_buys_back_two_slots():
     pins that no second number crept in."""
     for shorts in range(0, 5):
         capacity = pool.routable_directional_capacity(
-            _directional(pool.MAX_ROUTABLE_STRATEGIES - shorts, shorts)
+            _directional_contexts(GRID_CONTEXTS - shorts, shorts)
         )
-        expected = min(pool.MAX_ROUTABLE_STRATEGIES, 2 * shorts + paper.MAX_DIRECTIONAL_SKEW)
+        expected = min(GRID_CONTEXTS, 2 * shorts + paper.MAX_DIRECTIONAL_SKEW)
         assert capacity["reachable_book"] == expected, shorts
+
+
+def test_a_shared_fast_context_counts_once_toward_the_book():
+    """Under the fast-context cap two same-context strategies can never fill two book slots
+    — a position is per context — so the capacity report counts DISTINCT contexts, not
+    entries. Counting entries would have overstated the reachable book the day the first
+    shared context was promoted."""
+    entries = [_routable("S1", symbol="BTCUSDT", timeframe="15m"),
+               _routable("S2", symbol="BTCUSDT", timeframe="15m")]
+    capacity = pool.routable_directional_capacity(entries)
+    assert capacity["routable_contexts"] == 1
+    assert capacity["reachable_book"] == 1
+
+
+def test_a_context_holding_both_directions_is_flexible_and_aligns_with_the_scarce_side():
+    """A shared fast context whose two strategies disagree in direction can fill its slot
+    either way — so five one-way contexts plus one flexible reach all six, where six one-way
+    ones reach only the skew cap."""
+    assert pool.routable_directional_capacity(
+        _directional_contexts(6, 0))["cap_binds"] is True
+
+    capacity = pool.routable_directional_capacity(_directional_contexts(5, 0) + [
+        _routable("S_FLEX_L", symbol="BTCUSDT", timeframe="15m"),
+        {**_routable("S_FLEX_S", symbol="BTCUSDT", timeframe="15m"),
+         "strategy_spec": _spec_dict(strategy_id="S_FLEX_S", symbol_scope=["BTCUSDT"],
+                                     timeframe="15m", direction="short")},
+    ])
+    assert capacity["flexible_contexts"] == 1 and capacity["routable_contexts"] == 6
+    assert capacity["cap_binds"] is False
+    assert capacity["reachable_book"] == 6
 
 
 def test_a_pool_no_larger_than_the_cap_is_never_reported_as_bound():
     """Small pools must not raise the note: four one-way strategies fill four slots, which is
     the cap exactly. A line that fired on every young pool would train the reader to skip it."""
-    capacity = pool.routable_directional_capacity(_directional(paper.MAX_DIRECTIONAL_SKEW, 0))
+    capacity = pool.routable_directional_capacity(
+        _directional_contexts(paper.MAX_DIRECTIONAL_SKEW, 0))
     assert capacity["cap_binds"] is False
 
 
@@ -770,7 +829,7 @@ def test_the_capacity_report_refuses_nothing():
     """Deliberately a report and not a fifth guard. The directional cap can only DECLINE, so a
     lopsided pool trades less rather than unsafely — and refusing here would forbid assembling
     a pool in any order but alternating, since five longs before the first short is ordinary."""
-    lopsided = _directional(pool.MAX_ROUTABLE_STRATEGIES, 0)
+    lopsided = _directional_contexts(GRID_CONTEXTS, 0)
     assert pool.routable_directional_capacity(lopsided)["cap_binds"] is True
     pool.assert_pool_within_size_cap(lopsided)  # the door still admits it
 
@@ -778,7 +837,7 @@ def test_the_capacity_report_refuses_nothing():
 def test_suspended_entries_are_not_counted():
     """The cap is on the ROUTABLE set. After a retirement the pool file legitimately holds
     far more rows than the cap — 89 rows and 5 routable, the day this landed."""
-    entries = [*_one_per_context(5),
+    entries = [*_at_cap(5),
                *[_routable(f"X{i}", status="SUSPENDED") for i in range(200)]]
     pool.assert_pool_within_size_cap(entries)
 
@@ -791,8 +850,8 @@ def test_a_spec_less_entry_contributes_nothing():
 
 def test_warning_and_probation_still_occupy_a_slot():
     """They keep routing, so they keep splitting the window — the cap must see them."""
-    entries = [_routable("S1", symbol="BTCUSDT", timeframe="15m"),
-               _routable("S2", symbol="BTCUSDT", timeframe="15m", status="WARNING")]
+    entries = [_routable("S1", symbol="BTCUSDT", timeframe="4h"),
+               _routable("S2", symbol="BTCUSDT", timeframe="4h", status="WARNING")]
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
     assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"

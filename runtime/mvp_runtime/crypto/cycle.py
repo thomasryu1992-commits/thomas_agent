@@ -65,7 +65,7 @@ from .market_data import (
     degraded_market_data_record,
 )
 from .cooldown import CooldownMarkStore
-from .counterfactual import run_counterfactual_update
+from .counterfactual import read_counterfactual_outcomes, run_counterfactual_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
 from .live_pnl import excluded_outcomes_digest, live_outcomes_for_analysis, read_live_outcomes
@@ -78,11 +78,13 @@ from .live_route import (
 )
 from .paper import (
     ENTRY_COST_UNECONOMIC,
+    SUPPORTING_SHADOW_REASONS,
     PaperStore,
     build_entry_plan,
     list_open_positions,
     read_outcomes,
     run_paper_update,
+    split_by_provenance,
 )
 from .risk_limits import resolve_risk_limits
 
@@ -737,11 +739,33 @@ def run_crypto_cycle(
     # 4) paper update (C5) — kill-switch bound inside; refusals propagate.
     # The same gated collector resolves an ambiguous exit at 1m — a refinement, so a
     # failure degrades the settlement to its pessimistic assumption, never blocks it.
+    #
+    # Same-bar routing priority (the fast-context cap, Thomas 2026-08-24): realized
+    # per-strategy evidence — this runtime's OWN paper rows plus the supporting-shadow
+    # settlements, summarized with the same `by_strategy` math the report uses. Computed only
+    # when this context can hold more than one routable strategy, so a flat-cap context pays
+    # nothing for it. Observational at this point: an unreadable store degrades the ranking
+    # to champion_score (`realized_stats=None`, the pre-evidence behaviour) rather than
+    # blocking the cycle — the route must not need the shadow book to trade.
+    realized_stats = None
+    if pool.max_routable_per_context(timeframe) > 1 and outcomes is not None:
+        try:
+            own_rows, _imported = split_by_provenance(outcomes)
+            shadow_rows = [
+                r for r in read_counterfactual_outcomes(root)
+                if set(r.get("block_reasons") or []) & SUPPORTING_SHADOW_REASONS
+            ]
+            realized_stats = feedback.summarize_outcomes(
+                list(own_rows) + shadow_rows
+            )["by_strategy"]
+        except ToolError as exc:
+            reason_codes.append(exc.reason_code)
+            realized_stats = None
     paper_summary, paper_records = run_paper_update(
         snapshot, feature_row, active_pool, paper_verdict,
         store=store, now=now, root=root, control_store=control_store,
         intrabar_collector=collector, routing_marks=routing_marks,
-        cooldown_marks=cooldown_marks,
+        cooldown_marks=cooldown_marks, realized_stats=realized_stats,
     )
     if paper_summary.get("settle_refused"):
         reason_codes.append(paper_summary["settle_refused"]["reason_code"])
@@ -819,6 +843,10 @@ def run_crypto_cycle(
         now=now,
         root=root,
         persist=bool(getattr(store, "filesystem_write", False)),
+        # The signals the router declined this candle (built inside the paper step's
+        # freshness gate, so one per closed candle): they open as supporting shadows so a
+        # benched lineage still accrues the evidence the priority ranking above reads.
+        supporting_plans=paper_summary.get("supporting_plans"),
     )
     if counterfactual_summary.get("degraded"):
         reason_codes.append(counterfactual_summary["degraded"])

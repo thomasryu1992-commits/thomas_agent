@@ -121,6 +121,22 @@ STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
 STATUS_NO_ENTRY = "NO_ENTRY"
 STATUS_BLOCKED = "BLOCKED"
 BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
+
+# Same-bar routing priority is decided on REALIZED evidence when there is enough of it.
+# The floor reuses `feedback.HEALTHY_TRADES_PER_PARAMETER`'s judgement (10, "under ~5 it
+# is noise"): below it a realized expectancy is a coin path, and the ranking falls back to
+# `champion_score` exactly as before the fast-context cap (Thomas 2026-08-24) existed.
+MIN_PRIORITY_SAMPLE_TRADES = 10
+
+# Shadow-reason tags for the signals the router declined this bar. Each is its own
+# per-reason bucket in the counterfactual registry, so gate calibration never mixes with
+# routing-priority evidence — and a benched lineage still accrues judgeable outcomes.
+ROUTED_BEHIND_PRIMARY = "ROUTED_BEHIND_PRIMARY"
+DIRECTION_CONFLICT_LOST = "DIRECTION_CONFLICT_LOST"
+DIRECTION_CONFLICT_UNRESOLVED = "DIRECTION_CONFLICT_UNRESOLVED"
+SUPPORTING_SHADOW_REASONS = frozenset({
+    ROUTED_BEHIND_PRIMARY, DIRECTION_CONFLICT_LOST, DIRECTION_CONFLICT_UNRESOLVED,
+})
 POSITION_CONTEXT_MISMATCH = "POSITION_CONTEXT_MISMATCH"
 
 # Intrabar exit resolution: when a bar touches both the stop and the target it cannot
@@ -365,8 +381,113 @@ def directional_skew_admits(
     }
 
 
+def _realized_evidence(
+    match: Mapping[str, Any], realized_stats: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[int, float] | None:
+    """``(closed_count, expectancy)`` for this match's strategy, or None below the floor.
+
+    None means "no adequate realized sample", which is a different fact from a measured
+    zero — the ranking treats the two differently on purpose."""
+    if not realized_stats:
+        return None
+    stats = realized_stats.get(str(match.get("strategy_id") or ""))
+    if not isinstance(stats, Mapping):
+        return None
+    closed = stats.get("closed_count")
+    expectancy = stats.get("expectancy")
+    if not isinstance(closed, (int, float)) or isinstance(closed, bool):
+        return None
+    if not isinstance(expectancy, (int, float)) or isinstance(expectancy, bool):
+        return None
+    if closed < MIN_PRIORITY_SAMPLE_TRADES:
+        return None
+    return int(closed), float(expectancy)
+
+
+def _rank_matches(
+    matches: list[dict[str, Any]], realized_stats: Mapping[str, Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Same-direction matches, best first: proven edge, then hypothesis, then proven no-edge.
+
+    Tier 0 — positive realized expectancy over an adequate sample, best first: the evidence
+    ``champion_score`` was supposed to proxy, measured instead of fitted (the score was
+    ANTI-correlated with realized R on this machine, which is what made score-ranked slot
+    sharing strictly negative under the flat cap). Tier 1 — no adequate realized sample:
+    ``champion_score`` descending, the pre-evidence key, unchanged from the flat-cap router.
+    Tier 2 — adequate sample, non-positive: a lineage that has PROVEN it has no edge here
+    ranks below an untested hypothesis on purpose. ``strategy_id`` breaks every tie so the
+    order never depends on store order."""
+    def key(m: dict[str, Any]) -> tuple[int, float, str]:
+        evidence = _realized_evidence(m, realized_stats)
+        champion = m["champion_score"] if m["champion_score"] is not None else -math.inf
+        if evidence is not None and evidence[1] > 0:
+            return (0, -evidence[1], m["strategy_id"] or "")
+        if evidence is None:
+            return (1, -champion, m["strategy_id"] or "")
+        return (2, -evidence[1], m["strategy_id"] or "")
+    return sorted(matches, key=key)
+
+
+def _supporting_detail(match: Mapping[str, Any], shadow_reason: str) -> dict[str, Any]:
+    """The identity a declined signal carries into the shadow book."""
+    return {
+        "strategy_id": match["strategy_id"],
+        "candidate_id": match["candidate_id"],
+        "strategy_rule_hash": match["strategy_rule_hash"],
+        "strategy_generation_id": match["strategy_generation_id"],
+        "direction": match["direction"],
+        "champion_score": match["champion_score"],
+        "spec": match["spec"],
+        "shadow_reason": shadow_reason,
+    }
+
+
+def _resolve_direction_conflict(
+    matches: list[dict[str, Any]], realized_stats: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]] | None:
+    """The winning side of a two-direction bar, or None to fail closed as before.
+
+    A side is BACKED when a member holds a positive realized expectancy over an adequate
+    sample (``_realized_evidence``). Exactly one backed side wins outright; two backed
+    sides go to the better best-expectancy, and a dead-even tie stays closed; no backed
+    side keeps the flat-cap behaviour — fail closed — because there is no measured basis
+    to pick a direction, and the unresolved shadows are what will create one.
+
+    Returns ``(winning_matches, losing_matches, basis)`` or None."""
+    by_direction: dict[str, list[dict[str, Any]]] = {}
+    for m in matches:
+        by_direction.setdefault(str(m["direction"]), []).append(m)
+    backed: dict[str, tuple[dict[str, Any], float, int]] = {}
+    for direction, side in by_direction.items():
+        best: tuple[dict[str, Any], float, int] | None = None
+        for m in side:
+            evidence = _realized_evidence(m, realized_stats)
+            if evidence is None or evidence[1] <= 0:
+                continue
+            if best is None or evidence[1] > best[1]:
+                best = (m, evidence[1], evidence[0])
+        if best is not None:
+            backed[direction] = best
+    if not backed:
+        return None
+    ranked = sorted(backed.items(), key=lambda kv: (-kv[1][1], kv[0]))
+    if len(ranked) > 1 and ranked[0][1][1] == ranked[1][1][1]:
+        return None  # dead even: no measured basis to pick a side
+    winner = ranked[0][0]
+    winning = by_direction.pop(winner)
+    losing = [m for side in by_direction.values() for m in side]
+    best_match, best_expectancy, best_closed = ranked[0][1]
+    basis = {
+        "strategy_id": best_match["strategy_id"],
+        "expectancy": best_expectancy,
+        "closed_count": best_closed,
+    }
+    return winning, losing, basis
+
+
 def route_entries(
-    pool: Mapping[str, Any], feature_row: Mapping[str, Any], *, symbol: str, timeframe: str, now: str
+    pool: Mapping[str, Any], feature_row: Mapping[str, Any], *, symbol: str, timeframe: str,
+    now: str, realized_stats: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate every routable pool strategy against this cycle's feature row.
 
@@ -376,6 +497,14 @@ def route_entries(
     scoped elsewhere is recorded as unevaluable and cannot match — an ETH daily
     strategy is never judged on a BTC hourly row (the source's ``feature_rows`` rule,
     single-snapshot form). The router only proposes.
+
+    ``realized_stats`` (strategy_id -> ``{"closed_count", "expectancy"}``, this runtime's
+    own paper rows plus the supporting-shadow settlements) is what lets a shared fast
+    context be ranked on measured evidence: with it, a same-direction tie goes to the
+    proven edge before ``champion_score`` (``_rank_matches``) and a direction conflict can
+    resolve toward a backed side instead of always failing closed
+    (``_resolve_direction_conflict``). Without it — every caller under the flat cap, and
+    every cycle whose stats read degraded — behaviour is exactly as before.
     """
     entries = [
         e for e in (pool.get("active_strategies") or [])
@@ -457,25 +586,36 @@ def route_entries(
         return {**base, "status": STATUS_NO_ENTRY}
 
     directions = {m["direction"] for m in matches}
+    conflict_note: dict[str, Any] | None = None
+    losing: list[dict[str, Any]] = []
     if len(directions) > 1:
-        # Single-symbol cycle: a LONG and a SHORT on the same row fail closed.
-        return {
-            **base,
-            "status": STATUS_BLOCKED,
-            "block_reason": BLOCK_DIRECTION_CONFLICT,
-            "conflicting_directions": sorted(d for d in directions if d),
+        resolution = _resolve_direction_conflict(matches, realized_stats)
+        if resolution is None:
+            # Single-symbol cycle, no side backed by measured evidence (or dead even):
+            # fail closed exactly as the flat-cap router did — but hand BOTH sides to the
+            # shadow book, because an unresolved conflict must be able to END: the shadows
+            # are the evidence a later bar's resolution will read. Without them two fresh
+            # strategies that disagree would stay blocked forever.
+            return {
+                **base,
+                "status": STATUS_BLOCKED,
+                "block_reason": BLOCK_DIRECTION_CONFLICT,
+                "conflicting_directions": sorted(d for d in directions if d),
+                "conflict_matches": [
+                    _supporting_detail(m, DIRECTION_CONFLICT_UNRESOLVED) for m in matches
+                ],
+            }
+        matches, losing, basis = resolution
+        conflict_note = {
+            "resolved_direction": str(matches[0]["direction"]),
+            "basis": basis,
+            "losing_strategy_ids": sorted(str(m["strategy_id"]) for m in losing),
         }
 
-    ranked = sorted(
-        matches,
-        key=lambda m: (
-            m["champion_score"] if m["champion_score"] is not None else -math.inf,
-            m["strategy_id"] or "",
-        ),
-        reverse=True,
-    )
+    ranked = _rank_matches(matches, realized_stats)
     primary = ranked[0]
-    return {
+    primary_evidence = _realized_evidence(primary, realized_stats)
+    result = {
         **base,
         "status": STATUS_ENTRY_CANDIDATE,
         "direction": primary["direction"],
@@ -484,8 +624,23 @@ def route_entries(
         "primary_strategy_rule_hash": primary["strategy_rule_hash"],
         "primary_strategy_generation_id": primary["strategy_generation_id"],
         "primary_spec": primary["spec"],
+        # Which key actually picked the primary, so a reader of the route can tell a
+        # measured decision from the pre-evidence fallback without re-deriving it.
+        "primary_priority_basis": (
+            "realized_expectancy"
+            if primary_evidence is not None and primary_evidence[1] > 0
+            else "champion_score"
+        ),
         "supporting_strategy_ids": [m["strategy_id"] for m in ranked[1:]],
+        # Full identity for the shadow book: the bench behind the primary, plus a resolved
+        # conflict's losing side. `supporting_strategy_ids` above keeps its original
+        # same-direction meaning for the plan record.
+        "supporting": [_supporting_detail(m, ROUTED_BEHIND_PRIMARY) for m in ranked[1:]]
+        + [_supporting_detail(m, DIRECTION_CONFLICT_LOST) for m in losing],
     }
+    if conflict_note is not None:
+        result["direction_conflict"] = conflict_note
+    return result
 
 
 # How far the live size may be scaled DOWN when volatility is above its own normal. A floor
@@ -1525,6 +1680,7 @@ def run_paper_update(
     intrabar_collector: Any | None = None,
     routing_marks: Any | None = None,
     cooldown_marks: Any | None = None,
+    realized_stats: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One cycle's paper step: settle the open position, then maybe open one.
 
@@ -1728,7 +1884,10 @@ def run_paper_update(
     #    both concurrency caps. Counting and opening happen under ONE portfolio lock:
     #    the caps are a property of every book together, so two cycles that each
     #    counted before either wrote would both see room that only one of them had.
-    route = route_entries(pool, feature_row, symbol=symbol, timeframe=timeframe, now=now)
+    route = route_entries(
+        pool, feature_row, symbol=symbol, timeframe=timeframe, now=now,
+        realized_stats=realized_stats,
+    )
     summary["route_status"] = route["status"]
     summary["route"] = route
     if position is None and not attribution_blocked and bool(verdict.get("allow_new_position")):
@@ -1756,6 +1915,33 @@ def run_paper_update(
             records.append(_event("open_refused", {**refusal, "read_only": True}))
         else:
             plan = build_entry_plan(route, feature_row, now=now)
+            # The signals the router declined THIS candle — the bench behind the primary, a
+            # resolved conflict's losing side, or both sides of an unresolved one — become
+            # shadow-book candidates for the cycle to hand to `counterfactual`. Built inside
+            # the freshness gate on purpose: one shadow per closed candle, the same pacing
+            # as the real entry, never one per tick. When a position is already open this
+            # branch never runs and nothing is booked — the bench is measured only against
+            # bars the context could actually have traded.
+            declined = list(route.get("supporting") or []) \
+                + list(route.get("conflict_matches") or [])
+            supporting_plans: list[dict[str, Any]] = []
+            for bench in declined:
+                shadow = build_entry_plan({
+                    "status": STATUS_ENTRY_CANDIDATE,
+                    "direction": bench["direction"],
+                    "symbol": route.get("symbol"),
+                    "timeframe": route.get("timeframe"),
+                    "primary_spec": bench["spec"],
+                    "primary_strategy_id": bench["strategy_id"],
+                    "primary_candidate_id": bench["candidate_id"],
+                    "primary_strategy_rule_hash": bench["strategy_rule_hash"],
+                    "primary_strategy_generation_id": bench["strategy_generation_id"],
+                }, feature_row, now=now)
+                if shadow is None:
+                    continue
+                supporting_plans.append({**shadow, "shadow_reason": bench["shadow_reason"]})
+            if supporting_plans:
+                summary["supporting_plans"] = supporting_plans
             # The economics door, before the portfolio lock: it is pure arithmetic on the plan
             # and takes no state, so making every cycle contend for the lock to learn the trade
             # was uneconomic would serialise cycles on a question none of them needed shared
