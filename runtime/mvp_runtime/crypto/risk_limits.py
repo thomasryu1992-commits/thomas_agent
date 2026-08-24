@@ -28,9 +28,13 @@ Three properties worth stating, because each is a decision rather than an implem
    → BLOCK.
 
 Registering one **grants nothing and enables no trading.** It cannot widen a breaker past the
-code bounds, and it is not a permission: the `live_trading` grant, the confirmation phrase, the
-clean canary orders, the registered budget and both kill switches all still stand where they
-stood. It can only move a breaker *within* limits this repo's code already accepts.
+code bounds, and it is not a permission: the operator's live-trading opt-in, the confirmation
+phrase, the clean canary orders, the registered budget and both kill switches all still stand
+where they stood. It can only move a breaker *within* limits this repo's code already accepts.
+(That first door was a per-machine `live_trading` grant until 2026-07-28, when Thomas replaced
+it with an environment opt-in. The door did not go away — only its shape did, and revoking it
+now needs a container restart rather than a file deletion. This module deliberately does not
+name the variable; `test_registering_limits_grants_nothing` pins that containment by text.)
 """
 
 from __future__ import annotations
