@@ -218,11 +218,22 @@ TUNABLES: tuple[Tunable, ...] = (
 
     # --- the promotion door and the ladder ---------------------------------------------------
     Tunable("MAX_ROUTABLE_STRATEGIES", pool.MAX_ROUTABLE_STRATEGIES, "crypto/pool.py", OPERATOR,
-            "pool sizing cap; the router picks one strategy per context so a surplus dilutes",
-            "the attribution-rate argument in `pool.py` changing shape"),
+            "pool sizing cap: the grid-implied sum of the per-context caps (5 * (2+2+1+1))",
+            "the symbol set or a per-context cap changing"),
     Tunable("MAX_ROUTABLE_PER_CONTEXT", pool.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool.py", OPERATOR,
-            "one per context, which is what makes promotion split trades rather than add them",
-            "a router that could run more than one strategy per context"),
+            "Thomas 2026-08-24: slow contexts (4h/1d) keep one slot — splitting a ~33/~122-day "
+            "judgement window is how the un-demotable pool of 2026-07-30 happened",
+            "the lifecycle window or the slow timeframes' outcome rate changing"),
+    Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool.MAX_ROUTABLE_PER_CONTEXT_FAST,
+            "crypto/pool.py", OPERATOR,
+            "Thomas 2026-08-24: fast contexts (15m/1h) hold two — the window refills in weeks "
+            "even split, and the shadow book keeps the benched lineage judgeable",
+            "the fast timeframes' outcome rate, or the supporting-shadow book, changing shape"),
+    Tunable("MIN_PRIORITY_SAMPLE_TRADES", paper.MIN_PRIORITY_SAMPLE_TRADES, "crypto/paper.py",
+            OPERATOR,
+            "realized trades before the router ranks on measured expectancy instead of "
+            "champion_score; reuses HEALTHY_TRADES_PER_PARAMETER's noise floor",
+            "the noise-floor argument in `feedback.py` changing"),
     Tunable("PROMOTION_BACKLOG_ALERT_THRESHOLD", pool.PROMOTION_BACKLOG_ALERT_THRESHOLD,
             "crypto/pool.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",

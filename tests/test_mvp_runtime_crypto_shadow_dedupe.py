@@ -51,6 +51,24 @@ def _write_book(root, rows):
 
 # --- which rows are duplicates -------------------------------------------------
 
+def test_supporting_shadows_dedupe_per_strategy_not_per_context():
+    """A supporting shadow prices a benched LINEAGE, so two lineages benched in one context
+    are two different answers — only a repeat of the same lineage is a duplicate. Gate rows
+    (no ``shadow_kind``, including every row written before the field) keep the
+    context-only key untouched."""
+    rows = [
+        _shadow("cf-gate"),
+        _shadow("cf-sup-a1", opened="2026-07-25T06:09:00Z",
+                shadow_kind=counterfactual.SHADOW_KIND_SUPPORTING, strategy_id="S_a"),
+        _shadow("cf-sup-b", opened="2026-07-25T06:10:00Z",
+                shadow_kind=counterfactual.SHADOW_KIND_SUPPORTING, strategy_id="S_b"),
+        _shadow("cf-sup-a2", opened="2026-07-25T06:11:00Z",
+                shadow_kind=counterfactual.SHADOW_KIND_SUPPORTING, strategy_id="S_a"),
+    ]
+    duplicates = counterfactual.context_duplicates(rows)
+    assert [d["counterfactual_id"] for d in duplicates] == ["cf-sup-a2"]
+
+
 def test_the_oldest_in_a_context_survives():
     """What the rule itself would have produced: the first blocked signal opens a shadow and
     every later one is refused while it is still open."""

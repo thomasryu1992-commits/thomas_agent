@@ -127,6 +127,131 @@ def test_route_direction_conflict_fails_closed():
     route = route_entries(_pool(long_e, short_e), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW)
     assert route["status"] == STATUS_BLOCKED
     assert route["block_reason"] == BLOCK_DIRECTION_CONFLICT
+    # Fail-closed is no longer a dead end: both sides are handed to the shadow book so a
+    # later bar's resolution has evidence to read.
+    assert sorted(m["strategy_id"] for m in route["conflict_matches"]) == ["S_long", "S_short"]
+    assert {m["shadow_reason"] for m in route["conflict_matches"]} \
+        == {paper.DIRECTION_CONFLICT_UNRESOLVED}
+
+
+# --- routing priority on realized evidence (the fast-context cap's router half) ------
+
+def _stats(**by_id):
+    """``realized_stats`` in the report's ``by_strategy`` shape: S_x=(closed, expectancy)."""
+    return {sid: {"closed_count": closed, "expectancy": expectancy}
+            for sid, (closed, expectancy) in by_id.items()}
+
+
+def _conflict_pool():
+    long_e = _pool_entry(strategy_id="S_long")
+    short_spec = _spec_dict(strategy_id="S_short", direction="short", entry_rules={
+        "operator": "AND", "conditions": [{"feature": "adx", "comparison": ">=", "value": 20.0}],
+    })
+    return _pool(long_e, _pool_entry(spec=short_spec, strategy_id="S_short"))
+
+
+def test_route_primary_prefers_proven_realized_edge_over_champion_score():
+    """champion_score was ANTI-correlated with realized R on this machine, so a shared
+    context ranks on measured expectancy first: the proven edge outranks the better score."""
+    weak = _pool_entry(strategy_id="S_weak", champion_score=0.1)
+    strong = _pool_entry(strategy_id="S_strong", champion_score=0.9)
+    route = route_entries(
+        _pool(weak, strong), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_weak=(12, 0.4), S_strong=(12, -0.2)),
+    )
+    assert route["primary_strategy_id"] == "S_weak"
+    assert route["primary_priority_basis"] == "realized_expectancy"
+    assert route["supporting_strategy_ids"] == ["S_strong"]
+    assert [s["shadow_reason"] for s in route["supporting"]] == [paper.ROUTED_BEHIND_PRIMARY]
+
+
+def test_route_thin_realized_sample_falls_back_to_champion_score():
+    """Below the floor a realized expectancy is a coin path — the pre-evidence key decides,
+    exactly as it did before the fast-context cap existed."""
+    weak = _pool_entry(strategy_id="S_weak", champion_score=0.1)
+    strong = _pool_entry(strategy_id="S_strong", champion_score=0.9)
+    route = route_entries(
+        _pool(weak, strong), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_weak=(paper.MIN_PRIORITY_SAMPLE_TRADES - 1, 0.9)),
+    )
+    assert route["primary_strategy_id"] == "S_strong"
+    assert route["primary_priority_basis"] == "champion_score"
+
+
+def test_route_a_proven_no_edge_ranks_below_an_untested_hypothesis():
+    """An adequate sample saying "no edge" is an answer, and it loses the slot to a
+    hypothesis that has not been asked yet — the bench is where it re-earns entry."""
+    proven_loser = _pool_entry(strategy_id="S_loser", champion_score=0.9)
+    hypothesis = _pool_entry(strategy_id="S_hypo", champion_score=0.1)
+    route = route_entries(
+        _pool(proven_loser, hypothesis), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_loser=(15, -0.3)),
+    )
+    assert route["primary_strategy_id"] == "S_hypo"
+    assert route["supporting_strategy_ids"] == ["S_loser"]
+
+
+def test_route_direction_conflict_resolves_toward_the_proven_side():
+    route = route_entries(
+        _conflict_pool(), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_long=(12, 0.35)),
+    )
+    assert route["status"] == STATUS_ENTRY_CANDIDATE
+    assert route["direction"] == "LONG" and route["primary_strategy_id"] == "S_long"
+    assert route["direction_conflict"]["basis"] == {
+        "strategy_id": "S_long", "expectancy": 0.35, "closed_count": 12,
+    }
+    assert route["direction_conflict"]["losing_strategy_ids"] == ["S_short"]
+    lost = [s for s in route["supporting"] if s["shadow_reason"] == paper.DIRECTION_CONFLICT_LOST]
+    assert [s["strategy_id"] for s in lost] == ["S_short"]
+
+
+def test_a_proven_negative_side_cannot_win_a_conflict():
+    """Backing requires a POSITIVE proven expectancy: a proven loser is not a basis to trade
+    against a fresh hypothesis on the other side — the bar stays closed."""
+    route = route_entries(
+        _conflict_pool(), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_long=(12, -0.4)),
+    )
+    assert route["status"] == STATUS_BLOCKED
+    assert route["block_reason"] == BLOCK_DIRECTION_CONFLICT
+
+
+def test_a_dead_even_conflict_stays_closed():
+    route = route_entries(
+        _conflict_pool(), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
+        realized_stats=_stats(S_long=(12, 0.3), S_short=(12, 0.3)),
+    )
+    assert route["status"] == STATUS_BLOCKED
+
+
+def test_declined_signals_become_supporting_plans(tmp_path):
+    """The bench behind the primary leaves the paper step as a full trade plan, tagged for
+    the shadow book — same entry math, same candle, its own lineage identity."""
+    weak = _pool_entry(strategy_id="S_weak", champion_score=0.1)
+    strong = _pool_entry(strategy_id="S_strong", champion_score=0.9)
+    summary, _records = run_paper_update(
+        _snapshot(), ROW, _pool(weak, strong), _verdict(),
+        store=DryRunPaperStore(), now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+    assert summary["opened"] is not None
+    plans = summary["supporting_plans"]
+    assert [p["strategy_id"] for p in plans] == ["S_weak"]
+    assert plans[0]["shadow_reason"] == paper.ROUTED_BEHIND_PRIMARY
+    assert plans[0]["direction"] == "LONG" and plans[0]["entry_price"] == 105.0
+    assert plans[0]["strategy_rule_hash"] == "deadbeef"
+
+
+def test_an_unresolved_conflict_hands_both_sides_to_the_shadow_book(tmp_path):
+    summary, _records = run_paper_update(
+        _snapshot(), ROW, _conflict_pool(), _verdict(),
+        store=DryRunPaperStore(), now=NOW, root=tmp_path, control_store=ControlStore(tmp_path),
+    )
+    assert summary["opened"] is None and summary["route_status"] == STATUS_BLOCKED
+    plans = summary["supporting_plans"]
+    assert sorted(p["strategy_id"] for p in plans) == ["S_long", "S_short"]
+    assert {p["shadow_reason"] for p in plans} == {paper.DIRECTION_CONFLICT_UNRESOLVED}
+    assert {p["direction"] for p in plans} == {"LONG", "SHORT"}
 
 
 @pytest.mark.parametrize("status", ["SUSPENDED", "ARCHIVED", "GENERATED"])

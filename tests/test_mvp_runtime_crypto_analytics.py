@@ -159,6 +159,71 @@ def test_shadow_book_is_capped(tmp_path):
     assert len(counterfactual.load_open_counterfactuals(tmp_path)) == counterfactual.MAX_OPEN_COUNTERFACTUALS
 
 
+# --- supporting shadows (the fast-context cap's evidence half) -----------------
+
+def _supporting_plan(strategy_id="S_bench", reason="ROUTED_BEHIND_PRIMARY"):
+    return {**_plan(strategy_id=strategy_id), "shadow_reason": reason}
+
+
+def test_supporting_shadows_open_settle_and_stay_out_of_gate_buckets(tmp_path):
+    """A benched lineage's signal settles like any shadow, tagged with its routing reason —
+    which is a bucket of its own, so gate calibration never reads routing evidence."""
+    result = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+        supporting_plans=[_supporting_plan()],
+    )
+    assert result["supporting_opened"] and result["open_count"] == 1
+    open_rows = counterfactual.load_open_counterfactuals(tmp_path)
+    assert open_rows[0]["shadow_kind"] == counterfactual.SHADOW_KIND_SUPPORTING
+
+    sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0, "close_time": "2026-07-23T00:00:00Z"}
+    settled = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=sl_candle, last_close=98.0,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-23T12:00:00Z", root=tmp_path,
+    )
+    assert settled["settled"][0]["result_R"] == -1.0 and settled["open_count"] == 0
+    records = counterfactual.read_counterfactual_outcomes(tmp_path)
+    assert records[0]["shadow_kind"] == counterfactual.SHADOW_KIND_SUPPORTING
+    assert records[0]["strategy_id"] == "S_bench"
+    assert set(counterfactual.r_values_by_reason(records)) == {"ROUTED_BEHIND_PRIMARY"}
+
+
+def test_one_supporting_shadow_per_context_and_strategy(tmp_path):
+    """The same lineage re-declined while its shadow is still open is the SAME measurement
+    (the gate book's 16-copies lesson); a second benched lineage is a different one."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+        supporting_plans=[_supporting_plan()],
+    )
+    result = counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now="2026-07-22T16:00:00Z", root=tmp_path,
+        supporting_plans=[_supporting_plan(), _supporting_plan(strategy_id="S_other")],
+    )
+    assert result["supporting_skipped"] == 1
+    assert len(result["supporting_opened"]) == 1
+    assert result["open_count"] == 2
+
+
+def test_a_supporting_shadow_does_not_suppress_the_gate_shadow(tmp_path):
+    """Two different measurements in one context: what the gate cost the book, and what a
+    benched lineage would have done. Neither dedupe may reach across."""
+    counterfactual.run_counterfactual_update(
+        blocked_plan=None, block_reasons=[], last_candle=None, last_close=None,
+        symbol="BTCUSDT", timeframe="1d", now=NOW, root=tmp_path,
+        supporting_plans=[_supporting_plan()],
+    )
+    result = counterfactual.run_counterfactual_update(
+        blocked_plan=_plan(), block_reasons=["daily_loss_limit_breached"],
+        last_candle=None, last_close=None, symbol="BTCUSDT", timeframe="1d",
+        now="2026-07-22T16:00:00Z", root=tmp_path,
+    )
+    assert result["opened"] is not None and result["duplicate_of"] is None
+    assert result["open_count"] == 2
+
+
 def test_a_second_shadow_in_one_context_is_refused_not_stacked(tmp_path):
     """The book being shadowed holds ONE position per (symbol, timeframe). A shadow book that
     can hold sixteen in a context where the real book holds at most one is not measuring the
