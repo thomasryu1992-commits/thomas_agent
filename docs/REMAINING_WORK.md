@@ -1203,9 +1203,11 @@ Thomas at the end of it; the proposal is a decision to take, not work in flight.
 
 **The refusing half is now built** (`runtime/mvp_runtime/crypto/live_correction.py`): the record
 type, the chained corrections store, the five fail-closed rules, and application inside
-`read_live_outcomes`, which leaves all five consumers untouched. **The door is not built** — no
-`scripts/correct_live_outcome.py`, so nothing can write a correction yet, and this is deliberately
-the order: until a bad correction can be refused there must be no way to produce one. Verified
+`read_live_outcomes`, which leaves all five consumers untouched. **The door is built too** —
+`scripts/correct_live_outcome.py`, `--list` / `--request` / `--confirm`, with no
+`--without-approval` escape: a correction is never the thing standing between an operator and a
+working system, so an escape would only ever be a way to change a money figure unasked. What is
+left is Thomas running it. Verified
 against the live row in a copied state directory — `drawdown_r` moves from the contaminated
 `0.0000` to the true `-0.8871`, `max_drawdown_r` stays `-4.2811` (the historical low is deeper
 than the phantom, so the maximum was never wrong), and the verdict stays NORMAL either way.
