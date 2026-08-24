@@ -305,6 +305,19 @@ def test_run_once_handles_registered_and_replies():
     assert "Key findings" in ch.sent[1][1]
 
 
+class _NewFindingProvider(MockProvider):
+    """MockProvider whose analysis derives one finding of its own, so a run can add
+    something the store has not seen. Everything else stays the mock's."""
+
+    def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int):
+        result = super().generate(prompt, max_output_tokens=max_output_tokens,
+                                  timeout_seconds=timeout_seconds)
+        result.analysis["key_findings"] = [
+            "retention: churn concentrates in the first billing cycle",
+        ]
+        return result
+
+
 @requires_local_core
 def test_operator_accumulates_working_memory(tmp_path):
     from runtime.mvp_runtime.working_memory import WorkingMemoryStore
@@ -314,9 +327,19 @@ def test_operator_accumulates_working_memory(tmp_path):
     after_first = len(wm.read_all())
     assert after_first  # the operator run accumulated working memory
 
+    # A later run whose analysis re-derives the SAME findings (MockProvider is fixed) adds
+    # nothing: the store keys a candidate on its content, and a finding re-proposed by a
+    # different task within its TTL is the duplication the store exists to stop — this
+    # rerun used to add five more rows saying what the store already knew.
     run_operator_once(MockOperatorChannel(inbound=[_msg(text="구독 사업 유지율 분석")]), REG,
                       provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
-    assert len(wm.read_all()) > after_first  # a later operator run adds more
+    assert len(wm.read_all()) == after_first
+
+    # A run that derives a finding the store has NOT seen still grows it: accumulation
+    # is by distinct findings, not by run.
+    run_operator_once(MockOperatorChannel(inbound=[_msg(text="구독 사업 유지율 분석")]), REG,
+                      provider=_NewFindingProvider(), working_memory=wm, now="2026-07-16T11:00:00Z")
+    assert len(wm.read_all()) > after_first
 
 # --- Telegram offset persistence (a restart must not re-deliver) --------------
 
