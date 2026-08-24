@@ -432,7 +432,24 @@ service cannot rewrite. No restart: the tick loop picks the row up within 30s.
 
 **Decide before registering.** Pruning permanently deletes expired candidates, and an expired
 candidate is still promotable today — `promote_candidate` checks status, not expiry. If the
-315-candidate backlog is worth a review pass, do that first; the prune is not reversible.
+backlog is worth a review pass, do that first; the prune is not reversible.
+
+**The backlog was mostly one fact, written many times.** Reviewed 2026-08-24: 316 rows, **129
+distinct texts**, five of them repeated **38 times each** for 170 of the rows — almost all of it
+the same five-axis business-plan conclusion re-derived per analysis run. The store had no
+duplicate check, so pruning it would have reset a counter and nothing else. The check now lives
+in `WorkingMemoryStore.append` (against rows still live, on the `task_working_memory` /
+`CANDIDATE` rung only), which is what makes this schedule worth registering: retention now
+empties a store that stopped refilling.
+
+Two things the review found that the prune would still delete, and that the check does not
+address:
+
+- **A handful of the expired rows are real.** The Naver blog-SEO findings among them are usable
+  and are not proposed again. Promote what is worth keeping before the first prune runs.
+- **The classifier files conversation as knowledge.** Front-desk session turns
+  (`Thomas: 지금` and its reply) are stored as `reusable_knowledge`. Deduplication does not
+  touch them — they are a different scope by design — so the leak at the classifier is open.
 
 ## Sending feedback on a completed run
 
