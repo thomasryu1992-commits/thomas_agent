@@ -17,6 +17,8 @@ no way to write one.
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -24,6 +26,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import jsonl, timeutil
 from ..errors import ToolError
+from ..filelock import locked
 
 CORRECTIONS_FILENAME = "live_outcome_corrections.jsonl"
 SCHEMA_VERSION = "live_outcome_correction.v0.2"
@@ -395,3 +398,37 @@ def build_correction(
         }
     record["record_sha256"] = integrity.sha256_record(record)
     return record
+
+
+def append_correction(path: Path, record: Mapping[str, Any]) -> None:
+    """Append one correction, chained onto whatever the file ends with RIGHT NOW.
+
+    The chain link is recomputed here, under the lock, rather than trusted from the caller.
+    The caller read the tip when it started building; between then and now another process may
+    have appended, and two records both pointing at the same stale tip is a FORK — an honest
+    file that `read_corrections` reports as tampered, indistinguishable from a real deletion.
+    The audit ledger re-anchors its segments at persist time for exactly this reason
+    (`audit.rechain_events`); this is the same rule on a smaller record.
+
+    Re-verifies the whole file after linking and before writing, so a correction can never be
+    appended onto a chain that is already broken — the append would otherwise bury the break
+    under a valid-looking record.
+
+    fsync'd like the outcome ledger it corrects: a correction that reaches the disk buffer but
+    not the disk would let the breaker read the uncorrected figure again after a crash, which
+    is the state this whole record type exists to leave behind.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked(path.with_suffix(".lock"), code="LIVE_STATE_LOCKED",
+                label="live outcome corrections"):
+        existing = read_corrections(path)
+        body = {k: v for k, v in record.items() if k != "record_sha256"}
+        body["previous_record_sha256"] = existing[-1]["record_sha256"] if existing else None
+        body["record_sha256"] = integrity.sha256_record(
+            {k: v for k, v in body.items() if k != "record_sha256"}
+        )
+        _validate_shape(body, len(existing) + 1)
+        with open(path, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(dict(body), ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())

@@ -1430,6 +1430,84 @@ def build_strategy_promotion_permission_decision(
     )
 
 
+def build_live_outcome_correction_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    corrects_outcome_id: str,
+    corrects_record_sha256: str,
+    disposition: str,
+    reason: str,
+    content_sha256: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to correct one live
+    outcome row (`docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`).
+
+    The same scope and level as a promotion and a retirement, and for a sharper version of
+    the same reason: this does not change what the runtime trades, it changes what the loss
+    breakers BELIEVE about money already risked. The identity binds the target row's hash as
+    well as its id, so an approval cannot be re-pointed at a row that changed after Thomas
+    read it — the drift the correction record's own rule 2 refuses, asserted one door earlier.
+
+    The corrected FIGURES are deliberately not parameters here. A `DERIVED` correction
+    recomputes them from the target row, so what Thomas approves is the judgement — which row,
+    void or supersede, why — and the arithmetic is the runtime's. They ride in
+    ``content_sha256`` all the same, which is what stops an approved judgement from executing
+    against numbers computed off a different row.
+    """
+    if not (isinstance(corrects_outcome_id, str) and corrects_outcome_id):
+        raise PlannerBlocked("INVALID_CORRECTION", "a correction needs the outcome id it corrects")
+    if not (isinstance(corrects_record_sha256, str) and corrects_record_sha256):
+        raise PlannerBlocked("INVALID_CORRECTION", "a correction must pin the target row's hash")
+    if disposition not in ("VOID", "SUPERSEDE"):
+        raise PlannerBlocked("INVALID_CORRECTION", f"disposition {disposition!r} is neither VOID nor SUPERSEDE")
+    if not (isinstance(reason, str) and reason.strip()):
+        raise PlannerBlocked("INVALID_CORRECTION", "a correction needs an operator reason")
+
+    action = _ActionSpec(
+        action_type="crypto.live_outcome.correction",
+        target_suffix="live_outcome_correction",
+        tool_id=None,
+        data_scope=("crypto.live_outcomes", "crypto.live_outcome_corrections"),
+        normalized_parameters={
+            "corrects_outcome_id": corrects_outcome_id,
+            "corrects_record_sha256": corrects_record_sha256,
+            "disposition": disposition,
+            "basis": "DERIVED",
+        },
+        risk_reason=(
+            "Changes what the loss breakers read about money already risked; requires explicit "
+            "Thomas approval per policy."
+        ),
+        authority_reason="Prime may prepare a live outcome correction for Thomas review; the decision is Thomas's.",
+        decision_reason="RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a change to recorded P&L.",
+        constraint=(
+            "Appends one correction record; the live outcome ledger is not edited and no row "
+            "is removed from it. No order capability, no live/testnet effect, no other row "
+            "affected; full audit required."
+        ),
+        target_ref=f"live_outcome:{corrects_outcome_id}",
+        content_sha256=content_sha256,
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=STRATEGY_PROMOTION_PERMISSION_SCOPE,
+        required_permission_level=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=STRATEGY_PROMOTION_REQUIRED_PERMISSION_LEVEL,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
 def build_strategy_retirement_permission_decision(
     bound_task: Mapping[str, Any],
     *,
