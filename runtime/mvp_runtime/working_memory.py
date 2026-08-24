@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import jsonl, memory
+from . import jsonl, memory, timeutil
 from .filelock import locked
 from .paths import repo_root as _repo_root
 
@@ -29,6 +29,33 @@ VALIDATED_FILE = "validated.jsonl"      # R5: promoted (validated) memory — se
 # aged out simply is not in the file the prune rewrites.
 CORE_CANDIDATES_FILE = "core_candidates.jsonl"
 _CANDIDATES_LOCK = ".candidates.lock"   # serializes candidate appends vs. the prune rewrite
+
+
+def _dedup_key(entry: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The identity of an analysis candidate for duplicate purposes, or None to skip the check.
+
+    None for everything that is not a live analysis proposal: the promotion marker (same
+    content, ``status=PROMOTED``), the front desk's session turns (their own scope), and any
+    row with no content to compare. Whitespace is collapsed because the same finding arrives
+    wrapped differently from different runs; nothing else is normalised, so two findings that
+    differ by a word stay two findings."""
+    if entry.get("scope") != memory.CANDIDATE_SCOPE:
+        return None
+    if entry.get("status") != memory.CANDIDATE_STATUS:
+        return None
+    content = " ".join(str(entry.get("content") or "").split())
+    if not content:
+        return None
+    return (str(entry.get("candidate_type") or ""), content)
+
+
+def _reference_now(entries: list[Mapping[str, Any]]) -> str:
+    """The instant to judge "still live" against, taken from the batch itself when it says.
+
+    Callers stamp every candidate with the run's ``now``, so using it keeps the decision
+    deterministic and replayable instead of reaching for the wall clock mid-write."""
+    stamps = [str(e.get("created_at")) for e in entries if e.get("created_at")]
+    return max(stamps) if stamps else timeutil.utc_now_iso()
 
 
 class WorkingMemoryStore:
@@ -45,16 +72,57 @@ class WorkingMemoryStore:
     def root(self) -> Path:
         return self._root
 
-    def append(self, entries: list[Mapping[str, Any]]) -> None:
-        """Append candidate entries (append-only; fail-closed on write error).
+    def append(self, entries: list[Mapping[str, Any]], *, now: str | None = None
+               ) -> list[Mapping[str, Any]]:
+        """Append candidate entries, skipping ones already live. Returns what was written.
 
         Held under the candidates lock: the prune compaction is a read-modify-replace, so
         an unlocked append racing it (operator loop vs. a scheduled ``memory_prune`` in
-        another process) would be silently discarded by the rewrite."""
+        another process) would be silently discarded by the rewrite. The duplicate check
+        reads inside that same section, so it cannot decide against a store another process
+        is mid-rewrite.
+
+        **Why a duplicate check at all.** The store was append-only with none, and
+        ``candidate_id`` is derived from the originating task, so the SAME finding proposed
+        by twenty different runs stored twenty rows with twenty ids — nothing could see they
+        were one fact. Measured on this host 2026-08-24: 316 rows, 129 distinct texts, with
+        five of them repeated **38 times each** for 170 of the rows. Pruning that is a
+        counter reset; the store fills back up because nothing here ever compared two
+        candidates.
+
+        **Live, not ever.** A candidate is a duplicate of an entry that has not expired. A
+        finding re-derived after its TTL ran out is a fact being observed again, and it gets
+        a fresh row with a fresh TTL — which is what the TTL is for. Deduplicating against
+        expired rows would let a store nobody has pruned silently suppress new observations.
+
+        **Only the analysis rung.** The check applies to ``task_working_memory``-scoped rows
+        with ``status=CANDIDATE`` — where the duplication is. Two neighbours look identical
+        and must not be touched: ``mark_promoted`` writes a copy of the candidate
+        that differs only in ``status``, and the front desk's session turns are a different
+        scope whose repeated lines are conversation, not knowledge.
+
+        Returns the entries actually written, so a caller that cares can see the difference
+        between "stored" and "already knew that"."""
         if not entries:
-            return
+            return []
         with self._candidates_lock():
-            self._append(ENTRIES_FILE, entries, "WORKING_MEMORY_WRITE_FAILED", "working memory")
+            reference = now or _reference_now(entries)
+            live = {
+                _dedup_key(e) for e in self.read_all()
+                if _dedup_key(e) is not None and not memory.is_expired(e, reference)
+            }
+            fresh: list[Mapping[str, Any]] = []
+            for entry in entries:
+                key = _dedup_key(entry)
+                if key is not None:
+                    if key in live:
+                        continue
+                    live.add(key)       # a batch can carry the same finding twice
+                fresh.append(entry)
+            if not fresh:
+                return []
+            self._append(ENTRIES_FILE, fresh, "WORKING_MEMORY_WRITE_FAILED", "working memory")
+        return fresh
 
     def read_all(self) -> list[dict[str, Any]]:
         """Return every stored candidate. A corrupt/unreadable store fails closed rather than
