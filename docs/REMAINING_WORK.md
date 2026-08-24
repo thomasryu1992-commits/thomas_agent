@@ -1189,8 +1189,8 @@ And the row passes its own `record_sha256`, because the corruption happened befo
 taken, so no integrity check will ever flag it. A correction therefore needs a designed record
 type (void / supersede) with its own schema and governance, not an edit.
 
-**That design is now written: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.1.md`** (DRAFT,
-2026-08-23, no code). It answers the shape — a separate `live_outcome_corrections.jsonl` with its
+**That design is now written: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`** (DRAFT,
+2026-08-23, no code; V0.1 is kept beside it, superseded). It answers the shape — a separate `live_outcome_corrections.jsonl` with its
 own closed schema, so the outcome read path's duplicate and hash checks are untouched; a
 `corrects_record_sha256` that pins each correction to the exact row it voids, so a correction
 cannot drift onto another row; and application inside `read_live_outcomes`, which is the **single
@@ -1200,6 +1200,18 @@ VOID for this row on the evidence already in this section: voiding erases a real
 lands wrong in the other direction, which is the same trap
 `drawdown_excluded_strategy_ids` was measured falling into. Three open questions are left for
 Thomas at the end of it; the proposal is a decision to take, not work in flight.
+
+**V0.2 narrows the first of those three.** V0.1 priced SUPERSEDE as "the runtime believes a number
+it did not record, and a human calculated it". Against this row it does not: the row carries
+`quantity 0.001`, `entry_price 77881.3`, `exit_price 77708.5` and `risk_usdt 0.1948`, and
+`(exit - entry) * quantity = -0.1728` over that risk is `-0.8871` — the corrected figures are the
+row's own arithmetic, and the same expression `_pnl_agrees_with_prices` already evaluates. So V0.2
+adds a `basis` of `DERIVED` / `ATTESTED` and a fifth fail-closed rule
+(`CORRECTION_ARITHMETIC_DISAGREES`): for a DERIVED correction the runtime recomputes the figures
+itself and refuses the correction if the submitted ones disagree, reusing #753's tolerance rather
+than minting a second one for the same arithmetic. The human supplies the judgement; the runtime
+supplies the number. What is left to decide is whether `ATTESTED` — the path with no guarantee
+beyond the approval hash — is built now or deferred until a correction actually needs it.
 
 **Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
 and it would leave no record that anyone changed a money figure — on the one ledger whose whole
