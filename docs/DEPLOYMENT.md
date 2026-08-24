@@ -382,24 +382,39 @@ ever changes, removing the **mount** is what closes it: the container's `stage2-
 the group on every boot by inspecting the socket, so removing `group_add` alone leaves the path
 open. That correction is recorded in the Hermes-side compose header.
 
-## Assurance policies that ship OFF
+## Assurance policies — both ON since 2026-08-24
 
-Two policies cost a model call per task, so both default off and turning either on is a line on
-a service's compose `command` — a deploy with a diff, not a behaviour that arrives with a
-rebuild.
+Two policies cost a model call per task. They default OFF in the code and are turned on by a
+line on a service's compose `command` — a deploy with a diff, not a behaviour that arrives with
+a rebuild. **Both are now on, on both services**, and the committed compose says so; the table
+records what each buys and what it costs, because turning one back off is the same one-line
+deploy in reverse.
 
-| flag | service | what it adds |
-|---|---|---|
-| `--independent-validation [always\|auto]` | `operator`, `pipeline-worker` | R7's second reviewer; the stricter verdict decides delivery |
-| `--revise` | `operator`, `pipeline-worker` | M3's single bounded regeneration on a REVISE verdict (hard cap 1) |
+| flag | service | what it adds | cost |
+|---|---|---|---|
+| `--independent-validation auto` | `operator`, `pipeline-worker` | R7's second reviewer; the stricter verdict decides delivery | one specialist call on ORANGE/RED-risk work |
+| `--revise` | `operator`, `pipeline-worker` | M3's single bounded regeneration on a REVISE verdict (hard cap 1) | one specialist call, only on runs that draw a REVISE |
 
-**`pipeline-worker` had neither until 2026-08-23**, which is why every task the dispatch door
-forwarded — fifteen on record, including every blog draft — ran with AUTOMATIC checks only. The
-validator provider is already in that container's environment (`MVP_VALIDATOR_PROVIDER`), so
-turning it on is the compose line and nothing else.
+`auto` and not `always` on both: it is what the operator loop had been running since R7, and it
+spends the extra call where the risk is rather than on every request. Raising either service to
+`always` is the same one-line change.
 
-`--revise` has never run in any deployed path. Seven REVISE verdicts are on record and all
-seven ended `FINAL_BLOCKED`, waiting for the operator to ask again.
+**What this closed.** `pipeline-worker` had neither policy until this change, so every task the
+dispatch door forwarded — fifteen on record, including every blog draft — ran with AUTOMATIC
+checks only while the operator loop beside it had a second reviewer. And `--revise` had never
+run in any deployed path: seven REVISE verdicts are on record and all seven ended
+`FINAL_BLOCKED`, waiting for someone to ask again. A reviewer that can say "not good enough"
+with nothing able to act on that verdict is half a loop.
+
+**Reading the flags back off a running service** — the worker states both in its startup line,
+so a service that quietly lost a flag is visible without reading compose:
+
+```bash
+docker logs thomas-pipeline-worker 2>&1 | grep -o 'validation=[^,]*, revise=[^,]*'
+```
+
+Expect `validation=auto, revise=on`. `validation=automatic-only, revise=off` means the compose
+`command` in front of the running container is not this one.
 
 ## Register the memory prune schedule
 
