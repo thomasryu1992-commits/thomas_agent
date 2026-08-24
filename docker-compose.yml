@@ -67,6 +67,9 @@ services:
       - "25"
       - --independent-validation
       - auto
+      # M3, ON since 2026-08-24 — the same flag its worker now carries. The reviewer decides
+      # a run is not good enough; without this nothing acts on that verdict.
+      - --revise
     environment:
       # Model provider(s) — ordered failover chain; every member needs its own
       # mounted safety-flag grant or the whole chain fails closed at startup.
@@ -496,6 +499,17 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.pipeline_worker_cli
+      # The two assurance policies, ON since 2026-08-24. Until then every task the dispatch
+      # door forwarded — fifteen on record, including every blog draft — ran with AUTOMATIC
+      # checks only, while the operator loop beside it had the second reviewer since R7.
+      # `auto` and not `always`: it matches what the operator has been running, and spends the
+      # extra specialist call on ORANGE/RED-risk work rather than on every request.
+      - --independent-validation
+      - auto
+      # M3's single bounded regeneration (hard cap 1). Seven REVISE verdicts are on record and
+      # all seven ended FINAL_BLOCKED waiting for someone to ask again — this is the flag that
+      # closes that loop. Costs a second specialist call only on the runs that earn one.
+      - --revise
     environment:
       # The engine's peers are the runtime itself — see the header comment for why these are
       # literals. No group_add: the socket's group is the process's own.
