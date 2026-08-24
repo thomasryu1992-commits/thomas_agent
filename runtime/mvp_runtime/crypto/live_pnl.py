@@ -30,8 +30,9 @@ from typing import Any, Iterable, Mapping, Protocol
 
 from runtime.read_only_kernel import integrity
 
+from . import live_correction
 from .. import jsonl, safety_gate, timeutil
-from ..errors import ToolError
+from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, NETWORK_ACCESS, Authorization
@@ -311,12 +312,19 @@ def build_live_outcome_record(
     return body
 
 
-def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
-    """All persisted live outcomes, oldest first — a VERIFIED read.
+def read_live_outcomes_raw(root: Path | None = None) -> list[dict[str, Any]]:
+    """The live outcome FILE, oldest first — a VERIFIED read, corrections not applied.
 
     Missing store = honestly empty (nothing has traded yet). Anything unreadable, tampered,
     or duplicated raises, because every caller of this history is a risk decision: a history
     that cannot prove itself must not be allowed to argue that the breaker is clear.
+
+    **Use this only where the FILE is the question** — currently one place, the settlement-id
+    dedupe on append. Everything that reasons about what happened reads
+    :func:`read_live_outcomes` instead, which is the same rows with corrections applied. The
+    dedupe cannot: a VOID correction removes a row from the corrected view, and a dedupe that
+    read the view would then not see the settlement already on disk and would append it twice —
+    and one duplicate fails EVERY verified read of this history.
     """
     path = state_dir(root) / LIVE_OUTCOMES_FILENAME
     outcomes: list[dict[str, Any]] = []
@@ -347,6 +355,60 @@ def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
             seen_settlement_ids.add(settlement_id)
         outcomes.append(record)
     return outcomes
+
+
+def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
+    """The live history as this runtime believes it — the file, plus any approved corrections.
+
+    Unchanged signature and unchanged rows whenever no correction exists, which is every
+    deployment until one is written: with the corrections file absent this reads nothing extra,
+    touches no approval store, and returns exactly what it always did. That is what let the
+    correction record be added at ONE chokepoint — `breaker_watch`, `cycle`, `live_promotion`,
+    `run_slippage_probe` and this module's own readers all pass through here, and not one of
+    them needed a line.
+
+    A correction that cannot prove itself raises, exactly as a tampered outcome row does. The
+    alternative — skipping a correction we cannot verify — would leave the breaker reading a
+    figure the operator believes was corrected, which is the one failure a correction mechanism
+    must not have.
+    """
+    outcomes = read_live_outcomes_raw(root)
+    path = state_dir(root) / live_correction.CORRECTIONS_FILENAME
+    if not path.exists():
+        return outcomes
+    corrections = live_correction.read_corrections(path)
+    if not corrections:
+        return outcomes
+    return live_correction.apply_corrections(
+        outcomes, corrections, approvals=_approvals_for(corrections, root)
+    )
+
+
+def _approvals_for(
+    corrections: list[dict[str, Any]], root: Path | None
+) -> dict[str, dict[str, Any]] | None:
+    """The approval records the given corrections name, or ``None`` if the store cannot be read.
+
+    ``None`` is a refusal downstream, not a pass. Reads only the ids actually referenced rather
+    than the whole store, because this runs on every read of the live history and the store
+    holds every approval this deployment has ever issued.
+    """
+    from ..approval_store import ApprovalStore  # local: nothing on the cold path needs it
+    try:
+        store = ApprovalStore.default(root)
+        found: dict[str, dict[str, Any]] = {}
+        for correction in corrections:
+            approval_id = correction.get("approval_id")
+            if not isinstance(approval_id, str) or approval_id in found:
+                continue
+            record = store.get(approval_id)
+            if record is not None:
+                found[approval_id] = dict(record)
+        return found
+    except (OSError, MvpRuntimeError):
+        # Narrow on purpose. An unreadable store must fail the correction closed, but a bug in
+        # this function must surface as a bug rather than disguise itself as "no approvals".
+        return None
 
 
 # --- LP5.4: the outcome bridge -------------------------------------------------
@@ -735,7 +797,7 @@ class RealLiveLedger:
             # than being treated as not-yet-recorded.
             settlement_id = record.get("settlement_id")
             if isinstance(settlement_id, str) and settlement_id and any(
-                o.get("settlement_id") == settlement_id for o in read_live_outcomes(self._root)
+                o.get("settlement_id") == settlement_id for o in read_live_outcomes_raw(self._root)
             ):
                 return False
             with open(path, "a", encoding="utf-8", newline="\n") as handle:

@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **479** distinct codes across **891** raise sites
+- **487** distinct codes across **919** raise sites
 - **21** exception classes carry them
 - **65** codes are raised from more than one module (see below)
 - **126** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -250,6 +250,19 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 495 | `save` | `—` |
 | `CORE_CANDIDATE_ALREADY_DECIDED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 483 | `decide_core_candidate` | `candidate.get('status') != CORE_CANDIDATE_STATUS` |
 | `CORE_NOT_ACTIVATED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | 46 | `bind_task_to_core` | `not pointer.is_file()` |
+| `CORRECTION_AMBIGUOUS` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 320 | `apply_corrections` | `target_id in targets` |
+| `CORRECTION_ARITHMETIC_DISAGREES` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 234 | `verify_correction` | `recomputed is None` |
+| `CORRECTION_ARITHMETIC_DISAGREES` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 240 | `verify_correction` | `abs(float(correction['corrected_realized_pnl_usdt']) - realized) > tolerance` |
+| `CORRECTION_ARITHMETIC_DISAGREES` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 248 | `verify_correction` | `abs(float(correction['corrected_result_R']) - result_r) > tolerance / risk` |
+| `CORRECTION_ARITHMETIC_DISAGREES` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 383 | `build_correction` | `recomputed is None` |
+| `CORRECTION_TARGET_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 225 | `verify_correction` | `target.get('record_sha256') != correction['corrects_record_sha256']` |
+| `CORRECTION_TARGET_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 221 | `verify_correction` | `target is None` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 271 | `_verify_approval` | `not isinstance(approval_id, str) or not approval_id` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 274 | `_verify_approval` | `approvals is None` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 279 | `_verify_approval` | `approval is None` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 281 | `_verify_approval` | `approval.get('status') != 'APPROVED'` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 285 | `_verify_approval` | `snapshot.get('action_type') != CORRECTION_ACTION_TYPE` |
+| `CORRECTION_UNAPPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 289 | `_verify_approval` | `snapshot.get('content_sha256') != content_sha256(correction)` |
 | `COST_MODEL_UNMEASURED` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 700 | `cost_model_for` | `missing` |
 | `COST_MODEL_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/cost.py` | 694 | `cost_model_for` | `declaration is None` |
 | `COUNTERFACTUAL_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 111 | `load_open_counterfactuals` | `—` |
@@ -481,15 +494,30 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_BUDGET_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 262 | `write_registered_budget` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `LIVE_BUDGET_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 195 | `read_registered_budget` | `—` |
 | `LIVE_BUDGET_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 197 | `read_registered_budget` | `not isinstance(data, dict)` |
+| `LIVE_CORRECTIONS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 147 | `read_corrections` | `—` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 88 | `_validate_shape` | `missing` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 92 | `_validate_shape` | `unknown` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 95 | `_validate_shape` | `record['schema_version'] != SCHEMA_VERSION` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 98 | `_validate_shape` | `record['disposition'] not in (VOID, SUPERSEDE)` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 106 | `_validate_shape` | `record['basis'] == ATTESTED` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 110 | `_validate_shape` | `record['basis'] != DERIVED` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 115 | `_validate_shape` | `supplied != _SUPERSEDE_ONLY` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 120 | `_validate_shape` | `not isinstance(value, (int, float)) or isinstance(value, bool)` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 125 | `_validate_shape` | `supplied` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 151 | `read_corrections` | `not isinstance(record, dict)` |
+| `LIVE_CORRECTION_SCHEMA_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 362 | `build_correction` | `disposition not in (VOID, SUPERSEDE)` |
+| `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 156 | `read_corrections` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 158 | `read_corrections` | `record['previous_record_sha256'] != previous` |
+| `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 166 | `read_corrections` | `correction_id in seen_ids` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 675 | `count_today` | `—` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 677 | `count_today` | `not isinstance(data, dict)` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 681 | `count_today` | `—` |
 | `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 720 | `record_submission` | `path.is_file()` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 341 | `read_live_outcomes` | `outcome_id in seen_outcome_ids` |
-| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 346 | `read_live_outcomes` | `settlement_id in seen_settlement_ids` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 337 | `read_live_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 490 | `daily_realized_pnl` | `—` |
-| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 326 | `read_live_outcomes` | `—` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 349 | `read_live_outcomes_raw` | `outcome_id in seen_outcome_ids` |
+| `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 354 | `read_live_outcomes_raw` | `settlement_id in seen_settlement_ids` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 345 | `read_live_outcomes_raw` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 552 | `daily_realized_pnl` | `—` |
+| `LIVE_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 334 | `read_live_outcomes_raw` | `—` |
 | `LIVE_ORDER_PERMDEC_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 1188 | `build_live_order_audit` | `not (isinstance(permdec_id, str) and permdec_id)` |
 | `LIVE_POSITION_STAGE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 298 | `_read_position_file` | `data.get('stage') != LIVE_STAGE` |
 | `LIVE_POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 290 | `_read_position_file` | `—` |
