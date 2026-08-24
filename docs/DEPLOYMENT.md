@@ -416,11 +416,11 @@ docker logs thomas-pipeline-worker 2>&1 | grep -o 'validation=[^,]*, revise=[^,]
 Expect `validation=auto, revise=on`. `validation=automatic-only, revise=off` means the compose
 `command` in front of the running container is not this one.
 
-## Register the memory prune schedule
+## The memory prune schedule — registered 2026-08-24
 
-The kind, the lane, the store wiring, the pruner and its audit event all exist; the schedule row
-does not, so expired memory candidates are filtered at read time and never removed. 315 of them
-are on disk.
+`schedule_7c8b7423b5ceeac10b9e`, every 86400s, on the maintenance lane. Registered after the
+review pass below, and only after the duplicate check shipped — before that, pruning was a
+counter reset.
 
 ```bash
 docker exec thomas-scheduler-maint python -m runtime.mvp_runtime.scheduler_cli \
@@ -428,11 +428,14 @@ docker exec thomas-scheduler-maint python -m runtime.mvp_runtime.scheduler_cli \
 ```
 
 Module form and inside the container, per CLAUDE.md — a root run on the host leaves files the
-service cannot rewrite. No restart: the tick loop picks the row up within 30s.
+service cannot rewrite. No restart: the tick loop picks the row up within 30s. `add` sets the
+first fire to `now + interval`, so a freshly registered prune does **not** run immediately; there
+is one full interval in which `disable` still costs nothing.
 
-**Decide before registering.** Pruning permanently deletes expired candidates, and an expired
-candidate is still promotable today — `promote_candidate` checks status, not expiry. If the
-backlog is worth a review pass, do that first; the prune is not reversible.
+**Pruning is not reversible, and the audit does not preserve what it deleted.**
+`build_retention_event` records `removed_count` and the `candidate_id` list — not the content. An
+expired candidate is also still promotable right up until it is deleted (`promote_candidate`
+checks status, not expiry). Snapshot the rows first if any of them might be wanted.
 
 **The backlog was mostly one fact, written many times.** Reviewed 2026-08-24: 316 rows, **129
 distinct texts**, five of them repeated **38 times each** for 170 of the rows — almost all of it
@@ -442,14 +445,21 @@ in `WorkingMemoryStore.append` (against rows still live, on the `task_working_me
 `CANDIDATE` rung only), which is what makes this schedule worth registering: retention now
 empties a store that stopped refilling.
 
-Two things the review found that the prune would still delete, and that the check does not
-address:
+**Two claims recorded here on 2026-08-23 were wrong, and checking them is why the schedule was
+finally registered.** Both are corrected rather than deleted, because each is the kind of thing a
+later reader would otherwise re-derive from the same misreading:
 
-- **A handful of the expired rows are real.** The Naver blog-SEO findings among them are usable
-  and are not proposed again. Promote what is worth keeping before the first prune runs.
-- **The classifier files conversation as knowledge.** Front-desk session turns
-  (`Thomas: 지금` and its reply) are stored as `reusable_knowledge`. Deduplication does not
-  touch them — they are a different scope by design — so the leak at the classifier is open.
+- **"A handful of the expired rows are real."** The Naver blog-SEO findings among them were
+  fact-checked on 2026-08-24 and **none survived** — the reward figure described a programme that
+  had already launched under different criteria, the dwell-time metrics were never published by
+  Naver, and the search-volume band had no primary source at all. Nothing in the backlog needed
+  promoting before the prune.
+- **"The classifier files conversation as knowledge."** It does not. The front-desk session turns
+  are stored with `candidate_type=frontdesk_session_context` and `scope=frontdesk_session`, which
+  is correct and is exactly why the duplicate check leaves them alone. The earlier claim came from
+  reading `promote_memory_candidate --list`, whose output does not show the type. Of the 308
+  `reusable_knowledge` rows, one is non-analysis text; that is a model answering an input that
+  was not a business idea, not a leak.
 
 ## Sending feedback on a completed run
 
