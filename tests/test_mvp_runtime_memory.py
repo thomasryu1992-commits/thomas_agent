@@ -357,3 +357,29 @@ def test_promotion_of_a_plain_candidate_has_no_correction_marker():
                                             "data_sensitivity": "internal"})[0]
     v = promote_candidate(plain, promoted_by="thomas", reason="reuse", now=NOW)
     assert "learning_source" not in v and "correction_ref" not in v
+
+
+# --- a run that reached no model says so -------------------------------------
+
+def test_invocation_metadata_says_whether_a_model_was_reached():
+    """`select_provider` fails closed to the mock when `MVP_HOSTED_PROVIDER` is unset, and the
+    run that follows produces findings and proposes candidates exactly like an analysis. It is
+    not one. 190 of this host's 316 candidate rows are the mock's five canned strings, written
+    in July while the var was unset, and nothing in the record said so at the time."""
+    from runtime.mvp_runtime.intake import build_task
+    from runtime.mvp_runtime.prime import plan_task
+    from runtime.mvp_runtime.worker import MockProvider, run_analysis_worker
+
+    class _RealEnough(MockProvider):
+        """The mock, declaring the one thing that separates a fixture from a judgement."""
+        model_invocation = True
+
+    plan = plan_task(build_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", now=NOW), now=NOW)
+    task, assignment = plan["task"], plan["role_assignment"]
+
+    _out, meta = run_analysis_worker(task, assignment, provider=MockProvider(), created_at=NOW)
+    assert meta["model_invocation"] is False
+    assert meta["network_egress"] is False        # recorded beside it, and for the same reason
+
+    _out, meta = run_analysis_worker(task, assignment, provider=_RealEnough(), created_at=NOW)
+    assert meta["model_invocation"] is True
