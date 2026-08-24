@@ -762,5 +762,21 @@ def run_analysis_worker(
         "finish_reason": result.finish_reason,
         # Whether this invocation crossed the network boundary (audited downstream).
         "network_egress": bool(getattr(provider, "network_egress", False)),
+        # ...and whether it reached a model at all. `select_provider` fails closed to the
+        # deterministic mock when `MVP_HOSTED_PROVIDER` is unset, which is correct — but the
+        # run that follows still produces `key_findings`, still proposes working-memory
+        # candidates, and reads downstream exactly like an analysis. It is not one: the mock
+        # answers every prompt with the same fixture. 190 of the 316 rows in this host's
+        # candidate store are five canned strings, 38 copies each, all from July, all
+        # byte-identical to `MockProvider`'s output — written while the env var was unset and
+        # nothing in the record said the runs had reached no model.
+        #
+        # The env var IS the gate (Thomas 2026-08-10), so losing it is a silent downgrade in
+        # the same shape `MVP_BRIDGE_CLIENT_UID` had before it got a default. This does not
+        # re-close that gate; it makes the downgrade legible per run. The rule is the one
+        # `gate_banners` announces on (`cli_common`), so one fact answers both.
+        "model_invocation": bool(getattr(
+            provider, "model_invocation", getattr(provider, "model_id", None) is not None
+        )),
     }
     return agent_output, invocation_metadata
