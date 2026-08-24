@@ -1201,6 +1201,15 @@ lands wrong in the other direction, which is the same trap
 `drawdown_excluded_strategy_ids` was measured falling into. Three open questions are left for
 Thomas at the end of it; the proposal is a decision to take, not work in flight.
 
+**The refusing half is now built** (`runtime/mvp_runtime/crypto/live_correction.py`): the record
+type, the chained corrections store, the five fail-closed rules, and application inside
+`read_live_outcomes`, which leaves all five consumers untouched. **The door is not built** — no
+`scripts/correct_live_outcome.py`, so nothing can write a correction yet, and this is deliberately
+the order: until a bad correction can be refused there must be no way to produce one. Verified
+against the live row in a copied state directory — `drawdown_r` moves from the contaminated
+`0.0000` to the true `-0.8871`, `max_drawdown_r` stays `-4.2811` (the historical low is deeper
+than the phantom, so the maximum was never wrong), and the verdict stays NORMAL either way.
+
 **V0.2 narrows the first of those three.** V0.1 priced SUPERSEDE as "the runtime believes a number
 it did not record, and a human calculated it". Against this row it does not: the row carries
 `quantity 0.001`, `entry_price 77881.3`, `exit_price 77708.5` and `risk_usdt 0.1948`, and
