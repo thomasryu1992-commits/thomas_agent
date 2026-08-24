@@ -57,6 +57,21 @@ from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa:
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 
 
+def _num(value: object) -> str:
+    """A figure, or ``?`` where the row does not have one.
+
+    The rows this screen is FOR are the rows something is wrong with, and a row can be missing
+    the very field being printed — the two live rows with no recorded risk carry
+    ``result_R: None``. Formatting those with ``:+.4f`` raised `TypeError` and took the whole
+    listing down at the seventh row, on the real ledger, in the deployed runtime. The screen an
+    operator opens first must survive the data it exists to describe.
+    """
+    try:
+        return f"{float(value):+.4f}"          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "?"
+
+
 def _target(outcome_id: str, root: Path | None) -> dict:
     """The row this correction is about, read through the VERIFIED file read.
 
@@ -198,13 +213,13 @@ def main(argv: list[str] | None = None) -> int:
                 mark = "OK " if row["agrees"] else ("?? " if row["agrees"] is None else "!! ")
                 extra = ""
                 if row.get("derivable"):
-                    extra = (f" | prices give {row['derived_realized_pnl_usdt']:+.4f} USDT"
-                             f" / {row['derived_result_R']:+.4f}R")
+                    extra = (f" | prices give {_num(row['derived_realized_pnl_usdt'])} USDT"
+                             f" / {_num(row['derived_result_R'])}R")
                 if row["already_corrected"]:
                     extra += "  [corrected]"
                 print(f"{mark}{row['outcome_id']} {row['symbol']} "
-                      f"recorded {row['recorded_realized_pnl_usdt']:+.4f} USDT"
-                      f" / {row['recorded_result_R']:+.4f}R{extra}")
+                      f"recorded {_num(row['recorded_realized_pnl_usdt'])} USDT"
+                      f" / {_num(row['recorded_result_R'])}R{extra}")
             return EXIT_OK
         missing = [n for n, v in (("--outcome-id", args.outcome_id),
                                   ("--disposition", args.disposition),
