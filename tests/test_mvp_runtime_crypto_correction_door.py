@@ -222,3 +222,24 @@ def test_the_content_hash_moves_when_the_target_row_does(tmp_path):
                                 approval_id="a", corrected_by="t",
                                 previous_record_sha256=None, now=NOW)
     assert LC.content_sha256(first) != LC.content_sha256(moved)
+
+
+# --- the screen must survive the data it exists to describe -----------------------------------
+
+def test_the_listing_prints_a_row_that_has_no_figures(capsys, monkeypatch):
+    """Measured in the deployed runtime: `result_R: None` on the two rows with no recorded risk
+    raised TypeError and took the whole listing down at the seventh row. The rows this screen is
+    FOR are the rows something is wrong with."""
+    monkeypatch.setattr(DOOR, "run_list", lambda **_: [
+        {"outcome_id": "a", "symbol": "BTCUSDT", "recorded_realized_pnl_usdt": None,
+         "recorded_result_R": None, "already_corrected": False, "derivable": False,
+         "agrees": None},
+        {"outcome_id": "b", "symbol": "BTCUSDT", "recorded_realized_pnl_usdt": 77.5357,
+         "recorded_result_R": 398.0272, "already_corrected": False, "derivable": True,
+         "agrees": False, "derived_realized_pnl_usdt": -0.1728, "derived_result_R": -0.8871},
+    ])
+    monkeypatch.setattr(DOOR, "assert_not_foreign_root_run", lambda *a, **k: None)
+    assert DOOR.main(["--list"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("?? a BTCUSDT recorded ? USDT / ?R")
+    assert "+398.0272R" in out[1] and "-0.8871R" in out[1]
