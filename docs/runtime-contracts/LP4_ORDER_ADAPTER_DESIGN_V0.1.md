@@ -15,8 +15,8 @@ Sequenced after: verification (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`), th
 (steps 6/6b), and the P5 role (step 7). Depends decisions: `LIVE_EXECUTION_GOVERNANCE_V0.1.md`.
 
 **Claude does not run this, does not handle real keys, and does not enable live trading.**
-Every operational step — the order key, the grant, the confirmation phrase, placing a canary,
-activating the role — is Thomas's.
+Every operational step — the order key, the live-trading opt-in, the confirmation phrase,
+placing a canary, activating the role — is Thomas's.
 
 ## What LP4 is
 
@@ -61,14 +61,30 @@ The surrounding contracts already pin most of LP4's shape:
 - It does **not** open a position on the close path — a reduceOnly order can only shrink.
 - It holds **no** strategy logic and makes **no** model call.
 
-## The gate — one grant, DryRun by default
+## The gate — the env opt-in, DryRun by default
 
-LP4's real submitter is constructed **only** behind the `live_trading` safety-flag grant via
-`safety_gate.select_gated` (the established chokepoint used by `live_pnl`/`live_order`/
-`account`). The default is an inert **`DryRunOrderAdapter`** that computes the request and
-returns a synthetic "would-submit" result **without opening a socket**. `MVP_LIVE_TRADING=real`
-alone fails closed without a valid local grant. Deleting the grant is a live revocation
-(`assert_authorization` re-reads at every egress).
+**Changed 2026-07-28 (Thomas).** This section read *"one grant, DryRun by default"* and
+described the submitter as built behind a per-machine `live_trading` safety-flag grant via
+`safety_gate.select_gated`, with `MVP_LIVE_TRADING=real` failing closed without a valid local
+grant and grant deletion serving as live revocation. **The grant is gone.** Step 1 of the
+approval packet below was annotated at the time; this section was not, and read as current
+until then. The reason for the removal is in `CRYPTO_LIVE_EXECUTION_V0.1.md` ("One env var is
+the whole switch") and the 2026-07-28 entry of `docs/BUILD_HISTORY.md`: a grant expiring while
+a position was open shut the CLOSE path too.
+
+LP4's real submitter is constructed **only** behind the live-trading environment opt-in via
+`safety_gate.select_env_gated` (`live_execution.build_order_adapter`), the chokepoint the rest
+of the live surface moved onto with it. The default is an inert **`DryRunOrderAdapter`** that
+computes the request and returns a synthetic "would-submit" result **without opening a socket**
+— unchanged, and still what an unset or unrecognized value selects. `MVP_LIVE_TRADING=real`
+alone now builds the capable adapter: no second factor, no expiry, no per-machine record.
+
+**Revocation changed with it, and that is the half an operator has to know.** Deleting a grant
+file was immediate. Clearing the variable is not — `assert_authorization` re-reads the env at
+every egress, but a running process's environment does not change under it, so unsetting it
+stops the *next* process and needs a container restart. It also shuts the CLOSE path, which can
+strand an open position. The halt of record is the file-based `console_cli kill`, which lands
+on a running scheduler at its next guard and is exempt on that path.
 
 This POST is **the first WRITE network egress in the repository.** Every read so far
 (`account`, `market_data`) is GET-only. That is the weight of this module.
@@ -86,8 +102,10 @@ LP4 uses its **own** order-capable API key, distinct from `account.py`'s read-on
 - The signed URL carries the signature in its query string, so a transport failure raises a
   **deliberately generic** error — the URL never reaches a message, log, or record.
 
-The `live_trading` **grant** (network + filesystem) authorizes the capability; these env vars
-carry the key. Both are required; either alone fails closed.
+The live-trading **environment opt-in** authorizes the capability; these env vars carry the key.
+Both are required; either alone fails closed. (This read "the `live_trading` grant (network +
+filesystem)" until 2026-07-28 — see the gate section above. The shape of the first requirement
+changed; that both are needed did not.)
 
 ## Rehearsal — straight to mainnet canary, no testnet (decision 2026-07-25)
 
@@ -194,12 +212,13 @@ A submit is confirmed by a **read**, never assumed from the POST response:
 
 ## LP4 re-runs the final guard (belt-and-suspenders)
 
-LP4 never trusts a caller's "it's approved." It gathers the live facts itself — the grant state,
+LP4 never trusts a caller's "it's approved." It gathers the live facts itself — the opt-in state,
 the runtime kill switch (`ControlStore`), the daily-loss breaker (`live_risk_snapshot`), the
 clean-canary count (`live_promotion.promotion_status`), today's submission count (`count_today`),
 and the registered budget (`resolve_live_order_limits`) — runs `evaluate_live_order_guard`, and
 **refuses to open a socket unless it PASSes**. The close path runs `evaluate_live_close_guard`
-(grant + phrase + reduceOnly) instead.
+(opt-in + phrase + reduceOnly) instead — the three the close path keeps, in
+`evaluate_live_close_guard`'s own words.
 
 ## The canary placement path
 
