@@ -47,7 +47,7 @@ from runtime.mvp_runtime.binding import bind_task_to_core  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io  # noqa: E402
 from runtime.mvp_runtime.crypto import live_correction as LC  # noqa: E402
 from runtime.mvp_runtime.crypto.live_pnl import read_live_outcomes_raw, state_dir  # noqa: E402
-from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
+from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.intake import build_task  # noqa: E402
 from runtime.mvp_runtime.permission import (  # noqa: E402
     build_live_outcome_correction_permission_decision,
@@ -166,6 +166,33 @@ def run_request(*, outcome_id: str, disposition: str, reason: str,
             "content_sha256": content, "preview": preview}
 
 
+def _assert_within_validity(approval: dict, approval_id: str, *, now: str) -> None:
+    """The approval's window — the DOOR's question, and only the door's.
+
+    `live_correction._verify_approval` deliberately does not check this: a correction is
+    verified on every read of the live history, forever, so expiring it there would mean the
+    correction stops applying a quarter of an hour after it was made and the whole history
+    fails closed from then on, permanently, for having been correctly authorized.
+
+    But "may this be written now" is a different question from "was this authorized", and the
+    window is the answer to the first. Without this the door accepted an approval that had
+    already expired — measured 2026-08-24, when a confirm landed six seconds from the boundary
+    and nothing would have stopped it six seconds later. The two questions now live in two
+    places, which is what the read path's docstring already claimed.
+
+    `APPROVAL_EXPIRED` rather than a new code: `verify_promotion_approval` refuses the same
+    condition under that name, and one condition should not answer to two.
+    """
+    expires_at = (approval.get("validity") or {}).get("expires_at")
+    if not isinstance(expires_at, str):
+        raise ApprovalBlocked("APPROVAL_EXPIRED",
+                              f"approval {approval_id} carries no validity window")
+    if timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now):
+        raise ApprovalBlocked(
+            "APPROVAL_EXPIRED",
+            f"approval {approval_id} expired at {expires_at}; ask again with --request")
+
+
 def run_confirm(*, outcome_id: str, disposition: str, reason: str, approval_id: str,
                 corrected_by: str, root: Path | None = None, now: str | None = None) -> dict:
     """Verify the approval binds THIS correction, then append it. No escape hatch.
@@ -184,10 +211,12 @@ def run_confirm(*, outcome_id: str, disposition: str, reason: str, approval_id: 
         previous_record_sha256=None, now=now,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
+    approval = store.get(approval_id) or {}
     # The same check the read path will make on every read from now on, made once here so a
     # correction that would fail it is never written — a written-but-refused correction fails
     # the WHOLE live history closed, which is a far worse place to discover the mismatch.
-    LC._verify_approval(record, {approval_id: store.get(approval_id) or {}})
+    LC._verify_approval(record, {approval_id: approval})
+    _assert_within_validity(approval, approval_id, now=now)
     LC.append_correction(_corrections_path(root), record)
     return {"correction": record}
 

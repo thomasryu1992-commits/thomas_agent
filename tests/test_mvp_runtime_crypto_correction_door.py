@@ -63,9 +63,15 @@ class _Store:
         return self._records.get(approval_id)
 
 
-def _approval(record):
-    return {"status": "APPROVED", "approved_action_snapshot": {
+def _approval(record, expires_at="2026-08-24T03:15:00Z"):
+    """An approved record inside its window. The window is part of the fixture because the door
+    requires one — an approval with no window is refused, which `test_the_door_refuses_an_
+    approval_with_no_window_at_all` covers by stripping it."""
+    approval = {"status": "APPROVED", "approved_action_snapshot": {
         "action_type": LC.CORRECTION_ACTION_TYPE, "content_sha256": LC.content_sha256(record)}}
+    if expires_at is not None:
+        approval["validity"] = {"expires_at": expires_at}
+    return approval
 
 
 def _confirm(monkeypatch, root, store, **kwargs):
@@ -243,3 +249,60 @@ def test_the_listing_prints_a_row_that_has_no_figures(capsys, monkeypatch):
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("?? a BTCUSDT recorded ? USDT / ?R")
     assert "+398.0272R" in out[1] and "-0.8871R" in out[1]
+
+
+# --- the window is the door's question, and only the door's -----------------------------------
+
+def test_the_door_refuses_an_expired_approval(tmp_path, monkeypatch):
+    """Measured 2026-08-24: a confirm landed six seconds from the boundary and nothing would
+    have stopped it six seconds later. `_verify_approval` cannot ask this — it runs on every
+    read, forever — so the door has to."""
+    _outcomes(tmp_path, GHOST)
+    record = LC.build_correction(
+        target=read_live_outcomes_raw(tmp_path)[0], disposition=LC.SUPERSEDE,
+        reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x", approval_id="approval_a",
+        corrected_by="thomas", previous_record_sha256=None, now=NOW)
+    store = _Store({"approval_a": _approval(record, expires_at="2026-08-24T02:59:59Z")})   # NOW is 03:00:00Z
+    with pytest.raises(MvpRuntimeError) as excinfo:
+        _confirm(monkeypatch, tmp_path, store, outcome_id="live_out_ghost",
+                 disposition=LC.SUPERSEDE, reason="x", approval_id="approval_a",
+                 corrected_by="thomas")
+    assert excinfo.value.reason_code == "APPROVAL_EXPIRED"
+    assert not (state_dir(tmp_path) / LC.CORRECTIONS_FILENAME).exists()
+
+
+def test_the_door_refuses_an_approval_with_no_window_at_all(tmp_path, monkeypatch):
+    _outcomes(tmp_path, GHOST)
+    record = LC.build_correction(
+        target=read_live_outcomes_raw(tmp_path)[0], disposition=LC.SUPERSEDE,
+        reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x", approval_id="approval_a",
+        corrected_by="thomas", previous_record_sha256=None, now=NOW)
+    with pytest.raises(MvpRuntimeError) as excinfo:
+        _confirm(monkeypatch, tmp_path,
+                 _Store({"approval_a": _approval(record, expires_at=None)}),
+                 outcome_id="live_out_ghost", disposition=LC.SUPERSEDE, reason="x",
+                 approval_id="approval_a", corrected_by="thomas")
+    assert excinfo.value.reason_code == "APPROVAL_EXPIRED"
+
+
+def test_an_unexpired_approval_still_writes(tmp_path, monkeypatch):
+    _outcomes(tmp_path, GHOST)
+    record = LC.build_correction(
+        target=read_live_outcomes_raw(tmp_path)[0], disposition=LC.SUPERSEDE,
+        reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x", approval_id="approval_a",
+        corrected_by="thomas", previous_record_sha256=None, now=NOW)
+    store = _Store({"approval_a": _approval(record)})
+    result = _confirm(monkeypatch, tmp_path, store, outcome_id="live_out_ghost",
+                      disposition=LC.SUPERSEDE, reason="x", approval_id="approval_a",
+                      corrected_by="thomas")
+    assert result["correction"]["corrected_result_R"] == pytest.approx(-0.8871, abs=1e-4)
+
+
+def test_the_expiry_check_is_the_doors_alone(tmp_path):
+    """The read path must keep applying a correction whose approval has since expired —
+    otherwise the live history fails closed forever for having been correctly authorized.
+    #770 pins this from the other side; this asserts the two are actually different code."""
+    import inspect
+    from runtime.mvp_runtime.crypto import live_correction
+    assert "expires_at" not in inspect.getsource(live_correction._verify_approval)
+    assert "expires_at" in inspect.getsource(DOOR._assert_within_validity)
