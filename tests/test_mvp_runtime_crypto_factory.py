@@ -248,11 +248,14 @@ def test_a_centre_on_the_bound_does_not_send_half_its_children_back_to_it():
     floor re-pinned ~50% of its own draws; the store's real elite centres included seven such
     rows (14.6% of the 48 it supplies for the trend space), two of them re-pinning above 50%."""
     rng = random.Random(19)
-    centre = {**factory._EXIT_BASE, "target_atr": factory._EXIT_PARAMS["target_atr"].lo}
-    draws = [mutate_params(centre, factory._EXIT_PARAMS, rng)["target_atr"] for _ in range(8000)]
-    on_floor = sum(1 for d in draws if abs(d - factory._EXIT_PARAMS["target_atr"].lo) < 1e-9)
+    floor = factory._EXIT_PARAMS["reward_risk"].lo
+    centre = {**factory._EXIT_BASE, "reward_risk": floor}
+    draws = [mutate_params(centre, factory._EXIT_PARAMS, rng)["reward_risk"] for _ in range(8000)]
+    on_floor = sum(1 for d in draws if abs(d - floor) < 1e-9)
     assert on_floor / len(draws) < 0.01, f"{on_floor / len(draws):.1%} re-pinned on the floor"
-    assert max(draws) > 3.0, "the fold must spread the overshoot INTO the space, not delete it"
+    span = (factory._EXIT_PARAMS["reward_risk"].hi - floor) * factory._MUTATION_SCALE
+    assert max(draws) > floor + span * 0.5, (
+        "the fold must spread the overshoot INTO the space, not delete it")
 
 
 def test_the_fold_keeps_the_aim_where_truncating_would_move_it():
@@ -264,11 +267,11 @@ def test_the_fold_keeps_the_aim_where_truncating_would_move_it():
     A mutation is a claim about a NEIGHBOURHOOD. The point of this change was to fix the shape
     of the draw without moving where it aims, and that is the half that is easy to lose."""
     rng = random.Random(23)
-    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["target_atr"]
+    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
-    assert abs(statistics.median(draws) - factory._EXIT_BASE["target_atr"]) < 0.25, (
+    assert abs(statistics.median(draws) - factory._EXIT_BASE["reward_risk"]) < 0.15, (
         f"median {statistics.median(draws):.3f} against a base of "
-        f"{factory._EXIT_BASE['target_atr']} — the draw has been re-aimed, not reshaped"
+        f"{factory._EXIT_BASE['reward_risk']} — the draw has been re-aimed, not reshaped"
     )
 
 
@@ -279,11 +282,17 @@ def test_the_low_target_region_survives_as_a_region_rather_than_a_spike():
     -0.2642R against -0.2502R for the rest of the band, so the spike was the WORSE half of the
     region it was standing in."""
     rng = random.Random(37)
-    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["target_atr"]
+    floor = factory._EXIT_PARAMS["reward_risk"].lo
+    draws = [mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
-    low = [d for d in draws if d < 2.0]
+    # The bottom of the drawn window rather than a fixed ratio: the base is 2.07 and the span
+    # 0.805, so the FLOOR itself is out of reach from the template centre (min draw ~1.27) and
+    # a fixed `floor + eps` band would be testing arithmetic instead of the distribution. What
+    # must survive is a REGION of near-target geometry, and the elite ratchet is what reaches
+    # below it — see `_EXIT_PARAMS`.
+    low = [d for d in draws if d < factory._EXIT_BASE["reward_risk"] - 0.45]
     assert len(low) / len(draws) > 0.15, "the low band has been squeezed out, not un-spiked"
-    on_floor = sum(1 for d in low if abs(d - 1.6) < 1e-9)
+    on_floor = sum(1 for d in low if abs(d - floor) < 1e-9)
     assert on_floor / len(low) < 0.05, (
         f"{on_floor / len(low):.1%} of the low band is still the single pinned value"
     )
@@ -2576,6 +2585,67 @@ def test_the_stop_floor_holds_and_the_base_sits_inside_it():
     assert min(draws) >= stop.lo and max(draws) <= stop.hi
 
 
+def test_the_stop_ceiling_leaves_room_the_old_one_truncated():
+    """The ceiling opened 2.0 -> 3.0 (Thomas 2026-08-25), and the property is REACH.
+
+    `span = (hi - lo) * _MUTATION_SCALE`, so the old ceiling capped the template half at
+    1.73 — every spec in the store sits under that number because no draw could pass it, not
+    because higher scored worse. Measured on a 1h stop sweep with the reward:risk HELD FIXED
+    (target scaled with the stop, so only the geometry moves), net expectancy went -0.162R to
+    -0.032R per trade and the per-spec optima sat at 2.6-3.2. Under the old space that region
+    was unreachable, so the search could not have found it however well it worked.
+
+    Pinned as an inequality rather than as the number 3.0: what must not regress is that a
+    spec can be drawn meaningfully above where the store stops, and that the pair the space
+    can now mint stays inside what `validate_strategy` admits."""
+    stop = factory._EXIT_PARAMS["stop_atr"]
+    base = factory._EXIT_BASE["stop_atr"]
+    reach = base + (stop.hi - stop.lo) * factory._MUTATION_SCALE
+    assert reach > 2.0, (
+        f"the template half reaches only {reach:.2f} — the region the sweep found optima in "
+        "is still truncated, so widening the ceiling bought nothing"
+    )
+    assert stop.hi <= factory.STOP_ATR_RANGE[1]
+
+
+def test_widening_the_stop_no_longer_drags_the_target_distribution_with_it():
+    """The reason the ceiling could not move under the old parameterisation, kept as a guard.
+
+    With `target_atr` drawn independently and `_apply_reward_risk_floor` pushing it above
+    `MIN_REWARD_RISK x stop`, widening the stop's ceiling dragged the whole target
+    distribution up behind it: on the 2.0 -> 4.0 move the median target went 3.02 -> 3.28 and
+    the low band collapsed 17.5% -> 11.1%. Drawing the RATIO decouples them — the stop's
+    bounds cannot reach the ratio's draw at all — and this pins that a future widening stays
+    free of the same side effect.
+
+    Compares the aim under two stop ceilings on the same seed. The ratio must not move."""
+    import copy
+
+    def ratio_median(stop_hi):
+        space = copy.deepcopy(factory._EXIT_PARAMS)
+        space["stop_atr"] = ParamSpec(space["stop_atr"].lo, stop_hi)
+        rng = random.Random(97)
+        return statistics.median(
+            mutate_params(factory._EXIT_BASE, space, rng)["reward_risk"] for _ in range(8000))
+
+    narrow, wide = ratio_median(2.0), ratio_median(3.0)
+    assert abs(narrow - wide) < 1e-9, (
+        f"the ratio's aim moved {narrow:.4f} -> {wide:.4f} when only the STOP ceiling changed "
+        "— the two axes are coupled again"
+    )
+
+
+def test_the_fade_geometry_keeps_its_narrow_stop():
+    """The ceiling moved on the TREND geometry only, and the boundary is the fade's thesis.
+
+    A fade is complete when price returns to the mean — `_FADE_EXIT_BASE` pairs a short hold
+    with a near target for exactly that reason. A wide stop on a fade does not buy a cheaper
+    risk unit so much as a longer wait in a position whose premise has already failed, which
+    is the fade's own failure mode. Left narrow deliberately, and pinned so that a later
+    widening of the trend space does not carry it along by habit."""
+    assert factory._FADE_EXIT_PARAMS["stop_atr"].hi <= 2.0
+
+
 def test_fusion_cannot_carry_a_child_outside_the_space_it_mints_from():
     """The hole #420's `stop_atr` floor left open, found the day after it shipped.
 
@@ -2624,10 +2694,19 @@ def test_a_fused_parameter_and_a_mutated_one_obey_the_same_bounds():
     this test exists to deny. Only the `max_holding_bars` floor actually moves; the fade space
     is strictly inside the trend space on the other two."""
     rng = random.Random(4)
-    for name, spec in factory._EXIT_PARAMS.items():
+    for name in factory._EXIT_LEGAL_RANGE:
         low, high = factory._EXIT_LEGAL_RANGE[name]
-        union_lo = min(space[name].lo for space in factory._GENERATION_SPACES)
-        union_hi = max(space[name].hi for space in factory._GENERATION_SPACES)
+        if name == "target_atr":
+            # Derived from (stop_atr, reward_risk) since 2026-08-25, so its "space" is the
+            # product's range — the same union question, asked of a parameter that is no
+            # longer drawn. See `_fused_exit_param`.
+            union_lo = min(s["stop_atr"].lo * s["reward_risk"].lo for s in factory._GENERATION_SPACES)
+            union_hi = max(s["stop_atr"].hi * s["reward_risk"].hi for s in factory._GENERATION_SPACES)
+            spec = factory.ParamSpec(union_lo, union_hi)
+        else:
+            spec = factory._EXIT_PARAMS[name]
+            union_lo = min(space[name].lo for space in factory._GENERATION_SPACES)
+            union_hi = max(space[name].hi for space in factory._GENERATION_SPACES)
         # Legal but below every generation space: clamped up to the union floor.
         assert factory._fused_exit_param(name, low, low) == (
             int(round(union_lo)) if spec.integer else round(union_lo, 4))
@@ -3044,16 +3123,20 @@ def test_the_fade_space_can_never_draw_a_reward_risk_the_validator_refuses():
     This is why the fade target floor is 2.0: it equals the stop ceiling, and the property is
     arithmetic rather than lucky. It is asserted on the BOUNDS first, because a draw-based test
     alone would pass on a space that is merely unlikely to violate it."""
-    stop = factory._FADE_EXIT_PARAMS["stop_atr"]
-    target = factory._FADE_EXIT_PARAMS["target_atr"]
-    assert target.lo >= stop.hi * factory.MIN_REWARD_RISK, (
-        f"target floor {target.lo} is below stop ceiling {stop.hi} — some draws are unmintable"
+    ratio = factory._FADE_EXIT_PARAMS["reward_risk"]
+    assert ratio.lo >= factory.MIN_REWARD_RISK, (
+        f"ratio floor {ratio.lo} is below MIN_REWARD_RISK — some draws are unmintable"
     )
+    # And the other end: the pair is drawn independently, so the PRODUCT has to stay inside
+    # what the validator admits or the same attempt-burning returns from the top corner.
+    stop = factory._FADE_EXIT_PARAMS["stop_atr"]
+    assert stop.hi * ratio.hi <= factory.TARGET_ATR_RANGE[1]
 
     rng = random.Random(5)
     for _ in range(2000):
         drawn = factory.mutate_params(factory._FADE_EXIT_BASE, factory._FADE_EXIT_PARAMS, rng)
-        assert drawn["target_atr"] / drawn["stop_atr"] >= factory.MIN_REWARD_RISK
+        assert drawn["reward_risk"] >= factory.MIN_REWARD_RISK
+        assert drawn["stop_atr"] * drawn["reward_risk"] <= factory.TARGET_ATR_RANGE[1]
 
 
 def test_the_fade_bases_sit_strictly_inside_their_bounds():
@@ -3221,83 +3304,107 @@ def test_retired_parents_are_gone_from_every_bucket_not_just_the_ranking():
 
 
 def test_no_generation_space_can_draw_a_reward_risk_the_validator_refuses():
-    """`validate_strategy` refuses `target_atr / stop_atr < MIN_REWARD_RISK` and `mutate_params`
-    draws every other parameter independently, so before 2026-08-04 the trend space proposed
-    pairs the validator then refused: 4.71% of 200,000 draws at `_EXIT_BASE`, minimum drawn R:R
-    0.925. Each one spends an attempt against `_MAX_ATTEMPTS_PER_SPEC` and biases what survives
-    toward the high-target corner, the only corner never refused.
+    """`validate_strategy` refuses `target_atr / stop_atr < MIN_REWARD_RISK`, and before
+    2026-08-04 the trend space proposed pairs it then refused — 4.71% of 200,000 draws at
+    `_EXIT_BASE`, minimum drawn R:R 0.925 — because `target_atr` and `stop_atr` were drawn
+    independently. Each refusal spends an attempt against `_MAX_ATTEMPTS_PER_SPEC` and biases
+    what survives toward the high-target corner, the only corner never refused.
 
-    Asserted over EVERY space in `_GENERATION_SPACES` rather than the trend one, because the
-    property belongs to `mutate_params` now and the next space added must inherit it.
+    **Since 2026-08-25 the ratio IS the drawn parameter, so this is structural rather than
+    arithmetic**: its floor is `MIN_REWARD_RISK` and no draw can land under it, from any
+    centre. Asserted on the BOUNDS first for that reason, then over draws from adverse
+    centres — the half of every batch that `generate_batch` centres on `elite_base_params`
+    can sit anywhere a prior accepted candidate did, and a test that only drew from the
+    template base would have called the OLD space clean too.
 
-    The adverse centres are the point of the test, not decoration. `generate_batch` centres half
-    of every batch on `elite_base_params`, which returns a prior ACCEPTED candidate's params, so
-    any accepted draw is a reachable centre — and measured over 400 of them the refusal rate ran
-    to 36.9% at the worst (centre stop=1.7185, target=1.7627) with 9.5% of centres above 20%.
-    A test that only draws from the template base would have called that space clean."""
+    The ceiling is the other half and is new with the ratio: the pair is still drawn
+    independently, so `stop_atr x reward_risk` has to stay inside `TARGET_ATR_RANGE` or the
+    same attempt-burning returns from the top corner instead of the bottom."""
+    for space in factory._GENERATION_SPACES:
+        ratio = space["reward_risk"]
+        assert ratio.lo >= factory.MIN_REWARD_RISK
+        assert space["stop_atr"].hi * ratio.hi <= factory.TARGET_ATR_RANGE[1]
+
     rng = random.Random(23)
     for space in factory._GENERATION_SPACES:
-        stop, target = space["stop_atr"], space["target_atr"]
-        centres = [
-            {"stop_atr": stop.hi, "target_atr": target.lo},          # the worst legal corner
-            {"stop_atr": stop.hi, "target_atr": target.hi},
-            {"stop_atr": stop.lo, "target_atr": target.lo},
-            {"stop_atr": (stop.lo + stop.hi) / 2, "target_atr": (target.lo + target.hi) / 2},
+        adverse = [
+            {"stop_atr": space["stop_atr"].hi, "reward_risk": space["reward_risk"].lo,
+             "max_holding_bars": space["max_holding_bars"].lo},
+            {"stop_atr": space["stop_atr"].lo, "reward_risk": space["reward_risk"].hi,
+             "max_holding_bars": space["max_holding_bars"].hi},
         ]
-        for centre in centres:
-            for _ in range(1500):
-                drawn = factory.mutate_params(centre, {k: space[k] for k in ("stop_atr", "target_atr")}, rng)
-                assert drawn["target_atr"] / drawn["stop_atr"] >= factory.MIN_REWARD_RISK, (
-                    f"drew R:R {drawn['target_atr'] / drawn['stop_atr']:.4f} from centre {centre}"
-                )
-                assert target.lo <= drawn["target_atr"] <= target.hi, (
-                    "the repair pushed the target outside the space it is drawn from"
-                )
+        for centre in adverse:
+            for _ in range(2000):
+                drawn = factory.mutate_params(centre, space, rng)
+                target = drawn["stop_atr"] * drawn["reward_risk"]
+                assert drawn["reward_risk"] >= factory.MIN_REWARD_RISK
+                assert factory.TARGET_ATR_RANGE[0] <= target <= factory.TARGET_ATR_RANGE[1]
 
 
-def test_the_reward_risk_floor_redraws_the_target_instead_of_pinning_it_to_the_stop():
-    """The cheaper repair — clamp the target up to the stop — satisfies the validator and puts
-    **4.71%** of trend draws on R:R exactly 1.0, the worst ratio the space is allowed to hold.
-    Measured over 40 generations of the elite loop that concentration holds at ~4.2% rather than
-    compounding, so it is a standing bias and not a spiral; it is still the whole of the refused
-    mass parked on one edge. Redrawing leaves 0.005%.
+def test_the_reward_risk_floor_is_inert_because_the_pair_can_no_longer_be_drawn_illegal():
+    """What replaced the redraw, and why the redraw is still in the file.
 
-    Pinned as a distribution, because both repairs pass an assertion that only checks the ratio
-    is legal — which is exactly what makes the difference between them easy to lose later."""
+    `_apply_reward_risk_floor` existed because `target_atr` was drawn independently of
+    `stop_atr` and the pair could land under `MIN_REWARD_RISK`. Clamping the target to the
+    stop would have parked 4.7% of every batch on R:R exactly 1.0 — one value, one rule hash,
+    mass on an edge — so it redrew above the floor instead and left 0.005% there.
+
+    Since 2026-08-25 the ratio is what is drawn and its floor IS `MIN_REWARD_RISK`, so no
+    draw reaches the function at all: the mass at the floor is now zero by construction
+    rather than small by repair. Asserted as a distribution for the same reason the redraw
+    was — a legality check passes under either design, which is what makes the difference
+    easy to lose.
+
+    The function stays because it is `mutate_params`' contract to any space that draws a
+    `target_atr` against a `stop_atr`, not a property of the two spaces that no longer do."""
     rng = random.Random(29)
     draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
              for _ in range(20000)]
-    ratios = [d["target_atr"] / d["stop_atr"] for d in draws]
+    ratios = [d["reward_risk"] for d in draws]
     at_floor = sum(1 for r in ratios if abs(r - factory.MIN_REWARD_RISK) < 1e-9) / len(ratios)
-    assert at_floor < 0.005, (
-        f"{at_floor:.2%} of draws sit on R:R exactly {factory.MIN_REWARD_RISK} — the target is "
-        "being clamped to the stop rather than redrawn above it"
+    assert at_floor == 0.0, (
+        f"{at_floor:.2%} of draws sit on R:R exactly {factory.MIN_REWARD_RISK} — the ratio's "
+        "own floor should make that unreachable, not merely rare"
     )
+    assert min(ratios) >= factory.MIN_REWARD_RISK
+
+    # Still correct for a space that DOES draw a target against a stop.
+    legacy = {"stop_atr": factory.ParamSpec(1.2, 2.0),
+              "target_atr": factory.ParamSpec(1.6, 8.0)}
+    out = {"stop_atr": 1.9, "target_atr": 1.6}
+    factory._apply_reward_risk_floor(
+        out, {"stop_atr": 1.45, "target_atr": 3.0}, legacy, random.Random(3), scale=0.35)
+    assert out["target_atr"] >= 1.9 * factory.MIN_REWARD_RISK
 
 
-def test_the_reward_risk_floor_keeps_the_low_target_region_it_could_have_deleted():
-    """The obvious fix was `target_atr.lo = stop_atr.hi`, as `_FADE_EXIT_PARAMS` is built. It was
-    NOT taken for the trend space and this pins that, because it is one edit to undo by accident.
+def test_the_trend_ratio_floor_is_not_raised_to_delete_the_near_target_region():
+    """The obvious tidy-up was to lift the trend ratio's floor the way `_FADE_EXIT_PARAMS`
+    holds a narrower band. It was NOT taken, and this pins that, because it is one edit to
+    undo by accident.
 
-    Two measured reasons. The region is not dead: bucketed on the candidate store by holdout
-    R/trade, target<2.0 is the least negative band (-0.2642 pinned at 1.6, -0.2502 in 1.6-2.0,
-    against -0.3059 at 2.0-3.0 and -0.3216 above 3.0), and paired within (family, timeframe,
-    symbol) it runs +0.0174R median in favour of the low band, 34 of 58 cells — weak, but not the
-    direction that justifies deleting it. And the bound cannot move alone: at `target.lo` 2.0 the
-    base 3.0 pins 26.2% of draws on the new floor, and clearing that needs base 4.1, which moves
-    the median target 3.00 -> 4.10 and the median R:R 2.07 -> 2.83. That is a re-aiming of the
-    trend geometry, not a consistency fix."""
-    target = factory._EXIT_PARAMS["target_atr"]
-    assert target.lo < factory._EXIT_PARAMS["stop_atr"].hi, (
-        "the trend target floor was raised to the stop ceiling — that deletes target<2.0, which "
-        "measures as the least negative band in the store; see the note above `_EXIT_PARAMS`"
+    Measured on the candidate store by holdout R/trade, the near-target region is the least
+    negative band (-0.2642 pinned at target 1.6, -0.2502 in 1.6-2.0, against -0.3059 at
+    2.0-3.0 and -0.3216 above 3.0), and paired within (family, timeframe, symbol) it runs
+    +0.0174R median in favour of the low band, 34 of 58 cells — weak, but not the direction
+    that justifies deleting it.
+
+    Under the ratio axis the region is reached by RATIO rather than by an absolute target, so
+    the assertion moved with it: the floor stays at `MIN_REWARD_RISK`, and the drawn window
+    keeps real mass in its lower half rather than aiming past it."""
+    ratio = factory._EXIT_PARAMS["reward_risk"]
+    assert ratio.lo == factory.MIN_REWARD_RISK, (
+        "the trend ratio floor was raised off MIN_REWARD_RISK — that deletes the near-target "
+        "region, which measures as the least negative band in the store; see `_EXIT_PARAMS`"
     )
 
     rng = random.Random(31)
-    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)
+    draws = [factory.mutate_params(factory._EXIT_BASE, factory._EXIT_PARAMS, rng)["reward_risk"]
              for _ in range(20000)]
-    low = sum(1 for d in draws if d["target_atr"] < 2.0) / len(draws)
-    assert low > 0.15, f"only {low:.1%} of draws reach target<2.0 — the region is being squeezed out"
+    below_base = sum(1 for d in draws if d < factory._EXIT_BASE["reward_risk"]) / len(draws)
+    assert below_base > 0.40, (
+        f"only {below_base:.1%} of draws sit below the centre — the window has been aimed past "
+        "the near-target region rather than spanning it"
+    )
 
 
 def test_the_reward_risk_floor_leaves_an_unsatisfiable_draw_alone_for_the_validator():
