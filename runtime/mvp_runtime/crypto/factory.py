@@ -416,12 +416,94 @@ class StrategyTemplate:
 # drawn target 3.12 -> 3.86. Folding takes both halves to 0.0% and moves the median target by
 # 0.10. See `_fold_into_bounds` for the full table and for the ratchet that makes the elite half
 # the half that matters.
+# **The CEILING opens to 4.0 (Thomas 2026-08-25), and the floor and base do not move.**
+#
+# The floor's measurement above is about the bottom of the range and still holds. Nothing had
+# ever measured the top, and 2.0 was not chosen against evidence — it is the value the space
+# was born with, while `validate_strategy` has always admitted `STOP_ATR_RANGE` up to 5.0. So
+# the region 2.0-5.0 is not a rejected hypothesis; it is an untested one, and the reason it
+# stayed untested is arithmetic: `span = (hi - lo) * _MUTATION_SCALE` = 0.28, so a base of 1.45
+# could not draw past **1.73**. Every spec in the store sits under that number because no draw
+# could reach higher, not because higher scored worse.
+#
+# What made it worth testing: a fixed ~10-16 bps round trip is a FRACTION of 1R = stop_atr x
+# ATR, so widening the stop shrinks friction in R terms. Measured 2026-08-25 by replaying
+# stored 1h specs on one snapshot with the stop swept and the reward:risk PRESERVED (target
+# scaled with the stop, so the signal is held still and only the geometry moves):
+#
+#   stop_atr     1.2      1.6      2.0      2.6      3.2      4.0
+#   cost/trade   0.151    0.130    0.114    0.098    0.086    0.074
+#   net/trade   -0.162   -0.059   -0.039   -0.062   -0.032   -0.032
+#
+# **Two things that reading gets wrong if it stops at the aggregate.** First, cost does NOT
+# fall as 1/stop: `cost x stop` runs 0.181 -> 0.296 across that sweep (+63%, reproduced on a
+# second, weaker spec set), because a wider stop holds longer — more funding, and fewer trades
+# closing inside the window. An extrapolation that assumes the product is constant predicts a
+# break-even that does not arrive. Second, the aggregate hides the result that matters: it
+# mixes specs whose best stop is 3.2 (`breakdown_short`, +0.122 -> +0.276) with specs it makes
+# WORSE (`volatility_expansion_short`, +0.149 -> +0.020). The axis is per-spec, so what the
+# ceiling buys is not "wider is better" — it is that the search can reach a spec's own optimum
+# where today it is truncated at 1.73.
+#
+# **This does not open the fast timeframes, and is not offered as doing so.** At 15m friction
+# is 0.28R against a gross edge of 0.09R and no stop multiple closes a 3x gap — the same
+# conclusion the floor's comment reached, re-measured and unchanged.
+#
+# The BASE stays at 1.45 deliberately. Widening `hi` alone already triples the span (0.28 ->
+# 0.98), so the template half reaches 2.43 and the 1.2-1.6 band the floor measured falls from
+# ~73% to ~41% of draws — a dilution, not an abandonment. Moving the base as well would spend
+# the region that HAS evidence to reach one that has none. Above 2.43 the ratchet is the elite
+# half: `generate_batch` centres half of every batch on `elite_base_params`, so a wide-stop
+# spec that actually scores walks the centre up a generation at a time, and one that does not
+# never leaves 2.43. That is the property this change is buying — an opened space that the
+# evidence walks into, rather than a new number asserted into the geometry.
+# **The exit pair is drawn as (stop, reward:risk), not (stop, target)** — Thomas 2026-08-25,
+# and the ceiling above is what made the old parameterisation untenable rather than merely
+# awkward.
+#
+# `target_atr` was drawn independently of `stop_atr` with `_apply_reward_risk_floor` pushing it
+# up when the pair came out illegal. That is fine while the stop barely moves, and it breaks as
+# soon as the stop's range opens: the floor tracks the stop, so widening the ceiling drags the
+# whole target distribution up behind it. Measured on the 2.0 -> 4.0 move: the low-target band
+# (< 2.0) fell 17.5% -> 11.1% of draws and the median target rose 3.02 -> 3.28, re-aiming a
+# distribution the fold exists to hold still. Raising `target_atr`'s own ceiling makes it worse
+# (8.6% at 10.0), because the squeeze is the coupling, not the bound.
+#
+# It also could not express the thing the sweep measured. Widening the stop while HOLDING the
+# reward:risk is what turned -0.162R/trade into -0.032R at 1h; widening the stop alone
+# compresses the ratio instead, which is the confound that cancels the gain. Under
+# (stop, reward_risk) that operation is one axis moving and the other held — the search can
+# now reach it, where before it could only stumble into it.
+#
+# What the ratio's own bounds preserve: `lo` is `MIN_REWARD_RISK`, so the floor
+# `_apply_reward_risk_floor` used to enforce by redrawing is now structural and no draw can be
+# illegal. `hi` is 5.0, which is where the old space topped out in practice (target 8.0 over a
+# 1.6 stop). The base is 3.0 / 1.45 = 2.07, the ratio the old base described, so the aim is
+# carried over rather than re-chosen.
+#
+# `target_atr` is still what the SPEC stores and what every consumer reads — the change is to
+# how the pair is drawn, not to the geometry's representation, so stored specs, rule hashes and
+# `validate_strategy` are untouched. Elite centres migrate themselves: `_project` keeps only the
+# keys the template declares and falls back to the base for the rest, so a stored `mint_params`
+# carrying `target_atr` contributes its stop and takes the template's ratio for one generation,
+# after which the store carries `reward_risk` of its own.
+# **The bounds are chosen so the PRODUCT is legal, which is what makes the pair safe to draw
+# independently.** `target_atr = stop_atr x reward_risk` and `validate_strategy` refuses a
+# target outside `TARGET_ATR_RANGE` (0.5, 10.0), so a corner of the box has to stay inside it:
+# 3.0 x 3.3 = 9.9. Two independent draws whose product is bounded need no clamp and no redraw —
+# the old floor's `_apply_reward_risk_floor` existed precisely because the old pair COULD be
+# drawn illegal, and the whole point of this axis is that it cannot.
+#
+# 3.0 rather than the 4.0 a stop-only widening would have taken: the ceilings trade against
+# each other under that product, and the sweep's optima sit at stop 2.6-3.2 WITH ratio 2.7-3.1,
+# so a box that reaches ratio 3.3 and stop 3.0 covers them where stop 4.0 x ratio 2.5 would
+# clip the ratio instead. Both are far past the 1.73 the old space could actually draw.
 _EXIT_PARAMS = {
-    "stop_atr": ParamSpec(1.2, 2.0),
-    "target_atr": ParamSpec(1.6, 8.0),
+    "stop_atr": ParamSpec(1.2, 3.0),
+    "reward_risk": ParamSpec(MIN_REWARD_RISK, 3.3),
     "max_holding_bars": ParamSpec(12, 48, integer=True),
 }
-_EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
+_EXIT_BASE = {"stop_atr": 1.45, "reward_risk": 2.07, "max_holding_bars": 24}
 
 # The exit geometry above is a TREND geometry, and until now every family shared it. A target
 # reaching 8x ATR over a 48-bar hold is "ride it while it runs" — which is the right shape for
@@ -467,12 +549,17 @@ _EXIT_BASE = {"stop_atr": 1.45, "target_atr": 3.0, "max_holding_bars": 24}
 # this way never reaches the fold — the same relationship this space already has with
 # `_apply_reward_risk_floor`, and worth keeping for the same reason: a property that holds by
 # construction is stronger than one restored by a repair.
+# The fade geometry moves to the same axis and keeps its own numbers. Its ratio spans
+# [1.0, 2.4] against the trend space's [1.0, 5.0] — 3.4 over a 1.4 stop is where the old
+# target bound topped out — and its STOP ceiling deliberately does not move with the trend
+# space's: a fade is complete when price returns to the mean, so a wide stop buys a longer
+# wait in a position whose premise has already failed rather than a cheaper risk unit.
 _FADE_EXIT_PARAMS = {
     "stop_atr": ParamSpec(1.4, 2.0),
-    "target_atr": ParamSpec(2.0, 3.4),
+    "reward_risk": ParamSpec(MIN_REWARD_RISK, 2.4),
     "max_holding_bars": ParamSpec(4, 16, integer=True),
 }
-_FADE_EXIT_BASE = {"stop_atr": 1.7, "target_atr": 2.7, "max_holding_bars": 10}
+_FADE_EXIT_BASE = {"stop_atr": 1.7, "reward_risk": 1.59, "max_holding_bars": 10}
 
 # Every generation space the factory mints from. `_fused_exit_param` clamps against the UNION
 # of these rather than against `_EXIT_PARAMS` alone — see there for why the union is the honest
@@ -2117,7 +2204,15 @@ def _apply_reward_risk_floor(
     out: dict[str, float], base_params: dict[str, float], param_space: dict[str, ParamSpec],
     rng: random.Random, *, scale: float,
 ) -> None:
-    """Redraw ``target_atr`` above ``MIN_REWARD_RISK x`` the drawn ``stop_atr``, in place."""
+    """Redraw ``target_atr`` above ``MIN_REWARD_RISK x`` the drawn ``stop_atr``, in place.
+
+    **Inert for every space in the library since 2026-08-25**, when the exit pair moved to
+    (stop, reward_risk) and the floor became structural — a ratio drawn from a range whose
+    `lo` IS `MIN_REWARD_RISK` cannot produce an illegal pair, so there is nothing to redraw.
+    Kept rather than deleted because it is not a property of the exit spaces: it is what
+    `mutate_params` owes any space that draws a `target_atr` against a `stop_atr`, and a
+    future one may. It returns immediately when `target_atr` is not a drawn parameter.
+    """
     target_spec = param_space.get("target_atr")
     if target_spec is None or "stop_atr" not in param_space:
         return
@@ -2429,7 +2524,10 @@ def build_spec_dict(
         "exit_rules": {
             "stop_model": "atr",
             "stop_atr": params["stop_atr"],
-            "target_atr": params["target_atr"],
+            # Derived, not drawn — see `_EXIT_PARAMS`. Rounded to the same 4-decimal grid
+            # `mutate_params` puts every other parameter on, so a spec's exit geometry is
+            # comparable across mints however it was reached.
+            "target_atr": round(params["stop_atr"] * params["reward_risk"], 4),
             "max_holding_bars": int(params["max_holding_bars"]),
         },
         "risk_constraints": {"max_risk_per_trade_R": 1.0},
@@ -3892,14 +3990,24 @@ def _fused_exit_param(name: str, first: float, second: float) -> float | int:
     does move is an imported parent below 12 bars, which used to be lifted to 12 and now passes
     through — correctly, because 4-16 is now a region the factory does mint.
     """
-    spec = _EXIT_PARAMS[name]
     low, high = _EXIT_LEGAL_RANGE[name]
-    lo = min(space[name].lo for space in _GENERATION_SPACES)
-    hi = max(space[name].hi for space in _GENERATION_SPACES)
+    if name == "target_atr":
+        # `target_atr` is DERIVED from the drawn pair since 2026-08-25, so the region the
+        # factory "currently explores" for it is the product's range rather than a bound of
+        # its own. Same union over the generation spaces as every other exit parameter, and
+        # the same question — a fused midpoint is held to what the factory could have minted.
+        lo = min(s["stop_atr"].lo * s["reward_risk"].lo for s in _GENERATION_SPACES)
+        hi = max(s["stop_atr"].hi * s["reward_risk"].hi for s in _GENERATION_SPACES)
+        integer = False
+    else:
+        spec = _EXIT_PARAMS[name]
+        lo = min(space[name].lo for space in _GENERATION_SPACES)
+        hi = max(space[name].hi for space in _GENERATION_SPACES)
+        integer = spec.integer
     midpoint = (first + second) / 2
     if low <= first <= high and low <= second <= high:
         midpoint = max(lo, min(hi, midpoint))
-    return int(round(midpoint)) if spec.integer else round(midpoint, 4)
+    return int(round(midpoint)) if integer else round(midpoint, 4)
 
 
 def fuse_specs(

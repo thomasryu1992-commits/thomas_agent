@@ -249,8 +249,12 @@ def _spec_of(template, conditions, symbol="BTCUSDT"):
         "strategy_family": template.family, "symbol_scope": [symbol],
         "timeframe": template.timeframe, "direction": template.direction,
         "entry_rules": {"operator": "AND", "conditions": conditions},
+        # `target_atr` is derived from (stop_atr, reward_risk) since 2026-08-25 — same
+        # expression the mint path uses, so this helper keeps building the spec the template
+        # would actually produce.
         "exit_rules": {"stop_model": "atr", "stop_atr": template.base_params["stop_atr"],
-                       "target_atr": template.base_params["target_atr"],
+                       "target_atr": round(template.base_params["stop_atr"]
+                                           * template.base_params["reward_risk"], 4),
                        "max_holding_bars": int(template.base_params["max_holding_bars"])},
         "risk_constraints": {"max_risk_per_trade_R": 1.0},
     })
