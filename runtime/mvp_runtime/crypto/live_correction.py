@@ -9,16 +9,21 @@ changed a money figure, on the one ledger whose purpose is to be unchangeable.
 So a correction is a record of its own, in a file of its own, and the outcome read path applies
 it without the outcome file moving. Design: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`.
 
-**This module refuses; it does not write.** Producing a correction is a governed action
-(`--request` → Thomas `/approve` → `--confirm`), and its door is a separate increment. What is
-here is the half that has to exist first: until a bad correction can be refused, there must be
-no way to write one.
+**Refusing comes first, and most of this module is refusal.** `read_corrections` and
+`apply_corrections` verify; `append_correction` is the only writer, and it re-verifies the whole
+chain before it appends. Producing a correction is a governed action — `--request` → Thomas
+`/approve` → `--confirm` — and the door that drives it is `scripts/correct_live_outcome.py`,
+deliberately outside this module so the live-history read path does not import the approval
+machinery. (Through #770 this module genuinely could not write; `append_correction` arrived with
+the door in #772 and this paragraph did not, which is the kind of drift the docstring above the
+next function exists to prevent.)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -44,6 +49,8 @@ CORRECTION_TARGET_CHANGED = "CORRECTION_TARGET_CHANGED"
 CORRECTION_AMBIGUOUS = "CORRECTION_AMBIGUOUS"
 CORRECTION_UNAPPROVED = "CORRECTION_UNAPPROVED"
 CORRECTION_ARITHMETIC_DISAGREES = "CORRECTION_ARITHMETIC_DISAGREES"
+
+_REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 
 VOID = "VOID"
 SUPERSEDE = "SUPERSEDE"
@@ -71,6 +78,14 @@ def content_sha256(record: Mapping[str, Any]) -> str:
     It DOES include `corrects_record_sha256`: an approval that named only the outcome id would
     still verify after the target row changed underneath it, which is exactly the drift rule 2
     exists to stop.
+
+    **`reason_code` is deliberately outside, and adding it later would be a breaking change.**
+    This hash is never stored on the correction — it is recomputed on every read and compared
+    against the approval. So a field added to it retroactively invalidates every correction
+    already written: rule 4 refuses them, and refusing a correction fails the WHOLE live history
+    closed. Measured 2026-08-24 — `live_corr_1710c5ca552d3e88c668`'s approval carries
+    `sha256:53e3aba…`, computed without it. What belongs here is the effect on money; the label
+    for why does not change what the runtime reads.
     """
     return integrity.sha256_record({
         "action_type": CORRECTION_ACTION_TYPE,
@@ -97,6 +112,15 @@ def _validate_shape(record: Mapping[str, Any], lineno: int) -> None:
     if record["schema_version"] != SCHEMA_VERSION:
         raise ToolError(CORRECTION_SCHEMA_INVALID,
                         f"correction line {lineno} is {record['schema_version']!r}, not {SCHEMA_VERSION!r}")
+    code = record["reason_code"]
+    # Shape, not a closed set. An enum here would be guessing the taxonomy from one known cause,
+    # and a cause this door cannot name is a cause an operator works around by mislabelling.
+    # What the format buys is that codes group: `OUTCOME_QUANTITY_MISMATCH` and
+    # `Outcome quantity mismatch` would not, and prose in this field makes it prose forever.
+    if not (isinstance(code, str) and _REASON_CODE.fullmatch(code)):
+        raise ToolError(CORRECTION_SCHEMA_INVALID,
+                        f"correction line {lineno} has reason_code {code!r}; expected "
+                        f"SCREAMING_SNAKE_CASE, 3-64 chars")
     if record["disposition"] not in (VOID, SUPERSEDE):
         raise ToolError(CORRECTION_SCHEMA_INVALID,
                         f"correction line {lineno} has disposition {record['disposition']!r}")

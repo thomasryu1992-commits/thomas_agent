@@ -329,3 +329,45 @@ def test_the_settlement_dedupe_reads_the_file_not_the_corrected_view(tmp_path):
     _write(tmp_path, correction)
     ids = {o.get("settlement_id") for o in read_live_outcomes_raw(tmp_path)}
     assert "settle_ghost" in ids
+
+
+# --- the reason code is the operator's, and it has to group ----------------------------------
+
+@pytest.mark.parametrize("code", ["", "R", "lowercase", "Has Spaces", "1LEADING_DIGIT", None,
+                                  "X" * 65])
+def test_a_reason_code_that_would_not_group_is_refused(tmp_path, code):
+    """Prose in this field makes it prose forever — `OUTCOME_QUANTITY_MISMATCH` and
+    `Outcome quantity mismatch` do not group."""
+    _outcomes(tmp_path, GHOST)
+    _write(tmp_path, _rehash(_correction(tmp_path, GHOST), reason_code=code))
+    with pytest.raises(ToolError) as excinfo:
+        LC.read_corrections(state_dir(tmp_path) / LC.CORRECTIONS_FILENAME)
+    assert excinfo.value.reason_code == LC.CORRECTION_SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("code", ["OUTCOME_QUANTITY_MISMATCH", "ABC", "A1_B2"])
+def test_a_well_formed_reason_code_passes(tmp_path, code):
+    """Shape, not a closed set — an enum would be guessing the taxonomy from one known cause."""
+    _outcomes(tmp_path, GHOST)
+    _write(tmp_path, _rehash(_correction(tmp_path, GHOST), reason_code=code))
+    assert LC.read_corrections(
+        state_dir(tmp_path) / LC.CORRECTIONS_FILENAME)[0]["reason_code"] == code
+
+
+def test_the_reason_code_is_not_in_the_approval_content_hash(tmp_path):
+    """Adding a field to this hash retroactively invalidates every correction already written —
+    rule 4 refuses them, and one refused correction fails the WHOLE live history closed.
+    `live_corr_1710c5ca552d3e88c668`'s approval was minted without it."""
+    _outcomes(tmp_path, GHOST)
+    base = _correction(tmp_path, GHOST)
+    assert LC.content_sha256(base) == LC.content_sha256(
+        _rehash(base, reason_code="SOMETHING_ELSE_ENTIRELY"))
+
+
+def test_the_module_docstring_no_longer_claims_it_cannot_write():
+    """It gained `append_correction` in #772 and the docstring did not follow."""
+    import inspect
+    from runtime.mvp_runtime.crypto import live_correction
+    doc = inspect.getdoc(live_correction) or ""
+    assert "does not write" not in doc
+    assert callable(live_correction.append_correction)
