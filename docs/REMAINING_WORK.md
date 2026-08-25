@@ -4736,6 +4736,28 @@ What that cost is measurable: every capability the weekly loop needs shipped by 
       package schema's `published_url` has no writer. The proposal calls this the loop's one
       weak point and it still is.
 
+**Decision 1 is HELD by Thomas, 2026-08-25: do not register the schedule until Thomas raises
+it.** Not undecided — decided, and the decision is "not yet". Anything that surfaces "register
+the content lane" as a proposal (a weekly digest, another session, a backlog sweep) is
+re-proposing something already answered.
+
+Nothing needs undoing to hold it: the lane has no schedule row, so it is already completely
+inert and costs nothing. Everything below stays true and stays parked.
+
+Two things worth knowing while it is held, because both were checked on 2026-08-24 and neither
+is obvious from the code:
+
+- **`filesystem_write` (decision 2) is not required to run this lane.** `run_content_ideation`
+  writes the package to the LEDGER and returns `"written": False,
+  "filesystem_write": "not enabled on this deployment"`. The lane produces a
+  `blog_content_package` row, not a file. Opening the flag buys the §4b paste files, nothing
+  more — so decision 2 is not a prerequisite for decision 1, which reading the checklist above
+  would suggest.
+- **`already_written` is never supplied.** `select_target_keyword` takes it, but the scheduler
+  passes only `{seeds, source_ref}`, so the exclusion list is always empty and the same seed
+  set picks the same winner every week. Whoever registers this will want `target=<keyword>` in
+  the request, or a remove+add each week — `scheduler_cli` has no `update`.
+
 **Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
 schedule row is a state write, and no row means no fire.
 
