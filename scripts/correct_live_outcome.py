@@ -7,11 +7,13 @@
     2) Ask Thomas (stores the PENDING approval; performs nothing):
         python -m scripts.correct_live_outcome --request \
             --outcome-id live_out_e56cf310dcc07d9c6edd --disposition SUPERSEDE \
+            --reason-code OUTCOME_QUANTITY_MISMATCH \
             --reason "Close-All exit filled 0.002 against a book of 0.001."
 
     3) Execute the approved correction (the approval is VERIFIED, never consumed):
         python -m scripts.correct_live_outcome --confirm \
             --outcome-id live_out_e56cf310dcc07d9c6edd --disposition SUPERSEDE \
+            --reason-code OUTCOME_QUANTITY_MISMATCH \
             --reason "..." --approval-id approval_abc123 --corrected-by thomas
 
 **The corrected figures are never arguments.** A `DERIVED` correction recomputes them from
@@ -126,7 +128,7 @@ def run_list(*, root: Path | None = None) -> list[dict]:
     return rows
 
 
-def run_request(*, outcome_id: str, disposition: str, reason: str,
+def run_request(*, outcome_id: str, disposition: str, reason_code: str, reason: str,
                 root: Path | None = None, now: str | None = None) -> dict:
     """Build + store + audit the ask. Performs nothing."""
     now = now or timeutil.utc_now_iso()
@@ -135,7 +137,7 @@ def run_request(*, outcome_id: str, disposition: str, reason: str,
     # changes between ask and confirm, the rebuilt record hashes differently and the approval
     # stops verifying — which is rule 2 asserted one door earlier, at the ask.
     preview = LC.build_correction(
-        target=target, disposition=disposition, reason_code="OUTCOME_QUANTITY_MISMATCH",
+        target=target, disposition=disposition, reason_code=reason_code,
         reason=reason, approval_id="pending", corrected_by="pending",
         previous_record_sha256=None, now=now,
     )
@@ -193,8 +195,9 @@ def _assert_within_validity(approval: dict, approval_id: str, *, now: str) -> No
             f"approval {approval_id} expired at {expires_at}; ask again with --request")
 
 
-def run_confirm(*, outcome_id: str, disposition: str, reason: str, approval_id: str,
-                corrected_by: str, root: Path | None = None, now: str | None = None) -> dict:
+def run_confirm(*, outcome_id: str, disposition: str, reason_code: str, reason: str,
+                approval_id: str, corrected_by: str, root: Path | None = None,
+                now: str | None = None) -> dict:
     """Verify the approval binds THIS correction, then append it. No escape hatch.
 
     `promote_strategy_candidates` has `--without-approval` because a pool change can be a
@@ -206,7 +209,7 @@ def run_confirm(*, outcome_id: str, disposition: str, reason: str, approval_id: 
     now = now or timeutil.utc_now_iso()
     target = _target(outcome_id, root)
     record = LC.build_correction(
-        target=target, disposition=disposition, reason_code="OUTCOME_QUANTITY_MISMATCH",
+        target=target, disposition=disposition, reason_code=reason_code,
         reason=reason, approval_id=approval_id, corrected_by=corrected_by,
         previous_record_sha256=None, now=now,
     )
@@ -230,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--confirm", action="store_true", help="execute an approved correction")
     parser.add_argument("--outcome-id")
     parser.add_argument("--disposition", choices=[LC.VOID, LC.SUPERSEDE])
+    parser.add_argument("--reason-code",
+                        help="why this row is wrong, SCREAMING_SNAKE_CASE "
+                             "(e.g. OUTCOME_QUANTITY_MISMATCH)")
     parser.add_argument("--reason")
     parser.add_argument("--approval-id")
     parser.add_argument("--corrected-by")
@@ -250,15 +256,19 @@ def main(argv: list[str] | None = None) -> int:
                       f"recorded {_num(row['recorded_realized_pnl_usdt'])} USDT"
                       f" / {_num(row['recorded_result_R'])}R{extra}")
             return EXIT_OK
+        # `--reason-code` has no default on purpose. A default is how every correction through
+        # this door came to carry OUTCOME_QUANTITY_MISMATCH regardless of cause — the ledger
+        # would then say the same thing about every row it ever corrects.
         missing = [n for n, v in (("--outcome-id", args.outcome_id),
                                   ("--disposition", args.disposition),
+                                  ("--reason-code", args.reason_code),
                                   ("--reason", args.reason)) if not v]
         if missing:
             sys.stderr.write(f"BLOCKED: {', '.join(missing)} required\n")
             return EXIT_USAGE
         if args.request:
             prepared = run_request(outcome_id=args.outcome_id, disposition=args.disposition,
-                                   reason=args.reason)
+                                   reason_code=args.reason_code, reason=args.reason)
             request = prepared["approval_request"]
             print(f"approval requested: {request.get('approval_id')}")
             print(f"  content_sha256 {prepared['content_sha256']}")
@@ -272,8 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write("BLOCKED: --confirm needs --approval-id and --corrected-by\n")
             return EXIT_USAGE
         result = run_confirm(outcome_id=args.outcome_id, disposition=args.disposition,
-                             reason=args.reason, approval_id=args.approval_id,
-                             corrected_by=args.corrected_by)
+                             reason_code=args.reason_code, reason=args.reason,
+                             approval_id=args.approval_id, corrected_by=args.corrected_by)
         print(f"correction appended: {result['correction']['correction_id']}")
         return EXIT_OK
     except MvpRuntimeError as exc:

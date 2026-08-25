@@ -77,6 +77,7 @@ def _approval(record, expires_at="2026-08-24T03:15:00Z"):
 def _confirm(monkeypatch, root, store, **kwargs):
     monkeypatch.setattr(DOOR, "ApprovalStore", lambda *a, **k: store)
     monkeypatch.setattr(DOOR.ApprovalStore, "default", staticmethod(lambda *a, **k: store), raising=False)
+    kwargs.setdefault("reason_code", "OUTCOME_QUANTITY_MISMATCH")
     return DOOR.run_confirm(root=root, now=NOW, **kwargs)
 
 
@@ -169,12 +170,12 @@ def test_the_append_rechains_onto_the_current_tip(tmp_path, monkeypatch):
     _outcomes(tmp_path, GHOST, CLEAN)
     rows = read_live_outcomes_raw(tmp_path)
     first = LC.build_correction(target=rows[0], disposition=LC.SUPERSEDE,
-                                reason_code="R", reason="x", approval_id="a",
+                                reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x", approval_id="a",
                                 corrected_by="thomas", previous_record_sha256=None, now=NOW)
     LC.append_correction(state_dir(tmp_path) / LC.CORRECTIONS_FILENAME, first)
     # built against a stale tip (None) on purpose
     second = LC.build_correction(target=rows[1], disposition=LC.SUPERSEDE,
-                                 reason_code="R", reason="x", approval_id="b",
+                                 reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x", approval_id="b",
                                  corrected_by="thomas", previous_record_sha256=None, now=NOW)
     LC.append_correction(state_dir(tmp_path) / LC.CORRECTIONS_FILENAME, second)
     stored = LC.read_corrections(state_dir(tmp_path) / LC.CORRECTIONS_FILENAME)
@@ -187,14 +188,14 @@ def test_the_append_refuses_onto_an_already_broken_chain(tmp_path):
     _outcomes(tmp_path, GHOST, CLEAN)
     rows = read_live_outcomes_raw(tmp_path)
     path = state_dir(tmp_path) / LC.CORRECTIONS_FILENAME
-    broken = LC.build_correction(target=rows[0], disposition=LC.SUPERSEDE, reason_code="R",
+    broken = LC.build_correction(target=rows[0], disposition=LC.SUPERSEDE, reason_code="OUTCOME_QUANTITY_MISMATCH",
                                  reason="x", approval_id="a", corrected_by="thomas",
                                  previous_record_sha256="sha256:not-the-genesis", now=NOW)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(broken, ensure_ascii=False) + "\n", encoding="utf-8")
     with pytest.raises(ToolError) as excinfo:
         LC.append_correction(path, LC.build_correction(
-            target=rows[1], disposition=LC.SUPERSEDE, reason_code="R", reason="x",
+            target=rows[1], disposition=LC.SUPERSEDE, reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x",
             approval_id="b", corrected_by="thomas", previous_record_sha256=None, now=NOW))
     assert excinfo.value.reason_code == LC.CORRECTION_TAMPERED
 
@@ -220,11 +221,11 @@ def test_the_content_hash_moves_when_the_target_row_does(tmp_path):
     against another."""
     _outcomes(tmp_path, GHOST)
     target = read_live_outcomes_raw(tmp_path)[0]
-    first = LC.build_correction(target=target, disposition=LC.SUPERSEDE, reason_code="R",
+    first = LC.build_correction(target=target, disposition=LC.SUPERSEDE, reason_code="OUTCOME_QUANTITY_MISMATCH",
                                 reason="x", approval_id="a", corrected_by="t",
                                 previous_record_sha256=None, now=NOW)
     moved = LC.build_correction(target=dict(target, record_sha256="sha256:moved"),
-                                disposition=LC.SUPERSEDE, reason_code="R", reason="x",
+                                disposition=LC.SUPERSEDE, reason_code="OUTCOME_QUANTITY_MISMATCH", reason="x",
                                 approval_id="a", corrected_by="t",
                                 previous_record_sha256=None, now=NOW)
     assert LC.content_sha256(first) != LC.content_sha256(moved)
@@ -306,3 +307,13 @@ def test_the_expiry_check_is_the_doors_alone(tmp_path):
     from runtime.mvp_runtime.crypto import live_correction
     assert "expires_at" not in inspect.getsource(live_correction._verify_approval)
     assert "expires_at" in inspect.getsource(DOOR._assert_within_validity)
+
+
+def test_the_door_requires_a_reason_code(monkeypatch, capsys):
+    """No default, on purpose: a default is how every correction through this door came to
+    carry OUTCOME_QUANTITY_MISMATCH regardless of cause."""
+    monkeypatch.setattr(DOOR, "assert_not_foreign_root_run", lambda *a, **k: None)
+    code = DOOR.main(["--request", "--outcome-id", "x", "--disposition", "SUPERSEDE",
+                      "--reason", "because"])
+    assert code != 0
+    assert "--reason-code" in capsys.readouterr().err
