@@ -3,8 +3,12 @@
 **Status:** Active (MVP runtime). **Normative authority:** None — `governance/GOVERNANCE_POLICY.yaml`
 and `runtime/mvp_runtime/` remain authoritative; this describes how to run the deployed services.
 
-The MVP deploys as **two services from one image**, sharing one mounted state volume
-(`docker-compose.yml` at the repo root is the committed source of this topology):
+The MVP deploys as **eight services from one image**, sharing one mounted state volume
+(`docker-compose.yml` at the repo root is the committed source of this topology). The three
+loop services are described here; the **pipeline-worker** (the execution half of the dispatch
+door, holding the model/search/Naver credentials) and the **four assistant doors**
+(`read`/`switch`/`dispatch`/`knowledge` bridges, holding no credentials at all) have their own
+sections further down:
 
 - **operator** — the control-channel loop (`runtime/mvp_runtime/operator_cli.py`): poll
   Telegram → verify the registered operator → run the single-agent pipeline → reply. The same
@@ -84,16 +88,24 @@ the fixed names `thomas-operator`, `thomas-scheduler`, and `thomas-scheduler-mai
 hand-run container claiming
 either name blocks the next `docker compose up` with a name conflict, and two people
 deploying by different routes on one host means each redeploy silently replaces the
-other's containers. One host, one deploy command, run from a checkout on the commit you
-want live:
+other's containers. One host, one deploy procedure — the candidate-tag procedure in the
+root `CLAUDE.md` (its authority; this is the summary), run from a **clean `origin/main`
+worktree**, never `--build` from the primary checkout. The primary checkout on a busy day
+sits on another session's branch: measured 2026-08-29, a redeploy from a stale branch
+checkout silently reverted the merged assurance flags (#769) for five hours — the drift
+check in the assurance section below is what caught it.
 
 ```bash
-docker compose up -d --build
+docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>   # BEFORE building
+git -C /root/thomas_agent worktree add /root/thomas-deploy-<PR#> origin/main --detach
+docker build -t thomas-agent-runtime:candidate-<PR#> /root/thomas-deploy-<PR#>
+docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
+docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest      # re-check running==latest first
+docker compose -p thomas_agent --env-file /root/thomas_agent/.env \
+  -f /root/thomas-deploy-<PR#>/docker-compose.yml up -d
 ```
 
-This is safe to run from any session: it rebuilds `thomas-agent-runtime` from the current
-checkout and recreates both services in place. The mounted state volume is untouched, so
-no history is lost. If a name conflict is reported, an out-of-band container exists —
+The mounted state volume is untouched, so no history is lost. If a name conflict is reported, an out-of-band container exists —
 `docker rm -f thomas-operator thomas-scheduler thomas-scheduler-maint` and re-run compose (their state is on the
 bind mount, not in the container). Confirm the commit you are on is a superset of whatever
 the running image carried before removing anything.
@@ -164,12 +176,12 @@ MVP_OPENROUTER_MODEL=openai/gpt-oss-20b:free
 ```
 
 ```bash
-docker compose up -d --build
-docker compose ps            # both healthy: thomas-operator + thomas-scheduler
+# deploy: candidate-tag procedure above
+docker compose ps            # all eight thomas-* services healthy
 docker compose logs -f scheduler
 ```
 
-With an empty `.env` both services run the network-free mock paths — a safe smoke test:
+With an empty `.env` the services run the network-free mock paths — a safe smoke test:
 every env var alone fails closed without its mounted safety-flag grant, so a bare checkout
 cannot open a network socket or write paper state. The crypto gates (`MVP_MARKET_DATA`,
 `MVP_PAPER_TRADING`, `MVP_LIQUIDATION_FEED`) belong to the **scheduler** service; the
@@ -388,7 +400,10 @@ Two policies cost a model call per task. They default OFF in the code and are tu
 line on a service's compose `command` — a deploy with a diff, not a behaviour that arrives with
 a rebuild. **Both are now on, on both services**, and the committed compose says so; the table
 records what each buys and what it costs, because turning one back off is the same one-line
-deploy in reverse.
+deploy in reverse. That is also why the drift check below is not optional: on 2026-08-29 a
+redeploy from a stale branch checkout reverted both flags for five hours with every container
+healthy, and the check's `validation=automatic-only, revise=off` output was the only signal —
+run it after every deploy.
 
 | flag | service | what it adds | cost |
 |---|---|---|---|
