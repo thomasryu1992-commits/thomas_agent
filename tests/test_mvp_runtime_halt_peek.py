@@ -21,6 +21,7 @@ What must hold, and each is a direction chosen once:
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, operator
 from runtime.mvp_runtime.control import ControlStore
@@ -111,11 +112,7 @@ def test_the_real_transport_peek_leaves_the_cursor_where_it_found_it(tmp_path, m
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     state_path = tmp_path / "offset.json"
     channel = TelegramChannel(
-        authorization=Authorization(
-            flags=operator._NETWORK_FLAGS, provider_id="telegram",
-            activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-            evidence_ref=".runtime_governance_state/evidence.md",
-        ),
+        authorization=make_gate_authorization(flags=operator._NETWORK_FLAGS, provider_id="telegram"),
         state_path=state_path,
     )
     calls: list[dict] = []

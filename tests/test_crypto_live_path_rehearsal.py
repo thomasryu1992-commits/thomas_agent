@@ -30,6 +30,7 @@ failure) belong to each stage's own suite and are not duplicated here.
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_entry, live_execution, live_filters, live_leg
 from runtime.mvp_runtime.crypto.account import AccountSnapshot
@@ -141,10 +142,7 @@ FLAT_ACCOUNT = AccountSnapshot(
     unrealized_pnl=0.0, positions=[], realized_windows={}, source="rehearsal", collected_at=NOW,
 )
 
-_LIVE_AUTH = Authorization(
-    flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_LIVE_AUTH = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
 
 # The shape `live_governance.prepare_live_order_governance` returns. Built here rather than
 # called, because preparing a real one needs a Core-bound task and this file must run on a

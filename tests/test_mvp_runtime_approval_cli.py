@@ -18,21 +18,17 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK
 from runtime.mvp_runtime.consumption import _CapableConsumer
 from runtime.mvp_runtime.intake import build_task
 from runtime.mvp_runtime.memory import CANDIDATE_SCOPE, CANDIDATE_STATUS, is_expired
-from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION, Authorization
+from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 from runtime.read_only_kernel import integrity
 
-from tests._helpers import requires_local_core
+from tests._helpers import requires_local_core, make_gate_authorization
 
 NOW = "2026-07-19T12:00:00Z"
 CONTENT = "구독 모델은 현금흐름 우선 프레이밍이 유효하다."
 
-GRANT = Authorization(
-    flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption",
-    activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+GRANT = make_gate_authorization(flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption")
 
 
 def _patch_defaults(monkeypatch, tmp_path):

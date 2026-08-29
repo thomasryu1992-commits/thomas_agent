@@ -15,6 +15,7 @@ a wrong one is worse than none.
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_leg
 from runtime.mvp_runtime.crypto.live_leg import exit_fill_from_history
@@ -347,11 +348,7 @@ def test_a_failed_book_clear_cannot_poison_the_history_on_the_re_settle(tmp_path
     guard, promotion, all down on one transient clear failure, repairable only by hand-editing
     the fsync'd money ledger. Pinned end to end: the re-settle writes nothing, says so,
     finishes the clear, and the history stays readable with exactly one row."""
-    ledger = RealLiveLedger(root=tmp_path, authorization=Authorization(
-        flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID,
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    ))
+    ledger = RealLiveLedger(root=tmp_path, authorization=make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID))
     store = _StoreClearFailsOnce()
 
     first = live_leg.settle_venue_closed_position(

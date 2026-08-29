@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
@@ -29,7 +30,7 @@ from runtime.mvp_runtime.crypto.paper import (
 
 CTX = PositionContext(venue="binance_futures", symbol="BTCUSDT", timeframe="1d")
 from runtime.mvp_runtime.errors import ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
 from runtime.mvp_runtime.store import CONTROL_FILE, LEDGER_REL, RECORDS_FILE, LedgerStore
 
@@ -38,10 +39,7 @@ from scripts.import_crypto_history import run_import
 NOW_DT = datetime(2026, 7, 22, 12, tzinfo=timezone.utc)
 NOW = "2026-07-22T12:00:00Z"
 
-_AUTH = Authorization(
-    flags=(FILESYSTEM_WRITE,), provider_id="paper_trading", activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="paper_trading")
 
 
 class FakeExchangeCollector:

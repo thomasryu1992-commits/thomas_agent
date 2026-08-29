@@ -17,6 +17,8 @@ import urllib.parse
 
 import pytest
 
+from tests._helpers import FakeResp as _FakeResp, make_gate_authorization
+
 from runtime.mvp_runtime.crypto import account as account_mod
 from runtime.mvp_runtime.crypto.account import (
     ACCOUNT_API_KEY_ENV,
@@ -39,29 +41,14 @@ from runtime.mvp_runtime.crypto.account import (
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto.live_pnl import venue_daily_realized_net
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, build_activation_record
 
 NOW = "2026-07-23T12:00:00Z"
 _SECRET = "super-secret-value-never-logged"
 
-_ACCOUNT_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,), provider_id=BINANCE_ACCOUNT, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_ACCOUNT_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=BINANCE_ACCOUNT)
 
 
-class _FakeResp:
-    def __init__(self, payload: str):
-        self._payload = payload.encode("utf-8")
-
-    def read(self):
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def _creds(monkeypatch):

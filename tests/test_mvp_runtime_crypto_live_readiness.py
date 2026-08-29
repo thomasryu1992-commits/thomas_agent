@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness
 from runtime.mvp_runtime.crypto import pool as pool_store
@@ -39,10 +40,7 @@ from runtime.mvp_runtime.safety_gate import Authorization
 
 NOW = "2026-07-23T12:00:00Z"
 
-_LIVE_AUTH = Authorization(
-    flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_LIVE_AUTH = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
 
 _LIVE_ENVS = (
     LIVE_TRADING_ENV, CONFIRMATION_ENV, "MVP_LIVE_MANUAL_KILL_SWITCH",

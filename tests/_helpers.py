@@ -27,3 +27,55 @@ LOCAL_POINTER = REPO_ROOT / DEFAULT_POINTER_REL
 # knowing before reading a green local run as full coverage.
 requires_local_core = pytest.mark.skipif(
     not LOCAL_POINTER.is_file(), reason="no local Core activation")
+
+
+class FakeResp:
+    """The canonical fake urlopen response body five transport-test files carried verbatim.
+
+    Two more files keep their own variants deliberately (their tests exercise a different
+    response surface); a variant belongs beside the test that needs it, a verbatim copy
+    does not.
+    """
+
+    def __init__(self, payload: str):
+        self._payload = payload.encode("utf-8")
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def patch_urlopen(monkeypatch, payload_or_exc):
+    """Route ``urllib.request.urlopen`` to a canned payload or a raised exception."""
+    def fake_urlopen(request, timeout):
+        if isinstance(payload_or_exc, Exception):
+            raise payload_or_exc
+        return FakeResp(payload_or_exc)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+
+def make_gate_authorization(*, flags, provider_id, **overrides):
+    """One gate ``Authorization`` for tests (named so pytest cannot collect it): the standard inert tail (``sha256:test``, a
+    far-future expiry, the state-dir evidence ref) under the caller's capability head.
+
+    Twenty-plus files carried the tail as a four-line literal; the next change to the
+    Authorization shape — a new required field, a different evidence rule — lands here
+    once instead of in every copy. ``overrides`` exists for the handful of tests that
+    deliberately vary the tail (a past expiry, a different hash).
+    """
+    from runtime.mvp_runtime.safety_gate import Authorization
+
+    fields = {
+        "flags": tuple(flags),
+        "provider_id": provider_id,
+        "activation_sha256": "sha256:test",
+        "expires_at": "2999-01-01T00:00:00Z",
+        "evidence_ref": ".runtime_governance_state/evidence.md",
+    }
+    fields.update(overrides)
+    return Authorization(**fields)

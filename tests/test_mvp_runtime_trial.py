@@ -28,7 +28,7 @@ from runtime.mvp_runtime.permission import (
     trial_content_sha256,
 )
 from runtime.mvp_runtime.planner import load_resolved_roles, select_candidate_role
-from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION, Authorization
+from runtime.mvp_runtime.safety_gate import APPROVAL_CONSUMPTION
 from runtime.mvp_runtime.store import LedgerStore
 from runtime.mvp_runtime.trial import (
     MockTrialProvider,
@@ -39,17 +39,13 @@ from runtime.mvp_runtime.trial import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-from tests._helpers import requires_local_core
+from tests._helpers import requires_local_core, make_gate_authorization
 
 NOW = "2026-07-22T03:00:00Z"
 LATER = "2026-07-22T03:10:00Z"
 TRIAL_REQUEST = "재택 물리치료 시장의 근거를 조사해줘"
 
-GRANT = Authorization(
-    flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption",
-    activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+GRANT = make_gate_authorization(flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption")
 
 VERIFICATION = approval.Verification(
     approved_by="Thomas", method="telegram_private_control_channel",

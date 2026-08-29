@@ -9,6 +9,7 @@ approval door), recovery is only ever WARNING/PROBATION → ACTIVE, and the one 
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto import paper, pool
@@ -24,14 +25,11 @@ from runtime.mvp_runtime.crypto.lifecycle import (
 )
 from runtime.mvp_runtime.crypto.paper import DryRunPaperStore, RealPaperStore
 from runtime.mvp_runtime.errors import ToolError
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 
 NOW = "2026-07-22T12:00:00Z"
 
-_AUTH = Authorization(
-    flags=(FILESYSTEM_WRITE,), provider_id="paper_trading", activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="paper_trading")
 
 
 def _outcomes(rs, strategy_id="S1"):

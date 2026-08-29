@@ -13,6 +13,8 @@ import urllib.error
 
 import pytest
 
+from tests._helpers import FakeResp as _FakeResp, patch_urlopen as _patch_urlopen, make_gate_authorization
+
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
@@ -32,13 +34,7 @@ NOW = "2026-07-15T09:00:00Z"
 API_ENV = "BRAVE_SEARCH_API_KEY"
 
 # A granted egress authorization (as select_search_tool would produce after the gate passes).
-_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,),
-    provider_id="brave_search",
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id="brave_search")
 
 
 class _ErrorTool:
@@ -162,26 +158,6 @@ def test_web_search_no_api_key_fails_closed(monkeypatch):
     assert exc.value.reason_code == "NO_API_KEY"
 
 
-class _FakeResp:
-    def __init__(self, payload: str):
-        self._payload = payload.encode("utf-8")
-
-    def read(self):
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _patch_urlopen(monkeypatch, payload_or_exc):
-    def fake_urlopen(request, timeout):
-        if isinstance(payload_or_exc, Exception):
-            raise payload_or_exc
-        return _FakeResp(payload_or_exc)
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
 
 _BRAVE_RESPONSE = json.dumps({
@@ -231,13 +207,7 @@ def test_web_search_malformed_response_fails_closed(monkeypatch):
 
 TAVILY_API_ENV = "TAVILY_API_KEY"
 
-_TAVILY_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,),
-    provider_id="tavily_search",
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_TAVILY_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id="tavily_search")
 
 _TAVILY_RESPONSE = json.dumps({
     "query": "시장 조사",
