@@ -19,12 +19,11 @@ and the module refuses a deployment that has not named its permitted peer uids. 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Any
 
 from . import pipeline_worker, socket_door
-from .cli_common import EXIT_OK, force_utf8_io, report_block
+from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
 from .errors import MvpRuntimeError
 from .programization import ProgramizationStore
@@ -95,8 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     path = Path(args.socket) if args.socket else pipeline_worker.socket_path()
 
-    try:
-        server = pipeline_worker.open_door(
+    return serve_door_forever(
+        label="PIPELINE_WORKER", path=path,
+        open_server=lambda: pipeline_worker.open_door(
             path,
             control_store=ControlStore.default(),
             ledger=LedgerStore.default(),
@@ -105,30 +105,15 @@ def main(argv: list[str] | None = None) -> int:
             resolve_providers=_resolve_providers,
             independent_validation=_validation_policy(args.independent_validation),
             revise=bool(args.revise),
-        )
-    except MvpRuntimeError as exc:
-        return report_block(exc)
-    except OSError as exc:
-        sys.stderr.write(f"PIPELINE_WORKER: cannot listen on {path}: {exc}\n")
-        return 1
-
-    sys.stderr.write(
-        f"PIPELINE_WORKER: listening on {path} "
-        f"(kinds={sorted(pipeline_worker._ALLOWED_KINDS)}, "
-        f"actor={pipeline_worker.ASSISTANT_ACTOR}, "
-        f"validation={args.independent_validation or 'automatic-only'}, "
-        f"revise={'on' if args.revise else 'off'}, "
-        f"{socket_door.describe_admission(server)})\n"
+        ),
+        banner=lambda server: (
+            f"kinds={sorted(pipeline_worker._ALLOWED_KINDS)}, "
+            f"actor={pipeline_worker.ASSISTANT_ACTOR}, "
+            f"validation={args.independent_validation or 'automatic-only'}, "
+            f"revise={'on' if args.revise else 'off'}, "
+            f"{socket_door.describe_admission(server)}"
+        ),
     )
-    sys.stderr.flush()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        path.unlink(missing_ok=True)
-    return EXIT_OK
 
 
 if __name__ == "__main__":

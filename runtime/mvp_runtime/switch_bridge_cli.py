@@ -16,14 +16,12 @@ verb that needs a signature.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from . import socket_door, switch_bridge
 from .approval_store import ApprovalStore
-from .cli_common import EXIT_OK, force_utf8_io, report_block
+from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
-from .errors import MvpRuntimeError
 from .store import LedgerStore
 
 
@@ -46,36 +44,21 @@ def main(argv: list[str] | None = None) -> int:
     force_utf8_io()
     args = _parse_args(argv)
     path = Path(args.socket) if args.socket else switch_bridge.socket_path()
-
-    try:
-        server = switch_bridge.open_door(
+    return serve_door_forever(
+        label="SWITCH_BRIDGE", path=path,
+        open_server=lambda: switch_bridge.open_door(
             path,
             control_store=ControlStore.default(),
             ledger=LedgerStore.default(),
             approval_store=ApprovalStore.default(),
-        )
-    except MvpRuntimeError as exc:
-        return report_block(exc)
-    except OSError as exc:
-        sys.stderr.write(f"SWITCH_BRIDGE: cannot listen on {path}: {exc}\n")
-        return 1
-
-    sys.stderr.write(
-        f"SWITCH_BRIDGE: listening on {path} "
-        f"(verbs={sorted(switch_bridge._ALLOWED_COMMANDS)}, "
-        f"domains={sorted(switch_bridge._ALLOWED_DOMAINS)}, "
-        f"actor={switch_bridge.ASSISTANT_ACTOR}, "
-        f"{socket_door.describe_admission(server)})\n"
+        ),
+        banner=lambda server: (
+            f"verbs={sorted(switch_bridge._ALLOWED_COMMANDS)}, "
+            f"domains={sorted(switch_bridge._ALLOWED_DOMAINS)}, "
+            f"actor={switch_bridge.ASSISTANT_ACTOR}, "
+            f"{socket_door.describe_admission(server)}"
+        ),
     )
-    sys.stderr.flush()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        path.unlink(missing_ok=True)
-    return EXIT_OK
 
 
 if __name__ == "__main__":

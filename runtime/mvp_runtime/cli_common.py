@@ -149,3 +149,31 @@ def store_and_present_approval_request(permission_decision: Any, request: Any, *
     sys.stdout.write(approval.request_message(request, permission_decision, history=history) + "\n")
     if history_failure:
         sys.stdout.write(history_failure)
+
+def serve_door_forever(*, label: str, path: Any, open_server: Any, banner: Any) -> int:
+    """Run one unix-socket door for its lifetime — the tail every door CLI repeated.
+
+    ``open_server`` opens the door (raising ``MvpRuntimeError`` for a governed refusal,
+    ``OSError`` for a socket the process cannot bind); ``banner(server)`` renders the inside
+    of the startup line's parentheses. The lifecycle is the part worth one copy: a fix here
+    — say, SIGTERM handling for a clean compose stop — reaches all five doors at once, where
+    it used to need five edits and could silently miss one with nothing to say so.
+    """
+    try:
+        server = open_server()
+    except MvpRuntimeError as exc:
+        return report_block(exc)
+    except OSError as exc:
+        sys.stderr.write(f"{label}: cannot listen on {path}: {exc}\n")
+        return 1
+
+    sys.stderr.write(f"{label}: listening on {path} ({banner(server)})\n")
+    sys.stderr.flush()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        path.unlink(missing_ok=True)
+    return EXIT_OK
