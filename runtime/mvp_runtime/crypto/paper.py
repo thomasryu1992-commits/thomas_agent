@@ -59,7 +59,7 @@ REAL_PAPER = "real"
 PAPER_PROVIDER_ID = "paper_trading"
 _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
-STATE_REL = ".runtime_governance_state/crypto"
+from .state import STATE_REL, state_dir  # noqa: E402  (one root for both trading planes; re-exported for this module's many importers)
 PAPER_PROVENANCE = "mvp_paper_kernel"
 # See live_pnl.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
 from .cost import CostModel, apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
@@ -1238,9 +1238,7 @@ def build_outcome_record(
 
 
 # --- state: ungated reads, gated writes ---------------------------------------
-
-def state_dir(root: Path | None = None) -> Path:
-    return (root if root is not None else _repo_root()) / STATE_REL
+# (`state_dir` lives in `state.py` now — one root for both trading planes.)
 
 
 # --- position contexts: one slot per (venue, symbol, timeframe) ----------------

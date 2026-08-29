@@ -69,6 +69,7 @@ from .market_data import (
     ORDER_BOOK_LEVELS,
     POSITIONING_PERIOD_SECONDS,
 )
+from . import refresh_marks
 from .paper import state_dir
 
 ORDERBOOK_FILENAME = "orderbook_depth.jsonl"
@@ -220,16 +221,7 @@ def read_refresh_marks(root: Path | None = None) -> dict[str, str]:
     the asymmetry is starker than it was there — an over-ask costs one request and is discarded as
     a duplicate; an under-ask costs a period that no later run can recover.
     """
-    path = refresh_marks_path(root)
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): str(v) for k, v in data.items()}
+    return refresh_marks.read_marks(refresh_marks_path(root))
 
 
 def record_refresh_attempt(symbol: str, *, now: str, root: Path | None = None) -> None:
@@ -241,14 +233,10 @@ def record_refresh_attempt(symbol: str, *, now: str, root: Path | None = None) -
     name = _mark_key(symbol)
     if not name:
         return
-    directory = state_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = refresh_marks_path(root)
-    with locked(path.with_suffix(".lock"), code="ORDERBOOK_MARKS_LOCKED",
-                label="order-book refresh marks"):
-        marks = read_refresh_marks(root)
-        marks[name] = now
-        path.write_text(json.dumps(marks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    refresh_marks.record_attempt(
+        refresh_marks_path(root), name, now=now,
+        lock_code="ORDERBOOK_MARKS_LOCKED", label="order-book refresh marks",
+    )
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[str, str]:

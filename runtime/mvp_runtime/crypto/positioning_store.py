@@ -67,6 +67,7 @@ from runtime.read_only_kernel import integrity
 from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
+from . import refresh_marks
 from .market_data import (
     FACTORY_DEPTH_DAYS,
     POSITIONING_PERIOD_SECONDS,
@@ -145,16 +146,7 @@ def read_refresh_marks(root: Path | None = None) -> dict[str, str]:
     whatever coverage it already had, and a store that quietly stops growing is worse than one
     that asks the vendor once too often.
     """
-    path = refresh_marks_path(root)
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): str(v) for k, v in data.items()}
+    return refresh_marks.read_marks(refresh_marks_path(root))
 
 
 def record_refresh_attempt(symbol: str, series: str, *, now: str, root: Path | None = None) -> None:
@@ -168,14 +160,10 @@ def record_refresh_attempt(symbol: str, series: str, *, now: str, root: Path | N
     name = str(symbol).strip().upper()
     if not name or series not in POSITIONING_SERIES:
         return
-    directory = state_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = refresh_marks_path(root)
-    with locked(path.with_suffix(".lock"), code="POSITIONING_MARKS_LOCKED",
-                label="positioning refresh marks"):
-        marks = read_refresh_marks(root)
-        marks[_mark_key(name, series)] = now
-        path.write_text(json.dumps(marks, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    refresh_marks.record_attempt(
+        refresh_marks_path(root), _mark_key(name, series), now=now,
+        lock_code="POSITIONING_MARKS_LOCKED", label="positioning refresh marks",
+    )
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -330,13 +318,7 @@ def is_due(last_attempt: str | None, now: str) -> bool:
     Unparseable mark → due, because a marker that cannot be read must not be able to stop
     accumulation; the append is idempotent, so being wrong costs one redundant request.
     """
-    if not last_attempt:
-        return True
-    try:
-        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(last_attempt)).total_seconds()
-    except (ValueError, TypeError):
-        return True
-    return elapsed >= REFRESH_AFTER_SECONDS
+    return refresh_marks.attempt_is_due(last_attempt, now, refresh_after_seconds=REFRESH_AFTER_SECONDS)
 
 
 def refresh_rows_for(newest: str | None, now: str) -> int:

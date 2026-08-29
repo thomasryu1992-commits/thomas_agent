@@ -1568,3 +1568,14 @@ class TestPaperCooldownIntegration:
         )
         assert summary["settled"]["close_reason"] == "take_profit"
         assert cooldown.expiry(CTX.key) is None
+
+
+def test_the_crypto_state_root_has_one_definition():
+    """`paper` and `live_pnl` each carried their own byte-identical STATE_REL/state_dir, and a
+    change to either would have silently re-rooted half the crypto state away from the other
+    half. Both re-export `state.py`'s now; identity, not equality, is what pins that."""
+    from runtime.mvp_runtime.crypto import live_pnl, state
+
+    assert paper.state_dir is state.state_dir
+    assert live_pnl.state_dir is state.state_dir
+    assert paper.STATE_REL == live_pnl.STATE_REL == state.STATE_REL
