@@ -1081,3 +1081,112 @@ def test_hyperliquid_sends_one_post_with_a_time_window(monkeypatch):
     assert body["req"]["interval"] == "1h"
     # 101 hourly bars of span (the extra one covers the forming bar that gets dropped).
     assert body["req"]["endTime"] - body["req"]["startTime"] == 101 * 60 * 60_000
+
+
+# === the no-backward-progress guard, pinned on every paging walk =====================
+#
+# `collect` has carried its stuck-venue pin since the guard landed; the other three
+# backward-paging walks carried the same two guard lines with the same comment and no
+# pin — exactly the shape a copy loses silently. Restructuring the four walks into one
+# helper was considered and declined: their accumulate shapes, page params and transport
+# postures genuinely differ (two classify, two plain-ToolError by the R3 rule), so the
+# guard's PROPERTY is what gets pinned instead, per walk.
+
+
+class _StuckFundingVenue:
+    """Ignores endTime — always the same newest funding page."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, request, timeout):
+        self.calls += 1
+        return _FakeResp(json.dumps([
+            {"fundingTime": 1_000_000_000_000 + i * 28_800_000, "fundingRate": "0.0001"}
+            for i in range(10)
+        ]))
+
+
+def test_funding_refuses_to_spin_without_backward_progress(monkeypatch):
+    venue = _StuckFundingVenue()
+    monkeypatch.setattr("urllib.request.urlopen", venue)
+    rows = BinanceFuturesCollector(authorization=_AUTH).funding_history(
+        "BTCUSDT", records=30, timeout_seconds=5
+    )
+    assert venue.calls == 2, "second identical page must stop the walk, not the page budget"
+    assert len(rows) == 10
+
+
+class _StuckKlineVenue:
+    """Ignores endTime — always the same newest kline page."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, request, timeout):
+        self.calls += 1
+        base = 1_000_000_000_000
+        return _FakeResp(json.dumps([
+            _kline(base + i * 86_400_000, base + (i + 1) * 86_400_000, 100.0 + i)
+            for i in range(10)
+        ]))
+
+
+def test_derivative_klines_refuse_to_spin_without_backward_progress(monkeypatch):
+    venue = _StuckKlineVenue()
+    monkeypatch.setattr("urllib.request.urlopen", venue)
+    rows = BinanceFuturesCollector(authorization=_AUTH).derivative_price_klines(
+        "BTCUSDT", "1d", kind="mark", limit=30, timeout_seconds=5
+    )
+    assert venue.calls == 2, "second identical page must stop the walk, not the page budget"
+    assert len(rows) == 10
+
+
+class _StuckKlineVenue:
+    """Ignores endTime — always the same newest kline page."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, request, timeout):
+        self.calls += 1
+        base = 1_000_000_000_000
+        return _FakeResp(json.dumps([
+            _kline(base + i * 86_400_000, base + (i + 1) * 86_400_000, 100.0 + i)
+            for i in range(10)
+        ]))
+
+
+def test_derivative_klines_refuse_to_spin_without_backward_progress(monkeypatch):
+    venue = _StuckKlineVenue()
+    monkeypatch.setattr("urllib.request.urlopen", venue)
+    rows = BinanceFuturesCollector(authorization=_AUTH).derivative_price_klines(
+        "BTCUSDT", "1d", kind="mark", limit=30, timeout_seconds=5
+    )
+    assert venue.calls == 2, "second identical page must stop the walk, not the page budget"
+    assert len(rows) == 10
+
+
+class _StuckPositioningVenue:
+    """Ignores endTime — always the same newest positioning page."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, request, timeout):
+        self.calls += 1
+        return _FakeResp(json.dumps([
+            {"timestamp": 1_000_000_000_000 + i * 3_600_000,
+             "longAccount": "0.6", "shortAccount": "0.4"}
+            for i in range(10)
+        ]))
+
+
+def test_positioning_refuses_to_spin_without_backward_progress(monkeypatch):
+    venue = _StuckPositioningVenue()
+    monkeypatch.setattr("urllib.request.urlopen", venue)
+    rows = BinanceFuturesCollector(authorization=_AUTH).positioning_history(
+        "BTCUSDT", series="top_position", period="1h", limit=30, timeout_seconds=5
+    )
+    assert venue.calls == 2, "second identical page must stop the walk, not the page budget"
+    assert len(rows) == 10

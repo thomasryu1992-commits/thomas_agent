@@ -1232,7 +1232,12 @@ class BinanceFuturesCollector:
             self._authorization, required_flags=_NETWORK_FLAGS,
             provider_id=self.provider_id, now=timeutil.utc_now_iso(),
         )
-        collected: list[dict[str, Any]] = []
+        # Keyed by settlement time, like every other backward walk in this class: pages are
+        # requested by an exclusive endTime, but a venue that repeats a boundary row must not
+        # have it counted twice — for funding that double-count would flow straight into
+        # `funding_charges_per_bar`'s per-bar SUM. This walk was the one list-accumulator of
+        # the four, found by its stuck-venue pin.
+        collected: dict[int, dict[str, Any]] = {}
         end_time: int | None = None
         pages = 0
         while len(collected) < records and pages < FUNDING_MAX_PAGES:
@@ -1264,11 +1269,11 @@ class BinanceFuturesCollector:
             if not page:
                 break
             oldest = min(item["funding_time_ms"] for item in page)
-            collected = page + collected
+            collected.update({item["funding_time_ms"]: item for item in page})
             if end_time is not None and oldest >= end_time:
                 break  # no backward progress — refuse to spin
             end_time = oldest - 1
-        rows = sorted(collected, key=lambda r: r["funding_time_ms"])[-records:]
+        rows = [collected[stamp] for stamp in sorted(collected)][-records:]
         return [{"timestamp": r["timestamp"], "funding_rate": r["funding_rate"]} for r in rows]
 
     def derivative_price_klines(
