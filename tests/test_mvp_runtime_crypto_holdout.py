@@ -20,6 +20,7 @@ from runtime.mvp_runtime.crypto.robustness import (
     CONFIDENCE_Z,
     HOLDOUT_CONFIRMED,
     HOLDOUT_CONTRADICTED,
+    HOLDOUT_UNDERPOWERED,
     HOLDOUT_INSUFFICIENT,
     HOLDOUT_UNCONFIRMED,
     MIN_HOLDOUT_TRADES,
@@ -150,11 +151,30 @@ def test_a_profitable_tail_that_cannot_clear_its_own_noise_is_not_a_confirmation
 
     Both blocks are profitable and both clear the trade floor. Only one of them says
     anything — which is the entire difference between measuring an edge and measuring how
-    many candidates were tried."""
-    assert holdout_status(_tail(expectancy=_MARGINAL)) == HOLDOUT_CONTRADICTED
+    many candidates were tried.
+
+    The marginal one is UNDERPOWERED rather than CONTRADICTED since 2026-08-29, and the
+    claim under test is unchanged: **neither reads as a confirmation.** What the split adds
+    is that "could not resolve a lean it shares" stops being reported as "measured against"
+    — see `robustness.HOLDOUT_UNDERPOWERED`."""
+    assert holdout_status(_tail(expectancy=_MARGINAL)) != HOLDOUT_CONFIRMED
+    assert holdout_status(_tail(expectancy=_MARGINAL)) == HOLDOUT_UNDERPOWERED
     assert holdout_status(_tail(expectancy=_CLEARS)) == HOLDOUT_CONFIRMED
     # ...and the loud one is only loud because its trades agree with each other.
     assert holdout_status(_tail(expectancy=_MARGINAL, stdev=0.05)) == HOLDOUT_CONFIRMED
+
+
+def test_a_tail_that_measured_against_the_edge_is_still_contradicted():
+    """The other half of the split, and the one that must not drift.
+
+    UNDERPOWERED exists so that a positive-but-unresolvable tail stops being refused at the
+    OBSERVATION bar. A tail whose own expectancy is negative or exactly zero measured
+    AGAINST the edge, and keeps the refusal — the sign of a number the block already carries
+    is the whole discriminator, so no new threshold enters here."""
+    assert holdout_status(_tail(expectancy=-0.05)) == HOLDOUT_CONTRADICTED
+    assert holdout_status(_tail(expectancy=0.0)) == HOLDOUT_CONTRADICTED
+    # Thinness still wins over both: too few trades cannot say either thing.
+    assert holdout_status(_tail(closed=3, expectancy=-0.05)) == HOLDOUT_INSUFFICIENT
 
 
 def test_evidence_without_a_recorded_spread_cannot_confirm():

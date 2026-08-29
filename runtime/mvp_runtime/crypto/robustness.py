@@ -82,9 +82,36 @@ FRAGILE_SCORE_THRESHOLD = 0.35
 # distinguish a real edge from a lucky fit; promotion then selected the maximum of
 # many such scores, which is how noise gets promoted.
 HOLDOUT_CONFIRMED = "CONFIRMED"          # the unseen tail shows an edge that clears its own noise
-HOLDOUT_CONTRADICTED = "CONTRADICTED"    # enough unseen trades, and the edge does not clear it
+HOLDOUT_CONTRADICTED = "CONTRADICTED"    # enough unseen trades, and the tail measured AGAINST the edge
+HOLDOUT_UNDERPOWERED = "UNDERPOWERED"    # the tail leans WITH the edge but cannot resolve it from zero
 HOLDOUT_INSUFFICIENT = "INSUFFICIENT"    # the tail cannot be judged (too few trades, or no spread)
 HOLDOUT_UNCONFIRMED = "UNCONFIRMED"      # no holdout was evaluated at all
+
+# **Why UNDERPOWERED is its own state, and not a softening of the bar** (Thomas 2026-08-29).
+#
+# The interval test below refuses everything whose lower bound does not clear zero, and that
+# refusal was reported as CONTRADICTED — one label for two opposite facts. Measured over the
+# 442 stored blocks carrying it: **140 (32%) have a POSITIVE holdout expectancy**. They are
+# not rows where the unseen tail argued against the edge; they are rows where it leaned the
+# same way and the sample could not resolve the lean from zero. `cand_af72e3fae` reads
+# +0.585R over 32 trades and carried the same verdict as a row at -0.5R.
+#
+# The arithmetic says this is the common case rather than an edge case. Clearing the interval
+# needs `expectancy > CONFIDENCE_Z * stdev / sqrt(n)`, and at the store's median holdout
+# spread (1.20) that is:
+#
+#   edge 0.05R -> 2,213 trades | 0.10R -> 553 | 0.20R -> 138 | 0.40R -> 35
+#
+# The median holdout carries **95** closed trades. So the test is under-powered by roughly 6x
+# against a realistic edge, and "did not clear the interval" was never evidence of absence.
+#
+# **What does NOT change is every door that spends real money or claims an edge.** LIVE arming
+# takes `HOLDOUT_CONFIRMED` or a FORWARD_CONFIRMED paper record (`forward_confirmation`), and
+# `classify_verdict` awards ROBUST only on CONFIRMED — UNDERPOWERED is neither, so it lands
+# exactly where CONTRADICTED did on both. The one door that moves is the paper OBSERVATION
+# entry bar (`pool._observation_holdout_term`), which already admits a THIN tail on the
+# argument that forward evidence is what an OBSERVATION slot exists to buy. An underpowered
+# tail is that same case with more trades behind it.
 
 # **The gate above did not close, and the store says by how much.** It asked for 3 closed
 # trades and `total_R > 0`, which is the test "t > 0" on a sample of three — a coin flip at a
@@ -449,12 +476,19 @@ def holdout_status(holdout: Mapping[str, Any] | None) -> str:
     if not isinstance(stdev, (int, float)) or isinstance(stdev, bool) or stdev <= 0:
         return HOLDOUT_INSUFFICIENT
     stderr = float(stdev) / math.sqrt(float(closed))
-    if holdout_expectancy(holdout) - CONFIDENCE_Z * stderr <= 0:
+    expectancy = holdout_expectancy(holdout)
+    if expectancy - CONFIDENCE_Z * stderr <= 0:
         # The weaker test already failed. A block that cannot clear the trade-level interval
         # cannot clear the period-level one either — the period interval is strictly wider —
-        # so this stays CONTRADICTED without needing the period data, and legacy blocks keep
-        # the verdict they always had.
-        return HOLDOUT_CONTRADICTED
+        # so this needs no period data, and neither branch below can read CONFIRMED.
+        #
+        # **Which of the two failures it is, is the split** (see HOLDOUT_UNDERPOWERED above).
+        # A tail whose own expectancy is positive did not measure against the edge; it failed
+        # to resolve a lean it shares. Reporting that as CONTRADICTED made the label mean
+        # "not proven" while reading as "disproven", and the entry bar spends the difference.
+        # The sign is the honest discriminator, and it is the sign of a number the block
+        # already carries — no new threshold is introduced here.
+        return HOLDOUT_UNDERPOWERED if expectancy > 0 else HOLDOUT_CONTRADICTED
     return HOLDOUT_CONFIRMED if _periods_confirm(holdout) else HOLDOUT_INSUFFICIENT
 
 
