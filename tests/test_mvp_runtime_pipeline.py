@@ -9,14 +9,14 @@ import pytest
 from runtime.mvp_runtime.binding import DEFAULT_POINTER_REL
 from runtime.mvp_runtime.errors import ProviderError, ToolError
 from runtime.mvp_runtime.pipeline import run_task
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 from runtime.mvp_runtime.worker import MockProvider
 from runtime.mvp_runtime.workspace import RealWorkspaceWriter
 
 NOW = "2026-07-15T09:00:00Z"
 REQUEST = "이 사업 아이디어를 분석해줘: 구독형 반려동물 사료 배송"
 
-from tests._helpers import requires_local_core
+from tests._helpers import requires_local_core, make_gate_authorization
 
 
 class _ErrorProvider:
@@ -44,11 +44,7 @@ def _authorized_writer() -> RealWorkspaceWriter:
     """A writer holding a granted authorization, as select_writer would return once the
     Safety-Flag Gate has passed. Lets the write path be exercised without an activation
     record on the test machine."""
-    return RealWorkspaceWriter(authorization=Authorization(
-        flags=(FILESYSTEM_WRITE,), provider_id="workspace.writer",
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    ))
+    return RealWorkspaceWriter(authorization=make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="workspace.writer"))
 
 
 @pytest.fixture

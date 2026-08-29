@@ -10,6 +10,7 @@ is a no-op (backtest / existing callers unchanged)."""
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.crypto.paper import (
@@ -22,7 +23,7 @@ from runtime.mvp_runtime.crypto.paper import (
     run_paper_update,
 )
 from runtime.mvp_runtime.crypto.routing_marks import RoutingMarkStore, is_fresh
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 
 CTX = PositionContext(venue="binance_futures", symbol="BTCUSDT", timeframe="1d")
 T1 = "2026-07-22T00:00:00Z"
@@ -31,13 +32,7 @@ T2 = "2026-07-23T00:00:00Z"
 ROW = {"timestamp": T1, "close": 105.0, "ma20": 100.0, "adx": 25.0, "atr": 2.0}
 ROW_NO_MATCH = {**ROW, "close": 95.0}
 
-_AUTH = Authorization(
-    flags=(FILESYSTEM_WRITE,),
-    provider_id="paper_trading",
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="paper_trading")
 
 
 def _spec():

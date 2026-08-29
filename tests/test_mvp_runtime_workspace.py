@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, workspace
 from runtime.mvp_runtime.control import ControlState, ControlStore
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 from runtime.mvp_runtime.workspace import (
     WRITER_ENV,
     DryRunWriter,
@@ -29,13 +30,7 @@ from runtime.mvp_runtime.workspace import (
 NOW = "2026-07-16T09:00:00Z"
 
 # A granted write authorization (as select_writer would produce after the gate passes).
-_AUTH = Authorization(
-    flags=(FILESYSTEM_WRITE,),
-    provider_id="workspace.writer",
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="workspace.writer")
 
 
 @pytest.fixture
@@ -217,11 +212,7 @@ def test_real_writer_refuses_to_touch_disk_without_authorization(root):
 
 
 def test_real_writer_refuses_an_authorization_for_another_provider(root):
-    wrong = Authorization(
-        flags=(FILESYSTEM_WRITE,), provider_id="brave_search",
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    )
+    wrong = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id="brave_search")
     target = workspace_root(root) / "a.md"
     with pytest.raises(SafetyGateBlocked):
         RealWorkspaceWriter(authorization=wrong).write(target, "content")

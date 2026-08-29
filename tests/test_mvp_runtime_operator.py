@@ -27,20 +27,17 @@ from runtime.mvp_runtime.operator import (
     verify_control_channel,
 )
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, build_activation_record
 from runtime.mvp_runtime.worker import MockProvider
 
 NOW = "2026-07-16T09:00:00Z"
 
-from tests._helpers import requires_local_core
+from tests._helpers import requires_local_core, make_gate_authorization
 
 REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
 
 TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
-_TG_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,), provider_id="telegram", activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_TG_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id="telegram")
 
 
 def _msg(**overrides):

@@ -13,6 +13,8 @@ import urllib.error
 
 import pytest
 
+from tests._helpers import FakeResp as _FakeResp, patch_urlopen as _patch_urlopen, make_gate_authorization
+
 from runtime.mvp_runtime.errors import ProviderError, SafetyGateBlocked
 from runtime.mvp_runtime.providers import (
     HOSTED_PROVIDER_ENV,
@@ -37,13 +39,7 @@ from runtime.mvp_runtime.worker import MockProvider
 API_ENV = "GOOGLE_AI_STUDIO_API_KEY"
 
 # A granted egress authorization (as select_provider would produce after the gate passes).
-_AUTH = Authorization(
-    flags=(MODEL_INVOCATION, NETWORK_ACCESS),
-    provider_id="google_ai_studio",
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="google_ai_studio")
 
 
 # --- Safety-Flag Gate wiring in select_provider -----------------------------
@@ -477,11 +473,7 @@ def test_groq_without_authorization_fails_closed(monkeypatch):
 
 def _groq_auth():
     from runtime.mvp_runtime.safety_gate import Authorization
-    return Authorization(
-        flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="groq",
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    )
+    return make_gate_authorization(flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="groq")
 
 
 # --- the OpenRouter adapter ----------------------------------------------------
@@ -493,11 +485,7 @@ _openrouter_response = _groq_response
 
 def _openrouter_auth():
     from runtime.mvp_runtime.safety_gate import Authorization
-    return Authorization(
-        flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="openrouter",
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    )
+    return make_gate_authorization(flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id="openrouter")
 
 
 def test_openrouter_opens_by_being_named_like_every_other_provider(monkeypatch, tmp_path):
@@ -668,26 +656,6 @@ def _gemini_response(analysis: dict) -> str:
     })
 
 
-class _FakeResp:
-    def __init__(self, payload: str):
-        self._payload = payload.encode("utf-8")
-
-    def read(self):
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _patch_urlopen(monkeypatch, payload_or_exc):
-    def fake_urlopen(request, timeout):
-        if isinstance(payload_or_exc, Exception):
-            raise payload_or_exc
-        return _FakeResp(payload_or_exc)
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
 
 def test_no_api_key_fails_closed(monkeypatch):

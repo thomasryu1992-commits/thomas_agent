@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime import control, safety_gate
 from runtime.mvp_runtime.control import ControlState, ControlStore
@@ -35,20 +36,14 @@ from runtime.mvp_runtime.crypto.paper import (
     settle_trade_plan,
 )
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, build_activation_record
 
 NOW = "2026-07-22T12:00:00Z"
 
 # The book every fixture in this file trades in.
 CTX = PositionContext(venue="binance_futures", symbol="BTCUSDT", timeframe="1d")
 
-_AUTH = Authorization(
-    flags=(FILESYSTEM_WRITE,),
-    provider_id=PAPER_PROVIDER_ID,
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(FILESYSTEM_WRITE,), provider_id=PAPER_PROVIDER_ID)
 
 
 def _spec_dict(**overrides):

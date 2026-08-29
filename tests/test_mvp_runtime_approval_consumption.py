@@ -31,7 +31,7 @@ from runtime.mvp_runtime.working_memory import WorkingMemoryStore
 from runtime.read_only_kernel import integrity
 
 REPO = Path(__file__).resolve().parents[1]
-from tests._helpers import requires_local_core
+from tests._helpers import requires_local_core, make_gate_authorization
 
 NOW = "2026-07-16T12:00:00Z"
 LATER = "2026-07-16T12:20:00Z"
@@ -39,11 +39,7 @@ AFTER_EXPIRY = "2026-07-16T13:30:00Z"
 CONTENT = "Thomas prefers cash-flow first framing in business analyses."
 
 # A granted authorization, as select_consumer would produce once the gate passed.
-GRANT = Authorization(
-    flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption",
-    activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+GRANT = make_gate_authorization(flags=(APPROVAL_CONSUMPTION,), provider_id="approval_consumption")
 
 
 def _bound():

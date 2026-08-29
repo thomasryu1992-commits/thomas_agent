@@ -9,6 +9,7 @@ follows was one nobody had explained yet.
 from __future__ import annotations
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_leg
 from runtime.mvp_runtime.crypto.live_order import (
@@ -21,10 +22,7 @@ from scripts import clear_bracket_breaker as cbb
 
 NOW = "2026-08-02T08:20:44Z"
 
-_LIVE_AUTH = Authorization(
-    flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_LIVE_AUTH = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
 
 
 @pytest.fixture

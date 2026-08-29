@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_pnl
 from runtime.mvp_runtime.crypto.live_order import (
@@ -58,10 +59,7 @@ from runtime.mvp_runtime.safety_gate import Authorization
 NOW = "2026-07-23T12:00:00Z"
 TODAY = "2026-07-23"
 
-_LIVE_AUTH = Authorization(
-    flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_LIVE_AUTH = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
 
 
 def _outcome(pnl: float, *, closed_at: str = NOW, position_id: str = "pos-1", **kw):
@@ -195,11 +193,7 @@ def test_duplicate_settlement_refuses(tmp_path):
 # === LP2: the write side of that check — the append is idempotent ==================
 
 def _authorized_ledger(root):
-    return RealLiveLedger(root=root, authorization=Authorization(
-        flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID,
-        activation_sha256="sha256:test", expires_at="2999-01-01T00:00:00Z",
-        evidence_ref=".runtime_governance_state/evidence.md",
-    ))
+    return RealLiveLedger(root=root, authorization=make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID))
 
 
 def test_a_retried_settlement_appends_nothing_and_says_so(tmp_path):

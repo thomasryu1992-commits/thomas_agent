@@ -15,6 +15,8 @@ import urllib.error
 
 import pytest
 
+from tests._helpers import FakeResp as _FakeResp, make_gate_authorization
+
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto.cycle import attach_feeds, run_crypto_cycle
 from runtime.mvp_runtime.crypto.factory import generate_batch, validate_strategy
@@ -31,32 +33,14 @@ from runtime.mvp_runtime.crypto.paper import DryRunPaperStore
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, build_activation_record
 
 NOW = "2026-07-22T12:00:00Z"
 
-_BINANCE_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,), provider_id="binance_futures", activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
-_COINALYZE_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,), provider_id=COINALYZE, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_BINANCE_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id="binance_futures")
+_COINALYZE_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=COINALYZE)
 
 
-class _FakeResp:
-    def __init__(self, payload: str):
-        self._payload = payload.encode("utf-8")
-
-    def read(self):
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def _patch_urlopen_pages(monkeypatch, pages):

@@ -15,6 +15,8 @@ import urllib.parse
 
 import pytest
 
+from tests._helpers import FakeResp as _FakeResp, patch_urlopen as _patch_urlopen, make_gate_authorization
+
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.crypto import cycle, factory, market_data
 from runtime.mvp_runtime.crypto.market_data import (
@@ -42,13 +44,7 @@ from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build
 NOW = "2026-07-22T09:00:00Z"
 
 # A granted egress authorization (as select_market_data_collector would produce).
-_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,),
-    provider_id=BINANCE_FUTURES,
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=BINANCE_FUTURES)
 
 
 class _ErrorCollector:
@@ -319,26 +315,6 @@ def test_binance_without_authorization_fails_closed():
     assert exc.value.reason_code == "NOT_AUTHORIZED"
 
 
-class _FakeResp:
-    def __init__(self, payload: str):
-        self._payload = payload.encode("utf-8")
-
-    def read(self):
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _patch_urlopen(monkeypatch, payload_or_exc):
-    def fake_urlopen(request, timeout):
-        if isinstance(payload_or_exc, Exception):
-            raise payload_or_exc
-        return _FakeResp(payload_or_exc)
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
 
 def _kline(open_ms: int, close_ms: int, price: float) -> list:
@@ -934,13 +910,7 @@ def test_the_latch_cannot_reach_the_order_adapter_or_the_account_read():
 # strings, three flow legs that structurally do not exist, and a hard per-request ceiling
 # reported rather than papered over.
 
-_HL_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,),
-    provider_id=HYPERLIQUID,
-    activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z",
-    evidence_ref=".runtime_governance_state/evidence.md",
-)
+_HL_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=HYPERLIQUID)
 
 
 def _hl_candle(open_ms: int, close_ms: int, price: float) -> dict:

@@ -29,14 +29,12 @@ import json
 import urllib.parse
 
 import pytest
+from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import market_data as md
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS
 
-_AUTH = Authorization(
-    flags=(NETWORK_ACCESS,), provider_id=md.BINANCE_FUTURES, activation_sha256="sha256:test",
-    expires_at="2999-01-01T00:00:00Z", evidence_ref=".runtime_governance_state/evidence.md",
-)
+_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=md.BINANCE_FUTURES)
 
 
 class _FakeResp:
