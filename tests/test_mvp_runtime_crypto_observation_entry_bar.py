@@ -177,3 +177,59 @@ def test_an_overfull_incumbent_family_blocks_nothing_it_is_not_adding_to():
         [_entrant("cand_other", family="xs_momentum_short")],
         occupying_entries=[_occupying(f"cand_{n}") for n in "abc"],
     )
+
+
+# --- an underpowered tail is admitted; a contradicted one is not (Thomas 2026-08-29) --------
+
+def _tail(expectancy, closed=95, stdev=1.2):
+    """A modern holdout block: enough closes to be judged, with a spread and period data."""
+    per = [round(expectancy * closed / 10, 8)] * 10
+    return {
+        "closed_count": closed, "expectancy": expectancy,
+        "total_R": round(expectancy * closed, 8), "stdev_r": stdev,
+        "period_r": per, "period_trades": [closed // 10] * 10,
+    }
+
+
+def test_a_tail_that_leans_with_the_edge_but_cannot_resolve_it_is_admitted():
+    """The bar's own argument for admitting a THIN tail, applied to the case that carries
+    MORE evidence rather than less.
+
+    A slot's product is forward evidence, so the tail too small to judge is let in. A tail
+    at +0.10R over 95 trades against a 1.2 spread cannot clear its interval either — it
+    needs roughly 553 trades to — but it is not silent: it leans the way the edge does.
+    Refusing it while admitting a 10-trade block was the inversion this fixes."""
+    from runtime.mvp_runtime.crypto.robustness import HOLDOUT_UNDERPOWERED, holdout_status
+
+    block = _tail(0.10)
+    assert holdout_status(block) == HOLDOUT_UNDERPOWERED
+    assert pool._observation_holdout_term(_entrant("c1", holdout_block=block)) is None
+    pool.assert_observation_entry_bar([_entrant("c1", holdout_block=block)])
+
+
+def test_a_tail_that_measured_against_the_edge_is_still_refused():
+    """The half that must not move with it: UNDERPOWERED buys entry for "unresolved", never
+    for "disconfirmed". Same sample size, same spread — only the sign differs."""
+    from runtime.mvp_runtime.crypto.robustness import HOLDOUT_CONTRADICTED, holdout_status
+
+    block = _tail(-0.10)
+    assert holdout_status(block) == HOLDOUT_CONTRADICTED
+    with pytest.raises(ToolError) as exc:
+        pool.assert_observation_entry_bar([_entrant("c2", holdout_block=block)])
+    assert exc.value.reason_code == "CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR"
+    assert "CONTRADICTED" in exc.value.reason
+
+
+def test_admitting_an_underpowered_tail_does_not_loosen_the_other_three_terms():
+    """The bar has four terms and only the holdout one moved. A row whose tail is admitted
+    still has to be FULL depth, clear `OBSERVATION_MIN_BACKTEST_CLOSED`, and be positive at
+    CURRENT costs — so this cannot become a door for rows that fail elsewhere."""
+    block = _tail(0.10)
+    thin_sample = _entrant("c3", holdout_block=block,
+                           closed=pool.OBSERVATION_MIN_BACKTEST_CLOSED - 1, net_r=8.0)
+    with pytest.raises(ToolError):
+        pool.assert_observation_entry_bar([thin_sample])
+
+    losing = _entrant("c4", holdout_block=block, net_r=-5.0)
+    with pytest.raises(ToolError):
+        pool.assert_observation_entry_bar([losing])

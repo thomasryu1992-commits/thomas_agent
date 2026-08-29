@@ -1143,18 +1143,33 @@ OBSERVATION_FAMILY_CAP = 2
 def _observation_holdout_term(record: Mapping[str, Any]) -> str | None:
     """None when the holdout admits observation entry; else the failure, named.
 
-    Admitted: CONFIRMED (beyond the bar), and INSUFFICIENT that is merely THIN — a block
-    with fewer than `MIN_HOLDOUT_TRADES` closes, the case forward evidence exists to feed.
-    Refused: CONTRADICTED (evidence against), no block at all, and the vintage
-    INSUFFICIENT shapes (enough closes but no dispersion, or no period data) — those rows
-    cannot state their own uncertainty and their path back in is a re-mint, not a slot.
-    Branch order mirrors `robustness.holdout_status` so "thin" here is exactly the status
-    function's closed-count branch.
+    Admitted: CONFIRMED (beyond the bar); INSUFFICIENT that is merely THIN — a block with
+    fewer than `MIN_HOLDOUT_TRADES` closes; and UNDERPOWERED. Refused: CONTRADICTED
+    (evidence against), no block at all, and the vintage INSUFFICIENT shapes (enough closes
+    but no dispersion, or no period data) — those rows cannot state their own uncertainty and
+    their path back in is a re-mint, not a slot. Branch order mirrors
+    `robustness.holdout_status` so "thin" here is exactly the status function's closed-count
+    branch.
+
+    **UNDERPOWERED is admitted on the argument that already admits THIN** (Thomas 2026-08-29).
+    A thin tail is let in because a slot's whole product is forward evidence, and a tail too
+    small to judge is the case that needs it. An underpowered tail is the same case carrying
+    MORE trades: its expectancy leans WITH the edge and its interval cannot resolve the lean
+    from zero. Refusing it while admitting the thinner row is backwards — see
+    `robustness.HOLDOUT_UNDERPOWERED` for the arithmetic (the median holdout runs 95 trades
+    against the ~553 a 0.10R edge would need, so this is the common case, not the corner).
+
+    The bar's other three terms are untouched and do the discriminating: FULL depth,
+    `OBSERVATION_MIN_BACKTEST_CLOSED` closes, and a positive expectancy AT CURRENT COSTS. A
+    row admitted here still has to clear all three, and CONTRADICTED — a tail that measured
+    against the edge — is still refused.
     """
-    from .robustness import HOLDOUT_CONFIRMED, HOLDOUT_INSUFFICIENT, MIN_HOLDOUT_TRADES
+    from .robustness import (
+        HOLDOUT_CONFIRMED, HOLDOUT_INSUFFICIENT, HOLDOUT_UNDERPOWERED, MIN_HOLDOUT_TRADES,
+    )
 
     quality_status = candidate_quality(record)["holdout_status"]
-    if quality_status == HOLDOUT_CONFIRMED:
+    if quality_status in (HOLDOUT_CONFIRMED, HOLDOUT_UNDERPOWERED):
         return None
     if quality_status != HOLDOUT_INSUFFICIENT:
         return f"holdout={quality_status}"

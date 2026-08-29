@@ -209,3 +209,28 @@ def test_a_contradicted_forward_record_does_not_pass_as_merely_unconfirmed():
             [_record()], outcomes=_spread_outcomes(base=-0.3), observed_lineages=11,
         )
     assert "forward=FORWARD_CONTRADICTED" in str(exc.value)
+
+
+def test_an_underpowered_holdout_still_needs_forward_evidence_to_arm_live():
+    """**The containment on the 2026-08-29 split, and the reason it was safe to make.**
+
+    UNDERPOWERED lets a candidate through the PAPER observation bar, on the argument that a
+    tail leaning with the edge is unresolved rather than disconfirmed. Real money is a
+    different question and 5-1 answers it unchanged: the live door takes a CONFIRMED holdout
+    or a FORWARD_CONFIRMED paper record, and UNDERPOWERED is neither. So the split cannot
+    widen the live door by construction — a row that used to read CONTRADICTED here is
+    refused for exactly the same reason under its new label."""
+    from runtime.mvp_runtime.crypto.robustness import HOLDOUT_UNDERPOWERED
+
+    record = _record()
+    record["backtest_evidence"]["holdout"] = {
+        "closed_count": 95, "expectancy": 0.10, "total_R": 9.5, "stdev_r": 1.2,
+        "period_r": [0.95] * 10, "period_trades": [9] * 10,
+    }
+    from runtime.mvp_runtime.crypto import pool
+    assert pool.candidate_quality(record)["holdout_status"] == HOLDOUT_UNDERPOWERED
+
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([record], outcomes=[], observed_lineages=11)
+    assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+    assert HOLDOUT_UNDERPOWERED in exc.value.reason
