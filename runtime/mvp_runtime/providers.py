@@ -223,7 +223,13 @@ GOOGLE_AI_STUDIO = "google_ai_studio"
 DEFAULT_HOSTED_MODEL = "gemini-flash-latest"
 GROQ = "groq"
 GROQ_MODEL_ENV = "MVP_GROQ_MODEL"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+# Not "llama-3.3-70b-versatile": Groq decommissioned it for free/developer tiers in August
+# 2026 (notice 2026-06-17) and every request since answers HTTP 404 — PROVIDER_TRANSPORT,
+# no retry, no failover — which took down every path riding this default at once
+# (independent validator, frontdesk, data review, proposer; measured 2026-08-29, two
+# consecutive weekly DATA_REVIEW fires and a proposer backlog of 11). This slug is Groq's
+# own named migration target for that model.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 OPENROUTER = "openrouter"
 OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
