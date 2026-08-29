@@ -159,17 +159,18 @@ repository, its own container, its own Telegram bot, none of it committed here. 
 doors over the sockets under `.runtime_governance_state/bridge/`, which are bind-mounted into its
 container, and through MCP shims it owns.
 
-**The doors are not the only path from that container to this runtime.** Since 2026-07-31 the Hermes
-container also mounts the host Docker socket, which makes it equivalent to host root: it can `docker
-exec` into any container including `thomas-scheduler`, and read the live-order keys that the
-credential-plane separation keeps out of the door processes. It has been used — 37 times, all on
-2026-07-30 and 07-31, last at 07-31T07:29:58Z — including running `live_readiness` inside the trading
-container. The mount is retained by Thomas's decision (2026-08-22); what is recorded here is that the
-structural constraints the door modules enforce — P3 ceiling, closed kind set, no money path, `enable`
-only on a single-use grant — **do not constrain that path**, and no test in this repository can
-observe it, because the file that creates it lives in the other repository. The invariant is owned by
-a deployment checklist (`docs/DEPLOYMENT.md`), not by pytest, and that is a weaker guarantee than the
-door modules give. Say so rather than let a reader infer otherwise from the door tests.
+**The doors are now the only path from that container to this runtime.** From 2026-07-31 to
+2026-08-29 the Hermes container also mounted the host Docker socket, which made it equivalent to
+host root: able to `docker exec` into any container including `thomas-scheduler` and read the
+live-order keys that the credential-plane separation keeps out of the door processes,
+unconstrained by anything the door modules enforce (P3 ceiling, closed kind set, no money path,
+`enable` only on a single-use grant). It was used 37 times, all on 2026-07-30/31, last at
+07-31T07:29:58Z, then never again — and on 2026-08-29 Thomas reversed the 08-22 retention and
+removed the mount (with its `group_add`; the Hermes-side compose records the removal and the
+restore path). What stays true: no test in this repository can observe that boundary, because
+the file that creates — or recreates — it lives in the other repository. The invariant is still
+owned by the deployment checklist in `docs/DEPLOYMENT.md`, now guarding an absence instead of
+documenting an exception.
 
 **Peer identity is checked, and was not always.** Each door authorises its peer by the uid the kernel
 records at `connect()` (`socket_door.authorize_peer`, `MVP_BRIDGE_CLIENT_UID`). Before 2026-08-21 that
