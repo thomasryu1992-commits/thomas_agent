@@ -85,3 +85,67 @@ def gate_banners(**implementations: Any) -> None:
         sys.stderr.write(
             f"SAFETY_GATE: {name.replace('_', ' ')} authorized ({detail}{', '.join(flags)})\n"
         )
+
+
+def record_audit_gap(ledger: Any, gap_kind: str, exc: MvpRuntimeError, *,
+                     subject_ref: str, now: str) -> None:
+    """Durably note that something happened whose audit event could not be written.
+
+    Best-effort by construction: this runs *because* a ledger write already failed, so it
+    may fail too. The stderr warning stays either way — this only adds the durable half
+    when it can. One copy for every asking CLI; it was copied verbatim between the
+    approval and trial CLIs before it lived here.
+    """
+    from .audit import build_audit_gap_record  # local: cli_common stays a leaf for the CLIs
+
+    try:
+        ledger.append_block(build_audit_gap_record(
+            gap_kind, reason_code=exc.reason_code, subject_ref=subject_ref,
+            now=now, detail=exc.reason,
+        ))
+    except MvpRuntimeError:
+        sys.stderr.write("WARNING: the audit gap itself could not be recorded\n")
+
+
+def store_and_present_approval_request(permission_decision: Any, request: Any, *,
+                                       now: str) -> None:
+    """Persist, audit, and render one R9 ask — the block every asking CLI repeated.
+
+    The order is the contract: the ask becomes durable in the approval store FIRST, so an
+    audit failure demotes to a durable gap record plus a warning while the request stands;
+    the decision-history enrichment is advisory, so its failure is reported inline and
+    never blocks the ask. Callers add their own trailing STORED guidance — that text is
+    what differs between the surfaces.
+    """
+    from . import approval  # local: cli_common stays a leaf for the CLIs
+    from .approval_store import ApprovalStore
+    from .audit import build_approval_request_audit
+    from .store import LedgerStore
+
+    store = ApprovalStore.default()
+    store.append_permission_decision(permission_decision)
+    store.append([request])
+
+    ledger = LedgerStore.default()
+    try:
+        ledger.append_audit_events(build_approval_request_audit(
+            request, now=now, genesis_previous_hash=ledger.last_audit_hash(),
+        ))
+        sys.stderr.write(f"LEDGER: approval request audited to {ledger.root}\n")
+    except MvpRuntimeError as exc:
+        # The ask is already durable in the approval store, so it stands — but the gap must
+        # not live only in a stderr line nobody keeps. Record it durably (different file, so
+        # a broken audit ledger does not take this with it).
+        record_audit_gap(ledger, "approval_request", exc, subject_ref=request["approval_id"], now=now)
+        sys.stderr.write(f"WARNING: request audit failed ({exc.reason_code}); the request stands\n")
+
+    history = None
+    history_failure = ""
+    try:
+        history = approval.decision_history(store, request)
+    except MvpRuntimeError as exc:
+        history_failure = f"\n과거 유사 결정: 조회 실패 ({exc.reason_code}) — 이력 없이 요청합니다\n"
+
+    sys.stdout.write(approval.request_message(request, permission_decision, history=history) + "\n")
+    if history_failure:
+        sys.stdout.write(history_failure)
