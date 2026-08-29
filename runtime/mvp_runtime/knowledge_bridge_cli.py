@@ -15,13 +15,11 @@ stores what it is given, and searches what it has stored.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from . import knowledge_bridge, socket_door
-from .cli_common import EXIT_OK, force_utf8_io, report_block
+from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
-from .errors import MvpRuntimeError
 from .knowledge import pdf_text
 from .knowledge.store import KnowledgeStore
 
@@ -46,37 +44,22 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     path = Path(args.socket) if args.socket else knowledge_bridge.socket_path()
     store = KnowledgeStore.default()
-
-    try:
-        server = knowledge_bridge.open_door(
+    return serve_door_forever(
+        label="KNOWLEDGE_BRIDGE", path=path,
+        open_server=lambda: knowledge_bridge.open_door(
             path, store=store, control_store=ControlStore.default(),
-        )
-    except MvpRuntimeError as exc:
-        return report_block(exc)
-    except OSError as exc:
-        sys.stderr.write(f"KNOWLEDGE_BRIDGE: cannot listen on {path}: {exc}\n")
-        return 1
-
-    # The PDF backends are reported at startup, not discovered at the first ingest. A host
-    # with an empty chain answers every ingest with PDF_NO_BACKEND, and finding that out from
-    # a refusal hours later — rather than from the line the service printed when it came up —
-    # is the difference between a provisioning gap and a mystery.
-    backends = pdf_text.available_backends()
-    sys.stderr.write(
-        f"KNOWLEDGE_BRIDGE: listening on {path} "
-        f"(verbs={sorted(knowledge_bridge._COMMANDS)}, "
-        f"pdf_backends={list(backends) or 'NONE — PDF ingest will fail closed'}, "
-        f"{socket_door.describe_admission(server)})\n"
+        ),
+        # The PDF backends are reported at startup, not discovered at the first ingest. A
+        # host with an empty chain answers every ingest with PDF_NO_BACKEND, and finding
+        # that out from a refusal hours later — rather than from the line the service
+        # printed when it came up — is the difference between a provisioning gap and a
+        # mystery.
+        banner=lambda server: (
+            f"verbs={sorted(knowledge_bridge._COMMANDS)}, "
+            f"pdf_backends={list(pdf_text.available_backends()) or 'NONE — PDF ingest will fail closed'}, "
+            f"{socket_door.describe_admission(server)}"
+        ),
     )
-    sys.stderr.flush()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        path.unlink(missing_ok=True)
-    return EXIT_OK
 
 
 if __name__ == "__main__":

@@ -20,13 +20,11 @@ engine side.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from . import dispatch_bridge, pipeline_worker, socket_door
-from .cli_common import EXIT_OK, force_utf8_io, report_block
+from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
-from .errors import MvpRuntimeError
 from .store import LedgerStore
 
 
@@ -61,34 +59,20 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.worker_socket) if args.worker_socket else pipeline_worker.socket_path()
     )
 
-    try:
-        server = dispatch_bridge.open_door(
+    return serve_door_forever(
+        label="DISPATCH_BRIDGE", path=path,
+        open_server=lambda: dispatch_bridge.open_door(
             path,
             control_store=ControlStore.default(),
             ledger=LedgerStore.default(),
             worker_socket=worker_socket,
-        )
-    except MvpRuntimeError as exc:
-        return report_block(exc)
-    except OSError as exc:
-        sys.stderr.write(f"DISPATCH_BRIDGE: cannot listen on {path}: {exc}\n")
-        return 1
-
-    sys.stderr.write(
-        f"DISPATCH_BRIDGE: listening on {path} "
-        f"(kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, "
-        f"forwarding to {worker_socket}, "
-        f"{socket_door.describe_admission(server)})\n"
+        ),
+        banner=lambda server: (
+            f"kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, "
+            f"forwarding to {worker_socket}, "
+            f"{socket_door.describe_admission(server)}"
+        ),
     )
-    sys.stderr.flush()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        path.unlink(missing_ok=True)
-    return EXIT_OK
 
 
 if __name__ == "__main__":
