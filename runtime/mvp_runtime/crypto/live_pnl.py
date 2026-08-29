@@ -34,7 +34,6 @@ from . import live_correction
 from .. import jsonl, safety_gate, timeutil
 from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
-from ..paths import repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, NETWORK_ACCESS, Authorization
 
 LIVE_LEDGER_TOOL_ID = "crypto.live.pnl_ledger"
@@ -57,7 +56,7 @@ REAL_LIVE_TRADING = "real"
 LIVE_TRADING_PROVIDER_ID = "live_trading"
 LIVE_TRADING_FLAGS = (NETWORK_ACCESS, FILESYSTEM_WRITE)
 
-STATE_REL = ".runtime_governance_state/crypto"
+from .state import STATE_REL, state_dir  # noqa: E402  (one root for both trading planes; re-exported for the live-plane importers)
 LIVE_OUTCOMES_FILENAME = "live_outcomes.jsonl"
 LIVE_PROVENANCE = "mvp_live_kernel"
 
@@ -100,10 +99,6 @@ STOP_EXIT_REASONS = frozenset({"stop_loss"})
 LIVE_HISTORY_UNREADABLE = "LIVE_HISTORY_UNREADABLE"
 LIVE_HISTORY_TAMPERED = "LIVE_HISTORY_TAMPERED"
 LIVE_HISTORY_DUPLICATE = "LIVE_HISTORY_DUPLICATE"
-
-
-def state_dir(root: Path | None = None) -> Path:
-    return (root if root is not None else _repo_root()) / STATE_REL
 
 
 def realized_stop_slippage_bps(
