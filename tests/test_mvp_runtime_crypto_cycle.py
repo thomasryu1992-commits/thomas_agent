@@ -1598,3 +1598,52 @@ class TestStallDetectionWiring:
         assert self._last_status(env).startswith("degraded"), self._last_status(env)
         assert self._fire(env, self.T2)["failed"] == 1
         assert self._last_status(env) == "failed:PIPELINE_STALLED"
+
+
+# --- the fan-out's one verified outcome read -------------------------------------
+
+def test_a_handed_down_outcome_read_is_not_re_verified(tmp_path, monkeypatch):
+    """`paper_outcomes` is the fan-out's single verified read of the outcome ledger; a
+    context receiving it must not pay the per-row SHA256 of that file again."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    _install_pool(tmp_path, _always_spec())
+    monkeypatch.setattr(
+        cycle_mod, "read_outcomes",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("context re-read the ledger")),
+    )
+    record = _cycle(tmp_path, FakeExchangeCollector(), paper_outcomes=[])
+    assert record["report_status"] is not None, "the report ran on the handed-down read"
+
+
+def test_the_fanout_pays_one_verified_read_until_something_settles(tmp_path, monkeypatch):
+    """Two settle-free contexts share one verified read; a settlement evicts the snapshot so
+    every later context reads fresh — the exact freshness the per-context read provided,
+    paid only when the file actually changed."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    _install_pool(tmp_path, _always_spec("S_BTC", "BTCUSDT"), _always_spec("S_ETH", "ETHUSDT"))
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    calls = {"n": 0}
+    real_read = cycle_mod.read_outcomes
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(cycle_mod, "read_outcomes", _counting)
+
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(), store)
+    assert [c["symbol"] for c in summary["cycles"]] == ["BTCUSDT", "ETHUSDT"]
+    assert all(c["settled"] is None for c in summary["cycles"])
+    assert calls["n"] == 1, "a settle-free fan-out pays exactly one verified read"
+
+    calls["n"] = 0
+    sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0}
+    summary = _pool_cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
+                          now="2026-07-23T12:00:00Z")
+    assert sum(1 for c in summary["cycles"] if c["settled"]) == 2
+    assert calls["n"] == 2, (
+        "the fan-out's snapshot plus one fresh read after the first settlement — "
+        "the second settling context must not be served the stale snapshot"
+    )

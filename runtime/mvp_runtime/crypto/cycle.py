@@ -556,6 +556,7 @@ def run_crypto_cycle(
     cooldown_marks: Any | None = None,
     candle_cache: Any | None = None,
     positioning_rows: list[dict[str, Any]] | None = None,
+    paper_outcomes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -683,8 +684,15 @@ def run_crypto_cycle(
     # `run_lifecycle` and the counterfactual book below — but NO LONGER to the loss breaker.
     # `outcomes` stays None when this raises, which is what makes the report re-read and raise
     # the same way, and Gate 0 refuse on the absence.
+    #
+    # ``paper_outcomes`` is the fan-out's one verified read of this ledger, handed down so
+    # nine contexts do not each pay the per-row SHA256 of the same file (the LIVE ledger below
+    # is deliberately NOT handed down: it is small, and the allowance's settle-then-re-read
+    # contract depends on that read being fresh). The hand-down's own freshness contract lives
+    # in ``run_pool_cycle``: a context that settles evicts the snapshot, so a later context
+    # reads fresh exactly when today's per-context read would have seen something new.
     try:
-        outcomes = read_outcomes(root)
+        outcomes = paper_outcomes if paper_outcomes is not None else read_outcomes(root)
     except ToolError as exc:
         reason_codes.append(exc.reason_code)
 
@@ -1416,6 +1424,20 @@ def run_pool_cycle(
     # set below). Same lifetime rule as the caches above: one fan-out, then discarded.
     positioning_by_symbol = positioning_store.read_rows_grouped(root)
     stale_positioning: set[str] = set()
+    # The paper outcome ledger has the same fan-out redundancy at a higher unit price: its
+    # read is VERIFIED — a SHA256 per native row plus whole-store dedup — and each context
+    # paid it to see a file that changes mid-fire only when a context settles (measured 98ms
+    # over 3,000 rows; `feedback.py` already hands one context's read to its own report on
+    # the same argument). One verified read serves the fan-out until any context reports a
+    # settlement or skips mid-cycle — after that every remaining context reads fresh, which
+    # is exactly the freshness a same-fire settlement needs (see the step-3 comment in
+    # `run_crypto_cycle`). An unreadable ledger is NOT snapshotted as an absence: each
+    # context re-reads and records its own refusal, as before.
+    paper_outcomes_snapshot: list[dict[str, Any]] | None
+    try:
+        paper_outcomes_snapshot = read_outcomes(root)
+    except ToolError:
+        paper_outcomes_snapshot = None
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -1435,14 +1457,24 @@ def run_pool_cycle(
                 candle_cache=candle_cache,
                 positioning_rows=None if positioning_key in stale_positioning
                 else positioning_by_symbol.get(positioning_key, []),
+                # A fresh list per context, so no consumer can mutate a sibling's view.
+                paper_outcomes=(
+                    list(paper_outcomes_snapshot)
+                    if paper_outcomes_snapshot is not None else None
+                ),
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
                 raise  # global stop — every remaining context would refuse the same
             skipped.append({"symbol": symbol, "timeframe": timeframe, "reason_code": exc.reason_code})
+            # Whether this context settled before it raised cannot be known from here, and a
+            # missed settlement is the unsafe staleness — so the snapshot is dropped.
+            paper_outcomes_snapshot = None
             continue
         if (record.get("feeds") or {}).get("positioning") in ("seeded", "appended"):
             stale_positioning.add(positioning_key)
+        if record.get("settled") is not None:
+            paper_outcomes_snapshot = None
         cycles.append(record)
         if record.get("live_halt"):
             halted = {
