@@ -64,4 +64,10 @@ jobs:
           python scripts/ci_activate_core_for_tests.py
 
       - name: Run the MVP runtime test suite
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q --junitxml=junit.xml
+
+      # Same guard as the PR pipeline: a Core activation that silently did not take
+      # effect turns ~208 integration tests into green skips. The check needs the junit
+      # report above to have anything to read (scripts/check_test_skips.py).
+      - name: Fail if the run skipped what CI must never skip
+        run: python scripts/check_test_skips.py --junit junit.xml
