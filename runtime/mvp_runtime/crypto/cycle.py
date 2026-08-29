@@ -429,8 +429,17 @@ def attach_cross_section(
     return CROSS_SECTION_DEGRADED if degraded else None
 
 
-def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) -> None:
+def attach_positioning(
+    snapshot: dict[str, Any], *, root: Path | None = None,
+    pre_read: list[dict[str, Any]] | None = None,
+) -> None:
     """Put the accumulated positioning readings on ``snapshot`` (mutating it). Never raises.
+
+    ``pre_read`` is this symbol's slice of one fan-out-level ``read_rows_grouped`` parse —
+    the ``PeerCandleCache`` shape for a store instead of a vendor. ``None`` means "no
+    hand-down" and reads the store as before; a handed-down EMPTY list is an answer, not an
+    absence, so it is used as-is. The caller owns freshness: a context whose own feed step
+    just appended must hand ``None`` (see ``run_crypto_cycle``).
 
     A LOCAL read, unlike every other attach in this module: the rows come from the store this
     runtime has been filling since `positioning_store` shipped, not from a vendor. So there is no
@@ -450,7 +459,7 @@ def attach_positioning(snapshot: dict[str, Any], *, root: Path | None = None) ->
     symbol = str(snapshot.get("symbol") or "")
     if not symbol:
         return
-    rows = positioning_store.read_rows(root, symbol=symbol)
+    rows = pre_read if pre_read is not None else positioning_store.read_rows(root, symbol=symbol)
     if rows:
         snapshot["positioning"] = rows
 
@@ -546,6 +555,7 @@ def run_crypto_cycle(
     routing_marks: Any | None = None,
     cooldown_marks: Any | None = None,
     candle_cache: Any | None = None,
+    positioning_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run one full crypto cycle. Returns the cycle record (sub-records included).
 
@@ -610,7 +620,11 @@ def run_crypto_cycle(
     # 1f) positioning — the store's own accumulated readings. A local read, so no request and no
     # degrade code. The ROUTER must see the same columns the backtest scored, which is the whole
     # reason this is here and not only on the factory path.
-    attach_positioning(snapshot, root=root)
+    if positioning_rows is not None and feed_status.get("positioning") in ("seeded", "appended"):
+        # This context's own feed step just appended to the store, so the fan-out's pre-read
+        # is stale for exactly this symbol — fall back to the fresh read it replaced.
+        positioning_rows = None
+    attach_positioning(snapshot, root=root, pre_read=positioning_rows)
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
@@ -1393,6 +1407,15 @@ def run_pool_cycle(
     # both, because a cached candle read has no opinion about which leg wanted it. Same
     # lifetime rule as above: one fan-out, then discarded.
     candle_cache = PeerCandleCache(collector)
+    # The positioning store has the same shape of redundancy by a third door: every context
+    # reads only its own symbol's rows, and which context is asking cannot change the answer
+    # within one fire — yet each read re-parsed the whole store (6.8 MB × nine contexts a
+    # fire on the live host, growing forever). One parse serves the fan-out. Freshness stays
+    # exact: a context whose feed step appends falls back to a fresh read inside
+    # `run_crypto_cycle`, and every LATER context of that symbol reads fresh too (the stale
+    # set below). Same lifetime rule as the caches above: one fan-out, then discarded.
+    positioning_by_symbol = positioning_store.read_rows_grouped(root)
+    stale_positioning: set[str] = set()
 
     cycles: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -1402,6 +1425,7 @@ def run_pool_cycle(
         if halted is not None:
             unvisited.append({"symbol": symbol, "timeframe": timeframe})
             continue
+        positioning_key = str(symbol).strip().upper()
         try:
             record = run_crypto_cycle(
                 collector=collector, store=store, now=now,
@@ -1409,12 +1433,16 @@ def run_pool_cycle(
                 control_store=control_store, liquidation_feed=liquidation_feed,
                 routing_marks=routing_marks, cooldown_marks=cooldown_marks,
                 candle_cache=candle_cache,
+                positioning_rows=None if positioning_key in stale_positioning
+                else positioning_by_symbol.get(positioning_key, []),
             )
         except MvpRuntimeError as exc:
             if exc.reason_code in _KILL_CODES:
                 raise  # global stop — every remaining context would refuse the same
             skipped.append({"symbol": symbol, "timeframe": timeframe, "reason_code": exc.reason_code})
             continue
+        if (record.get("feeds") or {}).get("positioning") in ("seeded", "appended"):
+            stale_positioning.add(positioning_key)
         cycles.append(record)
         if record.get("live_halt"):
             halted = {
