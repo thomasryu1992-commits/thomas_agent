@@ -51,4 +51,10 @@ jobs:
           python scripts/ci_activate_core_for_tests.py
 
       - name: Run MVP runtime test suite
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q --junitxml=junit.xml
+
+      # A skipped test and a passing test are the same character in `pytest -q`. If the
+      # Core activation above ever stops taking effect, ~208 tests skip and the run stays
+      # green; this is the step that makes that loud (scripts/check_test_skips.py).
+      - name: Fail if the run skipped what CI must never skip
+        run: python scripts/check_test_skips.py --junit junit.xml
