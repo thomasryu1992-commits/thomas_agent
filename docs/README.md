@@ -52,8 +52,11 @@ reused as libraries; it is not extended). It runs one request end-to-end: intake
 (classify/bind/permission/assign) → read-only search → specialist model call → output
 validation → hash-chained audit → final response.
 
-Every **effect** is gated, and each gate is per machine: a capability is inert until an
-integrity-checked activation record grants it, and deleting that record revokes it live. What
+Every **effect** is gated, and since **2026-08-10 (Thomas) the environment IS the gate**: a
+capability is inert until its environment opt-in names it, and revoking means unsetting the
+variable and restarting the container. (The per-machine activation records and their 30-day
+renewal are retired; leftover `safety_flag_activations/*.json` files are inert — the history
+is in the root `CLAUDE.md` and `ACTIVE_ARCHITECTURE.md`.) What
 this text must not be read as saying is "nothing happens" — that was true through R7 and has
 not been since: R8 creates files under `workspace/`, R10 spends an approval, and the crypto
 stack can place a real order. This page names entry points; **it does not own status.** For
@@ -66,7 +69,7 @@ computed board: `python -m runtime.mvp_runtime.crypto.live_readiness`.
 | Run the MVP intake CLI | `python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."` |
 | Single source for authority levels / invariant / effect blocks | [`runtime/mvp_runtime/authority.py`](../runtime/mvp_runtime/authority.py) |
 | Permission decisions (analysis + search) | [`PERMISSION_DECISION_CONTRACT_V0.3`](runtime-contracts/PERMISSION_DECISION_CONTRACT_V0.3.md), [`runtime/mvp_runtime/permission.py`](../runtime/mvp_runtime/permission.py) |
-| Enforced Safety-Flag Gate (model / network OFF by default) | [`runtime/mvp_runtime/safety_gate.py`](../runtime/mvp_runtime/safety_gate.py); activate locally with [`scripts/activate_safety_flag.py`](../scripts/activate_safety_flag.py) |
+| Enforced Safety-Flag Gate (model / network OFF by default) | [`runtime/mvp_runtime/safety_gate.py`](../runtime/mvp_runtime/safety_gate.py); opt in via the environment (`MVP_HOSTED_PROVIDER` etc. — the env is the gate since 2026-08-10; `scripts/activate_safety_flag.py` is the retired grant mechanism) |
 | Durable append-only ledger | [`runtime/mvp_runtime/store.py`](../runtime/mvp_runtime/store.py) |
 | R3 read-only web-search tool | [`READONLY_SEARCH_TOOL_V0.1`](runtime-contracts/READONLY_SEARCH_TOOL_V0.1.md), [`runtime/mvp_runtime/tools.py`](../runtime/mvp_runtime/tools.py) |
 | R4 operator control channel (Telegram private 1:1) | [`OPERATOR_CONTROL_CHANNEL_V0.1`](runtime-contracts/OPERATOR_CONTROL_CHANNEL_V0.1.md), [`runtime/mvp_runtime/operator.py`](../runtime/mvp_runtime/operator.py); run `python -m runtime.mvp_runtime.operator_cli` |

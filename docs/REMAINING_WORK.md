@@ -4,7 +4,13 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-10** — **three sections moved and none of them said so here.** F9's
+Last updated: **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
+08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
+about. As of 08-29: §C's correction record is built **and executed** (2026-08-24T14:20Z,
+`live_corr_1710c5ca552d3e88c668` — §C records the row), so the "one unblocked build item" the
+08-23 paragraph below names is done and the list again holds none.
+
+Earlier — **2026-08-10** — **three sections moved and none of them said so here.** F9's
 decision was taken and shipped (#638 + #651, 2026-08-09): the rotation runs cohort schedules and
 F9 is now the working rather than an open ask. Section **G is exhausted** (2026-08-09) and states
 what would re-open it. Section **H's (a) cost re-derivation is done** (2026-08-09), leaving (b)
@@ -1206,8 +1212,11 @@ type, the chained corrections store, the five fail-closed rules, and application
 `read_live_outcomes`, which leaves all five consumers untouched. **The door is built too** —
 `scripts/correct_live_outcome.py`, `--list` / `--request` / `--confirm`, with no
 `--without-approval` escape: a correction is never the thing standing between an operator and a
-working system, so an escape would only ever be a way to change a money figure unasked. What is
-left is Thomas running it. Verified
+working system, so an escape would only ever be a way to change a money figure unasked. **And it
+has been run: 2026-08-24T14:20:31Z, `live_corr_1710c5ca552d3e88c668` corrects
+`live_out_e56cf310dcc07d9c6edd` (SUPERSEDE, basis DERIVED, `corrected_by: thomas`,
+corrected −0.1728 USDT / −0.887R) — the item this file's header calls "the one unblocked build
+item" is built AND executed, so §C is closed.** Verified beforehand
 against the live row in a copied state directory — `drawdown_r` moves from the contaminated
 `0.0000` to the true `-0.8871`, `max_drawdown_r` stays `-4.2811` (the historical low is deeper
 than the phantom, so the maximum was never wrong), and the verdict stays NORMAL either way.
@@ -1221,8 +1230,10 @@ adds a `basis` of `DERIVED` / `ATTESTED` and a fifth fail-closed rule
 (`CORRECTION_ARITHMETIC_DISAGREES`): for a DERIVED correction the runtime recomputes the figures
 itself and refuses the correction if the submitted ones disagree, reusing #753's tolerance rather
 than minting a second one for the same arithmetic. The human supplies the judgement; the runtime
-supplies the number. What is left to decide is whether `ATTESTED` — the path with no guarantee
-beyond the approval hash — is built now or deferred until a correction actually needs it.
+supplies the number. The `ATTESTED` question is decided and recorded in the code:
+**designed and deliberately NOT built** (`live_correction.py` refuses ATTESTED rows on load,
+citing V0.2 §5-1) — deferred until a correction actually needs a figure the row's own
+arithmetic cannot supply.
 
 **Hand-editing the value is the trap, not the shortcut.** It would pass the hash if recomputed,
 and it would leave no record that anyone changed a money figure — on the one ledger whose whole
