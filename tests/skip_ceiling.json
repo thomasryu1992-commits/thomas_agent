@@ -4,7 +4,7 @@
   "_how_to_record": "Read the 'Skipped tests on <platform>: N' line from a CI run of the check on that platform and set it here. Not from a developer machine: a local root run skips the two chown-refusal tests that a CI runner does not skip, so a locally measured number is wrong on both platforms.",
   "_null_means": "No ceiling recorded: the check reports the count and passes. The forbidden-reason check runs regardless and needs no number.",
   "ceilings": {
-    "linux": null,
-    "win32": null
+    "linux": 0,
+    "win32": 36
   }
 }
