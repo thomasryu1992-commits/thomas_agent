@@ -50,8 +50,6 @@ from runtime.mvp_runtime.approval_store import ApprovalStore  # noqa: E402
 from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
-from runtime.mvp_runtime.crypto import forward_confirmation  # noqa: E402
-from runtime.mvp_runtime.crypto import paper as paper_store  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
@@ -71,7 +69,9 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
                 allow_family_overflow: bool = False,
                 allow_unconfirmed_holdout: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
-                allow_quarantined_derivation: bool = False) -> dict:
+                allow_quarantined_derivation: bool = False,
+                allow_oversized_pool: bool = False,
+                allow_reactivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
     now = now or timeutil.utc_now_iso()
     prepared = promotion_mod.request_promotion(
@@ -84,6 +84,8 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
         allow_family_overflow=allow_family_overflow,
         allow_unconfirmed_holdout=allow_unconfirmed_holdout,
         allow_quarantined_derivation=allow_quarantined_derivation,
+        allow_oversized_pool=allow_oversized_pool,
+        allow_reactivation=allow_reactivation,
     )
     store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
     store.append_permission_decision(prepared["permission_decision"])
@@ -165,84 +167,13 @@ def run_promotion(
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
+    # After the approval check, not before: a promotion that Thomas never approved should
+    # say so first. `verify_promotion_approval` above resolves identity alone — it recomputes
+    # the approval's content hash and judges nothing else — because the escapes are
+    # deliberately not part of that hash, so a door that recomputes it cannot honour them.
+    # The quality gates live at the ask and at the gate-roster call below; not in between.
     try:
         candidates = pool_store.resolve_candidates(selectors, root)
-        # After the approval check, not before: a promotion that Thomas never approved should
-        # say so first. Both refusals are absolute; this is only about which one an operator
-        # reads when a selection fails on both counts.
-        #
-        # And this is the ONLY place they run on the execution path. `verify_promotion_approval`
-        # above resolves identity alone — it recomputes the approval's content hash and judges
-        # nothing else — because the escapes below are deliberately not part of that hash, so a
-        # door that recomputes it cannot honour them. While it ran these too, every promotion
-        # approved WITH an escape refused there before reaching this block. The gates live at
-        # the ask (`promotion.request_promotion`) and here; not in between.
-        if not allow_stale_cost_basis:
-            pool_store.assert_promotable_cost_basis(candidates)
-        # After the basis, because a row that records neither is more usefully reported as the
-        # cheaper failure first: "scored under an unknown cost model" is the one an operator
-        # can act on by re-minting, and re-minting fixes both. A KNOWN shallow window is not
-        # checked here at all — only an unreadable one.
-        if not allow_unrecorded_evidence_depth:
-            pool_store.assert_promotable_evidence_depth(candidates)
-        # Last, because it is the only one of the three that is about the POOL rather than
-        # about the evidence: the other two ask whether a number can be believed, this one
-        # asks whether the pool already holds this strategy under another rule hash.
-        if not allow_duplicates:
-            pool_store.assert_no_semantic_duplicates(
-                candidates,
-                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
-            )
-        # One tier below the semantic gate, same pool question, narrower claim: members of one
-        # behaviour cluster traded indistinguishably on the recorded axes, and a cluster gets
-        # ONE routing slot (Thomas 5-2, 2026-08-11) — the second member's forward record is
-        # the measurement the first is already making.
-        if not allow_cluster_siblings:
-            pool_store.assert_no_cluster_siblings(
-                candidates,
-                incumbents=pool_store.pool_candidate_records(root) if keep_active else None,
-            )
-        # The 5-3 entry bar and the family cap (Thomas 2026-08-11). Both charged to ENTRANTS
-        # only — a restatement of an occupying lineage is not an entry, so re-arming the
-        # pre-bar pool spends no waiver (measured before wiring: all five occupying rows are
-        # 350d/undispersed vintage, and grandfathering is what keeps the arm path usable).
-        occupying = [
-            e for e in (pool_store.load_active_pool(root).get("active_strategies") or [])
-            if e.get("status") in pool_store.OCCUPYING_STATUSES
-        ]
-        if not allow_below_entry_bar:
-            pool_store.assert_observation_entry_bar(
-                candidates,
-                occupying_candidate_ids=frozenset(
-                    str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
-                ),
-            )
-        if not allow_family_overflow:
-            selected_ids = {str(c.get("candidate_id")) for c in candidates}
-            # Add mode keeps every incumbent (all are base); a replace pool is the batch
-            # alone, so only the RESTATED incumbents still occupy after it lands.
-            pool_store.assert_family_cap(
-                candidates,
-                occupying_entries=occupying if keep_active else [
-                    e for e in occupying if str(e.get("candidate_id")) in selected_ids
-                ],
-            )
-        # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on
-        # unseen data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. This is
-        # the condition #648 disarmed the pool for, standing as a door instead of a
-        # migration; OBSERVATION installs are the tier it protects and pass untouched.
-        if live_tier == "LIVE" and not allow_unconfirmed_holdout:
-            forward_confirmation.assert_live_tier_confirmed(
-                candidates,
-                outcomes=paper_store.read_outcomes(root),
-                observed_lineages=len(occupying),
-            )
-        # And last of all, the axis that is about neither the evidence nor the pool but about
-        # the ROW: what minted it. Ordered last because it is the only one of the eight that
-        # refuses nothing today — it stands here so that an experimental derivation cannot
-        # reach the live pool through the ordinary door on the day someone starts minting one.
-        if not allow_quarantined_derivation:
-            pool_store.assert_promotable_derivation(candidates)
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
@@ -312,30 +243,37 @@ def run_promotion(
             "promoted_at": now,
         })
 
-    # The pool-sizing cap, checked on the MERGED result rather than on the batch: in add
-    # mode the incumbents are what make a two-candidate promotion oversized, so judging the
-    # batch alone would pass every promotion that ever mattered. Last of the four guards
-    # because it is the only one about the pool's SHAPE — the others ask whether a candidate
-    # is believable, this one asks whether the pool it would join can still be judged.
-    if not allow_oversized_pool:
-        try:
-            pool_store.assert_pool_within_size_cap(entries)
-        except MvpRuntimeError as exc:
-            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    # Every quality gate, from the shared roster in `promotion` — the same list the ask door
+    # ran, so the two doors cannot drift apart again (the size cap and the reactivation
+    # guard once ran here alone, and --request approved promotions this door then refused).
+    # Run on the ASSEMBLED entries so an add-mode batch is judged on incumbents plus itself.
+    # One ordering consequence, accepted: the already-in-pool and display-id refusals above
+    # now land before the evidence gates — an identity refusal reads first, matching how the
+    # approval check already leads.
+    try:
+        promotion_mod.run_promotion_gates(
+            candidates, keep_active=keep_active, live_tier=live_tier,
+            entries=entries, store_root=root,
+            escapes={
+                "allow_stale_cost_basis": allow_stale_cost_basis,
+                "allow_unrecorded_evidence_depth": allow_unrecorded_evidence_depth,
+                "allow_duplicates": allow_duplicates,
+                "allow_cluster_siblings": allow_cluster_siblings,
+                "allow_below_entry_bar": allow_below_entry_bar,
+                "allow_family_overflow": allow_family_overflow,
+                "allow_unconfirmed_holdout": allow_unconfirmed_holdout,
+                "allow_quarantined_derivation": allow_quarantined_derivation,
+                "allow_oversized_pool": allow_oversized_pool,
+                "allow_reactivation": allow_reactivation,
+            },
+        )
+    except MvpRuntimeError as exc:
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
-    # Beside the size cap because it is the other question about the ASSEMBLED pool rather
-    # than about a candidate — and the last one, because it is the only guard here that is
-    # about the entries this install would leave BEHIND rather than the ones it adds.
-    # Replace mode rebuilds every entry with a hardcoded PAPER_ACTIVE, so re-listing the
-    # incumbents to drop one brings back everything the lifecycle had terminated. Recorded
-    # either way below, and read `pool.assert_no_silent_reactivation` for why the approval
-    # cannot cover this and the operator therefore must.
+    # Who this install returns from a terminal status — recorded on the summary whether or
+    # not the escape fired, because the reactivation is the part of the effect the approval's
+    # content hash cannot name, so the ledger is the only place it is written down at all.
     reactivations = pool_store.silent_reactivations(entries, root=root)
-    if not allow_reactivation:
-        try:
-            pool_store.assert_no_silent_reactivation(entries, root=root)
-        except MvpRuntimeError as exc:
-            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     new_pool = {
         "pool_version": "active_strategy_pool.v1",
@@ -729,7 +667,9 @@ def main(argv: list[str] | None = None) -> int:
                 allow_below_entry_bar=args.allow_below_entry_bar,
                 allow_family_overflow=args.allow_family_overflow,
                 allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
-                allow_quarantined_derivation=args.allow_quarantined_derivation)
+                allow_quarantined_derivation=args.allow_quarantined_derivation,
+                allow_oversized_pool=args.allow_oversized_pool,
+                allow_reactivation=args.allow_reactivation)
         except MvpRuntimeError as exc:
             print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
             return EXIT_BLOCKED

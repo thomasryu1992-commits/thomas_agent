@@ -16,15 +16,16 @@ grant. Widening R10 consumption to this scope stays a separate explicit decision
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
 from .. import approval as approval_mod
 from .. import timeutil
 from ..binding import bind_task_to_core
-from ..errors import ApprovalBlocked, ToolError
+from ..errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
@@ -103,43 +104,205 @@ def _resolve_identity(selectors: list[str], root: Path | None) -> list[dict[str,
     return resolved
 
 
-def _resolve_candidates(
-    selectors: list[str], root: Path | None, *, allow_stale_cost_basis: bool = False,
-    allow_unrecorded_evidence_depth: bool = False,
-    allow_quarantined_derivation: bool = False,
-) -> list[dict[str, Any]]:
-    """Identity resolution plus the quality gates the ASK owes the install door.
+@dataclass(frozen=True)
+class _GateInput:
+    """What one promotion gate may read, assembled once per door by ``run_promotion_gates``."""
 
-    Backs ``request_promotion`` only. Verification deliberately resolves identity alone —
-    see ``verify_promotion_approval``.
+    candidates: list[dict[str, Any]]
+    keep_active: bool
+    live_tier: str
+    # The pool as it WOULD stand after this install. The two shape gates judge this, never
+    # the batch alone — an add-mode promotion is oversized because of its incumbents.
+    entries: list[Mapping[str, Any]]
+    store_root: Path | None
+    # Occupying pool members, read once per door: the entry bar, the family cap and the
+    # LIVE confirmation all key on the same set.
+    occupying: list[dict[str, Any]]
+
+    @property
+    def occupying_ids(self) -> frozenset[str]:
+        return frozenset(
+            str(e.get("candidate_id")) for e in self.occupying if e.get("candidate_id")
+        )
+
+    def incumbent_records(self) -> list[dict[str, Any]] | None:
+        # Incumbents matter only when the batch ADDS to the pool: a replace promotion
+        # installs exactly this batch, so yesterday's pool cannot collide with it.
+        return pool_store.pool_candidate_records(self.store_root) if self.keep_active else None
+
+
+def _gate_cost_basis(g: _GateInput) -> None:
+    # Evidence scored under a cost model cheaper than the venue charges cannot be believed.
+    pool_store.assert_promotable_cost_basis(g.candidates)
+
+
+def _gate_evidence_depth(g: _GateInput) -> None:
+    # Evidence that cannot say what window it was scored over. A KNOWN shallow window is
+    # ranked, never refused — only an unreadable one lands here.
+    pool_store.assert_promotable_evidence_depth(g.candidates)
+
+
+def _gate_semantic_duplicates(g: _GateInput) -> None:
+    # The same strategy under different rule hashes takes a slot and never trades.
+    pool_store.assert_no_semantic_duplicates(g.candidates, incumbents=g.incumbent_records())
+
+
+def _gate_cluster_siblings(g: _GateInput) -> None:
+    # One tier down, same pool question: a behaviour cluster gets ONE routing slot
+    # (Thomas 5-2, 2026-08-11) — the second member's forward record is the measurement
+    # the first is already making.
+    pool_store.assert_no_cluster_siblings(g.candidates, incumbents=g.incumbent_records())
+
+
+def _gate_entry_bar(g: _GateInput) -> None:
+    # The 5-3 entry bar (Thomas 2026-08-11), charged to ENTRANTS only: a restatement of an
+    # occupying lineage is not an entry, so re-arming the pre-bar pool spends no waiver.
+    pool_store.assert_observation_entry_bar(
+        g.candidates, occupying_candidate_ids=g.occupying_ids,
+    )
+
+
+def _gate_family_cap(g: _GateInput) -> None:
+    # The family cap (Thomas 2026-08-11), charged to entrants like the bar above. Add mode
+    # keeps every incumbent, so all of them are base; a replace pool is the batch alone, so
+    # only the RESTATED incumbents still occupy after it lands.
+    selected = {str(c.get("candidate_id")) for c in g.candidates}
+    base = g.occupying if g.keep_active else [
+        e for e in g.occupying if str(e.get("candidate_id")) in selected
+    ]
+    pool_store.assert_family_cap(g.candidates, occupying_entries=base)
+
+
+def _gate_live_confirmation(g: _GateInput) -> None:
+    # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on unseen
+    # data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. OBSERVATION installs
+    # are exactly the tier that gate exists to protect, so they pass untouched.
+    if g.live_tier != "LIVE":
+        return
+    forward_confirmation.assert_live_tier_confirmed(
+        g.candidates,
+        outcomes=paper_store.read_outcomes(g.store_root),
+        observed_lineages=len(g.occupying),
+    )
+
+
+def _gate_derivation(g: _GateInput) -> None:
+    # The axis about neither the evidence nor the pool but the ROW: what minted it. Ordered
+    # late because it refuses nothing on today's store — an operator reading a refusal
+    # should meet the actionable ones first.
+    pool_store.assert_promotable_derivation(g.candidates)
+
+
+def _gate_pool_size_cap(g: _GateInput) -> None:
+    # A pool whose routable set outgrows what the lifecycle can judge; judged on the
+    # MERGED result, since in add mode the incumbents are what make a batch oversized.
+    pool_store.assert_pool_within_size_cap(g.entries)
+
+
+def _gate_silent_reactivation(g: _GateInput) -> None:
+    # The one effect the approval's content hash names but cannot escape-gate: an install
+    # returning terminal members to trading must be the operator's explicit act.
+    pool_store.assert_no_silent_reactivation(list(g.entries), root=g.store_root)
+
+
+@dataclass(frozen=True)
+class PromotionGate:
+    """One quality gate on the promotion path, named by the escape flag that skips it.
+
+    ``PROMOTION_GATES`` below is the ONLY gate list either door runs. The ask
+    (``request_promotion``) and the install (``promote_strategy_candidates.run_promotion``)
+    used to keep hand-synced parallel lists in two directory trees, and they drifted: the
+    size cap and the reactivation guard ran at the install alone, so ``--request`` could
+    win Thomas's approval for a promotion ``--confirm`` was always going to refuse — an
+    ask that cannot execute spends his answer on nothing. A gate that should run at one
+    door only is now a decision to record on this roster, never an omission to discover
+    at the door.
     """
-    resolved = _resolve_identity(selectors, root)
-    # Checked at the ASK, not only at the install. The execution door refuses stale-basis
-    # evidence too, and an ask that cannot execute is worse than no ask: it spends Thomas's
-    # answer on a promotion the next step was always going to block.
-    if not allow_stale_cost_basis:
+
+    escape_flag: str
+    check: Callable[[_GateInput], None]
+
+
+# Ordering is operator UX, not correctness — every gate below is absolute unless escaped.
+# Evidence gates lead because they are the ones an operator can act on by re-minting; the
+# two pool-shape gates run on the assembled entries and come last, with reactivation after
+# the size cap because it is the only gate about the entries an install leaves BEHIND.
+PROMOTION_GATES: tuple[PromotionGate, ...] = (
+    PromotionGate("allow_stale_cost_basis", _gate_cost_basis),
+    PromotionGate("allow_unrecorded_evidence_depth", _gate_evidence_depth),
+    PromotionGate("allow_duplicates", _gate_semantic_duplicates),
+    PromotionGate("allow_cluster_siblings", _gate_cluster_siblings),
+    PromotionGate("allow_below_entry_bar", _gate_entry_bar),
+    PromotionGate("allow_family_overflow", _gate_family_cap),
+    PromotionGate("allow_unconfirmed_holdout", _gate_live_confirmation),
+    PromotionGate("allow_quarantined_derivation", _gate_derivation),
+    PromotionGate("allow_oversized_pool", _gate_pool_size_cap),
+    PromotionGate("allow_reactivation", _gate_silent_reactivation),
+)
+
+
+def run_promotion_gates(
+    candidates: list[dict[str, Any]],
+    *,
+    keep_active: bool,
+    live_tier: str,
+    entries: list[Mapping[str, Any]],
+    store_root: Path | None,
+    escapes: Mapping[str, bool],
+) -> None:
+    """Run every non-escaped gate on the roster, or raise ``ApprovalBlocked`` on the first
+    refusal.
+
+    Both doors call this with the same roster; ``entries`` is each door's own view of the
+    post-install pool — the install passes the entries it is about to write, the ask passes
+    ``predicted_pool_entries``. An escape flag missing from ``escapes`` RUNS its gate: the
+    fail-closed direction, so a door that forgets to wire a new flag refuses rather than
+    silently waving the gate through.
+    """
+    occupying = [
+        e for e in (pool_store.load_active_pool(store_root).get("active_strategies") or [])
+        if e.get("status") in pool_store.OCCUPYING_STATUSES
+    ]
+    gate_input = _GateInput(
+        candidates=candidates, keep_active=keep_active, live_tier=live_tier,
+        entries=entries, store_root=store_root, occupying=occupying,
+    )
+    for gate in PROMOTION_GATES:
+        if escapes.get(gate.escape_flag, False):
+            continue
         try:
-            pool_store.assert_promotable_cost_basis(resolved)
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    # Same rule for evidence that cannot say what window it was scored over, for the same
-    # reason: the execution door refuses it, so asking first only spends the answer.
-    if not allow_unrecorded_evidence_depth:
-        try:
-            pool_store.assert_promotable_evidence_depth(resolved)
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    # And the one axis that is not about the evidence at all: HOW the row was made. Asked at
-    # the ask for the same reason as the two above — the execution door refuses it, so an ask
-    # that cannot execute only spends Thomas's answer — and asked LAST because it is the one
-    # that refuses nothing on today's store, so an operator reading a refusal should meet the
-    # actionable ones first.
-    if not allow_quarantined_derivation:
-        try:
-            pool_store.assert_promotable_derivation(resolved)
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    return resolved
+            gate.check(gate_input)
+        except MvpRuntimeError as exc:
+            raise ApprovalBlocked(exc.reason_code, exc.reason) from exc
+
+
+def predicted_pool_entries(
+    candidates: list[dict[str, Any]], *, keep_active: bool, live_tier: str,
+    root: Path | None,
+) -> list[dict[str, Any]]:
+    """The pool as the install door would assemble it, reduced to what the shape gates read.
+
+    ``assert_pool_within_size_cap`` counts status plus spec; ``assert_no_silent_reactivation``
+    compares candidate_id plus status against the pool on disk. The install door's fuller
+    entries (display-id collision handling, evidence columns) change neither answer, so the
+    ask can judge the same two gates without duplicating that assembly. Add mode keeps the
+    incumbents exactly as they stand — a terminal member stays terminal, which is why add
+    mode can never reactivate; replace mode is the batch alone, every row ``PAPER_ACTIVE``,
+    which is exactly how replace mode can.
+    """
+    predicted = [
+        {
+            "strategy_id": c.get("strategy_id"),
+            "candidate_id": c.get("candidate_id"),
+            "status": "PAPER_ACTIVE",
+            pool_store.LIVE_TIER_FIELD: live_tier,
+            "strategy_spec": c.get("strategy_spec"),
+        }
+        for c in candidates
+    ]
+    if keep_active:
+        return [*(pool_store.load_active_pool(root).get("active_strategies") or []), *predicted]
+    return predicted
 
 
 def request_promotion(
@@ -163,6 +326,8 @@ def request_promotion(
     allow_family_overflow: bool = False,
     allow_unconfirmed_holdout: bool = False,
     allow_quarantined_derivation: bool = False,
+    allow_oversized_pool: bool = False,
+    allow_reactivation: bool = False,
 ) -> dict[str, Any]:
     """Build the records that ASK Thomas for this promotion. Performs nothing.
 
@@ -177,78 +342,34 @@ def request_promotion(
     # Candidates may live under a different root only in tests (the trial-test split:
     # real Core for binding, tmp state for stores); production passes one root.
     store_root = candidates_root if candidates_root is not None else root
-    candidates = _resolve_candidates(
-        selectors, store_root,
-        allow_stale_cost_basis=allow_stale_cost_basis,
-        allow_unrecorded_evidence_depth=allow_unrecorded_evidence_depth,
-        allow_quarantined_derivation=allow_quarantined_derivation,
+    candidates = _resolve_identity(selectors, store_root)
+    # Every quality gate, from the one shared roster the install door also runs. Checked at
+    # the ASK, not only at the install: the execution door refuses the same things, and an
+    # ask that cannot execute is worse than no ask — it spends Thomas's answer on a
+    # promotion the next step was always going to block. That argument was already written
+    # beside eight of these gates while the size cap and the reactivation guard still ran
+    # at the install alone; the roster is what makes it structural.
+    run_promotion_gates(
+        candidates,
+        keep_active=keep_active,
+        live_tier=live_tier,
+        entries=predicted_pool_entries(
+            candidates, keep_active=keep_active, live_tier=live_tier, root=store_root,
+        ),
+        store_root=store_root,
+        escapes={
+            "allow_stale_cost_basis": allow_stale_cost_basis,
+            "allow_unrecorded_evidence_depth": allow_unrecorded_evidence_depth,
+            "allow_duplicates": allow_duplicates,
+            "allow_cluster_siblings": allow_cluster_siblings,
+            "allow_below_entry_bar": allow_below_entry_bar,
+            "allow_family_overflow": allow_family_overflow,
+            "allow_unconfirmed_holdout": allow_unconfirmed_holdout,
+            "allow_quarantined_derivation": allow_quarantined_derivation,
+            "allow_oversized_pool": allow_oversized_pool,
+            "allow_reactivation": allow_reactivation,
+        },
     )
-    # Same rule again, one door earlier. Incumbents matter only when the batch ADDS to
-    # the pool: a replace promotion installs exactly this batch, so yesterday's pool
-    # cannot collide with it. Kept out of ``_resolve_candidates`` because it reads state
-    # the selectors do not name — the pool as it stands right now — where the three gates
-    # in that helper are pure functions of the rows being promoted. Both are ask-and-install
-    # checks either way; neither belongs on the verification path.
-    if not allow_duplicates:
-        try:
-            pool_store.assert_no_semantic_duplicates(
-                candidates,
-                incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
-            )
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    # One tier down, same shape: a behaviour cluster gets one routing slot (Thomas 5-2,
-    # 2026-08-11). Checked at the ask for the reason every gate above is — the install door
-    # refuses it too, and an ask that cannot execute only spends Thomas's answer.
-    if not allow_cluster_siblings:
-        try:
-            pool_store.assert_no_cluster_siblings(
-                candidates,
-                incumbents=pool_store.pool_candidate_records(store_root) if keep_active else None,
-            )
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    # The 5-3 entry bar and the family cap (Thomas 2026-08-11), at the ask for the same
-    # reason as every gate above. Both are charged to ENTRANTS only: a restatement of an
-    # occupying lineage is not an entry, so re-arming the pre-bar pool spends no waiver.
-    occupying = [
-        e for e in (pool_store.load_active_pool(store_root).get("active_strategies") or [])
-        if e.get("status") in pool_store.OCCUPYING_STATUSES
-    ]
-    occupying_ids = frozenset(
-        str(e.get("candidate_id")) for e in occupying if e.get("candidate_id")
-    )
-    if not allow_below_entry_bar:
-        try:
-            pool_store.assert_observation_entry_bar(
-                candidates, occupying_candidate_ids=occupying_ids,
-            )
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    if not allow_family_overflow:
-        selected_ids = {str(c.get("candidate_id")) for c in candidates}
-        # Add mode keeps every incumbent, so all of them are base; a replace pool is the
-        # batch alone, so only the RESTATED incumbents still occupy after it lands.
-        base_entries = occupying if keep_active else [
-            e for e in occupying if str(e.get("candidate_id")) in selected_ids
-        ]
-        try:
-            pool_store.assert_family_cap(candidates, occupying_entries=base_entries)
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
-    # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on unseen
-    # data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. OBSERVATION installs
-    # are exactly the tier that gate exists to protect, so they pass untouched; checked at
-    # the ask because an ask the install door refuses only spends Thomas's answer.
-    if live_tier == "LIVE" and not allow_unconfirmed_holdout:
-        try:
-            forward_confirmation.assert_live_tier_confirmed(
-                candidates,
-                outcomes=paper_store.read_outcomes(store_root),
-                observed_lineages=len(occupying),
-            )
-        except ToolError as exc:
-            raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
     # Read here rather than passed in: the set is a fact about the pool as it stands, which is

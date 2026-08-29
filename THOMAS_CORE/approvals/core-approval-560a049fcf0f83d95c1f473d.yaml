@@ -1,0 +1,32 @@
+schema_version: thomas_core_release_approval.v0.3
+approval_id: core-approval-560a049fcf0f83d95c1f473d
+status: approved
+approved_by: Thomas
+approved_at_utc: '2026-08-29T08:04:03Z'
+approval_ref: ci-test
+approval_reason: CI test Core activation.
+approval_source:
+  source_type: operator_decision_intake
+  source_id: THOMAS_CORE/approvals/intake/ci-test-core-activation.md
+  source_hash: sha256:55b45e633dc4e6adcc6d616c707aa950b43437a3b0938edfc60f14ec6e158a85
+  identity_verification_method: ci_test
+  verification_status: verified_by_control_channel
+  note: The CLI validates and preserves externally verified evidence; the external control channel, protected review, or signature
+    system performs authentication.
+release_id: thomas-core-v0.2.1-a99f17144a7c
+core_version: 0.2.1
+core_bundle_sha256: sha256:a99f17144a7cc54e2586d8614b3b28b379bbc6ab4ab3fca2e858a06bf5549ff8
+core_release_manifest_sha256: sha256:fc873a4c43825ab6cf5cee83e8f2beddeb1a96991e594622da4081acd81195cd
+manifest_path: THOMAS_CORE/releases/thomas-core-v0.2.1-a99f17144a7c/manifest.yaml
+git_provenance:
+  approved_commit_sha: aa45eb206394c4f4d0971447e56eb9a9826e0084
+scope:
+  authorizes_core_runtime_reference: true
+  grants_execution_permission: false
+  grants_external_action_permission: false
+  grants_financial_authority: false
+  changes_agent_permission_ceiling: false
+  changes_tool_or_program_scope: false
+immutability:
+  approval_record_edit_in_place_allowed: false
+  revocation_or_supersession_requires_new_record: true

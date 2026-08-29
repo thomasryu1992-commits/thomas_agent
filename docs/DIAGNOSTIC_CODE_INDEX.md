@@ -7,7 +7,7 @@ Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **
 - **488** distinct codes across **924** raise sites
 - **21** exception classes carry them
 - **65** codes are raised from more than one module (see below)
-- **126** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **119** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -124,24 +124,24 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AMBIGUOUS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 333 | `select_role` | `len(candidates) > 1` |
 | `ANNOUNCE_POINTER_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 896 | `record_announced` | `—` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 690 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
-| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 349 | `verify_promotion_approval` | `snapshot.get('content_sha256') != expected` |
+| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 470 | `verify_promotion_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 167 | `verify_retirement_approval` | `snapshot.get('content_sha256') != retirement_content_sha256(resolve_pool_entries(strategy_ids, …` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 229 | `verify_registration_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 248 | `record_decision` | `is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 594 | `apply_command` | `approval.get('status') == STATUS_PENDING and is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 173 | `consume_approval` | `approval_mod.is_expired(approval_rec, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 682 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
-| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 328 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
+| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 449 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 159 | `verify_retirement_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 222 | `verify_registration_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 410 | `_spend` | `approval_mod.is_expired(record, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 410 | `run_trial` | `approval_mod.is_expired(approval_rec, now=now)` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 676 | `verify_probe_approval` | `approval is None` |
-| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 322 | `verify_promotion_approval` | `approval is None` |
+| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 443 | `verify_promotion_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 153 | `verify_retirement_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 216 | `verify_registration_approval` | `approval is None` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 679 | `verify_probe_approval` | `status != 'APPROVED'` |
-| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 325 | `verify_promotion_approval` | `status != 'APPROVED'` |
+| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 446 | `verify_promotion_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 156 | `verify_retirement_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 219 | `verify_registration_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_CONSUMED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 801 | `build_approval_consumption_audit` | `approval.get('status') != 'CONSUMED'` |
@@ -156,7 +156,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 65 | `append` | `—` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 107 | `append_permission_decision` | `—` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 685 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
-| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 332 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
+| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 453 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
 | `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1752 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
@@ -230,7 +230,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_REQUIRES_REVIEW` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 508 | `create_program_candidate` | `latest.get('review_status') != 'UNDER_REVIEW'` |
 | `CANDIDATE_SEMANTIC_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 724 | `assert_no_semantic_duplicates` | `—` |
 | `CANDIDATE_UNCONFIRMED_FOR_LIVE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_confirmation.py` | 249 | `assert_live_tier_confirmed` | `—` |
-| `CANDIDATE_UNHASHED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 102 | `_resolve_identity` | `not (isinstance(c.get('strategy_rule_hash'), str) and c['strategy_rule_hash'])` |
+| `CANDIDATE_UNHASHED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 103 | `_resolve_identity` | `not (isinstance(c.get('strategy_rule_hash'), str) and c['strategy_rule_hash'])` |
 | `CANDIDATE_VERSION_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 288 | `select_candidate_role` | `version is not None and role.get('version') != version` |
 | `CAPABILITY_EXCEEDS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 75 | `build_role_assignment` | `not set(required_capabilities).issubset(capabilities)` |
 | `CHANNEL_PARTIAL_DELIVERY` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1162 | `send` | `—` |
@@ -823,7 +823,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROMOTION_ORIGIN_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 622 | `build_promotion_audit` | `not isinstance(origin, Mapping)` |
 | `PROMOTION_REASON_MISSING` | `AuditError` | `runtime/mvp_runtime/audit.py` | 634 | `build_promotion_audit` | `not (isinstance(reason, str) and reason.strip())` |
 | `PROMOTION_SUBJECT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 646 | `build_promotion_audit` | `not (isinstance(candidate_id, str) and candidate_id and isinstance(validated_id, str) and valid…` |
-| `PROMOTION_TIER_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 75 | `promotion_content_sha256` | `live_tier not in pool_store.LIVE_TIERS` |
+| `PROMOTION_TIER_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 76 | `promotion_content_sha256` | `live_tier not in pool_store.LIVE_TIERS` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 459 | `_apply_job` | `not isinstance(inputs, dict)` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 469 | `_apply_job` | `not isinstance(families, list) or not all((isinstance(f, str) for f in families)) or len(famili…` |
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 475 | `_apply_job` | `focus is not None and (not isinstance(focus, str))` |
