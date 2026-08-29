@@ -355,7 +355,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_CANDIDATE` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 892 | `build_memory_promotion_permission_decision` | `not (isinstance(content, str) and content.strip())` |
 | `INVALID_CANDIDATE_TRANSITION` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 573 | `transition_candidate` | `allowed is None` |
 | `INVALID_CANDIDATE_TRANSITION` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 579 | `transition_candidate` | `to_status is None` |
-| `INVALID_CHAIN` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 845 | `__init__` | `len(providers) < 2` |
+| `INVALID_CHAIN` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 851 | `__init__` | `len(providers) < 2` |
 | `INVALID_CHANNEL` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 171 | `build_task` | `channel not in _ALLOWED_CHANNELS` |
 | `INVALID_CONTENT` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 211 | `_require_content` | `not isinstance(content, str)` |
 | `INVALID_CORE_CANDIDATE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 489 | `decide_core_candidate` | `not (isinstance(candidate_id, str) and candidate_id)` |
@@ -568,9 +568,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 585 | `apply_switch` | `not isinstance(command, str) or not command.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 617 | `apply_switch` | `isinstance(raw_mode, str) and raw_mode.strip()` |
 | `MALFORMED_REQUEST` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 640 | `apply_switch` | `approval_id is not None and (not isinstance(approval_id, str) or not approval_id.strip())` |
-| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 499 | `_parse_hosted_response` | `—` |
-| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 501 | `_parse_hosted_response` | `not isinstance(analysis, dict) or any((k not in analysis for k in _REQUIRED_ANALYSIS_KEYS))` |
-| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 509 | `_parse_hosted_response` | `—` |
+| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 505 | `_parse_hosted_response` | `—` |
+| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 507 | `_parse_hosted_response` | `not isinstance(analysis, dict) or any((k not in analysis for k in _REQUIRED_ANALYSIS_KEYS))` |
+| `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 515 | `_parse_hosted_response` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 306 | `fill_history` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 343 | `_signed_get` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 354 | `_build` | `not isinstance(account, dict)` |
@@ -675,8 +675,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2079 | `open_interest_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 586 | `_headers` | `missing` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 717 | `_headers` | `missing` |
-| `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 585 | `generate` | `not api_key` |
-| `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 714 | `generate` | `not api_key` |
+| `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 591 | `generate` | `not api_key` |
+| `NO_API_KEY` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 720 | `generate` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/tools.py` | 266 | `search` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/tools.py` | 357 | `search` | `not api_key` |
 | `NO_APPROVAL_ID` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 159 | `build_approval_request` | `not (isinstance(approval_id, str) and approval_id.startswith('approval_'))` |
@@ -831,10 +831,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 672 | `run_analysis_worker` | `—` |
 | `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 297 | `authorize` | `record['provider_id'] != provider_id` |
 | `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 362 | `assert_authorization` | `authorization.provider_id != provider_id` |
-| `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 333 | `_post_json_with_retry` | `—` |
-| `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 338 | `_post_json_with_retry` | `—` |
-| `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 330 | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
-| `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 881 | `generate` | `—` |
+| `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 339 | `_post_json_with_retry` | `—` |
+| `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 344 | `_post_json_with_retry` | `—` |
+| `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 336 | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
+| `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 887 | `generate` | `—` |
 | `QUERY_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | 98 | `_require_query` | `len(query) > MAX_QUERY_CHARS` |
 | `QUEUE_FULL` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 517 | `enqueue` | `depth >= QUEUE_DEPTH_LIMIT` |
 | `REASON_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 181 | `apply_dispatch` | `not isinstance(reason, str) or not reason.strip()` |
@@ -872,7 +872,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RETIREMENT_REASON_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 357 | `operator_retirement_decision` | `not (isinstance(reason, str) and reason.strip())` |
 | `RISK_BELOW_DISPOSITION_FLOOR` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 576 | `build_permission_decision` | `declared_rank is None or declared_rank < RISK_ORDER[risk_floor]` |
 | `ROLE_ALREADY_ACTIVE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 278 | `select_candidate_role` | `status == 'active'` |
-| `ROLE_BINDING_UNSUPPORTED` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 861 | `bind_role_output_keys` | `binder is None` |
+| `ROLE_BINDING_UNSUPPORTED` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 867 | `bind_role_output_keys` | `binder is None` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 104 | `build_role_assignment` | `—` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 120 | `load_role_definition` | `—` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 256 | `load_resolved_roles` | `—` |
