@@ -698,13 +698,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `OFFSET_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1067 | `_save_offset` | `—` |
 | `OFFSET_STATE_MALFORMED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1040 | `_load_offset` | `—` |
 | `OI_INTERVAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2069 | `open_interest_history` | `interval not in OI_INTERVALS` |
-| `OI_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/oi_store.py` | 204 | `append_rows` | `not name` |
-| `ORDERBOOK_CROSSED` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 192 | `summarize_book` | `not best_bid < best_ask` |
-| `ORDERBOOK_DEPTH_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 198 | `summarize_book` | `total <= 0.0` |
-| `ORDERBOOK_SIDE_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 189 | `summarize_book` | `not bids or not asks` |
-| `ORDERBOOK_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 310 | `append_snapshot` | `not name` |
-| `ORDERBOOK_TIMESTAMP_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 149 | `period_start` | `—` |
-| `ORDERBOOK_TIMESTAMP_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 313 | `append_snapshot` | `not stamp` |
+| `OI_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/oi_store.py` | 191 | `append_rows` | `not name` |
+| `ORDERBOOK_CROSSED` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 193 | `summarize_book` | `not best_bid < best_ask` |
+| `ORDERBOOK_DEPTH_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 199 | `summarize_book` | `total <= 0.0` |
+| `ORDERBOOK_SIDE_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 190 | `summarize_book` | `not bids or not asks` |
+| `ORDERBOOK_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 298 | `append_snapshot` | `not name` |
+| `ORDERBOOK_TIMESTAMP_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 150 | `period_start` | `—` |
+| `ORDERBOOK_TIMESTAMP_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/orderbook_store.py` | 301 | `append_snapshot` | `not stamp` |
 | `ORDER_HOST_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 584 | `__init__` | `host not in ALLOWED_ORDER_HOSTS` |
 | `ORDER_MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 649 | `_signed_request` | `—` |
 | `ORDER_REJECTED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 669 | `submit` | `code == VENUE_DUPLICATE_CLIENT_ORDER_ID` |
@@ -761,8 +761,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POOL_CONTEXT_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1016 | `assert_pool_within_size_cap` | `over` |
 | `POOL_SILENT_REACTIVATION` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 829 | `assert_no_silent_reactivation` | `—` |
 | `POOL_SIZE_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 998 | `assert_pool_within_size_cap` | `len(occupying) > MAX_ROUTABLE_STRATEGIES` |
-| `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 282 | `append_rows` | `series not in POSITIONING_SERIES` |
-| `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 280 | `append_rows` | `not name` |
+| `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 270 | `append_rows` | `series not in POSITIONING_SERIES` |
+| `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 268 | `append_rows` | `not name` |
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1272 | `__post_init__` | `not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value))` |
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1277 | `__post_init__` | `value.split('.', 1)[0].upper() in RESERVED_BASENAMES` |
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1323 | `position_path` | `path.parent != resolved_base` |

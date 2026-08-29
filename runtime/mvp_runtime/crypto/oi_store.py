@@ -50,6 +50,7 @@ from runtime.read_only_kernel import integrity
 from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
+from . import refresh_marks
 from .market_data import FACTORY_DEPTH_DAYS
 from .paper import state_dir
 
@@ -108,16 +109,7 @@ def read_refresh_marks(root: Path | None = None) -> dict[str, str]:
     the one this store's *reads* take. A corrupt marks file that read as "recently attempted"
     would silently stop accumulation with the board still reporting whatever coverage it had —
     a store that quietly stops growing is worse than one that asks the vendor once too often."""
-    path = refresh_marks_path(root)
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): str(v) for k, v in data.items()}
+    return refresh_marks.read_marks(refresh_marks_path(root))
 
 
 def record_refresh_attempt(symbol: str, *, now: str, root: Path | None = None) -> None:
@@ -131,15 +123,10 @@ def record_refresh_attempt(symbol: str, *, now: str, root: Path | None = None) -
     name = str(symbol).strip().upper()
     if not name:
         return
-    directory = state_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = refresh_marks_path(root)
-    with locked(path.with_suffix(".lock"), code="OI_1H_MARKS_LOCKED", label="hourly OI refresh marks"):
-        marks = read_refresh_marks(root)
-        marks[name] = now
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(marks, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(path)
+    refresh_marks.record_attempt(
+        refresh_marks_path(root), name, now=now,
+        lock_code="OI_1H_MARKS_LOCKED", label="hourly OI refresh marks",
+    )
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -239,13 +226,7 @@ def is_due(last_attempt: str | None, now: str) -> bool:
     from the newest stored reading could never skip. Never attempted → due. Unparseable mark →
     due, because a marker that cannot be read should not be able to stop accumulation; the
     append is idempotent, so the cost of being wrong is one redundant request."""
-    if not last_attempt:
-        return True
-    try:
-        elapsed = (timeutil.parse_iso(now) - timeutil.parse_iso(last_attempt)).total_seconds()
-    except (ValueError, TypeError):
-        return True
-    return elapsed >= REFRESH_AFTER_SECONDS
+    return refresh_marks.attempt_is_due(last_attempt, now, refresh_after_seconds=REFRESH_AFTER_SECONDS)
 
 
 def record_intraday_oi(
