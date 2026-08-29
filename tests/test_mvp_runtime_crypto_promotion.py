@@ -9,13 +9,19 @@ source's veto semantics."""
 
 from __future__ import annotations
 
+import inspect
+import re
+from pathlib import Path
+
 import pytest
 
+import scripts.promote_strategy_candidates as promote_door
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL
 from runtime.mvp_runtime.approval_store import ApprovalStore
 from runtime.mvp_runtime.crypto import cost, paper, pool
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.promotion import (
+    PROMOTION_GATES,
     promotion_content_sha256,
     request_promotion,
     verify_promotion_approval,
@@ -334,7 +340,7 @@ def test_the_ask_refuses_stale_evidence_too(tmp_path):
     """Checked at the ASK, not only the install. An approval Thomas answers for a promotion
     the next step was always going to refuse spends his attention on nothing.
 
-    No `requires_local_core`, deliberately: the refusal lands in `_resolve_candidates`, before
+    No `requires_local_core`, deliberately: the refusal lands in `run_promotion_gates`, before
     `build_task`/`bind_task_to_core` ever reach for a Core. A test gated on one would have been
     skipped on exactly the machines where the gate is cheapest to break."""
     _seed_candidates(tmp_path, _spec_dict(),
@@ -1068,3 +1074,120 @@ def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval
         False, "LIVE", pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
     )
     assert asked != now_hash, "the approval would still verify against a changed effect"
+
+
+# --- one roster, two doors ------------------------------------------------------
+#
+# The gates used to live as two hand-synced lists — one in `request_promotion`, one in the
+# operator script — and they drifted: the size cap and the reactivation guard ran at the
+# install alone, so `--request` won Thomas's approval for promotions `--confirm` then
+# refused. `promotion.PROMOTION_GATES` is now the only list either door runs; these tests
+# pin the wiring so the next gate cannot land one-sided by accident.
+
+
+def test_the_ask_and_install_doors_consume_one_gate_roster():
+    roster = [g.escape_flag for g in PROMOTION_GATES]
+    assert len(roster) == len(set(roster)), "an escape flag names exactly one gate"
+    ask = {name for name in inspect.signature(request_promotion).parameters
+           if name.startswith("allow_")}
+    install = {name for name in inspect.signature(run_promotion).parameters
+               if name.startswith("allow_")}
+    assert ask == set(roster), "the ask door must expose exactly the roster's escapes"
+    assert install == set(roster), "the install door must expose exactly the roster's escapes"
+
+
+def test_every_roster_escape_is_reachable_from_the_operator_argv():
+    """A gate whose escape the argv cannot spell is a gate nobody can deliberately step
+    around — its refusal would read as a dead end. The spelling is pinned against the
+    script's own source because argparse builds the parser inside `main`."""
+    source = Path(promote_door.__file__).read_text(encoding="utf-8")
+    argv_flags = {m.replace("-", "_") for m in re.findall(r'"--(allow-[a-z-]+)"', source)}
+    assert argv_flags == {g.escape_flag for g in PROMOTION_GATES}
+
+
+def _seed_second_lineage(tmp_path, spec_dict, *, window_sha, expectancy=0.6):
+    """A second lineage the duplicate/cluster gates cannot mistake for the first: its own
+    evidence window and its own expectancy. `_seed_candidates` stamps every row with the
+    same `sha256:test` window, and the cluster bucket keys on exactly that."""
+    spec = StrategySpec.from_dict(spec_dict)
+    pool.append_candidates([{
+        "strategy_id": spec.strategy_id,
+        "strategy_rule_hash": spec.strategy_rule_hash,
+        "generation_id": "GEN-002",
+        "status": "BACKTESTED",
+        "champion_score": 0.5,
+        "strategy_spec": spec.to_dict(),
+        "backtest_evidence": {
+            "closed_count": 60, "expectancy": expectancy,
+            "robustness": {"verdict": "PROVISIONAL", "holdout_status": "CONFIRMED"},
+            "bars_replayed": _current_bars_replayed(spec),
+            "cost_summary": _current_cost_summary(),
+        },
+        "evidence_input_sha256": window_sha,
+        "provenance": "mvp_factory",
+    }], root=tmp_path)
+    return spec
+
+
+def test_the_ask_refuses_a_promotion_the_size_cap_would_refuse(tmp_path):
+    """The recorded operational trap, closed: `--request` approved a promotion whose install
+    the size cap then refused, spending Thomas's answer on nothing. Same deliberate shape as
+    `test_the_ask_refuses_stale_evidence_too`: no `requires_local_core`, because the refusal
+    lands in the gate roster before `bind_task_to_core` reaches for a Core."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    _seed_second_lineage(
+        tmp_path,
+        _spec_dict(strategy_id="S2", entry_rules={"operator": "AND", "conditions": [
+            {"feature": "adx", "comparison": ">=", "value": 30.0}]}),
+        window_sha="sha256:test-second-window",
+    )
+    with pytest.raises(ApprovalBlocked) as exc:
+        request_promotion(["S2"], keep_active=True, live_tier="OBSERVATION", now=NOW,
+                          candidates_root=tmp_path)
+    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
+
+
+def test_the_ask_refuses_a_reactivation_the_install_would_refuse(tmp_path):
+    """Same trap, other gate: a replace-mode ask re-listing a suspended member sailed
+    through `--request` and refused only at `--confirm`. No `requires_local_core`, same
+    reason as above."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    with pytest.raises(ApprovalBlocked) as exc:
+        request_promotion(["S1"], keep_active=False, live_tier="OBSERVATION", now=NOW,
+                          candidates_root=tmp_path)
+    assert exc.value.reason_code == "POOL_SILENT_REACTIVATION"
+    assert "SUSPENDED" in exc.value.reason, "the ask names what would come back, like the install"
+
+
+@requires_local_core
+def test_the_ask_honours_the_reactivation_escape(tmp_path):
+    """The escape releases the ask exactly as it releases the install, so a deliberate
+    reactivation is still askable rather than unrequestable."""
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    _suspend(tmp_path)
+    prepared = request_promotion(["S1"], keep_active=False, live_tier="OBSERVATION", now=NOW,
+                                 candidates_root=tmp_path, allow_reactivation=True)
+    assert prepared["approval_request"]["status"] == "PENDING"
+
+
+@requires_local_core
+def test_the_ask_honours_the_oversized_pool_escape(tmp_path):
+    _seed_candidates(tmp_path, _spec_dict())
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                  live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    _seed_second_lineage(
+        tmp_path,
+        _spec_dict(strategy_id="S2", entry_rules={"operator": "AND", "conditions": [
+            {"feature": "adx", "comparison": ">=", "value": 30.0}]}),
+        window_sha="sha256:test-second-window",
+    )
+    prepared = request_promotion(["S2"], keep_active=True, live_tier="OBSERVATION", now=NOW,
+                                 candidates_root=tmp_path, allow_oversized_pool=True)
+    assert prepared["approval_request"]["status"] == "PENDING"
