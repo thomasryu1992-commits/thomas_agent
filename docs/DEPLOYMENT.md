@@ -385,14 +385,18 @@ Host-side checks go through the scheduler CLI (above), not through these doors �
 docker inspect hermes --format '{{json .HostConfig.Binds}} {{json .HostConfig.GroupAdd}}'
 ```
 
-Since 2026-07-31 that container mounts `/var/run/docker.sock` and carries the host `docker`
-group, which makes it equivalent to host root — it can `docker exec` into `thomas-scheduler` and
-read the live-order keys the door processes are kept away from. **This is retained by Thomas's
-decision (2026-08-22), not an oversight**, and it is recorded here because the door modules'
-guarantees (P3 ceiling, closed kind set, no money path) do not apply to that path. If the intent
-ever changes, removing the **mount** is what closes it: the container's `stage2-hook.sh` re-adds
-the group on every boot by inspecting the socket, so removing `group_add` alone leaves the path
-open. That correction is recorded in the Hermes-side compose header.
+**The mount is gone — removed by Thomas's decision on 2026-08-29, reversing the 2026-08-22
+retention.** From 2026-07-31 to 08-29 that container mounted `/var/run/docker.sock` and carried
+the host `docker` group, which made it equivalent to host root — able to `docker exec` into
+`thomas-scheduler` and read the live-order keys the door processes are kept away from, unbound
+by any door guarantee (P3 ceiling, closed kind set, no money path). Actual use: 37 calls, all
+on 07-30/31, then zero for a month — which is why it went. The removal took the mount AND
+`group_add` out together (the mount is the one that matters: `stage2-hook.sh` re-adds the group
+on every boot by inspecting the socket, so with no socket the hook stands down). Verified on
+removal: no `/var/run/docker.sock` in the container, gateway groups reduced to `10000`, and a
+door round-trip still answers as uid 10000 while uid 0 still gets `PEER_NOT_PERMITTED`. The
+check above should now show empty Binds for the socket and an empty GroupAdd; a non-empty
+answer means the mount came back and this section is wrong again.
 
 ## Assurance policies — both ON since 2026-08-24
 
