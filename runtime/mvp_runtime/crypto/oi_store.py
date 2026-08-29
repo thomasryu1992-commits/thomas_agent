@@ -288,9 +288,9 @@ def record_intraday_oi(
     # which is the path that most needs the throttle.
     record_refresh_attempt(name, now=now, root=root)
     try:
-        rows = feed.open_interest_history(
+        rows = list(feed.open_interest_history(
             name, days=days, timeout_seconds=timeout_seconds, interval=OI_1H_INTERVAL,
-        )
+        ))
     except Exception as exc:  # noqa: BLE001 — a collection miss must not fail a cycle
         reason = getattr(exc, "reason_code", None) or type(exc).__name__
         return {"symbol": name, "status": "degraded", "written": 0, "reason": reason}
@@ -298,11 +298,23 @@ def record_intraday_oi(
         written = append_rows(rows, symbol=name, root=root)
     except ToolError as exc:
         return {"symbol": name, "status": "degraded", "written": 0, "reason": exc.reason_code}
+    # The status's "newest" without a third full parse of the store: the newest storable
+    # fetched timestamp. A fetched row dropped as a duplicate is a row the store already held
+    # at that timestamp, so the maximum over held-newest and fetched-storable is the stored
+    # newest either way.
+    fetched_newest = max(
+        (str(r.get("timestamp") or "") for r in rows
+         if str(r.get("timestamp") or "")
+         and isinstance(r.get("open_interest"), (int, float))
+         and not isinstance(r.get("open_interest"), bool)),
+        default="",
+    )
+    after = [t for t in (newest, fetched_newest) if t]
     return {
         "symbol": name,
         "status": "seeded" if seeding else "appended",
         "written": written,
-        "newest": newest_timestamp(root, symbol=name),
+        "newest": max(after) if after else None,
     }
 
 
@@ -315,10 +327,13 @@ def coverage(root: Path | None = None, *, symbol: str, now: str | None = None) -
     self-healing refresh is there to close; ``gap_hours`` reports how many of the hours in that
     span are missing so the span is never read as a completeness claim on its own.
     """
-    rows = read_rows(root, symbol=symbol)
+    return _coverage_from(str(symbol).strip().upper(), read_rows(root, symbol=symbol))
+
+
+def _coverage_from(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
-            "symbol": str(symbol).strip().upper(), "rows": 0, "covered_days": 0.0,
+            "symbol": name, "rows": 0, "covered_days": 0.0,
             "required_days": REQUIRED_COVERAGE_DAYS, "eligible": False,
             "oldest": None, "newest": None, "gap_hours": 0,
         }
@@ -330,7 +345,7 @@ def coverage(root: Path | None = None, *, symbol: str, now: str | None = None) -
     covered_days = round(max(span_hours, 0.0) / 24, 2)
     expected = int(round(span_hours)) + 1
     return {
-        "symbol": str(symbol).strip().upper(),
+        "symbol": name,
         "rows": len(rows),
         "covered_days": covered_days,
         "required_days": REQUIRED_COVERAGE_DAYS,
@@ -347,7 +362,13 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
     The minimum rather than the mean: a source switch is per timeframe across every symbol the
     pool trades, so the symbol with the least history is the one that decides.
     """
-    per_symbol = [coverage(root, symbol=s) for s in sorted({str(s).strip().upper() for s in symbols if s})]
+    wanted = sorted({str(s).strip().upper() for s in symbols if s})
+    # One parse for the whole board: per-symbol `coverage` reads used to cost one full parse
+    # of the same file per symbol.
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in read_rows(root):
+        grouped.setdefault(str(row.get("symbol") or ""), []).append(row)
+    per_symbol = [_coverage_from(name, grouped.get(name, [])) for name in wanted]
     if not per_symbol:
         return {"symbols": [], "min_covered_days": 0.0,
                 "required_days": REQUIRED_COVERAGE_DAYS, "eligible": False}

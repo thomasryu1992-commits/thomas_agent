@@ -855,3 +855,60 @@ def test_an_unreadable_store_yields_nothing_rather_than_a_partial_read(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir()                     # a directory where the store should be: open() raises OSError
     assert positioning_store.read_rows(root=tmp_path) == []
+
+
+# --- the fan-out hand-down: one parse serves every context ------------------------
+
+def test_grouped_read_equals_the_per_symbol_read(tmp_path):
+    """`read_rows_grouped` exists so `run_pool_cycle` can parse the store once and hand each
+    context its own slice; the slice must be byte-equal to what the per-context read returned,
+    or the hand-down changes what the features see."""
+    _seed(tmp_path, symbol="ETHUSDT", hours=3)
+    _seed(tmp_path, symbol="BTCUSDT", hours=2, top=0.7)
+    grouped = positioning_store.read_rows_grouped(tmp_path)
+    assert set(grouped) == {"ETHUSDT", "BTCUSDT"}
+    for symbol in grouped:
+        assert grouped[symbol] == positioning_store.read_rows(tmp_path, symbol=symbol)
+
+
+def test_attach_uses_the_handed_down_slice_without_touching_the_store(tmp_path, monkeypatch):
+    """A handed-down slice must not cost a second parse — that is its whole point."""
+    from runtime.mvp_runtime.crypto import cycle
+
+    _seed(tmp_path, hours=2)
+    handed = positioning_store.read_rows(tmp_path, symbol="ETHUSDT")
+
+    def _refuses(*args, **kwargs):
+        raise AssertionError("attach re-read the store although a slice was handed down")
+
+    monkeypatch.setattr(positioning_store, "read_rows", _refuses)
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h"}
+    cycle.attach_positioning(snapshot, root=tmp_path, pre_read=handed)
+    assert snapshot["positioning"] == handed
+
+
+def test_a_handed_down_empty_slice_is_an_answer_not_an_absence(tmp_path, monkeypatch):
+    """`[]` from the fan-out read means "this symbol has no rows" — attach must treat it as
+    that answer (key absent, columns None) rather than falling back to a fresh parse."""
+    from runtime.mvp_runtime.crypto import cycle
+
+    monkeypatch.setattr(
+        positioning_store, "read_rows",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fell back to a fresh read")),
+    )
+    snapshot = {"symbol": "ETHUSDT", "timeframe": "1h"}
+    cycle.attach_positioning(snapshot, root=tmp_path, pre_read=[])
+    assert "positioning" not in snapshot
+
+
+def test_the_refresh_reports_the_stored_newest_without_a_third_parse(tmp_path):
+    """`record_positioning` used to re-read the whole store after every write just to report
+    `newest`; the report must stay the truth the re-read gave — the stored newest reading."""
+    result = positioning_store.record_positioning(
+        symbol="BTCUSDT", collector=MockMarketDataCollector(), now=NOW, root=tmp_path
+    )
+    for series, entry in result["series"].items():
+        assert entry["status"] == "seeded"
+        assert entry["newest"] == positioning_store.newest_timestamp(
+            tmp_path, symbol="BTCUSDT", series=series
+        ), series

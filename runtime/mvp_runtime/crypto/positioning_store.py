@@ -186,24 +186,20 @@ def _row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def read_rows(
-    root: Path | None = None, *, symbol: str | None = None, series: str | None = None
-) -> list[dict[str, Any]]:
-    """Every stored reading, oldest first, latest-wins per ``(symbol, series, period)``.
+def _latest_rows(root: Path | None = None) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """One parse of the store: the latest-wins map every reader filters from.
 
-    Damage is skipped, never raised — see the module docstring for why this store answers with
-    less rather than refusing to answer.
+    Streams the handle rather than `read_text().splitlines()`, which held the whole file as one
+    string AND as a list of lines while the rows were being built. Measured on the live store
+    (4.5 MB, 2026-08-09): peak 9.71 MB -> 0.16 MB, and 0.150s -> 0.107s. Deliberately NOT
+    `jsonl.iter_objects`: that fails closed on a bad line and this reader must DEGRADE — see the
+    module docstring, and `except ValueError: continue` below, which is the whole point of it.
+    An OSError anywhere yields {}, including mid-iteration, so a partial read is discarded
+    rather than returned as if it were the store.
     """
     path = positioning_path(root)
     if not path.is_file():
-        return []
-    # Streams the handle rather than `read_text().splitlines()`, which held the whole file as one
-    # string AND as a list of lines while the rows were being built. Measured on the live store
-    # (4.5 MB, 2026-08-09): peak 9.71 MB -> 0.16 MB, and 0.150s -> 0.107s. Deliberately NOT
-    # `jsonl.iter_objects`: that fails closed on a bad line and this reader must DEGRADE — see the
-    # docstring above, and `except ValueError: continue` below, which is the whole point of it.
-    # An OSError anywhere still yields [], including mid-iteration, so a partial read is discarded
-    # rather than returned as if it were the store.
+        return {}
     latest: dict[tuple[str, str, str], dict[str, Any]] = {}
     try:
         with path.open(encoding="utf-8") as handle:
@@ -221,16 +217,44 @@ def read_rows(
                     continue
                 latest[key] = row
     except OSError:
-        return []
+        return {}
+    return latest
 
+
+def read_rows(
+    root: Path | None = None, *, symbol: str | None = None, series: str | None = None
+) -> list[dict[str, Any]]:
+    """Every stored reading, oldest first, latest-wins per ``(symbol, series, period)``.
+
+    Damage is skipped, never raised — see the module docstring for why this store answers with
+    less rather than refusing to answer.
+    """
     wanted_symbol = str(symbol).strip().upper() if symbol is not None else None
     wanted_series = str(series) if series is not None else None
     selected = [
-        r for k, r in latest.items()
+        r for k, r in _latest_rows(root).items()
         if (wanted_symbol is None or k[0] == wanted_symbol)
         and (wanted_series is None or k[1] == wanted_series)
     ]
     return sorted(selected, key=lambda r: (str(r.get("symbol")), str(r.get("series")), str(r.get("timestamp"))))
+
+
+def read_rows_grouped(root: Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    """One parse of the whole store, grouped per symbol — each group is exactly what
+    ``read_rows(root, symbol=s)`` returns.
+
+    For the fan-out consumer: ``cycle.run_pool_cycle`` reads once and hands each context its
+    own symbol's slice, where a per-context ``read_rows`` re-parsed the entire file to answer
+    for one symbol — nine full parses per fire of a store that grows forever. Same lifetime
+    rule as ``PeerCandleCache``: one fan-out, then discarded, so a later fire can never be
+    served a stale slice.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for key, row in _latest_rows(root).items():
+        grouped.setdefault(key[0], []).append(row)
+    for rows in grouped.values():
+        rows.sort(key=lambda r: (str(r.get("symbol")), str(r.get("series")), str(r.get("timestamp"))))
+    return grouped
 
 
 def newest_timestamp(root: Path | None = None, *, symbol: str, series: str) -> str | None:
@@ -371,25 +395,38 @@ def record_positioning(
 
     marks = read_refresh_marks(root)
     per_series: dict[str, dict[str, Any]] = {}
+    due: list[str] = []
     for series in sorted(POSITIONING_SERIES):
         last_attempt = marks.get(_mark_key(name, series))
-        if not is_due(last_attempt, now):
+        if is_due(last_attempt, now):
+            due.append(series)
+        else:
             per_series[series] = {
                 "status": "skipped_fresh", "written": 0, "last_attempt": last_attempt,
             }
-            continue
+    # One parse serves every due series. This used to be a `newest_timestamp` full parse per
+    # due series plus another after each write — up to nine parses of the whole store per
+    # refreshed symbol, to answer three per-series questions. The `skipped_fresh` fast path,
+    # which is what nineteen of twenty contexts take, stays parse-free either way.
+    newest_by_series: dict[str, str] = {}
+    if due:
+        # Rows arrive sorted (series, timestamp), so the last row per series is its newest —
+        # the same answer `newest_timestamp` gave.
+        for row in read_rows(root, symbol=name):
+            newest_by_series[str(row.get("series"))] = str(row.get("timestamp"))
+    for series in due:
         # Whether this is a seed is a property of the STORE, not of the marks: a machine whose
         # marks file was deleted must still refresh rather than re-seed 30 days it already holds.
-        newest = newest_timestamp(root, symbol=name, series=series)
+        newest = newest_by_series.get(series)
         seeding = newest is None
         # Stamped BEFORE the request, so a fetch that hangs or raises still counts as an attempt.
         record_refresh_attempt(name, series, now=now, root=root)
         try:
-            rows = collector.positioning_history(
+            rows = list(collector.positioning_history(
                 name, series=series, period=POSITIONING_PERIOD,
                 limit=refresh_rows_for(newest, now),
                 timeout_seconds=timeout_seconds,
-            )
+            ))
         except Exception as exc:  # noqa: BLE001 — a collection miss must not fail a cycle
             reason = getattr(exc, "reason_code", None) or type(exc).__name__
             per_series[series] = {"status": "degraded", "written": 0, "reason": reason}
@@ -399,10 +436,21 @@ def record_positioning(
         except ToolError as exc:
             per_series[series] = {"status": "degraded", "written": 0, "reason": exc.reason_code}
             continue
+        # The status's "newest" without re-parsing the store: the newest storable fetched
+        # timestamp. A fetched row dropped as a duplicate is a row the store already held at
+        # that timestamp, so the maximum over held-newest and fetched-storable is the stored
+        # newest either way.
+        fetched_newest = max(
+            (str(r.get("timestamp") or "") for r in rows
+             if str(r.get("timestamp") or "")
+             and _is_proportion(r.get("long_ratio")) and _is_proportion(r.get("short_ratio"))),
+            default="",
+        )
+        after = [t for t in (newest, fetched_newest) if t]
         per_series[series] = {
             "status": "seeded" if seeding else "appended",
             "written": written,
-            "newest": newest_timestamp(root, symbol=name, series=series),
+            "newest": max(after) if after else None,
         }
 
     statuses = {entry["status"] for entry in per_series.values()}
@@ -432,8 +480,11 @@ def coverage(
     ``gap_periods`` reports how many periods inside that span are missing, so the span is never
     read as a completeness claim on its own.
     """
-    rows = read_rows(root, symbol=symbol, series=series)
-    name = str(symbol).strip().upper()
+    return _coverage_from(str(symbol).strip().upper(), series,
+                          read_rows(root, symbol=symbol, series=series))
+
+
+def _coverage_from(name: str, series: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
             "symbol": name, "series": series, "rows": 0, "covered_days": 0.0,
@@ -471,8 +522,12 @@ def coverage_summary(root: Path | None = None, *, symbols: Iterable[str]) -> dic
     and ``global_account`` needs both, so one series being ready is not readiness.
     """
     wanted = sorted({str(s).strip().upper() for s in symbols if s})
+    # One parse for the whole grid: per-cell `coverage` reads used to cost symbols x series
+    # full parses of the same file (eighteen on the shipped cohort) to fill one board.
+    grouped = read_rows_grouped(root)
     cells = [
-        coverage(root, symbol=name, series=series)
+        _coverage_from(name, series,
+                       [r for r in grouped.get(name, []) if str(r.get("series")) == series])
         for name in wanted
         for series in sorted(POSITIONING_SERIES)
     ]
@@ -491,5 +546,6 @@ __all__ = [
     "POSITIONING_FILENAME", "POSITIONING_PERIOD", "RECORD_TYPE", "REFRESH_MARKS_FILENAME",
     "REQUIRED_COVERAGE_DAYS", "append_rows", "coverage", "coverage_summary", "is_due",
     "newest_timestamp", "positioning_path", "read_refresh_marks", "read_rows",
-    "record_positioning", "record_refresh_attempt", "refresh_marks_path", "refresh_rows_for",
+    "read_rows_grouped", "record_positioning", "record_refresh_attempt", "refresh_marks_path",
+    "refresh_rows_for",
 ]
