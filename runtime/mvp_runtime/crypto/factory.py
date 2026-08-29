@@ -80,7 +80,7 @@ from .paper import (
     ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
     settle_trade_plan, stop_is_beyond_liquidation,
 )
-from .pool import candidate_id, derive_candidate_id
+from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
 from .strategy import SCHEMA_VERSION, SpecParseError, StrategySpec, evaluate_spec
 

@@ -3934,3 +3934,14 @@ class TestPooledPerSymbolBreakdown:
         pooled = factory.backtest_spec_pooled(spec, [], frames=[anonymous])
         assert pooled["per_symbol"] == {}
         assert pooled["closed_count"] > 0, "the replay itself must be unaffected"
+
+
+def test_candidate_identity_is_one_leaf_for_both_sides():
+    """`factory` mints candidate ids and `pool` stores and re-derives them; both must be
+    the SAME rule object — a drifted second implementation would mint ids the store then
+    derives differently for legacy rows, silently splitting one lineage into two."""
+    from runtime.mvp_runtime.crypto import candidate_identity, factory, pool
+
+    assert factory.candidate_id is candidate_identity.candidate_id is pool.candidate_id
+    assert (factory.derive_candidate_id is candidate_identity.derive_candidate_id
+            is pool.derive_candidate_id)

@@ -56,6 +56,9 @@ from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
+from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
+# this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
+# moved to a leaf so `factory` no longer needs a module-level edge into this store.
 from .cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
@@ -499,9 +502,12 @@ def expected_replayed_bars(timeframe: str) -> int | None:
     an unknown span, not an error to raise through a reporting path."""
     if timeframe not in market_data.TIMEFRAMES:
         return None
-    # Deferred: `factory` imports this module for candidate ids, so the split rule can only be
-    # read at call time. Read rather than copied — a second 0.70 here would drift the day the
+    # Read at call time rather than copied — a second 0.70 here would drift the day the
     # holdout fraction moves, and the two sides would silently stop meaning the same window.
+    # Function-local by LAYERING now, not by cycle (candidate identity moved to its own leaf,
+    # so `factory` no longer imports this store): the split rule lives beside the replay
+    # engine's own constants, and a store should not pull the whole miner into its import
+    # graph to read one pure function.
     from .factory import holdout_split_index
 
     return holdout_split_index(market_data.factory_candle_target(timeframe))
@@ -1280,27 +1286,8 @@ def assert_family_cap(
 
 
 # --- candidate identity (single source) ----------------------------------------
-
-def derive_candidate_id(record: Mapping[str, Any]) -> str:
-    """The globally unique id of one candidate: its lineage, not its display name.
-
-    ``strategy_id`` restarts at S001 every factory generation, so it can never key a
-    lookup. The id derives from (generation_id, strategy_rule_hash,
-    evidence_input_sha256) — the exact strategy content in its exact generation with
-    its exact evidence window — so legacy rows without a stored ``candidate_id``
-    derive the same id on every read and the append-only store is never rewritten."""
-    return integrity.short_id("cand", {
-        "generation_id": record.get("generation_id"),
-        "strategy_rule_hash": record.get("strategy_rule_hash"),
-        "evidence_input_sha256": record.get("evidence_input_sha256"),
-    })
-
-
-def candidate_id(record: Mapping[str, Any]) -> str:
-    stored = record.get("candidate_id")
-    if isinstance(stored, str) and stored:
-        return stored
-    return derive_candidate_id(record)
+# `candidate_identity.py` owns the id rule now — a leaf both this store and `factory`
+# import, which is what dissolved their module cycle. Re-exported at the top of this file.
 
 
 # --- candidate lineage (fusion groundwork) --------------------------------------
