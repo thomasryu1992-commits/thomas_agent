@@ -48,7 +48,6 @@ from .consumption import ENV_VAR, OPT_IN_VALUE, PROVIDER_ID
 from .control import ControlStore
 from .errors import ApprovalBlocked, MvpRuntimeError, PersistenceError, PlannerBlocked
 from .events import stamped_event
-from .filelock import locked
 from .intake import build_task
 from .paths import repo_root as _repo_root
 from .permission import (
@@ -77,10 +76,6 @@ from .store import LedgerStore
 from .validation import validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .worker import MockTrialProvider, Provider, ProviderResult, run_analysis_worker
-
-from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
-
-from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 
 TRIAL_WORKER_ID = "mvp.candidate_trial.llm"
 TRIAL_PROMPT_VERSION = "mvp_candidate_trial.v2"
@@ -387,53 +382,17 @@ def run_trial(
     approval_store = approval_store or ApprovalStore.default()
     ledger = ledger or LedgerStore.default()
 
-    # kill_blocks: new_execution — a PAUSED or KILLED runtime must not start a trial.
+    # The shared fail-closed ladder (kill switch first — a PAUSED or KILLED runtime must not
+    # start a trial — then identity, status, expiry, bound decision, fingerprint, scope). One
+    # copy for both spend surfaces: `approval.validate_spendable_approval`.
     control = control_store if control_store is not None else ControlStore(root)
-    state = control.load()
-    if not state.execution_allowed:
-        raise ApprovalBlocked(
-            state.refusal_reason_code(),
-            f"runtime is {state.mode}; kill_blocks forbids running a trial",
-        )
-
-    approval_rec = approval_store.get(approval_id)
-    if approval_rec is None:
-        raise ApprovalBlocked("UNKNOWN_APPROVAL", f"no approval with id {approval_id}")
-    status = approval_rec.get("status")
-    if status == approval_mod.STATUS_CONSUMED:
-        raise ApprovalBlocked("ALREADY_CONSUMED", "approval has already been consumed (one-time use)")
-    if status != approval_mod.STATUS_APPROVED:
-        raise ApprovalBlocked(
-            "NOT_APPROVED", f"only an APPROVED approval can be consumed; this one is {status}"
-        )
-    if approval_mod.is_expired(approval_rec, now=now):
-        raise ApprovalBlocked(
-            "APPROVAL_EXPIRED",
-            f"approval expired at {approval_rec['validity']['expires_at']}; it can no longer be consumed",
-        )
-    permission_decision = approval_store.get_permission_decision(approval_rec["permission_decision_id"])
-    if permission_decision is None:
-        raise ApprovalBlocked(
-            "PERMISSION_DECISION_MISSING",
-            f"the decision {approval_rec['permission_decision_id']} this approval binds to is not on record",
-        )
-
-    snapshot = approval_rec["approved_action_snapshot"]
-    # Hot-path revalidation 1: the snapshot must still fingerprint to the bound value.
-    try:
-        recomputed_fp = compute_action_fingerprint(snapshot)
-    except ValueError as exc:
-        raise ApprovalBlocked("FINGERPRINT_UNCOMPUTABLE", str(exc)) from exc
-    if recomputed_fp != approval_rec.get("action_fingerprint"):
-        raise ApprovalBlocked(
-            "FINGERPRINT_MISMATCH",
-            "the approved action no longer fingerprints to its recorded value; the trial is refused",
-        )
-    if snapshot.get("permission_scope") != TRIAL_PERMISSION_SCOPE:
-        raise ApprovalBlocked(
-            "SCOPE_NOT_CONSUMABLE",
-            f"scope {snapshot.get('permission_scope')} is not a candidate-role trial",
-        )
+    approval_rec, permission_decision, snapshot = approval_mod.validate_spendable_approval(
+        approval_store, approval_id, now=now, control_state=control.load(),
+        expected_scope=TRIAL_PERMISSION_SCOPE,
+        kill_action="running a trial",
+        refusal_phrase="the trial is refused",
+        scope_refusal="is not a candidate-role trial",
+    )
     role_id, version = _parse_target(str(snapshot.get("target_ref", "")))
     trial_request = (snapshot.get("normalized_parameters") or {}).get("trial_request")
     if not (isinstance(trial_request, str) and trial_request.strip()):
@@ -476,16 +435,10 @@ def run_trial(
             "LEDGER_UNAVAILABLE", f"cannot read the audit ledger tip ({exc.reason_code}); the trial is refused"
         ) from exc
 
-    # Single-use compare-and-set under the cross-process consume lock, then SPEND FIRST:
-    # the CONSUMED record and its audit event are built before anything is written, and
-    # the grant is durably spent before the model runs (consumption.py's ordering).
-    with locked(approval_store.root / ".consume.lock",
-                code="APPROVAL_WRITE_FAILED", label="the approval store"):
-        latest = approval_store.get(approval_id)
-        if latest is None or latest.get("status") != approval_mod.STATUS_APPROVED:
-            raise ApprovalBlocked(
-                "ALREADY_CONSUMED", "approval is no longer APPROVED (a concurrent consume won); refusing"
-            )
+    # The shared single-use compare-and-set, then SPEND FIRST: the CONSUMED record and its
+    # audit event are built before anything is written, and the grant is durably spent before
+    # the model runs (consumption.py's ordering, now enforced by the same `spend_lock`).
+    with approval_mod.spend_lock(approval_store, approval_id):
         runner.authorize_spend(now=now)
         consumed = approval_mod.build_consumed_record(
             approval_rec, permission_decision,

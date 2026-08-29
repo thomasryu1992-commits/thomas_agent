@@ -31,10 +31,11 @@ any decided record, so a decision recorded without verified identity cannot even
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import yaml
 
@@ -46,6 +47,7 @@ from . import timeutil
 from .authority import permission_decision_runtime_effect
 from .control import command_verb
 from .errors import ApprovalBlocked
+from .filelock import locked
 from .paths import repo_root as _repo_root
 from .permission import (
     NONFINANCIAL_RESUME_TARGET_PREFIX,
@@ -55,6 +57,7 @@ from .permission import (
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
 
+from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 from validate_permission_approval_contracts import validate_approval_record  # noqa: E402
 
 APPROVAL_SCHEMA_VERSION = "approval.v0.2"
@@ -218,6 +221,101 @@ def build_approval_request(
 
 def is_expired(approval: Mapping[str, Any], *, now: str) -> bool:
     return timeutil.parse_iso(now) >= timeutil.parse_iso(approval["validity"]["expires_at"])
+
+
+def validate_spendable_approval(
+    approval_store: Any,
+    approval_id: str,
+    *,
+    now: str,
+    control_state: Any,
+    expected_scope: str,
+    kill_action: str,
+    refusal_phrase: str,
+    scope_refusal: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """The fail-closed ladder every single-use spend runs, in one copy.
+
+    ``consumption.consume_approval`` (the memory-promotion spend) and ``trial.run_trial``
+    (the candidate-role spend) each carried this ladder near-verbatim, cross-referenced by
+    prose instead of shared by code — so a hardening step added to one surface would have
+    silently left the twin on the old semantics, on the path that enforces single use.
+    A third consumable scope arrives by calling this, never by a third copy.
+
+    Checks, in order, each with its stable reason code: the kill switch (spending a grant is
+    execution), UNKNOWN_APPROVAL, ALREADY_CONSUMED, NOT_APPROVED, APPROVAL_EXPIRED,
+    PERMISSION_DECISION_MISSING, the hot-path fingerprint revalidation
+    (FINGERPRINT_UNCOMPUTABLE / FINGERPRINT_MISMATCH), and SCOPE_NOT_CONSUMABLE against
+    ``expected_scope``. The three text parameters carry each surface's own refusal wording;
+    the codes and the order are deliberately not parameters.
+
+    Returns ``(approval, permission_decision, snapshot)`` for the caller's scope-specific
+    revalidation (candidate content, role definition) — which stays at the caller, because
+    what "the approved content still matches" means is the one thing the scopes do not share.
+    """
+    if not control_state.execution_allowed:
+        raise ApprovalBlocked(
+            control_state.refusal_reason_code(),
+            f"runtime is {control_state.mode}; kill_blocks forbids {kill_action}",
+        )
+    approval_rec = approval_store.get(approval_id)
+    if approval_rec is None:
+        raise ApprovalBlocked("UNKNOWN_APPROVAL", f"no approval with id {approval_id}")
+    status = approval_rec.get("status")
+    if status == STATUS_CONSUMED:
+        raise ApprovalBlocked("ALREADY_CONSUMED", "approval has already been consumed (one-time use)")
+    if status != STATUS_APPROVED:
+        raise ApprovalBlocked(
+            "NOT_APPROVED", f"only an APPROVED approval can be consumed; this one is {status}"
+        )
+    if is_expired(approval_rec, now=now):
+        raise ApprovalBlocked(
+            "APPROVAL_EXPIRED",
+            f"approval expired at {approval_rec['validity']['expires_at']}; it can no longer be consumed",
+        )
+    permission_decision = approval_store.get_permission_decision(approval_rec["permission_decision_id"])
+    if permission_decision is None:
+        raise ApprovalBlocked(
+            "PERMISSION_DECISION_MISSING",
+            f"the decision {approval_rec['permission_decision_id']} this approval binds to is not on record",
+        )
+    snapshot = approval_rec["approved_action_snapshot"]
+    # Hot-path revalidation: the snapshot must still fingerprint to the bound value.
+    try:
+        recomputed_fp = compute_action_fingerprint(snapshot)
+    except ValueError as exc:
+        raise ApprovalBlocked("FINGERPRINT_UNCOMPUTABLE", str(exc)) from exc
+    if recomputed_fp != approval_rec.get("action_fingerprint"):
+        raise ApprovalBlocked(
+            "FINGERPRINT_MISMATCH",
+            f"the approved action no longer fingerprints to its recorded value; {refusal_phrase}",
+        )
+    if snapshot.get("permission_scope") != expected_scope:
+        raise ApprovalBlocked(
+            "SCOPE_NOT_CONSUMABLE",
+            f"scope {snapshot.get('permission_scope')} {scope_refusal}",
+        )
+    return approval_rec, permission_decision, snapshot
+
+
+@contextmanager
+def spend_lock(approval_store: Any, approval_id: str) -> Iterator[None]:
+    """The single-use compare-and-set both spend surfaces share.
+
+    One cross-process exclusion (the operator loop and ``docker exec`` CLIs share these
+    stores) in which the stored status is re-read — the loser of a concurrent spend refuses
+    ``ALREADY_CONSUMED`` — and the caller appends its CONSUMED record. Spend-first ordering
+    stays the caller's job and its argument stays at the call site: a grant spent before the
+    action runs fails to the safe direction (spent-but-unrun; ask Thomas again).
+    """
+    with locked(approval_store.root / ".consume.lock",
+                code="APPROVAL_WRITE_FAILED", label="the approval store"):
+        latest = approval_store.get(approval_id)
+        if latest is None or latest.get("status") != STATUS_APPROVED:
+            raise ApprovalBlocked(
+                "ALREADY_CONSUMED", "approval is no longer APPROVED (a concurrent consume won); refusing"
+            )
+        yield
 
 
 def record_decision(

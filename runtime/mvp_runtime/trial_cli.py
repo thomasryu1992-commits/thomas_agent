@@ -22,27 +22,19 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import approval, timeutil, trial
-from .approval_store import ApprovalStore
-from .audit import build_approval_request_audit, build_audit_gap_record
-from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
+from . import timeutil, trial
+from .cli_common import (
+    EXIT_BLOCKED,
+    EXIT_OK,
+    force_utf8_io,
+    gate_banners,
+    report_block,
+    store_and_present_approval_request,
+)
 from .errors import MvpRuntimeError
 from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
 from .worker import MockProvider
-
-
-def _record_audit_gap(ledger: LedgerStore, gap_kind: str, exc: MvpRuntimeError, *,
-                      subject_ref: str, now: str) -> None:
-    """Durably note that something happened whose audit event could not be written
-    (best-effort by construction; the approval_cli precedent)."""
-    try:
-        ledger.append_block(build_audit_gap_record(
-            gap_kind, reason_code=exc.reason_code, subject_ref=subject_ref,
-            now=now, detail=exc.reason,
-        ))
-    except MvpRuntimeError:
-        sys.stderr.write("WARNING: the audit gap itself could not be recorded\n")
 
 
 def _request(args: argparse.Namespace) -> int:
@@ -52,30 +44,7 @@ def _request(args: argparse.Namespace) -> int:
     permission_decision = prepared["permission_decision"]
     request = prepared["approval_request"]
 
-    store = ApprovalStore.default()
-    store.append_permission_decision(permission_decision)
-    store.append([request])
-
-    ledger = LedgerStore.default()
-    try:
-        ledger.append_audit_events(build_approval_request_audit(
-            request, now=now, genesis_previous_hash=ledger.last_audit_hash(),
-        ))
-        sys.stderr.write(f"LEDGER: approval request audited to {ledger.root}\n")
-    except MvpRuntimeError as exc:
-        _record_audit_gap(ledger, "approval_request", exc, subject_ref=request["approval_id"], now=now)
-        sys.stderr.write(f"WARNING: request audit failed ({exc.reason_code}); the request stands\n")
-
-    history = None
-    history_failure = ""
-    try:
-        history = approval.decision_history(store, request)
-    except MvpRuntimeError as exc:
-        history_failure = f"\n과거 유사 결정: 조회 실패 ({exc.reason_code}) — 이력 없이 요청합니다\n"
-
-    sys.stdout.write(approval.request_message(request, permission_decision, history=history) + "\n")
-    if history_failure:
-        sys.stdout.write(history_failure)
+    store_and_present_approval_request(permission_decision, request, now=now)
     role = prepared["role"]
     sys.stderr.write(
         f"\nSTORED: {request['approval_id']} is PENDING until {request['validity']['expires_at']}.\n"

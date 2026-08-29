@@ -43,17 +43,12 @@ from . import audit, safety_gate, timeutil
 from .approval_store import ApprovalStore
 from .control import ControlStore
 from .errors import ApprovalBlocked, MvpRuntimeError
-from .filelock import locked
 from .memory import is_expired as memory_is_expired, promote_candidate
 from .paths import repo_root as _repo_root
 from .permission import MEMORY_PROMOTION_PERMISSION_SCOPE
 from .safety_gate import APPROVAL_CONSUMPTION
 from .store import LedgerStore
 from .working_memory import WorkingMemoryStore, find_candidate, mark_promoted
-
-from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
-
-from lib.action_fingerprint import compute_action_fingerprint  # noqa: E402
 
 # Opt-in + gate coordinates. The provider_id is the safety-flag activation index; the env var
 # is the operator's per-run opt-in. Both are required, and even both together are not enough —
@@ -148,58 +143,17 @@ def consume_approval(
     working_memory_store = working_memory_store or WorkingMemoryStore.default()
     ledger = ledger or LedgerStore.default()
 
-    # kill_blocks: new_execution / pending_execution — spending a grant mutates VALIDATED
-    # memory, so a PAUSED or KILLED runtime must not consume. Checked first, before any other
-    # work, exactly as workspace.run_write and the scheduler do for their own effects.
+    # The shared fail-closed ladder (kill switch first — spending a grant mutates VALIDATED
+    # memory — then identity, status, expiry, bound decision, fingerprint, scope). One copy
+    # for both spend surfaces: `approval.validate_spendable_approval`.
     control = control_store if control_store is not None else ControlStore(root)
-    state = control.load()
-    if not state.execution_allowed:
-        raise ApprovalBlocked(
-            state.refusal_reason_code(),
-            f"runtime is {state.mode}; kill_blocks forbids consuming an approval",
-        )
-
-    approval_rec = approval_store.get(approval_id)
-    if approval_rec is None:
-        raise ApprovalBlocked("UNKNOWN_APPROVAL", f"no approval with id {approval_id}")
-    status = approval_rec.get("status")
-    if status == approval_mod.STATUS_CONSUMED:
-        raise ApprovalBlocked("ALREADY_CONSUMED", "approval has already been consumed (one-time use)")
-    if status != approval_mod.STATUS_APPROVED:
-        raise ApprovalBlocked(
-            "NOT_APPROVED", f"only an APPROVED approval can be consumed; this one is {status}"
-        )
-    if approval_mod.is_expired(approval_rec, now=now):
-        raise ApprovalBlocked(
-            "APPROVAL_EXPIRED",
-            f"approval expired at {approval_rec['validity']['expires_at']}; it can no longer be consumed",
-        )
-
-    permission_decision = approval_store.get_permission_decision(approval_rec["permission_decision_id"])
-    if permission_decision is None:
-        raise ApprovalBlocked(
-            "PERMISSION_DECISION_MISSING",
-            f"the decision {approval_rec['permission_decision_id']} this approval binds to is not on record",
-        )
-
-    snapshot = approval_rec["approved_action_snapshot"]
-    # Hot-path revalidation 1: the snapshot must still fingerprint to the bound fingerprint.
-    try:
-        recomputed_fp = compute_action_fingerprint(snapshot)
-    except ValueError as exc:
-        raise ApprovalBlocked("FINGERPRINT_UNCOMPUTABLE", str(exc)) from exc
-    if recomputed_fp != approval_rec.get("action_fingerprint"):
-        raise ApprovalBlocked(
-            "FINGERPRINT_MISMATCH",
-            "the approved action no longer fingerprints to its recorded value; consuming is refused",
-        )
-
-    # Only the memory-promotion scope is consumable — the one action the runtime can perform.
-    if snapshot.get("permission_scope") != MEMORY_PROMOTION_PERMISSION_SCOPE:
-        raise ApprovalBlocked(
-            "SCOPE_NOT_CONSUMABLE",
-            f"scope {snapshot.get('permission_scope')} has no consumption implementation",
-        )
+    approval_rec, permission_decision, snapshot = approval_mod.validate_spendable_approval(
+        approval_store, approval_id, now=now, control_state=control.load(),
+        expected_scope=MEMORY_PROMOTION_PERMISSION_SCOPE,
+        kill_action="consuming an approval",
+        refusal_phrase="consuming is refused",
+        scope_refusal="has no consumption implementation",
+    )
 
     target_ref = str(snapshot.get("target_ref", ""))
     if not target_ref.startswith(_CANDIDATE_TARGET_PREFIX):
@@ -236,18 +190,10 @@ def consume_approval(
     if consumer is None:
         consumer = select_consumer(now=now, root=root)
 
-    # Single-use compare-and-set under a cross-process file lock: the shipped deployment is
-    # multi-process (the operator loop plus `docker exec` CLIs on one volume), so the re-read
-    # and the spend must be one mutual exclusion — without it, two concurrent consumes both
-    # read APPROVED, both pass every guard, and one single-use grant promotes twice.
-    with locked(approval_store.root / ".consume.lock",
-                code="APPROVAL_WRITE_FAILED", label="the approval store"):
-        latest = approval_store.get(approval_id)
-        if latest is None or latest.get("status") != approval_mod.STATUS_APPROVED:
-            raise ApprovalBlocked(
-                "ALREADY_CONSUMED", "approval is no longer APPROVED (a concurrent consume won); refusing"
-            )
-
+    # Single-use compare-and-set under the shared cross-process spend lock: without it, two
+    # concurrent consumes both read APPROVED, both pass every guard, and one single-use grant
+    # promotes twice.
+    with approval_mod.spend_lock(approval_store, approval_id):
         promoted_by = (approval_rec.get("approver", {}) or {}).get("approved_by") or approval_mod.REQUIRED_APPROVER
         reason = (
             f"Consumed approval {approval_id} — "
