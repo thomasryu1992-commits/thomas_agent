@@ -85,7 +85,10 @@ def test_a_consistent_spread_forward_record_confirms():
     verdict = fc.judge_forward(_record(), _spread_outcomes())
     assert verdict["status"] == fc.FORWARD_CONFIRMED
     assert verdict["priceable_count"] == 27
-    assert verdict["active_slices"] == 9
+    # The exact bucket count is width arithmetic (a 60-day spread cluster can straddle a
+    # 14-day boundary); the PROPERTY is that a genuinely spread record clears the period
+    # floor with room.
+    assert verdict["active_slices"] >= fc.MIN_HOLDOUT_PERIODS
 
 
 def test_a_negative_forward_record_contradicts():
@@ -135,8 +138,21 @@ def test_4h_forward_insufficient_at_12_trades():
 
 
 def test_enough_trades_in_too_few_slices_is_insufficient():
-    """Slice concentration is the regime-lottery shape the period rule exists to refuse."""
-    rows = _spread_outcomes(slices=3, per_slice=9)  # 27 closes, 3 active slices
+    """Slice concentration is the regime-lottery shape the period rule exists to refuse.
+
+    Each cluster sits INSIDE one forward slice (its 9 trades land within 9 days, under the
+    14-day width), so 27 closes still occupy only three periods however many trades pile
+    into each — the shape the rule refuses, restated width-agnostically after the 30d
+    inheritance was retired (Thomas 2026-08-30)."""
+    from runtime.mvp_runtime import timeutil
+    from datetime import timedelta
+    t0 = timeutil.parse_iso("2026-01-01T00:00:00Z")
+    width = fc.forward_slice_width_days("1d")
+    rows = []
+    for s in range(3):
+        for k in range(9):
+            moment = t0 + timedelta(days=s * 4 * width + k)  # 9 trades inside one slice
+            rows.append(_outcome(timeutil.format_iso(moment), 0.3 + 0.05 * (k % 3)))
     verdict = fc.judge_forward(_record(), rows)
     assert verdict["status"] == fc.FORWARD_INSUFFICIENT
     assert verdict["active_slices"] == 3
@@ -149,10 +165,12 @@ def test_empty_slices_are_dropped_never_zero_filled():
     from runtime.mvp_runtime import timeutil
     from datetime import timedelta
     t0 = timeutil.parse_iso("2026-01-01T00:00:00Z")
+    width = fc.forward_slice_width_days("1d")
     rows = []
     for s in range(8):
         for k in range(4):
-            moment = t0 + timedelta(days=s * 3 * 60.0 + k * 5 + 1)  # every third window
+            # Four trades inside one slice, then two whole slices of silence.
+            moment = t0 + timedelta(days=s * 3 * width + k * 3 + 1)
             rows.append(_outcome(timeutil.format_iso(moment),
                                  round(0.3 + 0.05 * (k - 1) + 0.01 * s, 4)))
     verdict = fc.judge_forward(_record(), rows)
@@ -234,3 +252,47 @@ def test_an_underpowered_holdout_still_needs_forward_evidence_to_arm_live():
         fc.assert_live_tier_confirmed([record], outcomes=[], observed_lineages=11)
     assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
     assert HOLDOUT_UNDERPOWERED in exc.value.reason
+
+
+# --- the forward test's own slice width (Thomas 2026-08-30) ----------------------------
+
+def test_forward_width_is_the_decided_14_days_never_wider_than_the_holdout():
+    """The 30-day width was the holdout's replay geometry, inherited; forward calendar is
+    the scarce resource and 14d is the only width the block-autocorrelation table found
+    non-positive in both measured windows. The `min` is the containment: 1m/5m keep their
+    truncation-honest narrower widths, and an untargeted timeframe still cannot be
+    sliced."""
+    assert fc.FORWARD_SLICE_WIDTH_DAYS == 14.0
+    for tf in ("15m", "1h", "4h", "1d"):
+        assert fc.forward_slice_width_days(tf) == 14.0
+    assert fc.forward_slice_width_days("5m") == fc.slice_width_days("5m")   # 12.5 < 14
+    assert fc.forward_slice_width_days("1m") == fc.slice_width_days("1m")   # ~2.5 < 14
+    assert fc.forward_slice_width_days("2w") is None
+
+
+def test_a_quarter_of_calendar_can_now_confirm_what_seven_months_used_to_gate():
+    """The behavioral pin of option B: 25 priceable trades spread over ~120 days occupy
+    nine 14-day slices and CONFIRM — under the inherited 30-day width the same record held
+    only five active slices and read INSUFFICIENT however good the trades were. The
+    interval tests themselves are untouched: the same rows still have to clear the
+    trade-level z and the block-level t."""
+    rows = []
+    for i in range(25):
+        day = 1 + i * 5  # every 5 days: ~121-day span
+        rows.append(_outcome("2026-01-%02dT00:00:00Z" % day if day <= 28 else
+                             _shift_date(day), 0.9 + 0.02 * (i % 5)))
+    record = _record()
+    verdict = fc.judge_forward(record, rows)
+    assert verdict["slice_width_days"] == 14.0
+    assert verdict["active_slices"] >= fc.MIN_HOLDOUT_PERIODS
+    assert verdict["status"] == fc.FORWARD_CONFIRMED
+    # ...and the same spread through a 30-day lens is why the width had to move:
+    first = 1
+    buckets_30 = {int((1 + i * 5 - first) // 30) for i in range(25)}
+    assert len(buckets_30) < fc.MIN_HOLDOUT_PERIODS
+
+
+def _shift_date(day_offset):
+    from datetime import datetime, timedelta, timezone
+    return (datetime(2026, 1, 1, tzinfo=timezone.utc)
+            + timedelta(days=day_offset - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")

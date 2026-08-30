@@ -60,11 +60,12 @@ FORWARD_INSUFFICIENT = "FORWARD_INSUFFICIENT"  # the record cannot be judged (to
 #
 # **This floor is not the only constraint at 1d, and saying so here is the point.**
 # ``judge_forward`` also requires `MIN_HOLDOUT_PERIODS` active slices, which is a CALENDAR
-# demand no trade rate can shorten: at the 30-day slice `slice_width_days` now returns, eight
-# of them need 210 days. When this floor first moved (#741) that second rule stood at 420 days
-# — a 60-day slice, the `MIN_FACTORY_BARS` artifact removed in #747 — so #741 alone changed
-# nothing about how long a 1d lineage waits. The two rules are now the same order of magnitude
-# (~10 months of trades against ~7 of calendar) and neither is decorative: read them together.
+# demand no trade rate can shorten: at the 14-day forward slice (Thomas 2026-08-30, see
+# ``FORWARD_SLICE_WIDTH_DAYS``), eight of them need ~99 days. When this floor first moved
+# (#741) that second rule stood at 420 days — a 60-day slice, the `MIN_FACTORY_BARS`
+# artifact removed in #747 — then at 210 (the inherited 30-day holdout width, retired for
+# forward on 2026-08-30). At 1d the TRADE floor (~10 months at 0.03/day) now dominates the
+# calendar one (~3), and neither is decorative: read them together.
 MIN_FORWARD_TRADES_1D = 10
 
 _FORWARD_TRADE_FLOORS: dict[str, int] = {
@@ -75,6 +76,50 @@ _FORWARD_TRADE_FLOORS: dict[str, int] = {
 def min_forward_trades(timeframe: str | None) -> int:
     """The trade floor for forward confirmation, scaled by timeframe."""
     return _FORWARD_TRADE_FLOORS.get(str(timeframe or ""), MIN_HOLDOUT_TRADES)
+
+
+# **The forward test's own slice width (Thomas 2026-08-30, option B of the slice-requirement
+# ask).** The 30-day width the forward judge inherited was never chosen FOR forward
+# evidence: it is the holdout's replay geometry (span x HOLDOUT_FRACTION / HOLDOUT_PERIODS),
+# where bars are plentiful and the width costs nothing. Forward evidence accrues in real
+# calendar — the width IS the wait — and 8 x 30d put the first possible LIVE arming ~7
+# months after a lineage's mint.
+#
+# 14 days is not a convenience number. Measured 2026-08-30 (block-mean gross R lag-1
+# autocorrelation minus the -1/(K-1) iid bias; 12 BTC specs per timeframe, 5,629 trades over
+# 1,000d at 4h and 3,872 over 250d at 1h):
+#
+#   width   4h excess   1h excess
+#   7d       +0.036      +0.191     <- 1h positive: not adoptable on today's data
+#   10d      -0.039      +0.188
+#   14d      -0.047      -0.131     <- the ONLY width non-positive in BOTH windows
+#   17d      +0.157      +0.048
+#   30d      -0.114      +0.346(K=9)
+#
+# The estimates are noise-dominated (SE ~ 1/sqrt(K) = 0.13-0.26), so this is "nothing
+# measurable argues against 14d", not a proof of independence — stated plainly because the
+# number of PARALLEL forward clocks grew from one routed stream to one per lineage (#807),
+# and `assert_live_tier_confirmed`'s `observed_lineages` is informational, not a correction:
+# the multiple-testing burden stays on the operator reading the ask. What does NOT loosen:
+# the trade floors, the trade-level z-interval, the block-level t-interval itself, and
+# MIN_HOLDOUT_PERIODS=8 distinct periods.
+#
+# Full ask and options: docs/proposals/FORWARD_SLICE_WIDTH_FOR_FORWARD_V0.1.md.
+FORWARD_SLICE_WIDTH_DAYS = 14.0
+
+
+def forward_slice_width_days(timeframe: str) -> float | None:
+    """The FORWARD judge's slice width: the decided 14 days, never wider than the holdout's.
+
+    ``min`` and not a flat value, because the holdout width is already narrower where the
+    venue's history genuinely stops (1m reads 2.5 days, 5m 12.5 — the ``MAX_CANDLES``
+    truncation the 2026-08-21 decision kept on purpose), and a forward width wider than
+    the whole replay those specs were judged on would be a widening smuggled in through a
+    narrowing. ``None`` passes through: an untargeted timeframe still cannot be sliced."""
+    width = slice_width_days(timeframe)
+    if width is None:
+        return None
+    return min(width, FORWARD_SLICE_WIDTH_DAYS)
 
 
 def slice_width_days(timeframe: str) -> float | None:
@@ -188,7 +233,7 @@ def judge_forward(
     if mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)) <= 0:
         return verdict(FORWARD_CONTRADICTED, mean_net_r=round(mean, 6))
 
-    width = slice_width_days(str(spec.get("timeframe") or ""))
+    width = forward_slice_width_days(str(spec.get("timeframe") or ""))
     if width is None:
         return verdict(FORWARD_INSUFFICIENT, mean_net_r=round(mean, 6))
     first = min(day for day, _ in priced)

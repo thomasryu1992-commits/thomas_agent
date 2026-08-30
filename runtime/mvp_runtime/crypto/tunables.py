@@ -244,6 +244,12 @@ TUNABLES: tuple[Tunable, ...] = (
             "Thomas 2026-08-29: display-only horizon before a zero-open lineage is named in "
             "the cycle summary; two 1h windows of calendar at measured 0-10 opens/month rates",
             "the marker driving any action beyond display, or per-spec signal rates re-measured"),
+    Tunable("FORWARD_SLICE_WIDTH_DAYS", forward_confirmation.FORWARD_SLICE_WIDTH_DAYS,
+            "crypto/forward_confirmation.py", OPERATOR,
+            "Thomas 2026-08-30: the forward test's own slice width — 14d is the only width "
+            "non-positive in both measured windows; 8 slices then span ~99 days, not ~210",
+            "the block-autocorrelation table re-measured at scale, or a first arming that "
+            "reads as one hot regime"),
     Tunable("MIN_FORWARD_TRADES_1D", forward_confirmation.MIN_FORWARD_TRADES_1D,
             "crypto/forward_confirmation.py", OPERATOR,
             "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
