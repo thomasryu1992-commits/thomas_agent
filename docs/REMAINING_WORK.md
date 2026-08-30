@@ -4741,11 +4741,14 @@ What that cost is measurable: every capability the weekly loop needs shipped by 
 - [ ] the package as a **file**. `workspace.run_write` is behind `filesystem_write`, which is
       unset on this deployment and not passed to `pipeline-worker`; the package is a ledger row
       until that opens. §4b's two paste files (`POST.md` / `PASTE.txt`) do not exist yet.
-- [ ] Phase 4 — rank tracking feeding the next keyword choice. Its prerequisite does not exist:
-      **nothing can tell the runtime a post was published.** `BlogCompetitionTool` returns
-      counts and titles, not links, so the runtime cannot observe a publication, and the
-      package schema's `published_url` has no writer. The proposal calls this the loop's one
-      weak point and it still is.
+- [ ] Phase 4 — rank tracking feeding the next keyword choice. **Its prerequisite now exists
+      (2026-08-30, Thomas decision on §J question 4):** `scripts/record_published_url.py` is
+      the writer `published_url` never had — the operator tells the runtime after publishing
+      by appending a second package row (`publish_state: published`) under the same
+      `package_id`, exactly the schema-reuse shape question 4 proposed. What is still true:
+      the runtime cannot *observe* a publication (`BlogCompetitionTool` returns counts and
+      titles, not links) — it can only be told, and now it can be. Rank tracking itself
+      remains unbuilt.
 
 **Decision 1 is HELD by Thomas, 2026-08-25: do not register the schedule until Thomas raises
 it.** Not undecided — decided, and the decision is "not yet". Anything that surfaces "register
@@ -4783,10 +4786,10 @@ schedule row is a state write, and no row means no fire.
    winnable unused keyword and records every exclusion with its reason; `target=<keyword>` in
    the schedule's request overrides it for one week. Adopting the default is the decision;
    the override is why it is not already one.
-4. **How does a publication URL get back in?** A container CLI writing a second
-   `blog_content_package` row for the same `package_id` with `publish_state: published` reuses
-   the schema as written; extending an assistant door to carry it does not. Phase 4 cannot
-   start before this.
+4. **How does a publication URL get back in?** — **Decided and built, 2026-08-30 (Thomas):**
+   the container-CLI shape, as proposed. `scripts/record_published_url.py` appends the second
+   `blog_content_package` row (`--replace` for a corrected URL; every refusal has a named
+   reason). The assistant-door alternative stays not-built, on the original reasoning.
 5. **The §12–16 MVP use-case expansion judgement has not been made.** The proposal's §6 leaves
    it unchecked and no record of it exists here or in `BUILD_HISTORY.md`. A weekly cadence
    makes the lane a standing specialist function, which is what §14 asks the question about.
