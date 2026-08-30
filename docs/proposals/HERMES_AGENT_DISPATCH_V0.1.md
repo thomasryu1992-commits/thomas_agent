@@ -11,9 +11,9 @@
 > | P3 상한 + 롤 allowlist (§4-1, §4-2) | **출시** — `_ALLOWED_KINDS` = analysis/research/translation/content, 닫힌 집합. crypto·trading kind는 목록에 없다 |
 > | 키 없음 (§2-5) | **출시** — 2026-08-10 자격증명 평면 분리 이후 실행과 Naver 자격증명은 `pipeline-worker`에 있고 이 문은 검증·전달만 한다 |
 > | 감사·귀속 (§2-4) | **출시** — actor `assistant_bridge`. 다만 2026-08-21까지 그 이름은 **Hermes를 식별하지 않았다**: 문이 gid만 검사해 호스트 셸의 호출도 같은 이름으로 기록됐고, 원장의 15건 중 11건이 호스트측 배포 검증이다. `MVP_BRIDGE_CLIENT_UID=10000`으로 피어 uid를 고정한 2026-08-21 이후에야 그 라벨이 구성상 참이 됐다 |
-> | **§6-6 거버넌스 위치** — `control_channel.assistant_dispatch` 블록, policy 1.3.0 | **미이행** — `GOVERNANCE_POLICY.yaml`은 `policy_version: 1.2.0`이고 `assistant_dispatch` 블록은 없다 |
+> | **§6-6 거버넌스 위치** — `control_channel.assistant_dispatch` 블록, policy 1.3.0 | **이행 (2026-08-30, Thomas 승인)** — §7 초안의 두 블록(`authority.assistant_dispatch_gate` + `control_channel.assistant_dispatch`)이 `GOVERNANCE_POLICY.yaml` 1.3.0으로 적용됐다. 능력이 한 달 먼저 돌았다는 비대칭은 조문 자체의 주석에 기록했다. 범프 반경: 스키마 const 핀은 1.2.0 사고 후 제거돼 있어 저장 레코드 무영향, 살아있는 승인 0건 시점에 실행, 리플레이 번들 2개 재생성 |
 > | **§6-3 사용량 계측 + $50 USD/일 임계 알림** | **이행 (2026-08-30)** — `runtime/mvp_runtime/dispatch_spend.py` + `dispatch_spend_watch` 스케줄 kind. 임계 초과는 실패 발화로 올라가 기존 전환 알림을 탄다(자동 정지 없음 — §6-5의 결정 그대로). §6-5가 기록한 caveat도 그대로 참이다: 무료 티어는 비용을 계측하지 않으므로 이 임계는 휴면이며, status line이 그 사실을 명시한다(`unmetered — threshold dormant`) |
-> | §7 정책 diff | **미적용** |
+> | §7 정책 diff | **적용 (2026-08-30)** — 초안 그대로, PROPOSED 주석만 승인 사실로 교체 |
 >
 > **즉 능력은 배포됐고 그것을 기록·계측하기로 한 조문은 배포되지 않았다.** 이 비대칭 자체가
 > 기록되어야 할 사실이라 여기 적는다 — §12–16이 요구하는 "Expansion = 승인 + 버전드 거버넌스

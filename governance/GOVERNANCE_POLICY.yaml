@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.2.0
+policy_version: 1.3.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -171,6 +171,22 @@ authority:
       - post_action_report_and_audit     # EXECUTE_AND_REPORT is not fire-and-forget
     gate_grants_authority: false         # the gate permits; it never raises a ceiling
 
+  # The assistant's dispatch gate (Thomas approved 2026-08-30; proposed 2026-07-30 in
+  # docs/proposals/HERMES_AGENT_DISPATCH_V0.1.md §7 and running SINCE then — this clause is
+  # the codification the 08-22 door audit recorded as missing, not a new capability).
+  # Defining it opens nothing: dispatched tasks already execute under their own P<=3
+  # ceiling, and this gate makes that auditable against policy rather than implied by code.
+  assistant_dispatch_gate:
+    gate_id: thomas.dispatch.assistant_gate
+    applies_to_actor: assistant_bridge
+    requires:
+      - effective_permission_ceiling_p3   # a dispatched task tops out at P3 — P5/P6 unreachable
+      - role_in_dispatch_allowlist        # allowlisted roles only (control_channel.assistant_dispatch)
+      - no_money_path_capability          # no trading/venue/live-order role or tool
+      - reason_recorded                   # every dispatch names its reason, on the record
+      - post_dispatch_audit               # actor=assistant_bridge, one ledger record per dispatch
+    gate_grants_authority: false         # same invariant as p5: a gate permits, never raises
+
 action_identity:
   payload_schema: action_fingerprint_payload.v0.1
   algorithm: SHA-256
@@ -236,6 +252,36 @@ control_channel:
       # decision instead of console-code drift; the runtime tests assert the console verb
       # set stays a subset of this list.
       - resume
+    new_high_risk_approval_creation_allowed: false
+
+  # The assistant's dispatch lane (Thomas approved 2026-08-30). Distinct from the operator
+  # console (= Thomas-authenticated) and from the halt door (= fail-safe stop): this lane
+  # STARTS work, so it is bounded by effect class, not by trust. The lane has been live
+  # since 2026-07-30 behind the door's structural walls; this block is the versioned
+  # governance update §12–16 requires, written after the fact and saying so.
+  assistant_dispatch:
+    actor: assistant_bridge
+    mode: AUTONOMOUS_WITHIN_ALLOWLIST     # Thomas 2026-07-30 (option A): no per-dispatch operator confirmation
+    permission_ceiling: P3
+    role_allowlist:
+      - general.specialist
+      - research.general
+      - translation.general
+      - content.general
+    trading_role_absent: structural_and_test_locked   # crypto/trading roles structurally out of the list
+    hard_rate_cap: none                   # Thomas 2026-07-30: no fail-closed cap
+    self_halt_on_spike: false             # Thomas decision: alert only, no circuit breaker
+    spend_alert:
+      # Enforced since 2026-08-30 by `dispatch_spend_watch` (runtime/mvp_runtime/dispatch_spend.py,
+      # #803): the maintenance lane sums the UTC day's assistant-dispatched cost from the
+      # ledger's budget_usage rows and raises past the threshold onto the operator notifier.
+      # The recorded caveat stands: free-tier providers meter no cost, so the threshold is
+      # dormant until real cost appears — the watch's own status line says which state it is in.
+      meter: execution_budget_cumulative_cost
+      threshold_amount: 50
+      threshold_currency: USD
+      period: per_day
+      action: notify_operator             # no auto-stop — a human stops via the halt door
     new_high_risk_approval_creation_allowed: false
 
 approval_lifetime:
