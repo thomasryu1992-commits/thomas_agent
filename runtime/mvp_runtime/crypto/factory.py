@@ -180,6 +180,32 @@ WALK_FORWARD_MIN_PERIODS = 8
 DEFAULT_BATCH_SIZE = 4
 _MUTATION_SCALE = 0.35
 
+# Which accept-index slots (mod 4, after `_elite_flip`) centre their stop_atr draw on the
+# family's own stop CEILING instead of the learned/template centre. One slot of each parity —
+# 1 is a base-centred draw, 2 an elite-centred one — so the probe rides both halves of the
+# exploration split and every other parameter keeps the centre that half would have used.
+#
+# This exists because the ratchet cannot reach the region the evidence points at. The
+# 2026-08-25 controlled re-backtests found per-trade cost falls steeply with stop width and
+# individual 1h specs turning +0.28R NET around stop 2.6-3.2 (RR preserved) — and #782 widened
+# the generation space to (1.2, 3.0) to make that reachable. Measured 15 generations later
+# (GEN-857~871, 2026-08-30): batch stop_atr median still 1.5-1.7, maximum 2.07, ZERO draws
+# above 2.1. The mechanism is arithmetic: a draw spans centre +/- 0.35 x (hi - lo) = +/- 0.63,
+# so nothing above 2.37 can be minted unless a centre first walks past ~1.74 — and centres are
+# picked by `champion_score`, whose correlation with stop_atr over those generations is -0.075
+# (robustness is deliberately blind to cost-in-R, `score_robustness`). The score will never
+# walk the centre there, so the space #782 opened stays unexplored forever without a forced
+# coverage slot. A probe draw folds into the top scale of its own family's interval
+# ([2.37, 3.0] for the trend space; the fade space's ceiling deliberately stays 2.0 and its
+# probe respects that — see `_FADE_EXIT_PARAMS` for why a wide stop is wrong for a fade).
+#
+# Coverage, not preference: probe rows pass the same validation, backtest, ablation and entry
+# bar as any draw, and no score or ranking term changes with them. If the sweep's finding
+# holds pooled, their evidence promotes them on the existing doors; if it does not, the store
+# records that at ~2 draws per fire. Identify probe rows by the band, not a flag — a mint
+# provenance field would widen a closed schema for a question `stop_atr >= 2.37` answers.
+_EXIT_PROBE_SLOTS = (1, 2)
+
 # What its name says, and it did not until 2026-08-05: the retry budget is `count x` this, and
 # `generate_batch` re-drew the SAME template on every refusal because the template is picked by
 # the ACCEPT index, which a refusal does not move. So the number bounded the fire and not the
@@ -2056,7 +2082,7 @@ def validate_strategy(spec: StrategySpec) -> dict[str, Any]:
 
 def mutate_params(
     base_params: dict[str, float], param_space: dict[str, ParamSpec], rng: random.Random,
-    *, scale: float = _MUTATION_SCALE,
+    *, scale: float = _MUTATION_SCALE, overrides: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
     """Perturb each parameter within a fraction of its range, clamped to bounds.
 
@@ -2084,7 +2110,13 @@ def mutate_params(
         if not spec.ordered:
             out[name] = rng.randint(int(spec.lo), int(spec.hi))
             continue
-        base = base_params[name]
+        # `overrides` re-centres THIS name's draw without copying the centre dict — the exit
+        # probe's channel (`_EXIT_PROBE_SLOTS`). A parameter-level argument rather than a
+        # modified `base_params`, because the centre object's identity says which half of the
+        # exploration split chose it and a wrapped copy would erase that. Centring on a bound
+        # is well-defined here: `_fold_into_bounds` reflects the overshoot back inside, so the
+        # draw spans the `scale`-sized strip against that bound instead of collapsing onto it.
+        base = base_params[name] if overrides is None else overrides.get(name, base_params[name])
         span = (spec.hi - spec.lo) * scale
         val = _fold_into_bounds(base + rng.uniform(-span, span), spec.lo, spec.hi)
         out[name] = int(round(val)) if spec.integer else round(val, 4)
@@ -2761,7 +2793,20 @@ def generate_batch(
              for name in template.base_params}
             if elite and (len(accepted) + flip) % 2 == 0 else template.base_params
         )
-        params = mutate_params(centre, template.param_space, rng)
+        # A quarter of each half additionally probes the family's own stop ceiling — the
+        # stop_atr draw alone re-centres on `param_space["stop_atr"].hi`; every other
+        # parameter keeps the centre chosen above, so the probe changes exit geometry and
+        # nothing else. An override handed to `mutate_params` rather than a copied centre,
+        # because which half chose the centre stays legible from the centre OBJECT itself
+        # (the split tests discriminate by identity, and a wrapped dict would read as a
+        # third centre nobody picked). See `_EXIT_PROBE_SLOTS` for why coverage has to be
+        # forced here rather than waited for from the elite ratchet.
+        probe = (
+            {"stop_atr": template.param_space["stop_atr"].hi}
+            if (len(accepted) + flip) % 4 in _EXIT_PROBE_SLOTS
+            and "stop_atr" in template.param_space else None
+        )
+        params = mutate_params(centre, template.param_space, rng, overrides=probe)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
                                     generation_id=generation_id, symbol=symbol, venue=venue,

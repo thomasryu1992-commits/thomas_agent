@@ -334,6 +334,14 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("ELITE_EVIDENCE_MIN_TRADES", factory.ELITE_EVIDENCE_MIN_TRADES, "crypto/factory.py",
             OPERATOR, "a search centre moved on three trades is not a lesson",
             "a measured relationship between centre-evidence depth and child quality"),
+    Tunable("_EXIT_PROBE_SLOTS", factory._EXIT_PROBE_SLOTS, "crypto/factory.py", MEASURED,
+            "2 of 8 draws centre stop_atr on the family's own ceiling: 15 generations after "
+            "#782 opened (1.2, 3.0), zero draws sat above 2.1 — a centred draw cannot reach "
+            "the band the 2026-08-25 cost sweep pointed at, and `champion_score` never walks "
+            "a centre there (r = -0.075 with stop_atr)",
+            "the probe band accumulating judgeable evidence either way — net-positive rows "
+            "promote on the existing doors and end the need to force coverage; uniformly "
+            "negative ones close #782's question and the slots can be retired"),
     Tunable("FACTORY_DEPTH_DAYS", market_data.FACTORY_DEPTH_DAYS, "crypto/market_data.py", MEASURED,
             "calendar depth, not a bar count: a flat window makes fast timeframes single-regime",
             "F4 — the window is our constant rather than the venue's limit, and it moved once already"),

@@ -3945,3 +3945,76 @@ def test_candidate_identity_is_one_leaf_for_both_sides():
     assert factory.candidate_id is candidate_identity.candidate_id is pool.candidate_id
     assert (factory.derive_candidate_id is candidate_identity.derive_candidate_id
             is pool.derive_candidate_id)
+
+
+def test_exit_probe_slots_mint_the_unexplored_stop_ceiling():
+    """Slots 1 and 2 (mod 4, after the flip) centre stop_atr on the family's own ceiling.
+
+    #782 opened the generation space to stop (1.2, 3.0), and 15 generations later the store
+    still held zero draws above 2.1 — a centred draw spans ± 0.35 x range, so the region the
+    2026-08-25 sweep pointed at ([2.37, 3.0]) is arithmetically unreachable from any centre
+    `champion_score` ever picks. The probe slot forces coverage: its draw must land in the
+    top `_MUTATION_SCALE` of its OWN family's stop interval (a fade family probes its own
+    2.0 ceiling, not the trend space's), and every non-probe slot must stay within reach of
+    the centre its parity chose, because a probe that leaks into the ordinary slots would be
+    a preference, not a coverage guarantee."""
+    templates = templates_for_timeframe("1d", symbol="BTCUSDT")
+    spaces = {t.family: t.param_space for t in templates}
+    bases = {t.family: t.base_params for t in templates}
+    elite_stop = 1.3
+    elite = {"stop_atr": elite_stop, "reward_risk": 2.2, "max_holding_bars": 24}
+    batch = generate_batch(
+        "GEN-777", seed=11, count=8, symbol="BTCUSDT", timeframe="1d",
+        elite_params={family: dict(elite) for family in spaces},
+    )
+    flip = factory._elite_flip("GEN-777")
+    probed = []
+    for index, spec in enumerate(batch["specs"]):
+        family = spec["strategy_family"]
+        space = spaces[family]["stop_atr"]
+        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        stop = spec["exit_rules"]["stop_atr"]
+        if (index + flip) % 4 in factory._EXIT_PROBE_SLOTS:
+            probed.append(index)
+            assert stop >= space.hi - span - 1e-9, (
+                f"probe slot {index} drew stop {stop} below its band [{space.hi - span}, {space.hi}]"
+            )
+        else:
+            centre = elite_stop if (index + flip) % 2 == 0 else bases[family]["stop_atr"]
+            assert stop <= centre + span + 1e-9, (
+                f"non-probe slot {index} drew stop {stop} beyond its centre {centre}'s reach"
+            )
+    assert len(probed) == 4, "an 8-draw batch carries one probe per parity per half"
+
+
+def test_the_probe_moves_the_stop_centre_and_nothing_else():
+    """On an elite-parity probe slot the OTHER exit parameters still draw around the elite
+    centre — the probe overrides one key of the centre dict, so an elite reward_risk of 2.2
+    must still bound the drawn ratio even while the stop jumps to the ceiling. A probe that
+    re-centred the whole draw would spend the slot exploring a region nobody chose."""
+    templates = templates_for_timeframe("1d", symbol="BTCUSDT")
+    spaces = {t.family: t.param_space for t in templates}
+    elite_rr = 2.2
+    elite = {"stop_atr": 1.3, "reward_risk": elite_rr, "max_holding_bars": 24}
+    batch = generate_batch(
+        "GEN-778", seed=13, count=8, symbol="BTCUSDT", timeframe="1d",
+        elite_params={family: dict(elite) for family in spaces},
+    )
+    flip = factory._elite_flip("GEN-778")
+    checked = 0
+    for index, spec in enumerate(batch["specs"]):
+        if (index + flip) % 4 not in factory._EXIT_PROBE_SLOTS:
+            continue
+        if (index + flip) % 2 != 0:
+            continue  # base-parity probe: the elite centre has no claim on it
+        space = spaces[spec["strategy_family"]]
+        if "reward_risk" not in space:
+            continue
+        rr_span = (space["reward_risk"].hi - space["reward_risk"].lo) * factory._MUTATION_SCALE
+        exit_rules = spec["exit_rules"]
+        drawn_rr = exit_rules["target_atr"] / exit_rules["stop_atr"]
+        assert abs(drawn_rr - elite_rr) <= rr_span + 1e-2, (
+            f"probe slot {index} drew reward_risk {drawn_rr}, outside the elite centre's reach"
+        )
+        checked += 1
+    assert checked, "the batch must contain at least one elite-parity probe slot"
