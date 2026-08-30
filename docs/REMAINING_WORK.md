@@ -4778,10 +4778,12 @@ schedule row is a state write, and no row means no fire.
 1. **Register the schedule?** — **Decided and done, 2026-08-30 (Thomas):** registered as
    `schedule_1d25e2cef74b8a48adec` (weekly; seeds carry the 「사장님 AI 활용법」 topic space,
    `target=<keyword>` overrides a week). See the hold-lift note above.
-2. **Open `filesystem_write` on the worker?** Needs `MVP_WORKSPACE_WRITER` passed and
-   `workspace/` mounted, and `tests/test_deployment_env_passthrough.py` currently pins that
-   variable as NOT deployed on the reasoning "the loop does not write artefacts" — a premise
-   this lane reverses, so the pin needs a recorded reason, not a quiet edit.
+2. **Open `filesystem_write` on the worker?** — **Decided and built, 2026-08-30 (Thomas):**
+   `MVP_WORKSPACE_WRITER` reaches the pipeline-worker (and only it — the three loop services
+   keep their exclusion), `workspace/` is mounted with the same absolute-path rule as the
+   state dir, and the passthrough test's pin carries the recorded reason this item demanded.
+   The weekly fire now renders `POST.md`/`PASTE.txt` per §4b; the record stays the authority
+   and a refused write degrades the sheet instead of failing the fire.
 3. **Adopt the automatic keyword rule as the default?** — **Adopted, 2026-08-30 (Thomas,
    with the same judgement):** the rule picks the most-searched winnable unused keyword each
    week and records every exclusion with its reason; `target=<keyword>` in the schedule's
