@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.3.0
+policy_version: 1.4.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -283,6 +283,43 @@ control_channel:
       period: per_day
       action: notify_operator             # no auto-stop — a human stops via the halt door
     new_high_risk_approval_creation_allowed: false
+
+  # The assistant's switch lane (Thomas approved 2026-08-30). Its own proposal
+  # (docs/proposals/HERMES_AGENT_SWITCH_V0.1.md) decided the OPPOSITE — "no clause, and none
+  # coming" — because the only draft clause served S2's conditional branch, S2 was rejected,
+  # and the lane invents no authority: disable IS the halt door and enable rides the standard
+  # approval machinery this file already governs. That reasoning was sound until 1.3.0 named
+  # the actor's dispatch lane above, at which point a policy-only reader would conclude
+  # dispatch is the assistant's ONLY lane — which is false in the dangerous direction, since
+  # the unlisted lane is the one that can re-arm live trading. This block completes the
+  # actor's description; it grants nothing that was not already granted, and S2 stays
+  # rejected — the clause codifies the UNCONDITIONAL approval, not the branch.
+  assistant_switch:
+    actor: assistant_bridge
+    domain_allowlist:
+      - crypto                            # the door's own closed set
+    verbs:
+      status: read_only                   # answers even while halted
+      disable: fail_safe_immediate        # kill|pause, reason required, NO approval — the
+                                          # assistant may always stop; a stop needing sign-off
+                                          # is not a fail-safe (S3: the halt door lives here)
+      enable: approval_required_always    # S2 REJECTED (Thomas 2026-08-01): approval is
+                                          # required regardless of gate state — the assistant
+                                          # reads the untrusted web and cannot tell a user's
+                                          # request from an injected one, so "start" is never
+                                          # its own call. The verb only MINTS the ask.
+    enable_scopes:
+      trading:                            # RED — re-arms live entries (resume_arms: true)
+        risk_class: RED
+      runtime:                            # ORANGE — non-financial resume (resume_arms: false)
+        risk_class: ORANGE
+    approval_binding:
+      single_use: true                    # approval_lifetime.one_time_use_required, unchanged
+      stop_state_fingerprint: stop_ref    # a stop that changed after minting refuses the
+                                          # spend (STOP_CHANGED) — approving state A never
+                                          # re-arms state B
+    caller_cannot_name_resume: true       # control.CMD_RESUME is not in the caller's verb set
+    gate_grants_authority: false          # same invariant as every gate in this file
 
 approval_lifetime:
   one_time_use_required: true
