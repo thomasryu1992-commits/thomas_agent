@@ -14,9 +14,8 @@ layer:
   performs an internal governed memory write (the R8 precedent: an EXECUTE_AND_REPORT effect
   under REVIEW_ONLY), never an executor handoff, external call, or financial move.
 - **Gated.** The capable consumer is only constructed behind the ``approval_consumption``
-  safety flag via :func:`safety_gate.select_gated`. Without the operator's opt-in *and* a
-  local, integrity-checked activation record, the gate hands back an inert consumer that
-  refuses — an env var alone consumes nothing.
+  opt-in via :func:`safety_gate.select_env_gated` — the environment is the gate (Thomas
+  2026-08-10). Without the opt-in, the gate hands back an inert consumer that refuses.
 - **Hot-path revalidated.** Before acting it re-derives the action fingerprint from the
   snapshot and re-hashes the *current* candidate content, refusing (``FINGERPRINT_MISMATCH`` /
   ``CONTENT_CHANGED``) if either drifted since Thomas approved. He can only ever spend a grant

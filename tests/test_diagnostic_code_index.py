@@ -82,7 +82,9 @@ SHARED_ACROSS_MODULES = frozenset({
     "ROUTE_NOT_SUPPORTED", "SECRET_IN_CANDIDATE",
     "TOKEN_BUDGET_EXCEEDED", "TOOL_ERROR", "TOOL_TRANSPORT",
     "UNKNOWN_APPROVAL", "UNKNOWN_CANDIDATE", "UNKNOWN_COMMAND",
-    "UNKNOWN_FLAG", "UNKNOWN_REQUEST_KIND", "USAGE",
+    # UNKNOWN_FLAG left this set with the grant machinery (2026-08-30): its second raise
+    # site was build_activation_record, removed with the rest of the retired selectors.
+    "UNKNOWN_REQUEST_KIND", "USAGE",
     "VALIDATION_RESULT_INVALID", "VERB_NOT_PERMITTED",
 })
 

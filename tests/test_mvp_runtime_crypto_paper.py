@@ -36,7 +36,7 @@ from runtime.mvp_runtime.crypto.paper import (
     settle_trade_plan,
 )
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE, build_activation_record
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
 
 NOW = "2026-07-22T12:00:00Z"
 
@@ -561,22 +561,6 @@ def test_env_alone_opens_the_real_store(monkeypatch, tmp_path):
     durable store — no grant record backs it; revocation is unsetting the variable."""
     monkeypatch.setenv(PAPER_ENV, "real")
     assert isinstance(select_paper_store(now=NOW, root=tmp_path), paper.RealPaperStore)
-
-
-def test_activation_enables_real_store(monkeypatch, tmp_path):
-    (tmp_path / ".runtime_governance_state").mkdir()
-    evidence_rel = ".runtime_governance_state/paper_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[FILESYSTEM_WRITE], provider_id=PAPER_PROVIDER_ID,
-        activated_at="2026-07-01T00:00:00Z", expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel, authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, PAPER_PROVIDER_ID)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-    monkeypatch.setenv(PAPER_ENV, "real")
-    assert isinstance(select_paper_store(now=NOW, root=tmp_path), RealPaperStore)
 
 
 def test_directly_constructed_real_store_cannot_mutate(tmp_path):

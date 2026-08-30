@@ -39,7 +39,7 @@ from runtime.mvp_runtime.crypto.market_data import (
 )
 from runtime.mvp_runtime.crypto.strategy import ALLOWED_TIMEFRAMES
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
 
 NOW = "2026-07-22T09:00:00Z"
 
@@ -285,36 +285,12 @@ def test_select_real_collector_env_alone_returns_binance(monkeypatch, tmp_path):
     assert isinstance(collector, market_data.BinanceFuturesCollector)
 
 
-def test_select_real_collector_with_activation_returns_binance(monkeypatch, tmp_path):
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/market_data_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS],
-        provider_id=BINANCE_FUTURES,
-        activated_at="2026-07-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel,
-        authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, BINANCE_FUTURES)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-
-    monkeypatch.setenv(MARKET_DATA_ENV, BINANCE_FUTURES)
-    collector = select_market_data_collector(now="2026-07-22T00:00:00Z", root=tmp_path)
-    assert isinstance(collector, BinanceFuturesCollector)
-
-
 # --- Egress self-guard + HTTP parsing in BinanceFuturesCollector -------------
 
 def test_binance_without_authorization_fails_closed():
     with pytest.raises(SafetyGateBlocked) as exc:
         BinanceFuturesCollector().collect("BTCUSDT", "1d", limit=10, timeout_seconds=5)
     assert exc.value.reason_code == "NOT_AUTHORIZED"
-
-
 
 
 def _kline(open_ms: int, close_ms: int, price: float) -> list:

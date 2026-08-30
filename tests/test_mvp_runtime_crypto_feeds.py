@@ -33,14 +33,12 @@ from runtime.mvp_runtime.crypto.paper import DryRunPaperStore
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.control import ControlStore
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS
 
 NOW = "2026-07-22T12:00:00Z"
 
 _BINANCE_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id="binance_futures")
 _COINALYZE_AUTH = make_gate_authorization(flags=(NETWORK_ACCESS,), provider_id=COINALYZE)
-
-
 
 
 def _patch_urlopen_pages(monkeypatch, pages):
@@ -151,22 +149,6 @@ def test_select_liquidation_feed_defaults_to_none(monkeypatch):
 def test_select_coinalyze_env_alone_opens_the_feed(monkeypatch, tmp_path):
     """The environment is the gate (Thomas 2026-08-10): the opt-in alone selects the real
     feed — no grant record backs it; revocation is unsetting the variable."""
-    monkeypatch.setenv(LIQUIDATION_FEED_ENV, COINALYZE)
-    assert isinstance(select_liquidation_feed(now=NOW, root=tmp_path), CoinalyzeLiquidationFeed)
-
-
-def test_select_coinalyze_with_activation(monkeypatch, tmp_path):
-    (tmp_path / ".runtime_governance_state").mkdir()
-    evidence_rel = ".runtime_governance_state/coinalyze_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS], provider_id=COINALYZE,
-        activated_at="2026-07-01T00:00:00Z", expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel, authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, COINALYZE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
     monkeypatch.setenv(LIQUIDATION_FEED_ENV, COINALYZE)
     assert isinstance(select_liquidation_feed(now=NOW, root=tmp_path), CoinalyzeLiquidationFeed)
 

@@ -34,14 +34,14 @@ network adapter that re-verifies its authorization at the moment of egress, a
 failed backend is recorded rather than silent. Nothing here performs an external action —
 the lane's only write is a draft package a human reads before publishing.
 
-**Gate: environment opt-in, not a grant record** (Thomas decision, 2026-08-09). Every other
-network capability in this runtime opens via ``safety_gate.select_gated`` against a local
-integrity-checked grant. This one uses ``select_env_gated``, the path live trading moved to
-on 2026-07-28, and the reasoning is the same shape but a different premise:
+**Gate: environment opt-in, not a grant record** (Thomas decision, 2026-08-09). This lane
+uses ``select_env_gated``, the path live trading moved to on 2026-07-28 — and since
+2026-08-10 every capability gates this way (the grant machinery is removed). The original
+reasoning, kept because it argued the premise:
 
-- ``activate_safety_flag.py`` caps a grant at 30 days (``MAX_TTL_MINUTES``). This lane runs
-  on a weekly schedule, so a grant would need re-minting every month, and an expiry
-  between two fires stops the lane **silently** — no error, just no ideas that week.
+- A grant was TTL-capped at 30 days. This lane runs on a weekly schedule, so a grant would
+  need re-minting every month, and an expiry between two fires stops the lane
+  **silently** — no error, just no ideas that week.
 - What made expiry dangerous for live trading was that it could trap an OPEN position by
   blocking the close path. Nothing here can be trapped: an expired gate means a week of
   keyword research did not run, and the next fire recovers on its own.

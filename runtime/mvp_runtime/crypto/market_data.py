@@ -617,7 +617,7 @@ class MockMarketDataCollector:
     network_egress = False  # deterministic, in-process; no outbound call
     source = "mock.market_data"
     # The venue this stands in for. Declared rather than left to `collector_venue`'s default
-    # because the Mock is also what `select_gated` returns when a grant is MISSING, and a
+    # because the Mock is also what `select_env_gated` returns when the opt-in is ABSENT, and a
     # silent default there would be the one case where nobody chose the answer.
     provider_id = BINANCE_FUTURES
     _ANCHOR = datetime(2026, 1, 1, tzinfo=timezone.utc)

@@ -32,7 +32,6 @@ from runtime.mvp_runtime.safety_gate import (
     MODEL_INVOCATION,
     NETWORK_ACCESS,
     Authorization,
-    build_activation_record,
 )
 from runtime.mvp_runtime.worker import MockProvider
 
@@ -58,29 +57,6 @@ def test_select_provider_hosted_env_alone_returns_hosted(monkeypatch, tmp_path):
     assert isinstance(provider, GoogleAIStudioProvider)
 
 
-def test_select_provider_hosted_with_activation_returns_hosted(monkeypatch, tmp_path):
-    # A valid, integrity-checked activation record authorizes the hosted provider.
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/safety_flag_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[MODEL_INVOCATION, NETWORK_ACCESS],
-        provider_id="google_ai_studio",
-        activated_at="2026-07-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel,
-        authority_level="P4",
-    )
-    path = safety_gate.activation_path(tmp_path, "google_ai_studio")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-
-    monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio")
-    provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert isinstance(provider, GoogleAIStudioProvider)
-
-
 def test_select_provider_unknown_single_value_falls_back_to_mock(monkeypatch):
     """Single unrecognized opt-in falls back to inert, exactly as before the chain."""
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "bogus_vendor")
@@ -88,19 +64,6 @@ def test_select_provider_unknown_single_value_falls_back_to_mock(monkeypatch):
 
 
 # --- the failover chain (selection) ------------------------------------------
-
-def _grant(tmp_path, provider_id):
-    evidence_rel = f".runtime_governance_state/{provider_id}_approval.md"
-    (tmp_path / ".runtime_governance_state").mkdir(exist_ok=True)
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[MODEL_INVOCATION, NETWORK_ACCESS], provider_id=provider_id,
-        activated_at="2026-07-01T00:00:00Z", expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel, authority_level="P4",
-    )
-    path = safety_gate.activation_path(tmp_path, provider_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
 
 
 # --- M2: difficulty-driven model tiers ---------------------------------------
@@ -156,8 +119,6 @@ def test_naming_the_light_tier_does_not_open_the_heavy_tier(monkeypatch, tmp_pat
 def test_chain_with_both_grants_builds_ordered_failover(monkeypatch, tmp_path):
     from runtime.mvp_runtime.providers import FailoverProvider, GroqProvider
 
-    _grant(tmp_path, "google_ai_studio")
-    _grant(tmp_path, "groq")
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,groq")
     provider = select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
     assert isinstance(provider, FailoverProvider)
@@ -191,7 +152,6 @@ def test_editing_the_chain_revokes_every_member_at_egress(monkeypatch):
 
 
 def test_chain_with_a_typo_fails_closed_not_shrunk(monkeypatch, tmp_path):
-    _grant(tmp_path, "google_ai_studio")
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,grok")   # typo'd fallback
     with pytest.raises(SafetyGateBlocked) as exc:
         select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
@@ -199,7 +159,6 @@ def test_chain_with_a_typo_fails_closed_not_shrunk(monkeypatch, tmp_path):
 
 
 def test_chain_with_a_duplicate_is_refused(monkeypatch, tmp_path):
-    _grant(tmp_path, "google_ai_studio")
     monkeypatch.setenv(HOSTED_PROVIDER_ENV, "google_ai_studio,google_ai_studio")
     with pytest.raises(SafetyGateBlocked) as exc:
         select_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
@@ -227,7 +186,6 @@ def test_select_validator_provider_env_alone_returns_hosted(monkeypatch, tmp_pat
 def test_select_validator_provider_with_grant_returns_hosted(monkeypatch, tmp_path):
     from runtime.mvp_runtime.providers import GroqProvider
 
-    _grant(tmp_path, "groq")
     monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
     validator = select_validator_provider(now="2026-07-15T00:00:00Z", root=tmp_path)
     assert isinstance(validator, GroqProvider)
@@ -238,7 +196,6 @@ def test_validator_selection_is_independent_of_the_specialist_chain(monkeypatch,
     change what the specialist selection yields, and vice versa."""
     from runtime.mvp_runtime.providers import GroqProvider
 
-    _grant(tmp_path, "groq")
     monkeypatch.delenv(HOSTED_PROVIDER_ENV, raising=False)
     monkeypatch.setenv(VALIDATOR_PROVIDER_ENV, "groq")
     assert isinstance(select_provider(now="2026-07-15T00:00:00Z", root=tmp_path), MockProvider)
@@ -654,8 +611,6 @@ def _gemini_response(analysis: dict) -> str:
         "candidates": [{"content": {"parts": [{"text": json.dumps(analysis)}]}, "finishReason": "STOP"}],
         "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 34},
     })
-
-
 
 
 def test_no_api_key_fails_closed(monkeypatch):
