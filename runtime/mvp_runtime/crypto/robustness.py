@@ -106,7 +106,8 @@ HOLDOUT_UNCONFIRMED = "UNCONFIRMED"      # no holdout was evaluated at all
 # against a realistic edge, and "did not clear the interval" was never evidence of absence.
 #
 # **What does NOT change is every door that spends real money or claims an edge.** LIVE arming
-# takes `HOLDOUT_CONFIRMED` or a FORWARD_CONFIRMED paper record (`forward_confirmation`), and
+# takes `HOLDOUT_CONFIRMED` or a FORWARD_CONFIRMED record from the lineage's own forward
+# stream (`forward_confirmation` over `forward_book` rows since 2026-08-29), and
 # `classify_verdict` awards ROBUST only on CONFIRMED — UNDERPOWERED is neither, so it lands
 # exactly where CONTRADICTED did on both. The one door that moves is the paper OBSERVATION
 # entry bar (`pool._observation_holdout_term`), which already admits a THIN tail on the

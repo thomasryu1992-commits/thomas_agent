@@ -1,7 +1,13 @@
 """Forward confirmation — the holdout's own test, applied to data nobody could have seen.
 
-Thomas approved #690 §5-1 on 2026-08-11. The OBSERVATION tier accumulates forward paper
-evidence; this module is the rule that lets it reach the arming door: the backtest holdout's
+Thomas approved #690 §5-1 on 2026-08-11; the SOURCE of forward evidence was revised on
+2026-08-29. The OBSERVATION tier accumulates forward evidence in each lineage's own
+per-strategy virtual stream (``forward_book`` — seeded from the lineage's mint, advanced
+every cycle, settled by the paper kernel's own math on the same intent-net basis). It used
+to accumulate in the routed paper book, whose one-position-per-context slot made N
+co-located strategies split one evidence stream N ways — a queue, not a test. This module
+is deliberately store-agnostic either way; it judges whatever rows the arming door hands
+it, and the rule that lets a lineage reach that door is unchanged: the backtest holdout's
 own thresholds (``MIN_HOLDOUT_TRADES``, ``CONFIDENCE_Z``, the ``_periods_confirm`` slice test
 at ``t_critical_95``), the same slice width the holdout derives (tail/10 of the calendar span
 the timeframe replays: 30 days at 4h and at 1d), applied to outcomes settled AFTER the lineage

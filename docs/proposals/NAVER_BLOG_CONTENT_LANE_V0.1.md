@@ -211,8 +211,14 @@ Phase 1이 Phase 0을 **기다리지 않는다**는 점이 중요하다. `tools.
       만료 시 실패가 조용하다. 블로그 레인은 만료가 가두는 경로가 없어(실거래의 CLOSE
       경로와 달리) 그랜트가 사는 위험이 낮다.
       **포기하는 것:** 파일 삭제에 의한 즉시 취소. 취소는 env var 해제 + 컨테이너 재시작이 된다.
-- [ ] `filesystem_write` 안전플래그 — 초안을 `workspace/` 아래 파일로 남길 경우.
-      (이건 그랜트 경로를 유지한다. 발화 빈도가 낮고 만료가 아프지 않다.)
+- [x] `filesystem_write` 안전플래그 — **개방 (Thomas 결정, 2026-08-30).** 원문이 적은
+      "그랜트 경로 유지"는 2026-08-10의 그랜트 전면 폐지로 무의미해졌고, 실제 개방은
+      env-only 게이트(`MVP_WORKSPACE_WRITER=real`)를 **pipeline-worker에만** 준다 — 루프
+      3서비스(operator/scheduler/maint)의 제외는 그대로다
+      (`test_deployment_env_passthrough`의 NOT_DEPLOYED가 그 사유를 소유). §4b의 두 파일
+      (`POST.md`/`PASTE.txt`)은 패키지 레코드의 렌더링으로서 R8 controlled write를 그대로
+      탄다(create-only, confinement, `write_use` 감사 레코드). 쓰기 실패는 발화를 죽이지
+      않고 degrade한다 — 레코드가 authority이고 파일은 산출물이라는 §4b의 서열 그대로.
 - [x] 스케줄 kind `content_ideation` 추가 — **구현 2026-08-23 (#758), 행 등록 2026-08-30**
       (`schedule_1d25e2cef74b8a48adec`, 주간 604800s, 아래 확장 판단이 먼저 기록된 뒤에).
       등록 보류(Decision 1, 2026-08-25 HELD)는 Thomas가 2026-08-30 직접 해제했다.

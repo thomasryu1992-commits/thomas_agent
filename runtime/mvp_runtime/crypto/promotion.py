@@ -29,7 +29,7 @@ from ..errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
-from . import forward_confirmation
+from . import forward_book, forward_confirmation
 from . import paper as paper_store
 from . import pool as pool_store
 
@@ -174,14 +174,21 @@ def _gate_family_cap(g: _GateInput) -> None:
 
 
 def _gate_live_confirmation(g: _GateInput) -> None:
-    # The 5-1 rule (Thomas 2026-08-11): arming LIVE needs a confirmation earned on unseen
-    # data — a CONFIRMED holdout or a FORWARD_CONFIRMED paper record. OBSERVATION installs
-    # are exactly the tier that gate exists to protect, so they pass untouched.
+    # The 5-1 rule (Thomas 2026-08-11, forward source revised 2026-08-29): arming LIVE
+    # needs a confirmation earned on unseen data — a CONFIRMED holdout or a
+    # FORWARD_CONFIRMED record from the lineage's OWN forward stream. The stream moved
+    # from the routed paper book to the per-strategy forward book because the routed book
+    # holds one position per context: N strategies sharing a context split a fixed
+    # evidence flow N ways, which made the forward requirement a queue rather than a test
+    # (best lineage: 10 trades after a month; worst: zero). The virtual stream carries the
+    # same accounting (paper-kernel settlement, intent-net basis) and the judge's
+    # arithmetic is untouched — only where the rows come from changed. OBSERVATION
+    # installs are exactly the tier this gate exists to protect; they pass untouched.
     if g.live_tier != "LIVE":
         return
     forward_confirmation.assert_live_tier_confirmed(
         g.candidates,
-        outcomes=paper_store.read_outcomes(g.store_root),
+        outcomes=forward_book.read_forward_outcomes(g.store_root),
         observed_lineages=len(g.occupying),
     )
 
