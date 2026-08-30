@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     # Before the record exists: a host-side root run would leave the limits file root-owned, and
     # re-registering is how every limit change lands — so the service would be stuck with the
     # numbers from the last root run, unable to rewrite them. Exit 3 matches the guard's first
-    # adopter (`activate_safety_flag.py`) rather than this script's own generic 2.
+    # adopter (the since-removed `activate_safety_flag.py`) rather than this script's own generic 2.
     try:
         assert_not_foreign_root_run(root)
     except MvpRuntimeError as exc:

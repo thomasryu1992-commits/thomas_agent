@@ -7,7 +7,7 @@ parts (routing, entry plan, settlement math, outcome records) run at ALLOW tier;
 **only** effectful step — persisting paper state — is EXECUTE_AND_REPORT behind a new
 ``paper_trading`` safety-flag provider on the existing ``filesystem_write`` flag:
 :class:`DryRunPaperStore` is the default (computes everything, persists nothing), the
-real store is constructed solely through ``safety_gate.select_gated`` and re-asserts
+real store is constructed solely through ``safety_gate.select_env_gated`` and re-asserts
 its authorization at every mutating call, and the chokepoint :func:`run_paper_update`
 is kill-switch bound (``kill_blocks: tool_write``) exactly like R8's ``run_write``.
 

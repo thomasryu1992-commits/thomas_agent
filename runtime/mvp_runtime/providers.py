@@ -832,7 +832,7 @@ class FailoverProvider:
     """Ordered failover across gate-authorized providers.
 
     Composition only — every member was already built from its own
-    :class:`safety_gate.Authorization` by ``select_gated_chain``, so this class holds no
+    :class:`safety_gate.Authorization` by ``select_env_gated_chain``, so this class holds no
     authority of its own and adds none. The next member is tried on exactly ONE failure
     class: ``PROVIDER_UNAVAILABLE`` (503/429 persisting through the member's own retry —
     the provider saying "not now", the failure class observed live 2026-07-20). A timeout

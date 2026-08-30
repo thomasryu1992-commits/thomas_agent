@@ -18,11 +18,13 @@ and none of that exists in the env-only world. Revocation is now: unset the vari
 and restart the process — a running process's environment does not change under it,
 which `assert_authorization` below is honest about.
 
-The grant machinery that remains in this module (`authorize`,
-`build_activation_record`, `select_gated`, `select_gated_optional`,
-`select_gated_chain`) has **zero runtime callers** — the containment test in
-`tests/test_mvp_runtime_safety_gate.py` enforces that — and is retained only until
-its removal lands as its own reviewed change.
+The grant machinery itself (`authorize`, `build_activation_record`, `select_gated`,
+`select_gated_optional`, `select_gated_chain`, and `scripts/activate_safety_flag.py`)
+was removed on 2026-08-30 — this is that reviewed change. It had zero runtime callers
+since 2026-08-10; the containment test keeps sweeping for the retired names so a
+reintroduction is a named decision, never a drift. Leftover
+`.runtime_governance_state/safety_flag_activations/*.json` files stay inert exactly as
+before: nothing reads them.
 
 Nothing here performs a network call or stores a secret.
 """
@@ -31,20 +33,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.integrity import IntegrityError
 
-from .authority import rank_of
 from .errors import SafetyGateBlocked
-from .paths import RESERVED_BASENAMES
-from .paths import repo_root as _repo_root
-from .timeutil import FIXED_UTC_PATTERN
-from .timeutil import utc_now_iso as _utc_now_iso
 
 # The capability a gated selection returns (a Provider, SearchTool, OperatorChannel, ...).
 T = TypeVar("T")
@@ -64,45 +60,23 @@ FILESYSTEM_WRITE = "filesystem_write"
 APPROVAL_CONSUMPTION = "approval_consumption"
 _KNOWN_FLAGS = frozenset({MODEL_INVOCATION, NETWORK_ACCESS, FILESYSTEM_WRITE, APPROVAL_CONSUMPTION})
 
-# Local (gitignored) activation records — never committed, per-machine, like the Core pointer.
-# ONE FILE PER PROVIDER. Each grant is scoped, expired, and evidenced on its own, so
-# authorizing a second provider cannot widen, refresh, or accidentally re-authorize the
-# first, and a corrupt or expired grant fails only its own provider closed rather than all
-# of them. A single shared record could not express "the specialist may call Gemini AND the
-# validator may call a different vendor" at all — it had one provider_id field.
-ACTIVATIONS_DIR_REL = ".runtime_governance_state/safety_flag_activations"
-
-# provider_id becomes a filename, so it is confined like any caller-supplied path segment:
-# lowercase alnum start, then alnum/underscore/dot/hyphen. This admits every real provider
-# id (google_ai_studio, brave_search, telegram, workspace.writer) and admits no separator,
-# no traversal, and no absolute path. `\Z`, not `$`: `$` also matches before a trailing
-# newline, so "brave\n" passed and would have created a filename containing a newline.
-_PROVIDER_ID_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_.-]*\Z")
-# Windows device names — one authority in paths.py, shared with the workspace writer.
-_RESERVED_BASENAMES = RESERVED_BASENAMES
-# The one timestamp form the gate's lexicographic expiry compares are correct for —
-# single authority in timeutil (anchor rationale documented there).
-_TIMESTAMP_PATTERN = FIXED_UTC_PATTERN
-
-ACTIVATION_MARKER = "safety_flag_activation.v0"
+# The self-hash field name of the retired activation records. Still read in ONE place:
+# `assert_authorization`'s record-path branch below re-hashes a record a hand-built
+# Authorization may still point at (the documented test seam keeps that branch reachable).
 _HASH_FIELD = "content_sha256"
-_REQUIRED_FIELDS = (
-    "activation_marker", "flags", "provider_id", "authority_level",
-    "evidence_ref", "activated_at", "expires_at", _HASH_FIELD,
-)
 
 
 @dataclass(frozen=True)
 class Authorization:
     """A granted authorization to use a network-capable capability.
 
-    Produced only by :func:`authorize` after a valid activation record is verified.
-    Frozen so it cannot be mutated after the grant; carries the activation self-hash
-    AND the record's path, so :func:`assert_authorization` re-checks the grant on disk
-    at egress time — deleting or replacing the activation record is a live revocation,
-    not something a long-running process outlives. ``activation_path`` is ``None`` only
-    for hand-built in-process test authorizations (the documented seam); every grant
-    :func:`authorize` produces carries it.
+    Produced by :func:`env_only_authorization` (the one production path since the grant
+    machinery's removal — module docstring). Frozen so it cannot be mutated after the
+    grant. ``activation_path`` survives from the grant era: a hand-built test
+    authorization may still point it at a record file, and
+    :func:`assert_authorization`'s record branch then re-reads that file at egress —
+    the historical live-revocation contract, kept because the field is part of this
+    class's shape and the branch is the honest behavior for anything that sets it.
     """
 
     flags: tuple[str, ...]
@@ -121,217 +95,10 @@ class Authorization:
     # carrying `evidence_ref: "env_only:MVP_LIVE_TRADING=real"` passed the path validation
     # (no drive, not absolute, no `..`, and a file of that name is legal on Linux) and then took
     # the env branch — skipping the grant re-read, so deleting the grant file stopped revoking
-    # it. That defeated the one property `assert_authorization` below promises about grants, on
-    # providers this decision deliberately KEPT on a grant. `authorize` never sets this field,
-    # so no record content can reach it.
+    # it. That defeated the one property `assert_authorization` below promised about grants.
+    # The grant producer (`authorize`) is gone now; the field stays record-proof by
+    # construction — only `env_only_authorization` sets it.
     env_gate: tuple[str, str] | None = None
-
-
-def activation_path(root: Path, provider_id: str) -> Path:
-    """Where ``provider_id``'s activation record lives, or fail closed.
-
-    The id is a caller-supplied path segment, so it is validated against a strict pattern
-    and the resolved path is verified to stay inside the activations directory — a provider
-    id can name a grant, never a location.
-    """
-    if not (isinstance(provider_id, str) and _PROVIDER_ID_PATTERN.match(provider_id)):
-        raise SafetyGateBlocked(
-            "INVALID_PROVIDER_ID",
-            f"provider id {provider_id!r} is not a valid activation name",
-        )
-    if provider_id.split(".", 1)[0] in _RESERVED_BASENAMES:
-        raise SafetyGateBlocked(
-            "INVALID_PROVIDER_ID",
-            f"provider id {provider_id!r} is a reserved device name on Windows",
-        )
-    base = (root / ACTIVATIONS_DIR_REL).resolve()
-    path = (base / f"{provider_id}.json").resolve()
-    if path.parent != base:
-        raise SafetyGateBlocked(
-            "INVALID_PROVIDER_ID", f"provider id {provider_id!r} resolves outside the activations directory"
-        )
-    return path
-
-
-def _load_record(root: Path, provider_id: str) -> dict[str, Any]:
-    path = activation_path(root, provider_id)
-    if not path.is_file():
-        raise SafetyGateBlocked(
-            "ACTIVATION_MISSING",
-            f"no safety-flag activation record for {provider_id!r} at "
-            f"{ACTIVATIONS_DIR_REL}/{provider_id}.json; the capability is disabled (fail-closed)",
-        )
-    try:
-        raw = path.read_text(encoding="utf-8")
-        record = json.loads(raw)
-    except (OSError, ValueError) as exc:
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", f"activation record is unreadable: {exc}") from exc
-    if not isinstance(record, dict):
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", "activation record must be a JSON object")
-    return record
-
-
-def _verify_integrity(record: dict[str, Any]) -> str:
-    """Recompute the activation self-hash and compare. Tamper-evident core of the gate."""
-    for field in _REQUIRED_FIELDS:
-        if field not in record:
-            raise SafetyGateBlocked("ACTIVATION_MALFORMED", f"activation record missing field: {field}")
-    if record["activation_marker"] != ACTIVATION_MARKER:
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", "unrecognized activation_marker")
-    if not isinstance(record["flags"], list) or not all(isinstance(f, str) for f in record["flags"]):
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", "flags must be a list of strings")
-    if rank_of(record["authority_level"]) is None:
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
-
-    claimed = record[_HASH_FIELD]
-    payload = {k: v for k, v in record.items() if k != _HASH_FIELD}
-    try:
-        recomputed = integrity.sha256_record(payload)
-    except IntegrityError as exc:
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", f"activation record is not fingerprintable: {exc}") from exc
-    if not isinstance(claimed, str) or claimed != recomputed:
-        raise SafetyGateBlocked(
-            "ACTIVATION_TAMPERED",
-            "activation record self-hash does not match its content (tampered or hand-edited)",
-        )
-    return recomputed
-
-
-def build_activation_record(
-    *,
-    flags: Sequence[str],
-    provider_id: str,
-    activated_at: str,
-    expires_at: str,
-    evidence_ref: str,
-    authority_level: str,
-) -> dict[str, Any]:
-    """Build a valid activation record (with its self-hash) for an operator to write.
-
-    This is the *only* supported way to produce the ``content_sha256``; it does not
-    write any file and does not enable anything by itself — the operator records the
-    approval evidence and writes the returned object to ``activation_path(root,
-    provider_id)`` as a deliberate, local governance step, one grant per provider.
-
-    ``authority_level`` is **evidence, not an enforcement input** — deliberately. It
-    records the P-level the operator was acting at when they enabled the flag, and the
-    gate only checks that it is a real P0..P6 (a record claiming "P9" is malformed). It is
-    not compared against a per-flag minimum because no such policy exists to compare
-    against, and inventing one here would put authority policy in the runtime instead of
-    the Governance Policy. Note it is inside the self-hash, so it also cannot be dropped
-    from the record without invalidating every activation already minted on a live machine.
-    """
-    bad = [f for f in flags if f not in _KNOWN_FLAGS]
-    if bad:
-        raise SafetyGateBlocked("UNKNOWN_FLAG", f"not a governed safety flag: {bad}")
-    if not _PROVIDER_ID_PATTERN.match(provider_id or ""):
-        # Refuse to mint a grant whose id could not be stored or looked up.
-        raise SafetyGateBlocked("INVALID_PROVIDER_ID", f"provider id {provider_id!r} is not a valid activation name")
-    if rank_of(authority_level) is None:
-        raise SafetyGateBlocked("ACTIVATION_MALFORMED", "authority_level is not a known P0..P6 level")
-    for field_name, value in (("activated_at", activated_at), ("expires_at", expires_at)):
-        if not _TIMESTAMP_PATTERN.match(str(value) or ""):
-            # The gate compares these lexicographically, which is only a correct time
-            # compare for the one fixed second-precision Z format — a grant minted with
-            # "+00:00" or sub-second precision could compare wrong in EITHER direction
-            # (including never-expires). Refuse to mint what authorize() cannot compare.
-            raise SafetyGateBlocked(
-                "ACTIVATION_MALFORMED",
-                f"{field_name} must be the fixed UTC form YYYY-MM-DDThh:mm:ssZ, got {value!r}",
-            )
-    record = {
-        "activation_marker": ACTIVATION_MARKER,
-        "flags": list(flags),
-        "provider_id": provider_id,
-        "authority_level": authority_level,
-        "evidence_ref": evidence_ref,
-        "activated_at": activated_at,
-        "expires_at": expires_at,
-    }
-    record[_HASH_FIELD] = integrity.sha256_record(record)
-    return record
-
-
-def authorize(
-    required_flags: Sequence[str],
-    *,
-    provider_id: str,
-    now: str,
-    root: Path | None = None,
-) -> Authorization:
-    """Authorize a network-capable capability, or fail closed.
-
-    Verifies **that provider's own** activation record: present, integrity-consistent,
-    unexpired, references a real evidence file, and explicitly enables every
-    ``required_flag``. Returns an :class:`Authorization` on success; raises
-    :class:`SafetyGateBlocked` (a fail-closed BLOCK) otherwise.
-
-    Each provider is authorized independently, so one open grant never speaks for another:
-    a run may hold a Gemini grant and no Groq grant, and the Groq call still fails closed.
-    """
-    root = root if root is not None else _repo_root()
-    record = _load_record(root, provider_id)
-    activation_sha256 = _verify_integrity(record)
-
-    activated_at, expires_at = record["activated_at"], record["expires_at"]
-    # Verify-time re-check of the timestamp format: a self-hash only proves the record was
-    # not edited, not that it was minted well-formed. Lexicographic comparison is a correct
-    # time compare ONLY for this one fixed format, so anything else fails closed here
-    # rather than comparing wrong (possibly in the never-expires direction).
-    for field_name, value in (("activated_at", activated_at), ("expires_at", expires_at)):
-        if not _TIMESTAMP_PATTERN.match(str(value) or ""):
-            raise SafetyGateBlocked(
-                "ACTIVATION_MALFORMED",
-                f"activation {field_name} is not the fixed UTC form YYYY-MM-DDThh:mm:ssZ",
-            )
-    if now < str(activated_at):
-        raise SafetyGateBlocked("ACTIVATION_NOT_YET_ACTIVE", "activation record is not active yet")
-    if now >= str(expires_at):
-        raise SafetyGateBlocked("ACTIVATION_EXPIRED", "safety-flag activation has expired (fail-closed)")
-
-    # The filename is only an index; the record's own content is the authority. Copying
-    # google_ai_studio.json to groq.json therefore grants nothing — the inner provider_id
-    # still says google_ai_studio, and it is covered by the self-hash, so it cannot be
-    # edited to agree without breaking integrity.
-    if record["provider_id"] != provider_id:
-        raise SafetyGateBlocked(
-            "PROVIDER_NOT_AUTHORIZED",
-            f"activation authorizes provider {record['provider_id']!r}, not {provider_id!r}",
-        )
-    enabled = set(record["flags"])
-    missing = [f for f in required_flags if f not in enabled]
-    if missing:
-        raise SafetyGateBlocked("FLAG_NOT_ENABLED", f"activation does not enable required flags: {missing}")
-
-    # The evidence ref must stay inside the repository: an absolute or escaping ref would
-    # let ANY existing file on the machine (C:\Windows\win.ini) satisfy "references a real
-    # approval-evidence file", which is not what the check attests.
-    ref = str(record["evidence_ref"])
-    ref_parts = PureWindowsPath(ref)
-    if ref_parts.is_absolute() or ref_parts.drive or ref.startswith(("/", "\\")) or ".." in ref_parts.parts:
-        raise SafetyGateBlocked(
-            "EVIDENCE_INVALID", f"evidence_ref {ref!r} must be a repo-relative path without '..'"
-        )
-    root_real = root.resolve()
-    evidence = (root_real / ref).resolve()
-    if evidence != root_real and root_real not in evidence.parents:
-        raise SafetyGateBlocked(
-            "EVIDENCE_INVALID", f"evidence_ref {ref!r} resolves outside the repository"
-        )
-    if not evidence.is_file():
-        raise SafetyGateBlocked(
-            "EVIDENCE_MISSING",
-            f"activation references approval evidence {record['evidence_ref']!r} that does not exist",
-        )
-
-    return Authorization(
-        flags=tuple(record["flags"]),
-        provider_id=provider_id,
-        activation_sha256=activation_sha256,
-        expires_at=str(expires_at),
-        evidence_ref=str(record["evidence_ref"]),
-        activation_path=str(activation_path(root, provider_id)),
-    )
 
 
 def assert_authorization(
@@ -343,12 +110,11 @@ def assert_authorization(
 ) -> None:
     """Egress-time re-check: the socket-opening path calls this immediately before it
     would open a network connection. Fails closed unless it holds a genuine, unexpired
-    :class:`Authorization` covering the required flags for this provider — and, for a
-    grant produced by :func:`authorize`, unless the activation record still exists on
-    disk with exactly the authorized content. That last check is what makes deleting a
-    grant an actual revocation: a long-lived process (the operator loop holds its grant
-    for the loop's whole lifetime) re-reads the record at every egress, so removing or
-    replacing the file stops it at the next call rather than at expiry.
+    :class:`Authorization` covering the required flags for this provider. An
+    authorization that still carries an ``activation_path`` (the grant-era shape; only a
+    hand-built one can, since the grant producer was removed) is additionally re-checked
+    against that record on disk — the historical live-revocation contract, honored for
+    whatever still sets the field.
 
     For an authorization from :func:`select_env_gated` there is no record, so the re-check
     re-reads the environment variable instead. It is the weaker of the two and the code below
@@ -410,52 +176,14 @@ def assert_authorization(
             )
 
 
-def select_gated(
-    *,
-    env_var: str,
-    opt_in_value: str,
-    flags: Sequence[str],
-    provider_id: str,
-    default_factory: Callable[[], T],
-    gated_factory: Callable[[Authorization], T],
-    now: str | None = None,
-    root: Path | None = None,
-) -> T:
-    """The Safety-Flag Gate chokepoint shared by every gated capability.
-
-    Every capability that can reach outside the runtime — the model provider, the search
-    tool, the operator channel, the workspace writer — chooses its implementation the same
-    way, and that sameness is the safety property, not a coincidence worth deduplicating:
-
-    1. Without the caller's explicit opt-in (``env_var == opt_in_value``), return the inert
-       default. It needs no gate because it cannot reach anything.
-    2. With the opt-in, ``authorize`` FIRST. Only if it passes does ``gated_factory`` run.
-
-    Step 2 is why this exists. "Never construct the capable thing before the gate opens" was
-    previously four authors each remembering to write it in the right order; here it is
-    structural — ``gated_factory`` receives the :class:`Authorization` as its argument, so it
-    cannot run without one. An env var alone can never open a capability: with no valid
-    activation record, ``authorize`` raises :class:`SafetyGateBlocked` and nothing is built.
-
-    The gated object is still expected to re-verify its authorization at the moment it acts
-    (defense in depth) — this selects; it does not excuse the egress check.
-    """
-    choice = os.environ.get(env_var, "").strip().lower()
-    if choice != opt_in_value:
-        return default_factory()
-    # Opted in — the gate must pass before the capable implementation is even constructed.
-    authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
-    return gated_factory(authorization)
-
-
 # --- the environment-only gate --------------------------------------------------------------
 #
 # Thomas decision, 2026-07-28 (live trading): gated by its environment opt-in ALONE, with no
-# per-machine grant — and, since Thomas 2026-08-10, the same is true of EVERY gated capability;
-# `select_gated` above has no runtime caller left.
+# per-machine grant — and, since Thomas 2026-08-10, the same is true of EVERY gated capability.
+# The grant-backed selectors themselves were removed 2026-08-30 (module docstring).
 #
 # The separate-function shape predates that and is kept: while both worlds existed, a
-# `require_grant=False` keyword on `select_gated` would have put "no grant needed" one token
+# `require_grant=False` keyword on the grant selector would have put "no grant needed" one token
 # away from the model provider, the search tool, the operator channel and the workspace writer;
 # a separate function can only be reached by a caller that names it. It is also what keeps the
 # containment test's AST sweep meaningful — env-only call sites are enumerable BY NAME.
@@ -514,18 +242,16 @@ def select_env_gated(
     default_factory: Callable[[], T],
     gated_factory: Callable[[Authorization], T],
 ) -> T:
-    """:func:`select_gated`'s shape, with the environment opt-in as the only gate.
+    """The gate chokepoint every capability selects through, environment opt-in only.
 
-    Same construction order — the capable implementation is built only after the opt-in is
+    Construction order is the safety property: the capable implementation is built only after the opt-in is
     confirmed and receives its ``Authorization`` as an argument, so "never construct the capable
-    thing before the gate opens" stays structural here too. Only what "the gate" means differs.
+    thing before the gate opens" stays structural here too. The environment IS the gate.
     """
     # Both sides normalised, and `assert_authorization`'s re-check normalises the same way. Only
     # the env value was, which is right for every caller today (all five pass
     # `REAL_LIVE_TRADING = "real"`) and silently wrong for one that passes "REAL": the gate would
-    # never open and nothing would say why. `select_gated` above has the same asymmetry and is
-    # left alone deliberately — it is pre-existing, it governs every other capability, and
-    # widening what opens THOSE gates does not belong in a live-trading change.
+    # never open and nothing would say why.
     choice = os.environ.get(env_var, "").strip().lower()
     if choice != opt_in_value.strip().lower():
         return default_factory()
@@ -543,14 +269,13 @@ def select_env_gated_optional(
     provider_id: str,
     gated_factory: Callable[[Authorization], T],
 ) -> tuple[T | None, str | None]:
-    """:func:`select_gated_optional`'s shape — a capability that DEGRADES rather than fails
-    closed — with the environment as the only gate: ``(impl, None)`` when ``env_var``'s
+    """The chokepoint for a capability that DEGRADES rather than fails closed, with the
+    environment as the only gate: ``(impl, None)`` when ``env_var``'s
     comma-separated list names ``provider_id``, ``(None, reason_code)`` otherwise.
 
     The member must be NAMED; the variable merely being set is not an opt-in. That keeps
     the per-provider scope the per-provider grants used to carry: a list that spells the
-    light tier's id still cannot open the heavy tier's gate. Same use rule as
-    :func:`select_gated_optional`, unchanged: ONLY where the fallback is itself already
+    light tier's id still cannot open the heavy tier's gate. Use rule unchanged from the retired grant era: ONLY where the fallback is itself already
     authorized and inert-or-narrower; a capability with no safe fallback fails closed."""
     choice = os.environ.get(env_var, "").strip().lower()
     names = [part.strip() for part in choice.split(",") if part.strip()]
@@ -570,7 +295,7 @@ def select_env_gated_chain(
     flags: Sequence[str],
     default_factory: Callable[[], T],
 ) -> list[T]:
-    """:func:`select_gated_chain`'s shape and rules, with the environment as the only gate.
+    """The chain-aware chokepoint (comma-separated failover order), environment gate only.
 
     The single-value semantics match :func:`select_env_gated` (unset or a single
     unrecognized value -> the inert default, never any capable path), and the plural rule
@@ -609,88 +334,3 @@ def select_env_gated_chain(
         )
         for name in names
     ]
-
-
-# --- RETIRED grant-backed selectors (Thomas 2026-08-10) -------------------------------------
-#
-# `select_gated_optional` and `select_gated_chain` below, like `select_gated` and `authorize`
-# above, have no runtime caller left — the containment test enforces zero — and are retained
-# only until their removal lands as its own reviewed change.
-
-def select_gated_optional(
-    *,
-    flags: Sequence[str],
-    provider_id: str,
-    gated_factory: Callable[[Authorization], T],
-    now: str | None = None,
-    root: Path | None = None,
-) -> tuple[T | None, str | None]:
-    """Gate chokepoint for a capability that DEGRADES rather than fails closed.
-
-    Same safety property as :func:`select_gated` — ``gated_factory`` receives the
-    :class:`Authorization`, so the capable implementation is built only after the gate
-    opens — but where ``select_gated`` raises :class:`SafetyGateBlocked` when an opted-in
-    provider has no grant, this returns a signal instead: ``(impl, None)`` when the gate
-    opens, ``(None, reason_code)`` when it does not. The caller then falls back to an
-    implementation it already holds (e.g. a base provider), turning "no grant" into a
-    recorded degrade instead of a blocked run. Use ONLY where the fallback is itself
-    already-authorized and inert-or-narrower; a capability with no safe fallback must use
-    :func:`select_gated` and fail closed."""
-    try:
-        authorization = authorize(flags, provider_id=provider_id, now=now or _utc_now_iso(), root=root)
-    except SafetyGateBlocked as exc:
-        return None, exc.reason_code
-    return gated_factory(authorization), None
-
-
-def select_gated_chain(
-    *,
-    env_var: str,
-    factories: dict[str, Callable[[Authorization], T]],
-    flags: Sequence[str],
-    default_factory: Callable[[], T],
-    now: str | None = None,
-    root: Path | None = None,
-) -> list[T]:
-    """Chain-aware gate chokepoint: the env var may name SEVERAL providers, comma-separated
-    in failover order, each with its own grant.
-
-    Same safety property as :func:`select_gated` — every capable implementation is built
-    only from an :class:`Authorization` its own grant produced — extended with one rule for
-    the plural case: **a chain never silently shrinks.** The single-value semantics match
-    ``select_gated`` exactly (unset/unrecognized value -> the inert default; a known value
-    -> its gate must open). But the moment the operator writes a comma they are being
-    explicit, so in a multi-value list ANY unknown name or ANY member whose gate does not
-    open fails the WHOLE selection closed: a typo'd or unauthorized fallback must surface
-    at startup, not at 3am when the primary goes down and the chain quietly has one link.
-
-    Returns the built implementations in the order named (length 1 for the single/default
-    cases). The caller decides how to compose them — composition is capability logic, not
-    gate logic.
-    """
-    stamp = now or _utc_now_iso()
-    choice = os.environ.get(env_var, "").strip().lower()
-    if not choice:
-        return [default_factory()]
-    names = [part.strip() for part in choice.split(",") if part.strip()]
-    if len(names) == 1 and names[0] not in factories:
-        # Single unrecognized opt-in falls back to inert, exactly like select_gated —
-        # never to any capable path.
-        return [default_factory()]
-    unknown = [name for name in names if name not in factories]
-    if unknown:
-        raise SafetyGateBlocked(
-            "UNKNOWN_PROVIDER",
-            f"failover chain names unknown provider(s) {unknown}; "
-            f"known: {sorted(factories)} (fail-closed — a chain never silently shrinks)",
-        )
-    if len(set(names)) != len(names):
-        raise SafetyGateBlocked(
-            "DUPLICATE_PROVIDER", f"failover chain names a provider twice: {names}"
-        )
-    # Authorize EVERY member before constructing ANY member: a chain that cannot fully
-    # open must not leave already-built capable implementations behind.
-    authorizations = [
-        authorize(flags, provider_id=name, now=stamp, root=root) for name in names
-    ]
-    return [factories[name](auth) for name, auth in zip(names, authorizations)]

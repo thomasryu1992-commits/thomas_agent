@@ -4,9 +4,9 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **492** distinct codes across **922** raise sites
+- **485** distinct codes across **896** raise sites
 - **21** exception classes carry them
-- **64** codes are raised from more than one module (see below)
+- **63** codes are raised from more than one module (see below)
 - **119** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
@@ -74,7 +74,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_APPROVAL` | `approval.py`, `switch_bridge.py` |
 | `UNKNOWN_CANDIDATE` | `approval_cli.py`, `pool.py` |
 | `UNKNOWN_COMMAND` | `approval.py`, `control.py`, `registry_console.py` |
-| `UNKNOWN_FLAG` | `safety_gate.py`, `task_registry.py` |
 | `UNKNOWN_REQUEST_KIND` | `planner.py`, `task_registry.py` |
 | `USAGE` | `memory_console.py`, `registry_console.py` |
 | `VALIDATION_RESULT_INVALID` | `validation.py`, `validator.py` |
@@ -91,23 +90,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 288 | `load_funds_board` | `body.get('degraded')` |
 | `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 276 | `load_funds_board` | `body is None` |
 | `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 271 | `load_funds_board` | `snapshot_path(root).is_file()` |
-| `ACTIVATION_CHANGED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 406 | `assert_authorization` | `current != authorization.activation_sha256` |
-| `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 290 | `authorize` | `now >= str(expires_at)` |
-| `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 367 | `assert_authorization` | `now >= authorization.expires_at` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 168 | `_load_record` | `—` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 170 | `_load_record` | `not isinstance(record, dict)` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 178 | `_verify_integrity` | `field not in record` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 180 | `_verify_integrity` | `record['activation_marker'] != ACTIVATION_MARKER` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 182 | `_verify_integrity` | `not isinstance(record['flags'], list) or not all((isinstance(f, str) for f in record['flags']))` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 184 | `_verify_integrity` | `rank_of(record['authority_level']) is None` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 191 | `_verify_integrity` | `—` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 231 | `build_activation_record` | `rank_of(authority_level) is None` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 238 | `build_activation_record` | `not _TIMESTAMP_PATTERN.match(str(value) or '')` |
-| `ACTIVATION_MALFORMED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 283 | `authorize` | `not _TIMESTAMP_PATTERN.match(str(value) or '')` |
-| `ACTIVATION_MISSING` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 159 | `_load_record` | `not path.is_file()` |
-| `ACTIVATION_NOT_YET_ACTIVE` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 288 | `authorize` | `now < str(activated_at)` |
-| `ACTIVATION_REVOKED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 393 | `assert_authorization` | `not record_path.is_file()` |
-| `ACTIVATION_TAMPERED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 193 | `_verify_integrity` | `not isinstance(claimed, str) or claimed != recomputed` |
+| `ACTIVATION_CHANGED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 172 | `assert_authorization` | `current != authorization.activation_sha256` |
+| `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 133 | `assert_authorization` | `now >= authorization.expires_at` |
+| `ACTIVATION_REVOKED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 159 | `assert_authorization` | `not record_path.is_file()` |
 | `ACTOR_PROFILE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 257 | `apply_work` | `isinstance(raw_profile, str) and raw_profile.strip() in _ACTOR_PROFILES` |
 | `ALREADY_CLASSIFIED` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 198 | `classify_task` | `classification.get('classification_status') != 'UNCLASSIFIED'` |
 | `ALREADY_CONSUMED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 266 | `validate_spendable_approval` | `status == STATUS_CONSUMED` |
@@ -200,13 +185,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1237 | `assert_observation_entry_bar` | `—` |
 | `CANDIDATE_COST_BASIS_STALE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 344 | `assert_promotable_cost_basis` | `stale` |
 | `CANDIDATE_DERIVATION_NOT_PROMOTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1374 | `assert_promotable_derivation` | `refused` |
-| `CANDIDATE_EMPTY` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 180 | `consume_approval` | `not (isinstance(content, str) and content.strip())` |
+| `CANDIDATE_EMPTY` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 179 | `consume_approval` | `not (isinstance(content, str) and content.strip())` |
 | `CANDIDATE_EVIDENCE_DEPTH_UNRECORDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 573 | `assert_promotable_evidence_depth` | `unknown` |
 | `CANDIDATE_EXISTS` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 513 | `create_program_candidate` | `any((c.get('pattern_id') == pattern_id for c in store.read_candidates()))` |
-| `CANDIDATE_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 173 | `consume_approval` | `memory_is_expired(candidate, now=now)` |
+| `CANDIDATE_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 172 | `consume_approval` | `memory_is_expired(candidate, now=now)` |
 | `CANDIDATE_EXPIRED` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 205 | `apply_memory_command` | `memory.is_expired(match, stamp)` |
 | `CANDIDATE_FAMILY_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1280 | `assert_family_cap` | `—` |
-| `CANDIDATE_GONE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 165 | `consume_approval` | `candidate is None` |
+| `CANDIDATE_GONE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 164 | `consume_approval` | `candidate is None` |
 | `CANDIDATE_GONE` | `OperatorBlocked` | `runtime/mvp_runtime/memory_console.py` | 199 | `apply_memory_command` | `match is None` |
 | `CANDIDATE_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 484 | `create_program_candidate` | `not isinstance(review_input, Mapping)` |
 | `CANDIDATE_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 491 | `create_program_candidate` | `not items` |
@@ -222,7 +207,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 146 | `create_program_request` | `candidate is None` |
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 547 | `_require_candidate` | `latest is None` |
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 64 | `_lineage` | `candidate is None` |
-| `CANDIDATE_NOT_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 239 | `consume_approval` | `—` |
+| `CANDIDATE_NOT_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 238 | `consume_approval` | `—` |
 | `CANDIDATE_REQUIRES_REVIEW` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 508 | `create_program_candidate` | `latest.get('review_status') != 'UNDER_REVIEW'` |
 | `CANDIDATE_SEMANTIC_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 730 | `assert_no_semantic_duplicates` | `—` |
 | `CANDIDATE_UNCONFIRMED_FOR_LIVE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_confirmation.py` | 255 | `assert_live_tier_confirmed` | `—` |
@@ -233,13 +218,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1026 | `_call` | `—` |
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1028 | `_call` | `not isinstance(payload, dict) or not payload.get('ok')` |
 | `CHAT_NOT_REGISTERED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 241 | `verify_control_channel` | `not isinstance(message.chat_id, str) or message.chat_id != registration.chat_id` |
-| `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 226 | `consume_approval` | `—` |
-| `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 247 | `consume_approval` | `—` |
-| `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 71 | `consume` | `—` |
+| `CONSUMED_NOT_PROMOTED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 225 | `consume_approval` | `—` |
+| `CONSUMED_UNAUDITED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 246 | `consume_approval` | `—` |
+| `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 70 | `consume` | `—` |
 | `CONSUMPTION_DISABLED` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 96 | `authorize_spend` | `—` |
 | `CONSUMPTION_SUBJECT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 808 | `build_approval_consumption_audit` | `not (isinstance(validated_id, str) and validated_id)` |
 | `CONSUMPTION_SUBJECT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 862 | `build_trial_consumption_audit` | `not (isinstance(trial_task_id, str) and trial_task_id)` |
-| `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 183 | `consume_approval` | `integrity.sha256_record({'content': content}) != snapshot.get('content_sha256')` |
+| `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 182 | `consume_approval` | `integrity.sha256_record({'content': content}) != snapshot.get('content_sha256')` |
 | `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 410 | `run_trial` | `trial_content_sha256(role, trial_request) != snapshot.get('content_sha256')` |
 | `CONTENT_TOO_LARGE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 216 | `_require_content` | `size > MAX_CONTENT_BYTES` |
 | `CONTROL_CHARS` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 76 | `_reject_control_chars` | `code < 32 and ch not in _ALLOWED_CONTROL_CHARS or code == 127` |
@@ -296,8 +281,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `DOOR_UNREACHABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 661 | `call_door` | `—` |
 | `DOOR_UNREACHABLE` | `ControlBlocked` | `runtime/mvp_runtime/socket_door.py` | 669 | `call_door` | `not raw` |
 | `DUPLICATE_CORE_RULES` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 192 | `build_task` | `len(set(rule_ids)) != len(rule_ids)` |
-| `DUPLICATE_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 601 | `select_env_gated_chain` | `len(set(names)) != len(names)` |
-| `DUPLICATE_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 688 | `select_gated_chain` | `len(set(names)) != len(names)` |
+| `DUPLICATE_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 326 | `select_env_gated_chain` | `len(set(names)) != len(names)` |
 | `DUPLICATE_SELECTOR` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1420 | `resolve_candidates` | `record['candidate_id'] in seen` |
 | `EMPTY_CONTENT` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 213 | `_require_content` | `not content` |
 | `EMPTY_FEEDBACK` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 232 | `apply_feedback` | `not payload` |
@@ -308,13 +292,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `EMPTY_SYMBOL` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 777 | `_require_symbol` | `not isinstance(symbol, str) or not symbol.strip()` |
 | `ENTRY_NOT_FOUND` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 372 | `_require_entry` | `entry is None` |
 | `ENTRY_NOT_FOUND` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 453 | `_current_locked` | `latest is None` |
-| `ENV_OPT_IN_WITHDRAWN` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 385 | `assert_authorization` | `os.environ.get(env_var, '').strip().lower() != expected.strip().lower()` |
+| `ENV_OPT_IN_WITHDRAWN` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 151 | `assert_authorization` | `os.environ.get(env_var, '').strip().lower() != expected.strip().lower()` |
 | `EVENT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 115 | `_make_event` | `—` |
 | `EVENT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 918 | `rechain_events` | `—` |
 | `EVENT_STRUCTURE_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 912 | `rechain_events` | `not (isinstance(integrity_block, MutableMapping) and isinstance(payload, MutableMapping) and is…` |
-| `EVIDENCE_INVALID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 312 | `authorize` | `ref_parts.is_absolute() or ref_parts.drive or ref.startswith(('/', '\\')) or ('..' in ref_parts…` |
-| `EVIDENCE_INVALID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 318 | `authorize` | `evidence != root_real and root_real not in evidence.parents` |
-| `EVIDENCE_MISSING` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 322 | `authorize` | `not evidence.is_file()` |
 | `FACTORY_RUN_ID_MISSING` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1525 | `_execute` | `run_id is None` |
 | `FEEDBACK_TARGET_UNREADABLE` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 120 | `load_last_delivered` | `—` |
 | `FEEDBACK_TARGET_UNREADABLE` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 125 | `load_last_delivered` | `not (isinstance(trace_id, str) and trace_id and isinstance(delivered_at, str) and delivered_at)` |
@@ -326,8 +307,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FINGERPRINT_MISMATCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 428 | `_spend` | `recomputed != record.get('action_fingerprint')` |
 | `FINGERPRINT_UNCOMPUTABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 287 | `validate_spendable_approval` | `—` |
 | `FINGERPRINT_UNCOMPUTABLE` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 426 | `_spend` | `—` |
-| `FLAG_NOT_ENABLED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 304 | `authorize` | `missing` |
-| `FLAG_NOT_ENABLED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 365 | `assert_authorization` | `missing` |
+| `FLAG_NOT_ENABLED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 131 | `assert_authorization` | `missing` |
 | `FORWARDED_MESSAGE` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 237 | `verify_control_channel` | `message.is_forwarded` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 138 | `_parse_book` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 155 | `load_book` | `—` |
@@ -395,10 +375,6 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1390 | `build_strategy_promotion_permission_decision` | `not candidate_ids or not all((isinstance(c, str) and c for c in candidate_ids))` |
 | `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1392 | `build_strategy_promotion_permission_decision` | `len(strategy_ids) != len(candidate_ids) or not all((isinstance(s, str) and s for s in strategy_…` |
 | `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1394 | `build_strategy_promotion_permission_decision` | `len(rule_hashes) != len(candidate_ids) or not all((isinstance(h, str) and h for h in rule_hashe…` |
-| `INVALID_PROVIDER_ID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 138 | `activation_path` | `not (isinstance(provider_id, str) and _PROVIDER_ID_PATTERN.match(provider_id))` |
-| `INVALID_PROVIDER_ID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 143 | `activation_path` | `provider_id.split('.', 1)[0] in _RESERVED_BASENAMES` |
-| `INVALID_PROVIDER_ID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 150 | `activation_path` | `path.parent != base` |
-| `INVALID_PROVIDER_ID` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 229 | `build_activation_record` | `not _PROVIDER_ID_PATTERN.match(provider_id or '')` |
 | `INVALID_REGISTRATION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1325 | `build_program_registration_permission_decision` | `not (isinstance(definition_sha256, str) and definition_sha256.startswith('sha256:'))` |
 | `INVALID_REQUESTER_TYPE` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 173 | `build_task` | `requester_type not in _ALLOWED_REQUESTER_TYPES` |
 | `INVALID_REQUIRED_LEVEL` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 310 | `select_role` | `required_rank is None` |
@@ -654,7 +630,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 268 | `validate_spendable_approval` | `status != STATUS_APPROVED` |
 | `NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 424 | `build_consumed_record` | `status != STATUS_APPROVED` |
 | `NOT_APPROVED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 406 | `_spend` | `status != approval_mod.STATUS_APPROVED` |
-| `NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 357 | `assert_authorization` | `not isinstance(authorization, Authorization)` |
+| `NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 123 | `assert_authorization` | `not isinstance(authorization, Authorization)` |
 | `NOT_A_CANDIDATE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 587 | `promote_candidate` | `not isinstance(candidate, Mapping)` |
 | `NOT_A_CANDIDATE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 589 | `promote_candidate` | `candidate.get('status') != CANDIDATE_STATUS or candidate.get('scope') != CANDIDATE_SCOPE` |
 | `NOT_A_CANDIDATE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 282 | `select_candidate_role` | `status != 'candidate' or role.get('routable') is not False` |
@@ -828,8 +804,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROPOSAL_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 475 | `_apply_job` | `focus is not None and (not isinstance(focus, str))` |
 | `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 229 | `run_validation_worker` | `—` |
 | `PROVIDER_ERROR` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 672 | `run_analysis_worker` | `—` |
-| `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 297 | `authorize` | `record['provider_id'] != provider_id` |
-| `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 362 | `assert_authorization` | `authorization.provider_id != provider_id` |
+| `PROVIDER_NOT_AUTHORIZED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 128 | `assert_authorization` | `authorization.provider_id != provider_id` |
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 339 | `_post_json_with_retry` | `—` |
 | `PROVIDER_TRANSPORT` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 344 | `_post_json_with_retry` | `—` |
 | `PROVIDER_UNAVAILABLE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 336 | `_post_json_with_retry` | `exc.code in _RETRYABLE_HTTP` |
@@ -917,7 +892,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SUBJECT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 49 | `_fingerprint` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 138 | `write` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 249 | `run_write` | `target.exists()` |
-| `TARGET_NOT_CANDIDATE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 160 | `consume_approval` | `not target_ref.startswith(_CANDIDATE_TARGET_PREFIX)` |
+| `TARGET_NOT_CANDIDATE` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 159 | `consume_approval` | `not target_ref.startswith(_CANDIDATE_TARGET_PREFIX)` |
 | `TARGET_NOT_CANDIDATE_ROLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 213 | `_parse_target` | `not target_ref.startswith(_TARGET_PREFIX) or '@' not in target_ref` |
 | `TARGET_NOT_CANDIDATE_ROLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 219 | `_parse_target` | `not role_id or not version` |
 | `TARGET_NOT_SWITCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 445 | `_spend` | `prefix is None` |
@@ -958,14 +933,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_CORE_CANDIDATE_TYPE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 413 | `build_core_candidate` | `candidate_type not in CORE_CANDIDATE_TYPES` |
 | `UNKNOWN_DOMAIN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 195 | `apply_domain_command` | `verb not in _SUBCOMMANDS` |
 | `UNKNOWN_DOMAIN_SUBCOMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 202 | `apply_domain_command` | `handler is None` |
-| `UNKNOWN_FLAG` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 226 | `build_activation_record` | `bad` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 253 | `build_entry` | `unknown` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 481 | `build_schedule` | `kind not in KINDS` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1810 | `_execute` | `schedule.kind != KIND_TASK` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 242 | `build_entry` | `origin not in ORIGINS` |
 | `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1335 | `validate_candidate_lineage` | `unknown` |
-| `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 595 | `select_env_gated_chain` | `unknown` |
-| `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 682 | `select_gated_chain` | `unknown` |
+| `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 320 | `select_env_gated_chain` | `unknown` |
 | `UNKNOWN_REQUEST_KIND` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 147 | `capabilities_for_request_kind` | `capabilities is None` |
 | `UNKNOWN_REQUEST_KIND` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 262 | `build_entry` | `kind is not None and kind not in REQUEST_KIND_CAPABILITIES` |
 | `UNKNOWN_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 293 | `select_candidate_role` | `—` |

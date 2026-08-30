@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     # Before the record exists: a host-side root run would leave the budget file root-owned,
     # and re-registering a cap is how every limit change lands — so the service would be stuck
     # with the caps from the last root run, unable to rewrite them. Exit 3 matches the guard's
-    # first adopter (`activate_safety_flag.py`) rather than this script's own generic 2.
+    # first adopter (the since-removed `activate_safety_flag.py`) rather than this script's own generic 2.
     try:
         assert_not_foreign_root_run(args.root.resolve())
     except MvpRuntimeError as exc:

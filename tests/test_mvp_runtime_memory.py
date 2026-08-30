@@ -361,6 +361,7 @@ def test_promotion_of_a_plain_candidate_has_no_correction_marker():
 
 # --- a run that reached no model says so -------------------------------------
 
+@requires_local_core
 def test_invocation_metadata_says_whether_a_model_was_reached():
     """`select_provider` fails closed to the mock when `MVP_HOSTED_PROVIDER` is unset, and the
     run that follows produces findings and proposes candidates exactly like an analysis. It is

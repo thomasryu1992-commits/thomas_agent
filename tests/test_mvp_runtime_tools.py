@@ -17,7 +17,7 @@ from tests._helpers import FakeResp as _FakeResp, patch_urlopen as _patch_urlope
 
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolBlocked, ToolError
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, Authorization
 from runtime.mvp_runtime.tools import (
     SEARCH_TOOL_ENV,
     MockSearchTool,
@@ -120,28 +120,6 @@ def test_select_real_tool_env_alone_returns_web_tool(monkeypatch, tmp_path):
     assert isinstance(tool, WebSearchTool)
 
 
-def test_select_real_tool_with_activation_returns_web_tool(monkeypatch, tmp_path):
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/search_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS],
-        provider_id="brave_search",
-        activated_at="2026-07-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel,
-        authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, "brave_search")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-
-    monkeypatch.setenv(SEARCH_TOOL_ENV, "brave_search")
-    tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert isinstance(tool, WebSearchTool)
-
-
 # --- Egress self-guard + HTTP parsing in WebSearchTool ----------------------
 
 def test_web_search_without_authorization_fails_closed(monkeypatch):
@@ -156,8 +134,6 @@ def test_web_search_no_api_key_fails_closed(monkeypatch):
     with pytest.raises(ToolError) as exc:
         WebSearchTool(authorization=_AUTH).search("q", max_results=5, timeout_seconds=10)
     assert exc.value.reason_code == "NO_API_KEY"
-
-
 
 
 _BRAVE_RESPONSE = json.dumps({
@@ -262,28 +238,6 @@ def test_tavily_malformed_response_fails_closed(monkeypatch):
 def test_select_tavily_env_alone_returns_tavily_tool(monkeypatch, tmp_path):
     # Same decision as above (Thomas 2026-08-10): the value picks the backend, the
     # backend arrives capable, and only the named one.
-    monkeypatch.setenv(SEARCH_TOOL_ENV, "tavily_search")
-    tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
-    assert isinstance(tool, TavilySearchTool)
-
-
-def test_select_tavily_with_activation_returns_tavily_tool(monkeypatch, tmp_path):
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/search_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision evidence", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS],
-        provider_id="tavily_search",
-        activated_at="2026-07-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z",
-        evidence_ref=evidence_rel,
-        authority_level="P1",
-    )
-    path = safety_gate.activation_path(tmp_path, "tavily_search")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-
     monkeypatch.setenv(SEARCH_TOOL_ENV, "tavily_search")
     tool = select_search_tool(now="2026-07-15T00:00:00Z", root=tmp_path)
     assert isinstance(tool, TavilySearchTool)

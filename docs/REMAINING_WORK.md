@@ -4750,13 +4750,13 @@ What that cost is measurable: every capability the weekly loop needs shipped by 
       titles, not links) — it can only be told, and now it can be. Rank tracking itself
       remains unbuilt.
 
-**Decision 1 is HELD by Thomas, 2026-08-25: do not register the schedule until Thomas raises
-it.** Not undecided — decided, and the decision is "not yet". Anything that surfaces "register
-the content lane" as a proposal (a weekly digest, another session, a backlog sweep) is
-re-proposing something already answered.
-
-Nothing needs undoing to hold it: the lane has no schedule row, so it is already completely
-inert and costs nothing. Everything below stays true and stays parked.
+**The 08-25 hold on Decision 1 was lifted by Thomas on 2026-08-30 — by Thomas raising it,
+which was the hold's own release condition.** The §12–16 judgement was written first
+(question 5's ordering rule, honored: the full judgement lives in the proposal's §6,
+NAVER_BLOG_CONTENT_LANE_V0.1.md), and the schedule row is registered:
+`schedule_1d25e2cef74b8a48adec`, `content_ideation`, weekly (604800s), first fire
+2026-09-06T10:17Z. The lane's revisit condition is part of the judgement: four consecutive
+weeks of packages with no `published` row is the signal to re-examine the row's existence.
 
 Two things worth knowing while it is held, because both were checked on 2026-08-24 and neither
 is obvious from the code:
@@ -4775,25 +4775,27 @@ is obvious from the code:
 **Decisions this lane is waiting on** — the code above is inert without them, deliberately: a
 schedule row is a state write, and no row means no fire.
 
-1. **Register the schedule?** `scheduler_cli add --kind content_ideation --request "<seeds>"
-   --interval-seconds 604800`, run inside `thomas-scheduler-maint`. Registering it starts a
-   weekly fire that spends two specialist calls plus a validation.
+1. **Register the schedule?** — **Decided and done, 2026-08-30 (Thomas):** registered as
+   `schedule_1d25e2cef74b8a48adec` (weekly; seeds carry the 「사장님 AI 활용법」 topic space,
+   `target=<keyword>` overrides a week). See the hold-lift note above.
 2. **Open `filesystem_write` on the worker?** Needs `MVP_WORKSPACE_WRITER` passed and
    `workspace/` mounted, and `tests/test_deployment_env_passthrough.py` currently pins that
    variable as NOT deployed on the reasoning "the loop does not write artefacts" — a premise
    this lane reverses, so the pin needs a recorded reason, not a quiet edit.
-3. **Adopt the automatic keyword rule as the default?** The code picks the most-searched
-   winnable unused keyword and records every exclusion with its reason; `target=<keyword>` in
-   the schedule's request overrides it for one week. Adopting the default is the decision;
-   the override is why it is not already one.
+3. **Adopt the automatic keyword rule as the default?** — **Adopted, 2026-08-30 (Thomas,
+   with the same judgement):** the rule picks the most-searched winnable unused keyword each
+   week and records every exclusion with its reason; `target=<keyword>` in the schedule's
+   request stays the weekly override path.
 4. **How does a publication URL get back in?** — **Decided and built, 2026-08-30 (Thomas):**
    the container-CLI shape, as proposed. `scripts/record_published_url.py` appends the second
    `blog_content_package` row (`--replace` for a corrected URL; every refusal has a named
    reason). The assistant-door alternative stays not-built, on the original reasoning.
-5. **The §12–16 MVP use-case expansion judgement has not been made.** The proposal's §6 leaves
-   it unchecked and no record of it exists here or in `BUILD_HISTORY.md`. A weekly cadence
-   makes the lane a standing specialist function, which is what §14 asks the question about.
-   Decision 1 should not be taken before this one is written down.
+5. **The §12–16 MVP use-case expansion judgement** — **written, 2026-08-30 (Thomas), before
+   Decision 1 was taken, as this item required.** It lives in the proposal's §6
+   (NAVER_BLOG_CONTENT_LANE_V0.1.md): the weekly package is a second standing USE CASE, not a
+   new agent (§13 — reuses active roles), not a department (§14 — one schedule row, removable
+   whole, the `predmarket/` precedent), not a business group (§15 — no revenue claim), with
+   §16's guardrails checked item by item and a usage-based revisit condition attached.
 
 ---
 
