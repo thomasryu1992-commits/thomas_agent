@@ -47,9 +47,12 @@ Thomas-decision point.**
   first, hiding `google_ai_studio` from the chain). Now one line, full chain:
   `MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq` — OpenRouter first (M2 tiering builds on
   it), google/groq as failover (tried only on 503/429).
-- Verified all three provider grants exist and are unexpired (`safety_flag_activations/`).
-- Known follow-up: `workspace.writer` grant expired 2026-07-18 → R8 `--write-output` is
-  fail-closed until re-activated (`scripts/activate_safety_flag.py`).
+- ~~Verified all three provider grants exist and are unexpired (`safety_flag_activations/`).~~
+  **Superseded 2026-08-10**: grants are retired; the environment is the gate, and the leftover
+  activation files are inert. The grant machinery itself was removed 2026-08-30.
+- ~~Known follow-up: `workspace.writer` grant expired 2026-07-18 → R8 `--write-output` is
+  fail-closed until re-activated (`scripts/activate_safety_flag.py`).~~ **Superseded the same
+  way**: `MVP_WORKSPACE_WRITE` is the gate; the script no longer exists.
 
 ### M1 — difficulty triage: HIGH/NORMAL → 상/중/하 *(1 PR, no Thomas decision)*
 

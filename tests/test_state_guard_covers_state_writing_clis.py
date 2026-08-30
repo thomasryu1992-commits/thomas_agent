@@ -9,7 +9,8 @@ It is not hypothetical for the money path. On 2026-07-26 a `binance_futures_acco
 activation, a `live_trading` activation, a registered budget and a canary registry row were all
 written root-owned from a host shell, and a separate session had to find them and `chown` them
 back. `activate_safety_flag.py` gained the guard from that incident; the four other writers in
-the same session's path did not.
+the same session's path did not. (That original adopter was removed with the grant machinery
+on 2026-08-30 — the incident and the rule it minted outlive the script.)
 
 The list below is the gate. Adding a CLI that writes state means adding it here, which forces
 the question to be answered at authoring time rather than discovered on a broken service.
@@ -28,7 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Every script that writes under .runtime_governance_state/, and where its guard sits.
 GUARDED = {
-    "activate_safety_flag": "the per-provider safety-flag grant (the original adopter)",
     "place_canary_order": "the canary registry row and the order's audit event",
     "register_live_trading_budget": "the self-hashed live-trading budget record",
     "promote_memory_candidate": "the working-memory promotion and its audit event",

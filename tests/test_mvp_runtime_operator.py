@@ -27,7 +27,7 @@ from runtime.mvp_runtime.operator import (
     verify_control_channel,
 )
 from runtime.mvp_runtime import safety_gate
-from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS, build_activation_record
+from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS
 from runtime.mvp_runtime.worker import MockProvider
 
 NOW = "2026-07-16T09:00:00Z"
@@ -180,22 +180,6 @@ def test_select_telegram_env_alone_returns_channel(monkeypatch, tmp_path):
     monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
     channel = select_operator_channel(now="2026-07-16T00:00:00Z", root=tmp_path)
     assert isinstance(channel, TelegramChannel)
-
-
-def test_select_telegram_with_activation_returns_channel(monkeypatch, tmp_path):
-    state = tmp_path / ".runtime_governance_state"
-    state.mkdir()
-    evidence_rel = ".runtime_governance_state/telegram_gate_approval.md"
-    (tmp_path / evidence_rel).write_text("operator decision", encoding="utf-8")
-    record = build_activation_record(
-        flags=[NETWORK_ACCESS], provider_id="telegram", activated_at="2026-07-01T00:00:00Z",
-        expires_at="2026-12-31T23:59:59Z", evidence_ref=evidence_rel, authority_level="P2",
-    )
-    path = safety_gate.activation_path(tmp_path, "telegram")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record), encoding="utf-8")
-    monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
-    assert isinstance(select_operator_channel(now="2026-07-16T00:00:00Z", root=tmp_path), TelegramChannel)
 
 
 # --- R4.2: TelegramChannel egress self-guard + HTTP path ---------------------

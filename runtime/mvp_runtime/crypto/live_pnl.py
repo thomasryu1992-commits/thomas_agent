@@ -41,7 +41,7 @@ LIVE_LEDGER_TOOL_VERSION = "0.1.0"
 
 # THE live-trading switch, and the only one: `MVP_LIVE_TRADING=real` in the process
 # environment (Thomas, 2026-07-28). It used to ALSO require a per-machine grant record minted
-# by scripts/activate_safety_flag.py; Thomas removed that second requirement because the
+# by the since-removed scripts/activate_safety_flag.py; Thomas removed that requirement because the
 # deployment already places these vars under operator-only control and the grant's expiry could
 # trap an open position — an expired grant closed the gate on the CLOSE path too. Under the
 # grant this was one switch across two mechanisms; now it is one switch, full stop.
