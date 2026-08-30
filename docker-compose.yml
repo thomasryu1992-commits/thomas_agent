@@ -82,6 +82,14 @@ services:
       # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
+      # The other two vendors' model slugs, same contract as MVP_OPENROUTER_MODEL: unset
+      # falls back to the code default. Wired through 2026-08-30 because until then only
+      # the OpenRouter slug reached the services — when Groq decommissioned the code
+      # default (#790) the only fix was a rebuild, and when gemini-flash-latest sat at 503
+      # there was no per-machine override at all. A vendor retiring a model is an .env
+      # edit now, not an image.
+      MVP_GROQ_MODEL: ${MVP_GROQ_MODEL:-}
+      MVP_HOSTED_MODEL: ${MVP_HOSTED_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       # F2 conversational front desk (operator service ONLY — the scheduler holds no
       # conversation). Unset = the deterministic channel, exactly as before. Set = plain
@@ -521,6 +529,11 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MVP_OPENROUTER_MODEL: ${MVP_OPENROUTER_MODEL:-}
+      # Same passthrough as the operator service (see its comment, 2026-08-30): the
+      # Groq/Google slugs must reach every service that opens the gate, or a retired
+      # vendor default can only be fixed by rebuilding the image.
+      MVP_GROQ_MODEL: ${MVP_GROQ_MODEL:-}
+      MVP_HOSTED_MODEL: ${MVP_HOSTED_MODEL:-}
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       # Read-only web search (optional), same Safety-Flag Gate.
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
