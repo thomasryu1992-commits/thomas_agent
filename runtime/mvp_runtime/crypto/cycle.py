@@ -66,6 +66,7 @@ from .market_data import (
 )
 from .cooldown import CooldownMarkStore
 from .counterfactual import read_counterfactual_outcomes, run_counterfactual_update
+from .forward_book import run_forward_book_update
 from .lifecycle import run_lifecycle, split_for_record as lifecycle_split
 from .live_allowance import evaluate_live_allowance
 from .live_pnl import excluded_outcomes_digest, live_outcomes_for_analysis, read_live_outcomes
@@ -873,6 +874,27 @@ def run_crypto_cycle(
     if counterfactual_summary.get("degraded"):
         reason_codes.append(counterfactual_summary["degraded"])
 
+    # 4b') the per-strategy forward book (Thomas 2026-08-29) — observational, like the
+    # shadow step above, and for the same reason placed outside every lock: each OCCUPYING
+    # strategy scoped to this context advances one bar of its OWN virtual stream, so the
+    # 5-1 forward evidence accrues per lineage instead of being serialized behind the
+    # routed book's one-position-per-context slot. Reads the same candle the shadows
+    # settled on; writes only through its own store, and only when this cycle's store
+    # writes at all.
+    forward_summary = run_forward_book_update(
+        pool=active_pool,
+        feature_row=feature_row,
+        last_candle=candles_for_cf[-1] if candles_for_cf else None,
+        last_close=(candles_for_cf[-1] or {}).get("close") if candles_for_cf else None,
+        symbol=symbol,
+        timeframe=timeframe,
+        now=now,
+        root=root,
+        persist=bool(getattr(store, "filesystem_write", False)),
+    )
+    if forward_summary.get("degraded"):
+        reason_codes.append(forward_summary["degraded"])
+
     # 5) feedback (C6) — every cycle, even a no-trade one. The report reads the
     # store as persisted: in dry-run it honestly reports the durable (empty) truth.
     # Handed the history this cycle already read and verified at step 3, rather than paying for
@@ -1112,6 +1134,7 @@ def run_crypto_cycle(
         "lifecycle_evaluated": len(lifecycle_decisions),
         "lifecycle_applied": lifecycle_applied,
         "counterfactual": counterfactual_summary,
+        "forward_book": forward_summary,
         "report_status": report.get("status") if report else None,
         # What the paper evidence says about this pool. Kept on the record after Gate 0's
         # enforcement was removed (2026-08-03), because the question is still worth answering

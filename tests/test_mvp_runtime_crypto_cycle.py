@@ -1645,3 +1645,39 @@ def test_the_fanout_pays_one_verified_read_until_something_settles(tmp_path, mon
         "the fan-out's snapshot plus one fresh read after the first settlement — "
         "the second settling context must not be served the stale snapshot"
     )
+
+# --- the forward book rides the cycle (Thomas 2026-08-29) ------------------------------
+
+def test_forward_book_advances_with_the_cycle_and_follows_the_store_flag(tmp_path):
+    """The wiring, end to end: an occupying lineage opens a virtual position through the
+    REAL cycle plumbing (this context's feature row and candle), settles it on the next
+    cycle's stop candle, and the row lands in the forward store the arming door reads.
+    Dry-run cycles compute the same summary and persist nothing — the store flag is the
+    only switch."""
+    from runtime.mvp_runtime.crypto import forward_book as fb
+
+    spec = _always_spec()
+    pool.install_active_pool({"active_strategies": [
+        {"strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
+         "candidate_id": "cand_fwdwire0001", "strategy_spec": spec}]}, root=tmp_path)
+
+    dry = _cycle(tmp_path, FakeExchangeCollector())
+    assert dry["forward_book"]["opened"], "the step must run on dry cycles too"
+    assert not fb._book_path(tmp_path).exists(), "…but persist nothing without the flag"
+
+    store = RealPaperStore(root=tmp_path, authorization=_AUTH)
+    record = _cycle(tmp_path, FakeExchangeCollector(), store)
+    assert record["forward_book"]["opened"]
+    assert any(s.get("position") for s in fb.load_book(tmp_path)["entries"].values())
+
+    sl_candle = {"high": 100.5, "low": 96.0, "close": 98.0}
+    record2 = _cycle(tmp_path, FakeExchangeCollector(extra_candle=sl_candle), store,
+                     now="2026-07-23T12:00:00Z")
+    assert record2["forward_book"]["settled"]
+    rows = fb.read_forward_outcomes(tmp_path)
+    assert rows and rows[0]["candidate_id"] == "cand_fwdwire0001"
+    assert rows[0]["r_basis"] == "intent_net_of_costs"
+    # The virtual stream and the routed paper book are separate ledgers: the paper book
+    # settled its own trade this cycle, and neither row leaked into the other's file.
+    assert all(r["provenance"] == fb.FORWARD_PROVENANCE for r in rows)
+    assert all(o["provenance"] == "mvp_paper_kernel" for o in paper.read_outcomes(tmp_path))
