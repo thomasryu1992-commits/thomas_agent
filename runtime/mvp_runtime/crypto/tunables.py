@@ -49,6 +49,7 @@ from . import (
     factory,
     features,
     feedback,
+    forward_book,
     forward_confirmation,
     guards,
     live_allowance,
@@ -238,6 +239,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/pool.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
+    Tunable("FORWARD_NO_SIGNAL_DAYS", forward_book.FORWARD_NO_SIGNAL_DAYS,
+            "crypto/forward_book.py", OPERATOR,
+            "Thomas 2026-08-29: display-only horizon before a zero-open lineage is named in "
+            "the cycle summary; two 1h windows of calendar at measured 0-10 opens/month rates",
+            "the marker driving any action beyond display, or per-spec signal rates re-measured"),
     Tunable("MIN_FORWARD_TRADES_1D", forward_confirmation.MIN_FORWARD_TRADES_1D,
             "crypto/forward_confirmation.py", OPERATOR,
             "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
