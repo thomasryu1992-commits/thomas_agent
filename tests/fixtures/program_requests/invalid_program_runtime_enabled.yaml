@@ -4,7 +4,7 @@ task_revision: 1
 core_context_binding_id: ccb-release-demo:task_resource_request_program_schema_validator_001:r1
 operating_policy:
   policy_id: thomas.governance.policy
-  policy_version: 1.2.0
+  policy_version: 1.3.0
   policy_ref: governance/GOVERNANCE_POLICY.yaml
 requested_by:
   actor_type: role
