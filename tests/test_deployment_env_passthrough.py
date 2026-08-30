@@ -76,8 +76,14 @@ REMOVED_PREDMARKET_SELECTORS = (
 # Present so the list above cannot be read as "everything else was forgotten".
 NOT_DEPLOYED = {
     workspace.WRITER_ENV: (
-        "R8 controlled write is exercised through the operator-run intake CLI "
-        "(--write-output), not the continuous loop; the loop never writes artifacts."
+        "For the three LOOP services (operator, scheduler, scheduler-maint) the original "
+        "reasoning stands: R8 controlled write is exercised through the operator-run intake "
+        "CLI (--write-output), and none of these loops writes artifacts. The premise-reversal "
+        "this entry once guarded against has HAPPENED, deliberately: the content lane renders "
+        "its weekly package to files (§J decision 2, Thomas 2026-08-30), so the "
+        "PIPELINE-WORKER — where the lane executes — now receives this selector "
+        "(PIPELINE_WORKER_ENGINE_SURFACE below). The recorded reason this pin demanded is "
+        "that decision; the loops' exclusion is unchanged."
     ),
     consumption.ENV_VAR: (
         "R10 approval consumption is a deliberate operator act via approval_cli consume — "
@@ -259,6 +265,7 @@ PIPELINE_WORKER_ENGINE_SURFACE = {
     "OPENROUTER_API_KEY": "the OpenRouter key — shared with the operator's assistant",
     tools.SEARCH_TOOL_ENV: "the read-only search tool",
     "TAVILY_API_KEY": "the search key",
+    workspace.WRITER_ENV: "the R8 writer — the content lane's package files (§J decision 2)",
 }
 
 

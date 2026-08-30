@@ -200,3 +200,94 @@ def test_without_an_override_the_rule_decides():
     seeds, target = blog_content.parse_seeds("미리캔버스, 포스터제작")
     assert seeds == ["미리캔버스", "포스터제작"]
     assert target is None
+
+
+# --- the package renders to files, behind the gate (§J decision 2) ------------------
+
+
+from runtime.mvp_runtime.safety_gate import FILESYSTEM_WRITE
+from runtime.mvp_runtime.workspace import DryRunWriter, RealWorkspaceWriter, workspace_root
+from tests._helpers import make_gate_authorization
+
+
+class _ListLedger:
+    def __init__(self):
+        self.rows = []
+
+    def append_records(self, trace_id, records):
+        for kind, record in records.items():
+            self.rows.append({"kind": kind, "trace_id": trace_id, "record": record})
+
+
+def _package():
+    return blog_content.build_package(
+        target_keyword="미리캔버스 포스터", draft=DRAFT, keyword_record=_brief(), now=NOW)
+
+
+def _real_writer():
+    return RealWorkspaceWriter(authorization=make_gate_authorization(
+        flags=(FILESYSTEM_WRITE,), provider_id="workspace.writer"))
+
+
+def test_the_paste_file_is_the_paste_body_and_nothing_else():
+    package = _package()
+    rendered = blog_content.render_paste_txt(package)
+    assert rendered == package["body_paste"] + "\n"
+    # The §4b founding rule: zero formatting symbols in what gets pasted.
+    assert "##" not in rendered and "**" not in rendered
+
+
+def test_the_reading_file_carries_the_4b_sections_and_the_return_path():
+    package = _package()
+    post = blog_content.render_post_md(package)
+    for section in ("## 선정 근거", "## 제목 후보", "## 본문", "## 발행 전 확인"):
+        assert section in post
+    # The evidence numbers ride along — a package whose numbers cannot be traced is a guess.
+    assert "9000" in post and "naver_searchad" in post
+    # ...and the file tells the operator how to close the loop (#802's writer).
+    assert package["package_id"] in post and "record_published_url" in post
+
+
+def test_the_closed_gate_writes_nothing_and_says_so():
+    written, files, note = blog_content._write_package_files(
+        _package(), writer=DryRunWriter(), ledger=_ListLedger(), now=NOW, repo_root=None)
+    assert (written, files) == (False, [])
+    assert note == "not enabled on this deployment"
+
+
+def test_the_open_gate_writes_both_files_and_records_each(tmp_path):
+    package = _package()
+    ledger = _ListLedger()
+    written, files, note = blog_content._write_package_files(
+        package, writer=_real_writer(), ledger=ledger, now=NOW, repo_root=tmp_path)
+    assert written is True and len(files) == 2
+    base = workspace_root(tmp_path)
+    post = (base / blog_content.package_dir(package).removeprefix("blog/")).parent  # noqa: F841
+    for rel in files:
+        target = base / rel
+        assert target.is_file(), rel
+    assert (base / files[1]).read_text(encoding="utf-8") == blog_content.render_paste_txt(package)
+    assert [r["kind"] for r in ledger.rows] == ["write_use", "write_use"]
+    assert all(r["trace_id"] == package["package_id"] for r in ledger.rows)
+    assert note.startswith("workspace/blog/")
+
+
+def test_a_refused_write_degrades_instead_of_failing_the_fire(tmp_path):
+    package = _package()
+    # Pre-create the first target so the create-only rule refuses it.
+    rel = blog_content.package_dir(package) + "/POST.md"
+    target = workspace_root(tmp_path) / rel
+    target.parent.mkdir(parents=True)
+    target.write_text("이미 있음", encoding="utf-8")
+    written, files, note = blog_content._write_package_files(
+        package, writer=_real_writer(), ledger=_ListLedger(), now=NOW, repo_root=tmp_path)
+    assert written is False and files == []
+    assert "TARGET_EXISTS" in note and "ledger row" in note
+
+
+def test_the_package_dir_is_dated_slugged_and_collision_free():
+    package = _package()
+    d = blog_content.package_dir(package)
+    assert d.startswith(f"blog/{NOW[:10]}-")
+    assert d.endswith(package["package_id"][-4:])
+    assert " " not in d and "/" not in d.removeprefix("blog/")

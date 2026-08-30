@@ -22,11 +22,15 @@ Two governed runs, in order:
 Then the draft is parsed into a package, **scored against the lane's standards**, validated
 against the closed schema, and appended to the ledger.
 
-**What this does NOT do: write a file.** The package is a ledger row. `workspace.run_write` is
-behind `filesystem_write`, that flag is unset on this deployment, and opening it is a separate
-decision with its own compose change — so this module never calls the writer. The consequence
-is honest and worth stating: an operator gets the package by reading the record, not by opening
-`workspace/`. When the flag opens, the write is one call added here.
+**The file write is governed and optional (§J decision 2, Thomas 2026-08-30).** The package
+is still the ledger row — the record is the authority and the two files are its RENDERING
+(proposal §4b): ``POST.md`` for the operator to read, ``PASTE.txt`` to paste into the editor
+verbatim (SmartEditor ONE renders no markdown, so the paste file carries zero formatting
+symbols). Both go through ``workspace.run_write`` — same confinement, same create-only rule,
+same audit record — behind ``MVP_WORKSPACE_WRITER=real`` on the worker. With the flag closed
+this module writes nothing, exactly as before the decision; with it open, a failed write
+DEGRADES the fire's sheet rather than failing it, because a package that exists only as a
+record is the lane's founding state, not an error.
 
 **The scoring is advisory here, not a gate.** `blog_draft_score` says whether the draft cleared
 Thomas's standards and the answer rides in the record and the operator's sheet. It does not
@@ -45,7 +49,7 @@ from typing import Any, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from . import blog_draft_score, timeutil
-from .errors import ToolError
+from .errors import MvpRuntimeError, ToolError
 from .pipeline import run_task
 
 PACKAGE_SCHEMA_VERSION = "blog_content_package.v0.1"
@@ -304,6 +308,108 @@ def build_package(
     return package
 
 
+def render_paste_txt(package: Mapping[str, Any]) -> str:
+    """`PASTE.txt` — the editor paste, verbatim. Zero formatting symbols, paragraph breaks
+    only: SmartEditor ONE renders no markdown, so anything beyond plain text would land in
+    the published post as literal characters (proposal §4b's founding observation)."""
+    body = str(package.get("body_paste") or "")
+    return body if body.endswith("\n") else body + "\n"
+
+
+def render_post_md(package: Mapping[str, Any]) -> str:
+    """`POST.md` — the operator's single reading file, per the §4b table: evidence, titles,
+    body, edit directives, capture directives, tags, pre-publish checks. A rendering of the
+    package record, never an authority of its own."""
+    evidence = package.get("keyword_evidence") or {}
+    metrics = (evidence.get("metrics") or [{}])[0]
+    lines: list[str] = [f"# {package.get('target_keyword')}", ""]
+
+    lines += ["## 선정 근거"]
+    lines += [f"- 타깃 키워드: {package.get('target_keyword')}"]
+    if metrics:
+        lines += [
+            f"- 월간검색수: PC {metrics.get('monthly_pc')} / 모바일 {metrics.get('monthly_mobile')}"
+            f" (합 {metrics.get('monthly_total')})",
+            f"- 경쟁정도: {metrics.get('competition')} / 경쟁 문서수: {evidence.get('total_competing_posts')}",
+            f"- 근거 시점: {evidence.get('as_of')} (출처: {metrics.get('source')})",
+        ]
+    if evidence.get("degraded"):
+        lines += ["- ⚠ 근거 수집이 degraded 상태에서 만들어진 패키지다 — 숫자를 재확인할 것"]
+
+    lines += ["", "## 제목 후보"]
+    lines += [f"{i}. {t}" for i, t in enumerate(package.get("title_candidates") or [], start=1)]
+
+    lines += ["", "## 본문 (PASTE.txt와 동일)", "", str(package.get("body_paste") or "")]
+
+    blocks = package.get("body_blocks") or []
+    if blocks:
+        lines += ["", "## 편집 지시"]
+        lines += [f"- {b.get('paragraph_index')}번째 문단: {b.get('action')} — {b.get('note')}"
+                  for b in blocks]
+
+    shots = package.get("image_shots") or []
+    if shots:
+        lines += ["", "## 캡처 지시 (이미지 생성이 아니라 실제 화면 캡처)"]
+        lines += [f"- {s.get('after_paragraph')}번째 문단 뒤: {s.get('what_to_capture')}"
+                  f" ({s.get('tool_name')})" for s in shots]
+
+    tags = package.get("tags") or []
+    if tags:
+        lines += ["", "## 태그", " ".join(f"#{t}" for t in tags)]
+
+    checks = package.get("fact_checks") or []
+    lines += ["", "## 발행 전 확인"]
+    if checks:
+        lines += [f"- [ ] {c.get('claim')} — {c.get('why')}" for c in checks]
+    else:
+        lines += ["- (기계 추출된 검증 문장 없음 — 가격·무료범위·기능 문장을 직접 표시할 것)"]
+
+    lines += ["", f"---", f"package_id: {package.get('package_id')} · publish 후: "
+              f"`python -m scripts.record_published_url --package-id {package.get('package_id')} --url <URL>`"]
+    return "\n".join(lines) + "\n"
+
+
+def package_dir(package: Mapping[str, Any]) -> str:
+    """`blog/<날짜>-<슬러그>-<id끝4>` — §4b's shape, with the package-id suffix making the
+    create-only write collision-free when one keyword produces two packages."""
+    slug = re.sub(r"[\\/:*?\"<>|\s]+", "-", str(package.get("target_keyword") or "")).strip("-")
+    return f"blog/{str(package.get('created_at_utc'))[:10]}-{slug}-{str(package.get('package_id'))[-4:]}"
+
+
+def _write_package_files(
+    package: Mapping[str, Any], *, writer: Any, ledger: Any, now: str, repo_root: Path | None,
+) -> tuple[bool, list[str], str]:
+    """Render the package to `POST.md`/`PASTE.txt` through the governed write — or don't.
+
+    Returns ``(written, files, note)``. The dry-run writer (flag closed) writes nothing and
+    says so, which is the lane's pre-decision behavior unchanged. A refused write degrades:
+    the record already exists and IS the package, so the sheet reports the refusal instead
+    of the fire failing over a rendering.
+    """
+    from . import workspace as _workspace  # function-local: only the write path needs it
+
+    if writer is None:
+        writer = _workspace.select_writer()
+    if not getattr(writer, "filesystem_write", False):
+        return False, [], "not enabled on this deployment"
+
+    base = package_dir(package)
+    files: list[str] = []
+    try:
+        for name, content in (("POST.md", render_post_md(package)),
+                              ("PASTE.txt", render_paste_txt(package))):
+            result, record = _workspace.run_write(
+                f"{base}/{name}", content, writer=writer, now=now, root=repo_root,
+            )
+            if ledger is not None:
+                ledger.append_records(package.get("package_id"), {"write_use": record})
+            files.append(result.relative_path)
+    except MvpRuntimeError as exc:
+        code = getattr(exc, "reason_code", type(exc).__name__)
+        return False, files, f"write refused: {code} — the package stays a ledger row"
+    return True, files, f"workspace/{base}"
+
+
 def _run(kind: str, request: str, *, blocked_code: str, **kwargs: Any) -> dict[str, Any]:
     result = run_task(request, request_kind=kind, **kwargs)
     if result.get("status") != "COMPLETED":
@@ -325,6 +431,7 @@ def run_content_ideation(
     programization: Any = None,
     now: str,
     repo_root: Path | None = None,
+    writer: Any = None,
 ) -> dict[str, Any]:
     """Research -> pick -> draft -> score -> package. Returns the sheet the scheduler renders.
 
@@ -403,6 +510,10 @@ def run_content_ideation(
     if ledger is not None:
         ledger.append_records(package["package_id"], {PACKAGE_RECORD_KIND: package})
 
+    written, files, write_note = _write_package_files(
+        package, writer=writer, ledger=ledger, now=now, repo_root=repo_root,
+    )
+
     return {
         "package": package,
         "package_id": package["package_id"],
@@ -414,6 +525,7 @@ def run_content_ideation(
         "trace_ids": [t for t in (
             ((content.get("records") or {}).get("task") or {}).get("identity", {}).get("trace_id"),
         ) if t],
-        "written": False,
-        "filesystem_write": "not enabled on this deployment",
+        "written": written,
+        "files": files,
+        "filesystem_write": write_note,
     }
