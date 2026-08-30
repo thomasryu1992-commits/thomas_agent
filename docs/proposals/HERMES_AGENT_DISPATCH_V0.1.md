@@ -12,7 +12,7 @@
 > | 키 없음 (§2-5) | **출시** — 2026-08-10 자격증명 평면 분리 이후 실행과 Naver 자격증명은 `pipeline-worker`에 있고 이 문은 검증·전달만 한다 |
 > | 감사·귀속 (§2-4) | **출시** — actor `assistant_bridge`. 다만 2026-08-21까지 그 이름은 **Hermes를 식별하지 않았다**: 문이 gid만 검사해 호스트 셸의 호출도 같은 이름으로 기록됐고, 원장의 15건 중 11건이 호스트측 배포 검증이다. `MVP_BRIDGE_CLIENT_UID=10000`으로 피어 uid를 고정한 2026-08-21 이후에야 그 라벨이 구성상 참이 됐다 |
 > | **§6-6 거버넌스 위치** — `control_channel.assistant_dispatch` 블록, policy 1.3.0 | **미이행** — `GOVERNANCE_POLICY.yaml`은 `policy_version: 1.2.0`이고 `assistant_dispatch` 블록은 없다 |
-> | **§6-3 사용량 계측 + $50 USD/일 임계 알림** | **미이행** — 강제하는 코드가 런타임에 없다(`dispatch_usage`/`spend_alert` 참조 0건) |
+> | **§6-3 사용량 계측 + $50 USD/일 임계 알림** | **이행 (2026-08-30)** — `runtime/mvp_runtime/dispatch_spend.py` + `dispatch_spend_watch` 스케줄 kind. 임계 초과는 실패 발화로 올라가 기존 전환 알림을 탄다(자동 정지 없음 — §6-5의 결정 그대로). §6-5가 기록한 caveat도 그대로 참이다: 무료 티어는 비용을 계측하지 않으므로 이 임계는 휴면이며, status line이 그 사실을 명시한다(`unmetered — threshold dormant`) |
 > | §7 정책 diff | **미적용** |
 >
 > **즉 능력은 배포됐고 그것을 기록·계측하기로 한 조문은 배포되지 않았다.** 이 비대칭 자체가

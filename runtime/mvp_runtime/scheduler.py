@@ -194,10 +194,15 @@ KIND_NULL_CONTROL = "crypto_null_control"
 # The `request` column carries the seed keywords, comma separated, exactly as `crypto_factory`
 # carries a symbol list there. `target=<keyword>` among them overrides the week's selection.
 KIND_CONTENT_IDEATION = "content_ideation"
+# §6-3's spend watch (docs/proposals/HERMES_AGENT_DISPATCH_V0.1.md, Thomas 2026-07-30): sum
+# the day's assistant-dispatched cost and raise past 50 USD. Maintenance, not risk: it reads
+# the ledger and never touches money — the threshold is dormant on free tiers by the
+# proposal's own recorded caveat, and `dispatch_spend`'s docstring carries the details.
+KIND_DISPATCH_SPEND = "dispatch_spend_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION})
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -256,7 +261,7 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION,
+    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1300,6 +1305,29 @@ def _execute(
             return f"breaker_changed_not_sent:{type(exc).__name__}"
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
+    if schedule.kind == KIND_DISPATCH_SPEND:
+        # §6-3's alert rides the failure-transition notifier the way the data review's stall
+        # does: past the threshold this fire FAILS, the operator gets the transition message,
+        # and a steady over-threshold day stays one message instead of one per fire. Under
+        # the threshold the status line is the whole fire — quiet is the normal state, and
+        # doubly so while free tiers leave the cost unmetered (the line says which).
+        from . import dispatch_spend
+        from .store import LedgerStore as _LedgerStore
+
+        try:
+            measured = dispatch_spend.measure_day(_LedgerStore.default(repo_root), now=now)
+        except MvpRuntimeError as exc:
+            # An unreadable ledger cannot tell "nothing spent" from "cannot see" — report it,
+            # never swallow it into a comfortable zero.
+            return f"dispatch_spend_unavailable:{exc.reason_code}"
+        status = dispatch_spend.status_line(measured)
+        if dispatch_spend.over_threshold(measured):
+            raise SchedulerBlocked(dispatch_spend.DISPATCH_SPEND_OVER, (
+                f"assistant dispatch spent {measured['cost_usd']:.2f} USD today against the "
+                f"{measured['threshold_usd']:.0f} USD/day alert line (Thomas 2026-07-30, no "
+                f"hard cap — nothing was stopped). runs={measured['runs']}. {status}"
+            ))
+        return status
     if schedule.kind == KIND_REPORT:
         # C13: render the read-only dashboard and push it to the ONE registered
         # operator chat. Pure reads + one notify — no gate of its own beyond the
