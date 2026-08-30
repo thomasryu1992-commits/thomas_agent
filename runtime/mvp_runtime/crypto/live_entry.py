@@ -108,6 +108,9 @@ COST_REFUSED = "LIVE_ENTRY_COST_REFUSED"
 # decision with its own approval.
 MANAGED_EXIT_REFUSED = "LIVE_ENTRY_MANAGED_EXIT_UNSUPPORTED"
 SPREAD_REFUSED = "LIVE_ENTRY_SPREAD_TOO_WIDE"
+# The same string live_route records when the book read fails — one name for one fact,
+# informational there, a refusal here since the entry went fail-closed (Thomas 2026-08-30).
+BOOK_UNREADABLE_REFUSED = "LIVE_ENTRY_ORDERBOOK_UNREADABLE"
 SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
 LIQUIDATION_REFUSED = "LIVE_ENTRY_STOP_BEYOND_LIQUIDATION"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
@@ -132,6 +135,11 @@ INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
 # Reopens when: a symbol whose ordinary spread is a material fraction of 50 bps joins the
 # universe — the hundredfold span above is the warning that one could — or realized slippage on
 # live entries shows the cost door letting through fills this would have caught.
+#
+# And the door's own failure mode is closed too (Thomas 2026-08-30): a book that cannot be
+# READ refuses the entry instead of skipping the check — see the refusal below for the
+# measurement and the settle/protect carve-out. Reopens when unreadable-book refusals start
+# costing real entries (the code on the cycle record makes that countable).
 MAX_ENTRY_SPREAD_BPS = 50.0
 
 # Which venue price the protective orders trigger on. MARK_PRICE rather than the last
@@ -333,7 +341,17 @@ def plan_live_entry(
         reasons.append(MANAGED_EXIT_REFUSED)
         detail["managed_exit"] = managed
 
-    if spread_bps is not None and spread_bps > MAX_ENTRY_SPREAD_BPS:
+    if spread_bps is None:
+        # Fail-closed for the ENTRY only (Thomas 2026-08-30). An unreadable book is
+        # correlated with exactly the dislocation this guard exists for — venue stress
+        # degrades data endpoints before order endpoints — and this was the one guard on
+        # the money path whose failure mode was "off". Measured before deciding: 0
+        # unreadable books in 33,604 recorded cycles, so the refusal costs nothing on the
+        # observed record; the settle/protect path runs before the entry block and is
+        # untouched, so no position can be trapped by it. The route still degrades rather
+        # than raises — it records the same code and hands None down to this refusal.
+        reasons.append(BOOK_UNREADABLE_REFUSED)
+    elif spread_bps > MAX_ENTRY_SPREAD_BPS:
         reasons.append(SPREAD_REFUSED)
         detail["spread_bps"] = round(spread_bps, 6)
         detail["spread_limit_bps"] = MAX_ENTRY_SPREAD_BPS

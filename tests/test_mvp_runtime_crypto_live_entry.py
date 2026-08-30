@@ -99,6 +99,10 @@ def _plan(**kw):
         clean_canary_orders=kw.pop("clean_canary_orders", 3),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
+        # A healthy book by default, per this helper's own rule (every door open; each test
+        # closes exactly one) — since the unreadable-book fail-open closed (2026-08-30),
+        # leaving this unset would close the spread door in every test at once.
+        spread_bps=kw.pop("spread_bps", 1.0),
         now=kw.pop("now", NOW),
         # #610 Part 1. Defaulted to "this plan's strategy is armed for live" so the existing
         # cases keep testing the doors they were written for; the tier door has its own tests.
@@ -492,10 +496,14 @@ def test_a_narrow_spread_does_not_refuse():
     assert decision["status"] == le.STATUS_READY
 
 
-def test_no_spread_reading_does_not_refuse():
-    """When the orderbook could not be read, the entry proceeds as before the guard existed."""
+def test_an_unreadable_book_refuses_the_entry():
+    """The guard's own failure mode, closed (Thomas 2026-08-30): an unreadable book was the
+    one path that skipped the dislocation check, and it correlates with exactly the venue
+    stress the check exists for. Measured before deciding: 0 unreadable books in 33,604
+    recorded cycles — this refusal costs nothing on the observed record."""
     decision = _plan(spread_bps=None)
-    assert decision["status"] == le.STATUS_READY
+    assert decision["status"] == le.STATUS_REFUSED
+    assert le.BOOK_UNREADABLE_REFUSED in decision["reasons"]
 
 
 def test_spread_at_the_limit_does_not_refuse():

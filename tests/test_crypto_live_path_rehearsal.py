@@ -242,6 +242,9 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
         bracket_failures_consecutive=0,
         clean_canary_orders=3,
         submitted_today=0,
+        # A healthy book: the rehearsal walks the READY path, and since the unreadable-book
+        # fail-open closed (2026-08-30) an absent reading is a refusal with its own tests.
+        spread_bps=1.0,
         equity_usdt=usable_equity_usdt(snapshot),
         now=NOW,
         verdict={"allow_new_position": True, "problems": []},
