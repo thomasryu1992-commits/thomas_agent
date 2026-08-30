@@ -406,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
                         help="explicit escape: arm LIVE although no confirmation was earned on "
                              "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
-                             "paper record) — the condition #648 disarmed the pool for")
+                             "forward-book record) — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")
