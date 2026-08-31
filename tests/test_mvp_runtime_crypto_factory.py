@@ -18,7 +18,7 @@ import pytest
 
 from runtime.mvp_runtime import control, timeutil
 from runtime.mvp_runtime.control import ControlState, ControlStore
-from runtime.mvp_runtime.crypto import factory, market_data, pool, robustness
+from runtime.mvp_runtime.crypto import factory, features, indicators, market_data, pool, robustness
 from runtime.mvp_runtime.crypto.factory import (
     generate_batch,
     backtest_spec,
@@ -4018,3 +4018,118 @@ def test_the_probe_moves_the_stop_centre_and_nothing_else():
         )
         checked += 1
     assert checked, "the batch must contain at least one elite-parity probe slot"
+
+
+def _volatile_candles(n=400, price=100.0, atr_pct_by_bar=None):
+    """A candle series whose per-bar range is a chosen fraction of price.
+
+    The true range IS ``high - low`` here (each bar opens and closes at ``price``), so the
+    ATR the ceiling reads back is the mean of the chosen fractions — which makes the
+    admissible multiple checkable by hand rather than only by the code under test.
+    """
+    out = []
+    for i in range(n):
+        pct = 0.01 if atr_pct_by_bar is None else atr_pct_by_bar(i)
+        half = price * pct / 2.0
+        out.append({"open": price, "high": price + half, "low": price - half,
+                    "close": price, "open_time": "2026-01-01T00:00:00Z"})
+    return out
+
+
+def test_the_probe_ceiling_admits_the_fraction_it_promises():
+    """The ceiling is checked against `paper.stop_is_beyond_liquidation` itself, not against
+    a second copy of the arithmetic — the whole point of reading `room` out of
+    `liquidation_price` is that the two cannot drift. A tenth of the bars are ten times as
+    volatile as the rest, so a ceiling taken from the mean would be refused on all of them."""
+    from runtime.mvp_runtime.crypto import paper
+
+    candles = _volatile_candles(atr_pct_by_bar=lambda i: 0.10 if i % 10 == 0 else 0.01)
+    ceiling = factory.liquidation_admissible_stop_atr(candles)
+    assert ceiling is not None
+
+    # Replay the guard's own question per bar: would a stop this wide sit beyond liquidation?
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+    closes = [c["close"] for c in candles]
+    atr_series = indicators.atr(highs, lows, closes, features.ATR_PERIOD)
+    judged = [(close, atr) for close, atr in zip(closes, atr_series) if atr]
+    admitted = sum(
+        1 for close, atr in judged
+        if not paper.stop_is_beyond_liquidation(close, close - ceiling * atr, True)
+    )
+    fraction = admitted / len(judged)
+    assert fraction >= factory.PROBE_LIQUIDATION_ADMIT_FRACTION - 0.02, (
+        f"ceiling {ceiling} admitted only {fraction:.2%} of bars"
+    )
+    # And it is a real bound, not a vacuous one: doubling it loses bars the ceiling kept.
+    wider = sum(
+        1 for close, atr in judged
+        if not paper.stop_is_beyond_liquidation(close, close - 2 * ceiling * atr, True)
+    )
+    assert wider < admitted, "the ceiling must be tight enough that widening it costs coverage"
+
+
+def test_a_binding_ceiling_narrows_the_probe_and_a_loose_one_changes_nothing():
+    """The ceiling only ever narrows. A value above every family's own space must leave the
+    batch byte-identical to the un-ceilinged one — otherwise the parameter would be changing
+    draws it has no claim on."""
+    kwargs = dict(seed=11, count=8, symbol="BTCUSDT", timeframe="1d")
+    unbounded = generate_batch("GEN-780", **kwargs)
+    assert generate_batch("GEN-780", probe_stop_ceiling=99.0, **kwargs) == unbounded
+
+    tight = 2.0
+    bounded = generate_batch("GEN-780", probe_stop_ceiling=tight, **kwargs)
+    templates = {t.family: t.param_space for t in templates_for_timeframe("1d", symbol="BTCUSDT")}
+    flip = factory._elite_flip("GEN-780")
+    probed = 0
+    for index, spec in enumerate(bounded["specs"]):
+        space = templates[spec["strategy_family"]]["stop_atr"]
+        if (index + flip) % 4 not in factory._EXIT_PROBE_SLOTS or space.hi <= tight:
+            continue
+        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        stop = spec["exit_rules"]["stop_atr"]
+        # Centred on the ceiling now, so the draw sits within one span of it — and crucially
+        # below the band the space's own ceiling would have produced.
+        assert stop <= tight + span + 1e-9, f"probe {index} drew {stop} above the ceiling's reach"
+        probed += 1
+    assert probed, "the batch must contain a probe slot whose family the ceiling actually binds"
+
+
+def test_a_ceiling_under_the_family_floor_spends_the_slot_on_an_ordinary_draw():
+    """A context that cannot carry a probe at all must not mint one at its floor. A draw
+    pinned to the bottom of the space is not a wide-stop datapoint, and counting it as probe
+    coverage would report a search this factory never ran."""
+    templates = {t.family: t.param_space for t in templates_for_timeframe("1d", symbol="BTCUSDT")}
+    floor = min(space["stop_atr"].lo for space in templates.values())
+    batch = generate_batch("GEN-781", seed=5, count=8, symbol="BTCUSDT", timeframe="1d",
+                           probe_stop_ceiling=floor - 0.1)
+    flip = factory._elite_flip("GEN-781")
+    for index, spec in enumerate(batch["specs"]):
+        space = templates[spec["strategy_family"]]["stop_atr"]
+        span = (space.hi - space.lo) * factory._MUTATION_SCALE
+        stop = spec["exit_rules"]["stop_atr"]
+        assert stop >= space.lo - 1e-9, "a refused probe must not mint below the space"
+        # Only the TREND space can answer this: a fade family's band [1.79, 2.0] overlaps what
+        # an ordinary draw around its 1.7 base already reaches, so a draw landing there proves
+        # nothing either way. The trend space's band starts at 2.37, beyond any centre's reach.
+        if (index + flip) % 4 in factory._EXIT_PROBE_SLOTS and space.hi > 2.5:
+            assert stop <= space.hi - span + 1e-9, (
+                f"slot {index} still drew in the probe band ({stop}) under an impossible ceiling"
+            )
+
+
+def test_the_cohort_ceiling_takes_the_most_binding_leg():
+    """A pooled spec is scored on every leg, so the ceiling is the cohort's minimum — and a
+    leg too short to have an ATR is skipped rather than read as unbounded."""
+    calm = {"candles": _volatile_candles(atr_pct_by_bar=lambda i: 0.005)}
+    wild = {"candles": _volatile_candles(atr_pct_by_bar=lambda i: 0.05)}
+    silent = {"candles": _volatile_candles(n=3)}
+
+    calm_ceiling = factory.liquidation_admissible_stop_atr(calm["candles"])
+    wild_ceiling = factory.liquidation_admissible_stop_atr(wild["candles"])
+    assert wild_ceiling < calm_ceiling
+    assert factory.liquidation_admissible_stop_atr(silent["candles"]) is None
+
+    assert factory.cohort_probe_stop_ceiling([calm, wild]) == wild_ceiling
+    assert factory.cohort_probe_stop_ceiling([calm, silent]) == calm_ceiling
+    assert factory.cohort_probe_stop_ceiling([silent]) is None
