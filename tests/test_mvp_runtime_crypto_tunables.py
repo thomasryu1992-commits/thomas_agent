@@ -59,6 +59,10 @@ MECHANICS: dict[str, str] = {
     "MIN_CANDLE_COUNT": "data hygiene: how much history makes a snapshot judgeable at all",
     "MAX_ALLOWED_CANDLE_GAP_MULTIPLE": "data hygiene: gap detection, not a trading choice",
     "_MAX_ATTEMPTS_PER_SPEC": "private retry bound on spec generation; no money touches it",
+    # The DECISION is `PROBE_LIQUIDATION_ADMIT_FRACTION` and is indexed. This is only the step
+    # that puts the resulting ceiling on the admitting side of the guard's `<=` boundary, and
+    # any value between float noise and the search's own resolution behaves identically.
+    "_LIQUIDATION_CEILING_STEP": "strict-inequality margin against the guard's boundary; not a level",
     # The CAP is the decision and is indexed (`ABLATION_MAX_CONDITIONS`); the floor is the
     # definition of a proper subset — a single condition has nothing to ablate — and there is
     # no other value it could take.

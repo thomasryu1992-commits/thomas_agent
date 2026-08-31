@@ -61,7 +61,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
-from . import features, market_data
+from . import features, indicators, market_data
 from ..errors import ToolBlocked
 from .cost import (
     FUNDING_INTERVALS_PER_DAY,
@@ -78,7 +78,7 @@ from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
 from .paper import (
     ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
-    settle_trade_plan, stop_is_beyond_liquidation,
+    liquidation_price, settle_trade_plan, stop_is_beyond_liquidation,
 )
 from .candidate_identity import candidate_id, derive_candidate_id
 from .robustness import MIN_HOLDOUT_TRADES, score_robustness
@@ -205,6 +205,111 @@ _MUTATION_SCALE = 0.35
 # records that at ~2 draws per fire. Identify probe rows by the band, not a flag — a mint
 # provenance field would widen a closed schema for a question `stop_atr >= 2.37` answers.
 _EXIT_PROBE_SLOTS = (1, 2)
+
+# What fraction of a context's bars must be able to CARRY the probe's stop for the slot to be
+# worth spending. The probe re-centres on a ceiling; if `paper.stop_is_beyond_liquidation`
+# then refuses most entries at that width, the slot mints a row with no evidence instead of a
+# wide-stop datapoint — which is what the first harvest did on 1d (2026-08-31, GEN-873:
+# `refused_entries` 2,428-4,796 against 198 for the same families' narrow rows, and 0/1/1/2
+# closed trades against 15-41).
+#
+# **0.5 is calibrated against that harvest rather than chosen for tidiness**, because the
+# criterion that matters is judgeable evidence, not comfortable admission. The same fire's 4h
+# probes were refused heavily too — 407 and 168 refusals at stop 2.96 and 2.62 — and still
+# closed 139 and 119 trades, one of them clearing the observation entry bar at +0.114R while
+# every ordinary draw of those three generations failed it. A rule that admits "most" entries
+# would have forbidden both. Measured on 600 live bars per leg (2026-08-31), the cohort
+# ceiling by quantile, against a generation space of [1.2, 3.0]:
+#
+#     admit      0.90    0.70    0.50    0.30
+#     1h         2.49    3.60    7.05    9.22   (non-binding at 0.5; 1h refuses ~nothing)
+#     4h         1.56    2.04    2.75    3.34   (0.7 forbids BOTH rows that worked)
+#     1d         0.46    0.62    0.73    0.85   (under the space FLOOR at every quantile)
+#
+# So 0.5 — "more bars carry it than refuse it" — is the only stated rule that keeps the 4h
+# band that produced evidence and drops the 1d band that produced none.
+#
+# **What this exposes and deliberately does not fix:** on 1d the admissible width is 0.46-0.94
+# against a space that starts at 1.2, so at `ASSUMED_LEVERAGE` every 1d row this factory can
+# mint is one the guard refuses on most bars — which is a candidate explanation for that
+# tier's chronically thin evidence (median 12 closes), not just for the probe's. The assumed
+# leverage is a money-path constant and moving it is Thomas's decision, not a side effect of
+# a search-coverage change.
+PROBE_LIQUIDATION_ADMIT_FRACTION = 0.5
+
+# How far under the quantile's width the ceiling sits, relatively. Only large enough to clear
+# the guard's `<=` boundary and float noise in the price-space comparison it makes there.
+_LIQUIDATION_CEILING_STEP = 1e-6
+
+
+def liquidation_admissible_stop_atr(
+    candles: Sequence[Mapping[str, Any]], *,
+    leverage: float = ASSUMED_LEVERAGE, mmr: float = MAINTENANCE_MARGIN_RATE,
+    admit: float = PROBE_LIQUIDATION_ADMIT_FRACTION,
+) -> float | None:
+    """The widest ``stop_atr`` that ``admit`` of these bars can carry, or None if unknowable.
+
+    A stop sits ``stop_atr x ATR`` from entry, and `paper.stop_is_beyond_liquidation` refuses
+    it once that distance reaches the isolated-margin liquidation price. So per bar the widest
+    legal multiple is ``room x close / ATR``, where ``room`` is the liquidation distance as a
+    fraction of entry — **read out of `paper.liquidation_price` itself rather than re-derived
+    here**, so the two can never disagree about what the guard does.
+
+    Returns the multiple that ``admit`` of the bars are at or above (the ``1 - admit``
+    quantile), which is a floor on coverage rather than a promise: a bar more volatile than
+    that still refuses. None when there is no usable ATR yet (a short series), and callers
+    treat None as "no ceiling known" rather than as zero — an unknown must not silently
+    become a refusal to probe.
+
+    Pure and deterministic given the candles, so a replay reproduces the same ceiling.
+    """
+    if leverage <= 0 or not 0.0 < admit <= 1.0:
+        return None
+    room = 1.0 - liquidation_price(1.0, "LONG", leverage=leverage, mmr=mmr)
+    if room <= 0:
+        return None
+    highs = [c.get("high") for c in candles]
+    lows = [c.get("low") for c in candles]
+    closes = [c.get("close") for c in candles]
+    if not closes:
+        return None
+    atr_series = indicators.atr(highs, lows, closes, features.ATR_PERIOD)
+    admissible = [
+        room * float(close) / float(atr)
+        for close, atr in zip(closes, atr_series)
+        if isinstance(close, (int, float)) and not isinstance(close, bool)
+        and isinstance(atr, (int, float)) and not isinstance(atr, bool)
+        and float(atr) > 0 and float(close) > 0
+    ]
+    if not admissible:
+        return None
+    admissible.sort()
+    index = int(round((1.0 - admit) * (len(admissible) - 1)))
+    # Strictly BELOW the quantile's own width, because the guard refuses at equality
+    # (`stop_price <= liq`): a ceiling sitting exactly on a bar's admissible width is refused
+    # on that bar, and on a series with ties — a clustered ATR, which a smoothed series has
+    # plenty of — that is not a rounding detail but a large share of the bars. Measured while
+    # building this: a ceiling taken as the raw quantile admitted 60% where it promised 90%.
+    # The step is relative and far below any width the search can distinguish.
+    return admissible[index] * (1.0 - _LIQUIDATION_CEILING_STEP)
+
+
+def cohort_probe_stop_ceiling(
+    legs: Sequence[Mapping[str, Any]], **kwargs: Any
+) -> float | None:
+    """The probe ceiling for a pooled mint: the MOST BINDING leg's, not the primary's.
+
+    One pooled spec is scored across every leg, so a stop the cohort's most volatile symbol
+    cannot carry is refused there however comfortable the primary is. Legs that cannot say
+    (no usable ATR) are skipped rather than treated as unbounded — an unknown leg must not
+    raise the ceiling the known ones set.
+    """
+    known = [
+        ceiling for ceiling in (
+            liquidation_admissible_stop_atr(leg.get("candles") or [], **kwargs) for leg in legs
+        ) if ceiling is not None
+    ]
+    return min(known) if known else None
 
 # What its name says, and it did not until 2026-08-05: the retry budget is `count x` this, and
 # `generate_batch` re-drew the SAME template on every refusal because the template is picked by
@@ -2700,6 +2805,7 @@ def generate_batch(
     elite_params: Mapping[str, Mapping[str, float]] | None = None,
     venue: str = market_data.BINANCE_FUTURES,
     symbol_scope: Sequence[str] | None = None,
+    probe_stop_ceiling: float | None = None,
 ) -> dict[str, Any]:
     """Produce ``count`` validated, distinct candidate specs (source mechanics).
 
@@ -2801,11 +2907,23 @@ def generate_batch(
         # (the split tests discriminate by identity, and a wrapped dict would read as a
         # third centre nobody picked). See `_EXIT_PROBE_SLOTS` for why coverage has to be
         # forced here rather than waited for from the elite ratchet.
-        probe = (
-            {"stop_atr": template.param_space["stop_atr"].hi}
-            if (len(accepted) + flip) % 4 in _EXIT_PROBE_SLOTS
-            and "stop_atr" in template.param_space else None
-        )
+        probe = None
+        if (len(accepted) + flip) % 4 in _EXIT_PROBE_SLOTS and "stop_atr" in template.param_space:
+            stop_space = template.param_space["stop_atr"]
+            # The parameter space says what MAY be minted; the liquidation guard says what can
+            # actually trade. Probing above the guard's admissible width spends the slot on a
+            # row whose entries are refused rather than on a wide-stop datapoint — measured
+            # 2026-08-31 on the first harvest, where 1d probes closed 0-2 trades against
+            # 15-41 for the same families' narrow rows. `None` means the caller could not say,
+            # and then the space's own ceiling stands (the pre-existing behaviour).
+            ceiling = (stop_space.hi if probe_stop_ceiling is None
+                       else min(stop_space.hi, float(probe_stop_ceiling)))
+            # A ceiling at or under the family's own floor means this context cannot carry a
+            # probe at all at the assumed leverage. Fall through to the ordinary centre rather
+            # than mint at the floor: a "probe" indistinguishable from a normal draw would
+            # report coverage this search does not have.
+            if ceiling > stop_space.lo:
+                probe = {"stop_atr": ceiling}
         params = mutate_params(centre, template.param_space, rng, overrides=probe)
         strategy_id = f"S{start_index + len(accepted):03d}"
         spec_dict = build_spec_dict(template, params, strategy_id=strategy_id,
@@ -4756,6 +4874,11 @@ def run_factory(
         venue=venue,
         rotation_index=rotation_index,
         symbol_scope=scope,
+        # Derived from the candles this fire will be SCORED on, so the probe's width and the
+        # evidence that judges it come from the same bars. Pooled mints take the most binding
+        # leg (`cohort_probe_stop_ceiling`); a leg that cannot say is skipped, not treated as
+        # unbounded.
+        probe_stop_ceiling=cohort_probe_stop_ceiling(legs),
     )
 
     # Built once for the whole run. Features, candles and carry are properties of the market and

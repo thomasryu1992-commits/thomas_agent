@@ -334,6 +334,16 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("ELITE_EVIDENCE_MIN_TRADES", factory.ELITE_EVIDENCE_MIN_TRADES, "crypto/factory.py",
             OPERATOR, "a search centre moved on three trades is not a lesson",
             "a measured relationship between centre-evidence depth and child quality"),
+    Tunable("PROBE_LIQUIDATION_ADMIT_FRACTION", factory.PROBE_LIQUIDATION_ADMIT_FRACTION,
+            "crypto/factory.py", MEASURED,
+            "the probe's width is capped at what the median bar can carry past "
+            "`paper.stop_is_beyond_liquidation`: calibrated on the first harvest "
+            "(2026-08-31), where 4h probes at 2.62/2.96 closed 119/139 trades despite heavy "
+            "refusal while 1d probes at 2.68/2.99 closed 2/1 — 0.7 would have forbidden both "
+            "4h rows, 0.5 keeps them and drops 1d",
+            "the 1d tier becoming judgeable at all, which needs `paper.ASSUMED_LEVERAGE` "
+            "revisited (at 20x the 1d admissible width is 0.46-0.94, under the generation "
+            "space's own floor) — a money-path decision, not a search one"),
     Tunable("_EXIT_PROBE_SLOTS", factory._EXIT_PROBE_SLOTS, "crypto/factory.py", MEASURED,
             "2 of 8 draws centre stop_atr on the family's own ceiling: 15 generations after "
             "#782 opened (1.2, 3.0), zero draws sat above 2.1 — a centred draw cannot reach "
