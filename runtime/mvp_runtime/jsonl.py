@@ -33,12 +33,38 @@ def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code
         raise PersistenceError(write_code, f"could not append {label}: {exc}") from exc
 
 
+def _screened(
+    numbered: Iterator[tuple[int, str]], must_contain: tuple[str, ...]
+) -> Iterator[tuple[int, str]]:
+    """Drop lines that cannot carry what the caller asked for, without parsing them.
+
+    Allocation-free on the dropped path, which is most of the win: rows in the record ledger
+    average ~5 KB, so testing a `line.strip()` copy would have re-copied the whole store to
+    avoid decoding it. Containment reads the raw line — a trailing newline changes no
+    substring answer.
+
+    A line is skipped only if it also still LOOKS whole. `endswith("}")` alone is not that
+    test: a torn append often lands just after a nested object and ends in a brace it does not
+    own, so the brace counts must balance too. Braces inside string values can only unbalance
+    a line that is in fact fine, which costs one parse and never a wrong answer; a truncated
+    line cannot balance, so it reaches the parser and fails closed there.
+    """
+    for lineno, line in numbered:
+        if not any(token in line for token in must_contain):
+            if (line[:1] == "{"
+                    and (line.endswith("}\n") or line.rstrip().endswith("}"))
+                    and line.count("{") == line.count("}")):
+                continue
+        yield lineno, line
+
+
 def iter_numbered(
     path: Path,
     *,
     read_code: str,
     label: str,
     exc_type: type[MvpRuntimeError] = PersistenceError,
+    must_contain: tuple[str, ...] | None = None,
 ) -> Iterator[tuple[int, dict[str, Any]]]:
     """Yield ``(file line number, object)`` for every non-blank line; nothing if ``path`` is absent.
 
@@ -54,12 +80,40 @@ def iter_numbered(
     ``ToolError``, and a reader that started raising a sibling class would fail *past* its caller
     instead of at it. Both classes carry ``reason_code``, so the fail-closed contract is unchanged
     — only which except-clause sees it.
+
+    ``must_contain`` is an OPTIONAL PRESCREEN, not a filter: a line containing none of the
+    substrings is skipped **without being parsed**. It exists because the parse is the whole
+    cost of a large store — the record ledger is 23 MB of which 97.6% is one kind, so a reader
+    after a rare kind was paying to decode ~5.3k objects it discarded (measured 2026-08-31:
+    0.17 s for the active file, 1.12 s once archives join, all of it under the appender's lock).
+
+    Two properties make it safe to skip a parse this way, and both are load-bearing:
+
+    * **No false negatives.** Rows are written by :func:`append_objects` with
+      ``json.dumps(..., ensure_ascii=False)``, and every token a caller screens on is ASCII, so
+      a row that really carries the value contains the quoted substring verbatim. False
+      POSITIVES are fine and expected (a payload may quote the word) — the screen only decides
+      what to parse, never what a caller accepts, so the caller's own check stays the authority.
+    * **Corruption still raises.** A skipped line must first look like a complete object
+      (``{`` … ``}``), which is precisely what a torn append — this store's real corruption
+      mode, an interrupted write leaving a truncated final line — does not. What the prescreen
+      does give up, stated rather than discovered: a byte-flip *inside* a well-formed line of a
+      kind the caller did not ask for is no longer detected by that caller. Unfiltered readers
+      (the audit chain, every all-or-nothing load) are unchanged.
     """
     if not path.is_file():
         return
     try:
         with path.open(encoding="utf-8") as handle:
-            for lineno, line in enumerate(handle, start=1):
+            numbered = enumerate(handle, start=1)
+            # The screen is applied by WRAPPING the line source, never by a test inside the
+            # loop below: an unscreened read — which is every existing caller — must execute
+            # the same instructions it did before this parameter existed, and a per-line
+            # branch on a loop-invariant is exactly the kind of "free" check that shows up as
+            # a few percent on a 200 MB store.
+            if must_contain is not None:
+                numbered = _screened(numbered, must_contain)
+            for lineno, line in numbered:
                 if not line.strip():
                     continue
                 try:
@@ -81,6 +135,7 @@ def iter_objects(
     read_code: str,
     label: str,
     exc_type: type[MvpRuntimeError] = PersistenceError,
+    must_contain: tuple[str, ...] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield every JSON object in ``path`` (one per line); nothing if the file is absent.
 
@@ -105,7 +160,8 @@ def iter_objects(
     completes or raises); a caller that streams is choosing to see a prefix of a store whose
     tail may not parse, and must treat a partial consumption as partial.
     """
-    for _lineno, obj in iter_numbered(path, read_code=read_code, label=label, exc_type=exc_type):
+    for _lineno, obj in iter_numbered(path, read_code=read_code, label=label,
+                                      exc_type=exc_type, must_contain=must_contain):
         yield obj
 
 
