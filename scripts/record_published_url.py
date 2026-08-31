@@ -75,10 +75,15 @@ def latest_packages(store: LedgerStore) -> dict[str, dict]:
     """Newest package row per package_id, archives included.
 
     Archives matter here more than anywhere: a package is published days after it was
-    produced, which is exactly the window rotation moves rows out of the active file.
+    produced, which is exactly the window rotation moves rows out of the active file — so the
+    scan stays unbounded in TIME (no ``appended_since``: a package from any week must be
+    findable) and is bounded in KIND instead, which is where the cost actually was.
     """
     latest: dict[str, dict] = {}
-    for row in store.iter_records_with_archive():
+    # Kind-filtered: unfiltered this walked 200 MB / 37k rows to find the handful of package
+    # rows, and it did it holding the appender's lock — 1.29 s on 2026-08-31, growing with
+    # every archive rotation while the packages themselves arrive once a week.
+    for row in store.iter_records_with_archive(kinds=(blog_content.PACKAGE_RECORD_KIND,)):
         if row.get("kind") != blog_content.PACKAGE_RECORD_KIND:
             continue
         record = row.get("record")
