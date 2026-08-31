@@ -34,6 +34,9 @@ from .store import LedgerStore
 # Thomas 2026-07-30: currency threshold only, no hard cap, no count criterion (the
 # request-count storm gap is a recorded, accepted coverage hole — proposal §6-5).
 THRESHOLD_USD = 50.0
+# The only two kinds this measurement reads. Passed to the ledger as a parse prescreen, so the
+# fire stops paying to decode the cycle rows that make up almost all of the file.
+SCANNED_KINDS = frozenset({"task", "budget_usage"})
 DISPATCH_SPEND_OVER = "DISPATCH_SPEND_OVER_THRESHOLD"
 ASSISTANT_REQUESTER = "assistant_bridge"
 
@@ -48,37 +51,43 @@ def measure_day(store: LedgerStore, *, now: str) -> dict[str, Any]:
     """
     day_start = f"{now[:10]}T00:00:00Z"
     dispatch_traces: set[str] = set()
-    usage_by_trace: dict[str, list[Mapping[str, Any]]] = {}
-    for row in store.iter_records_with_archive(appended_since=day_start):
+    # Two floats per trace, never the rows themselves. The rows are the biggest objects in
+    # this ledger and retaining them made peak memory a function of how much OTHER work ran
+    # today — on a host already living in swap, the wrong thing to scale with.
+    cost_by_trace: dict[str, float] = {}
+    metered_by_trace: dict[str, int] = {}
+    # KINDS is the prescreen: 97.6% of the active ledger is `crypto_cycle`, and decoding it to
+    # throw it away was the whole cost of this fire (measured 2026-08-31: 0.17 s of the 0.20 s).
+    for row in store.iter_records_with_archive(appended_since=day_start, kinds=SCANNED_KINDS):
         record = row.get("record")
         if not isinstance(record, Mapping):
             continue
         kind = row.get("kind")
         trace = row.get("trace_id")
+        if not isinstance(trace, str):
+            continue
         if kind == "task":
             requester = (record.get("source") or {}).get("requester") or {}
             received = (record.get("request") or {}).get("received_at")
             if (requester.get("requester_id") == ASSISTANT_REQUESTER
-                    and isinstance(received, str) and received >= day_start
-                    and isinstance(trace, str)):
+                    and isinstance(received, str) and received >= day_start):
                 dispatch_traces.add(trace)
-        elif kind == "budget_usage" and isinstance(trace, str):
-            usage_by_trace.setdefault(trace, []).append(record)
-
-    cost_usd = 0.0
-    metered_rows = 0
-    for trace in dispatch_traces:
-        for usage_record in usage_by_trace.get(trace, ()):
-            usage = usage_record.get("usage") or {}
+        elif kind == "budget_usage":
+            usage = record.get("usage") or {}
             if str(usage.get("cost_currency", "USD")) != "USD":
                 # A non-USD row would make this sum a lie; no such row exists today
                 # (cost_currency is pinned "USD" everywhere) and one appearing should
                 # surface as a loud number, not a silent unit mix.
                 continue
             amount = float(usage.get("cost_used") or 0.0)
+            cost_by_trace[trace] = cost_by_trace.get(trace, 0.0) + amount
             if amount:
-                metered_rows += 1
-            cost_usd += amount
+                metered_by_trace[trace] = metered_by_trace.get(trace, 0) + 1
+
+    # Summed after the scan, not during it: a usage row may be appended before or after the
+    # task row it belongs to, and neither order should change the answer.
+    cost_usd = sum(cost_by_trace.get(trace, 0.0) for trace in dispatch_traces)
+    metered_rows = sum(metered_by_trace.get(trace, 0) for trace in dispatch_traces)
 
     return {
         "day": now[:10],

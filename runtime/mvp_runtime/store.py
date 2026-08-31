@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from . import jsonl
 from .errors import PersistenceError
@@ -111,6 +111,32 @@ _RECORD_KINDS = (
 # is read-only context (already durable in the working-memory store, not a run product).
 _NON_RECORD_KEYS = frozenset({"audit_trail", "block_record", "memory_retrieved",
                               "validated_memory_retrieved"})
+
+
+def _kind_prescreen(kinds: Iterable[str] | None) -> tuple[str, ...] | None:
+    """The quoted tokens a kind-filtered ledger read may skip parsing on.
+
+    A row of kind K is written with ``"kind": "K"``, so ``'"K"'`` appears verbatim in its line
+    and the screen cannot miss it; it can only over-include, which costs one parse the caller
+    then discards. See ``jsonl.iter_numbered`` for why that asymmetry is the whole safety
+    argument, and for what a filtered read gives up on corruption it did not ask about.
+
+    Why this lives here rather than in each caller: the lock is held for the WHOLE iteration,
+    so a reader after a rare kind does not merely waste its own time — it holds the appender's
+    lock while it wastes it. Measured 2026-08-31 on the live host: the active ledger is 23 MB /
+    5,458 rows of which 97.6% are ``crypto_cycle``, and the archives add 177 MB / 31,590 rows.
+    An unfiltered ``--list`` over both paid 1.29 s under that lock, all of it to decode rows it
+    dropped, and the cost grows with every archive rotation.
+    """
+    if kinds is None:
+        return None
+    tokens = tuple(sorted({f'"{kind}"' for kind in kinds}))
+    # An empty selection is a caller bug, not "match nothing": screening on () would make
+    # `any(...)` false for every line and silently return an empty ledger.
+    if not tokens:
+        raise PersistenceError("LEDGER_EMPTY_KIND_FILTER",
+                               "kinds= was given an empty selection; omit it to read every kind")
+    return tokens
 
 
 class LedgerStore:
@@ -268,7 +294,7 @@ class LedgerStore:
         81 MB of process memory to materialize, and it is rotated daily rather than bounded."""
         return list(self.iter_records())
 
-    def iter_records(self) -> Iterator[dict[str, Any]]:
+    def iter_records(self, *, kinds: Iterable[str] | None = None) -> Iterator[dict[str, Any]]:
         """Record rows one at a time, in append order, under the appender's lock.
 
         For the readers that scan the ledger to retain almost none of it: the last N rows of
@@ -289,10 +315,11 @@ class LedgerStore:
         """
         with self.file_lock(RECORDS_FILE, label="the record ledger"):
             yield from jsonl.iter_objects(self._root / RECORDS_FILE,
-                                          read_code="LEDGER_UNREADABLE", label="the record ledger")
+                                          read_code="LEDGER_UNREADABLE", label="the record ledger",
+                                          must_contain=_kind_prescreen(kinds))
 
     def iter_records_with_archive(
-        self, *, appended_since: str | None = None
+        self, *, appended_since: str | None = None, kinds: Iterable[str] | None = None
     ) -> Iterator[dict[str, Any]]:
         """Record rows one at a time, ARCHIVES INCLUDED, oldest first, under the same lock.
 
@@ -326,13 +353,15 @@ class LedgerStore:
         lock (see :meth:`file_lock`), so no archive can appear mid-scan and no row can be
         yielded twice or missed.
         """
+        screen = _kind_prescreen(kinds)
         with self.file_lock(RECORDS_FILE, label="the record ledger"):
             for path in self._archived_record_files(appended_since):
                 yield from jsonl.iter_objects(
                     path, read_code="LEDGER_UNREADABLE",
-                    label=f"the archived record ledger {path.name}")
+                    label=f"the archived record ledger {path.name}", must_contain=screen)
             yield from jsonl.iter_objects(self._root / RECORDS_FILE,
-                                          read_code="LEDGER_UNREADABLE", label="the record ledger")
+                                          read_code="LEDGER_UNREADABLE", label="the record ledger",
+                                          must_contain=screen)
 
     def _archived_record_files(self, appended_since: str | None) -> list[Path]:
         """Archived record ledgers oldest first, minus those wholly older than the bound."""
