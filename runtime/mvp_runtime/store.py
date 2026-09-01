@@ -106,6 +106,41 @@ _RECORD_KINDS = (
     "programization_observation", "programization_pattern",
 )
 
+# The same roster, public, for the archive index: rotation records which of these a closed
+# archive can contain so a kind-filtered read can skip the file without opening it.
+RECORD_KINDS = _RECORD_KINDS
+
+# Sidecar naming. An archive is immutable once written, so an index written beside it at
+# rotation stays true forever; the suffix deliberately does not end in `.jsonl` so the
+# archive glob cannot pick it up as a ledger.
+ARCHIVE_INDEX_SUFFIX = ".kinds"
+
+
+def archive_index_path(archive: Path) -> Path:
+    return archive.with_name(archive.name + ARCHIVE_INDEX_SUFFIX)
+
+
+def read_archive_index(archive: Path) -> frozenset[str] | None:
+    """The kinds an archive may contain, or ``None`` when that is not known.
+
+    ``None`` is the fail-closed answer and it is what every unindexed archive returns — the
+    caller must then read the file. Only a positively-read index may cause a file to be
+    skipped, and the index is a SUPERSET of what the archive holds (rotation screens by
+    substring without parsing, so it can over-report and never under-report). Both halves
+    matter: over-reporting costs one needless file read, under-reporting would silently drop
+    rows from a filtered answer.
+    """
+    index = archive_index_path(archive)
+    try:
+        raw = index.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    kinds = frozenset(line.strip() for line in raw.splitlines() if line.strip())
+    # An index that names nothing is indistinguishable from a truncated write; refuse to read
+    # it as "this archive is empty of every kind", which would skip a file on damaged evidence.
+    return kinds or None
+
+
 # Keys the pipeline carries in its records mapping that are deliberately NOT persisted as
 # record rows: the audit trail and block entry have their own files, and retrieved memory
 # is read-only context (already durable in the working-memory store, not a run product).
@@ -355,7 +390,7 @@ class LedgerStore:
         """
         screen = _kind_prescreen(kinds)
         with self.file_lock(RECORDS_FILE, label="the record ledger"):
-            for path in self._archived_record_files(appended_since):
+            for path in self._archived_record_files(appended_since, kinds):
                 yield from jsonl.iter_objects(
                     path, read_code="LEDGER_UNREADABLE",
                     label=f"the archived record ledger {path.name}", must_contain=screen)
@@ -363,18 +398,39 @@ class LedgerStore:
                                           read_code="LEDGER_UNREADABLE", label="the record ledger",
                                           must_contain=screen)
 
-    def _archived_record_files(self, appended_since: str | None) -> list[Path]:
-        """Archived record ledgers oldest first, minus those wholly older than the bound."""
+    def _archived_record_files(
+        self, appended_since: str | None, kinds: Iterable[str] | None = None
+    ) -> list[Path]:
+        """Archived record ledgers oldest first, minus those this read cannot need.
+
+        Two independent skips, and the difference between them is worth stating. The
+        ``appended_since`` bound drops archives wholly older than a time window. The ``kinds``
+        bound drops archives whose INDEX says they carry none of the wanted kinds — and only
+        an index that was positively read may do that: an unindexed or unreadable archive is
+        always opened, because "cannot see" must never render as "nothing there".
+
+        This is the only skip that does not scale with the store. Archives are kept forever by
+        design (`retention`: *nothing is ever destroyed*), so a full-history reader was on a
+        line that rises ~5 MB a day — 201 MB across 36 files on 2026-08-31, and a filtered walk
+        of it cost 0.89 s under the appender's lock. The kinds a weekly package lands in are a
+        handful of files; the rest are now a stat and a 100-byte read.
+        """
         directory = self._root / ARCHIVE_DIR
         if not directory.is_dir():
             return []
         stem = RECORDS_FILE.removesuffix(".jsonl")
         cutoff = appended_since.replace(":", "") if appended_since else None
+        wanted = frozenset(kinds) if kinds is not None else None
         kept: list[Path] = []
         for path in sorted(directory.glob(f"{stem}.*.jsonl")):
             stamp = path.name[len(stem) + 1:].removesuffix(".jsonl").split(".", 1)[0]
-            if cutoff is None or not _ARCHIVE_STAMP.fullmatch(stamp) or stamp >= cutoff:
-                kept.append(path)
+            if not (cutoff is None or not _ARCHIVE_STAMP.fullmatch(stamp) or stamp >= cutoff):
+                continue
+            if wanted is not None:
+                indexed = read_archive_index(path)
+                if indexed is not None and indexed.isdisjoint(wanted):
+                    continue
+            kept.append(path)
         return kept
 
     def read_scheduler_events(self) -> list[dict[str, Any]]:

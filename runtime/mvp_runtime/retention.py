@@ -49,6 +49,8 @@ from .store import (
     MEMORY_FILE,
     PROGRAMIZATION_FILE,
     RECORDS_FILE,
+    RECORD_KINDS,
+    archive_index_path,
     SCHEDULER_FILE,
 )
 
@@ -102,6 +104,52 @@ def _count_rows(path: Path) -> int:
     """Rows in the file, streamed. Blank lines are not rows (jsonl readers skip them)."""
     with path.open(encoding="utf-8") as handle:
         return sum(1 for line in handle if line.strip())
+
+
+def write_archive_index(archive: Path) -> frozenset[str]:
+    """Record which record kinds a just-closed archive can contain, beside it.
+
+    Written WITHOUT parsing, on purpose: the rotation below moves lines verbatim so an
+    archived row stays byte-identical to the one that was written, and re-decoding megabytes
+    to label them would trade that property away. The index is built by testing the
+    known-kind tokens against the archive's bytes, which makes it a SUPERSET of the kinds
+    actually present — a payload quoting another kind's name adds an entry and costs one
+    needless file read later. The unsafe direction (missing a kind that IS present) cannot
+    happen: rows carry the kind as an ASCII JSON string, so a present kind's token is there.
+
+    Chunked with an overlap so a token cannot be split across reads — archives reach tens of
+    MB and this host runs in swap.
+    """
+    tokens = {kind: f'"{kind}"'.encode("utf-8") for kind in RECORD_KINDS}
+    overlap = max(len(tok) for tok in tokens.values())
+    found: set[str] = set()
+    try:
+        with archive.open("rb") as handle:
+            tail = b""
+            while True:
+                # 256 KB, not 1 MB: the rotation above is O(one line) in memory and
+                # `test_memory_stays_bounded_on_a_large_ledger` pins that at 2 MB peak — an
+                # indexer that reads in megabyte windows spends the whole budget on a
+                # convenience. Measured: this keeps the rotation's peak where it was.
+                chunk = handle.read(1 << 18)
+                if not chunk:
+                    break
+                window = tail + chunk
+                for kind, token in tokens.items():
+                    if kind not in found and token in window:
+                        found.add(kind)
+                if len(found) == len(tokens):
+                    break
+                tail = window[-overlap:]
+        index = archive_index_path(archive)
+        tmp = index.with_name(index.name + ".tmp")
+        tmp.write_text("".join(f"{kind}\n" for kind in sorted(found)), encoding="utf-8")
+        os.replace(tmp, index)
+    except OSError as exc:
+        raise PersistenceError(
+            "LEDGER_ARCHIVE_INDEX_FAILED", f"could not index {archive.name}: {exc}"
+        ) from exc
+    return frozenset(found)
 
 
 def rotate_file(
@@ -181,6 +229,8 @@ def rotate_file(
                 retained.flush()
                 os.fsync(retained.fileno())
             os.replace(retained_tmp, path)
+            if filename == RECORDS_FILE:
+                write_archive_index(archive_path)
         except OSError as exc:
             raise PersistenceError(
                 "LEDGER_ROTATION_FAILED", f"could not rotate {filename}: {exc}"
