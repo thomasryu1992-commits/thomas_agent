@@ -417,3 +417,95 @@ def test_paper_store_rows_no_longer_count_as_forward_evidence(tmp_path):
     with pytest.raises(ToolError) as exc:
         promotion._gate_live_confirmation(g)
     assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+
+
+# --- the seed merge: idempotent counters, not just idempotent rows -----------------------
+
+def _seed_merge_setup(tmp_path, *, live_opens=2, seed_opens=5):
+    """A book whose live stream has settled ``live_opens`` rows, plus a seed result."""
+    import scripts.seed_forward_book as seeder
+    lineage = "cand:cand_forwardbook0001"
+    key = fb.book_key(lineage, "BTCUSDT", "1d")
+    book = {"forward_book_version": fb.FORWARD_BOOK_VERSION, "entries": {key: {
+        "lineage": lineage, "symbol": "BTCUSDT", "timeframe": "1d",
+        "strategy_id": "S1-GEN-9", "first_tracked_at": "2026-08-20T00:00:00Z",
+        "first_seen_candle": "2026-08-25T00:00:00Z",
+        "last_seen_candle": "2026-08-29T00:00:00Z", "last_signal_at": "2026-08-29T00:00:00Z",
+        "opens_count": live_opens, "position": None, "cooldown_remaining": 0,
+    }}}
+    seed_state = {"first_tracked_at": "2026-07-01T00:00:00Z", "opens_count": seed_opens,
+                  "last_signal_at": "2026-08-20T00:00:00Z"}
+    return seeder, book, key, seed_state
+
+
+def test_re_seeding_does_not_inflate_the_open_counter(tmp_path):
+    """The rows a re-seed writes are deduped; before #820 the counter was not, so every
+    extra ``--apply`` added the whole seed span again (three applies left GEN-706 at 29
+    opens against 12 real ones). The seeder's half is now ASSIGNED, not accumulated."""
+    seeder, book, key, seed_state = _seed_merge_setup(tmp_path)
+    for _ in range(3):
+        seeder._merge_seed_state(book, key, seed_state, live_settled=2)
+    state = book["entries"][key]
+    assert state["seed_opens_count"] == 5
+    assert state["opens_count"] == 2      # the live half, untouched by any number of runs
+    assert fb.opens_total(state) == 7
+    # what seeding IS allowed to move: the mint reaches back, the signal reaches forward
+    assert state["first_tracked_at"] == "2026-07-01T00:00:00Z"
+    assert state["last_signal_at"] == "2026-08-29T00:00:00Z"
+
+
+def test_a_book_written_before_the_split_has_its_live_half_reconstructed(tmp_path):
+    """A pre-#820 entry carries an unknowable number of seed folds inside ``opens_count``,
+    so the first merge rebuilds it from the store: the live rows this context minted, plus
+    an open position if it holds one. Trusting the inflated number would freeze it."""
+    seeder, book, key, seed_state = _seed_merge_setup(tmp_path, live_opens=29)
+    seeder._merge_seed_state(book, key, seed_state, live_settled=2)
+    assert book["entries"][key]["opens_count"] == 2
+    assert fb.opens_total(book["entries"][key]) == 7
+    # and the reconstruction happens once — a later live open is the cycle's to keep
+    book["entries"][key]["opens_count"] = 3
+    seeder._merge_seed_state(book, key, seed_state, live_settled=2)
+    assert book["entries"][key]["opens_count"] == 3
+
+
+def test_a_position_open_at_reconstruction_counts_as_its_own_open(tmp_path):
+    seeder, book, key, seed_state = _seed_merge_setup(tmp_path, live_opens=29)
+    book["entries"][key]["position"] = {"position_id": "pos_x"}
+    seeder._merge_seed_state(book, key, seed_state, live_settled=2)
+    assert book["entries"][key]["opens_count"] == 3  # 2 settled + the one still open
+
+
+def test_seeding_a_context_the_live_stream_never_reached_starts_it_live_at_zero(tmp_path):
+    import scripts.seed_forward_book as seeder
+    lineage = "cand:cand_forwardbook0001"
+    key = fb.book_key(lineage, "BTCUSDT", "1d")
+    book = {"forward_book_version": fb.FORWARD_BOOK_VERSION, "entries": {}}
+    seed_state = {"lineage": lineage, "symbol": "BTCUSDT", "timeframe": "1d",
+                  "first_tracked_at": "2026-07-01T00:00:00Z", "opens_count": 4,
+                  "last_signal_at": "2026-08-20T00:00:00Z", "position": {"position_id": "p"},
+                  "last_seen_candle": "2026-08-24T00:00:00Z",
+                  "first_seen_candle": "2026-08-01T00:00:00Z", "cooldown_remaining": 3}
+    seeder._merge_seed_state(book, key, seed_state, live_settled=0)
+    state = book["entries"][key]
+    assert (state["seed_opens_count"], state["opens_count"]) == (4, 0)
+    # the live stream still owns its own start, its position and its cooldown
+    assert state["position"] is None and state["cooldown_remaining"] == 0
+    assert state["first_seen_candle"] is None and state["last_seen_candle"] is None
+
+
+def test_a_lineage_that_only_ever_fired_in_the_seed_span_is_not_called_signal_less(tmp_path):
+    """The marker asks "has this lineage EVER fired", and seeded opens are firings — so it
+    reads the sum. Splitting the counter without this would have flagged every lineage
+    whose only evidence is its backfill."""
+    entry = _pool_entry(strategy_spec=_spec_dict(entry_rules={
+        "operator": "AND",
+        "conditions": [{"feature": "adx", "comparison": ">=", "value": 99.0}],
+    }))
+    pool = _pool(entry)
+    _update(pool, ROW, _candle("2026-08-29T00:00:00Z"), tmp_path)
+    key = next(iter(fb.load_book(tmp_path)["entries"]))
+    fb.mutate_book(tmp_path, NOW, lambda b: b["entries"][key].update(  # backfill found three
+        {"seed_opens_count": 3}))
+    past = _update(pool, ROW, _candle("2026-09-14T00:00:00Z"), tmp_path,
+                   now="2026-09-14T12:00:01Z")
+    assert past["no_signal"] == []

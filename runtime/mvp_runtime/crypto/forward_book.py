@@ -41,8 +41,9 @@ position still open at that boundary is dropped un-minted — the live stream ow
 present.
 
 The no-signal marker is DISPLAY ONLY (Thomas 2026-08-29): a lineage tracked for
-``FORWARD_NO_SIGNAL_DAYS`` without a single virtual open is named in its own context's
-cycle summary. Nothing here refuses, demotes or retires it.
+``FORWARD_NO_SIGNAL_DAYS`` without a single virtual open (``opens_total`` — live plus
+seeded) is named in its own context's cycle summary. Nothing here refuses, demotes or
+retires it.
 """
 
 from __future__ import annotations
@@ -129,8 +130,23 @@ def _fresh_state(lineage: str, symbol: str, timeframe: str, strategy_id: Any, no
         # at or after it to the cycle — the boundary that keeps the two streams disjoint.
         "first_seen_candle": None,
         "last_seen_candle": None, "last_signal_at": None,
-        "opens_count": 0, "position": None, "cooldown_remaining": 0,
+        # Two counters, one per writer: the cycle owns ``opens_count`` (the live stream's
+        # opens), the seeder owns ``seed_opens_count`` (what the replayed span produced).
+        # Folding the seed span into one shared total made re-seeding non-idempotent while
+        # the rows it writes are perfectly idempotent — see ``opens_total``.
+        "opens_count": 0, "seed_opens_count": 0,
+        "position": None, "cooldown_remaining": 0,
     }
+
+
+def opens_total(state: Mapping[str, Any]) -> int:
+    """Every virtual open this lineage-context has ever produced, live plus seeded.
+
+    The split exists because the two counters have different writers and different
+    idempotence: the cycle increments ``opens_count`` once per bar it opens on, while the
+    seeder ASSIGNS ``seed_opens_count`` from a replay that re-runs whole. Anything asking
+    "has this lineage ever fired?" wants the sum, never one half."""
+    return int(state.get("opens_count") or 0) + int(state.get("seed_opens_count") or 0)
 
 
 def _parse_book(raw: Any) -> dict[str, Any]:
@@ -514,7 +530,7 @@ def run_forward_book_update(
         for state in entries.values():
             if state.get("symbol") != symbol or state.get("timeframe") != timeframe:
                 continue
-            if int(state.get("opens_count") or 0) > 0:
+            if opens_total(state) > 0:  # live or seeded — either one is a signal
                 continue
             first = state.get("first_tracked_at")
             if not (isinstance(first, str) and first):

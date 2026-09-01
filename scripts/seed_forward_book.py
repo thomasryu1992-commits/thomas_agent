@@ -55,6 +55,7 @@ from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa:
 from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.cycle import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
+from runtime.mvp_runtime.crypto.lifecycle import outcome_attribution_key  # noqa: E402
 from runtime.mvp_runtime.crypto.paper import OCCUPYING_STATUSES  # noqa: E402
 from runtime.mvp_runtime.crypto.state import state_dir  # noqa: E402
 from runtime.mvp_runtime.crypto.strategy import StrategySpec  # noqa: E402
@@ -88,31 +89,67 @@ def _first_seen_by_hash(root: Path) -> dict[str, str]:
     return first
 
 
-def _merge_seed_state(book: dict[str, Any], key: str, seed_state: Mapping[str, Any]) -> None:
+def _merge_seed_state(
+    book: dict[str, Any], key: str, seed_state: Mapping[str, Any], *, live_settled: int,
+) -> None:
     """Fold ONE lineage's seed results into the live book — counters and markers only.
 
     The live cycle owns ``position``, ``last_seen_candle``, ``first_seen_candle`` and the
     cooldown; the seeder must never move any of them. What seeding adds is the history:
     the earlier ``first_tracked_at`` (the mint), the opens the span produced, and the
-    latest signal the span saw."""
+    latest signal the span saw.
+
+    **The seed span's opens are ASSIGNED to their own counter, never added to the live
+    one.** The rows a re-seed writes are idempotent (deterministic settlement ids, dedup
+    on append), so a second ``--apply`` is a no-op on the evidence — but the old
+    ``opens_count += seed_opens`` made the counter climb with every run. Measured
+    2026-09-01: three applies left S004-GEN-706 at 29 opens against 12 real ones, every
+    seeded lineage inflated by exactly its seed count per extra run. Assignment makes the
+    seeder's half re-runnable by construction, the way its rows already are.
+
+    A book written before that split has the seed opens folded into ``opens_count`` an
+    unknowable number of times, so the first merge that finds no ``seed_opens_count``
+    RECONSTRUCTS the live half from the store instead of trusting it: the live settled
+    rows this context minted, plus its open position if it holds one. That is the exact
+    definition of the counter (every live open either closed into a row or is still
+    open), and it runs once — afterwards the field exists and the cycle owns it alone."""
     existing = book["entries"].get(key)
+    seed_opens = int(seed_state.get("opens_count") or 0)
     if existing is None:
         merged = dict(seed_state)
         merged["position"] = None
         merged["last_seen_candle"] = None  # the live stream starts wherever it starts
         merged["first_seen_candle"] = None
         merged["cooldown_remaining"] = 0
+        merged["seed_opens_count"] = seed_opens
+        merged["opens_count"] = 0  # nothing live has happened here yet
         book["entries"][key] = merged
         return
     first = [t for t in (existing.get("first_tracked_at"), seed_state.get("first_tracked_at"))
              if isinstance(t, str) and t]
     if first:
         existing["first_tracked_at"] = min(first)
-    existing["opens_count"] = int(existing.get("opens_count") or 0) + int(seed_state.get("opens_count") or 0)
+    if "seed_opens_count" not in existing:
+        existing["opens_count"] = live_settled + (1 if existing.get("position") else 0)
+    existing["seed_opens_count"] = seed_opens
     signals = [t for t in (existing.get("last_signal_at"), seed_state.get("last_signal_at"))
                if isinstance(t, str) and t]
     if signals:
         existing["last_signal_at"] = max(signals)
+
+
+def _live_settled_count(root: Path, lineage: str, symbol: str, timeframe: str) -> int:
+    """Rows this context minted from the LIVE stream — the seeded ones are not its opens."""
+    try:
+        rows = forward_book.read_forward_outcomes(root)
+    except (ToolError, MvpRuntimeError):
+        return 0
+    return sum(
+        1 for row in rows
+        if not row.get("seeded")
+        and str(row.get("symbol")) == symbol and str(row.get("timeframe")) == timeframe
+        and outcome_attribution_key(row) == lineage
+    )
 
 
 def seed_lineage(
@@ -158,7 +195,9 @@ def seed_lineage(
     report["settled"] = len(rows)
     if apply:
         forward_book._append_outcomes(rows, root=root)
-        forward_book.mutate_book(root, now, lambda book: _merge_seed_state(book, key, seed_state))
+        live_settled = _live_settled_count(root, lineage, symbol, timeframe)
+        forward_book.mutate_book(root, now, lambda book: _merge_seed_state(
+            book, key, seed_state, live_settled=live_settled))
     return report
 
 
