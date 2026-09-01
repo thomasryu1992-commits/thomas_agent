@@ -46,6 +46,11 @@ def unindexed(store: LedgerStore) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Backfill record-archive kind indexes.")
+    # `--list` is the default and does not need naming — but it was named in this file's
+    # own usage block and in the deploy note that shipped with it, and a documented command
+    # that answers "unrecognized arguments" costs more than an accepted no-op flag.
+    parser.add_argument("--list", action="store_true",
+                        help="read-only: show archives without an index (the default)")
     parser.add_argument("--apply", action="store_true", help="write the missing indexes")
     parser.add_argument("--root", type=Path, default=Path("."))
     args = parser.parse_args(argv)
