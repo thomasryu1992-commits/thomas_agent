@@ -31,6 +31,7 @@ from runtime.mvp_runtime.crypto.account import (
     BinanceFuturesAccountFeed,
     NoAccountFeed,
     bucket_income,
+    parse_configured_leverage,
     parse_positions,
     read_account,
     render_account_text,
@@ -414,3 +415,45 @@ def test_render_is_ascii_only():
 
 def test_render_handles_no_account():
     assert "not configured" in render_account_text(None)
+
+ACCOUNT_ROWS = [
+    {"symbol": "BTCUSDT", "positionAmt": "0", "leverage": "5"},
+    {"symbol": "ETHUSDT", "positionAmt": "0.5", "leverage": "20", "entryPrice": "3000",
+     "markPrice": "3000", "unrealizedProfit": "0", "notional": "1500"},
+    {"symbol": "SOLUSDT", "positionAmt": "0", "leverage": "0"},
+    {"symbol": "", "positionAmt": "0", "leverage": "7"},
+    "not a row",
+]
+
+
+def test_configured_leverage_reads_the_rows_positions_deliberately_drops():
+    """The setting lives on the zero-amount rows, which is exactly what `parse_positions`
+    throws away — and before the first fill those rows are the only place the venue states
+    the leverage the liquidation guard will face."""
+    assert [p.symbol for p in parse_positions(ACCOUNT_ROWS)] == ["ETHUSDT"]
+    assert parse_configured_leverage(ACCOUNT_ROWS) == {"BTCUSDT": 5.0, "ETHUSDT": 20.0}
+
+
+def test_an_unusable_leverage_is_omitted_rather_than_defaulted():
+    """Omission is a fact the caller can act on: `live_entry.configured_leverage_for` turns a
+    missing symbol into the restrictive assumption, which it could not do if this function had
+    already invented a number for it."""
+    assert "SOLUSDT" not in parse_configured_leverage(ACCOUNT_ROWS)
+    assert parse_configured_leverage(None) == {}
+    assert parse_configured_leverage([{"symbol": "BTCUSDT"}]) == {}
+
+
+def test_the_snapshot_record_carries_the_settings_not_just_the_holdings(monkeypatch):
+    """Recorded so a liquidation refusal can be read back against the leverage that produced
+    it — 'refused at 20x assumed' and 'refused at 20x reported' are different facts. The
+    payload's own zero-amount rows are what supply this, so the record proves the whole path
+    (venue response -> snapshot -> record), not just the dataclass field."""
+    _creds(monkeypatch)
+    _patch_urlopen(monkeypatch, [_account_payload(), "[]"])
+    feed = BinanceFuturesAccountFeed(authorization=_ACCOUNT_AUTH)
+    snapshot = feed.account_snapshot(timeout_seconds=1)
+    record = snapshot_record(snapshot, feed=feed, now=NOW)
+    assert record["configured_leverage"] == snapshot.configured_leverage
+    assert set(record["configured_leverage"]) >= {p.symbol for p in snapshot.positions}, (
+        "every held symbol must also appear among the settings"
+    )

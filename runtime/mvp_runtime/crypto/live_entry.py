@@ -62,7 +62,7 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
-from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
+from .paper import ASSUMED_LEVERAGE, STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -196,6 +196,31 @@ def price_bracket(
         "working_type": BRACKET_WORKING_TYPE,
         "tick_size": tick,
     }, None
+
+
+def configured_leverage_for(snapshot: Any | None, symbol: str) -> tuple[float, str]:
+    """The leverage the venue will apply to ``symbol``, and where that number came from.
+
+    **The fallback is the RESTRICTIVE direction, which here is the higher number.** A higher
+    leverage puts the liquidation price closer to entry, so the guard refuses more — an
+    unreadable account therefore keeps `paper.ASSUMED_LEVERAGE` and the pre-existing
+    behaviour, never inherits another symbol's setting, and never resolves to something
+    permissive. Returning the source alongside the value keeps a refusal auditable: "refused
+    at 20x assumed" and "refused at 20x reported" are different facts about the account.
+
+    Why read it at all: `ASSUMED_LEVERAGE` is the venue's DEFAULT for most perpetuals, not a
+    posture this system chose, and the guard applies it identically in backtest, paper and
+    live. Measured 2026-08-31 across the candidate store, that assumption refuses 98.4% of
+    the 1d tier's entries (112,358 against 1,837 closed) while risk-based sizing
+    (`live_sizing.RISK_PER_TRADE_FRACTION`) never asks for more than ~1.2x of equity. On the
+    live path the honest input is what the account is actually set to.
+    """
+    configured = getattr(snapshot, "configured_leverage", None)
+    if isinstance(configured, Mapping):
+        value = configured.get(symbol)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value), "venue"
+    return float(ASSUMED_LEVERAGE), "assumed"
 
 
 def plan_live_entry(
@@ -369,9 +394,14 @@ def plan_live_entry(
         )
     detail["bracket"] = bracket
 
-    # 5a. The liquidation guard, on the rounded bracket stop — the price the venue will use.
+    # 5a. The liquidation guard, on the rounded bracket stop — the price the venue will use,
+    #     at the leverage the venue will actually apply rather than at a standing assumption.
+    guard_leverage, leverage_source = configured_leverage_for(snapshot, symbol)
+    detail["liquidation_leverage"] = guard_leverage
+    detail["liquidation_leverage_source"] = leverage_source
     liq_refusal = stop_beyond_liquidation_refusal(
         {**dict(plan), "stop_loss": bracket["stop_loss"]},
+        leverage=guard_leverage,
     )
     if liq_refusal is not None:
         detail["liquidation_refusal"] = liq_refusal
