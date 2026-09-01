@@ -323,7 +323,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 159 | `_require_active_role` | `len(entries) != 1` |
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 184 | `_require_active_role` | `—` |
 | `GUARD_NOT_APPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 899 | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
-| `HOST_NOT_ALLOWED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | 224 | `__init__` | `host not in ALLOWED_ACCOUNT_HOSTS` |
+| `HOST_NOT_ALLOWED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | 229 | `__init__` | `host not in ALLOWED_ACCOUNT_HOSTS` |
 | `IDEATION_INPUTS_REQUIRED` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | 443 | `run_content_ideation` | `not seeds and (not target_override)` |
 | `IDEATION_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 403 | `_apply_job` | `not isinstance(inputs, dict) or not str(inputs.get('seeds') or '').strip()` |
 | `IDEMPOTENCY_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 205 | `apply_dispatch` | `request_id is not None and ledger is None` |
@@ -549,9 +549,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 505 | `_parse_hosted_response` | `—` |
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 507 | `_parse_hosted_response` | `not isinstance(analysis, dict) or any((k not in analysis for k in _REQUIRED_ANALYSIS_KEYS))` |
 | `MALFORMED_RESPONSE` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 515 | `_parse_hosted_response` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 306 | `fill_history` | `not isinstance(rows, list)` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 343 | `_signed_get` | `—` |
-| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 354 | `_build` | `not isinstance(account, dict)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 311 | `fill_history` | `not isinstance(rows, list)` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 348 | `_signed_get` | `—` |
+| `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 359 | `_build` | `not isinstance(account, dict)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1178 | `_parse` | `—` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1180 | `_parse` | `not isinstance(rows, list)` |
 | `MALFORMED_RESULT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1190 | `_parse` | `not isinstance(row, list) or len(row) < 7` |
@@ -647,7 +647,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `NOT_RECEIVED` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 196 | `classify_task` | `lifecycle.get('status') != 'RECEIVED'` |
 | `NOT_VALIDATED_MEMORY` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 399 | `build_core_candidate` | `not isinstance(validated_entry, Mapping)` |
 | `NOT_VALIDATED_MEMORY` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 402 | `build_core_candidate` | `validated_entry.get('status') != VALIDATED_STATUS or validated_entry.get('scope') != VALIDATED_…` |
-| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 316 | `_signed_get` | `not api_key or not api_secret` |
+| `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 321 | `_signed_get` | `not api_key or not api_secret` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2001 | `liquidation_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 2084 | `open_interest_history` | `not api_key` |
 | `NO_API_KEY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 586 | `_headers` | `missing` |
@@ -905,7 +905,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/tools.py` | 121 | `run_search` | `—` |
 | `TOOL_RATE_LIMITED` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 174 | `classify_transport_error` | `isinstance(status, int) and status in _RATE_LIMIT_STATUSES` |
 | `TOOL_REQUEST_REJECTED` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 151 | `_rejected` | `—` |
-| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 339 | `_signed_get` | `—` |
+| `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/account.py` | 344 | `_signed_get` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 178 | `classify_transport_error` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1342 | `derivative_price_klines` | `—` |
 | `TOOL_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1438 | `positioning_history` | `—` |

@@ -509,3 +509,54 @@ def test_an_unreadable_book_refuses_the_entry():
 def test_spread_at_the_limit_does_not_refuse():
     decision = _plan(spread_bps=le.MAX_ENTRY_SPREAD_BPS)
     assert decision["status"] == le.STATUS_READY
+
+
+def _leveraged_snapshot(**configured):
+    """FLAT, plus what the venue says each symbol's leverage is set to."""
+    return AccountSnapshot(
+        asset="USDT", wallet_balance=1000.0, margin_balance=1000.0, available_balance=1000.0,
+        unrealized_pnl=0.0, positions=[], realized_windows={}, source="test", collected_at=NOW,
+        configured_leverage=dict(configured),
+    )
+
+
+# A stop 6.7% from entry: beyond the isolated-margin liquidation price at 20x (4.6% of room),
+# comfortably inside it at 5x (19.6%). That gap is the whole question these tests ask.
+WIDE_STOP_PLAN = {**PLAN, "stop_loss": 56000.0, "risk": 4000.0}
+
+
+def test_an_unreadable_account_keeps_the_restrictive_assumption():
+    """Fail-closed here is the HIGHER leverage, because a higher one puts liquidation nearer
+    entry and refuses more. A snapshot that cannot say must not become a permissive answer."""
+    decision = _plan(plan=WIDE_STOP_PLAN, snapshot=FLAT)
+    assert le.LIQUIDATION_REFUSED in decision["reasons"]
+    assert decision["liquidation_leverage"] == float(le.ASSUMED_LEVERAGE)
+    assert decision["liquidation_leverage_source"] == "assumed"
+
+
+def test_the_guard_uses_the_leverage_the_venue_actually_reports():
+    """The same plan and the same stop, refused only because of a leverage nobody set. At the
+    account's own 5x the liquidation price is 19.6% away and this stop is nowhere near it, so
+    the refusal must not stand. Other doors may still refuse, which is why this asserts on the
+    liquidation reason rather than on the whole decision."""
+    decision = _plan(plan=WIDE_STOP_PLAN, snapshot=_leveraged_snapshot(BTCUSDT=5.0))
+    assert le.LIQUIDATION_REFUSED not in decision["reasons"]
+    assert decision["liquidation_leverage"] == 5.0
+    assert decision["liquidation_leverage_source"] == "venue"
+
+
+def test_a_symbol_the_venue_did_not_name_does_not_borrow_another_setting():
+    """Per-symbol means per-symbol. A reported 5x on ETHUSDT says nothing about BTCUSDT, and
+    inheriting it would apply a setting that symbol may not have."""
+    assert le.configured_leverage_for(_leveraged_snapshot(ETHUSDT=5.0), "BTCUSDT") == (
+        float(le.ASSUMED_LEVERAGE), "assumed"
+    )
+
+
+def test_an_unusable_reported_leverage_falls_back_rather_than_dividing_by_it():
+    """Zero, negative and boolean readings are the venue failing to say, not a setting — and
+    `liquidation_price` divides by this number."""
+    for bad in (0.0, -5.0, True):
+        assert le.configured_leverage_for(_leveraged_snapshot(BTCUSDT=bad), "BTCUSDT") == (
+            float(le.ASSUMED_LEVERAGE), "assumed"
+        ), bad

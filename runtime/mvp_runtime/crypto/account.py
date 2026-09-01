@@ -145,6 +145,11 @@ class AccountSnapshot:
     feed_version: str = ACCOUNT_TOOL_VERSION
     latency_ms: int = 0
     warnings: list[str] = field(default_factory=list)
+    # symbol -> the leverage the venue will apply when a position IS opened there. Separate
+    # from `positions` because a symbol holding nothing still has a setting, and that setting
+    # is what the liquidation guard needs BEFORE the first fill. See
+    # :func:`parse_configured_leverage`.
+    configured_leverage: dict[str, float] = field(default_factory=dict)
 
 
 class AccountFeed(Protocol):
@@ -359,6 +364,7 @@ class BinanceFuturesAccountFeed:
             available_balance=_f(account.get("availableBalance")),
             unrealized_pnl=_f(account.get("totalUnrealizedProfit")),
             positions=parse_positions(account.get("positions")),
+            configured_leverage=parse_configured_leverage(account.get("positions")),
             # ``None`` income means "unreadable or possibly truncated": no windows at all,
             # so every reader must say "unknown" rather than mistake absence for zero.
             realized_windows=(
@@ -400,6 +406,39 @@ def parse_positions(rows: Any) -> list[AccountPosition]:
         )
     positions.sort(key=lambda p: p.symbol)
     return positions
+
+
+def parse_configured_leverage(rows: Any) -> dict[str, float]:
+    """Every symbol's configured leverage, INCLUDING the ones holding nothing.
+
+    ``/fapi/v2/account`` reports a row per symbol the venue knows about and most carry
+    ``positionAmt == 0``, which :func:`parse_positions` drops — correctly, because a zero
+    amount is not a position. The leverage on those rows is not noise though: it is the
+    setting that WILL apply when one is opened, and before the first fill it is the only
+    place the venue states it.
+
+    A separate function rather than a widening of `parse_positions`, because "what am I
+    holding" and "what setting would apply" are different questions; merging them would make
+    an empty book indistinguishable from an unconfigured one, which is exactly the
+    distinction the liquidation guard needs.
+
+    Rows without a usable positive leverage are omitted rather than defaulted, so a caller
+    can tell "the venue did not say" from "the venue said something", and pick its own
+    fail-closed answer for the first case.
+    """
+    leverage: dict[str, float] = {}
+    if not isinstance(rows, list):
+        return leverage
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "")
+        if not symbol:
+            continue
+        value = _f(row.get("leverage"))
+        if value > 0:
+            leverage[symbol] = value
+    return leverage
 
 
 def bucket_income(rows: Any, *, now_ms: int) -> dict[str, dict[str, float]]:
@@ -590,6 +629,10 @@ def snapshot_record(snapshot: AccountSnapshot | None, *, feed: AccountFeed, now:
             "available_balance": snapshot.available_balance,
             "unrealized_pnl": snapshot.unrealized_pnl,
             "open_position_count": len(snapshot.positions),
+            # The settings, not the holdings: what the liquidation guard would assume for a
+            # symbol this account has never traded. Recorded so a refusal can be read back
+            # against the leverage that produced it.
+            "configured_leverage": dict(snapshot.configured_leverage),
             "realized_windows": snapshot.realized_windows,
             "source": snapshot.source,
             "collected_at": snapshot.collected_at,
