@@ -133,8 +133,8 @@ def run_promotion(
     ``allow_quarantined_derivation`` says otherwise; a row that names no derivation at all is
     legacy and passes — see ``pool.assert_promotable_derivation``. A promotion that would leave the pool with more
     routable strategies than the lifecycle can ever judge refuses with
-    ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED`` unless ``allow_oversized_pool``
-    says otherwise — see ``pool.assert_pool_within_size_cap``. Every escape stays out of
+    ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED`` / ``POOL_CONTEXT_DIRECTION_SPLIT``
+    unless ``allow_oversized_pool`` says otherwise — see ``pool.assert_pool_within_size_cap``. Every escape stays out of
     ``promotion_content_sha256``: the candidate ids are already in the hash and each check
     is a pure function of them, so the same approval can never need an escape in one
     execution and not another.
