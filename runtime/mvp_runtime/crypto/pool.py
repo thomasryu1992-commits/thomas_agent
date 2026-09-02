@@ -1759,6 +1759,41 @@ def update_statuses(
         return changed
 
 
+def admission_evidence(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """The two admission-door inputs a promotion lifts off a candidate's backtest.
+
+    ``paper.regime_admits`` and ``distribution_gate.distribution_admits`` read these off the
+    POOL ENTRY at route time, and a candidate row does not carry them — they are projected
+    out of ``backtest_evidence`` when the entry is built. Both doors fail OPEN on a missing
+    reference, so anything that replays a bare candidate through the entry path measures a
+    lineage with its gating switched off.
+
+    That has now bitten twice in the same direction. #743 shipped the distribution gate
+    without the promotion-side line and every routed entry passed it unmeasured. Then on
+    2026-09-02 the signal probe replayed candidate rows to rank promotion picks and read
+    S004-GEN-690 at 36 opens in 60 days — it installed at 11, because its own regime evidence
+    excludes the regime it fires in most. The projection lives here, in one function both the
+    promotion door and any pre-promotion replay call, so the two can no longer disagree about
+    what a candidate becomes."""
+    evidence = candidate.get("backtest_evidence") or {}
+    return {
+        "regime_evidence": ((evidence.get("regime_breakdown") or {}).get("per_regime")),
+        "distribution_reference": evidence.get("distribution_reference"),
+    }
+
+
+def as_pool_entry_for_replay(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """A candidate seen as the pool entry it would become, for replay ONLY.
+
+    Carries the admission evidence and nothing else a promotion would add — no status, no
+    lifecycle counters, no ``promoted_at``. It is an argument to a pure walk, never a row to
+    write. An entry that already carries its own evidence is returned untouched, so probing
+    a pooled lineage measures the pool, not a reconstruction of it."""
+    if candidate.get("regime_evidence") is not None or candidate.get("distribution_reference") is not None:
+        return dict(candidate)
+    return {**candidate, **admission_evidence(candidate)}
+
+
 def read_candidates(root: Path | None = None) -> list[dict[str, Any]]:
     """All candidate rows, oldest first — a VERIFIED read.
 

@@ -113,3 +113,48 @@ def test_the_calendar_demand_tracks_the_forward_width_not_a_copied_number():
 def test_an_untargeted_timeframe_has_no_calendar_and_says_so():
     horizon = probe.confirmation_horizon("2w", opens=10, days=30)
     assert horizon["calendar_days"] is None and horizon["days_to_confirmable"] is None
+
+
+# --- the probe must measure the lineage promotion would install ---------------------------
+
+def test_a_candidate_is_replayed_with_the_gating_it_will_actually_have():
+    """2026-09-02: the probe read S004-GEN-690 at 36 opens in 60 days and it installed at
+    11, because a candidate row carries no ``regime_evidence`` and ``regime_admits`` fails
+    OPEN without it. Ranking promotion picks on that number ranks specs by their rules with
+    the admission doors switched off."""
+    from runtime.mvp_runtime.crypto import pool as pool_store
+    candidate = {"candidate_id": "cand_probe0000000002", "generation_id": "GEN-9",
+                 "strategy_rule_hash": "", "strategy_spec": _spec_dict(),
+                 "backtest_evidence": {
+                     "regime_breakdown": {"per_regime": {
+                         "HIGH_VOLATILITY": {"trades": 40, "total_r": -30.0}}},
+                     "distribution_reference": None}}
+    rows, candles = _bars(6)
+    for row in rows:
+        row["market_regime"] = "HIGH_VOLATILITY"
+    # the projection is what the promotion door writes, so the probe sees the same refusal
+    assert pool_store.admission_evidence(candidate)["regime_evidence"] == {
+        "HIGH_VOLATILITY": {"trades": 40, "total_r": -30.0}}
+    result = _probe(candidate, rows, candles)
+    assert result["verdict"] == probe.DOOR_REFUSED
+    assert result["opens"] == 0
+
+
+def test_an_entry_that_already_carries_its_evidence_is_not_reconstructed():
+    """Probing a POOLED lineage must measure the pool, not a projection of it — the entry's
+    own evidence is what routes it today."""
+    from runtime.mvp_runtime.crypto import pool as pool_store
+    entry = _entry(regime_evidence={"RANGE": {"trades": 5, "total_r": 1.0}},
+                   backtest_evidence={"regime_breakdown": {"per_regime": {
+                       "RANGE": {"trades": 999, "total_r": -999.0}}}})
+    seen = pool_store.as_pool_entry_for_replay(entry)
+    assert seen["regime_evidence"] == {"RANGE": {"trades": 5, "total_r": 1.0}}
+
+
+def test_the_promotion_door_and_the_probe_project_through_one_function():
+    """A second copy of the two lookups is how they drift; #743 was the first time one of
+    them went missing on the promotion side."""
+    import scripts.promote_strategy_candidates as promote
+    source = Path(promote.__file__).read_text()
+    assert "pool_store.admission_evidence(c)" in source
+    assert '"regime_evidence": ((c.get(' not in source  # the inlined copy is gone
