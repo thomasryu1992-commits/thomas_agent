@@ -1610,11 +1610,17 @@ def test_promotion_installs_selected_candidates(tmp_path):
     # context, so promoting two of them is exactly what the per-context cap refuses. That
     # refusal has its own tests (test_mvp_runtime_crypto_promotion.py); the subject here is
     # that the door installs what was selected, and the escape keeps it that.
+    # `allow_cluster_siblings` for the same reason as the escapes beside it: on this
+    # synthetic monotone-trending snapshot several mined specs trade identically, and once
+    # the guard stopped refusing most of their entries (the assumption moved to the
+    # account's real 5x) two of them became indistinguishable on the recorded axes. The
+    # cluster door has its own tests; the subject here is that the door installs what was
+    # selected.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                             allow_oversized_pool=True, allow_below_entry_bar=True,
-                            allow_unconfirmed_holdout=True)
+                            allow_unconfirmed_holdout=True, allow_cluster_siblings=True)
     assert summary["pool_size"] == 2
     active = pool.load_active_pool(tmp_path)
     assert [e["strategy_id"] for e in active["active_strategies"]] == ids[:2]
@@ -1632,6 +1638,7 @@ def test_promotion_keep_active_adds(tmp_path):
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
                   keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
                   allow_oversized_pool=True,   # same context as the incumbent; see above
+                  allow_cluster_siblings=True,  # and indistinguishable from it; see above
                   allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     active = pool.load_active_pool(tmp_path)
     assert len(active["active_strategies"]) == 2
@@ -3737,7 +3744,13 @@ class TestLiquidationGuard:
     liquidated first. The guard refuses such entries in backtest, paper, and live."""
 
     def test_stop_beyond_liquidation_is_refused(self):
-        """At 20x leverage with ATR wide enough, the stop exceeds liquidation distance."""
+        """A stop past the liquidation distance is refused, whatever that distance is.
+
+        The expected price is DERIVED from the guard's own constants rather than written
+        out: the arithmetic used to be pinned at `95.4`, which was 20x spelled as a number
+        and would have had to be re-typed every time the assumption moved (it moved to 5x
+        on 2026-09-02). What this test is for is the refusal, not the leverage.
+        """
         from runtime.mvp_runtime.crypto.paper import (
             ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
             liquidation_price, stop_is_beyond_liquidation,
@@ -3745,11 +3758,12 @@ class TestLiquidationGuard:
         )
         entry = 100.0
         liq = liquidation_price(entry, "LONG")
-        # liq ≈ 100 * (1 - 0.05 + 0.004) = 95.4 — a stop at 94 is below it
-        assert liq == pytest.approx(95.4, abs=0.01)
-        assert stop_is_beyond_liquidation(entry, 94.0, True)
+        expected = entry * (1.0 - 1.0 / ASSUMED_LEVERAGE + MAINTENANCE_MARGIN_RATE)
+        assert liq == pytest.approx(expected, abs=0.01)
+        beyond = liq - 1.0
+        assert stop_is_beyond_liquidation(entry, beyond, True)
         refusal = stop_beyond_liquidation_refusal({
-            "direction": "LONG", "entry_price": entry, "stop_loss": 94.0,
+            "direction": "LONG", "entry_price": entry, "stop_loss": beyond,
         })
         assert refusal is not None
         assert refusal["reason_code"] == "STOP_BEYOND_LIQUIDATION"
@@ -3768,14 +3782,20 @@ class TestLiquidationGuard:
         from runtime.mvp_runtime.crypto.paper import (
             liquidation_price, stop_is_beyond_liquidation, stop_beyond_liquidation_refusal,
         )
+        from runtime.mvp_runtime.crypto.paper import (
+            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
+        )
         entry = 100.0
         liq = liquidation_price(entry, "SHORT")
-        # liq ≈ 100 * (1 + 0.05 - 0.004) = 104.6
-        assert liq == pytest.approx(104.6, abs=0.01)
-        assert stop_is_beyond_liquidation(entry, 106.0, False)
-        assert not stop_is_beyond_liquidation(entry, 103.0, False)
+        # Derived, not spelled: the literal used to be 104.6, which was 20x written as a
+        # number and stopped being true when the assumption moved to the account's real 5x.
+        expected = entry * (1.0 + 1.0 / ASSUMED_LEVERAGE - MAINTENANCE_MARGIN_RATE)
+        assert liq == pytest.approx(expected, abs=0.01)
+        beyond, inside = liq + 1.0, liq - 1.0
+        assert stop_is_beyond_liquidation(entry, beyond, False)
+        assert not stop_is_beyond_liquidation(entry, inside, False)
         refusal = stop_beyond_liquidation_refusal({
-            "direction": "SHORT", "entry_price": entry, "stop_loss": 106.0,
+            "direction": "SHORT", "entry_price": entry, "stop_loss": beyond,
         })
         assert refusal is not None
 
@@ -3800,13 +3820,21 @@ class TestLiquidationGuard:
     def test_replay_counts_liquidation_refusals(self):
         """_replay returns a liquidation_refused count as the 8th element.
 
-        At 20x leverage the liquidation distance is ~4.6% of entry. A stop_atr of 5.0
-        with ATR=3.0 on a ~100 price puts the stop ~15% away — well beyond liquidation."""
+        The breaching width is DERIVED from the guard's constants rather than fixed at 5.0:
+        the fixture's ATR is ~3% of a ~100 price, so the multiple that clears the liquidation
+        distance is `room / 0.03` — about 1.5x at the old 20x assumption and 6.5x at the
+        account's real 5x. Pinning the number made this test a statement about the leverage
+        instead of about the counter."""
         from runtime.mvp_runtime.crypto.cost import CostModel
+        from runtime.mvp_runtime.crypto.paper import (
+            ASSUMED_LEVERAGE, MAINTENANCE_MARGIN_RATE,
+        )
 
+        room = 1.0 / ASSUMED_LEVERAGE - MAINTENANCE_MARGIN_RATE
+        breaching_stop = round(room / 0.03 + 1.0, 2)   # +1 so the tail of the ATR range clears too
         spec = StrategySpec.from_dict(_spec_dict(
-            exit_rules={"stop_model": "atr", "stop_atr": 5.0, "target_atr": 6.0,
-                        "max_holding_bars": 10},
+            exit_rules={"stop_model": "atr", "stop_atr": breaching_stop,
+                        "target_atr": breaching_stop + 1.0, "max_holding_bars": 10},
         ))
         rows, candles = TestReplayCooldown()._make_rows_and_candles(n=80)
         result = factory._replay(spec, rows, candles, cost=CostModel())
@@ -3823,7 +3851,7 @@ class TestLiquidationGuard:
         assert "liquidation_guard" in result
         guard = result["liquidation_guard"]
         assert guard["applied"] is True
-        assert guard["assumed_leverage"] == 20
+        assert guard["assumed_leverage"] == factory.ASSUMED_LEVERAGE
         assert guard["maintenance_margin_rate"] == 0.004
         assert guard["refused_entries"] >= 0
 

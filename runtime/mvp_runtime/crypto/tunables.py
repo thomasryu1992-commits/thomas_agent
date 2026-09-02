@@ -374,9 +374,24 @@ TUNABLES: tuple[Tunable, ...] = (
             "a measured relationship between per-regime sample size and forward sign"),
 
     # --- liquidation guard: stop-beyond-liquidation refusal ----------------------------------
-    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", OPERATOR,
-            "Binance USDM default for most perpetuals; higher → guard more restrictive",
-            "the operator changing the account leverage, or adding per-symbol leverage reads"),
+    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", MEASURED,
+            "what the account is actually set to, read off /fapi/v2/account on 2026-09-02: "
+            "every traded symbol at 5x, and 880 of the 884 the venue lists. It was 20 — the "
+            "venue's default, never a chosen posture — which refused 98.4% of the 1d tier's "
+            "backtest entries; a controlled re-backtest changing only this number moved median "
+            "closed trades per 1d spec from 1 to 145",
+            "the account changing, which the live path already tracks per symbol "
+            "(`live_entry.configured_leverage_for`) but the backtest cannot; five symbols "
+            "outside the traded universe still read above 5x, so widening the universe needs "
+            "this re-verified rather than assumed"),
+    Tunable("UNREADABLE_ACCOUNT_LEVERAGE", live_entry.UNREADABLE_ACCOUNT_LEVERAGE,
+            "crypto/live_entry.py", OPERATOR,
+            "what to assume on the live path when the venue cannot be asked at all — kept at "
+            "the venue's maximum default rather than at the account's setting, because being "
+            "wrong LOW here admits an entry whose stop sits beyond an unseen liquidation while "
+            "being wrong HIGH only refuses a good one",
+            "a decision about what a DEGRADED account read deserves; it is deliberately not "
+            "coupled to `ASSUMED_LEVERAGE`, so lowering that one must not drag this down"),
     Tunable("MAINTENANCE_MARGIN_RATE", paper.MAINTENANCE_MARGIN_RATE, "crypto/paper.py", VENUE,
             "Binance USDM tier-1 MMR (0.4%); lowest tier is permissive for the guard",
             "trading positions large enough to cross into tier-2 (> $50K notional)"),

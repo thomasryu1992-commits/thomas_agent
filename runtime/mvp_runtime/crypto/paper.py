@@ -170,11 +170,35 @@ STOP_BEYOND_LIQUIDATION = "STOP_BEYOND_LIQUIDATION"
 # one after it, short enough to re-enter on a genuine trend resumption.
 COOLDOWN_BARS_AFTER_STOPLOSS = 2
 
-# The leverage the liquidation guard assumes when no venue-reported leverage is
-# available (paper, backtest). Binance USDM defaults to 20x for most perpetual
-# contracts. A higher assumption makes the guard MORE restrictive (liquidation price
+# The leverage the liquidation guard assumes where there is no account to ask: the backtest
+# and the paper book. A higher assumption makes the guard MORE restrictive (liquidation price
 # closer to entry); a lower one more permissive.
-ASSUMED_LEVERAGE = 20
+#
+# **5 because that is what the account is actually set to, verified 2026-09-02** over
+# `/fapi/v2/account`: every symbol in the traded universe (BTC, ETH, SOL, BNB, DOGE, XRP)
+# reports 5x, as do 880 of the 884 symbols the venue lists for it.
+#
+# It was 20 — the venue's DEFAULT for most perpetuals — and that was never a posture anyone
+# chose. What the default cost, measured across the candidate store on rows where the guard
+# ran: it refused 98.4% of the 1d tier's entries (112,358 against 1,837 closed), 56.4% at 4h
+# and 4.4% at 1h. A controlled re-backtest of ten real 1d specs over the same 2,000 bars x 5
+# symbols, changing nothing but this number: **median closed trades per spec 1 at 20x, 145 at
+# 5x** — 37 total closes against 1,623. At 20x the median 1d spec cannot fill a single
+# lifecycle window, so the tier was unjudgeable by arithmetic rather than by signal.
+#
+# The starved sample was also BIASED, which is why the old evidence looked fine: the guard
+# refuses where ATR is large against price, so the survivors are drawn from calm regimes.
+# Median 1d expectancy read +0.3172 on guard-era rows against +0.0504 before it (#742,
+# 2026-08-21, which introduced the guard and dropped median 1d closes 80.5 -> 10.5 in the
+# forty generations either side of it). The number improved as the sample vanished.
+#
+# The assumption is now a fact rather than a default, and what would reopen it is the account
+# changing — five symbols outside the traded universe still read above 5x (SUIUSDT 6,
+# KAITOUSDT 10, ZORAUSDT 15, UNIUSDT 20, BTCUSDC 35), so widening the universe to any of them
+# needs this re-verified, not assumed. The LIVE path does not depend on this being current:
+# it reads the venue per symbol (`live_entry.configured_leverage_for`) and falls back to
+# `live_entry.UNREADABLE_ACCOUNT_LEVERAGE`, which is deliberately NOT this constant.
+ASSUMED_LEVERAGE = 5
 
 # Tier-1 maintenance margin rate on Binance USDM (0.4%). Using the lowest tier is
 # permissive — larger positions have higher MMR and get liquidated sooner, so a

@@ -530,7 +530,7 @@ def test_an_unreadable_account_keeps_the_restrictive_assumption():
     entry and refuses more. A snapshot that cannot say must not become a permissive answer."""
     decision = _plan(plan=WIDE_STOP_PLAN, snapshot=FLAT)
     assert le.LIQUIDATION_REFUSED in decision["reasons"]
-    assert decision["liquidation_leverage"] == float(le.ASSUMED_LEVERAGE)
+    assert decision["liquidation_leverage"] == float(le.UNREADABLE_ACCOUNT_LEVERAGE)
     assert decision["liquidation_leverage_source"] == "assumed"
 
 
@@ -549,7 +549,7 @@ def test_a_symbol_the_venue_did_not_name_does_not_borrow_another_setting():
     """Per-symbol means per-symbol. A reported 5x on ETHUSDT says nothing about BTCUSDT, and
     inheriting it would apply a setting that symbol may not have."""
     assert le.configured_leverage_for(_leveraged_snapshot(ETHUSDT=5.0), "BTCUSDT") == (
-        float(le.ASSUMED_LEVERAGE), "assumed"
+        float(le.UNREADABLE_ACCOUNT_LEVERAGE), "assumed"
     )
 
 
@@ -558,5 +558,25 @@ def test_an_unusable_reported_leverage_falls_back_rather_than_dividing_by_it():
     `liquidation_price` divides by this number."""
     for bad in (0.0, -5.0, True):
         assert le.configured_leverage_for(_leveraged_snapshot(BTCUSDT=bad), "BTCUSDT") == (
-            float(le.ASSUMED_LEVERAGE), "assumed"
+            float(le.UNREADABLE_ACCOUNT_LEVERAGE), "assumed"
         ), bad
+
+
+def test_the_unreadable_fallback_is_not_the_account_setting_constant():
+    """Two constants because there are two questions, and their failure costs are opposite.
+
+    `paper.ASSUMED_LEVERAGE` tracks what the account IS (verified 5x, 2026-09-02) and drives
+    the backtest and the paper book, which have no venue to ask. This one answers what to
+    assume when the venue cannot be asked at all — where being wrong LOW admits a live entry
+    whose stop sits beyond a liquidation nobody saw, while being wrong HIGH only refuses one
+    that would have been fine. Collapsing them into a single number would make lowering the
+    account's setting silently loosen the degraded-read path, which is the one path that has
+    no evidence behind it."""
+    from runtime.mvp_runtime.crypto import paper
+
+    assert le.UNREADABLE_ACCOUNT_LEVERAGE >= paper.ASSUMED_LEVERAGE, (
+        "the degraded-read assumption must never be more permissive than the known setting"
+    )
+    assert le.UNREADABLE_ACCOUNT_LEVERAGE is not paper.ASSUMED_LEVERAGE or (
+        le.UNREADABLE_ACCOUNT_LEVERAGE > paper.ASSUMED_LEVERAGE
+    ), "the split must be real, not two names for one value"
