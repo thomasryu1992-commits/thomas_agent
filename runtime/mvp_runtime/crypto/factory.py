@@ -4075,8 +4075,11 @@ FUSION_PARENT_POOL = 6
 # one of these in ``fusion_skipped``, or ``None`` when the path did execute — see the comment at
 # the dispatch for why "it ran and found nothing" has to be distinguishable from "it never ran".
 FUSION_NOT_REQUESTED = "not_requested"   # the caller passed fusion_pairs <= 0
-FUSION_POOLED_FIRE = "pooled_fire"       # a pooled mint: `_fuse_batch` scores on one frame
-FUSION_SKIP_REASONS = frozenset({FUSION_NOT_REQUESTED, FUSION_POOLED_FIRE})
+# `pooled_fire` was a skip reason from 2026-08-10 to 2026-09-02: `_fuse_batch` scored on one
+# frame, so a pooled mint could not fuse without minting a child scored on one leg while
+# claiming five. It now takes the cohort's frames (the "second increment" the boundary named),
+# so a pooled fire fuses like any other and the reason has no case left to name.
+FUSION_SKIP_REASONS = frozenset({FUSION_NOT_REQUESTED})
 
 
 class FusionRefused(ValueError):
@@ -4504,7 +4507,7 @@ def _fusion_bucket_key(record: Mapping[str, Any]) -> tuple | None:
 
 def fusion_parent_buckets(
     existing_candidates: list[Mapping[str, Any]], *, symbol: str, timeframe: str,
-    per_bucket: int = FUSION_PARENT_POOL,
+    per_bucket: int = FUSION_PARENT_POOL, scope: Sequence[str] | None = None,
 ) -> list[list[dict[str, Any]]]:
     """Fusable parent groups, best bucket first, best parent first within each.
 
@@ -4526,13 +4529,25 @@ def fusion_parent_buckets(
     with evidence that never described it. Global ranking hid that — compatible pairs
     were so rare it effectively never arose — so making pairs common has to close it
     in the same change."""
+    # Membership when mining one symbol, exact equality when mining a cohort — the same rule
+    # `_matches_context` applies to search centres, for the same reason: a pooled child is
+    # scored across every leg and claims the whole cohort, so its parents must already have
+    # been fitted across that exact cohort. A single-symbol parent that merely CONTAINS the
+    # primary would fuse into a child claiming one symbol while five legs scored it — the
+    # inverse of the wrong number the pooled boundary existed to prevent.
+    cohort = tuple(sorted(str(s) for s in scope)) if scope is not None else None
     buckets: dict[tuple, list[dict[str, Any]]] = {}
     for record in rank_fusion_parents(existing_candidates, top_n=len(existing_candidates)):
         key = _fusion_bucket_key(record)
         if key is None:
             continue
-        _schema, _direction, bucket_timeframe, scope, _stop = key
-        if bucket_timeframe != timeframe or symbol not in scope:
+        _schema, _direction, bucket_timeframe, bucket_scope, _stop = key
+        if bucket_timeframe != timeframe:
+            continue
+        if cohort is not None:
+            if bucket_scope != cohort:
+                continue  # fitted on a different cohort, or on one symbol of this one
+        elif symbol not in bucket_scope:
             continue  # not the context this run can produce honest evidence for
         buckets.setdefault(key, []).append(record)  # already score-ordered
     ordered = [members[:per_bucket] for members in buckets.values() if len(members) >= 2]
@@ -4614,8 +4629,16 @@ def _fuse_batch(
     buckets: list[list[Mapping[str, Any]]], snapshot: Mapping[str, Any], *, generation_id: str,
     start_index: int, pairs: int, seen_hashes: set[str], evidence_sha: str, now: str,
     frame: ReplayFrame | None = None, ablation_stats: dict[str, int] | None = None,
+    frames: Sequence[ReplayFrame] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fuse parents pairwise, bucket by bucket, until ``pairs`` children carry evidence.
+
+    ``frames`` (a cohort, primary first) makes this a POOLED fusion: every child and every
+    parent-on-this-window is scored with `backtest_spec_pooled` across all of them, and the
+    lattice slices its train segment from all of them, exactly as the seeded pooled path does.
+    Without it the single-frame path is unchanged. The caller must hand buckets confined to
+    the same cohort (`fusion_parent_buckets(..., scope=)`), or a child would claim one scope
+    and be scored on another — the wrong number this path refused to mint for three weeks.
 
     Each bucket is a set of lineages that already agree on schema/direction/timeframe/
     symbol/stop model (see :func:`fusion_parent_buckets`), so every pair offered here
@@ -4648,14 +4671,23 @@ def _fuse_batch(
     # its train segment from, and every child/parent backtest below reuses it. A frame is a
     # pure function of (snapshot, cost model), so results are unchanged — only rebuilds go.
     if frame is None:
-        frame = build_replay_frame(snapshot)
+        frame = frames[0] if frames else build_replay_frame(snapshot)
     stats = ablation_stats if ablation_stats is not None else {"lattices": 0, "luck_filtered": 0}
+    # One scoring rule for child and parents alike, chosen once: a child judged pooled against
+    # parents judged on a single leg would pass `_fusion_improvement` on a difference of
+    # windows rather than of rules.
+    lattice_frames: list[ReplayFrame] = list(frames) if frames else [frame]
+
+    def score(spec: StrategySpec) -> dict[str, Any]:
+        if frames:
+            return backtest_spec_pooled(spec, [], frames=frames)
+        return backtest_spec(spec, snapshot, frame=frame)
 
     def on_this_window(spec: StrategySpec) -> dict[str, Any]:
-        """This parent's evidence on the CHILD's snapshot, replayed once per fire."""
+        """This parent's evidence on the CHILD's window, replayed once per fire."""
         cached = replayed.get(spec.strategy_rule_hash)
         if cached is None:
-            cached = replayed[spec.strategy_rule_hash] = backtest_spec(spec, snapshot, frame=frame)
+            cached = replayed[spec.strategy_rule_hash] = score(spec)
         return cached
 
     pair_stream = (pair for bucket in buckets for pair in combinations(bucket, 2))
@@ -4684,12 +4716,12 @@ def _fuse_batch(
         # improve on BOTH parents to be worth storing as a crossover, and a union whose
         # value was all in one parent's conditions now fails exactly there.
         child, ablation, refusal = _lattice_winner(
-            child, [frame], seen_hashes=seen_hashes, stats=stats,
+            child, lattice_frames, seen_hashes=seen_hashes, stats=stats,
         )
         if refusal is not None:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": refusal})
             continue
-        evidence = backtest_spec(child, snapshot, frame=frame)
+        evidence = score(child)
         if not evidence["closed_count"]:
             rejected.append({"parent_candidate_ids": parent_ids, "reason": "no_trades"})
             continue
@@ -4979,26 +5011,28 @@ def run_factory(
 
     fused: list[dict[str, Any]] = []
     fusion_rejected: list[dict[str, Any]] = []
-    # **A pooled fire does not fuse, and that is a boundary rather than an oversight.**
-    # `_fuse_batch` re-scores each parent on THIS window through `backtest_spec`, which takes one
-    # frame; handing it a cohort is a second increment. `fuse_specs` would pair pooled parents
-    # happily (their scopes match, so `symbol_scope_mismatch` never fires), so the child would be
-    # minted and scored on one leg while claiming five — the exact shape of wrong number this
-    # file spends most of its guards preventing.
+    # **A pooled fire fuses since 2026-09-02; from 2026-08-10 it did not, and the record of
+    # why matters more than the fix.** `_fuse_batch` scored on one frame, so a pooled mint would
+    # have stored a child scored on one leg while claiming five — the boundary refused rather
+    # than mint that, and named itself in `fusion_skipped` (`pooled_fire`, measured 2026-08-15
+    # after six days of `fused_count: 0` that read like a dry parent pool). What it cost, measured
+    # 2026-09-02 across the store: crossover children pass the observation entry bar at 44.8% on
+    # 1d (13 of 29) against 11.2% for the seeded rotation (44 of 392), and every 1d and 4h fire
+    # since the first pooled one reported `fused=0` — 25 of the 27 fires since 2026-08-25, the
+    # two exceptions being single-symbol 1h. The mechanism was never broken: replayed against the
+    # current store at the account's 5x, 1d yields 4 children from 4 pairs. The path was closed.
     #
-    # **`fusion_skipped` names WHY the path did not run, because `fused_count: 0` cannot.**
-    # Three unrelated situations produced an identical record — the caller never asked, the fire
-    # was pooled, or fusion ran and no bucket held a pair — and only the last is a fact about the
-    # candidate store. Measured 2026-08-15: every fire since the first pooled one
-    # (2026-08-10T08:12:38Z) reported `fused_count: 0` with an empty `fusion_rejected`, which is
-    # byte-identical to a dry parent pool, and the crossover path being off went unnoticed for six
-    # days. `pooled: true` was on the record and implied it, but implying is not saying — a reader
-    # has to already know this boundary exists to read it that way, and a watch built to catch a
-    # dry pool looked straight past it.
+    # The second increment the boundary asked for is exactly two things: `_fuse_batch` scores
+    # child and parents with `backtest_spec_pooled` across the cohort's frames, and
+    # `fusion_parent_buckets` confines parents to the EXACT cohort (`scope=`) rather than to
+    # any scope containing the primary — otherwise two single-symbol BTC parents would fuse into
+    # a child claiming one symbol and scored on five, the same wrong number mirrored.
+    #
+    # **`fusion_skipped` still names WHY the path did not run, because `fused_count: 0` cannot:**
+    # the caller never asked, or fusion ran and no bucket held a pair — and only the second is a
+    # fact about the candidate store.
     fusion_skipped = None if fusion_pairs > 0 else FUSION_NOT_REQUESTED
-    if fusion_pairs > 0 and pooled:
-        fusion_skipped = FUSION_POOLED_FIRE
-    if fusion_pairs > 0 and not pooled:
+    if fusion_pairs > 0:
         fused, fusion_rejected = _fuse_batch(
             # The function's own `symbol`/`timeframe`, not a second read of the snapshot. Both
             # lines answered the same question and disagreed about the default — `run_factory`
@@ -5007,7 +5041,8 @@ def run_factory(
             # every parent (`symbol not in scope`), yielding no bucket and no children, in
             # silence. Unreachable through the scheduler, which always sets it; one fact, one
             # default, is the point.
-            fusion_parent_buckets(existing_candidates, symbol=symbol, timeframe=timeframe),
+            fusion_parent_buckets(existing_candidates, symbol=symbol, timeframe=timeframe,
+                                  scope=scope),
             snapshot,
             generation_id=generation_id,
             # Ids RESERVED by the seeded draw, never survivors of it. `generate_batch` numbers
@@ -5033,6 +5068,9 @@ def run_factory(
             frame=frame,
             now=now,
             ablation_stats=ablation_stats,
+            # The cohort's frames when pooled, so children and parents are scored across every
+            # leg — the same `frames` the seeded draw above is scored on.
+            frames=frames if pooled else None,
         )
 
     # --- the half of the budget fusion declined ----------------------------------------
