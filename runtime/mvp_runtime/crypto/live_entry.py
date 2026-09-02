@@ -62,7 +62,7 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
-from .paper import ASSUMED_LEVERAGE, STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
+from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -198,19 +198,32 @@ def price_bracket(
     }, None
 
 
+# What to assume when the venue cannot be asked. **Deliberately NOT `paper.ASSUMED_LEVERAGE`,
+# and the split is the point:** that constant answers "what is this account set to" and is
+# maintained against a verified reading, while this one answers "what should I assume when I
+# cannot check" — and the two have opposite failure costs. Being wrong LOW here lets through a
+# live entry whose stop sits beyond a liquidation the guard failed to see; being wrong HIGH
+# only refuses an entry that would have been fine. So this stays at the venue's own maximum
+# default for perpetuals rather than tracking the account down, and lowering it is a decision
+# about what an UNREADABLE account deserves, not about what this one is configured to.
+#
+# Reading the venue is the normal path and it makes this number rare; it is the answer for a
+# degraded account read, not for daily operation.
+UNREADABLE_ACCOUNT_LEVERAGE = 20
+
+
 def configured_leverage_for(snapshot: Any | None, symbol: str) -> tuple[float, str]:
     """The leverage the venue will apply to ``symbol``, and where that number came from.
 
     **The fallback is the RESTRICTIVE direction, which here is the higher number.** A higher
     leverage puts the liquidation price closer to entry, so the guard refuses more — an
-    unreadable account therefore keeps `paper.ASSUMED_LEVERAGE` and the pre-existing
-    behaviour, never inherits another symbol's setting, and never resolves to something
-    permissive. Returning the source alongside the value keeps a refusal auditable: "refused
-    at 20x assumed" and "refused at 20x reported" are different facts about the account.
+    unreadable account therefore keeps :data:`UNREADABLE_ACCOUNT_LEVERAGE`, never inherits
+    another symbol's setting, and never resolves to something permissive. Returning the
+    source alongside the value keeps a refusal auditable: "refused at 20x assumed" and
+    "refused at 5x reported" are different facts about the account.
 
-    Why read it at all: `ASSUMED_LEVERAGE` is the venue's DEFAULT for most perpetuals, not a
-    posture this system chose, and the guard applies it identically in backtest, paper and
-    live. Measured 2026-08-31 across the candidate store, that assumption refuses 98.4% of
+    Why read it at all: the guard used to apply one standing number in backtest, paper and
+    live alike. Measured 2026-08-31 across the candidate store, that number refused 98.4% of
     the 1d tier's entries (112,358 against 1,837 closed) while risk-based sizing
     (`live_sizing.RISK_PER_TRADE_FRACTION`) never asks for more than ~1.2x of equity. On the
     live path the honest input is what the account is actually set to.
@@ -220,7 +233,7 @@ def configured_leverage_for(snapshot: Any | None, symbol: str) -> tuple[float, s
         value = configured.get(symbol)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
             return float(value), "venue"
-    return float(ASSUMED_LEVERAGE), "assumed"
+    return float(UNREADABLE_ACCOUNT_LEVERAGE), "assumed"
 
 
 def plan_live_entry(
