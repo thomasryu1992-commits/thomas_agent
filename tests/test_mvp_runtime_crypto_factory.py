@@ -1384,9 +1384,11 @@ def test_two_cohorts_sharing_a_first_leg_do_not_draw_the_same_batch():
     assert a["seed"] != b["seed"]
 
 
-def test_a_pooled_fire_does_not_fuse():
-    """`_fuse_batch` re-scores parents through the one-frame `backtest_spec`; a fused child of a
-    pooled fire would be scored on one leg while claiming the cohort."""
+def test_a_pooled_fire_with_no_cohort_parents_fuses_nothing_and_still_tops_up():
+    """A pooled fire fuses since 2026-09-02, but only from parents fitted on this EXACT cohort —
+    and an empty store offers none, so the fusion budget re-fires as the seeded topup exactly as
+    it did while the pooled boundary stood. What this pins is the topup's scope, not the
+    boundary: every row a pooled fire stores claims the cohort."""
     result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
                          fusion_pairs=4)
     assert all((c.get("derivation_type") or "seeded_template") == "seeded_template"
@@ -1401,19 +1403,17 @@ def test_a_pooled_fire_does_not_fuse():
         assert candidate["backtest_evidence"]["holdout"]["symbols"] == 2
 
 
-def test_a_pooled_fire_says_it_skipped_fusion_rather_than_looking_dry():
-    """`fused_count: 0` with an empty `fusion_rejected` is what a DRY PARENT POOL looks like, so
-    a pooled fire reporting the same thing is indistinguishable from one whose store had no pair.
-
-    Measured on the live ledger 2026-08-15: every fire from the first pooled one
-    (2026-08-10T08:12:38Z) onward carried exactly that record, and the crossover path being off
-    went unnoticed for six days. `pooled: true` implied it; a reader had to already know this
-    boundary existed to read it that way."""
+def test_a_pooled_fire_with_a_dry_store_reads_as_a_dry_pool_because_it_is_one():
+    """From 2026-08-10 to 2026-09-02 this exact record meant "the pooled boundary declined", and
+    the skip reason `pooled_fire` existed so it could not be mistaken for a dry parent pool.
+    Now the path RUNS on a pooled fire, so `None` is the honest reading: fusion looked, and an
+    empty store offered no pair fitted on this cohort."""
     result = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")],
                          fusion_pairs=4)
     assert result["pooled"] is True
     assert result["fused_count"] == 0 and result["fusion_rejected"] == []
-    assert result["fusion_skipped"] == factory.FUSION_POOLED_FIRE
+    assert result["fusion_skipped"] is None
+    assert not hasattr(factory, "FUSION_POOLED_FIRE"), "the retired reason must not linger"
 
 
 def test_a_caller_that_never_asked_for_fusion_is_not_a_dry_pool_either():
@@ -1435,10 +1435,13 @@ def test_a_fire_that_ran_fusion_reports_no_skip_reason(tmp_path):
 def test_every_skip_reason_is_a_declared_one():
     """A stable vocabulary, so a reader (or a watch) can enumerate the cases rather than
     pattern-match strings that drift."""
-    for kwargs, cohort in (({}, None),
-                           ({"fusion_pairs": 4}, [_shifted_snapshot(symbol="ETHUSDT")])):
-        result = _pooled_run(_trending_snapshot(), cohort, **kwargs)
+    for cohort in (None, [_shifted_snapshot(symbol="ETHUSDT")]):
+        result = _pooled_run(_trending_snapshot(), cohort)
         assert result["fusion_skipped"] in factory.FUSION_SKIP_REASONS
+    # A fire that asked for fusion ran it, pooled or not — `None` is the only reading under
+    # which an empty `fusion_rejected` means the store genuinely offered no pair.
+    ran = _pooled_run(_trending_snapshot(), [_shifted_snapshot(symbol="ETHUSDT")], fusion_pairs=4)
+    assert ran["fusion_skipped"] is None
 
 
 def test_a_leg_missing_a_column_starves_the_spec_rather_than_shrinking_the_pool():
@@ -3566,9 +3569,9 @@ def test_fusion_reads_the_symbol_run_factory_resolved(monkeypatch):
     seen: dict[str, str] = {}
     real_buckets = factory.fusion_parent_buckets
 
-    def spy(records, *, symbol, timeframe):
+    def spy(records, *, symbol, timeframe, scope=None):
         seen["symbol"] = symbol
-        return real_buckets(records, symbol=symbol, timeframe=timeframe)
+        return real_buckets(records, symbol=symbol, timeframe=timeframe, scope=scope)
 
     monkeypatch.setattr(factory, "fusion_parent_buckets", spy)
     snapshot = {k: v for k, v in _trending_snapshot().items() if k != "symbol"}
@@ -4161,3 +4164,101 @@ def test_the_cohort_ceiling_takes_the_most_binding_leg():
     assert factory.cohort_probe_stop_ceiling([calm, wild]) == wild_ceiling
     assert factory.cohort_probe_stop_ceiling([calm, silent]) == calm_ceiling
     assert factory.cohort_probe_stop_ceiling([silent]) is None
+
+
+
+# --- pooled fusion: the second increment ----------------------------------------------------
+
+_COHORT = ["BTCUSDT", "ETHUSDT"]
+
+
+def _two_cohort_parents(tmp_path, scope=None):
+    """The improving pair, fitted on the cohort rather than on BTCUSDT alone."""
+    scope = list(scope or _COHORT)
+    _durable_parent(tmp_path, "cand-pool-a",
+                    _parent_spec("S1", [_RSI_OVER_50], symbol_scope=scope), 99.0)
+    _durable_parent(tmp_path, "cand-pool-b",
+                    _parent_spec("S2", [_RSI_UNDER_60], symbol_scope=scope), 98.0)
+    return pool.read_candidates(tmp_path)
+
+
+def test_cohort_buckets_take_exact_scope_not_membership(tmp_path):
+    """Membership when mining one symbol, exact equality when mining a cohort. A BTCUSDT-only
+    parent CONTAINS the primary, and under the membership rule it would bucket into a pooled
+    fire and fuse into a child claiming one symbol while scored on two — the wrong number the
+    pooled boundary existed to refuse, mirrored."""
+    single = _two_improving_parents(tmp_path)                 # scope ["BTCUSDT"]
+    both = _two_cohort_parents(tmp_path)                       # + scope ["BTCUSDT", "ETHUSDT"]
+    assert len(both) == 4
+
+    by_membership = factory.fusion_parent_buckets(both, symbol="BTCUSDT", timeframe="1d")
+    assert {r["candidate_id"] for b in by_membership for r in b} == {
+        "cand-aaa", "cand-bbb", "cand-pool-a", "cand-pool-b"}, "membership keeps every parent"
+
+    by_cohort = factory.fusion_parent_buckets(both, symbol="BTCUSDT", timeframe="1d",
+                                              scope=_COHORT)
+    assert [sorted(r["candidate_id"] for r in b) for b in by_cohort] == [["cand-pool-a", "cand-pool-b"]]
+    # And the cohort rule is order-independent, like the pool key it mirrors.
+    assert factory.fusion_parent_buckets(both, symbol="ETHUSDT", timeframe="1d",
+                                         scope=list(reversed(_COHORT))) == by_cohort
+    assert factory.fusion_parent_buckets(single, symbol="BTCUSDT", timeframe="1d",
+                                         scope=_COHORT) == [], "no parent fitted on this cohort"
+
+
+def test_a_pooled_fusion_scores_the_child_across_every_leg(tmp_path, monkeypatch):
+    """The whole point of the second increment: with the cohort's frames the child (and each
+    parent, on this window) is replayed across every leg, so its evidence claims exactly what
+    its scope claims. The improvement bar is waived here because this test is about WHERE the
+    child is scored, not whether this synthetic pair happens to clear the bar; the bar has its
+    own tests. Handing the same call one frame is the single-symbol path, byte for byte."""
+    monkeypatch.setattr(factory, "_fusion_improvement", lambda child, parents: None)
+    parents = _two_cohort_parents(tmp_path)
+    primary = _trending_snapshot()
+    frames = [factory.build_replay_frame(primary),
+              factory.build_replay_frame(_shifted_snapshot(symbol="ETHUSDT"))]
+    buckets = factory.fusion_parent_buckets(parents, symbol="BTCUSDT", timeframe="1d",
+                                            scope=_COHORT)
+    common = dict(generation_id="GEN-777", start_index=5, pairs=1, evidence_sha="sha256:test",
+                  now=NOW)
+
+    pooled_children, rejected = factory._fuse_batch(
+        buckets, primary, seen_hashes=set(), frames=frames, **common)
+    assert pooled_children, f"no pooled child minted: {rejected}"
+    child = pooled_children[0]
+    assert child["strategy_spec"]["symbol_scope"] == _COHORT
+    assert child["backtest_evidence"]["symbols_replayed"] == 2
+    assert child["backtest_evidence"]["holdout"]["symbols"] == 2
+    assert child["derivation_type"] == "crossover"
+    assert sorted(child["parent_candidate_ids"]) == ["cand-pool-a", "cand-pool-b"]
+    for parent_figures in child["fusion_improvement"]["parents"].values():
+        assert set(parent_figures) == set(factory.FUSION_IMPROVEMENT_METRICS)
+
+    single_children, _ = factory._fuse_batch(
+        buckets, primary, seen_hashes=set(), frames=None, **common)
+    assert single_children[0]["backtest_evidence"]["symbols_replayed"] == 1, (
+        "without frames the call must remain the one-frame path"
+    )
+
+
+def test_a_pooled_fire_fuses_cohort_parents_end_to_end(tmp_path, monkeypatch):
+    """Through `run_factory`: a pooled fire with cohort-fitted parents in the store reports no
+    skip reason, mints crossover children scoped to the cohort and scored across it, and its
+    seeded rows still carry the cohort too. The bar is waived for the reason stated above."""
+    monkeypatch.setattr(factory, "_fusion_improvement", lambda child, parents: None)
+    parents = _two_cohort_parents(tmp_path)
+    result = run_factory(_trending_snapshot(), active_pool={"active_strategies": []},
+                         existing_candidates=parents, now=NOW, count=1, fusion_pairs=1,
+                         cohort_snapshots=[_shifted_snapshot(symbol="ETHUSDT")])
+    assert result["pooled"] is True
+    assert result["fusion_skipped"] is None
+    assert result["fused_count"] >= 1, f"fusion ran and refused everything: {result['fusion_rejected']}"
+    fused = [c for c in result["candidates"] if c["derivation_type"] == "crossover"]
+    assert fused
+    for child in fused:
+        assert child["strategy_spec"]["symbol_scope"] == _COHORT
+        assert child["backtest_evidence"]["symbols_replayed"] == 2
+        assert child["evidence_input_sha256"] == result["evidence_input_sha256"]
+    for candidate in result["candidates"]:
+        assert candidate["strategy_spec"]["symbol_scope"] == _COHORT
+    # The store's lineage guard accepts a pooled child of pooled parents.
+    assert pool.append_candidates(result["candidates"], root=tmp_path) == len(result["candidates"])
