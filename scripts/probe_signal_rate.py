@@ -77,10 +77,16 @@ def probe_span(
 
     ``boundary=None`` because a probe is not a seed: nothing is minted, nothing is merged,
     and the live stream's calendar is not being partitioned against. The walk's own state
-    carries the two numbers that matter — did anything match, and did anything open."""
+    carries the two numbers that matter — did anything match, and did anything open.
+
+    The entry is replayed as ``pool.as_pool_entry_for_replay`` sees it: a candidate row does
+    not carry the regime and distribution evidence its admission doors read, and both doors
+    fail OPEN without it, so a bare candidate replays with its gating switched off. That is
+    not a rounding error — S004-GEN-690 read 36 opens in 60 days as a candidate and installed
+    at 11, because its own regime evidence excludes the regime it fires in most."""
     state, minted = forward_book.walk_seed_span(
-        entry, spec, rows, candles, symbol=symbol, timeframe=timeframe,
-        boundary=None, mint=since)
+        pool_store.as_pool_entry_for_replay(entry), spec, rows, candles,
+        symbol=symbol, timeframe=timeframe, boundary=None, mint=since)
     opens = int(state.get("opens_count") or 0)
     matched = bool(state.get("last_signal_at"))
     verdict = FIRES if opens else (DOOR_REFUSED if matched else NEVER_MATCHED)
