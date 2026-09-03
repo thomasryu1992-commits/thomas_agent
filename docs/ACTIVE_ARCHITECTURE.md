@@ -181,6 +181,15 @@ the Hermes gateway's uid and nothing else, which makes the attribution true by c
 deliberately excluded: `docker exec hermes` defaults to root, so uid 0 cannot tell the host operator
 apart from Hermes-as-root.
 
+**Decided 2026-09-03: Hermes becomes the orchestrator, and the doors are what bound it.** Thomas
+decided to run both systems under one compose project with Hermes orchestrating dispatch and
+conversation, while every guarantee above stays: approval decisions are made only on the control
+bot, schedule rows are changed only by the in-container CLI, execution stays with the worker and the
+scheduler lanes, resume needs a Thomas-approved single-use grant, and the door processes keep no
+credentials. The eight invariants, the decisions, and the PR sequence are in
+[`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md); this section
+stays the record of what the doors enforce today.
+
 A second domain package, `predmarket/` (PM-series, observe-only), stood beside `crypto/` until
 2026-08-02 and was removed — prediction-market trading is not a lane this project may operate under
 Korean domestic regulation. `docs/BUILD_HISTORY.md` records what it was and what the PM1 observation

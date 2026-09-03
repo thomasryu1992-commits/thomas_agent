@@ -4,7 +4,7 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
+Last updated: **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
 about. As of 08-29: §C's correction record is built **and executed** (2026-08-24T14:20Z,
 `live_corr_1710c5ca552d3e88c668` — §C records the row), so the "one unblocked build item" the
@@ -4800,6 +4800,34 @@ schedule row is a state write, and no row means no fire.
    §16's guardrails checked item by item and a usage-based revisit condition attached.
 
 ---
+
+## K. Hermes orchestrator integration — decided 2026-09-03, documentation first
+
+Decision record and invariants: [`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md).
+Sequence is fixed; each PR starts after the previous one merges.
+
+- [x] **PR1 — the architecture document** (this section's source). Eight invariants named with what
+      enforces each today; decisions Q1–Q17; PR sequence.
+- [ ] **PR2 — security / secret boundary.** `.env` to 0600; one Secret Source of Truth; per-service
+      injection by `environment:` enumeration (no `env_file`); a secret ownership matrix pinned by
+      `tests/test_deployment_env_passthrough.py` with `hermes` named explicitly. The Hermes bot token
+      is currently stored twice (`SCHEDULER_TELEGRAM_BOT_TOKEN` here and in the Hermes env file).
+- [ ] **PR3 — CI gate.** Make `MVP runtime pytest (ubuntu-latest)`, `(windows-latest)` and
+      `Docker build + fail-closed smoke` required checks (today only the two Active Architecture Gates are).
+- [ ] **PR4 — backup / restart / health.** Hermes healthcheck, SQLite backup via `hermes backup`,
+      five-root backup (`.runtime_governance_state`, Hermes data, `THOMAS_CORE/{activations,approvals}`,
+      `workspace`, `.env`), restore runbook, `S6_KILL_GRACETIME`, restart drain timeout, log rotation.
+- [ ] **PR5 — harness unification.** Hermes as the ninth service of `-p thomas_agent`; runtimes stay
+      split (two images, two uids, two state roots); `mem_limit` on hermes, pipeline-worker and
+      operator; a compose test that no Thomas service `depends_on` hermes.
+- [ ] **After PR5 — door API v2** (typed/versioned frame, `task_registry` origin `AGENT` after a load
+      review, `request_id` idempotency returning `{task_id, status, result}`, read-only schedule and
+      approval-status verbs, approval-notice mirroring to the Hermes chat) → **policy 1.5.0** (drafted
+      together, applied by Thomas while no approval is live) → Hermes-side SOUL/shim/cron changes.
+- [ ] **Independent of the sequence, now:** `content_ideation` cannot succeed on current `main`
+      (`blog_content.py:455,470,491` — three defects) and its first weekly fire is 2026-09-06; the
+      dispatch door's docstring and the Hermes skill both promise a `result <task_id>` recovery path
+      that does not exist (the worker never writes `task_registry`).
 
 ## Per-machine setup that does NOT travel via git
 

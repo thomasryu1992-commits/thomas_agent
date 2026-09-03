@@ -11,6 +11,7 @@ This file does not define Permission, Approval, Runtime behavior, readiness, or 
 |---|---|
 | **Top-level design-direction (Goal) document** — Target / MVP / Dynamic Task Team layers, expansion criteria, guardrails | [Thomas Autonomous Organization Architecture](THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md) |
 | Final active architecture and canonical Gate commands | [Active Architecture](ACTIVE_ARCHITECTURE.md) |
+| **Hermes as orchestrator — decided architecture, the eight invariants, and the PR sequence** (2026-09-03) | [Hermes Orchestrator Architecture V0.1](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md) |
 | Canonical Governance Policy | [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml) |
 | Architecture Slimming principles | [Step 1 — Principles](architecture-slimming/STEP1_PRINCIPLES.md) |
 | Architecture review findings (why C is parked) | [Architecture Review Record](ARCHITECTURE_REVIEW_RECORD.md) |
