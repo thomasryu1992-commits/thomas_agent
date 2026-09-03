@@ -858,10 +858,31 @@ def assert_no_silent_reactivation(
 # routes nor splits the evidence, and after a retirement the pool file legitimately holds
 # far more rows than these numbers (89 rows, 5 routable, the day this landed).
 #
-# MAX_ROUTABLE_PER_CONTEXT: 1 on the slow timeframes, 2 on the fast ones (Thomas
-# 2026-08-24, revising the flat 1 of Thomas 5-2, 2026-08-11 — the cluster-sibling rule from
-# that decision is untouched: near-identical lineages still get one slot TOTAL; this cap is
-# about DISTINCT strategies sharing a context).
+# MAX_ROUTABLE_PER_CONTEXT: 2 on every timeframe since Thomas 2026-09-02, with one condition
+# the slow timeframes carry and the fast ones do not — a slow context's two occupants must
+# agree on DIRECTION (`assert_pool_within_size_cap`, `POOL_CONTEXT_DIRECTION_SPLIT`). Before
+# that: 1 slow / 2 fast (Thomas 2026-08-24), revising the flat 1 of Thomas 5-2, 2026-08-11.
+# The cluster-sibling rule from that decision is untouched: near-identical lineages still get
+# one slot TOTAL; this cap is about DISTINCT strategies sharing a context.
+#
+# **Why the slow slot opened, on the record.** The exclusive slow slot bought judgeability
+# (the arithmetic below), and judgeability stopped depending on routing exclusivity in two
+# steps: `counterfactual` shadow-books every signal the router declines, and #807 gives each
+# pool member its own forward stream settled by the paper kernel regardless of who routed —
+# so a benched slow lineage accrues judgeable evidence at full rate. What an exclusive slot
+# still bought was the routed paper book, and there the cost is asymmetric: two SAME-direction
+# occupants only ever change which of them routes a bar (`_rank_matches`, on realized evidence
+# first), while two OPPOSING ones fail the bar closed until one side is backed
+# (`_resolve_direction_conflict`) — on 1d that is a whole day of routing lost per unresolved
+# bar, at 0.16 outcomes/day. Hence the condition: the second slow occupant is admitted only
+# alongside its own direction. Fast contexts keep the 2026-08-24 rule unchanged (a mixed pair
+# is admitted and reads as "flexible" in `routable_directional_capacity`), because a blocked
+# 15m/1h bar costs minutes, not days.
+#
+# What forced it: pooled minting (five-symbol scope) against a one-per-context door meant the
+# 1d tier could hold exactly ONE strategy at a time. Measured 2026-08-30 and again 2026-09-02:
+# 13 of 14, then 4 of 4 entry-bar passers were refused on `POOL_CONTEXT_CAP_EXCEEDED` alone,
+# every one of them colliding with a single incumbent across all five contexts.
 #
 # The flat cap rested on "a second entry cannot add routing capacity (`route_entries`
 # returns `ranked[0]`)" — true per BAR (the book holds one position per context) but not
@@ -874,8 +895,9 @@ def assert_no_silent_reactivation(
 # On 15m/1h a context split two ways still fills a 20-trade lifecycle window in weeks; on
 # 4h/1d a single lineage already needs ~33/~122 days, and splitting it puts auto-demotion
 # out of reach — the 2026-07-30 failure (67 routable, nothing demotable, a -13.25R family
-# living for a week) was exactly that arithmetic. So fast contexts take 2 and slow ones
-# keep the exclusive slot. Three router changes ride with this (`paper.route_entries`): a
+# living for a week) was exactly that arithmetic. So fast contexts took 2 and slow ones
+# kept the exclusive slot until 2026-09-02 (see the note above for what changed and why).
+# Three router changes rode with the 2026-08-24 decision (`paper.route_entries`): a
 # same-bar tie is resolved on REALIZED expectancy before champion_score (whose anti-
 # correlation with realized R is what made score-ranked sharing strictly negative), a
 # direction conflict resolves toward a proven edge instead of always failing closed, and
@@ -892,8 +914,11 @@ def assert_no_silent_reactivation(
 # needs ~29, 4h ~33, 15m ~10). That is a property of the timeframe, not of the pool size,
 # and no cap here can reach it — a 1d strategy is un-demotable by arithmetic. Naming it
 # here so the next reader does not mistake this guard for a complete answer.
+# 30 is unchanged although 5 * (2 + 2 + 2 + 2) is now 40: the note above says this number is
+# its own decision and binds when the symbol set grows, and today's pool routes 10. Raising it
+# is a separate change with its own argument, not a side effect of the slow cap moving.
 MAX_ROUTABLE_STRATEGIES = 30
-MAX_ROUTABLE_PER_CONTEXT = 1
+MAX_ROUTABLE_PER_CONTEXT = 2
 MAX_ROUTABLE_PER_CONTEXT_FAST = 2
 FAST_ROUTING_TIMEFRAMES = frozenset({"15m", "1h"})
 
@@ -1011,7 +1036,8 @@ def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
             "the explicit --allow-oversized-pool escape.",
         )
 
-    over = {ctx: ids for ctx, ids in routable_context_map(occupying).items()
+    contexts = routable_context_map(occupying)
+    over = {ctx: ids for ctx, ids in contexts.items()
             if len(ids) > max_routable_per_context(ctx[1])}
     if over:
         listed = "; ".join(
@@ -1022,9 +1048,37 @@ def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
         raise ToolError(
             "POOL_CONTEXT_CAP_EXCEEDED",
             f"more routable strategies than the context's timeframe can judge — {listed}. "
-            "A context over its cap splits outcomes faster than its timeframe refills a "
-            "judgeable window (slow contexts hold one strategy; fast ones two). Retire the "
+            "A context over its cap splits its routed book across more lineages than the "
+            "router can rank on evidence (two per context, on every timeframe). Retire an "
             "incumbent first, or pass the explicit --allow-oversized-pool escape.",
+        )
+
+    # The slow-context condition (Thomas 2026-09-02): two occupants of a 4h/1d context must
+    # agree on direction. Read the spec the way the router does (`Direction.SHORT` is an enum,
+    # so `str()` on it matches nothing — see `routable_directional_capacity`).
+    split: dict[tuple[str, str], list[str]] = {}
+    directions_of: dict[str, str] = {}
+    for entry in occupying:
+        spec = StrategySpec.from_dict(entry["strategy_spec"])
+        directions_of[str(entry.get("strategy_id"))] = (
+            "SHORT" if spec.direction is Direction.SHORT else "LONG"
+        )
+    for (sym, tf), ids in contexts.items():
+        if str(tf) in FAST_ROUTING_TIMEFRAMES or len(ids) < 2:
+            continue
+        if len({directions_of[i] for i in ids}) > 1:
+            split[(sym, tf)] = ids
+    if split:
+        listed = "; ".join(
+            f"{sym} {tf}: " + ", ".join(f"{i} {directions_of[i]}" for i in sorted(ids))
+            for (sym, tf), ids in sorted(split.items())
+        )
+        raise ToolError(
+            "POOL_CONTEXT_DIRECTION_SPLIT",
+            f"a slow context's two occupants disagree on direction — {listed}. On 4h/1d an "
+            "unresolved conflict fails the bar closed until one side is backed by realized "
+            "evidence, and a bar there is a day of routing. Promote alongside the incumbent's "
+            "direction, retire it first, or pass the explicit --allow-oversized-pool escape.",
         )
 
 

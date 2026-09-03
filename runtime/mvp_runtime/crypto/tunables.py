@@ -222,9 +222,14 @@ TUNABLES: tuple[Tunable, ...] = (
             "pool sizing cap: the grid-implied sum of the per-context caps (5 * (2+2+1+1))",
             "the symbol set or a per-context cap changing"),
     Tunable("MAX_ROUTABLE_PER_CONTEXT", pool.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool.py", OPERATOR,
-            "Thomas 2026-08-24: slow contexts (4h/1d) keep one slot — splitting a ~33/~122-day "
-            "judgement window is how the un-demotable pool of 2026-07-30 happened",
-            "the lifecycle window or the slow timeframes' outcome rate changing"),
+            "Thomas 2026-09-02: slow contexts (4h/1d) hold two, on the condition that both agree "
+            "on direction (`POOL_CONTEXT_DIRECTION_SPLIT`). The exclusive slot of 2026-08-24 "
+            "bought judgeability, which the shadow book and #807's per-lineage forward stream "
+            "now supply regardless of routing; what remained was a day of routing lost per "
+            "unresolved opposing bar on 1d, which the direction condition removes. Forced by "
+            "pooled minting: 13/14 then 4/4 entry-bar passers refused on the cap alone",
+            "the router resolving an unbacked opposing pair on slow bars (then the condition "
+            "can go), or the slow tiers' outcome rate changing"),
     Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool.MAX_ROUTABLE_PER_CONTEXT_FAST,
             "crypto/pool.py", OPERATOR,
             "Thomas 2026-08-24: fast contexts (15m/1h) hold two — the window refills in weeks "

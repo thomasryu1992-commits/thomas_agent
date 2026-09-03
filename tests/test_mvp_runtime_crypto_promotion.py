@@ -701,15 +701,48 @@ def test_one_routable_strategy_too_many_is_refused():
     assert "31" in exc.value.reason and "--allow-oversized-pool" in exc.value.reason
 
 
-def test_two_strategies_in_one_slow_context_is_refused_even_well_under_the_global_cap():
-    """The failure the global cap alone cannot see: 2 entries, 1 slow context, 28 slots
-    spare. A 4h lineage needs ~33 days for one judgement window; split, it never judges."""
-    entries = [_routable("S1", symbol="BTCUSDT", timeframe="4h"),
-               _routable("S2", symbol="BTCUSDT", timeframe="4h")]
+def _opposing(entry):
+    entry["strategy_spec"] = {**entry["strategy_spec"], "direction": "short"}
+    return entry
+
+
+def test_a_slow_context_holds_two_of_one_direction_and_refuses_a_third():
+    """Thomas 2026-09-02: the exclusive slow slot bought judgeability, which the shadow book
+    and the per-lineage forward stream now supply regardless of routing — so two 4h lineages
+    that agree on direction share the context. Exactly two: the third is where the routed
+    book is split among more lineages than the router ranks on evidence."""
+    two = [_routable("S1", symbol="BTCUSDT", timeframe="4h"),
+           _routable("S2", symbol="BTCUSDT", timeframe="4h")]
+    pool.assert_pool_within_size_cap(two)                # 2 longs, 28 slots spare: fine
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.assert_pool_within_size_cap(two + [_routable("S3", symbol="BTCUSDT", timeframe="4h")])
+    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
+    assert "BTCUSDT 4h" in exc.value.reason and "S1, S2, S3" in exc.value.reason
+
+
+def test_a_slow_context_refuses_an_opposing_second_occupant_and_names_both():
+    """The condition the slow slot carries and the fast one does not: two opposing 1d
+    lineages fail every unresolved bar closed until one is backed, and a 1d bar is a day of
+    routing. Refused with the incumbent's direction on the record, so the operator can see
+    which side to promote alongside — and under the same escape as the size cap."""
+    entries = [_routable("S_LONG", symbol="ETHUSDT", timeframe="1d"),
+               _opposing(_routable("S_SHORT", symbol="ETHUSDT", timeframe="1d"))]
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
-    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
-    assert "BTCUSDT 4h" in exc.value.reason and "S1, S2" in exc.value.reason
+    assert exc.value.reason_code == "POOL_CONTEXT_DIRECTION_SPLIT"
+    assert "ETHUSDT 1d" in exc.value.reason
+    assert "S_LONG LONG" in exc.value.reason and "S_SHORT SHORT" in exc.value.reason
+    assert "--allow-oversized-pool" in exc.value.reason
+
+
+def test_a_fast_context_still_admits_an_opposing_pair():
+    """Scope of the 2026-09-02 change: fast contexts keep the 2026-08-24 rule untouched. A
+    blocked 15m bar costs minutes, and `routable_directional_capacity` reads a mixed fast
+    pair as the flexible slot it is."""
+    pool.assert_pool_within_size_cap([
+        _routable("S1", symbol="BTCUSDT", timeframe="1h"),
+        _opposing(_routable("S2", symbol="BTCUSDT", timeframe="1h")),
+    ])
 
 
 def test_a_fast_context_holds_two_and_refuses_a_third():
@@ -726,21 +759,32 @@ def test_a_fast_context_holds_two_and_refuses_a_third():
 
 
 def test_a_multi_symbol_strategy_occupies_every_symbol_it_is_scoped_to():
-    """Scope, not primary symbol: `route_entries` judges it on each, so the cap must too."""
+    """Scope, not primary symbol: `route_entries` judges it on each, so the cap must too — a
+    pooled lineage shares (or splits) every context it is scoped to, not just its first."""
     wide = _routable("S_WIDE", timeframe="4h")
     wide["strategy_spec"] = _spec_dict(strategy_id="S_WIDE", timeframe="4h",
                                        symbol_scope=["BTCUSDT", "ETHUSDT"])
-    entries = [wide, _routable("S_ETH", symbol="ETHUSDT", timeframe="4h")]
+    pool.assert_pool_within_size_cap([wide, _routable("S_ETH", symbol="ETHUSDT", timeframe="4h")])
+    # An opposing single-symbol lineage splits the pooled one's ETH context, not its BTC one.
     with pytest.raises(MvpRuntimeError) as exc:
-        pool.assert_pool_within_size_cap(entries)
+        pool.assert_pool_within_size_cap(
+            [wide, _opposing(_routable("S_ETH", symbol="ETHUSDT", timeframe="4h"))])
+    assert exc.value.reason_code == "POOL_CONTEXT_DIRECTION_SPLIT"
+    assert "ETHUSDT 4h" in exc.value.reason and "BTCUSDT" not in exc.value.reason
+    # And a third occupant on that context is the cap, whichever way it points.
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.assert_pool_within_size_cap(
+            [wide, _routable("S_ETH", symbol="ETHUSDT", timeframe="4h"),
+             _routable("S_ETH2", symbol="ETHUSDT", timeframe="4h")])
     assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
     assert "ETHUSDT 4h" in exc.value.reason
 
 
 # --- what the sizing cap and the directional cap do to each other ----------------
 #
-# An interaction, not a standalone idea, and it exists because MAX_ROUTABLE_PER_CONTEXT is 1:
-# every context holds exactly one strategy, and a spec's `direction` is fixed at promotion
+# An interaction, not a standalone idea, and it exists because a context holds one strategy
+# (now up to two, and on slow timeframes only of ONE direction — Thomas 2026-09-02), while a
+# spec's `direction` is fixed at promotion
 # time — so WHICH directions the book can ever hold became a property of the POOL, where it
 # used to be a property of the template library (balanced 16 long / 16 short). Neither cap
 # says so on its own, which is the whole reason this is reported.
@@ -855,12 +899,16 @@ def test_a_spec_less_entry_contributes_nothing():
 
 
 def test_warning_and_probation_still_occupy_a_slot():
-    """They keep routing, so they keep splitting the window — the cap must see them."""
+    """They keep routing, so the cap must see them. Since two aligned 4h lineages may share a
+    context, the proof is the direction rule: an OPPOSING lineage on WARNING still counts as
+    the occupant it is, and the context is refused as split — not admitted as if S2 had
+    already left."""
     entries = [_routable("S1", symbol="BTCUSDT", timeframe="4h"),
-               _routable("S2", symbol="BTCUSDT", timeframe="4h", status="WARNING")]
+               _opposing(_routable("S2", symbol="BTCUSDT", timeframe="4h", status="WARNING"))]
     with pytest.raises(MvpRuntimeError) as exc:
         pool.assert_pool_within_size_cap(entries)
-    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
+    assert exc.value.reason_code == "POOL_CONTEXT_DIRECTION_SPLIT"
+    assert "S2 SHORT" in exc.value.reason
 
 
 def test_the_context_map_reports_who_competes_for_each_slot():
@@ -1137,16 +1185,20 @@ def test_the_ask_refuses_a_promotion_the_size_cap_would_refuse(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
                   live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    # Opposing the incumbent, because two aligned 1d lineages may now share the context
+    # (Thomas 2026-09-02) — the split rule is the cap-family refusal an add-mode ask on this
+    # fixture reaches, and it is the same roster the install runs.
     _seed_second_lineage(
         tmp_path,
-        _spec_dict(strategy_id="S2", entry_rules={"operator": "AND", "conditions": [
-            {"feature": "adx", "comparison": ">=", "value": 30.0}]}),
+        _spec_dict(strategy_id="S2", direction="short",
+                   entry_rules={"operator": "AND", "conditions": [
+                       {"feature": "adx", "comparison": ">=", "value": 30.0}]}),
         window_sha="sha256:test-second-window",
     )
     with pytest.raises(ApprovalBlocked) as exc:
         request_promotion(["S2"], keep_active=True, live_tier="OBSERVATION", now=NOW,
                           candidates_root=tmp_path)
-    assert exc.value.reason_code == "POOL_CONTEXT_CAP_EXCEEDED"
+    assert exc.value.reason_code == "POOL_CONTEXT_DIRECTION_SPLIT"
 
 
 def test_the_ask_refuses_a_reactivation_the_install_would_refuse(tmp_path):
