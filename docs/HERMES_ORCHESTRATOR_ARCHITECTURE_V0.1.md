@@ -162,7 +162,7 @@ money path / dispatch / 두 스케줄러 레인(claim-and-drop, catch-up 없음)
 5. **승인 알림 미러링** — operator `announce_pending_approvals`에 발신처 1개 추가(best-effort).
 6. **2단계** — 비동기 dispatch(submit→id→poll), abort 프레임·CANCELLED 전이.
 
-지금 당장 고쳐야 할 문서 오류: `dispatch_bridge.py:128,274`와 Hermes 쪽 SKILL.md가 "타임아웃 후 `result <task_id>`로 회수"를 안내하지만, 워커는 registry를 쓰지 않아 그 경로는 존재하지 않는다(`pipeline_worker.py`에 `task_registry` 참조 0건, `registry_console.py:362-376`은 `treg_` id만 매치).
+**정정됨(2026-09-04)** — 아래 오류는 고쳐졌다(레포 주석 3곳·Hermes SKILL.md·shim 메시지). 기록: `dispatch_bridge.py:128,274`와 Hermes 쪽 SKILL.md가 "타임아웃 후 `result <task_id>`로 회수"를 안내하지만, 워커는 registry를 쓰지 않아 그 경로는 존재하지 않는다(`pipeline_worker.py`에 `task_registry` 참조 0건, `registry_console.py:362-376`은 `treg_` id만 매치).
 
 ## 5. 실행 순서
 

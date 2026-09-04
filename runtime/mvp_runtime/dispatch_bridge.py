@@ -124,9 +124,9 @@ _DOOR = "dispatch"
 Executor = Callable[[str, str, str, "str | None"], dict[str, Any]]
 
 # How long the door waits for the worker's answer. A real run on the free-tier chain is
-# minute-plus; the assistant's own client gives up at 180s, but the run must be allowed to
-# finish and land in the ledger regardless (the read door's `result <task_id>` fetches it).
-# The wait holds one of this door's slots, which is what MAX_CONCURRENT_REQUESTS bounds.
+# minute-plus; the assistant's own client gives up at 280s, but the run must be allowed to
+# finish and land in the ledger regardless. NB: the worker writes no task-registry entry, so
+# the read door's `result`/`history` CANNOT fetch it — a missed reply is a lost report (v2).
 WORKER_DEADLINE_SECONDS = 600.0
 
 
@@ -270,8 +270,8 @@ def apply_dispatch(
 
     # A BLOCK completes the id as surely as a COMPLETED does: both ran the pipeline, both left
     # a task in the ledger, and re-running one on a retry is the duplicate work this prevents.
-    # The recorded outcome is the task's identity, never its text — the report is already in the
-    # ledger and the read door's `result <task_id>` is how it is fetched.
+    # The recorded outcome is the task's identity, never its text — and until the worker writes
+    # a task-registry entry (door API v2), the read door cannot fetch that report by its id.
     if request_id is not None:
         bridge_idempotency.complete(
             ledger, door=_DOOR, request_id=request_id, request_fingerprint=fingerprint,

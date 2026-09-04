@@ -16,6 +16,7 @@ import pytest
 from runtime.mvp_runtime import blog_content
 from runtime.mvp_runtime.paths import repo_root
 from runtime.read_only_kernel.schema_validation import validate_against_schema
+from tests._helpers import requires_local_core
 
 SCHEMA = repo_root() / "schemas" / "blog_content_package.v0.1.schema.json"
 NOW = "2026-08-23T09:00:00Z"
@@ -291,3 +292,55 @@ def test_the_package_dir_is_dated_slugged_and_collision_free():
     assert d.startswith(f"blog/{NOW[:10]}-")
     assert d.endswith(package["package_id"][-4:])
     assert " " not in d and "/" not in d.removeprefix("blog/")
+
+
+# --- the weekly run survives the pipeline it calls -----------------------------
+
+@requires_local_core
+def test_the_weekly_run_reaches_the_pipeline_as_the_scheduler_and_hands_it_strings(monkeypatch):
+    """Three defects shipped together and nothing here ran the producer end to end: the run
+    named a requester type intake does not admit (`human`), handed the keyword brief a list
+    where the venue splits a string, and passed the content run a keyword argument `run_task`
+    does not have. Any one of them fails the first weekly fire before a model is asked anything
+    — this test failed on the unfixed source at the first `_run` (`IDEATION_RESEARCH_BLOCKED`).
+
+    The brief is the one network leg; it is replaced with the fixture and made to insist on the
+    type the real one splits. Everything else is the real pipeline on the deterministic
+    provider."""
+    from runtime.mvp_runtime import pipeline, pipeline_worker
+    from runtime.mvp_runtime.worker import MockProvider
+
+    briefs: list[str] = []
+
+    def fake_brief(seeds, *, now, keyword_tool=None):
+        assert isinstance(seeds, str), f"the brief splits a string, got {type(seeds).__name__}"
+        briefs.append(seeds)
+        return list(_brief()["metrics"]), _brief()
+
+    monkeypatch.setattr(pipeline.naver_research, "run_keyword_brief", fake_brief)
+
+    calls: list[dict] = []
+    real_run_task = blog_content.run_task
+
+    def recording_run_task(request, **kwargs):
+        calls.append(dict(kwargs))
+        return real_run_task(request, **kwargs)
+
+    monkeypatch.setattr(blog_content, "run_task", recording_run_task)
+
+    sheet = blog_content.run_content_ideation(
+        {"seeds": "미리캔버스 포스터, 포스터 만들기"},
+        providers={"provider": MockProvider()},
+        now=NOW,
+    )
+
+    assert sheet["target_keyword"] == "미리캔버스 포스터"
+    assert briefs == ["미리캔버스 포스터, 포스터 만들기", "미리캔버스 포스터"]
+    profile = pipeline_worker._ACTOR_PROFILES[pipeline_worker.SCHEDULER_PROFILE]
+    assert [c["request_kind"] for c in calls] == ["research", "content"]
+    for call in calls:
+        assert (call["requester_id"], call["requester_type"], call["channel"]) == (
+            profile["requester_id"], profile["requester_type"], profile["channel"])
+        assert "naver_keywords" not in call
+    assert calls[0]["keyword_seeds"] == "미리캔버스 포스터, 포스터 만들기"
+    assert calls[1]["keyword_seeds"] == "미리캔버스 포스터"

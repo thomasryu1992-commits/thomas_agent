@@ -451,9 +451,12 @@ def run_content_ideation(
         "store": ledger,
         "repo_root": repo_root,
         "now": now,
-        "requester_id": "thomas",
-        "requester_type": "human",
-        "channel": "api",
+        # The scheduler's own identity, as `pipeline_worker.SCHEDULER_PROFILE` states it: this
+        # runs inside the worker on the maintenance lane's behalf, and intake admits no
+        # `human` requester type — the first weekly fire would have blocked at intake.
+        "requester_id": "mvp.scheduler",
+        "requester_type": "scheduler",
+        "channel": "scheduler",
         "source_ref": str(inputs.get("source_ref") or "scheduler:content_ideation"),
         "authenticated": True,
     }
@@ -467,7 +470,7 @@ def run_content_ideation(
             "이 시드 키워드들의 측정된 검색 수요와 경쟁 강도를 정리하고, "
             "다음 블로그 글의 주제 후보를 근거와 함께 제시해라: " + ", ".join(seeds),
             blocked_code=IDEATION_RESEARCH_BLOCKED,
-            keyword_seeds=seeds,
+            keyword_seeds=", ".join(seeds),   # the brief splits a string; a list has no `.split`
             **common,
         )
         keyword_record = (research.get("records") or {}).get("keyword_research")
@@ -488,7 +491,7 @@ def run_content_ideation(
         f"'{target}' 키워드로 네이버 블로그 글 초안을 작성해라. "
         f"소제목 4~7개, 본문 1,800자 이상, 이미지 지시는 [캡처: …] 형식으로 넣어라.",
         blocked_code=IDEATION_CONTENT_BLOCKED,
-        naver_keywords=[target],
+        keyword_seeds=target,   # `run_task` has no `naver_keywords`; the brief keyword is `keyword_seeds`
         **common,
     )
     draft = str(content.get("final_response") or "")
