@@ -24,6 +24,21 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Four reads the console never rendered — door API v2, increment 4 (PR10)** (design record proposal 4).
+  An orchestrator on the far side of the read door needs to see what is scheduled, what the scheduler did,
+  whether the loops are alive, and where an approval it asked for stands; schedules had only a Telegram
+  summary, heartbeats a CLI probe, approvals nothing but `/approve` itself. `store_reads` renders each as
+  text and structured `data` under a fourth family of the read door — `schedules` (rows with the lane
+  derived from the kind partition and the overdue seconds), `scheduler_events [n]` (the newest n of the
+  active file, count clamped and stated like `/history`), `heartbeat` (the three loops from their files),
+  `approval_status <id>` (a summary with the clock applied: the store never writes EXPIRED on its own, so
+  `status_effective` says what the file cannot; the snapshot and the fingerprint are never exposed). Rows
+  and events only: `enable`/`disable`/`remove` stay in the scheduler CLI, and the door's rule that no
+  mutating verb is ever named here covers these four exactly as it covers the nine above. The verbs are
+  named in `READ_VERB_AUTHORITY`, the read door's equivalent of the operator channel's inventory, pinned
+  equal to `_READS` in both directions — so the policy's `assistant_read` clause (1.5.0) has something in
+  code to be checked against instead of being decoration. The stores are injected, never `.default()`ed
+  inside the applier: a door opened without one refuses by name.
 - **A repeated dispatch id answers with the run's status and result — door API v2, increment 3 (PR9)**
   (design record proposal 3, D-4 inline). The idempotency path had recorded only `{kind, task_id, ok}`, so a
   client that timed out and re-sent learned that *something* ran and nothing else. The outcome row still

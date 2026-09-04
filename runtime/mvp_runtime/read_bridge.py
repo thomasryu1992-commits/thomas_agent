@@ -34,9 +34,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import control, domain_console, memory_console, registry_console, socket_door
+from . import control, domain_console, memory_console, registry_console, socket_door, store_reads, timeutil
+from .approval_store import ApprovalStore
 from .control import ControlStore
 from .errors import ControlBlocked
+from .scheduler import ScheduleStore
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .working_memory import WorkingMemoryStore
@@ -51,6 +53,9 @@ SOCKET_ENV = "MVP_READ_BRIDGE_SOCKET"
 
 # Families, so the dispatch below reads as a table rather than a chain of ifs.
 _CONTROL, _DOMAIN, _REGISTRY, _MEMORY = "control", "domain", "registry", "memory"
+# The fourth family (door API v2): stores the console never rendered — schedules, scheduler
+# events, heartbeats, one approval's standing. Reads only; `store_reads` says what each is.
+_STORES = "stores"
 
 # THE permission surface. Read it as the answer to "what can the assistant see": every entry
 # is a read, and the two mutating verbs their consoles also implement (registry CANCEL,
@@ -68,13 +73,42 @@ _READS: dict[str, tuple[str, Any]] = {
     "history":          (_REGISTRY, "HISTORY"),
     "result":           (_REGISTRY, "RESULT"),
     "memory":           (_MEMORY, "LIST"),
+    # Door API v2. Rows and events, never verbs that change them: `enable`/`disable`/`remove`
+    # stay in the scheduler CLI, and this door's rule ("no mutating verb is ever named here")
+    # covers these four exactly as it covers the nine above.
+    "schedules":        (_STORES, store_reads.SCHEDULES),
+    "scheduler_events": (_STORES, store_reads.SCHEDULER_EVENTS),
+    "heartbeat":        (_STORES, store_reads.HEARTBEAT),
+    "approval_status":  (_STORES, store_reads.APPROVAL_STATUS),
+}
+
+# Why each read is permitted — the same inventory the operator channel keeps
+# (`operator.CHANNEL_VERB_AUTHORITY`), so a verb cannot join `_READS` without naming the clause
+# that admits it, and the policy's `assistant_read` block (1.5.0) has something to be checked
+# against. A test pins the two key sets equal in both directions.
+_INTERNAL_READ = "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows read_only_status"
+_AUDIT_READ = "policy:permission_model INTERNAL_READ (ALLOW) + kill_switch.kill_allows audit_read"
+READ_VERB_AUTHORITY: dict[str, str] = {
+    "runtime_status": "policy:kill_switch.kill_allows read_only_status",
+    "crypto_status": _INTERNAL_READ,
+    "crypto_readiness": _INTERNAL_READ,
+    "crypto_paper": _INTERNAL_READ,
+    "crypto_funds": _INTERNAL_READ + " (snapshot the scheduler wrote; no venue key here)",
+    "tasks": _INTERNAL_READ,
+    "history": _INTERNAL_READ,
+    "result": _INTERNAL_READ + " (ledger re-render; never a raw record)",
+    "memory": _INTERNAL_READ + " (candidates list; PROMOTE is not reachable)",
+    "schedules": _INTERNAL_READ + " (rows only; mutation stays in scheduler_cli)",
+    "scheduler_events": _AUDIT_READ,
+    "heartbeat": "policy:kill_switch.kill_allows read_only_status",
+    "approval_status": _AUDIT_READ + " (summary only; approvals/ records never exposed)",
 }
 
 # The only two that mean anything with an argument. Everything else refuses one rather than
 # accepting it silently — a caller that passed an argument believed it would be used, and
 # answering as though it had not been passed is the kind of quiet mismatch that later reads
 # as a wrong answer.
-_TAKES_ARGUMENT = frozenset({"history", "result"})
+_TAKES_ARGUMENT = frozenset({"history", "result", "scheduler_events", "approval_status"})
 
 
 def socket_path(root: Path | None = None) -> Path:
@@ -91,6 +125,8 @@ def apply_read(
     working_memory: WorkingMemoryStore | None = None,
     now: str | None = None,
     repo_root: Path | None = None,
+    schedules: ScheduleStore | None = None,
+    approval_store: ApprovalStore | None = None,
 ) -> dict[str, Any]:
     """Validate one request and render it, or raise a typed error.
 
@@ -142,6 +178,16 @@ def apply_read(
             (spec, argument), operator_id=ASSISTANT_ACTOR, registry=registry,
             ledger=ledger, control_store=control_store, now=now, repo_root=repo_root,
         )
+    elif family == _STORES:
+        stamp = now or timeutil.utc_now_iso()
+        if spec == store_reads.SCHEDULES:
+            outcome = store_reads.read_schedules(schedules, now=stamp)
+        elif spec == store_reads.SCHEDULER_EVENTS:
+            outcome = store_reads.read_scheduler_events(ledger, argument, now=stamp)
+        elif spec == store_reads.HEARTBEAT:
+            outcome = store_reads.read_heartbeat(now=stamp, repo_root=repo_root)
+        else:
+            outcome = store_reads.read_approval_status(approval_store, argument, now=stamp)
     else:
         outcome = memory_console.apply_memory_command(
             (spec, argument, None), operator_id=ASSISTANT_ACTOR,
@@ -158,7 +204,8 @@ def apply_read(
             "reply": outcome["reply"],
             "action": outcome.get("action"),
         },
-        request=request, data=socket_door.plain(outcome),
+        request=request,
+        data=outcome["data"] if isinstance(outcome.get("data"), dict) else socket_door.plain(outcome),
     )
 
 
@@ -176,6 +223,8 @@ def open_door(
     ledger: LedgerStore,
     registry: TaskRegistryStore | None = None,
     working_memory: WorkingMemoryStore | None = None,
+    schedules: ScheduleStore | None = None,
+    approval_store: ApprovalStore | None = None,
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and serve reads from it.
 
@@ -188,6 +237,7 @@ def open_door(
         lambda request: apply_read(
             request, control_store=control_store, ledger=ledger,
             registry=registry, working_memory=working_memory,
+            schedules=schedules, approval_store=approval_store,
         ),
         max_concurrent_requests=MAX_CONCURRENT_REQUESTS,
     )
