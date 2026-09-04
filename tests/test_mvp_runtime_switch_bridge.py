@@ -592,3 +592,37 @@ def test_end_to_end_over_the_socket(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- the frame envelope (door API v2) ------------------------------------------
+
+def test_status_echoes_the_envelope_and_carries_its_structured_keys_as_data(tmp_path):
+    out = _apply({"command": "status", "proto": 2, "client_id": "hermes:dm"}, ControlStore(tmp_path))
+    assert out["ok"] is True and out["proto"] == 2 and out["client_id"] == "hermes:dm"
+    assert out["data"]["mode"] == out["mode"] and out["data"]["domain"] == "crypto"
+    assert "reply" not in out["data"]
+
+
+def test_a_v1_status_frame_is_unchanged_but_for_data(tmp_path):
+    out = _apply({"command": "status"}, ControlStore(tmp_path))
+    assert "proto" not in out and "client_id" not in out and "data" in out
+
+
+def test_disable_under_v2_still_applies_and_reports_the_stop_as_data(tmp_path):
+    store = ControlStore(tmp_path)
+    out = _apply({"command": "disable", "mode": "pause", "reason": "drill", "proto": 2}, store)
+    assert out["changed"] is True and out["proto"] == 2
+    assert out["data"]["mode"] == store.load().mode and out["data"]["actor"] == switch_bridge.ASSISTANT_ACTOR
+
+
+def test_an_unsupported_proto_is_refused_before_the_verb_and_burns_no_id(tmp_path):
+    ledger = FakeLedger()
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "enable", "reason": "x", "proto": 7, "request_id": "req-v"}, ControlStore(tmp_path), ledger=ledger)
+    assert exc.value.reason_code == "PROTO_UNSUPPORTED"
+
+
+def test_a_key_outside_the_envelope_is_still_refused(tmp_path):
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "status", "protocol": 2}, ControlStore(tmp_path))
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"

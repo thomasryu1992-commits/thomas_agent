@@ -284,3 +284,34 @@ def test_the_funds_read_never_opens_a_socket_to_the_venue(monkeypatch, tmp_path)
             control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path,
         )
     assert exc.value.reason_code == "ACCOUNT_SNAPSHOT_MISSING"
+
+
+# --- the frame envelope (door API v2) ------------------------------------------
+
+def test_a_v1_frame_gets_the_v1_reply_plus_data(tmp_path):
+    out = _apply({"command": "runtime_status"}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert "proto" not in out and "client_id" not in out
+    assert isinstance(out["reply"], str)
+    assert isinstance(out["data"], dict) and "reply" not in out["data"]
+    assert out["data"]["action"] == out["action"]
+
+
+def test_a_v2_frame_is_echoed_and_its_data_is_the_consoles_structured_view(tmp_path):
+    out = _apply(
+        {"command": "runtime_status", "proto": 2, "client_id": "hermes:dm"},
+        ControlStore(tmp_path), repo_root=tmp_path,
+    )
+    assert out["proto"] == 2 and out["client_id"] == "hermes:dm"
+    assert out["data"]["mode"] == ACTIVE
+
+
+def test_an_unsupported_proto_is_refused_before_any_verb_is_read(tmp_path):
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "no_such_verb", "proto": 3}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert exc.value.reason_code == "PROTO_UNSUPPORTED"
+
+
+def test_a_malformed_client_id_is_refused_even_though_this_door_ignores_unknown_keys(tmp_path):
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "runtime_status", "client_id": "not a name"}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert exc.value.reason_code == "MALFORMED_REQUEST"

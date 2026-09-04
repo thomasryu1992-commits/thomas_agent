@@ -99,6 +99,10 @@ def apply_read(
     """
     if not isinstance(request, dict):
         raise ControlBlocked("MALFORMED_REQUEST", "request must be a JSON object")
+    # The envelope first: a version this door does not speak is refused before any verb is
+    # interpreted. This door ignores keys it does not read, so `proto`/`client_id` were already
+    # tolerated here — validating them is what turns tolerance into a contract.
+    socket_door.validate_envelope(request)
 
     command = request.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -145,12 +149,17 @@ def apply_read(
             now=now, repo_root=repo_root,
         )
 
-    return {
-        "ok": True,
-        "command": command,
-        "reply": outcome["reply"],
-        "action": outcome.get("action"),
-    }
+    # `data` is the applier's outcome minus its rendered text — the structured view a v2 client
+    # reads instead of parsing the console reply. The reply itself is unchanged.
+    return socket_door.envelope(
+        {
+            "ok": True,
+            "command": command,
+            "reply": outcome["reply"],
+            "action": outcome.get("action"),
+        },
+        request=request, data=socket_door.plain(outcome),
+    )
 
 
 # The widest ceiling of the three doors, because these are the cheapest requests: a read

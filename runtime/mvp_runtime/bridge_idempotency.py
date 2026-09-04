@@ -43,6 +43,7 @@ from runtime.read_only_kernel.integrity import IntegrityError
 
 from . import jsonl, timeutil
 from .errors import ControlBlocked
+from .socket_door import ENVELOPE_KEYS
 from .store import BRIDGE_REQUESTS_FILE, LedgerStore
 
 # The frame key this module owns. Each door names it in its own allowed-key set, so a door that
@@ -97,13 +98,18 @@ def request_id_of(request: Mapping[str, Any]) -> str | None:
 
 
 def fingerprint(request: Mapping[str, Any]) -> str:
-    """Hash everything in the frame **except** the id.
+    """Hash everything in the frame **except** the id and the envelope.
 
     This is what makes a reused id detectable instead of dangerous. Without it, a second frame
     carrying a spent id and different parameters would be answered with the first frame's
     outcome — the door reporting success for something it never did.
+
+    The envelope keys (`proto`, `client_id`) are excluded with the id: they say who is asking
+    and in which dialect, not what is asked, and a retry that arrives from a different session
+    of the same assistant — or after that assistant upgraded its client — is the same request.
     """
-    payload = {key: value for key, value in request.items() if key != REQUEST_ID_KEY}
+    excluded = ENVELOPE_KEYS | {REQUEST_ID_KEY}
+    payload = {key: value for key, value in request.items() if key not in excluded}
     try:
         return integrity.sha256_record(payload)
     except IntegrityError as exc:

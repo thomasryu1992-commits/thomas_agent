@@ -102,7 +102,7 @@ _DEFAULT_KIND = "analysis"
 # client-side timeout is the same request rather than a second one (`bridge_idempotency`).
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", bridge_idempotency.REQUEST_ID_KEY}
-)
+) | socket_door.ENVELOPE_KEYS
 
 # `naver_keywords` (optional): comma-separated seeds for the Naver keyword brief, forwarded
 # so the worker's run carries measured demand as [K#] evidence. Admitted on every kind this
@@ -158,6 +158,10 @@ def apply_dispatch(
             "ARGUMENT_NOT_ACCEPTED",
             f"this door accepts only {sorted(_ALLOWED_KEYS)}; it will not act on {sorted(unexpected)}",
         )
+    # The envelope is validated here and echoed on the reply; it never crosses to the worker —
+    # the forward frame stays exactly the validated fields, and `client_id` is attribution the
+    # ledger will carry once the registry records these runs (door API v2, next increment).
+    socket_door.validate_envelope(request)
 
     text = request.get("request")
     if not isinstance(text, str) or not text.strip():
@@ -237,7 +241,10 @@ def apply_dispatch(
             request_fingerprint=fingerprint, now=stamp,
         )
         if prior is not None:
-            return bridge_idempotency.replay_reply(prior)
+            return socket_door.envelope(
+                bridge_idempotency.replay_reply(prior), request=request,
+                data=dict(prior.get("outcome") or {}),
+            )
 
     try:
         reply = execute(text.strip(), kind, reason, naver_keywords)
@@ -281,7 +288,11 @@ def apply_dispatch(
         # Named on the fresh reply as well as the replayed one, so `replayed` is the only thing
         # that separates them and a caller never has to infer which it got.
         reply[bridge_idempotency.REQUEST_ID_KEY] = request_id
-    return reply
+    # `data` is the run's identity — what a client needs to find the run again — never its text.
+    return socket_door.envelope(
+        reply, request=request,
+        data={key: reply.get(key) for key in ("kind", "task_id", "trace_id", "actor") if key in reply},
+    )
 
 
 # The narrowest ceiling of the doors, and the only one where the ceiling is about cost rather

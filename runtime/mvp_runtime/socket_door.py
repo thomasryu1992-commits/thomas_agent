@@ -46,6 +46,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import socket
 import socketserver
 import stat
@@ -155,6 +156,127 @@ def decode_request(raw: bytes) -> Any:
         raise ControlBlocked("MALFORMED_REQUEST", f"request is not valid JSON: {exc}") from exc
 
 
+# ── The frame envelope (door API v2) ───────────────────────────────────────────────────────
+#
+# Three optional keys every door reads the same way, defined here beside the transport so no
+# door can grow its own dialect: `proto` names the protocol version a client speaks (absent
+# means 1, the pre-v2 frame), `client_id` is attribution metadata — WHICH assistant session,
+# cron job or delegate sent this, never WHO is allowed to — and `request_id` stays the
+# idempotency key `bridge_idempotency` owns. Identity is the peer uid checked at `connect()`
+# and nothing in the frame; a door that used `client_id` to decide anything would be trusting
+# the least trusted end of the socket with the one thing the socket exists to establish.
+#
+# Replies carry the envelope back: `proto` echoed only when the frame named one, `client_id`
+# echoed when given, and `data` — the structured view of the reply — always present so a v2
+# client never has to probe for the key (`None` when a verb has nothing structured). The text
+# `reply` stays exactly as it was: v1 clients read it, and the console renderers own it.
+PROTO_KEY = "proto"
+CLIENT_ID_KEY = "client_id"
+ENVELOPE_KEYS: frozenset[str] = frozenset({PROTO_KEY, CLIENT_ID_KEY})
+SUPPORTED_PROTOS: frozenset[int] = frozenset({1, 2})
+DEFAULT_PROTO = 1
+MAX_CLIENT_ID_LENGTH = 64
+_CLIENT_ID = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def negotiate_proto(request: Any) -> int:
+    """The protocol version a frame speaks: ``DEFAULT_PROTO`` when it names none.
+
+    A version this door does not speak is refused by name rather than served as v1: a client
+    that asked for 3 believed it would get 3's guarantees, and answering in an older dialect
+    would be the quiet mismatch a reader downstream misreads as a wrong answer.
+    """
+    raw = request.get(PROTO_KEY) if isinstance(request, dict) else None
+    if raw is None:
+        return DEFAULT_PROTO
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw not in SUPPORTED_PROTOS:
+        raise ControlBlocked(
+            "PROTO_UNSUPPORTED",
+            f"{PROTO_KEY!r} must be one of {sorted(SUPPORTED_PROTOS)}; got {raw!r}",
+        )
+    return raw
+
+
+def client_id_of(request: Any) -> str | None:
+    """The frame's ``client_id``, validated as a name, or ``None`` when it carries none."""
+    raw = request.get(CLIENT_ID_KEY) if isinstance(request, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ControlBlocked(
+            "MALFORMED_REQUEST", f"{CLIENT_ID_KEY!r} must be a non-empty string when given",
+        )
+    value = raw.strip()
+    if len(value) > MAX_CLIENT_ID_LENGTH or not _CLIENT_ID.match(value):
+        raise ControlBlocked(
+            "MALFORMED_REQUEST",
+            f"{CLIENT_ID_KEY!r} is a name: at most {MAX_CLIENT_ID_LENGTH} characters of "
+            f"letters, digits, '.', '_', ':' or '-'",
+        )
+    return value
+
+
+def validate_envelope(request: Any) -> tuple[int, str | None]:
+    """Validate the envelope keys up front, before a door applies anything.
+
+    Called by every door right after its own key check, so a frame that names a version the
+    door cannot honour, or a malformed client name, is refused before any effect and before
+    any idempotency claim — the same rule the doors apply to every other malformed field.
+    """
+    return negotiate_proto(request), client_id_of(request)
+
+
+def _echo_envelope(reply: dict[str, Any], request: Any, *, strict: bool) -> None:
+    if not isinstance(request, dict):
+        return
+    try:
+        proto = negotiate_proto(request)
+        client_id = client_id_of(request)
+    except ControlBlocked:
+        if strict:
+            raise
+        return
+    if proto != DEFAULT_PROTO:
+        reply[PROTO_KEY] = proto
+    if client_id is not None:
+        reply[CLIENT_ID_KEY] = client_id
+
+
+def envelope(reply: dict[str, Any], *, request: Any, data: Any = None) -> dict[str, Any]:
+    """Stamp a door's reply with the frame's envelope and its structured ``data`` view."""
+    _echo_envelope(reply, request, strict=True)
+    reply["data"] = data
+    return reply
+
+
+def refusal_payload(exc: MvpRuntimeError, request: Any = None) -> dict[str, Any]:
+    """The reply for a typed refusal raised inside ``apply``.
+
+    A refusal is still an answer to a frame, so it carries the envelope back when the frame's
+    envelope was well-formed — a v2 client can tell which of its requests was refused. A frame
+    whose envelope was itself the problem gets the bare refusal: nothing is echoed that could
+    not be read.
+    """
+    payload: dict[str, Any] = {"ok": False, "reason_code": exc.reason_code, "reason": str(exc)}
+    _echo_envelope(payload, request, strict=False)
+    if isinstance(request, dict):
+        request_id = request.get("request_id")
+        if isinstance(request_id, str) and request_id.strip():
+            payload["request_id"] = request_id.strip()
+    return payload
+
+
+def plain(outcome: Any) -> dict[str, Any]:
+    """A console outcome minus its rendered text, kept to JSON-safe values — the ``data`` a
+    read-style verb can offer without a renderer of its own."""
+    if not isinstance(outcome, dict):
+        return {}
+    return {
+        key: value for key, value in outcome.items()
+        if key != "reply" and isinstance(value, (str, int, float, bool, list, dict, type(None)))
+    }
+
+
 # Numbers one internal failure from the next within a process, so the redacted reply and the
 # logged traceback can be tied together by an operator holding only the reply. Deliberately not
 # `integrity.short_id`: that is a *deterministic* id over a seed, and two different crashes with
@@ -222,10 +344,12 @@ class _Handler(socketserver.BaseRequestHandler):
             self._reply({"ok": False, "reason_code": exc.reason_code, "reason": str(exc)})
             return
 
+        decoded: Any = None
         try:
-            payload = self.server.apply(decode_request(raw))    # type: ignore[attr-defined]
+            decoded = decode_request(raw)
+            payload = self.server.apply(decoded)                # type: ignore[attr-defined]
         except MvpRuntimeError as exc:
-            payload = {"ok": False, "reason_code": exc.reason_code, "reason": str(exc)}
+            payload = refusal_payload(exc, decoded)
         except Exception as exc:  # noqa: BLE001 — a door must answer, then keep standing
             payload = internal_error_payload(exc, self.server.door_label)  # type: ignore[attr-defined]
 

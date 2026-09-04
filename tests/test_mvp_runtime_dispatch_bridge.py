@@ -290,3 +290,53 @@ def test_the_door_wires_its_stated_ceiling(tmp_path, monkeypatch):
         assert server.max_concurrent_requests == dispatch_bridge.MAX_CONCURRENT_REQUESTS == 2
     finally:
         server.server_close()
+
+
+# --- the frame envelope (door API v2) ------------------------------------------
+
+def test_the_envelope_is_echoed_and_never_crosses_to_the_worker(tmp_path, captured_execute):
+    out = dispatch_bridge.apply_dispatch(
+        _valid(proto=2, client_id="hermes:cron:weekly"),
+        control_store=ControlStore(tmp_path), execute=captured_execute,
+    )
+    assert out["proto"] == 2 and out["client_id"] == "hermes:cron:weekly"
+    assert out["data"] == {"kind": "analysis", "task_id": "task-1", "actor": ASSISTANT_ACTOR}
+    # The forward frame is exactly the validated fields, as before — no envelope key rides along.
+    assert captured_execute.calls == [{
+        "request": "analyze this idea", "kind": "analysis", "reason": "operator asked",
+        "naver_keywords": None,
+    }]
+
+
+def test_a_v1_dispatch_reply_gains_only_data(tmp_path, captured_execute):
+    out = dispatch_bridge.apply_dispatch(_valid(), control_store=ControlStore(tmp_path), execute=captured_execute)
+    assert "proto" not in out and "client_id" not in out
+    assert out["data"]["task_id"] == "task-1"
+
+
+def test_an_unsupported_proto_is_refused_before_the_worker_and_before_any_claim(tmp_path, captured_execute):
+    ledger = LedgerStore(tmp_path / "ledger")
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(
+            _valid(proto=3, request_id="req-proto"),
+            control_store=ControlStore(tmp_path), ledger=ledger, execute=captured_execute,
+        )
+    assert exc.value.reason_code == "PROTO_UNSUPPORTED"
+    assert not captured_execute.calls
+    # A second, well-formed frame under the same id is a first claim, not a replay: nothing was burned.
+    out = dispatch_bridge.apply_dispatch(
+        _valid(request_id="req-proto"),
+        control_store=ControlStore(tmp_path), ledger=ledger, execute=captured_execute,
+    )
+    assert "replayed" not in out and out["request_id"] == "req-proto"
+
+
+def test_a_replay_carries_the_envelope_and_its_outcome_as_data(tmp_path, captured_execute):
+    ledger = LedgerStore(tmp_path / "ledger")
+    store = ControlStore(tmp_path)
+    first = dispatch_bridge.apply_dispatch(_valid(request_id="req-r", proto=2), control_store=store, ledger=ledger, execute=captured_execute)
+    second = dispatch_bridge.apply_dispatch(_valid(request_id="req-r", proto=2, client_id="hermes:dm"), control_store=store, ledger=ledger, execute=captured_execute)
+    assert first["data"]["task_id"] == "task-1"
+    assert second["replayed"] is True and second["proto"] == 2 and second["client_id"] == "hermes:dm"
+    assert second["data"]["task_id"] == "task-1" and second["data"]["kind"] == "analysis"
+    assert len(captured_execute.calls) == 1  # the envelope difference did not make it a new request

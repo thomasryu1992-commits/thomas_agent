@@ -72,9 +72,9 @@ _ALLOWED_KEYS: dict[str, frozenset[str]] = {
     ADD_DOCUMENT: frozenset({
         "command", "title", "source", "text", "pdf_base64", "source_type",
         "document_date", "data_sensitivity", "tags",
-    }),
-    QUERY: frozenset({"command", "question", "limit"}),
-    STATS: frozenset({"command"}),
+    }) | socket_door.ENVELOPE_KEYS,
+    QUERY: frozenset({"command", "question", "limit"}) | socket_door.ENVELOPE_KEYS,
+    STATS: frozenset({"command"}) | socket_door.ENVELOPE_KEYS,
 }
 
 # A document, not a console verb. 12 MB of frame holds a ~9 MB PDF once base64 has added its
@@ -130,6 +130,7 @@ def apply_knowledge(
             f"{command!r} accepts only {sorted(_ALLOWED_KEYS[command])}; "
             f"it will not act on {sorted(unexpected)}",
         )
+    socket_door.validate_envelope(request)
 
     # Kill-switch binding, on the writes only. `store.add` does not read control state — this
     # is its door, and this is where the halt is enforced.
@@ -143,7 +144,10 @@ def apply_knowledge(
             )
 
     if command == STATS:
-        return {"ok": True, "command": command, "stats": store.stats()}
+        stats = store.stats()
+        return socket_door.envelope(
+            {"ok": True, "command": command, "stats": stats}, request=request, data={"stats": stats},
+        )
 
     if command == QUERY:
         result = service.query(
@@ -151,7 +155,9 @@ def apply_knowledge(
             question=request.get("question"),
             limit=request.get("limit"),
         )
-        return {"ok": True, "command": command, **result}
+        return socket_door.envelope(
+            {"ok": True, "command": command, **result}, request=request, data=dict(result),
+        )
 
     result = service.add_document(
         store=store,
@@ -169,7 +175,9 @@ def apply_knowledge(
         data_sensitivity=request.get("data_sensitivity") or "INTERNAL",
         tags=request.get("tags"),
     )
-    return {"ok": True, "command": command, **result}
+    return socket_door.envelope(
+        {"ok": True, "command": command, **result}, request=request, data=dict(result),
+    )
 
 
 def open_door(
