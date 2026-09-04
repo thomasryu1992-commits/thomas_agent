@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.4.0
+policy_version: 1.5.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -185,6 +185,7 @@ authority:
       - no_money_path_capability          # no trading/venue/live-order role or tool
       - reason_recorded                   # every dispatch names its reason, on the record
       - post_dispatch_audit               # actor=assistant_bridge, one ledger record per dispatch
+                                          # and one task_registry entry, origin AGENT (PR8)
     gate_grants_authority: false         # same invariant as p5: a gate permits, never raises
 
 action_identity:
@@ -320,6 +321,49 @@ control_channel:
                                           # re-arms state B
     caller_cannot_name_resume: true       # control.CMD_RESUME is not in the caller's verb set
     gate_grants_authority: false          # same invariant as every gate in this file
+  # The assistant's read lane (door API v2, 2026-09-04). Named for the reason 1.4.0 named the
+  # switch: with dispatch and switch described, a policy-only reader concludes those are the
+  # assistant's lanes — and misses the one that reads the approvals store. The verb list is
+  # CLOSED and pinned by test to read_bridge.READ_VERB_AUTHORITY <-> _READS (both directions).
+  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and
+  # reach no socket; the approval read is a summary and never the record.
+  assistant_read:
+    actor: assistant_bridge
+    authority:
+      - policy_dispositions.ALLOW.INTERNAL_READ
+      - kill_switch.kill_allows.read_only_status
+    verbs:                                # closed; see tests/test_policy_assistant_read_clause.py
+      - runtime_status
+      - crypto_status
+      - crypto_readiness
+      - crypto_paper
+      - crypto_funds
+      - tasks
+      - history
+      - result
+      - memory
+      - schedules                         # v2: rows only; enable/disable/remove stay in scheduler_cli
+      - scheduler_events
+      - heartbeat
+      - approval_status                   # v2: summary only; approvals/ records are never exposed
+    mutation_allowed: false
+    approval_status_exposes:              # never the action snapshot, never the fingerprint
+      - approval_id
+      - status_recorded
+      - status_effective
+      - expires_at
+      - issued_at
+      - target_prefix
+      - permission_scope
+    gate_grants_authority: false          # same invariant as every gate in this file
+  # A switch-door ask is also SENT on the assistant's bot (PR11, decision Q1-b). A second sink,
+  # not a second source: the copy carries no /approve invitation, the operator's channel on
+  # that token is send-only by construction (MIRROR_IS_SEND_ONLY), and nothing typed in that
+  # window can answer an ask — invalid_approval_sources above is unchanged.
+  approval_notification_mirror:
+    sink: assistant_bot_private_chat      # operator sends on HERMES_BOT_TOKEN, send-only
+    decision_source: false
+    mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals
 
 approval_lifetime:
   one_time_use_required: true
