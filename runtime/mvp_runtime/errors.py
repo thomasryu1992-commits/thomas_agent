@@ -14,9 +14,14 @@ class MvpRuntimeError(ValueError):
     audit records and user-facing BLOCK reasons; the message adds detail.
     """
 
-    def __init__(self, reason_code: str, message: str):
+    def __init__(self, reason_code: str, message: str, *, data: dict | None = None):
         self.reason_code = reason_code
         self.reason = message
+        # Optional structured detail a door may carry back beside the text (door API v2):
+        # a refusal that knows something a client can act on — "this id is in flight, its
+        # run is RUNNING" — says so in `data`, the same key a successful reply uses. Never
+        # consulted for authority; a refusal stays a refusal.
+        self.data = data
         super().__init__(f"{reason_code}: {message}")
 
 

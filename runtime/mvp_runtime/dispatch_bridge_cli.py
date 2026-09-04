@@ -26,6 +26,7 @@ from . import dispatch_bridge, pipeline_worker, socket_door
 from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
 from .store import LedgerStore
+from .task_registry import TaskRegistryStore
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -66,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
             control_store=ControlStore.default(),
             ledger=LedgerStore.default(),
             worker_socket=worker_socket,
+            # Read-only here: the worker writes the entries; this door reads one back to
+            # answer an idempotent replay with the run's status and result (door API v2).
+            registry=TaskRegistryStore.default(),
         ),
         banner=lambda server: (
             f"kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, "

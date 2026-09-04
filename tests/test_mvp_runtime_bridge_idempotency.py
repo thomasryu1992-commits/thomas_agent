@@ -500,3 +500,107 @@ def test_one_domain_spends_normally(tmp_path, approved):
     )
     assert out["ok"] is True
     assert control_store.load().mode == ACTIVE
+
+
+# --- replay v2: status and result ride along (door API v2, proposal 3) ----------------
+
+from runtime.mvp_runtime import registry_console, task_registry
+from runtime.mvp_runtime.errors import MvpRuntimeError
+from runtime.mvp_runtime.task_registry import TaskRegistryStore
+
+
+def test_a_refusal_may_carry_structured_detail():
+    assert MvpRuntimeError("X", "m").data is None
+    assert ControlBlocked("X", "m", data={"status": "RUNNING"}).data == {"status": "RUNNING"}
+
+
+def test_an_in_flight_id_says_its_run_is_running(ledger):
+    _claim(ledger)
+    with pytest.raises(ControlBlocked) as exc:
+        _claim(ledger)
+    assert exc.value.reason_code == "REQUEST_IN_FLIGHT"
+    assert exc.value.data["status"] == "RUNNING" and exc.value.data["request_id"] == exc.value.data["request_id"]
+
+
+@pytest.fixture
+def delivered_registry(tmp_path):
+    """A registry holding one DELIVERED assistant entry, and an executor whose reply names it —
+    the shape the worker leaves behind since PR8."""
+    registry = TaskRegistryStore(tmp_path / "reg")
+    entry = task_registry.record_submission(
+        registry, request_text="analyze this", origin=task_registry.AGENT_ORIGIN,
+        requester_id="assistant_bridge", now=NOW, request_kind="analysis",
+    )
+    registry.transition(entry.registry_entry_id, task_registry.DELIVERED, now=LATER,
+                        task_id="task_r1", trace_id="trace_r1", result_ref="ledger:trace_r1")
+    calls: list[dict] = []
+
+    def _execute(text, kind, reason, naver_keywords, client_id=None):
+        calls.append({"request": text})
+        return {"ok": True, "kind": kind, "task_id": "task_r1", "trace_id": "trace_r1",
+                "registry_entry_id": entry.registry_entry_id, "final_response": "ok", "actor": "assistant_bridge"}
+    _execute.calls = calls
+    return registry, entry, _execute
+
+
+def test_a_replay_returns_the_runs_status_and_its_result(tmp_path, delivered_registry, monkeypatch):
+    registry, entry, execute = delivered_registry
+    monkeypatch.setattr(registry_console, "render_result", lambda e, ledger: f"rendered:{e.trace_id}")
+    store = ControlStore(tmp_path); ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "req-v2", "proto": 2}
+    first = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, registry=registry, now=NOW)
+    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, registry=registry, now=LATER)
+    assert first["data"]["registry_entry_id"] == entry.registry_entry_id
+    assert second["replayed"] is True and second["proto"] == 2
+    assert second["data"]["task_id"] == "task_r1" and second["data"]["status"] == "DELIVERED"
+    assert second["data"]["result"] == "rendered:trace_r1" and second["data"]["result_ref"] == "ledger:trace_r1"
+    assert len(execute.calls) == 1
+
+
+def test_a_result_too_large_to_carry_is_named_not_truncated(tmp_path, delivered_registry, monkeypatch):
+    registry, entry, execute = delivered_registry
+    monkeypatch.setattr(registry_console, "render_result",
+                        lambda e, ledger: "가" * (dispatch_bridge.MAX_REPLAY_RESULT_BYTES // 3 + 10))
+    store = ControlStore(tmp_path); ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "req-big"}
+    dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, registry=registry, now=NOW)
+    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, registry=registry, now=LATER)
+    assert second["data"]["status"] == "DELIVERED"
+    assert second["data"]["result"] is None and second["data"]["result_ref"] == "ledger:trace_r1"
+
+
+def test_a_replay_without_a_registry_still_answers_with_the_identity(tmp_path, delivered_registry):
+    registry, entry, execute = delivered_registry
+    store = ControlStore(tmp_path); ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "req-noreg"}
+    dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, now=NOW)
+    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=execute, now=LATER)
+    assert second["replayed"] is True
+    assert second["data"]["task_id"] == "task_r1" and second["data"]["status"] is None and second["data"]["result"] is None
+
+
+def test_a_running_entry_replays_as_running_without_a_result(tmp_path, monkeypatch):
+    registry = TaskRegistryStore(tmp_path / "reg")
+    entry = task_registry.record_submission(registry, request_text="analyze this", origin=task_registry.AGENT_ORIGIN,
+                                            requester_id="assistant_bridge", now=NOW, request_kind="analysis")
+
+    def _execute(text, kind, reason, naver_keywords, client_id=None):
+        return {"ok": True, "kind": kind, "task_id": "task_x", "registry_entry_id": entry.registry_entry_id,
+                "final_response": "ok", "actor": "assistant_bridge"}
+    monkeypatch.setattr(registry_console, "render_result", lambda e, ledger: pytest.fail("must not render a RUNNING entry"))
+    store = ControlStore(tmp_path); ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "req-run"}
+    dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=_execute, registry=registry, now=NOW)
+    second = dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=_execute, registry=registry, now=LATER)
+    assert second["data"]["status"] == "RUNNING" and second["data"]["result"] is None
+
+
+def test_an_in_flight_retry_at_the_door_is_refused_with_running_status(tmp_path, captured_execute):
+    store = ControlStore(tmp_path); ledger = LedgerStore(tmp_path)
+    frame = {"request": "analyze this", "kind": "analysis", "reason": "asked", "request_id": "req-flight"}
+    bridge_idempotency.claim(ledger, door="dispatch", request_id="req-flight",
+                             request_fingerprint=bridge_idempotency.fingerprint(frame), now=NOW)
+    with pytest.raises(ControlBlocked) as exc:
+        dispatch_bridge.apply_dispatch(frame, control_store=store, ledger=ledger, execute=captured_execute, now=NOW)
+    assert exc.value.reason_code == "REQUEST_IN_FLIGHT" and exc.value.data["status"] == "RUNNING"
+    assert not captured_execute.calls

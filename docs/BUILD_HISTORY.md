@@ -24,6 +24,17 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A repeated dispatch id answers with the run's status and result — door API v2, increment 3 (PR9)**
+  (design record proposal 3, D-4 inline). The idempotency path had recorded only `{kind, task_id, ok}`, so a
+  client that timed out and re-sent learned that *something* ran and nothing else. The outcome row still
+  carries no text (a test pins that); it now carries the registry entry the worker opened (PR8), and the
+  dispatch door reads that entry back on a replay for `status`, re-renders a `DELIVERED` run's response from
+  the ledger with the same renderer `/result` uses, and names it by `result_ref` instead of truncating when
+  it would not fit the client's 1 MiB reply. A retry that arrives while the first is still running is
+  refused as before (`REQUEST_IN_FLIGHT`), and the refusal now says so in `data.status = RUNNING` — every
+  `MvpRuntimeError` may carry structured detail, and the transport puts it beside the text. The two
+  replies a Hermes shim v2 needs to stop retrying under fresh ids are therefore both there: "still
+  running, wait" and "already delivered, here it is".
 - **The assistant's runs leave a registry entry — door API v2, increment 2 (PR8)** (design record
   `DOOR_API_V2_DESIGN_V0.1.md` proposal 2; D-1 in place, D-2 `created_by`, D-3 run ids resolve). Until now
   the pipeline worker never wrote `task_registry`, so a dispatched run landed in the ledger and could not be

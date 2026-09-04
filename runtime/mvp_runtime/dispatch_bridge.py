@@ -73,11 +73,12 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from . import bridge_idempotency, socket_door, timeutil
+from . import bridge_idempotency, registry_console, socket_door, task_registry, timeutil
 from .control import ControlStore
-from .errors import ControlBlocked
+from .errors import ControlBlocked, PersistenceError, TaskRegistryBlocked
 from .naver_research import MAX_SEED_CHARS
 from .store import LedgerStore
+from .task_registry import TaskRegistryStore
 
 # Its own subdirectory sibling of the other doors' sockets, so the assistant's container
 # reaches it through the same group-owned `bridge/` mount.
@@ -131,10 +132,48 @@ Executor = Callable[[str, str, str, "str | None", "str | None"], dict[str, Any]]
 # the read door's `result`/`history` CANNOT fetch it — a missed reply is a lost report (v2).
 WORKER_DEADLINE_SECONDS = 600.0
 
+# The largest result a replay carries inline (door API v2, D-4). `call_door` reads at most
+# 1 MiB of reply, and a rendered response is UTF-8 Korean at ~3 bytes a character; past this
+# the replay names where the result lives (`result_ref`) and the read door's `result` fetches
+# it — the same text, one more round trip, never a truncated one.
+MAX_REPLAY_RESULT_BYTES = 768 * 1024
+
 
 def socket_path(root: Path | None = None) -> Path:
     """The socket path, overridable per-deployment via ``MVP_DISPATCH_BRIDGE_SOCKET``."""
     return socket_door.resolve_socket_path(SOCKET_ENV, SOCKET_REL, root)
+
+
+def _replay_data(
+    prior: dict[str, Any], *, registry: TaskRegistryStore | None, ledger: LedgerStore | None,
+) -> dict[str, Any]:
+    """What a repeated id gets back beside "already applied": the run's identity from the
+    recorded outcome, its current status from the registry, and — when it delivered — its
+    result re-rendered from the ledger (door API v2: `{task_id, status, result}`).
+
+    The outcome row never carries text (a test pins that); the registry entry the outcome
+    names is the pointer, and the ledger is the authority the text comes from. A result too
+    large to carry inline is named by `result_ref` instead of truncated.
+    """
+    outcome = dict(prior.get("outcome") or {})
+    data: dict[str, Any] = {**outcome, "status": None, "result": None, "result_ref": None}
+    entry_id = outcome.get("registry_entry_id")
+    if registry is None or not isinstance(entry_id, str) or not entry_id:
+        return data
+    try:
+        entry = registry.find(entry_id)
+    except (TaskRegistryBlocked, PersistenceError):
+        entry = None
+    if entry is None:
+        return data
+    data["status"] = entry.status
+    data["trace_id"] = entry.trace_id
+    data["result_ref"] = entry.result_ref
+    if entry.status == task_registry.DELIVERED:
+        rendered = registry_console.render_result(entry, ledger)
+        if rendered is not None and len(rendered.encode("utf-8")) <= MAX_REPLAY_RESULT_BYTES:
+            data["result"] = rendered
+    return data
 
 
 def apply_dispatch(
@@ -144,6 +183,7 @@ def apply_dispatch(
     ledger: LedgerStore | None = None,
     execute: Executor | None = None,
     now: str | None = None,
+    registry: TaskRegistryStore | None = None,
 ) -> dict[str, Any]:
     """Validate one dispatch request and forward it, or raise a typed ``ControlBlocked``.
 
@@ -245,7 +285,7 @@ def apply_dispatch(
         if prior is not None:
             return socket_door.envelope(
                 bridge_idempotency.replay_reply(prior), request=request,
-                data=dict(prior.get("outcome") or {}),
+                data=_replay_data(prior, registry=registry, ledger=ledger),
             )
 
     try:
@@ -315,6 +355,7 @@ def open_door(
     ledger: LedgerStore,
     worker_socket: Path,
     worker_deadline_seconds: float = WORKER_DEADLINE_SECONDS,
+    registry: TaskRegistryStore | None = None,
 ) -> socket_door.SocketDoor:
     """Listen on ``path``, validate, and forward to the worker at ``worker_socket``.
 
@@ -355,6 +396,7 @@ def open_door(
     def _apply(request: Any) -> dict[str, Any]:
         return apply_dispatch(
             request, control_store=control_store, ledger=ledger, execute=_forward,
+            registry=registry,
         )
 
     return socket_door.SocketDoor(

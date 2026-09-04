@@ -188,6 +188,13 @@ def _raced_refusal(registry: TaskRegistryStore, entry: RegistryEntry) -> tuple[s
             "취소하려는 동안 작업 상태가 바뀌었습니다 — /tasks 로 현재 상태를 확인해 주세요.")
 
 
+def render_result(entry: RegistryEntry, ledger: Any) -> str | None:
+    """A delivered entry's response re-rendered from the ledger, or None when the evidence is
+    not there. The dispatch door uses this to answer an idempotent replay with the run's
+    result (door API v2) — same renderer as `/result`, so the two never disagree."""
+    return _rerender_from_ledger(entry, ledger)
+
+
 def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
     """Re-render a delivered response from the run's records, or None if unavailable.
 
