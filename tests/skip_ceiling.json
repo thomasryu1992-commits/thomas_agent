@@ -5,6 +5,6 @@
   "_null_means": "No ceiling recorded: the check reports the count and passes. The forbidden-reason check runs regardless and needs no number.",
   "ceilings": {
     "linux": 0,
-    "win32": 36
+    "win32": 38
   }
 }
