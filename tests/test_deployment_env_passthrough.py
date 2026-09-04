@@ -576,7 +576,10 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),
-    "HERMES_BOT_TOKEN": frozenset({"hermes", "scheduler", "scheduler-maint"}),
+    # `operator` since 2026-09-04 (PR11): send-only, to mirror switch-door asks into the
+    # assistant's window. The one service that polls the control bot now also holds the
+    # assistant's bot token — the boundary is one cell wider, by decision Q1-b.
+    "HERMES_BOT_TOKEN": frozenset({"hermes", "operator", "scheduler", "scheduler-maint"}),
     "MVP_LIVE_ORDER_API_KEY": frozenset({"scheduler"}),
     "MVP_LIVE_ORDER_API_SECRET": frozenset({"scheduler"}),
     "NAVER_APIHUB_KEY": frozenset({"pipeline-worker"}),

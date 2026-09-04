@@ -24,6 +24,19 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The approval mirror — door API v2, increment 5 (PR11)** (design record proposal 5; decision Q1-b).
+  A switch-door ask minted through the assistant was pushed only to the control bot, the window Thomas is
+  not looking at when he is talking to the assistant. The operator now also sends a copy on the assistant's
+  bot (`HERMES_BOT_TOKEN`, the mechanism the scheduler lanes have used since 2026-08-01) to the same
+  registered private chat. The copy is a *different* body: the `/approve | /reject` invitation is removed and
+  the destination stated top and bottom, because a verbatim copy would invite him to answer where nothing
+  reads it. `SendOnlyChannel` refuses `poll`/`peek` by construction (`MIRROR_IS_SEND_ONLY`) so the assistant's
+  bot keeps exactly one poller; `select_mirror_channel` shares the control channel's gate, degrades rather
+  than fails closed (D-5: the control push is the authority, the mirror a courtesy, and this is the service
+  that reads `/approve`), and refuses to mirror on the control bot's own token. One pointer, keyed on the
+  primary send: a mirror failure is one stderr line, never a re-announcement. The secret boundary is one
+  cell wider and `SECRET_OWNERSHIP`, the compose file and `docs/DEPLOYMENT.md` say so together.
+
 - **Four reads the console never rendered — door API v2, increment 4 (PR10)** (design record proposal 4).
   An orchestrator on the far side of the read door needs to see what is scheduled, what the scheduler did,
   whether the loops are alive, and where an approval it asked for stands; schedules had only a Telegram

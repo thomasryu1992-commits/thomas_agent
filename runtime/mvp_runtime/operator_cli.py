@@ -39,6 +39,7 @@ from .operator import (
     announce_pending_approvals,
     load_operator_registration,
     run_operator_once,
+    select_mirror_channel,
     select_operator_channel,
 )
 from .pipeline import AUTO_VALIDATION
@@ -86,6 +87,7 @@ def main(
     argv: list[str] | None = None,
     *,
     channel: OperatorChannel | None = None,
+    mirror_channel: OperatorChannel | None = None,
     registration: OperatorIdentity | None = None,
     provider: Any | None = None,
     validator_provider: Any | None = None,
@@ -112,6 +114,10 @@ def main(
         assert_state_writable(repo_root)
         registration = registration if registration is not None else load_operator_registration(repo_root)
         channel = channel if channel is not None else select_operator_channel(root=repo_root)
+        # The approval mirror (PR11, decision Q1-b): never raises — off with a stderr line when
+        # the gate is closed or the assistant's token is absent. A convenience must not stop
+        # the one service that reads `/approve`.
+        mirror_channel = mirror_channel if mirror_channel is not None else select_mirror_channel()
         provider = provider if provider is not None else select_provider()
         search_tool = search_tool if search_tool is not None else select_search_tool()
         # R7.1: the validator's own (gated) provider — None keeps the pipeline pairing.
@@ -135,6 +141,7 @@ def main(
     gate_banners(
         operator_channel=channel, analysis_provider=provider, search_tool=search_tool,
         validator_provider=validator_provider, frontdesk_provider=frontdesk_provider,
+        approval_mirror=mirror_channel,
     )
     if frontdesk_provider is not None:
         sys.stderr.write("FRONTDESK: conversational mode ON "
@@ -259,6 +266,7 @@ def main(
             try:
                 announced = announce_pending_approvals(
                     channel, approval_store, now=timeutil.utc_now_iso(), repo_root=repo_root,
+                    mirror=mirror_channel,
                 )
                 for approval_id in announced:
                     sys.stderr.write(f"OPERATOR: announced approval {approval_id}\n")

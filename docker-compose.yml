@@ -108,6 +108,13 @@ services:
       # The real Telegram transport additionally needs its mounted grant.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # The assistant's bot token, SEND-ONLY (2026-09-04, PR11, decision Q1-b): switch-door
+      # approval asks are mirrored into the window Thomas talks to the assistant in, with the
+      # decision staying on the control bot above. The container name is deliberately NOT
+      # `TELEGRAM_BOT_TOKEN` and there is no lane-style fallback alias — this service POLLS
+      # the control bot, and a fallback that handed it the assistant's bot under that name
+      # would make it that bot's second poller. Unset = mirror off, said once at startup.
+      HERMES_BOT_TOKEN: ${HERMES_BOT_TOKEN:-}
 
   scheduler:
     image: thomas-agent-runtime

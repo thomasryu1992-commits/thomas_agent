@@ -32,13 +32,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from . import (
     approval, control, domain_console, frontdesk, memory_console, operator_feedback,
@@ -838,6 +839,125 @@ def notify_operator(channel: OperatorChannel, text: str, *, repo_root: Path | No
     channel.send(registration.chat_id, text)
 
 
+# --- the approval mirror: the same ask, in the assistant's window, decided elsewhere -----------
+#
+# Thomas talks to the assistant on its own bot and reads `/approve` on the control bot (decision
+# Q1-b, 2026-09-03). A switch-door ask minted through the assistant would otherwise appear only
+# in the window he is NOT looking at. The mirror sends a copy on the assistant's bot token — the
+# mechanism the scheduler lanes have used since 2026-08-01 — and the copy says where the answer
+# goes, because a verbatim copy would invite him to type `/approve` where nothing reads it.
+
+MIRROR_TOKEN_ENV = "HERMES_BOT_TOKEN"
+MIRROR_SEND_ONLY_REASON = "MIRROR_IS_SEND_ONLY"
+
+
+class SendOnlyChannel:
+    """A channel that can only ``send`` — the assistant's bot as seen from this service.
+
+    That bot has exactly ONE poller, the ``hermes`` container, and a second ``getUpdates``
+    caller on the same token steals its updates (the scheduler lanes' comment in
+    ``docker-compose.yml``). So the wrapper refuses ``poll`` and ``peek`` by construction: an
+    operator loop that were ever handed this as its control channel fails closed on the first
+    poll instead of quietly eating the assistant's messages. ``send`` is delegated; the
+    capability attributes are the wrapped channel's, so ``gate_banners`` announces it honestly.
+    """
+
+    def __init__(self, inner: OperatorChannel):
+        self._inner = inner
+
+    @property
+    def network_egress(self) -> bool:
+        return bool(getattr(self._inner, "network_egress", False))
+
+    @property
+    def provider_id(self) -> str | None:
+        return getattr(self._inner, "provider_id", None)
+
+    def poll(self, *, long_poll_seconds: int = 0) -> list[InboundMessage]:
+        del long_poll_seconds
+        raise OperatorBlocked(
+            MIRROR_SEND_ONLY_REASON, "the approval mirror sends only; it never polls the assistant's bot"
+        )
+
+    def peek(self) -> list[InboundMessage]:
+        raise OperatorBlocked(
+            MIRROR_SEND_ONLY_REASON, "the approval mirror sends only; it never reads the assistant's bot"
+        )
+
+    def send(self, chat_id: str, text: str) -> str | None:
+        return self._inner.send(chat_id, text)
+
+
+def select_mirror_channel() -> OperatorChannel | None:
+    """The send-only channel switch-door asks are mirrored on, or ``None`` — and a stderr line
+    either way, because a silently absent mirror is the failure this feature exists to end.
+
+    Same gate as the control channel (``MVP_OPERATOR_CHANNEL=telegram``): the mirror is a second
+    use of the same authorization, not a second authorization. It DEGRADES rather than fails
+    closed (``scheduler_cli.build_alerter``'s pattern): the control channel is the authority and
+    the mirror a convenience (D-5), and this is the one service that also READS ``/approve`` —
+    it must not die for a courtesy.
+
+    Off when the gate is not open (the Mock notifies nobody, so there is nothing to mirror on),
+    when ``HERMES_BOT_TOKEN`` is not set in this container, or when it holds the SAME value as
+    ``TELEGRAM_BOT_TOKEN`` — then the "mirror" would be the control bot sending the ask twice
+    into one window, the second copy telling Thomas to answer in the window he is already in.
+    The values are compared in memory and never written anywhere.
+    """
+    if os.environ.get(OPERATOR_CHANNEL_ENV, "").strip().lower() != TELEGRAM:
+        sys.stderr.write("OPERATOR: approval mirror OFF (the control channel is not telegram)\n")
+        return None
+    token = os.environ.get(MIRROR_TOKEN_ENV)
+    if not token:
+        sys.stderr.write(f"OPERATOR: approval mirror OFF ({MIRROR_TOKEN_ENV} is not set)\n")
+        return None
+    if token == os.environ.get("TELEGRAM_BOT_TOKEN"):
+        sys.stderr.write(
+            f"OPERATOR: approval mirror OFF ({MIRROR_TOKEN_ENV} equals TELEGRAM_BOT_TOKEN — "
+            "one bot cannot mirror itself)\n"
+        )
+        return None
+    try:
+        channel = safety_gate.select_env_gated(
+            env_var=OPERATOR_CHANNEL_ENV,
+            opt_in_value=TELEGRAM,
+            flags=_NETWORK_FLAGS,
+            provider_id=TELEGRAM,
+            default_factory=MockOperatorChannel,
+            # No state_path: the mirror keeps no getUpdates cursor because it never polls.
+            gated_factory=lambda authorization: TelegramChannel(
+                token_env=MIRROR_TOKEN_ENV, authorization=authorization, state_path=None,
+            ),
+        )
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"OPERATOR: approval mirror OFF ({exc.reason_code})\n")
+        return None
+    sys.stderr.write(
+        "OPERATOR: approval mirror ON — switch-door asks are also sent on the assistant's bot "
+        "(send-only; the decision stays on this channel)\n"
+    )
+    return SendOnlyChannel(channel)
+
+
+_CHOICE_LINE_PREFIXES = ("가능한 선택:", "(id 뒤에 이유를 적으면")
+
+
+def mirror_message(ask: Mapping[str, Any], permission_decision: Mapping[str, Any]) -> str:
+    """The ask as the assistant's window shows it: the same text minus the two lines that invite
+    an answer HERE, framed by where the answer goes. The shim already warns about exactly this
+    confusion; the copy must not create it."""
+    approval_id = str(ask["approval_id"])
+    where = f"결정은 관제봇 창에서: /approve {approval_id} 또는 /reject {approval_id}"
+    body = [
+        line for line in approval.request_message(ask, permission_decision).splitlines()
+        if not line.startswith(_CHOICE_LINE_PREFIXES)
+    ]
+    return "\n".join(
+        [f"[알림 사본] {where}", ""] + body
+        + ["", where, "이 창의 /approve는 아무에게도 닿지 않습니다 — 여기서는 사본만 보입니다."]
+    )
+
+
 # The switch door's asks are the only ones nobody delivers. Every other approval is minted by
 # Thomas running a script, so the id is already on his screen and the median answer comes back
 # in about a minute. The switch door's are minted by an assistant, asynchronously, and until
@@ -905,10 +1025,17 @@ def announce_pending_approvals(
     *,
     now: str,
     repo_root: Path | None = None,
+    mirror: OperatorChannel | None = None,
 ) -> list[str]:
     """Push undelivered switch-door approval asks to the registered control channel.
 
     Returns the approval ids announced on this pass (empty when there is nothing to send).
+
+    ``mirror`` (opt-in) is the assistant's send-only channel (:func:`select_mirror_channel`):
+    right after the authoritative send, a *different* body (:func:`mirror_message`) goes to the
+    same registered chat on that bot. Best-effort and outside the pointer (D-5): a mirror
+    failure is one stderr line, never a re-announcement — the control channel push is the
+    authority, and a second pointer would only widen this loop's partial-failure window.
 
     **Only the switch door's asks.** ``pending()`` returns every scope, and the rest are
     already in front of Thomas by the flow that minted them — announcing those would put a
@@ -961,6 +1088,13 @@ def announce_pending_approvals(
         )
         announced.add(approval_id)
         sent.append(approval_id)
+        if mirror is not None:
+            try:
+                notify_operator(mirror, mirror_message(ask, decision), repo_root=repo_root)
+            except MvpRuntimeError as exc:
+                sys.stderr.write(
+                    f"OPERATOR: approval {approval_id} announced but not mirrored ({exc.reason_code})\n"
+                )
 
     # Drop ids that are no longer open so the pointer does not grow without bound. Pruning
     # AFTER the send loop, and only against ids seen open this pass, keeps an ask that is
