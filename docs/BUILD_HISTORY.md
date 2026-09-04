@@ -24,6 +24,22 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Five-root backup, a Hermes healthcheck, and a stop budget that finally lets the gateway exit
+  cleanly — PR4 of the Hermes integration sequence** (Thomas decisions Q10 and Q15, 2026-09-03; applied
+  2026-09-04). The analysis found the daily backup covered one root (`.runtime_governance_state`) and
+  nothing of the assistant's — 101 MB of SOUL, shims, skills, cron, memories, sessions and a 32 MB SQLite
+  state had no copy anywhere — nor the root-owned Core activation, the workspace, or `.env`. The backup
+  script now lives in the repository (`scripts/ops/harness_backup.sh`) and is installed to the same crontab
+  path; it tars five roots with member paths prefixed by the host directory each restores into, and it
+  never tars a live WAL database: the assistant makes its own consistent copy with `hermes backup --quick`
+  (sqlite backup API) into a snapshot directory, and that directory is what the archive carries. 25 MB,
+  4.8 s; the Mac pull's `govstate-*` glob needed no change. On the assistant's container: a healthcheck on
+  the age of `state/gateway.heartbeat` (the CMD is `sleep infinity`, so a dead gateway had left the
+  container `running`), `S6_KILL_GRACETIME=25000` (the s6 default of 3 s meant the 30 s compose grace was
+  never reached — 19 of 19 boots had recorded `prior_exit=unclean`; the first restart under the new budget
+  recorded `clean`), `agent.restart_drain_timeout: 20`, and copy-truncate rotation for the one log Hermes
+  does not rotate. The restore runbook writes down the part that was only in one person's head: three
+  owning uids, the WAL files to delete beside a restored SQLite file, and the pre-09-04 archive shape.
 - **Five required checks on `main` — PR3 of the Hermes integration sequence** (Thomas decision Q14,
   2026-09-03; applied 2026-09-04). Only the two Active Architecture Gates had been required, and both
   finish in about a minute; the pytest matrix and the Docker fail-closed smoke ran on every PR but
