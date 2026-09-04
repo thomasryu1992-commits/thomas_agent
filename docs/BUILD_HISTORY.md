@@ -24,6 +24,19 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **One compose project, two runtimes — PR5 of the Hermes integration sequence** (Thomas decision
+  2026-09-03 "1개의 Compose OK, 1개의 Runtime은 X"; delivered 2026-09-04). The assistant's container moves
+  from its own compose project into this file as the `hermes` service: image only (`hermes-agent`, built
+  out of band from the other repository — no `build:` here, so CI's `docker compose build` and the smoke
+  never see a 4 GB image), uid 10000 against the runtime's 10001, its own state root, the state root's
+  `bridge/` directory as its only mount into the runtime, exactly three `.env` values, and no
+  `depends_on` in either direction. What that buys: one `up -d`, one backup, one `docker compose ps`
+  health view for nine containers. What it deliberately does not buy: a shared process, image, uid or
+  code path — the doors stay the only contact, and five new tests pin the parts a compose file can
+  express (image-not-build, no depends_on, bridge-only mount, three values and none of the live or
+  peer-gate surface, memory ceilings on everything but the two lanes). The ceilings are Q15-b: the
+  scheduler lanes are what the OOM killer must never pick on a 3.8 GB host, so every other long-lived
+  process carries one (assistant 1.5 GB, worker 1 GB, operator 512 MB; idle footprints are 1–10 MB).
 - **Five-root backup, a Hermes healthcheck, and a stop budget that finally lets the gateway exit
   cleanly — PR4 of the Hermes integration sequence** (Thomas decisions Q10 and Q15, 2026-09-03; applied
   2026-09-04). The analysis found the daily backup covered one root (`.runtime_governance_state`) and

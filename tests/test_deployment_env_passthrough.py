@@ -576,14 +576,14 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
     "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),
-    "HERMES_BOT_TOKEN": frozenset({"scheduler", "scheduler-maint"}),
+    "HERMES_BOT_TOKEN": frozenset({"hermes", "scheduler", "scheduler-maint"}),
     "MVP_LIVE_ORDER_API_KEY": frozenset({"scheduler"}),
     "MVP_LIVE_ORDER_API_SECRET": frozenset({"scheduler"}),
     "NAVER_APIHUB_KEY": frozenset({"pipeline-worker"}),
     "NAVER_APIHUB_KEY_ID": frozenset({"pipeline-worker"}),
     "NAVER_SEARCHAD_API_KEY": frozenset({"pipeline-worker"}),
     "NAVER_SEARCHAD_SECRET_KEY": frozenset({"pipeline-worker"}),
-    "OPENROUTER_API_KEY": frozenset({"operator", "pipeline-worker"}),
+    "OPENROUTER_API_KEY": frozenset({"hermes", "operator", "pipeline-worker"}),
     "TAVILY_API_KEY": frozenset({"operator", "pipeline-worker"}),
     "TELEGRAM_BOT_TOKEN": frozenset({"operator", "scheduler", "scheduler-maint"}),
 }
@@ -644,3 +644,79 @@ def test_the_ownership_matrix_is_documented_verbatim():
     They must not drift — a matrix that lives in a test nobody reads is not a boundary
     anyone can check on the host."""
     assert _documented_matrix() == SECRET_OWNERSHIP
+
+
+# ── The assistant as the ninth service (PR5, 2026-09-04) ──────────────────────────────────
+#
+# "One compose, runtimes stay split" (Thomas, 2026-09-03). What a compose file can express of
+# the eight invariants in docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md is pinned here; the
+# rest (uid gate, approval path, closed kind set) lives in the door modules and their tests.
+ASSISTANT = "hermes"
+LANES = ("scheduler", "scheduler-maint")
+
+
+def _service(name: str) -> dict:
+    return yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"][name]
+
+
+def test_the_assistant_is_an_image_not_a_build():
+    """CI's `docker compose build` builds every service with a build context. The assistant's
+    image is 4 GB and comes from another repository; a `build:` here would make every PR build
+    it and would bake a foreign checkout into this file's smoke."""
+    spec = _service(ASSISTANT)
+    assert "build" not in spec and spec.get("image") == "hermes-agent"
+
+
+def test_no_service_depends_on_any_other():
+    """Scheduler survives Hermes failure; operator survives Hermes failure — and the assistant
+    theirs. `depends_on` is the one compose key that would couple their lifecycles, so it is
+    absent everywhere, not just on the assistant."""
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    coupled = {name for name, spec in compose["services"].items() if spec.get("depends_on")}
+    assert coupled == set(), f"services declaring depends_on: {sorted(coupled)}"
+
+
+def test_the_assistant_mounts_only_the_bridge_directory_of_the_state_root():
+    """The four sockets are the only path from the assistant to the runtime. Mounting the
+    state root itself would expose approvals, ledgers and control state; mounting the Docker
+    socket would make the container host-root (removed 2026-08-29 and never to return)."""
+    mounts = [str(v) for v in _service(ASSISTANT)["volumes"]]
+    assert len(mounts) == 2, mounts
+    # rsplit: the source may carry a `${VAR:-default}` with a colon inside; the target never does.
+    sources = [m.rsplit(":", 1)[0].rstrip("/") for m in mounts]
+    targets = [m.rsplit(":", 1)[1] for m in mounts]
+    assert sum(1 for src, dst in zip(sources, targets) if src.endswith("/bridge") and dst == "/opt/bridge") == 1, mounts
+    assert not any("docker.sock" in m for m in mounts), mounts
+    assert not any(src.endswith(".runtime_governance_state") or src.endswith(".runtime_governance_state}") for src in sources), (
+        f"the assistant mounts the runtime's state root itself: {mounts}"
+    )
+
+
+def test_the_assistant_holds_exactly_its_three_values_and_nothing_of_the_surfaces():
+    """Hermes cannot read exchange / write secrets: its environment draws exactly the OpenRouter
+    key and its own bot token from `.env` (the allowed-user id is not a secret), and none of the
+    live-trading surface, the Naver credentials, or the doors' peer-gate variables — a peer-gate
+    value here would let it impersonate a door's declared client on the worker socket."""
+    environment = _service(ASSISTANT)["environment"]
+    secrets = {
+        name for value in environment.values()
+        for name in _ENV_REFERENCE.findall(str(value)) if SECRET_NAME.search(name)
+    }
+    assert secrets == {"OPENROUTER_API_KEY", "HERMES_BOT_TOKEN"}, sorted(secrets)
+    forbidden = set(LIVE_TRADING_SURFACE) | {"MVP_BRIDGE_CLIENT_UID", "MVP_BRIDGE_CLIENT_GID"}
+    referenced = {name for value in environment.values() for name in _ENV_REFERENCE.findall(str(value))}
+    assert not (forbidden & referenced) and not (forbidden & set(environment)), (
+        f"the assistant is handed {sorted((forbidden & referenced) | (forbidden & set(environment)))}"
+    )
+    assert environment["HERMES_UID"] == "10000" and environment["HERMES_GID"] == "10000"
+
+
+def test_memory_ceilings_sit_on_everything_but_the_money_path():
+    """Thomas decision Q15-b: the two scheduler lanes are what the OOM killer must never pick,
+    so they carry no ceiling and every other long-lived process does — the assistant, the
+    worker, the operator. The doors are tiny and short-lived per request; no ceiling there."""
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    limited = {name for name, spec in compose["services"].items() if spec.get("mem_limit")}
+    assert limited == {ASSISTANT, "pipeline-worker", "operator"}, sorted(limited)
+    for lane in LANES:
+        assert "mem_limit" not in compose["services"][lane] and "memswap_limit" not in compose["services"][lane]

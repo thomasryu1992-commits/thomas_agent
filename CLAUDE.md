@@ -174,6 +174,12 @@ core thin while lanes grow, stated as rules:
   stays on, so a branch that falls behind `main` re-runs after `update-branch`. Push follow-up
   commits BEFORE enabling auto-merge, or disable it first — a green head merges as soon as the
   five are green, and a later push arrives on a merged PR.
+- **The assistant is the ninth compose service, not part of the runtime image** (PR5, 2026-09-04).
+  `hermes` in `docker-compose.yml` is image-only (`hermes-agent`, built from `/root/hermes-trial/hermes-agent`
+  out of band); the candidate-tag flow above never rebuilds or retags it, and `up -d` recreates it only
+  when its own service block changed. Its boundary — bridge-only mount, three `.env` values, no
+  `depends_on` — is pinned in `tests/test_deployment_env_passthrough.py`; changing that block is a
+  governance change, not a deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`).
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
 

@@ -82,6 +82,22 @@ Keep this state on a host directory (e.g. `/srv/thomas/state`) that maps to
 
 ## Run (compose — the one deployment path)
 
+**Since PR5 (2026-09-04) the assistant is the ninth service of this file.** One project, one
+`up -d`, one backup, one health view — and still two runtimes: `hermes` has its own image
+(`hermes-agent`), uid (10000), state root (`/root/hermes-trial/data`) and no `build:` here.
+Its image is built **out of band** and never by a Thomas deploy:
+
+```bash
+docker build -t hermes-agent /root/hermes-trial/hermes-agent          # only when the assistant's checkout changes
+docker tag hermes-agent:latest hermes-agent:rollback-pre-<change>    # before rebuilding, same rule as the runtime image
+```
+
+A Thomas deploy (`up -d` from a clean worktree, below) recreates `hermes` only when its own
+service definition changed; the candidate-tag flow in `CLAUDE.md` is about `thomas-agent-runtime`
+and does not touch it. `hermes` depends on no service and none on it
+(`test_no_service_depends_on_any_other`) — a lane or the operator being recreated leaves the
+assistant running, and vice versa.
+
 **Compose is the only way this is deployed. Do not `docker run` the services and do not
 build private `thomas-agent-operator:<tag>` images to deploy from.** The services own
 the fixed names `thomas-operator`, `thomas-scheduler`, and `thomas-scheduler-maint`; a
@@ -388,7 +404,7 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `MVP_LIVE_ORDER_API_KEY` | `scheduler` | the live order path — the one service that may place an order |
 | `MVP_LIVE_ORDER_API_SECRET` | `scheduler` | same |
 | `COINALYZE_API_KEY` | `scheduler`, `scheduler-maint` | derivatives feed for the cycle (risk) and the candle archive (maintenance) |
-| `OPENROUTER_API_KEY` | `operator`, `pipeline-worker` | the model plane: analyses, validation, the front desk — never the money plane |
+| `OPENROUTER_API_KEY` | `hermes`, `operator`, `pipeline-worker` | the model plane: analyses, validation, the front desk, and the assistant's own model — never the money plane |
 | `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |
 | `GROQ_API_KEY` | `operator`, `pipeline-worker` | same plane, validator and front-desk provider |
 | `TAVILY_API_KEY` | `operator`, `pipeline-worker` | the read-only search tool, model plane only |
@@ -397,20 +413,20 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
 | `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
-| `HERMES_BOT_TOKEN` | `scheduler`, `scheduler-maint` | the assistant's bot, outbound-only here — these two never call `getUpdates`, which is what makes sharing the assistant's bot safe |
+| `HERMES_BOT_TOKEN` | `hermes`, `scheduler`, `scheduler-maint` | the assistant's bot: `hermes` is its one poller; the two lanes send on it and never call `getUpdates`, which is what makes sharing it safe |
 
 **The door services hold nothing** — their `environment:` is exactly the two peer-gate variables
 (`test_the_dispatch_door_carries_only_the_peer_variables`), and no row above names them.
 
-**The assistant's container (Hermes) draws from the same file.** Until the harness is unified
-it runs from its own compose project, started as
-`docker compose --env-file /root/thomas_agent/.env up -d` in `/root/hermes-trial`: the file is
-read for **interpolation only**, and the container receives exactly three values by
-`environment:` enumeration — `OPENROUTER_API_KEY` (the same key, held once), `HERMES_BOT_TOKEN`
-as its `TELEGRAM_BOT_TOKEN` (it is the one poller of that bot), and `HERMES_TELEGRAM_ALLOWED_USERS`
-as its `TELEGRAM_ALLOWED_USERS`. The separate `hermes.env` that used to hold a second copy of the
-first two is retired. Nothing in the live-trading surface is enumerated there; check the
-container rather than the compose file:
+**The assistant's container (Hermes) is the `hermes` service of this compose file** (PR5,
+2026-09-04 — one compose project, two runtimes). It draws exactly three values from the same
+`.env` by `environment:` enumeration — `OPENROUTER_API_KEY` (the same key, held once),
+`HERMES_BOT_TOKEN` as its `TELEGRAM_BOT_TOKEN` (it is the one poller of that bot), and
+`HERMES_TELEGRAM_ALLOWED_USERS` as its `TELEGRAM_ALLOWED_USERS` — and nothing of the live-trading
+or peer-gate surface (`test_the_assistant_holds_exactly_its_three_values_and_nothing_of_the_surfaces`).
+The separate compose project under `/root/hermes-trial` and its `hermes.env` are retired; the
+directory keeps the assistant's **data** (`data/`, its state root) and its **build context**
+(`hermes-agent/`). Check the container rather than the compose file:
 
 ```bash
 docker inspect hermes --format '{{range .Config.Env}}{{println .}}{{end}}' | cut -d= -f1 | grep -E 'KEY|SECRET|TOKEN'
