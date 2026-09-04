@@ -413,7 +413,7 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
 | `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
 | `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
-| `HERMES_BOT_TOKEN` | `hermes`, `scheduler`, `scheduler-maint` | the assistant's bot: `hermes` is its one poller; the two lanes send on it and never call `getUpdates`, which is what makes sharing it safe |
+| `HERMES_BOT_TOKEN` | `hermes`, `operator`, `scheduler`, `scheduler-maint` | the assistant's bot: `hermes` is its one poller; the two lanes and the operator's approval mirror send on it and never call `getUpdates`, which is what makes sharing it safe |
 
 **The door services hold nothing** — their `environment:` is exactly the two peer-gate variables
 (`test_the_dispatch_door_carries_only_the_peer_variables`), and no row above names them.
@@ -432,6 +432,16 @@ directory keeps the assistant's **data** (`data/`, its state root) and its **bui
 docker inspect hermes --format '{{range .Config.Env}}{{println .}}{{end}}' | cut -d= -f1 | grep -E 'KEY|SECRET|TOKEN'
 # expect exactly: OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN
 ```
+
+**One cell wider since 2026-09-04 (PR11, decision Q1-b):** the `operator` service also receives
+`HERMES_BOT_TOKEN`, under that name, for the approval mirror — a switch-door ask minted through the
+assistant is pushed to the control bot (where `/approve` is read) and a copy, with the invitation
+to answer removed and the destination stated, is sent on the assistant's bot into the window
+Thomas talks to it in. The operator's channel on that token is send-only by construction
+(`SendOnlyChannel` refuses `poll`/`peek` with `MIRROR_IS_SEND_ONLY`), so the `hermes` container
+stays the bot's one poller. The mirror is off, and says so at startup, when the control channel is
+not `telegram`, when the variable is unset, or when it equals `TELEGRAM_BOT_TOKEN` (one bot cannot
+mirror itself). Expect a line reading `OPERATOR: approval mirror ON` in the operator's log.
 
 **Renamed 2026-09-04:** `SCHEDULER_TELEGRAM_BOT_TOKEN` → `HERMES_BOT_TOKEN`. The old name is no
 longer read anywhere; a host still carrying it silently falls back to the control bot for lane

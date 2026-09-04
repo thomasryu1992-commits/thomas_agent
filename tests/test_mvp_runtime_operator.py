@@ -1115,3 +1115,118 @@ def test_announcing_without_a_registration_fails_closed(tmp_path):
         announce_pending_approvals(ch, store, now=_ANN_NOW, repo_root=tmp_path)
     assert exc.value.reason_code == "REGISTRATION_MISSING"
     assert ch.sent == []
+
+# --- PR11: the approval mirror — the same ask in the assistant's window, decided here ----------
+
+from runtime.mvp_runtime.operator import (  # noqa: E402
+    MIRROR_SEND_ONLY_REASON,
+    MIRROR_TOKEN_ENV,
+    SendOnlyChannel,
+    mirror_message,
+    select_mirror_channel,
+)
+
+
+def test_the_send_only_wrapper_refuses_to_poll_or_peek_and_delegates_send():
+    """One bot token, one poller: a second `getUpdates` caller would steal the assistant's
+    updates, so the wrapper cannot poll by construction — not by convention."""
+    inner = MockOperatorChannel()
+    mirror = SendOnlyChannel(inner)
+    with pytest.raises(OperatorBlocked) as exc:
+        mirror.poll()
+    assert exc.value.reason_code == MIRROR_SEND_ONLY_REASON
+    with pytest.raises(OperatorBlocked) as exc:
+        mirror.peek()
+    assert exc.value.reason_code == MIRROR_SEND_ONLY_REASON
+    assert mirror.send("chat-1", "hi") == "mock-msg-1"
+    assert inner.sent == [("chat-1", "hi")]
+    assert mirror.network_egress is False           # the wrapped channel's capability, not a claim
+
+
+def test_the_mirror_is_off_and_says_so_without_the_gate_the_token_or_with_the_control_bots_own_token(
+    monkeypatch, capsys,
+):
+    monkeypatch.delenv(OPERATOR_CHANNEL_ENV, raising=False)
+    monkeypatch.setenv(MIRROR_TOKEN_ENV, "assistant-token-value")
+    assert select_mirror_channel() is None
+    monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
+    monkeypatch.delenv(MIRROR_TOKEN_ENV, raising=False)
+    assert select_mirror_channel() is None
+    monkeypatch.setenv(MIRROR_TOKEN_ENV, "shared-token-value")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shared-token-value")
+    assert select_mirror_channel() is None
+    err = capsys.readouterr().err
+    assert err.count("OPERATOR: approval mirror OFF") == 3
+    assert "one bot cannot mirror itself" in err
+    assert "token-value" not in err                  # a token value is never printed, even on refusal
+
+
+def test_the_mirror_wraps_the_assistants_bot_send_only_behind_the_same_gate(monkeypatch, capsys):
+    monkeypatch.setenv(OPERATOR_CHANNEL_ENV, "telegram")
+    monkeypatch.setenv(MIRROR_TOKEN_ENV, "assistant-token-value")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "control-token-value")
+    mirror = select_mirror_channel()
+    assert isinstance(mirror, SendOnlyChannel)
+    assert mirror.network_egress is True
+    assert isinstance(mirror._inner, TelegramChannel)
+    assert mirror._inner._token_env == MIRROR_TOKEN_ENV     # read by NAME, at send time
+    with pytest.raises(OperatorBlocked):
+        mirror.poll()
+    err = capsys.readouterr().err
+    assert "OPERATOR: approval mirror ON" in err and "token-value" not in err
+
+
+@requires_local_core
+def test_a_switch_ask_is_mirrored_with_a_different_body_to_the_same_registered_chat(tmp_path):
+    """The copy reaches the assistant's window (same registered private chat, other bot) and
+    does NOT carry the `/approve | /reject` invitation — it says where the decision goes."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    ask = _switch_ask(store, tmp_path)
+    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+
+    sent = announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror)
+
+    assert sent == [ask["approval_id"]]
+    assert len(primary.sent) == 1 and len(mirror.sent) == 1
+    assert mirror.sent[0][0] == "chat-registered"
+    primary_text, mirror_text = primary.sent[0][1], mirror.sent[0][1]
+    assert "가능한 선택:" in primary_text and f"/approve {ask['approval_id']}" in primary_text
+    assert "가능한 선택:" not in mirror_text and "(id 뒤에 이유를" not in mirror_text
+    assert mirror_text.startswith("[알림 사본] 결정은 관제봇 창에서")
+    assert "Approval Request" in mirror_text and ask["approval_id"] in mirror_text
+    assert "아무에게도 닿지 않습니다" in mirror_text
+    assert mirror_text == mirror_message(ask, store.get_permission_decision(ask["permission_decision_id"]))
+
+    # A second pass sends nothing on either channel: one pointer, keyed on the primary send.
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == []
+    assert len(primary.sent) == 1 and len(mirror.sent) == 1
+
+
+class _RefusingMirror(MockOperatorChannel):
+    def send(self, chat_id: str, text: str) -> str | None:
+        raise OperatorBlocked("NO_BOT_TOKEN", "environment variable HERMES_BOT_TOKEN is not set")
+
+
+@requires_local_core
+def test_a_mirror_failure_is_one_stderr_line_and_never_re_announces(tmp_path, capsys):
+    """D-5: the control-channel push is the authority and the pointer follows it alone. A
+    mirror that cannot send costs a stderr line, not a second ask on the control channel."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    ask = _switch_ask(store, tmp_path)
+    primary = MockOperatorChannel()
+
+    sent = announce_pending_approvals(
+        primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=_RefusingMirror(),
+    )
+
+    assert sent == [ask["approval_id"]] and len(primary.sent) == 1
+    assert load_announced(tmp_path) == {ask["approval_id"]}
+    assert f"approval {ask['approval_id']} announced but not mirrored (NO_BOT_TOKEN)" in capsys.readouterr().err
+    assert announce_pending_approvals(
+        primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=_RefusingMirror(),
+    ) == []
+    assert len(primary.sent) == 1

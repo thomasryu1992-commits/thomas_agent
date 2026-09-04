@@ -170,3 +170,27 @@ def test_approve_over_the_loop_reaches_the_approval_path(tmp_path, monkeypatch):
     assert rc == 0
     assert len(ch.sent) == 1
     assert "no approval with id" in ch.sent[0][1]
+
+
+def test_the_mirror_channel_reaches_the_announcer_and_is_selected_when_not_injected(monkeypatch, capsys):
+    """`main` hands the mirror to the announcer under `mirror=`; without an injected one it
+    selects through the same gate as the control channel and says the outcome once."""
+    import runtime.mvp_runtime.operator_cli as cli
+    from runtime.mvp_runtime.operator import OPERATOR_CHANNEL_ENV
+
+    seen: list = []
+
+    def fake_announce(channel, approval_store, *, now, repo_root=None, mirror=None):
+        seen.append(mirror)
+        return []
+
+    monkeypatch.setattr(cli, "announce_pending_approvals", fake_announce)
+    monkeypatch.delenv(OPERATOR_CHANNEL_ENV, raising=False)
+    mirror = MockOperatorChannel()
+
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(),
+                mirror_channel=mirror) == 0
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider()) == 0
+
+    assert seen == [mirror, None]
+    assert capsys.readouterr().err.count("OPERATOR: approval mirror OFF") == 1
