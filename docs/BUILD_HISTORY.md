@@ -24,6 +24,14 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Five required checks on `main` — PR3 of the Hermes integration sequence** (Thomas decision Q14,
+  2026-09-03; applied 2026-09-04). Only the two Active Architecture Gates had been required, and both
+  finish in about a minute; the pytest matrix and the Docker fail-closed smoke ran on every PR but
+  bound nothing, so auto-merge could land a red pytest or a compose file the smoke rejects on green
+  gates alone (the merge-order accident of 2026-08-29, #794/#797, was this window). The two pytest
+  jobs and the smoke are now required beside the gates, `strict` unchanged. The branch protection
+  was changed first and this PR opened second, so the change proved itself on its own merge. No code
+  changed; the repository half is the record in `CLAUDE.md`, `docs/DEPLOYMENT.md` and §K.
 - **One secret source, per-service projection, an exact ownership matrix — PR2 of the Hermes
   integration sequence** (Thomas decision 2026-09-03; delivered 2026-09-04). The analysis behind the
   sequence found the assistant's bot token stored twice under two names (`SCHEDULER_TELEGRAM_BOT_TOKEN`

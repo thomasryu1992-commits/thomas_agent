@@ -166,6 +166,14 @@ core thin while lanes grow, stated as rules:
   first (`cd <worktree> && git commit …`), because it cannot see which tree those land in
   and guessing denied every legitimate worktree commit while the primary checkout rested
   on `main`.
+- **Five required checks on `main` since 2026-09-04** (PR3 of the Hermes sequence, Thomas
+  decision Q14): the two Active Architecture Gates, `MVP runtime pytest (ubuntu-latest)`,
+  `MVP runtime pytest (windows-latest)`, and `Docker build + fail-closed smoke`. Until then only
+  the two one-minute gates were required, so auto-merge could land a branch with a red pytest or
+  a compose file the smoke rejects. Auto-merge now waits for all five (~7–8 minutes); `strict`
+  stays on, so a branch that falls behind `main` re-runs after `update-branch`. Push follow-up
+  commits BEFORE enabling auto-merge, or disable it first — a green head merges as soon as the
+  five are green, and a later push arrives on a merged PR.
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
 
