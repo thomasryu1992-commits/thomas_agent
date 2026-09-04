@@ -423,3 +423,18 @@ def test_approval_status_refuses_typed_without_its_store(tmp_path):
     with pytest.raises(ControlBlocked) as exc:
         _apply({"command": "approval_status", "argument": "approval_ok"}, ControlStore(tmp_path), repo_root=tmp_path)
     assert exc.value.reason_code == "APPROVALS_UNAVAILABLE"
+
+
+def test_approval_status_data_keys_are_exactly_the_named_fields(tmp_path):
+    """`APPROVAL_STATUS_FIELDS` is the name the policy draft pins to; it must not drift from
+    what the read actually renders, in either direction."""
+    from runtime.mvp_runtime import store_reads
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+    store = ApprovalStore(tmp_path)
+    store.append([{"approval_id": "approval_fields01", "status": "PENDING",
+                   "validity": {"issued_at": "2026-09-04T00:00:00Z", "expires_at": "2026-09-04T00:15:00Z"},
+                   "approved_action_snapshot": {"target_ref": "trading_switch:crypto", "permission_scope": "RUNTIME_GOVERNANCE"},
+                   "action_fingerprint": "sha256:x"}])
+    outcome = store_reads.read_approval_status(store, "approval_fields01", now="2026-09-04T00:05:00Z")
+    assert set(outcome["data"]) == set(store_reads.APPROVAL_STATUS_FIELDS)
+    assert not ({"approved_action_snapshot", "action_fingerprint", "permission_decision_id"} & set(outcome["data"]))

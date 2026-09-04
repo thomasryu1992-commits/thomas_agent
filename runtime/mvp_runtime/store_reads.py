@@ -124,6 +124,15 @@ def read_heartbeat(*, now: str, repo_root: Path | None) -> dict[str, Any]:
     }
 
 
+# Every key `read_approval_status` puts in `data`, by name, so the policy's
+# `assistant_read.approval_status_exposes` (1.5.0 draft) can be pinned to it by test. The
+# record's own body — snapshot, fingerprint, permission_decision_id — is deliberately absent.
+APPROVAL_STATUS_FIELDS: tuple[str, ...] = (
+    "approval_id", "status_recorded", "status_effective", "issued_at", "expires_at",
+    "target_prefix", "permission_scope", "decided_at", "consumed_at", "as_of",
+)
+
+
 def read_approval_status(
     approval_store: ApprovalStore | None, argument: str | None, *, now: str,
 ) -> dict[str, Any]:
