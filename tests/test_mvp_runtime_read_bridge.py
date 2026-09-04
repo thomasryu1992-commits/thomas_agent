@@ -315,3 +315,111 @@ def test_a_malformed_client_id_is_refused_even_though_this_door_ignores_unknown_
     with pytest.raises(ControlBlocked) as exc:
         _apply({"command": "runtime_status", "client_id": "not a name"}, ControlStore(tmp_path), repo_root=tmp_path)
     assert exc.value.reason_code == "MALFORMED_REQUEST"
+
+
+# --- the fourth family: stores the console never rendered (door API v2) ---------------
+
+from runtime.mvp_runtime import heartbeat, scheduler, store_reads
+from runtime.mvp_runtime.approval_store import ApprovalStore
+from runtime.mvp_runtime.scheduler import ScheduleStore
+from runtime.mvp_runtime.store import LedgerStore
+
+
+def test_every_read_names_the_clause_that_admits_it_and_nothing_else_is_named():
+    """The operator channel's rule, applied here: a verb cannot join `_READS` without an
+    authority string, and an authority string cannot outlive its verb."""
+    assert set(read_bridge.READ_VERB_AUTHORITY) == set(read_bridge._READS)
+    for verb, authority in read_bridge.READ_VERB_AUTHORITY.items():
+        assert authority.startswith("policy:"), verb
+
+
+def test_the_store_family_names_only_reads():
+    verbs = {v for v, (family, _spec) in read_bridge._READS.items() if family == read_bridge._STORES}
+    assert verbs == {"schedules", "scheduler_events", "heartbeat", "approval_status"}
+    for verb in verbs:
+        assert not any(word in verb for word in ("enable", "disable", "remove", "add", "approve", "reject"))
+
+
+def test_schedules_lists_rows_with_their_lane_and_overdue_state(tmp_path):
+    store = ScheduleStore(tmp_path)
+    store.add(scheduler.build_schedule(
+        kind=scheduler.KIND_TASK, request="시장 요약", interval_seconds=3600,
+        created_by="test", now="2026-07-30T00:00:00Z",
+    ))
+    out = _apply({"command": "schedules", "proto": 2}, ControlStore(tmp_path), repo_root=tmp_path, schedules=store)
+    assert out["ok"] is True and out["proto"] == 2 and isinstance(out["reply"], str)
+    (row,) = out["data"]["enabled"]
+    assert row["kind"] == scheduler.KIND_TASK and row["lane"] == scheduler.LANE_MAINTENANCE
+    assert row["overdue_seconds"] is not None and out["data"]["overdue_count"] == 1   # 9 hours past a 1 h cadence
+    assert out["data"]["disabled_count"] == 0
+
+
+def test_schedules_refuses_typed_without_its_store(tmp_path):
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "schedules"}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert exc.value.reason_code == "SCHEDULES_UNAVAILABLE"
+
+
+def test_scheduler_events_returns_the_newest_n_and_states_a_clamped_count(tmp_path):
+    ledger = LedgerStore(tmp_path)
+    for i in range(3):
+        ledger.append_scheduler_event({"record_type": "scheduler_event.v0", "action": "fired", "schedule_id": f"s{i}",
+                                       "kind": "crypto_pipeline", "status": f"fired {i}", "created_at": f"2026-07-30T09:0{i}:00Z"})
+    out = _apply({"command": "scheduler_events", "argument": "2"}, ControlStore(tmp_path), ledger=ledger, repo_root=tmp_path)
+    assert out["data"]["count"] == 2 and out["data"]["active_file_total"] == 3
+    assert [e["schedule_id"] for e in out["data"]["events"]] == ["s1", "s2"]
+    noted = _apply({"command": "scheduler_events", "argument": "abc"}, ControlStore(tmp_path), ledger=ledger, repo_root=tmp_path)
+    assert noted["data"]["count"] == 3 and "기본값" in noted["reply"]
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "scheduler_events"}, ControlStore(tmp_path), repo_root=tmp_path)   # FakeLedger has no reader
+    assert exc.value.reason_code == "SCHEDULER_LEDGER_UNAVAILABLE"
+
+
+def test_heartbeat_reports_each_loop_from_its_file(tmp_path):
+    heartbeat.write_heartbeat(heartbeat.OPERATOR_SERVICE, interval_seconds=25, now=NOW, root=tmp_path)
+    out = _apply({"command": "heartbeat"}, ControlStore(tmp_path), repo_root=tmp_path)
+    by = {c["service"]: c for c in out["data"]["services"]}
+    assert by[heartbeat.OPERATOR_SERVICE]["status"] == heartbeat.FRESH
+    assert by[heartbeat.SCHEDULER_RISK_SERVICE]["status"] == heartbeat.MISSING
+    assert out["data"]["all_fresh"] is False
+    assert "operator: FRESH" in out["reply"]
+
+
+def _approval(approval_id="approval_ok", *, status="PENDING", expires_at="2026-07-30T09:15:00Z"):
+    return {"approval_id": approval_id, "status": status,
+            "validity": {"issued_at": NOW, "expires_at": expires_at},
+            "approved_action_snapshot": {"target_ref": "trading_switch:crypto", "permission_scope": "RUNTIME_GOVERNANCE",
+                                         "action_type": "RESUME"},
+            "action_fingerprint": "sha256:secret", "decision": {}, "consumption": {}}
+
+
+def test_approval_status_applies_the_clock_and_never_exposes_the_record(tmp_path):
+    store = ApprovalStore(tmp_path)
+    store.append([_approval()])
+    fresh = _apply({"command": "approval_status", "argument": "approval_ok"}, ControlStore(tmp_path), repo_root=tmp_path, approval_store=store)
+    assert fresh["data"]["status_recorded"] == "PENDING" and fresh["data"]["status_effective"] == "PENDING"
+    assert fresh["data"]["target_prefix"] == "trading_switch" and fresh["data"]["permission_scope"] == "RUNTIME_GOVERNANCE"
+    assert "action_fingerprint" not in fresh["data"] and "approved_action_snapshot" not in fresh["data"]
+    assert "sha256:secret" not in fresh["reply"]
+    lapsed = read_bridge.apply_read({"command": "approval_status", "argument": "approval_ok"}, control_store=ControlStore(tmp_path),
+                                    ledger=FakeLedger(), now="2026-07-30T09:20:00Z", repo_root=tmp_path, approval_store=store)
+    assert lapsed["data"]["status_effective"] == "EXPIRED" and lapsed["data"]["status_recorded"] == "PENDING"
+    assert store.get("approval_ok")["status"] == "PENDING"   # a read wrote nothing back
+
+
+@pytest.mark.parametrize("argument, code", [(None, "USAGE"), ("approval_nope", "APPROVAL_NOT_FOUND")])
+def test_approval_status_refuses_typed(tmp_path, argument, code):
+    store = ApprovalStore(tmp_path)
+    store.append([_approval()])
+    request = {"command": "approval_status"}
+    if argument is not None:
+        request["argument"] = argument
+    with pytest.raises(ControlBlocked) as exc:
+        _apply(request, ControlStore(tmp_path), repo_root=tmp_path, approval_store=store)
+    assert exc.value.reason_code == code
+
+
+def test_approval_status_refuses_typed_without_its_store(tmp_path):
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "approval_status", "argument": "approval_ok"}, ControlStore(tmp_path), repo_root=tmp_path)
+    assert exc.value.reason_code == "APPROVALS_UNAVAILABLE"

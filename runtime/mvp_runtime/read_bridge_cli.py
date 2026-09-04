@@ -19,6 +19,8 @@ from pathlib import Path
 from . import read_bridge, socket_door
 from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
+from .approval_store import ApprovalStore
+from .scheduler import ScheduleStore
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .working_memory import WorkingMemoryStore
@@ -52,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
             ledger=LedgerStore.default(),
             registry=TaskRegistryStore.default(),
             working_memory=WorkingMemoryStore.default(),
+            schedules=ScheduleStore.default(),
+            approval_store=ApprovalStore.default(),
         ),
         banner=lambda server: (
             f"reads={sorted(read_bridge._READS)}, {socket_door.describe_admission(server)}"
