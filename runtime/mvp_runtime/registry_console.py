@@ -205,15 +205,16 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
         return None
     from .pipeline import render_response
 
-    # Streamed: this scans the whole ledger to keep the handful of rows carrying one trace
-    # id, and the ledger is ~23 MB on the live host.
+    # Streamed, and prescreened on the trace id: the ledger is ~21 MB on the live host and a
+    # run's rows are a handful of lines in it; decoding the rest to discard them cost
+    # 160–220 ms per re-render (2026-09-04), paid on every `/result` and every replay.
     #
     # The `try` wraps the LOOP, not the call. `iter_records` is a generator, so building it
     # runs no code and raises nothing; an unreadable ledger surfaces on the first `next`.
     # Guarding only the call would have caught nothing and turned a degradation into a crash.
     kinds: dict[str, Any] = {}
     try:
-        for row in ledger.iter_records():
+        for row in ledger.iter_records(trace_id=entry.trace_id):
             if isinstance(row, dict) and row.get("trace_id") == entry.trace_id:
                 kind = row.get("kind")
                 if isinstance(kind, str):

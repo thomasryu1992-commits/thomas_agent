@@ -86,19 +86,21 @@ def read_schedules(schedules: ScheduleStore | None, *, now: str) -> dict[str, An
 
 
 def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, now: str) -> dict[str, Any]:
-    """The newest N scheduler events. The active file only (rotation keeps ~2000 rows), read
-    under the appender's lock — a poller should not ask more than about once a minute."""
-    if ledger is None or not hasattr(ledger, "read_scheduler_events"):
+    """The newest N scheduler events, read from the END of the active file and without the
+    appender's lock (``LedgerStore.read_scheduler_events_tail``): the cost is the N rows, not
+    the file, and the tick loop is never made to wait for a poller. The active file only —
+    rotation keeps ~2000 rows and the archives are a question for the CLI."""
+    if ledger is None or not hasattr(ledger, "read_scheduler_events_tail"):
         raise ControlBlocked("SCHEDULER_LEDGER_UNAVAILABLE", "this door was opened without the scheduler ledger")
     limit, note = parse_count_arg(
         argument, default=DEFAULT_EVENTS, maximum=MAX_EVENTS, usage="scheduler_events [개수]",
     )
-    events = ledger.read_scheduler_events()
-    tail = events[-limit:]
+    tail = ledger.read_scheduler_events_tail(limit)
+    total = ledger.count_scheduler_events()
     if not tail:
         text = "기록된 스케줄러 이벤트가 없습니다."
     else:
-        lines = [f"최근 스케줄러 이벤트 {len(tail)}개 (활성 파일 {len(events)}개):"]
+        lines = [f"최근 스케줄러 이벤트 {len(tail)}개 (활성 파일 {total}개):"]
         for e in tail:
             lines.append(
                 f"• {e.get('created_at', '?')} {e.get('kind', '?')} {e.get('action', '?')}"
@@ -108,7 +110,7 @@ def read_scheduler_events(ledger: LedgerStore | None, argument: str | None, *, n
     return {
         "reply": with_note(text, note),
         "action": "SCHEDULER_EVENTS_LISTED",
-        "data": {"events": tail, "count": len(tail), "active_file_total": len(events), "as_of": now},
+        "data": {"events": tail, "count": len(tail), "active_file_total": total, "as_of": now},
     }
 
 

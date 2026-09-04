@@ -478,3 +478,61 @@ def test_result_resolves_a_dispatch_replys_task_id(tmp_path):
         _apply(("RESULT", "task_a1"), registry=store, ledger=None)
     assert exc.value.reason_code == "RESULT_UNAVAILABLE"
     assert again.status == RUNNING
+
+
+# --- /result: the re-render prescreens the ledger on the trace id (2026-09-04) -------------
+
+def test_result_rerender_asks_the_ledger_for_one_trace_only(tmp_path, monkeypatch):
+    """The 21 MB live ledger cost 173 ms per re-render decoding rows of other runs; the read
+    now names the trace id so those lines are skipped unparsed (53 ms, identical text)."""
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, trace_id="trace_r3")
+    ledger = _ledger_with_run(tmp_path, "trace_other", records={"agent_output": {**_AGENT_OUTPUT, "goal": "다른 런"}})
+    ledger.append_records("trace_r3", {"agent_output": _AGENT_OUTPUT})
+    seen: list = []
+    original = LedgerStore.iter_records
+
+    def spy(self, **kwargs):
+        seen.append(kwargs)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(LedgerStore, "iter_records", spy)
+    reply = _apply(("RESULT", entry.registry_entry_id), registry=store, ledger=ledger)["reply"]
+    assert seen == [{"trace_id": "trace_r3"}]
+    assert "구독형 세차 사업성 분석" in reply and "다른 런" not in reply
+
+
+def test_a_corrupt_row_of_another_run_no_longer_blocks_a_result(tmp_path):
+    """Stated trade-off of the prescreen: a bad line the reader never decodes is not this
+    reader's failure. Before, any corrupt line anywhere made /result say it could not
+    re-render; now only the run's own rows decide."""
+    store = _registry(tmp_path)
+    entry = _entry(store)
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, trace_id="trace_r4")
+    ledger = _ledger_with_run(tmp_path, "trace_r4")
+    records = tmp_path / "ledger" / "records.jsonl"
+    # A byte-flip inside a well-formed line of ANOTHER run: looks complete, is not JSON.
+    with records.open("ab") as fh:
+        fh.write(b'{"kind": "agent_output", "trace_id": "trace_zzz", "record": {broken}}\n')
+    assert "구독형 세차 사업성 분석" in _apply(("RESULT", entry.registry_entry_id), registry=store, ledger=ledger)["reply"]
+    # A TORN line (the store's real corruption mode) does not look complete, is parsed, and
+    # still fails closed — the prescreen keeps that property, as jsonl.iter_numbered promises.
+    with records.open("ab") as fh:
+        fh.write(b'{"kind": "agent_output", "trace_id": "trace_zzz", "record": {"half')
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", entry.registry_entry_id), registry=store, ledger=ledger)
+    assert exc.value.reason_code == "RESULT_UNAVAILABLE"
+
+
+def test_iter_records_trace_prescreen_yields_that_runs_rows_and_the_caller_still_checks(tmp_path):
+    ledger = LedgerStore(tmp_path / "ledger")
+    ledger.append_records("trace_a", {"agent_output": {"x": 1}, "tool_use": {"hits": []}})
+    ledger.append_records("trace_b", {"agent_output": {"x": 2}})
+    rows = list(ledger.iter_records(trace_id="trace_a"))
+    assert {r["trace_id"] for r in rows} == {"trace_a"} and {r["kind"] for r in rows} == {"agent_output", "tool_use"}
+    # A payload carrying the quoted token (here as a key name) is a false positive the caller
+    # filters, never a miss: the screen decides what to parse, not what is accepted.
+    ledger.append_records("trace_c", {"agent_output": {"trace_a": "a key that happens to spell the id"}})
+    screened = list(ledger.iter_records(trace_id="trace_a"))
+    assert len(screened) == 3 and [r["trace_id"] for r in screened if r["trace_id"] == "trace_a"] == ["trace_a", "trace_a"]

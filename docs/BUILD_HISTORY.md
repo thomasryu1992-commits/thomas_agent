@@ -24,6 +24,20 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Two reads that paid for the whole file now pay for what they return** (performance review of
+  the door API v2 sequence, 2026-09-04; measured against the live state). `scheduler_events` parsed
+  the whole active scheduler ledger under the appender's lock to keep the newest twenty — 21 ms on a
+  2.4 MB file that grows toward ~20,000 rows before its daily rotation, and every millisecond of it
+  held the tick loop's append lock. `jsonl.tail_objects` reads the last N complete lines backwards
+  from the end, lock-free (a torn final line is dropped, a corrupt complete line in the tail still
+  raises), and `count_lines` gives the "of N" without decoding: 1.9 ms, output identical. The
+  `/result` re-render — also what the dispatch door answers a replayed `request_id` with — decoded
+  every row of the 21 MB record ledger to keep the four carrying one trace id, 173 ms under the same
+  kind of lock; `iter_records(trace_id=)` prescreens on the quoted id the way `kinds=` already did,
+  53 ms, identical text. Everything else touched today measured at or under 3 ms end-to-end from
+  the assistant's container (`heartbeat`, `schedules`, `approval_status`, registry finds, the
+  idempotency scan) and was left alone; the numbers are in the PR.
+
 - **The read lane and the approval mirror join the policy — 1.5.0** (door API v2, PR7–PR11).
   1.3.0 named dispatch, 1.4.0 named the switch, and the same argument now reaches the last two
   things the assistant does that the policy did not describe: thirteen read verbs — four of them
