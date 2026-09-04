@@ -153,6 +153,8 @@ money path / dispatch / 두 스케줄러 레인(claim-and-drop, catch-up 없음)
 
 ## 4. 문 계약의 방향 (구현은 PR5 이후)
 
+**설계 기록(2026-09-04):** [`runtime-contracts/DOOR_API_V2_DESIGN_V0.1.md`](runtime-contracts/DOOR_API_V2_DESIGN_V0.1.md) — 아래 방향을 코드·테스트 단위로 가격 매기고 Thomas의 분기점 D-1~D-6을 묻는다. PR7~PR11 순서도 거기에.
+
 지금의 문은 "사람이 읽는 콘솔"이고, 오케스트레이터가 필요로 하는 것이 구조적으로 없다 — 비동기 핸들, 회수 경로, 구조화 응답, 클라이언트 신원, 승인 상태 조회, 스케줄 조회. 방향만 적는다.
 
 1. **Typed / Versioned frame** — `socket_door` 프레임에 `proto`(정수 버전), `client_id`(Hermes 세션·cron·위임 자식 구분; actor 상수는 그대로 두고 task 레코드 `requester_id`에만 닿는다), 응답에 `data`(구조화)를 추가. 콘솔 텍스트는 유지.
