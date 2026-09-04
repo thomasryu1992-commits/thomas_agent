@@ -4823,9 +4823,11 @@ Sequence is fixed; each PR starts after the previous one merges.
       healthcheck; `S6_KILL_GRACETIME`/`S6_SERVICES_GRACETIME=25000` + `agent.restart_drain_timeout: 20`
       (first `prior_exit=clean` since 07-30); `mcp-stderr.log` copy-truncate rotation (07:40Z cron); restore
       runbook `docs/RUNBOOK_HARNESS_BACKUP_RESTORE.md`.
-- [ ] **PR5 — harness unification.** Hermes as the ninth service of `-p thomas_agent`; runtimes stay
-      split (two images, two uids, two state roots); `mem_limit` on hermes, pipeline-worker and
-      operator; a compose test that no Thomas service `depends_on` hermes.
+- [x] **PR5 — harness unification** (2026-09-04)**.** `hermes` is the ninth service of `docker-compose.yml`
+      (`-p thomas_agent`): image only (no `build:`, so CI never builds it), uid 10000, bridge-only mount,
+      three `.env` values, no `depends_on` anywhere; `mem_limit` on hermes, pipeline-worker and operator,
+      the two lanes unlimited. The `/root/hermes-trial` compose project is retired (data and build
+      context stay there). Pinned by five new tests in `tests/test_deployment_env_passthrough.py`.
 - [ ] **After PR5 — door API v2** (typed/versioned frame, `task_registry` origin `AGENT` after a load
       review, `request_id` idempotency returning `{task_id, status, result}`, read-only schedule and
       approval-status verbs, approval-notice mirroring to the Hermes chat) → **policy 1.5.0** (drafted

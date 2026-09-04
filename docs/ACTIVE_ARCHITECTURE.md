@@ -154,8 +154,13 @@ PermissionDecisions, pass the same Safety-Flag Gate, and append to the same audi
 Named here because until 2026-08-22 no document in this repository did, and two facts about that
 client change how the doors' guarantees should be read.
 
-The client is **Hermes**, a separate assistant deployed from `/root/hermes-trial` — its own
-repository, its own container, its own Telegram bot, none of it committed here. It reaches the four
+The client is **Hermes**, a separate assistant — its own repository (checked out at
+`/root/hermes-trial/hermes-agent`), its own image and uid, its own Telegram bot, its own state root
+(`/root/hermes-trial/data`), none of it committed here. Since 2026-09-04 (PR5) its **container** is
+the `hermes` service of this repository's `docker-compose.yml` — one compose project, two runtimes —
+so the parts of the boundary a compose file can express are now pinned by
+`tests/test_deployment_env_passthrough.py` (bridge-only mount, three environment values, no
+`depends_on`). It reaches the four
 doors over the sockets under `.runtime_governance_state/bridge/`, which are bind-mounted into its
 container, and through MCP shims it owns.
 

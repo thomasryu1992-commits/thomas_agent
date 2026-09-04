@@ -38,6 +38,12 @@ services:
     container_name: thomas-operator
     restart: unless-stopped
     stop_grace_period: 30s
+    # Memory ceiling (Thomas decision Q15-b, 2026-09-03; PR5). The two scheduler lanes stay unlimited —
+    # the money path is what the kernel's OOM killer must never pick — so every OTHER long-lived
+    # process on this 3.8 GB host carries a ceiling and is the candidate instead. Idle footprint is
+    # ~1–10 MB; the ceiling is sized for a model call plus a Naver research pass, not for idle.
+    mem_limit: 512m
+    memswap_limit: 1g
     logging:
       driver: json-file
       options:
@@ -488,6 +494,12 @@ services:
     # A model run in flight deserves the operator/scheduler grace, not the doors' 10s: a
     # SIGTERM mid-analysis should let the task settle into the ledger where it can.
     stop_grace_period: 30s
+    # Memory ceiling (Thomas decision Q15-b, 2026-09-03; PR5). The two scheduler lanes stay unlimited —
+    # the money path is what the kernel's OOM killer must never pick — so every OTHER long-lived
+    # process on this 3.8 GB host carries a ceiling and is the candidate instead. Idle footprint is
+    # ~1–10 MB; the ceiling is sized for a model call plus a Naver research pass, not for idle.
+    mem_limit: 1g
+    memswap_limit: 2g
     logging:
       driver: json-file
       options:
@@ -685,3 +697,62 @@ services:
       MVP_BRIDGE_CLIENT_GID: ${MVP_BRIDGE_CLIENT_GID:-10000}
       # See read-bridge for the uid gate and why uid 0 is not in its default.
       MVP_BRIDGE_CLIENT_UID: ${MVP_BRIDGE_CLIENT_UID:-10000}
+
+  # ── The assistant (Hermes) — the ninth service since PR5 (Thomas decision 2026-09-03, "one
+  # compose, runtimes stay split"). One compose PROJECT so that one `up -d`, one backup, one
+  # health view cover both runtimes; NOT one runtime: its own image (`hermes-agent`, built from
+  # /root/hermes-trial/hermes-agent, never by this file — no `build:` here, so CI's
+  # `docker compose build` skips it and the smoke never needs a 4 GB image), its own uid (10000
+  # against the runtime's 10001), its own state root (/root/hermes-trial/data), no code shared.
+  #
+  # Everything the doors enforce stays true here, and tests/test_deployment_env_passthrough.py
+  # pins the parts a compose file can express:
+  #   - it mounts the state root's `bridge/` directory and nothing else of the runtime's state —
+  #     the four sockets are the only path from this container to the runtime;
+  #   - its environment names exactly three values from `.env` (OpenRouter key, its own bot
+  #     token, its allowed user) and none of the live-trading or peer-gate surface;
+  #   - no service `depends_on` it and it `depends_on` nothing: the scheduler lanes and the
+  #     operator survive its failure, and it theirs.
+  # The bot token is the SAME `.env` variable the scheduler lanes send on (`HERMES_BOT_TOKEN`);
+  # this container is that bot's one poller, which is what makes the sharing safe.
+  #
+  # Healthcheck: the container CMD is `sleep infinity` (an s6 slot) and the gateway is an s6
+  # service under it, so process liveness says nothing about the gateway. The gateway rewrites
+  # /opt/data/state/gateway.heartbeat every 30 s; older than 120 s is unhealthy. Reports only —
+  # nothing on this host restarts on unhealthy (same as every service above).
+  # Stop budget: s6-overlay's default kill grace is 3 s, so `stop_grace_period` was never
+  # reached and every stop since 07-30 was unclean; 25 s sits inside the 30 s compose grace.
+  hermes:
+    image: hermes-agent
+    container_name: hermes
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 1500m
+    memswap_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${HERMES_DATA_DIR:-/root/hermes-trial/data}:/opt/data
+      - ${THOMAS_STATE_DIR:-./.runtime_governance_state}/bridge:/opt/bridge
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test $$(( $$(date +%s) - $$(stat -c %Y /opt/data/state/gateway.heartbeat) )) -lt 120"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    command: ["gateway", "run"]
+    environment:
+      # uid 10000 — the value the doors' peer gate admits; the runtime's services are 10001.
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      S6_KILL_GRACETIME: "25000"
+      S6_SERVICES_GRACETIME: "25000"
+      # `${VAR:-}` like every service above, so `docker compose config` works on a bare
+      # checkout (CI); on the host the deploy checklist in docs/DEPLOYMENT.md confirms the three
+      # resolve. An empty bot token does not start Telegram, and the healthcheck says so.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USERS: ${HERMES_TELEGRAM_ALLOWED_USERS:-}
