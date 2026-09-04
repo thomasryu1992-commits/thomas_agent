@@ -4817,9 +4817,12 @@ Sequence is fixed; each PR starts after the previous one merges.
       `Docker build + fail-closed smoke` are required checks beside the two Active Architecture Gates
       (five in all, `strict`). Applied on the branch protection before this PR opened, so the PR itself
       merged under the new rule.
-- [ ] **PR4 — backup / restart / health.** Hermes healthcheck, SQLite backup via `hermes backup`,
-      five-root backup (`.runtime_governance_state`, Hermes data, `THOMAS_CORE/{activations,approvals}`,
-      `workspace`, `.env`), restore runbook, `S6_KILL_GRACETIME`, restart drain timeout, log rotation.
+- [x] **PR4 — backup / restart / health** (2026-09-04)**.** `scripts/ops/harness_backup.sh` (installed as the
+      07:45Z cron): five roots — governance state, `THOMAS_CORE/{activations,approvals}`, `workspace`, `.env`,
+      Hermes data with a consistent `hermes backup --quick` snapshot — 25 MB / 4.8 s. Hermes heartbeat
+      healthcheck; `S6_KILL_GRACETIME`/`S6_SERVICES_GRACETIME=25000` + `agent.restart_drain_timeout: 20`
+      (first `prior_exit=clean` since 07-30); `mcp-stderr.log` copy-truncate rotation (07:40Z cron); restore
+      runbook `docs/RUNBOOK_HARNESS_BACKUP_RESTORE.md`.
 - [ ] **PR5 — harness unification.** Hermes as the ninth service of `-p thomas_agent`; runtimes stay
       split (two images, two uids, two state roots); `mem_limit` on hermes, pipeline-worker and
       operator; a compose test that no Thomas service `depends_on` hermes.

@@ -558,6 +558,11 @@ wrong, so a run nobody comments on is a run the system will repeat.
 
 ## Health, logs, shutdown
 
+**Backup, restore, and the assistant's health and stop budgets** are in
+[`RUNBOOK_HARNESS_BACKUP_RESTORE.md`](RUNBOOK_HARNESS_BACKUP_RESTORE.md) (PR4, 2026-09-04): five roots in one
+daily archive, the restore order with the three owning uids, the Hermes heartbeat healthcheck, the s6
+stop budget that ended the unclean-exit run, and the one log Hermes does not rotate.
+
 - **Healthcheck** (compose): each service's own **heartbeat**
   (`python -m runtime.mvp_runtime.heartbeat_cli operator|scheduler`). Each loop stamps
   `.runtime_governance_state/heartbeats/<service>.json` once per pass, and the probe fails
