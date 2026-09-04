@@ -4808,10 +4808,11 @@ Sequence is fixed; each PR starts after the previous one merges.
 
 - [x] **PR1 — the architecture document** (this section's source). Eight invariants named with what
       enforces each today; decisions Q1–Q17; PR sequence.
-- [ ] **PR2 — security / secret boundary.** `.env` to 0600; one Secret Source of Truth; per-service
+- [x] **PR2 — security / secret boundary** (2026-09-04)**.** `.env` to 0600; one Secret Source of Truth; per-service
       injection by `environment:` enumeration (no `env_file`); a secret ownership matrix pinned by
-      `tests/test_deployment_env_passthrough.py` with `hermes` named explicitly. The Hermes bot token
-      is currently stored twice (`SCHEDULER_TELEGRAM_BOT_TOKEN` here and in the Hermes env file).
+      `tests/test_deployment_env_passthrough.py` (`SECRET_OWNERSHIP`, exact in both directions and read
+      back from `docs/DEPLOYMENT.md`). The Hermes bot token had been stored twice
+      (`SCHEDULER_TELEGRAM_BOT_TOKEN` here and in the Hermes env file); it is `HERMES_BOT_TOKEN`, held once.
 - [ ] **PR3 — CI gate.** Make `MVP runtime pytest (ubuntu-latest)`, `(windows-latest)` and
       `Docker build + fail-closed smoke` required checks (today only the two Active Architecture Gates are).
 - [ ] **PR4 — backup / restart / health.** Hermes healthcheck, SQLite backup via `hermes backup`,

@@ -202,7 +202,10 @@ services:
       # same registered chat as the operator service — the scheduler never reads
       # inbound messages, so this adds notification, not a second command door.
       #
-      # The BOT, though, may differ, and `SCHEDULER_TELEGRAM_BOT_TOKEN` is how. Operator
+      # The BOT, though, may differ, and `HERMES_BOT_TOKEN` is how — the assistant's bot token,
+      # held ONCE in `.env` (the single secret source since PR2, 2026-09-04; the variable was
+      # `SCHEDULER_TELEGRAM_BOT_TOKEN` before, a second copy of a token the assistant's own
+      # env file also held) and projected only to the services that SEND on it. Operator
       # Telegram moved to the assistant (Hermes), which polls its own bot; this service kept
       # the original one. So its notifications were delivered — the API returned ok and the
       # watch marker advanced — into a conversation nobody reads any more. Measured
@@ -218,7 +221,7 @@ services:
       # Unset falls back to `TELEGRAM_BOT_TOKEN`, so a machine that has not opted in behaves
       # exactly as before.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
-      TELEGRAM_BOT_TOKEN: ${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
+      TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
       # Crypto pipeline gates (scheduler-only): the env var alone fails closed —
       # each real backend also needs its mounted safety-flag grant.
       MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
@@ -340,7 +343,7 @@ services:
       # both lanes de-dup their own alerts, so a shared failure alerts once per lane, which
       # is honest: two loops, two restarts, two diagnoses.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
-      TELEGRAM_BOT_TOKEN: ${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
+      TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
 
   # The read-only door. Same shape as `switch-bridge` and deliberately a second service:
   # different authority (INTERNAL_READ + kill_allows read_only_status, not the emergency

@@ -32,6 +32,7 @@ to be answered at authoring time, not discovered on a server that quietly does n
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,11 @@ from runtime.mvp_runtime.crypto import account, live_execution, live_order, live
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
+DEPLOYMENT_DOC = ROOT / "docs" / "DEPLOYMENT.md"
+# Every service in the file, read once: the bulk-forward prohibition below must cover a service
+# the moment it is added, not when someone remembers to extend a tuple (the door services were
+# outside the old tuple for a month).
+_ALL_SERVICES = tuple(sorted(yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))["services"]))
 
 # Capability selectors the OPERATOR service's code paths read. Each must be passed through
 # to that service, or the capability is unreachable there however correct the grant is.
@@ -406,7 +412,7 @@ def test_the_operator_receives_none_of_it(env_var, what):
     )
 
 
-@pytest.mark.parametrize("service", ("operator", "scheduler", "scheduler-maint", "pipeline-worker"))
+@pytest.mark.parametrize("service", _ALL_SERVICES)
 def test_no_service_bulk_forwards_the_environment(service):
     """The bypass the list above cannot see.
 
@@ -496,7 +502,7 @@ def test_the_maintenance_lane_notifies_on_the_schedulers_bot():
     property that makes sharing the bot safe."""
     environment = _service_environment("scheduler-maint")
     assert environment["TELEGRAM_BOT_TOKEN"] == (
-        "${SCHEDULER_TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
+        "${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}"
     )
     assert environment["TELEGRAM_BOT_TOKEN"] == _service_environment("scheduler")["TELEGRAM_BOT_TOKEN"]
 
@@ -545,3 +551,96 @@ def test_the_lane_wiring_matches_the_heartbeat_each_service_probes():
             f"{service}'s healthcheck probes {spec['healthcheck']['test'][-1]!r}, "
             f"expected {heartbeat_name!r}"
         )
+
+
+# ── Secret ownership matrix (PR2, 2026-09-04) ─────────────────────────────────────────────
+#
+# One secret source on the host (`.env`, root-owned, mode 0600) and per-service projection by
+# `environment:` enumeration — the two halves of Thomas's 2026-09-03 decision. This matrix is
+# the third half: for every secret-bearing variable the compose file can draw from `.env`, the
+# exact set of services that receives it. Keyed by the NAME IN `.env` (the source), not by the
+# name the container sees — the scheduler lanes receive the assistant's bot token under the
+# container name `TELEGRAM_BOT_TOKEN`, and that is precisely the kind of aliasing a reader of
+# the compose file misses.
+#
+# `TELEGRAM_BOT_TOKEN` (the control bot) is listed for the scheduler lanes because their value is
+# `${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}`: a host that has not set the assistant's token
+# falls back to the control bot, so the control bot token CAN reach those two services. The
+# matrix records what can reach a service, which is the question a leak asks.
+SECRET_NAME = re.compile(r"(KEY|SECRET|TOKEN)")
+_ENV_REFERENCE = re.compile(r"\$\{([A-Z0-9_]+)")
+
+SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
+    "BINANCE_ACCOUNT_API_KEY": frozenset({"scheduler"}),
+    "BINANCE_ACCOUNT_API_SECRET": frozenset({"scheduler"}),
+    "COINALYZE_API_KEY": frozenset({"scheduler", "scheduler-maint"}),
+    "GOOGLE_AI_STUDIO_API_KEY": frozenset({"operator", "pipeline-worker"}),
+    "GROQ_API_KEY": frozenset({"operator", "pipeline-worker"}),
+    "HERMES_BOT_TOKEN": frozenset({"scheduler", "scheduler-maint"}),
+    "MVP_LIVE_ORDER_API_KEY": frozenset({"scheduler"}),
+    "MVP_LIVE_ORDER_API_SECRET": frozenset({"scheduler"}),
+    "NAVER_APIHUB_KEY": frozenset({"pipeline-worker"}),
+    "NAVER_APIHUB_KEY_ID": frozenset({"pipeline-worker"}),
+    "NAVER_SEARCHAD_API_KEY": frozenset({"pipeline-worker"}),
+    "NAVER_SEARCHAD_SECRET_KEY": frozenset({"pipeline-worker"}),
+    "OPENROUTER_API_KEY": frozenset({"operator", "pipeline-worker"}),
+    "TAVILY_API_KEY": frozenset({"operator", "pipeline-worker"}),
+    "TELEGRAM_BOT_TOKEN": frozenset({"operator", "scheduler", "scheduler-maint"}),
+}
+
+
+def _secret_holders_in_compose() -> dict[str, frozenset[str]]:
+    """Every `${NAME` reference in any service's `environment:` whose NAME looks like a secret,
+    mapped to the services that reference it. Reads the file the way Compose does — the
+    interpolation SOURCE is what leaves `.env`, whatever the container calls it."""
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    holders: dict[str, set[str]] = {}
+    for service, spec in compose["services"].items():
+        environment = spec.get("environment") or {}
+        assert isinstance(environment, dict), (
+            f"{service} declares `environment:` as a list; the matrix reads mappings only, and "
+            f"so does every assertion above — declare it as a mapping"
+        )
+        for value in environment.values():
+            for name in _ENV_REFERENCE.findall(str(value)):
+                if SECRET_NAME.search(name):
+                    holders.setdefault(name, set()).add(service)
+    return {name: frozenset(services) for name, services in holders.items()}
+
+
+def test_every_secret_the_compose_file_can_draw_is_in_the_ownership_matrix():
+    """Both directions, as one assertion: a secret referenced by a service the matrix does not
+    name is a leak the enumeration tests above cannot see (they each know one variable); a
+    matrix row no service references is a stale claim about the deployment."""
+    assert _secret_holders_in_compose() == SECRET_OWNERSHIP
+
+
+def test_the_bulk_forward_prohibition_covers_every_service():
+    """`_ALL_SERVICES` is read from the file, so this can only fail if the file has no services —
+    it is here to make the coverage claim explicit rather than implicit in a parametrize."""
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    assert set(_ALL_SERVICES) == set(compose["services"]) and len(_ALL_SERVICES) >= 8
+
+
+def _documented_matrix() -> dict[str, frozenset[str]]:
+    """The table under `## Secret boundary` in docs/DEPLOYMENT.md: `| NAME | a, b | ... |` (NAME in backticks).
+    Only the second column (services in THIS compose file) is read; the assistant's container
+    lives in another compose project until the harness is unified and is documented in prose."""
+    text = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+    start = text.index("## Secret boundary")
+    end = text.find("\n## ", start + 1)
+    section = text[start:end if end > 0 else None]
+    rows: dict[str, frozenset[str]] = {}
+    for line in section.splitlines():
+        match = re.match(r"^\| `([A-Z0-9_]+)` \| ([^|]*) \|", line)
+        if match:
+            services = {item.strip().strip("`") for item in match.group(2).split(",") if item.strip()}
+            rows[match.group(1)] = frozenset(services)
+    return rows
+
+
+def test_the_ownership_matrix_is_documented_verbatim():
+    """docs/DEPLOYMENT.md is where an operator looks; the test is where the truth is pinned.
+    They must not drift — a matrix that lives in a test nobody reads is not a boundary
+    anyone can check on the host."""
+    assert _documented_matrix() == SECRET_OWNERSHIP

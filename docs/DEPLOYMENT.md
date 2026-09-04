@@ -122,7 +122,7 @@ TELEGRAM_BOT_TOKEN=...
 # successfully into a conversation nobody reads any more. Safe only because the scheduler never
 # calls getUpdates — never set this on the operator service, which does poll, or the two
 # pollers steal each other's messages. Unset falls back to TELEGRAM_BOT_TOKEN.
-SCHEDULER_TELEGRAM_BOT_TOKEN=...
+HERMES_BOT_TOKEN=...            # the assistant's bot; lane notifications go there (renamed 2026-09-04)
 MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq
 OPENROUTER_API_KEY=...
 GOOGLE_AI_STUDIO_API_KEY=...
@@ -355,6 +355,75 @@ docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --r
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
 only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
+
+## Secret boundary — one source, per-service projection (decided 2026-09-03, PR2)
+
+Three rules, two of them pinned by `tests/test_deployment_env_passthrough.py`, one by this
+checklist:
+
+1. **`/root/thomas_agent/.env` is the only file on the host that holds a secret**, owned by root,
+   mode **0600**. It was 0644 until 2026-09-04 — world-readable live-order keys. No test can see a
+   host file mode; check it whenever you touch the file:
+
+   ```bash
+   stat -c '%a %U %n' /root/thomas_agent/.env      # expect: 600 root
+   ```
+
+2. **A service receives a secret only by `environment:` enumeration** — never `env_file`, which
+   forwards the whole file. Pinned for **every** service in the compose file
+   (`test_no_service_bulk_forwards_the_environment`), not a hand-kept tuple.
+
+3. **The ownership matrix below is exact in both directions** (`SECRET_OWNERSHIP` in the test
+   file; `test_every_secret_the_compose_file_can_draw_is_in_the_ownership_matrix`): a service that
+   starts referencing a secret the matrix does not give it fails CI, and so does a row nothing
+   references. The table here is read back by `test_the_ownership_matrix_is_documented_verbatim`,
+   so editing one without the other also fails.
+
+Rows are keyed by the name in `.env` (what leaves the file), not by the container's name for it.
+
+| Secret in `.env` | Services in this compose file | Why there and nowhere else |
+|---|---|---|
+| `BINANCE_ACCOUNT_API_KEY` | `scheduler` | account snapshot for the readiness board — the risk lane only |
+| `BINANCE_ACCOUNT_API_SECRET` | `scheduler` | same |
+| `MVP_LIVE_ORDER_API_KEY` | `scheduler` | the live order path — the one service that may place an order |
+| `MVP_LIVE_ORDER_API_SECRET` | `scheduler` | same |
+| `COINALYZE_API_KEY` | `scheduler`, `scheduler-maint` | derivatives feed for the cycle (risk) and the candle archive (maintenance) |
+| `OPENROUTER_API_KEY` | `operator`, `pipeline-worker` | the model plane: analyses, validation, the front desk — never the money plane |
+| `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |
+| `GROQ_API_KEY` | `operator`, `pipeline-worker` | same plane, validator and front-desk provider |
+| `TAVILY_API_KEY` | `operator`, `pipeline-worker` | the read-only search tool, model plane only |
+| `NAVER_APIHUB_KEY` | `pipeline-worker` | Naver research runs on the engine and nowhere else |
+| `NAVER_APIHUB_KEY_ID` | `pipeline-worker` | same |
+| `NAVER_SEARCHAD_API_KEY` | `pipeline-worker` | same |
+| `NAVER_SEARCHAD_SECRET_KEY` | `pipeline-worker` | same |
+| `TELEGRAM_BOT_TOKEN` | `operator`, `scheduler`, `scheduler-maint` | the control bot: the operator polls it; the two lanes list it only as the **fallback** when `HERMES_BOT_TOKEN` is unset |
+| `HERMES_BOT_TOKEN` | `scheduler`, `scheduler-maint` | the assistant's bot, outbound-only here — these two never call `getUpdates`, which is what makes sharing the assistant's bot safe |
+
+**The door services hold nothing** — their `environment:` is exactly the two peer-gate variables
+(`test_the_dispatch_door_carries_only_the_peer_variables`), and no row above names them.
+
+**The assistant's container (Hermes) draws from the same file.** Until the harness is unified
+it runs from its own compose project, started as
+`docker compose --env-file /root/thomas_agent/.env up -d` in `/root/hermes-trial`: the file is
+read for **interpolation only**, and the container receives exactly three values by
+`environment:` enumeration — `OPENROUTER_API_KEY` (the same key, held once), `HERMES_BOT_TOKEN`
+as its `TELEGRAM_BOT_TOKEN` (it is the one poller of that bot), and `HERMES_TELEGRAM_ALLOWED_USERS`
+as its `TELEGRAM_ALLOWED_USERS`. The separate `hermes.env` that used to hold a second copy of the
+first two is retired. Nothing in the live-trading surface is enumerated there; check the
+container rather than the compose file:
+
+```bash
+docker inspect hermes --format '{{range .Config.Env}}{{println .}}{{end}}' | cut -d= -f1 | grep -E 'KEY|SECRET|TOKEN'
+# expect exactly: OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN
+```
+
+**Renamed 2026-09-04:** `SCHEDULER_TELEGRAM_BOT_TOKEN` → `HERMES_BOT_TOKEN`. The old name is no
+longer read anywhere; a host still carrying it silently falls back to the control bot for lane
+notifications, which is the misdelivery the 2026-08-01 comment in the compose file describes.
+
+**Adding a secret** means answering the ownership question at authoring time: add it to `.env`,
+enumerate it in exactly the services whose code reads it, add the row to `SECRET_OWNERSHIP` and
+to the table above. CI fails until all four agree.
 
 ## The four assistant doors — check the boundary, no test can
 
