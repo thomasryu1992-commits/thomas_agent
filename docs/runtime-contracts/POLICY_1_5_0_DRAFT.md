@@ -1,6 +1,6 @@
 # Governance policy 1.5.0 — draft for Thomas to apply
 
-**Status:** PROPOSED — a draft. Nothing in this file is policy. `governance/GOVERNANCE_POLICY.yaml`
+**Status:** IMPLEMENTED — applied 2026-09-04 with `scripts/ops/policy_bump_1_5_0.py --apply` on Thomas's explicit instruction (decision Q2 amended for this bump: "이거 네가 해줄래?"), at zero live PENDING; `governance/GOVERNANCE_POLICY.yaml` is at **1.5.0**. The sections below are the draft as applied.
 stays at **1.4.0** until Thomas applies the bump himself (decision Q2, 2026-09-03: policy edits are
 written together and uploaded by Thomas, at a zero-PENDING moment, atomically).
 **Owner:** Thomas.

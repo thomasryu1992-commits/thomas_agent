@@ -24,6 +24,18 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The read lane and the approval mirror join the policy — 1.5.0** (door API v2, PR7–PR11).
+  1.3.0 named dispatch, 1.4.0 named the switch, and the same argument now reaches the last two
+  things the assistant does that the policy did not describe: thirteen read verbs — four of them
+  new, one reading the approvals store as a summary — and the copy of every switch-door ask sent
+  on the assistant's bot. `control_channel.assistant_read` is a CLOSED verb list pinned both ways
+  to `read_bridge.READ_VERB_AUTHORITY` by test, with `mutation_allowed: false` and the exact fields
+  `approval_status` may expose; `approval_notification_mirror` records a second sink with
+  `decision_source: false` and leaves `invalid_approval_sources` untouched. Same bump discipline
+  as 1.4.0, same measured radius, zero PENDING at bump time; both replay bundles rebuilt. Applied
+  by the assistant on Thomas's explicit instruction (2026-09-04, amending decision Q2's "uploaded
+  by Thomas himself" for this bump), with `scripts/ops/policy_bump_1_5_0.py --apply`.
+
 - **The approval mirror — door API v2, increment 5 (PR11)** (design record proposal 5; decision Q1-b).
   A switch-door ask minted through the assistant was pushed only to the control bot, the window Thomas is
   not looking at when he is talking to the assistant. The operator now also sends a copy on the assistant's
