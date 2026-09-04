@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, operator, scheduler, task_registry, timeutil
+from . import heartbeat, operator, policy_fingerprint, scheduler, task_registry, timeutil
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -393,6 +393,12 @@ def main(
             scheduler.LANE_RISK: heartbeat.SCHEDULER_RISK_SERVICE,
             scheduler.LANE_MAINTENANCE: heartbeat.SCHEDULER_MAINTENANCE_SERVICE,
         }[args.lane]
+        # Which policy this image runs under (Q7-a, Thomas 2026-09-03), per lane PROCESS for
+        # the same reason the heartbeat is. Banner only: the operator service owns the control
+        # channel and is the one that tells Thomas, so a deploy that moves the policy produces
+        # one notice rather than one per loop. Never fail-closed — see `policy_fingerprint`.
+        sys.stderr.write(policy_fingerprint.banner(policy_fingerprint.check_and_record(
+            heartbeat_service, now=now or timeutil.utc_now_iso(), root=repo_root)))
 
         def _beat() -> None:
             try:

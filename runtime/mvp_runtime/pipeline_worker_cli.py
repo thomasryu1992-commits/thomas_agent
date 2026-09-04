@@ -24,7 +24,7 @@ from typing import Any
 
 import sys
 
-from . import pipeline_worker, socket_door, timeutil
+from . import pipeline_worker, policy_fingerprint, socket_door, timeutil
 from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -100,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     # The assistant's runs are recorded here (door API v2). A predecessor killed mid-run left
     # its entries RUNNING; this process is the one that may honestly close them. Best-effort:
     # bookkeeping must not stop the engine.
+    # Which policy this image runs under (Q7-a). Banner only — the operator tells Thomas.
+    sys.stderr.write(policy_fingerprint.banner(
+        policy_fingerprint.check_and_record("pipeline-worker", now=timeutil.utc_now_iso())))
     registry = TaskRegistryStore.default()
     try:
         stranded = pipeline_worker.reconcile_worker_entries(registry, now=timeutil.utc_now_iso())

@@ -139,7 +139,8 @@ def test_tick_runs_due_prune(tmp_path, capsys):
                 "content": "old", "created_at": PAST, "expires_at": PAST}])
     store.add(build_schedule(kind=KIND_PRUNE, request="", interval_seconds=86400, created_by="op", now=T0))
     rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
-              store=store, ledger=ledger, control_store=control_store, working_memory=wm, now=DUE)
+              store=store, ledger=ledger, control_store=control_store, working_memory=wm,
+              repo_root=tmp_path, now=DUE)
     assert rc == 0
     assert "fired 1" in capsys.readouterr().out
     assert wm.read_all() == []
@@ -205,7 +206,7 @@ def test_the_loop_measures_the_pass_it_just_ran(tmp_path, capsys):
     slept: list[float] = []
     rc = main(["tick", "--max-ticks", "2", "--interval-seconds", "30"],
               store=store, ledger=ledger, control_store=control_store, working_memory=wm,
-              now=DUE, sleep=slept.append, monotonic=clock)
+              repo_root=tmp_path, now=DUE, sleep=slept.append, monotonic=clock)
     assert rc == 0
     assert len(slept) == 1                  # only between ticks, never after the last
     assert slept[0] == 25.0                 # the 30s period minus the 5s pass, not 30.0
@@ -218,7 +219,8 @@ def test_tick_skips_while_killed(tmp_path, capsys):
     wm = WorkingMemoryStore(tmp_path / "wm")
     store.add(build_schedule(kind=KIND_TASK, request="x", interval_seconds=86400, created_by="op", now=T0))
     rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
-              store=store, ledger=ledger, control_store=control_store, working_memory=wm, now=DUE)
+              store=store, ledger=ledger, control_store=control_store, working_memory=wm,
+              repo_root=tmp_path, now=DUE)
     assert rc == 0
     assert "skipped 1" in capsys.readouterr().out
 
@@ -240,7 +242,7 @@ def _budget_bound_tick(tmp_path, monkeypatch, *, budget):
                              created_by="op", now=T0))
     rc = main(["tick", "--max-ticks", "1", "--interval-seconds", "0"],
               store=store, ledger=ledger, control_store=control_store, working_memory=wm,
-              now=DUE)
+              repo_root=tmp_path, now=DUE)
     assert rc == 0
 
 

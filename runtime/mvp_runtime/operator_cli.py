@@ -27,17 +27,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, task_registry, timeutil
+from . import heartbeat, policy_fingerprint, task_registry, timeutil
 from .approval_store import ApprovalStore
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
 from .errors import MvpRuntimeError, OperatorBlocked
+from .events import stamped_event
 from .frontdesk import select_frontdesk_provider
 from .operator import (
     OperatorChannel,
     OperatorIdentity,
     announce_pending_approvals,
     load_operator_registration,
+    notify_operator,
     run_operator_once,
     select_mirror_channel,
     select_operator_channel,
@@ -149,6 +151,31 @@ def main(
                          "plain text is a conversation turn, /verbs stay deterministic)\n")
 
     store = store if store is not None else LedgerStore.default(repo_root)
+    # Q7-a (Thomas 2026-09-03): which policy is this image running under, and did it change?
+    # Startup is the only place the question has an answer — the file is baked into the image,
+    # so it moves on a deploy or a rollback and never under a running process. Never
+    # fail-closed (see `policy_fingerprint`), and this service is the ONE that also tells
+    # Thomas, because it is the one holding the control channel.
+    policy_check = policy_fingerprint.check_and_record(
+        heartbeat.OPERATOR_SERVICE, now=timeutil.utc_now_iso(), root=repo_root,
+    )
+    sys.stderr.write(policy_fingerprint.banner(policy_check))
+    if policy_check["status"] == policy_fingerprint.CHANGED:
+        try:
+            store.append_block(stamped_event(
+                "policy_fingerprint.v0", action="policy_changed",
+                service=policy_check["service"], policy_ref=policy_check["policy_ref"],
+                policy_version=policy_check["policy_version"], sha256=policy_check["sha256"],
+                previous_policy_version=policy_check["previous_policy_version"],
+                previous_sha256=policy_check["previous_sha256"],
+                created_at=policy_check["checked_at"],
+            ))
+        except MvpRuntimeError as exc:
+            sys.stderr.write(f"OPERATOR: policy change not recorded in the ledger ({exc.reason_code})\n")
+        try:
+            notify_operator(channel, policy_fingerprint.change_notice(policy_check), repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            sys.stderr.write(f"OPERATOR: policy change not announced ({exc.reason_code})\n")
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
     programization = ProgramizationStore.default(repo_root)
     control_store = control_store if control_store is not None else ControlStore.default(repo_root)
