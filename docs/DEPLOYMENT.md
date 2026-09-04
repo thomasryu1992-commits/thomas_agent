@@ -590,6 +590,15 @@ all on a **bare image with no secrets and no provisioned state**:
 
 So the fail-closed claims above are checked on every PR rather than trusted.
 
+**Required on `main` since 2026-09-04 (PR3):** this smoke (`Docker build + fail-closed smoke`),
+`MVP runtime pytest (ubuntu-latest)`, `MVP runtime pytest (windows-latest)`, and the two Active
+Architecture Gates — five checks, `strict` (branch must be current with `main`). Before that only
+the two gates were required, and "checked on every PR" meant *reported*, not *enforced*: a PR
+whose compose change failed this smoke, or whose pytest was red, could still be merged once the
+gates were green. The harness PRs that follow (backup/health, then the compose unification)
+change exactly the files this smoke and these tests read, which is why the requirement comes
+first. Verify: `gh api repos/<owner>/<repo>/branches/main/protection --jq '.required_status_checks.contexts'`.
+
 ## Notes
 
 - The base image is `python:3.12-slim` to match CI's Python 3.12.

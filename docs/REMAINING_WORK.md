@@ -4813,8 +4813,10 @@ Sequence is fixed; each PR starts after the previous one merges.
       `tests/test_deployment_env_passthrough.py` (`SECRET_OWNERSHIP`, exact in both directions and read
       back from `docs/DEPLOYMENT.md`). The Hermes bot token had been stored twice
       (`SCHEDULER_TELEGRAM_BOT_TOKEN` here and in the Hermes env file); it is `HERMES_BOT_TOKEN`, held once.
-- [ ] **PR3 — CI gate.** Make `MVP runtime pytest (ubuntu-latest)`, `(windows-latest)` and
-      `Docker build + fail-closed smoke` required checks (today only the two Active Architecture Gates are).
+- [x] **PR3 — CI gate** (2026-09-04)**.** `MVP runtime pytest (ubuntu-latest)`, `(windows-latest)` and
+      `Docker build + fail-closed smoke` are required checks beside the two Active Architecture Gates
+      (five in all, `strict`). Applied on the branch protection before this PR opened, so the PR itself
+      merged under the new rule.
 - [ ] **PR4 — backup / restart / health.** Hermes healthcheck, SQLite backup via `hermes backup`,
       five-root backup (`.runtime_governance_state`, Hermes data, `THOMAS_CORE/{activations,approvals}`,
       `workspace`, `.env`), restore runbook, `S6_KILL_GRACETIME`, restart drain timeout, log rotation.
