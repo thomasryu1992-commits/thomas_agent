@@ -3,6 +3,8 @@ network or env; the accepted path runs the pipeline and so needs a local Core.""
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,26 @@ from runtime.mvp_runtime.worker import MockProvider
 from tests._helpers import requires_local_core
 
 REG = OperatorIdentity(operator_id="tg-1", chat_id="chat-1")
+
+
+@pytest.fixture(autouse=True)
+def _quiet_policy_check(monkeypatch):
+    """Neutralize the Q7-a startup policy check for the tests that are not about it.
+
+    `main` records the policy fingerprint under `repo_root`, and these tests deliberately
+    leave `repo_root` unset so the run binds to the repo's own Core while their stores are
+    injected under `tmp_path`. Without this the check would write a real state file for every
+    test in this file — which `tests/conftest.py`'s leak guard exists to catch. The two tests
+    that ARE about the check override this with their own stub.
+    """
+    import runtime.mvp_runtime.operator_cli as cli
+    from runtime.mvp_runtime import policy_fingerprint
+
+    monkeypatch.setattr(cli.policy_fingerprint, "check_and_record", lambda *a, **k: {
+        "status": policy_fingerprint.UNCHANGED, "service": "operator",
+        "checked_at": "2026-09-04T13:00:00Z", "policy_ref": policy_fingerprint.POLICY_REL,
+        "sha256": "c" * 64, "policy_version": "1.5.0", "recorded": True,
+    })
 
 
 def _msg(**overrides):
@@ -194,3 +216,46 @@ def test_the_mirror_channel_reaches_the_announcer_and_is_selected_when_not_injec
 
     assert seen == [mirror, None]
     assert capsys.readouterr().err.count("OPERATOR: approval mirror OFF") == 1
+
+
+def test_the_operator_announces_a_policy_change_once_to_the_control_channel(tmp_path, monkeypatch, capsys):
+    """Q7-a: the operator is the one service holding the channel, so it is the one that tells
+    Thomas. The ledger keeps the record; the notice is best-effort on top of it."""
+    import runtime.mvp_runtime.operator_cli as cli
+    from runtime.mvp_runtime import heartbeat, policy_fingerprint
+    from runtime.mvp_runtime.store import LedgerStore
+
+    state = tmp_path / ".runtime_governance_state"
+    state.mkdir(exist_ok=True)
+    (state / "operator_registration.json").write_text(
+        '{"operator_id": "tg-1", "chat_id": "chat-1", "approver": "Thomas"}', encoding="utf-8")
+    changed = {"status": policy_fingerprint.CHANGED, "service": heartbeat.OPERATOR_SERVICE,
+               "checked_at": "2026-09-04T13:00:00Z", "policy_ref": policy_fingerprint.POLICY_REL,
+               "sha256": "b" * 64, "policy_version": "1.5.0",
+               "previous_sha256": "a" * 64, "previous_policy_version": "1.4.0", "recorded": True}
+    monkeypatch.setattr(cli.policy_fingerprint, "check_and_record", lambda *a, **k: changed)
+    ch = MockOperatorChannel()
+
+    assert main([], channel=ch, registration=REG, provider=MockProvider(),
+                store=LedgerStore(tmp_path), repo_root=tmp_path) == 0
+
+    assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-1"      # the registered chat, never a caller's
+    assert "1.4.0" in ch.sent[0][1] and "1.5.0" in ch.sent[0][1]
+    assert "POLICY CHANGED: 1.4.0" in capsys.readouterr().err
+    events = [json.loads(l) for l in (tmp_path / "blocks.jsonl").read_text(encoding="utf-8").splitlines()
+              if '"policy_fingerprint.v0"' in l]
+    assert len(events) == 1 and events[0]["action"] == "policy_changed"
+    assert events[0]["previous_policy_version"] == "1.4.0" and events[0]["policy_version"] == "1.5.0"
+
+
+def test_an_unchanged_policy_is_a_banner_and_nothing_else(tmp_path, capsys):
+    """The banner is printed on every start — "which policy am I running" must be answerable
+    from a log written before anything went wrong — but nothing else happens."""
+    from runtime.mvp_runtime.store import LedgerStore
+
+    ch = MockOperatorChannel()
+    assert main([], channel=ch, registration=REG, provider=MockProvider(),
+                store=LedgerStore(tmp_path), repo_root=tmp_path) == 0
+
+    assert ch.sent == [] and not (tmp_path / "blocks.jsonl").exists()
+    assert "POLICY: 1.5.0" in capsys.readouterr().err

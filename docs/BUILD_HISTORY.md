@@ -24,6 +24,22 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Which policy is this image running under — and did it change?** (decision Q7-a, 2026-09-03).
+  The governance policy is copied into the image, never mounted, so it moves only when a different
+  image is deployed — and nothing said so: the 1.4.0 → 1.5.0 bump rode in on `candidate-839`
+  silently, and `docker tag rollback-pre-839 latest` would put 1.4.0 back under services that were
+  approving against 1.5.0, indistinguishably from outside. `policy_fingerprint` records the hash and
+  version per service at startup (one file each, the heartbeats' shape, because the services all
+  start within a second of each other and a shared pointer would let the race winner record the
+  change for everybody else to read back as UNCHANGED) and every loop prints which policy it holds.
+  On a change the operator — the one service with the control channel — appends a
+  `policy_fingerprint.v0` block and sends one notice to Thomas's window naming both versions. Never
+  fail-closed, by decision and for a reason worth stating: a runtime that refused to start on a
+  moved hash would turn every legitimate bump into an outage, and the halt door lives in these same
+  processes. This is the compensating control for what Q2 gave up when policy edits became a human
+  act. Adding a read-door verb for it would now cost a policy bump (the 1.5.0 clause pins the verb
+  list), so it stays a startup control.
+
 - **Two reads that paid for the whole file now pay for what they return** (performance review of
   the door API v2 sequence, 2026-09-04; measured against the live state). `scheduler_events` parsed
   the whole active scheduler ledger under the appender's lock to keep the newest twenty — 21 ms on a
