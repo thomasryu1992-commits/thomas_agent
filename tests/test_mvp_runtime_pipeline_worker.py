@@ -608,3 +608,127 @@ def test_the_policies_reach_run_task_when_the_deployment_sets_them(monkeypatch):
         independent_validation="AUTO", revise=True)
     assert seen["independent_validation"] == "AUTO"
     assert seen["revise"] is True
+
+
+# --- the registry entry an assistant run leaves behind (door API v2) --------------
+
+import json as _json
+
+from runtime.mvp_runtime import task_registry as _tr
+from runtime.mvp_runtime.task_registry import TaskRegistryStore as _Registry
+
+
+@pytest.fixture
+def completed_run(monkeypatch):
+    """Like `captured_run_task`, with the ids shaped as the real pipeline shapes them
+    (`task_…`/`trace_…`). The registry validates every row it appends against its schema, so a
+    close carrying an id in any other shape is swallowed as REGISTRY_RECORD_INVALID — the
+    shared fixture's `task-1` would leave every entry RUNNING here, and this pins that the
+    real shape closes."""
+    calls: list[dict] = []
+
+    def _fake(raw_request, **kwargs):
+        calls.append({"raw_request": raw_request, **kwargs})
+        return {
+            "status": "COMPLETED",
+            "final_response": "ok",
+            "records": {"received_task": {"identity": {"task_id": "task_a1", "trace_id": "trace_a1"}}},
+        }
+
+    monkeypatch.setattr(pipeline_worker, "run_task", _fake)
+    return calls
+
+
+def test_an_assistant_run_opens_running_and_closes_delivered_with_its_ids(tmp_path, completed_run):
+    registry = _Registry(tmp_path)
+    out = pipeline_worker.apply_work(
+        _valid(client_id="hermes:dm"), control_store=ControlStore(tmp_path), registry=registry, now=NOW,
+    )
+    entry = registry.find(out["registry_entry_id"])
+    assert entry.origin == "AGENT" and entry.status == _tr.DELIVERED
+    assert entry.requester_id == ASSISTANT_ACTOR and entry.request_kind == "analysis"
+    assert entry.task_id == "task_a1" and entry.trace_id == "trace_a1" and entry.result_ref == "ledger:trace_a1"
+    assert registry.find("task_a1").registry_entry_id == out["registry_entry_id"]   # the reply's id resolves
+    assert out["task_id"] == "task_a1"
+    # Never QUEUED: the operator's drain claims QUEUED regardless of origin.
+    rows = [_json.loads(line) for line in registry.path.read_text(encoding="utf-8").splitlines()]
+    assert [r["status"] for r in rows] == [_tr.RUNNING, _tr.DELIVERED]
+    # The attribution the assistant named lands on the task record, nowhere that decides.
+    assert completed_run[0]["created_by"] == f"{ASSISTANT_ACTOR}:hermes:dm"
+    assert completed_run[0]["requester_id"] == ASSISTANT_ACTOR
+
+
+def test_without_a_client_id_no_created_by_is_passed(tmp_path, captured_run_task):
+    pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=_Registry(tmp_path), now=NOW)
+    assert "created_by" not in captured_run_task[0]
+
+
+def test_a_blocked_run_closes_blocked_with_the_pipelines_reason(tmp_path, monkeypatch):
+    def _blocked(raw_request, **kwargs):
+        return {"status": "BLOCKED", "block": {"reason_code": "PERMISSION_EXCEEDED", "message": "no"},
+                "records": {"received_task": {"identity": {"task_id": "task_b", "trace_id": "trace_b"}}}}
+    monkeypatch.setattr(pipeline_worker, "run_task", _blocked)
+    registry = _Registry(tmp_path)
+    out = pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry, now=NOW)
+    assert out["ok"] is False and out["reason_code"] == "PERMISSION_EXCEEDED"
+    entry = registry.find(out["registry_entry_id"])
+    assert entry.status == _tr.BLOCKED and entry.last_reason_code == "PERMISSION_EXCEEDED"
+    assert entry.task_id == "task_b"
+
+
+def test_a_run_that_raises_closes_failed_and_still_raises(tmp_path, monkeypatch):
+    def _explodes(raw_request, **kwargs):
+        raise RuntimeError("provider down")
+    monkeypatch.setattr(pipeline_worker, "run_task", _explodes)
+    registry = _Registry(tmp_path)
+    with pytest.raises(RuntimeError):
+        pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry, now=NOW)
+    (entry,) = registry.latest()
+    assert entry.status == _tr.FAILED and entry.last_reason_code == pipeline_worker.WORKER_EXCEPTION_REASON_CODE
+
+
+def test_the_scheduler_profile_records_nothing_here(tmp_path, captured_run_task):
+    """The scheduler opens its own SCHEDULER entry before delegating; recording its forwarded
+    run here too would make one run two entries."""
+    registry = _Registry(tmp_path)
+    out = pipeline_worker.apply_work(
+        _valid(actor_profile=pipeline_worker.SCHEDULER_PROFILE, reason="scheduler:sched_abc"),
+        control_store=ControlStore(tmp_path), registry=registry, now=NOW,
+    )
+    assert out["ok"] is True and out["registry_entry_id"] is None
+    assert registry.latest() == []
+
+
+def test_a_missing_registry_never_costs_the_run(tmp_path, captured_run_task):
+    out = pipeline_worker.apply_work(_valid(client_id="hermes:dm"), control_store=ControlStore(tmp_path), now=NOW)
+    assert out["ok"] is True and out["registry_entry_id"] is None
+    assert len(captured_run_task) == 1
+
+
+def test_a_refused_frame_records_nothing(tmp_path, captured_run_task):
+    registry = _Registry(tmp_path)
+    store = ControlStore(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="test", now=NOW, reason="halt", ledger=FakeLedger())
+    with pytest.raises(ControlBlocked):
+        pipeline_worker.apply_work(_valid(), control_store=store, registry=registry, now=NOW)
+    assert registry.latest() == [] and not captured_run_task
+
+
+def test_the_worker_reconciles_only_its_own_origin_at_startup(tmp_path):
+    registry = _Registry(tmp_path)
+    agent = _tr.record_submission(registry, request_text="a", origin=_tr.AGENT_ORIGIN, requester_id=ASSISTANT_ACTOR, now=NOW)
+    theirs = _tr.record_submission(registry, request_text="b", origin="SCHEDULER", requester_id="mvp.scheduler:s1", now=NOW)
+    closed = pipeline_worker.reconcile_worker_entries(registry, now="2026-08-10T09:05:00Z")
+    assert [e.registry_entry_id for e in closed] == [agent.registry_entry_id]
+    assert registry.find(theirs.registry_entry_id).status == _tr.RUNNING
+    assert pipeline_worker.reconcile_worker_entries(None, now=NOW) == []
+
+
+def test_the_worker_accepts_client_id_and_still_refuses_proto(tmp_path, captured_run_task):
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(_valid(proto=2), control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(_valid(client_id="bad name"), control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == "MALFORMED_REQUEST"
+    assert not captured_run_task

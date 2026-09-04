@@ -445,3 +445,36 @@ def test_console_commands_do_not_create_registry_entries(tmp_path):
     handle_operator_message(_msg("/status"), registration=REG, registry=store,
                             control_store=_control(tmp_path), now=NOW, repo_root=tmp_path)
     assert store.latest() == []
+
+
+# --- the assistant's entries among the operator's (door API v2) --------------------
+
+def test_an_agent_entry_is_marked_as_the_assistants_in_both_listings(tmp_path):
+    store = _registry(tmp_path)
+    mine = _entry(store, text="내 요청", status=RUNNING, now=NOW)
+    theirs = _entry(store, text="비서가 맡긴 분석", status=RUNNING, now=NOW, origin="AGENT")
+    reply = _apply(("TASKS", None), registry=store)["reply"]
+    assert "[실행 중 · 비서]" in reply and reply.count("• ") == 2
+    assert "[실행 중]" in reply                      # the operator's own line carries no mark
+    store.transition(theirs.registry_entry_id, DELIVERED, now=LATER, task_id="task_a1", trace_id="trace_a1")
+    history = _apply(("HISTORY", None), registry=store)["reply"]
+    assert "[완료 · 비서]" in history
+    assert mine.registry_entry_id[:12] in reply
+
+
+def test_result_resolves_a_dispatch_replys_task_id(tmp_path):
+    """The dispatch reply hands the assistant `task_id`; `/result task_…` must reach the entry
+    without a second lookup. RUNNING here, so the refusal is TASK_NOT_FINISHED — which proves
+    the id resolved (an unknown id is ENTRY_NOT_FOUND)."""
+    store = _registry(tmp_path)
+    entry = _entry(store, text="비서가 맡긴 분석", status=RUNNING, now=NOW, origin="AGENT")
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, task_id="task_a1", trace_id="trace_a1")
+    again = _entry(store, text="두 번째", status=RUNNING, now=LATER, origin="AGENT")
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", "trace_nope"), registry=store)
+    assert exc.value.reason_code == "ENTRY_NOT_FOUND"
+    # A delivered AGENT entry found by its task id proceeds to the ledger re-render step.
+    with pytest.raises(OperatorBlocked) as exc:
+        _apply(("RESULT", "task_a1"), registry=store, ledger=None)
+    assert exc.value.reason_code == "RESULT_UNAVAILABLE"
+    assert again.status == RUNNING

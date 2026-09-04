@@ -267,3 +267,60 @@ def test_close_entry_swallows_an_illegal_transition(tmp_path):
     # QUEUED -> DELIVERED is illegal; the seam must not raise into the run path.
     task_registry.close_entry(store, entry, status=DELIVERED, now=LATER)
     assert store.find(entry.registry_entry_id).status == QUEUED
+
+
+# --- origin AGENT (door API v2) -------------------------------------------------
+
+def test_the_origin_enum_in_the_schema_is_exactly_the_code_constant():
+    """The failure this pins is silent: `_validate` checks every appended row against the
+    schema, so an origin in `ORIGINS` but not in the enum makes `record_submission` swallow
+    REGISTRY_RECORD_INVALID and return None — a run that simply never appears in /tasks."""
+    from pathlib import Path
+    schema = json.loads(
+        (Path(task_registry.__file__).resolve().parents[2] / "schemas" / "task_registry_entry.v0.2.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    assert set(schema["properties"]["origin"]["enum"]) == set(task_registry.ORIGINS)
+    assert task_registry.AGENT_ORIGIN in task_registry.ORIGINS
+
+
+def test_the_three_ownership_sets_are_disjoint_and_the_worker_owns_agent():
+    sets = (task_registry.OPERATOR_ORIGINS, task_registry.SCHEDULER_ORIGINS, task_registry.WORKER_ORIGINS)
+    for i, a in enumerate(sets):
+        for b in sets[i + 1:]:
+            assert not (a & b)
+    assert task_registry.WORKER_ORIGINS == {task_registry.AGENT_ORIGIN}
+    assert (task_registry.OPERATOR_ORIGINS | task_registry.SCHEDULER_ORIGINS | task_registry.WORKER_ORIGINS) <= task_registry.ORIGINS
+
+
+def test_an_agent_entry_records_and_only_the_worker_set_reconciles_it(tmp_path):
+    store = _store(tmp_path)
+    entry = task_registry.record_submission(
+        store, request_text="분석해줘", origin=task_registry.AGENT_ORIGIN,
+        requester_id="assistant_bridge", now=NOW, request_kind="analysis",
+    )
+    assert entry is not None and entry.status == RUNNING and entry.origin == "AGENT"
+    # Neither of the other two services may abandon it...
+    assert reconcile_stale_running(store, now=LATER, origins=task_registry.OPERATOR_ORIGINS) == []
+    assert reconcile_stale_running(store, now=LATER, origins=task_registry.SCHEDULER_ORIGINS) == []
+    assert store.find(entry.registry_entry_id).status == RUNNING
+    # ...and the worker's own set closes it honestly.
+    closed = reconcile_stale_running(store, now=LATER, origins=task_registry.WORKER_ORIGINS)
+    assert [e.registry_entry_id for e in closed] == [entry.registry_entry_id]
+    assert store.find(entry.registry_entry_id).last_reason_code == task_registry.ABANDONED_REASON_CODE
+
+
+def test_find_resolves_a_runs_own_ids_exactly_and_refuses_a_shared_one(tmp_path):
+    store = _store(tmp_path)
+    entry = store.submit(_entry(status=RUNNING))
+    store.transition(entry.registry_entry_id, DELIVERED, now=LATER, task_id="task_abc", trace_id="trace_xyz")
+    assert store.find("task_abc").registry_entry_id == entry.registry_entry_id
+    assert store.find("trace_xyz").registry_entry_id == entry.registry_entry_id
+    assert store.find("task_ab") is None                       # never abbreviated
+    assert store.find("task_nope") is None
+    twin = store.submit(_entry(status=RUNNING, request_text="다른 요청"))
+    store.transition(twin.registry_entry_id, DELIVERED, now=LATER, task_id="task_abc", trace_id="trace_other")
+    with pytest.raises(TaskRegistryBlocked) as exc:
+        store.find("task_abc")
+    assert exc.value.reason_code == "AMBIGUOUS_ENTRY_ID"
+    assert store.find("trace_other").registry_entry_id == twin.registry_entry_id

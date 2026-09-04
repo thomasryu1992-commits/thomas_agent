@@ -92,7 +92,13 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     CANCELLED: frozenset(),
 }
 
-ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK"})
+# `AGENT` is the assistant's dispatch run, opened RUNNING by the pipeline worker (door API v2).
+# Adding an origin here is only half of it: `_validate` checks every appended row against
+# `schemas/task_registry_entry.v0.2.schema.json`, so an origin missing from that enum makes
+# `record_submission` swallow REGISTRY_RECORD_INVALID and return None — a silent non-record.
+# A test pins the two sets equal.
+AGENT_ORIGIN = "AGENT"
+ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK", AGENT_ORIGIN})
 
 # WHICH SERVICE EXECUTES an entry of each origin — that is, whose death strands it at RUNNING.
 # The shipped deployment is TWO long-lived processes sharing ONE state volume (see
@@ -101,6 +107,11 @@ ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK"})
 # exactly this reason; see its docstring for what went wrong without one.
 OPERATOR_ORIGINS = frozenset({"TELEGRAM", "FRONTDESK"})
 SCHEDULER_ORIGINS = frozenset({"SCHEDULER"})
+# The pipeline worker's own: the assistant's forwarded runs. The scheduler's forwarded
+# analyses are NOT here — the scheduler opens a SCHEDULER entry before delegating and closes it
+# after, so the worker records only the assistant profile, and one run stays one entry. The
+# worker service's restart is what may honestly close a stranded one.
+WORKER_ORIGINS = frozenset({AGENT_ORIGIN})
 _FLAG_NAMES = ("important", "independent_validation", "revise", "write_output")
 
 # The terminal supplied by the next startup for an entry whose process died mid-run.
@@ -395,6 +406,19 @@ class TaskRegistryStore:
         exact = [e for e in entries if e.registry_entry_id == needle]
         if exact:
             return exact[0]
+        # A run's own ids resolve too (door API v2): the dispatch reply names `task_id` and
+        # `trace_id`, and the assistant should not need a second lookup to turn either into a
+        # registry id. Exact match only — a run id is never abbreviated — and refused when two
+        # entries claim it rather than resolved to an arbitrary one.
+        if needle.startswith(("task_", "trace_")):
+            by_run = [e for e in entries if needle in (e.task_id, e.trace_id)]
+            if len(by_run) > 1:
+                raise TaskRegistryBlocked(
+                    "AMBIGUOUS_ENTRY_ID",
+                    f"'{needle}' names {len(by_run)} entries; use the registry id (treg_…) instead",
+                )
+            if by_run:
+                return by_run[0]
         matches = [e for e in entries if e.registry_entry_id.startswith(needle)]
         if len(matches) > 1:
             raise TaskRegistryBlocked(

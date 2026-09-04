@@ -22,7 +22,9 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from . import pipeline_worker, socket_door
+import sys
+
+from . import pipeline_worker, socket_door, timeutil
 from .cli_common import force_utf8_io, serve_door_forever
 from .control import ControlStore
 from .errors import MvpRuntimeError
@@ -30,6 +32,7 @@ from .programization import ProgramizationStore
 from .pipeline import AUTO_VALIDATION
 from .providers import select_provider, select_validator_provider
 from .store import LedgerStore
+from .task_registry import TaskRegistryStore
 from .tools import select_search_tool
 from .working_memory import WorkingMemoryStore
 
@@ -94,6 +97,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     path = Path(args.socket) if args.socket else pipeline_worker.socket_path()
 
+    # The assistant's runs are recorded here (door API v2). A predecessor killed mid-run left
+    # its entries RUNNING; this process is the one that may honestly close them. Best-effort:
+    # bookkeeping must not stop the engine.
+    registry = TaskRegistryStore.default()
+    try:
+        stranded = pipeline_worker.reconcile_worker_entries(registry, now=timeutil.utc_now_iso())
+        if stranded:
+            sys.stderr.write(f"PIPELINE_WORKER: {len(stranded)} interrupted run(s) marked RUN_ABANDONED\n")
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"PIPELINE_WORKER: task registry not reconciled ({exc.reason_code})\n")
+
     return serve_door_forever(
         label="PIPELINE_WORKER", path=path,
         open_server=lambda: pipeline_worker.open_door(
@@ -105,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             resolve_providers=_resolve_providers,
             independent_validation=_validation_policy(args.independent_validation),
             revise=bool(args.revise),
+            registry=registry,
         ),
         banner=lambda server: (
             f"kinds={sorted(pipeline_worker._ALLOWED_KINDS)}, "

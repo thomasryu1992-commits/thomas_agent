@@ -36,12 +36,13 @@
       "minLength": 1
     },
     "origin": {
-      "description": "Which door submitted this request. FRONTDESK is reserved for the conversational front desk (not yet implemented); entries never carry it until that role is active.",
+      "description": "Which door submitted this request. TELEGRAM: the operator channel. SCHEDULER: analysis_task fires. FRONTDESK: the conversational front desk (F2). AGENT: the assistant's dispatch run, opened RUNNING by the pipeline worker for its own profile (door API v2). CLI: reserved, unwired.",
       "enum": [
         "TELEGRAM",
         "CLI",
         "SCHEDULER",
-        "FRONTDESK"
+        "FRONTDESK",
+        "AGENT"
       ]
     },
     "requester_id": {

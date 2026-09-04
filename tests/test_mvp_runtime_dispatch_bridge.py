@@ -51,9 +51,9 @@ def captured_execute():
     plus the relayed reply, so the capture list is the assertion and not scaffolding."""
     calls: list[dict] = []
 
-    def _execute(text, kind, reason, naver_keywords):
+    def _execute(text, kind, reason, naver_keywords, client_id=None):
         calls.append({"request": text, "kind": kind, "reason": reason,
-                      "naver_keywords": naver_keywords})
+                      "naver_keywords": naver_keywords, "client_id": client_id})
         return {"ok": True, "kind": kind, "task_id": "task-1",
                 "final_response": "ok", "actor": ASSISTANT_ACTOR}
 
@@ -180,6 +180,7 @@ def test_a_valid_dispatch_forwards_validated_fields_and_relays_the_reply(tmp_pat
     assert captured_execute.calls == [{
         "request": "analyze this idea", "kind": "analysis",
         "reason": "operator asked for a market read", "naver_keywords": None,
+        "client_id": None,
     }]
 
 
@@ -224,7 +225,7 @@ def test_a_pipeline_block_is_relayed_not_swallowed(tmp_path):
     """A BLOCK ran the pipeline and carries its task_id — a real answer, relayed as-is."""
     store = ControlStore(tmp_path)
 
-    def _blocked(text, kind, reason, naver_keywords):
+    def _blocked(text, kind, reason, naver_keywords, client_id=None):
         return {"ok": False, "kind": kind, "task_id": "task-9",
                 "reason_code": "NO_ROUTABLE_ROLE", "reason": "none", "actor": ASSISTANT_ACTOR}
 
@@ -240,7 +241,7 @@ def test_a_worker_refusal_surfaces_under_the_workers_own_reason_code(tmp_path):
     refusal so the assistant sees the worker's reason, not a generic failure."""
     store = ControlStore(tmp_path)
 
-    def _refused(text, kind, reason, naver_keywords):
+    def _refused(text, kind, reason, naver_keywords, client_id=None):
         return {"ok": False, "reason_code": "KILLED",
                 "reason": "runtime is KILLED; new work is blocked"}
 
@@ -262,7 +263,7 @@ def test_a_door_without_a_forwarder_fails_closed_never_running_in_process(tmp_pa
 def test_a_transport_failure_from_the_forward_propagates_typed(tmp_path):
     store = ControlStore(tmp_path)
 
-    def _down(text, kind, reason, naver_keywords):
+    def _down(text, kind, reason, naver_keywords, client_id=None):
         raise ControlBlocked("WORKER_UNAVAILABLE", "the pipeline worker is not answering")
 
     with pytest.raises(ControlBlocked) as exc:
@@ -294,17 +295,18 @@ def test_the_door_wires_its_stated_ceiling(tmp_path, monkeypatch):
 
 # --- the frame envelope (door API v2) ------------------------------------------
 
-def test_the_envelope_is_echoed_and_never_crosses_to_the_worker(tmp_path, captured_execute):
+def test_the_envelope_is_echoed_and_only_client_id_crosses_to_the_worker(tmp_path, captured_execute):
+    """`proto` is the door's dialect and never reaches the engine; `client_id` is attribution
+    the engine records on the task (`created_by`) and the registry entry it opens."""
     out = dispatch_bridge.apply_dispatch(
         _valid(proto=2, client_id="hermes:cron:weekly"),
         control_store=ControlStore(tmp_path), execute=captured_execute,
     )
     assert out["proto"] == 2 and out["client_id"] == "hermes:cron:weekly"
     assert out["data"] == {"kind": "analysis", "task_id": "task-1", "actor": ASSISTANT_ACTOR}
-    # The forward frame is exactly the validated fields, as before — no envelope key rides along.
     assert captured_execute.calls == [{
         "request": "analyze this idea", "kind": "analysis", "reason": "operator asked",
-        "naver_keywords": None,
+        "naver_keywords": None, "client_id": "hermes:cron:weekly",
     }]
 
 
