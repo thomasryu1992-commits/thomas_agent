@@ -329,8 +329,19 @@ class LedgerStore:
         81 MB of process memory to materialize, and it is rotated daily rather than bounded."""
         return list(self.iter_records())
 
-    def iter_records(self, *, kinds: Iterable[str] | None = None) -> Iterator[dict[str, Any]]:
+    def iter_records(
+        self, *, kinds: Iterable[str] | None = None, trace_id: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Record rows one at a time, in append order, under the appender's lock.
+
+        ``trace_id`` is the prescreen for the reader after ONE run's rows — ``/result`` and
+        the dispatch door's idempotent replay re-render a delivered response from them. A
+        row of that run carries ``"trace_id": "<id>"`` verbatim, so a line without the
+        quoted id is skipped unparsed (see ``_kind_prescreen`` for why that is safe and
+        what it gives up). Measured 2026-09-04 on the live 21 MB file: 160–220 ms decoding
+        every row to keep four, all of it under the appender's lock. When both ``kinds`` and
+        ``trace_id`` are given the screen is the trace id alone (the narrower token; the
+        prescreen is OR-shaped and cannot express both), and the caller still checks kinds.
 
         For the readers that scan the ledger to retain almost none of it: the last N rows of
         one kind, a count, the rows carrying one trace id. `crypto/dashboard.py` already had
@@ -348,10 +359,11 @@ class LedgerStore:
         the record ledger locked until it is collected, which would stall the run trying to
         append to it. All present callers run the stream to exhaustion.
         """
+        prescreen = (f'"{trace_id}"',) if trace_id else _kind_prescreen(kinds)
         with self.file_lock(RECORDS_FILE, label="the record ledger"):
             yield from jsonl.iter_objects(self._root / RECORDS_FILE,
                                           read_code="LEDGER_UNREADABLE", label="the record ledger",
-                                          must_contain=_kind_prescreen(kinds))
+                                          must_contain=prescreen)
 
     def iter_records_with_archive(
         self, *, appended_since: str | None = None, kinds: Iterable[str] | None = None
@@ -442,6 +454,26 @@ class LedgerStore:
                     code="LEDGER_WRITE_FAILED", label="the scheduler ledger"):
             return jsonl.read_objects(self._root / SCHEDULER_FILE,
                                       read_code="LEDGER_UNREADABLE", label="the scheduler ledger")
+
+    def read_scheduler_events_tail(self, limit: int) -> list[dict[str, Any]]:
+        """The newest ``limit`` scheduler events, read from the end of the active file and
+        WITHOUT the appender's lock — the read door's shape of this question.
+
+        :meth:`read_scheduler_events` parses the whole active file under the lock: right
+        after rotation that is ~2,000 rows, by the end of the day ~20,000, and every call
+        held the tick loop's append lock for the whole parse (18–22 ms measured 2026-09-04 on
+        a 2.4 MB file). A poller wanting the last twenty was paying for all of them and
+        making the scheduler wait while it did. See ``jsonl.tail_objects`` for why the
+        lock-free read is honest for an append-only file: a torn final line is dropped,
+        a corrupt complete line in the tail still raises, and the rest of the file is not
+        this reader's business."""
+        return jsonl.tail_objects(self._root / SCHEDULER_FILE, limit,
+                                  read_code="LEDGER_UNREADABLE", label="the scheduler ledger")
+
+    def count_scheduler_events(self) -> int:
+        """Rows in the active scheduler file — a newline count, lock-free, ~1 ms."""
+        return jsonl.count_lines(self._root / SCHEDULER_FILE,
+                                 read_code="LEDGER_UNREADABLE", label="the scheduler ledger")
 
     def read_audit_events(self) -> list[dict[str, Any]]:
         """Every persisted audit event, in append order. Fails closed on a corrupt ledger.
