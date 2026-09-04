@@ -56,6 +56,10 @@ _PREVIEW_CHARS = 70
 
 # Rendered as the status column. The registry's own vocabulary, not a friendlier synonym —
 # the word in the chat is the word in the record.
+# Rendered beside the status for the one origin that is not the operator's own request: an
+# assistant run listed among Thomas's would otherwise read as something he asked for.
+_ORIGIN_MARK = {task_registry.AGENT_ORIGIN: "비서"}
+
 _STATUS_MARK = {
     task_registry.QUEUED: "대기",
     task_registry.RUNNING: "실행 중",
@@ -113,6 +117,11 @@ def _short(entry_id: str) -> str:
     return entry_id[:12]
 
 
+def _origin(entry: RegistryEntry) -> str:
+    mark = _ORIGIN_MARK.get(entry.origin)
+    return f" · {mark}" if mark else ""
+
+
 def _format_open(entries: list[RegistryEntry], now: str) -> str:
     if not entries:
         return ("현재 진행 중이거나 대기 중인 작업이 없습니다.\n"
@@ -121,7 +130,7 @@ def _format_open(entries: list[RegistryEntry], now: str) -> str:
     for entry in entries[:MAX_LISTED]:
         elapsed = _elapsed(entry, now)
         suffix = f" · {elapsed} 경과" if elapsed else ""
-        lines.append(f"• [{_STATUS_MARK.get(entry.status, entry.status)}]{suffix}\n"
+        lines.append(f"• [{_STATUS_MARK.get(entry.status, entry.status)}{_origin(entry)}]{suffix}\n"
                      f"  {_preview(entry.request_text)}\n"
                      f"  id: {_short(entry.registry_entry_id)}")
     if len(entries) > MAX_LISTED:
@@ -136,7 +145,7 @@ def _format_history(entries: list[RegistryEntry], total: int) -> str:
     for entry in entries:
         reason = f" ({entry.last_reason_code})" if entry.last_reason_code else ""
         when = entry.finished_at or entry.submitted_at
-        lines.append(f"• [{_STATUS_MARK.get(entry.status, entry.status)}]{reason} {when}\n"
+        lines.append(f"• [{_STATUS_MARK.get(entry.status, entry.status)}{_origin(entry)}]{reason} {when}\n"
                      f"  {_preview(entry.request_text)}\n"
                      f"  id: {_short(entry.registry_entry_id)}")
     lines.append("\n결과 다시 보기: /result <id>")
@@ -360,7 +369,10 @@ def apply_registry_command(
 
 
 def _require_entry(registry: TaskRegistryStore, argument: str | None, usage: str) -> RegistryEntry:
-    """Resolve the id argument to exactly one entry, or refuse with a typed reason."""
+    """Resolve the id argument to exactly one entry, or refuse with a typed reason.
+
+    A registry id (or an unambiguous prefix of one), or — door API v2 — a run's own
+    ``task_…``/``trace_…`` id exactly, which is what the dispatch reply hands the assistant."""
     if not argument:
         raise OperatorBlocked("USAGE", f"사용법: {usage} — 먼저 /tasks 또는 /history 로 id를 확인하세요.")
     token = argument.split()[0]

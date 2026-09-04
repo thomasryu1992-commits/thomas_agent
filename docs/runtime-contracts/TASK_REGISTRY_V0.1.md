@@ -219,6 +219,7 @@ each stage begins:
 | `SCHEDULER` | yes | `analysis_task` fires only |
 | `CLI` | not yet | the one-shot intake CLI is unwired |
 | `FRONTDESK` | yes | conversational submissions (F2), with the kind the front desk read |
+| `AGENT` | yes | the assistant's dispatch runs (door API v2, 2026-09-04): opened `RUNNING` by the pipeline worker for its own profile, closed with the run's `task_id`/`trace_id`; owned by `WORKER_ORIGINS`, reconciled at worker start. The scheduler's forwarded analyses are NOT recorded here twice |
 
 The scheduler's maintenance and crypto kinds are not task-shaped and keep their own
 scheduler events. Stated here rather than left to be discovered: `/history` is complete for

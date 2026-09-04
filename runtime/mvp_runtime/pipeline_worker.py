@@ -35,7 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from . import socket_door, timeutil
+from . import socket_door, task_registry, timeutil
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .naver_research import MAX_SEED_CHARS
@@ -43,6 +43,7 @@ from .pipeline import run_task
 from .programization import ProgramizationStore
 from .socket_door import ASSISTANT_ACTOR
 from .store import LedgerStore
+from .task_registry import RegistryEntry, TaskRegistryStore
 from .working_memory import WorkingMemoryStore
 
 # The permission surface stays the door's; see the module docstring. Imported, not copied, so
@@ -60,10 +61,18 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # not come from the door. `naver_keywords` is optional and travels only when the caller sent
 # it: read-only [K#] evidence for the run, re-validated here with the door's own rule because
 # fail-closed means not trusting the peer to have checked, even when the peer is our own door.
+# `client_id` (door API v2) is attribution the door validated and forwards when the assistant
+# named one — which session or cron job asked. It lands on the task record's `created_by` and
+# nowhere that decides anything. `proto` never crosses: the dialect is the door's business.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
-     "proposal_inputs", "ideation_inputs"}
+     "proposal_inputs", "ideation_inputs", socket_door.CLIENT_ID_KEY}
 )
+
+# The terminal a worker writes on an entry whose run raised rather than answered: the run
+# reached no outcome, so the registry must not say RUNNING forever (the door relays the
+# exception as BRIDGE_ERROR, and the assistant sees that; this is the bookkeeping half).
+WORKER_EXCEPTION_REASON_CODE = "WORKER_EXCEPTION"
 
 # The second thing this process does, and the reason it is a *set* rather than a second
 # entrypoint: after the plane separation this is where the model credentials live, so anything
@@ -187,6 +196,7 @@ def apply_work(
     repo_root: Path | None = None,
     independent_validation: bool | str = False,
     revise: bool = False,
+    registry: TaskRegistryStore | None = None,
 ) -> dict[str, Any]:
     """Re-validate one forwarded dispatch and run it, or raise a typed ``ControlBlocked``.
 
@@ -286,36 +296,76 @@ def apply_work(
         )
 
     resolved = providers or {}
+    client_id = socket_door.client_id_of(request)
+
+    # The registry entry (door API v2): opened RUNNING — never QUEUED, which the operator's
+    # drain would claim regardless of origin — for the assistant's profile only. The
+    # scheduler's forwarded analyses already own a SCHEDULER entry opened before delegation;
+    # recording them here again would make one run two entries. Best-effort like every
+    # recording seam: a broken registry never costs the caller its run. `now` is stamped here
+    # because the door does not send one, and a None reaches `build_entry` as a schema
+    # violation that `record_submission` swallows — the silent non-record this must not be.
+    stamp = now or timeutil.utc_now_iso()
+    entry: RegistryEntry | None = None
+    if profile_name == ASSISTANT_PROFILE:
+        entry = task_registry.record_submission(
+            registry, request_text=text.strip(), origin=task_registry.AGENT_ORIGIN,
+            requester_id=profile["requester_id"], now=stamp, request_kind=kind,
+        )
+    # Attribution on the task record: `created_by` is the one free-text audit field the task
+    # schema leaves to the caller and nothing reads for authority. `requester_id` stays the
+    # constant actor — the spend meter and the task id seed both key on it.
+    attribution = {"created_by": f"{profile['requester_id']}:{client_id}"} if client_id else {}
+
     # No `write_path`/`writer` is passed — nothing on this socket can lift a run above P3, and
     # the run is attributed to its caller, never to Thomas.
-    result = run_task(
-        text.strip(),
-        request_kind=kind,
-        keyword_seeds=naver_keywords,
-        independent_validation=independent_validation,
-        revise=revise,
-        provider=resolved.get("provider"),
-        validator_provider=resolved.get("validator_provider"),
-        search_tool=resolved.get("search_tool"),
-        working_memory=working_memory,
-        programization=programization,
-        store=ledger,
-        repo_root=repo_root,
-        now=now,
-        requester_id=profile["requester_id"],
-        requester_type=profile["requester_type"],
-        channel=profile["channel"],
-        source_ref=_source_ref(reason, profile),
-        authenticated=True,
-    )
+    try:
+        result = run_task(
+            text.strip(),
+            request_kind=kind,
+            keyword_seeds=naver_keywords,
+            independent_validation=independent_validation,
+            revise=revise,
+            provider=resolved.get("provider"),
+            validator_provider=resolved.get("validator_provider"),
+            search_tool=resolved.get("search_tool"),
+            working_memory=working_memory,
+            programization=programization,
+            store=ledger,
+            repo_root=repo_root,
+            now=now,
+            requester_id=profile["requester_id"],
+            requester_type=profile["requester_type"],
+            channel=profile["channel"],
+            source_ref=_source_ref(reason, profile),
+            authenticated=True,
+            **attribution,
+        )
+    except BaseException:
+        # The run reached no outcome; the entry must not say RUNNING forever. The exception
+        # itself still propagates — the door turns it into BRIDGE_ERROR, as before.
+        task_registry.close_entry(
+            registry, entry, status=task_registry.FAILED, now=now or timeutil.utc_now_iso(),
+            reason_code=WORKER_EXCEPTION_REASON_CODE,
+        )
+        raise
 
     identity = _identity(result)
+    finished = now or timeutil.utc_now_iso()
+    entry_id = entry.registry_entry_id if entry is not None else None
     if result.get("status") == "COMPLETED":
+        trace_id = identity.get("trace_id")
+        task_registry.close_entry(
+            registry, entry, status=task_registry.DELIVERED, now=finished,
+            task_id=identity.get("task_id"), trace_id=trace_id,
+            result_ref=f"ledger:{trace_id}" if trace_id else None,
+        )
         return {
             "ok": True,
             "kind": kind,
             "task_id": identity.get("task_id"),
-            "trace_id": identity.get("trace_id"),
+            "trace_id": trace_id,
+            "registry_entry_id": entry_id,
             "final_response": result.get("final_response", ""),
             "actor": profile["requester_id"],
         }
@@ -323,15 +373,36 @@ def apply_work(
     # completes the idempotency claim and relays it — the assistant reports "the runtime
     # refused this" rather than "the door broke".
     block = result.get("block") or {}
+    task_registry.close_entry(
+        registry, entry, status=task_registry.BLOCKED, now=finished,
+        task_id=identity.get("task_id"), trace_id=identity.get("trace_id"),
+        reason_code=block.get("reason_code", "DISPATCH_BLOCKED"),
+    )
     return {
         "ok": False,
         "kind": kind,
         "task_id": identity.get("task_id"),
         "trace_id": identity.get("trace_id"),
+        "registry_entry_id": entry_id,
         "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
         "reason": block.get("message", "the runtime blocked this dispatch"),
         "actor": profile["requester_id"],
     }
+
+
+def reconcile_worker_entries(registry: TaskRegistryStore | None, *, now: str) -> list[RegistryEntry]:
+    """Close the AGENT entries a previous worker process left RUNNING. Call at startup.
+
+    The worker is the only process that opens AGENT entries, so a fresh worker may honestly
+    close the ones its predecessor was running — the same rule the operator and the scheduler
+    apply to their own origins, and the reason `WORKER_ORIGINS` exists: without a third
+    ownership set nobody would ever close these.
+    """
+    if registry is None:
+        return []
+    return task_registry.reconcile_stale_running(
+        registry, now=now, origins=task_registry.WORKER_ORIGINS,
+    )
 
 
 def _apply_job(
@@ -528,6 +599,7 @@ def open_door(
     resolve_providers: ProviderSelector | None = None,
     independent_validation: bool | str = False,
     revise: bool = False,
+    registry: TaskRegistryStore | None = None,
 ) -> socket_door.SocketDoor:
     """Listen on ``path`` and run forwarded work from it — refusing to listen at all unless
     the deployment states who may connect.
@@ -569,6 +641,7 @@ def open_door(
             providers=providers,
             independent_validation=independent_validation,
             revise=revise,
+            registry=registry,
         )
 
     return socket_door.SocketDoor(

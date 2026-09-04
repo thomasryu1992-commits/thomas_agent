@@ -24,6 +24,22 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The assistant's runs leave a registry entry — door API v2, increment 2 (PR8)** (design record
+  `DOOR_API_V2_DESIGN_V0.1.md` proposal 2; D-1 in place, D-2 `created_by`, D-3 run ids resolve). Until now
+  the pipeline worker never wrote `task_registry`, so a dispatched run landed in the ledger and could not be
+  found again — the read door's `result` matched registry ids only, and the assistant's reply carried a
+  `task_id` nothing accepted. Now origin `AGENT` exists in the code constant AND the schema enum (a test
+  pins them equal, because a mismatch is not an error but a silent non-record), the worker opens the
+  entry `RUNNING` for its assistant profile only — never `QUEUED`, which the operator's drain claims
+  regardless of origin, and never for the scheduler's forwarded analyses, which already own an entry —
+  closes it `DELIVERED`/`BLOCKED` with the run's ids, or `FAILED`/`WORKER_EXCEPTION` when the run raised
+  rather than answered, and reports `registry_entry_id` on its reply. A third ownership set,
+  `WORKER_ORIGINS`, is what lets a restarted worker close what its predecessor left running; the operator
+  and the scheduler still never touch it. `find` resolves a run's own `task_…`/`trace_…` id exactly, so
+  `/result <task_id>` works the way every comment had promised. The `client_id` the door validated now
+  crosses to the worker and lands on the task's `created_by` — the one free audit field nothing reads for
+  authority; `requester_id` stays the constant actor the spend meter and the id seed key on. `/tasks` and
+  `/history` mark the assistant's entries `· 비서` so they do not read as Thomas's own requests.
 - **The frame envelope — door API v2, increment 1 (PR7)** (design record `DOOR_API_V2_DESIGN_V0.1.md`;
   Thomas took the recommendations D-1..D-6 on 2026-09-04). Three optional keys every door now reads the
   same way, defined once beside the transport in `socket_door`: `proto` (absent means 1; a version the

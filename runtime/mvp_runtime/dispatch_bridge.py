@@ -118,10 +118,12 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 # door and this one are two different requests — which they are.
 _DOOR = "dispatch"
 
-# What the door hands to the engine: the three validated fields, nothing else. In production
-# this is `open_door`'s forward over the worker socket; in tests it is a capture. Injected so
-# `apply_dispatch` stays pure with respect to the transport and testable without a listener.
-Executor = Callable[[str, str, str, "str | None"], dict[str, Any]]
+# What the door hands to the engine: the validated fields, nothing else — request, kind,
+# reason, the optional keyword seeds, and the optional `client_id` (attribution the assistant
+# named; door API v2). In production this is `open_door`'s forward over the worker socket; in
+# tests it is a capture. Injected so `apply_dispatch` stays pure with respect to the transport
+# and testable without a listener.
+Executor = Callable[[str, str, str, "str | None", "str | None"], dict[str, Any]]
 
 # How long the door waits for the worker's answer. A real run on the free-tier chain is
 # minute-plus; the assistant's own client gives up at 280s, but the run must be allowed to
@@ -158,10 +160,10 @@ def apply_dispatch(
             "ARGUMENT_NOT_ACCEPTED",
             f"this door accepts only {sorted(_ALLOWED_KEYS)}; it will not act on {sorted(unexpected)}",
         )
-    # The envelope is validated here and echoed on the reply; it never crosses to the worker —
-    # the forward frame stays exactly the validated fields, and `client_id` is attribution the
-    # ledger will carry once the registry records these runs (door API v2, next increment).
-    socket_door.validate_envelope(request)
+    # The envelope is validated here and echoed on the reply. `proto` never crosses to the
+    # worker — the dialect is this door's business; `client_id` does, as attribution the task
+    # record carries (`created_by`) and the registry entry the worker opens can be traced to.
+    _proto, client_id = socket_door.validate_envelope(request)
 
     text = request.get("request")
     if not isinstance(text, str) or not text.strip():
@@ -247,7 +249,7 @@ def apply_dispatch(
             )
 
     try:
-        reply = execute(text.strip(), kind, reason, naver_keywords)
+        reply = execute(text.strip(), kind, reason, naver_keywords, client_id)
         if not isinstance(reply, dict):
             raise ControlBlocked(
                 "WORKER_UNAVAILABLE",
@@ -282,7 +284,8 @@ def apply_dispatch(
     if request_id is not None:
         bridge_idempotency.complete(
             ledger, door=_DOOR, request_id=request_id, request_fingerprint=fingerprint,
-            outcome={"kind": kind, "task_id": reply.get("task_id"), "ok": bool(reply.get("ok"))},
+            outcome={"kind": kind, "task_id": reply.get("task_id"), "ok": bool(reply.get("ok")),
+                     "registry_entry_id": reply.get("registry_entry_id")},
             now=stamp,
         )
         # Named on the fresh reply as well as the replayed one, so `replayed` is the only thing
@@ -291,7 +294,8 @@ def apply_dispatch(
     # `data` is the run's identity — what a client needs to find the run again — never its text.
     return socket_door.envelope(
         reply, request=request,
-        data={key: reply.get(key) for key in ("kind", "task_id", "trace_id", "actor") if key in reply},
+        data={key: reply.get(key)
+              for key in ("kind", "task_id", "trace_id", "registry_entry_id", "actor") if key in reply},
     )
 
 
@@ -322,13 +326,15 @@ def open_door(
     """
 
     def _forward(
-        text: str, kind: str, reason: str, naver_keywords: str | None
+        text: str, kind: str, reason: str, naver_keywords: str | None, client_id: str | None,
     ) -> dict[str, Any]:
-        # The seeds key travels only when present, so a frame without it stays byte-identical
+        # Optional keys travel only when present, so a frame without them stays byte-identical
         # to the pre-lane contract and the worker's closed key set never sees a null.
         frame: dict[str, Any] = {"request": text, "kind": kind, "reason": reason}
         if naver_keywords is not None:
             frame["naver_keywords"] = naver_keywords
+        if client_id is not None:
+            frame[socket_door.CLIENT_ID_KEY] = client_id
         try:
             return socket_door.call_door(
                 worker_socket,

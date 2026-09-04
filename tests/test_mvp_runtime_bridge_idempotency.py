@@ -39,7 +39,7 @@ def captured_execute():
     the claim in most of what follows, so the counter is the assertion and not scaffolding."""
     calls: list[dict] = []
 
-    def _execute(text, kind, reason, naver_keywords):
+    def _execute(text, kind, reason, naver_keywords, client_id=None):
         calls.append({"request": text, "kind": kind, "reason": reason})
         return {"ok": True, "kind": kind, "task_id": f"task-{len(calls)}",
                 "final_response": "ok", "actor": "assistant_bridge"}
@@ -272,7 +272,7 @@ def test_a_worker_refusal_never_burns_its_id_either(tmp_path, captured_execute):
     frame = {"request": "analyze this", "kind": "analysis", "reason": "asked",
              "request_id": "r-worker"}
 
-    def _busy(text, kind, reason, naver_keywords):
+    def _busy(text, kind, reason, naver_keywords, client_id=None):
         return {"ok": False, "reason_code": "BRIDGE_BUSY", "reason": "retry shortly"}
 
     with pytest.raises(ControlBlocked) as exc:
