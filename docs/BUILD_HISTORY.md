@@ -24,6 +24,22 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **One secret source, per-service projection, an exact ownership matrix — PR2 of the Hermes
+  integration sequence** (Thomas decision 2026-09-03; delivered 2026-09-04). The analysis behind the
+  sequence found the assistant's bot token stored twice under two names (`SCHEDULER_TELEGRAM_BOT_TOKEN`
+  here, `TELEGRAM_BOT_TOKEN` in the assistant's own env file), the OpenRouter key stored twice, and the
+  host `.env` at 0644 with the live-order keys in it. The shape chosen: `.env` is the only secret file
+  (0600, a checklist item — no test can read a host file mode), every service receives secrets by
+  `environment:` enumeration only (the `env_file` prohibition now covers every service in the file,
+  read from the file rather than a tuple that had left the four doors uncovered), and
+  `SECRET_OWNERSHIP` in `tests/test_deployment_env_passthrough.py` names, for each secret-bearing
+  variable the compose file can draw, the exact service set — asserted against the file in both
+  directions and read back from the table in `docs/DEPLOYMENT.md`, so the operator's page and the
+  pinned truth cannot drift. The rename to `HERMES_BOT_TOKEN` is the visible part; the matrix keyed
+  by the `.env` name rather than the container's is the part that matters, because the lanes receive
+  that token under the name `TELEGRAM_BOT_TOKEN` and a reader of the compose file would not see the
+  aliasing. The assistant's container draws from the same file by `--env-file` interpolation and
+  receives three values; its private env file is retired. No runtime code changed.
 - **The switch lane joins the policy — 1.4.0, because 1.3.0 made its absence misleading** (`control_channel.assistant_switch`; Thomas approved 2026-08-30, hours after 1.3.0). The switch proposal had decided the OPPOSITE — *"no clause, and none coming"* — and that reasoning was sound: the lane invents no authority (disable IS the halt door, enable rides the standard approval machinery), and the only drafted clause served S2's conditional branch, which was rejected. What changed is what 1.3.0 did to the reader: with the dispatch lane named in the policy, a policy-only reader concludes dispatch is the assistant's ONLY lane — false in the dangerous direction, since the unlisted lane is the one that can re-arm live trading. The block completes the actor's description and grants nothing: verbs status/disable/enable with the asymmetry stated (`disable: fail_safe_immediate`, `enable: approval_required_always` — S2 stays rejected, the clause codifies the unconditional approval), the two enable scopes with their risk classes (trading=RED re-arms, runtime=ORANGE does not), the single-use approval with the `stop_ref` fingerprint (STOP_CHANGED), and `caller_cannot_name_resume`. Same bump discipline as 1.3.0, same measured radius (validator literals, example bindings, fixtures, both bundles rebuilt), and again zero PENDING approvals at bump time.
 
 - **The dispatch lane's governance clause exists — policy 1.3.0, written after the fact and saying so** (`governance/GOVERNANCE_POLICY.yaml` gains `authority.assistant_dispatch_gate` + `control_channel.assistant_dispatch`, both per the §7 draft; Thomas approved 2026-08-30). The 08-22 door audit's standing asymmetry — *"the capability shipped and the clause that was to record and meter it did not"* — is closed on both halves: #803 built the meter, and this bump writes the clause, whose own comments state that the lane ran for a month before its codification rather than pretending otherwise. What made the bump safe to take, measured before taking it: the schema const-pins that turned the 1.1.0→1.2.0 bump into a 314-record incident were removed by that incident's own fix (`policy_version` is pattern-validated now, so stored records stay well-formed across bumps); zero PENDING approvals were alive at bump time, so the SUPERSEDED refusal fell on nothing; no runtime module reads `policy_version` at all, so nothing behaves differently — the blast radius was exactly the declared pins (the contracts validator's three literals, the committed example records' bindings, both replay bundles' four-way hash pins regenerated through `rebuild_bundle`, invoked directly because it still has no CLI). Both validation gates pass; the governance drift suite passes unchanged, which is the point — the clause describes what already ran.
