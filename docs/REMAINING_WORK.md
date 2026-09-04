@@ -4832,7 +4832,7 @@ Sequence is fixed; each PR starts after the previous one merges.
       review, `request_id` idempotency returning `{task_id, status, result}`, read-only schedule and
       approval-status verbs, approval-notice mirroring to the Hermes chat) → **policy 1.5.0** (drafted
       together, applied by Thomas while no approval is live) → Hermes-side SOUL/shim/cron changes.
-- [ ] **Independent of the sequence, now:** `content_ideation` cannot succeed on current `main`
+- [x] **Independent of the sequence, now** (both done 2026-09-04)**:** `content_ideation` could not succeed on `main`
       (`blog_content.py:455,470,491` — three defects) and its first weekly fire is 2026-09-06; the
       dispatch door's docstring and the Hermes skill both promise a `result <task_id>` recovery path
       that does not exist (the worker never writes `task_registry`).

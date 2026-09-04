@@ -492,9 +492,9 @@ def _identity(result: Any) -> dict[str, Any]:
 
     ``run_task`` surfaces the task and trace ids on the received-task record, not at the top
     level, so reading ``result["task_id"]`` returned None on every reply this door ever sent.
-    Two callers need them for real: the read door's ``result <task_id>`` is how the assistant
-    fetches a report it did not wait for, and the scheduler closes its task-registry entry
-    with both.
+    Two callers need them for real: the scheduler closes its task-registry entry with both,
+    and the assistant's idempotent replay names the run by them. (The read door's ``result``
+    resolves registry ids only, and this worker writes no registry entry — door API v2.)
     """
     if not isinstance(result, dict):
         return {}
