@@ -4828,7 +4828,7 @@ Sequence is fixed; each PR starts after the previous one merges.
       three `.env` values, no `depends_on` anywhere; `mem_limit` on hermes, pipeline-worker and operator,
       the two lanes unlimited. The `/root/hermes-trial` compose project is retired (data and build
       context stay there). Pinned by five new tests in `tests/test_deployment_env_passthrough.py`.
-- [ ] **After PR5 — door API v2** (typed/versioned frame, `task_registry` origin `AGENT` after a load
+- [ ] **After PR5 — door API v2** (design record PROPOSED 2026-09-04: [`DOOR_API_V2_DESIGN_V0.1.md`](runtime-contracts/DOOR_API_V2_DESIGN_V0.1.md); PR7 frame → PR8 registry AGENT → PR9 idempotency → PR10 read verbs → PR11 mirroring, then shim v2 and policy 1.5.0) (typed/versioned frame, `task_registry` origin `AGENT` after a load
       review, `request_id` idempotency returning `{task_id, status, result}`, read-only schedule and
       approval-status verbs, approval-notice mirroring to the Hermes chat) → **policy 1.5.0** (drafted
       together, applied by Thomas while no approval is live) → Hermes-side SOUL/shim/cron changes.
