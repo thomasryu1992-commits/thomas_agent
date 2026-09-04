@@ -535,3 +535,16 @@ def test_a_frame_that_is_not_json_gets_a_bare_refusal_with_no_envelope(tmp_path)
         server.shutdown()
     assert reply["reason_code"] == "MALFORMED_REQUEST"
     assert "proto" not in reply and "data" not in reply and "client_id" not in reply
+
+
+@unix_only
+def test_a_refusal_with_detail_carries_it_as_data_over_the_socket(tmp_path):
+    def apply(request):
+        raise ControlBlocked("REQUEST_IN_FLIGHT", "still running", data={"status": "RUNNING"})
+
+    server = _serving(tmp_path / "detail.sock", apply)
+    try:
+        reply = _ask(tmp_path / "detail.sock", {"command": "x", "proto": 2})
+    finally:
+        server.shutdown()
+    assert reply["reason_code"] == "REQUEST_IN_FLIGHT" and reply["data"] == {"status": "RUNNING"} and reply["proto"] == 2

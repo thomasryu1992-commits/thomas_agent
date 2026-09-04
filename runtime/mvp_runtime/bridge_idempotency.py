@@ -146,10 +146,15 @@ def claim(
             if prior.get("state") == STATE_COMPLETED:
                 return prior
             if prior.get("state") == STATE_CLAIMED:
+                # The refusal carries what it knows (door API v2): the effect is still running,
+                # so a client that timed out and retried learns to wait rather than to
+                # re-send under a fresh id. `status` is the registry vocabulary on purpose.
                 raise ControlBlocked(
                     "REQUEST_IN_FLIGHT",
                     f"request_id {request_id!r} is already being applied at this door; "
                     f"nothing was applied again",
+                    data={"status": "RUNNING", "request_id": request_id,
+                          "claimed_at": prior.get("recorded_at")},
                 )
         _append(
             ledger,

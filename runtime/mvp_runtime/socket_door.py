@@ -258,6 +258,9 @@ def refusal_payload(exc: MvpRuntimeError, request: Any = None) -> dict[str, Any]
     not be read.
     """
     payload: dict[str, Any] = {"ok": False, "reason_code": exc.reason_code, "reason": str(exc)}
+    detail = getattr(exc, "data", None)
+    if isinstance(detail, dict):
+        payload["data"] = detail
     _echo_envelope(payload, request, strict=False)
     if isinstance(request, dict):
         request_id = request.get("request_id")
