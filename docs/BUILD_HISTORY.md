@@ -24,6 +24,21 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The frame envelope — door API v2, increment 1 (PR7)** (design record `DOOR_API_V2_DESIGN_V0.1.md`;
+  Thomas took the recommendations D-1..D-6 on 2026-09-04). Three optional keys every door now reads the
+  same way, defined once beside the transport in `socket_door`: `proto` (absent means 1; a version the
+  door does not speak is refused by name, `PROTO_UNSUPPORTED`, never served as v1), `client_id`
+  (attribution — which assistant session or cron job asked — validated as a name and never consulted for
+  authority: identity stays the peer uid), and the existing `request_id`. Replies echo `proto` only when
+  the frame named one, echo `client_id`, and always carry `data`, the structured view of what the text
+  `reply` says — the read door's console outcome minus its text, the switch door's own structured keys
+  under one name, the run's identity from the dispatch door, the result from the knowledge door. The text
+  reply is untouched, so the v1 shims keep working unchanged. Typed refusals raised inside `apply` carry
+  the envelope back over the socket; the transport's own refusals (BUSY, not-JSON) carry none, because
+  nothing was read. The idempotency fingerprint now excludes the envelope with the id: a retry from
+  another session of the same assistant is the same request, not a reused id — the one place the old
+  fingerprint would have turned a harmless difference into `REQUEST_ID_REUSED`. The envelope never crosses
+  to the worker; attribution on the task record is the next increment (registry origin AGENT).
 - **One compose project, two runtimes — PR5 of the Hermes integration sequence** (Thomas decision
   2026-09-03 "1개의 Compose OK, 1개의 Runtime은 X"; delivered 2026-09-04). The assistant's container moves
   from its own compose project into this file as the `hermes` service: image only (`hermes-agent`, built

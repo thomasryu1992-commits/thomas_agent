@@ -346,3 +346,24 @@ def _ask(path, payload):
             if b"\n" in chunk:
                 break
         return json.loads(b"".join(chunks).decode("utf-8").strip())
+
+
+# --- the frame envelope (door API v2) ------------------------------------------
+
+def test_stats_echoes_the_envelope_and_repeats_its_result_as_data(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge")
+    out = _apply({"command": "stats", "proto": 2, "client_id": "hermes:dm"}, store)
+    assert out["ok"] is True and out["proto"] == 2 and out["client_id"] == "hermes:dm"
+    assert out["data"] == {"stats": out["stats"]}
+
+
+def test_every_verb_accepts_the_envelope_and_still_refuses_a_stray_key(tmp_path):
+    for verb, allowed in knowledge_bridge._ALLOWED_KEYS.items():
+        assert socket_door.ENVELOPE_KEYS <= allowed, verb
+    store = KnowledgeStore(tmp_path / "knowledge")
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "stats", "proto": 2, "protocol": 2}, store)
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "stats", "proto": 5}, store)
+    assert exc.value.reason_code == "PROTO_UNSUPPORTED"

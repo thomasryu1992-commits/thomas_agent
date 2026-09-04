@@ -118,7 +118,7 @@ _ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISAB
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"command", "domain", "reason", "mode", "approval_id", "scope",
      bridge_idempotency.REQUEST_ID_KEY}
-)
+) | socket_door.ENVELOPE_KEYS
 
 # What an `enable` is asking to start. Two answers, and the difference is the money path.
 #
@@ -260,6 +260,20 @@ def _echo_request_id(request: dict[str, Any], reply: dict[str, Any]) -> dict[str
     if request_id is not None:
         reply[bridge_idempotency.REQUEST_ID_KEY] = request_id
     return reply
+
+
+_TEXT_KEYS = frozenset({"ok", "reply", "reason", "reason_code", "request_id", "replayed", "data"})
+
+
+def _enveloped(request: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
+    """The frame's envelope echoed, and `data` = this reply's structured keys.
+
+    This door already answers in structured keys beside its text (`mode`, `approval_id`,
+    `trading_armed`, …); `data` is the same view under one name, so a v2 client reads one
+    place for every door instead of learning which keys each door happens to put on top.
+    """
+    data = {key: value for key, value in reply.items() if key not in _TEXT_KEYS}
+    return socket_door.envelope(reply, request=request, data=data)
 
 
 def _require_reason(request: dict[str, Any]) -> str:
@@ -579,6 +593,7 @@ def apply_switch(
             f"this door accepts only {sorted(_ALLOWED_KEYS)}; "
             f"it will not act on {sorted(unexpected)}",
         )
+    socket_door.validate_envelope(request)
 
     command = request.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -600,10 +615,10 @@ def apply_switch(
         outcome = control.apply_command(
             control_store, control.CMD_STATUS, actor=ASSISTANT_ACTOR, now=now,
         )
-        return _echo_request_id(request, {
+        return _enveloped(request, _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "action": outcome["action"], "domain": _require_domain(request),
-        })
+        }))
 
     reason = _require_reason(request)
 
@@ -626,11 +641,11 @@ def apply_switch(
             control_store, _DISABLE_MODES[mode], actor=ASSISTANT_ACTOR, now=now,
             reason=reason, ledger=ledger,
         )
-        return _echo_request_id(request, {
+        return _enveloped(request, _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],
             "changed": outcome["changed"], "action": outcome["action"],
             "actor": ASSISTANT_ACTOR, "domain": domain,
-        })
+        }))
 
     # CMD_ENABLE. Two shapes: without an approval id it opens the ask; with one it spends it.
     # Both are validated before anything is claimed, so a frame that was going to be refused
@@ -660,7 +675,10 @@ def apply_switch(
             request_fingerprint=fingerprint, now=now,
         )
         if prior is not None:
-            return bridge_idempotency.replay_reply(prior)
+            return socket_door.envelope(
+                bridge_idempotency.replay_reply(prior), request=request,
+                data=dict(prior.get("outcome") or {}),
+            )
 
     try:
         if approval_id is None:
@@ -713,7 +731,7 @@ def apply_switch(
         )
     # On the fresh application too, so every reply from this door carries the id it was given
     # and `replayed` is the only thing that distinguishes the first from the second.
-    return _echo_request_id(request, reply)
+    return _enveloped(request, _echo_request_id(request, reply))
 
 
 def open_door(

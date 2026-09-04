@@ -1,6 +1,6 @@
 # Door API v2 — design record v0.1
 
-**Status:** PROPOSED — nothing in this record is built. Thomas fixed the *scope* on 2026-09-03 (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md` §4); this record turns that scope into concrete changes, prices each against the code and the tests that pin it, and names the six branch points that are still Thomas's (D-1…D-6).
+**Status:** PARTIALLY IMPLEMENTED — 제안 1(typed/versioned frame)은 PR7로 landed(`socket_door.validate_envelope`/`envelope`/`refusal_payload`, `PROTO_UNSUPPORTED`, 문 4개의 `proto`·`client_id` 수용과 `data`, 멱등 지문의 봉투 키 제외). 제안 2~5는 아직 unbuilt. Thomas fixed the *scope* on 2026-09-03 (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md` §4); this record turns that scope into concrete changes, prices each against the code and the tests that pin it, and names the six branch points that are still Thomas's (D-1…D-6).
 **Owner:** Thomas.
 **Authority:** None. The door modules, `task_registry.py`, `bridge_idempotency.py` and the committed policy are the authority for what the runtime does; this record explains what would change and why it is shaped that way. It changes no policy or schema file itself.
 **Raised:** 2026-09-04, after PR1–PR5 of the harness sequence and the #831 fix.

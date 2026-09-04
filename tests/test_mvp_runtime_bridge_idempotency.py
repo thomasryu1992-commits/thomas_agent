@@ -90,14 +90,19 @@ def test_an_id_is_a_name_not_a_payload():
     assert exc.value.reason_code == "MALFORMED_REQUEST"
 
 
-def test_the_fingerprint_ignores_the_id_and_nothing_else():
+def test_the_fingerprint_ignores_the_id_and_the_envelope_and_nothing_else():
     """Same request under two ids fingerprints the same; different requests do not — which is
-    what makes a reused id detectable instead of dangerous."""
+    what makes a reused id detectable instead of dangerous. The envelope (`proto`,
+    `client_id`) is excluded with the id: a retry from another session of the same assistant,
+    or after it upgraded its client, is the same request, not a reused id."""
     a = bridge_idempotency.fingerprint({"request_id": "one", "kind": "analysis"})
     b = bridge_idempotency.fingerprint({"request_id": "two", "kind": "analysis"})
     c = bridge_idempotency.fingerprint({"request_id": "one", "kind": "research"})
     assert a == b
     assert a != c
+    d = bridge_idempotency.fingerprint({"request_id": "one", "kind": "analysis", "proto": 2, "client_id": "hermes:dm"})
+    e = bridge_idempotency.fingerprint({"request_id": "one", "kind": "analysis", "proto": 2, "client_id": "hermes:cron:x"})
+    assert d == a == e
 
 
 # --- claim / complete / release ---------------------------------------------------

@@ -445,3 +445,93 @@ def test_peer_credentials_report_this_process(tmp_path):
         socket_door.peer_credentials = original
         server.shutdown()
         server.server_close()
+
+
+# --- the frame envelope (door API v2) ------------------------------------------
+#
+# Three optional keys every door reads the same way, defined beside the transport. What is
+# pinned: a frame that names no version speaks v1 and gets no `proto` back; a version the door
+# does not speak is refused by name, never served as v1; `client_id` is a name, not a payload;
+# a typed refusal raised inside `apply` still carries the envelope back over the socket; and the
+# transport's own refusals — BUSY, a frame that is not JSON — carry none, because nothing was read.
+
+def test_a_frame_that_names_no_proto_speaks_v1():
+    assert socket_door.negotiate_proto({"command": "status"}) == socket_door.DEFAULT_PROTO
+    assert socket_door.negotiate_proto({"proto": 2}) == 2
+    assert socket_door.negotiate_proto("not a dict") == socket_door.DEFAULT_PROTO
+
+
+@pytest.mark.parametrize("proto", [3, 0, -1, "2", 2.0, True, [2], {}])
+def test_an_unsupported_proto_is_refused_by_name_not_served_as_v1(proto):
+    with pytest.raises(ControlBlocked) as exc:
+        socket_door.negotiate_proto({"proto": proto})
+    assert exc.value.reason_code == "PROTO_UNSUPPORTED"
+
+
+def test_client_id_is_a_name_not_a_payload():
+    assert socket_door.client_id_of({}) is None
+    assert socket_door.client_id_of({"client_id": " hermes:cron:silent-watch "}) == "hermes:cron:silent-watch"
+    for bad in ("", "   ", 42, "x" * (socket_door.MAX_CLIENT_ID_LENGTH + 1), "has space", "semi;colon", "quote'"):
+        with pytest.raises(ControlBlocked) as exc:
+            socket_door.client_id_of({"client_id": bad})
+        assert exc.value.reason_code == "MALFORMED_REQUEST", bad
+
+
+def test_the_envelope_echoes_only_what_the_frame_named_and_always_carries_data():
+    v1 = socket_door.envelope({"ok": True, "reply": "x"}, request={"command": "status"})
+    assert "proto" not in v1 and "client_id" not in v1
+    assert v1["data"] is None
+    v2 = socket_door.envelope(
+        {"ok": True, "reply": "x"}, request={"command": "status", "proto": 2, "client_id": "hermes:dm"},
+        data={"mode": "ACTIVE"},
+    )
+    assert v2["proto"] == 2 and v2["client_id"] == "hermes:dm"
+    assert v2["data"] == {"mode": "ACTIVE"}
+    assert v2["reply"] == "x"  # the text a v1 client reads is untouched
+
+
+def test_a_refusal_payload_echoes_a_well_formed_envelope_and_nothing_malformed():
+    exc = ControlBlocked("VERB_NOT_PERMITTED", "no such verb")
+    echoed = socket_door.refusal_payload(exc, {"command": "x", "proto": 2, "client_id": "hermes:dm", "request_id": "req-1"})
+    assert echoed["ok"] is False and echoed["reason_code"] == "VERB_NOT_PERMITTED"
+    assert echoed["proto"] == 2 and echoed["client_id"] == "hermes:dm" and echoed["request_id"] == "req-1"
+    assert "data" not in echoed
+    bare = socket_door.refusal_payload(exc, {"command": "x", "proto": 9, "client_id": "bad id", "request_id": 42})
+    assert "proto" not in bare and "client_id" not in bare and "request_id" not in bare
+    assert socket_door.refusal_payload(exc, None) == {"ok": False, "reason_code": "VERB_NOT_PERMITTED", "reason": str(exc)}
+
+
+def test_plain_keeps_a_consoles_structured_keys_and_drops_its_text():
+    outcome = {"reply": "rendered", "action": "TASKS_LISTED", "count": 2, "entries": object(), "nested": {"a": 1}}
+    assert socket_door.plain(outcome) == {"action": "TASKS_LISTED", "count": 2, "nested": {"a": 1}}
+    assert socket_door.plain("not a dict") == {}
+
+
+@unix_only
+def test_a_typed_refusal_over_the_socket_carries_the_envelope_back(tmp_path):
+    def apply(request):
+        raise ControlBlocked("VERB_NOT_PERMITTED", "this door serves nothing")
+
+    server = _serving(tmp_path / "refusing.sock", apply)
+    try:
+        reply = _ask(tmp_path / "refusing.sock", {"command": "x", "proto": 2, "client_id": "hermes:dm"})
+    finally:
+        server.shutdown()
+    assert reply["ok"] is False and reply["reason_code"] == "VERB_NOT_PERMITTED"
+    assert reply["proto"] == 2 and reply["client_id"] == "hermes:dm"
+
+
+@unix_only
+def test_a_frame_that_is_not_json_gets_a_bare_refusal_with_no_envelope(tmp_path):
+    server = _serving(tmp_path / "bare.sock", lambda request: {"ok": True})
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5.0)
+    try:
+        client.connect(str(tmp_path / "bare.sock"))
+        client.sendall(b'{"proto": 2, not json\n')
+        reply = json.loads(client.recv(65536).decode("utf-8"))
+    finally:
+        client.close()
+        server.shutdown()
+    assert reply["reason_code"] == "MALFORMED_REQUEST"
+    assert "proto" not in reply and "data" not in reply and "client_id" not in reply
