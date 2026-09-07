@@ -4823,6 +4823,12 @@ Sequence is fixed; each PR starts after the previous one merges.
       healthcheck; `S6_KILL_GRACETIME`/`S6_SERVICES_GRACETIME=25000` + `agent.restart_drain_timeout: 20`
       (first `prior_exit=clean` since 07-30); `mcp-stderr.log` copy-truncate rotation (07:40Z cron); restore
       runbook `docs/RUNBOOK_HARNESS_BACKUP_RESTORE.md`.
+      **Corrected 2026-09-07:** the daily core archive failed `rc=2` on 09-04, 09-05 and 09-06 and deleted
+      itself each time — PR5 retired `/root/hermes-trial/docker-compose.yml` while it was still a tar member,
+      and nothing on this host reports a failed backup. The member is gone, the script now names an absent
+      root in the log, and the restore runbook's Hermes section had gone stale with it (one compose project
+      since PR5, so `-p thomas_agent -f <clean-main-worktree>/docker-compose.yml`). Last good archive before
+      the fix: `govstate-20260904-0310.tar.gz`. Detection itself is still missing — nothing watches the log.
 - [x] **PR5 — harness unification** (2026-09-04)**.** `hermes` is the ninth service of `docker-compose.yml`
       (`-p thomas_agent`): image only (no `build:`, so CI never builds it), uid 10000, bridge-only mount,
       three `.env` values, no `depends_on` anywhere; `mem_limit` on hermes, pipeline-worker and operator,

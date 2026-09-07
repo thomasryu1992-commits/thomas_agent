@@ -9,9 +9,13 @@
 #              thomas_agent/THOMAS_CORE/{activations,approvals}   (root-owned Core activation, was never backed up)
 #              thomas_agent/workspace                   (content-lane deliverables)
 #              thomas_agent/.env                        (the single secret source, 0600 — inside a 0600 archive)
-#              hermes-trial/data + docker-compose.yml   (SOUL, MCP shims, skills, cron, memories, sessions,
+#              hermes-trial/data                        (SOUL, MCP shims, skills, cron, memories, sessions,
 #                                                        and a consistent SQLite copy via `hermes backup --quick`)
 #   candles  weekly Sun 08:15Z, keep 4 — crypto/candle_archive only (unchanged from 2026-08-31).
+#
+# The assistant's compose definition is NOT a member: since PR5 (2026-09-04) hermes is the ninth
+# service of this repository's docker-compose.yml, which is code and lives in git. Backing up the
+# retired /root/hermes-trial/docker-compose.yml is what broke this script for three days.
 #
 # Member paths are prefixed with the host directory (`thomas_agent/…`, `hermes-trial/…`) so a restore
 # knows where each root goes. Archives before 2026-09-04 start at `.runtime_governance_state/` instead.
@@ -48,6 +52,21 @@ case "$MODE" in
     # Keep only the newest snapshot directory (33 MB each): older ones are in older archives.
     ls -1dt "$HOST_ROOT/$HERMES/data/state-snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
     # 2. One archive, two host roots, member paths prefixed with the directory they restore into.
+    # A missing member makes tar exit 2 and this script delete the archive it just wrote, so the
+    # whole backup is lost for the sake of one absent path. Name the absent path in the log —
+    # `FAILED rc=2` alone said nothing for three days after PR5 retired a member (2026-09-04..06).
+    MEMBERS=("$THOMAS/.runtime_governance_state"
+             "$THOMAS/THOMAS_CORE/activations" "$THOMAS/THOMAS_CORE/approvals"
+             "$THOMAS/workspace" "$THOMAS/.env"
+             "$HERMES/data")
+    MISSING=()
+    for member in "${MEMBERS[@]}"; do
+      [ -e "$HOST_ROOT/$member" ] || MISSING+=("$member")
+    done
+    if [ "${#MISSING[@]}" -gt 0 ]; then
+      log "FAILED mode=$MODE rc=2 missing=$(IFS=,; echo "${MISSING[*]}") $SNAP_NOTE"
+      exit 2
+    fi
     tar czf "$OUT" --warning=no-file-changed -C "$HOST_ROOT" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
         --exclude="$HERMES/data/state.db" --exclude="$HERMES/data/state.db-*" \
@@ -58,10 +77,7 @@ case "$MODE" in
         --exclude="$HERMES/data/logs" --exclude="$HERMES/data/sandboxes" \
         --exclude="$HERMES/data/image_cache" --exclude="$HERMES/data/audio_cache" \
         --exclude="$HERMES/data/models_dev_cache.json" \
-        "$THOMAS/.runtime_governance_state" \
-        "$THOMAS/THOMAS_CORE/activations" "$THOMAS/THOMAS_CORE/approvals" \
-        "$THOMAS/workspace" "$THOMAS/.env" \
-        "$HERMES/data" "$HERMES/docker-compose.yml"
+        "${MEMBERS[@]}"
     RC=$?
     ;;
   candles)
