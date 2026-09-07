@@ -75,11 +75,17 @@ def _run(tmp_path: Path, table: dict[str, str | None], *, dry_run: bool = False,
          confirm_runs: int = 2, delivers: str | None = None) -> subprocess.CompletedProcess[str]:
     """`delivers` is the HTTP code a stub curl returns; None means no secret source at all, so
     `send` records SKIPPED and never reaches the network."""
+    # A fresh stand-in for the backup watch's log: without it these tests would read the host's
+    # real one and start failing a day after it last ran.
+    backup_log = tmp_path / "backup-watch.log"
+    if not backup_log.exists():
+        backup_log.write_text("stub\n", encoding="utf-8")
     env = dict(os.environ)
     env.update(
         DOCKER_BIN=str(_stub_docker(tmp_path, table)),
         HEALTH_WATCH_STATE_DIR=str(tmp_path),
         HEALTH_WATCH_CONFIRM_RUNS=str(confirm_runs),
+        BACKUP_WATCH_LOG=str(backup_log),
         THOMAS_ENV_FILE=str(tmp_path / "absent.env"),
         OPERATOR_REGISTRATION=str(tmp_path / "absent.json"),
     )
@@ -92,6 +98,13 @@ def _run(tmp_path: Path, table: dict[str, str | None], *, dry_run: bool = False,
                    CURL_BIN=str(_stub_curl(tmp_path, delivers)))
     cmd = [str(SCRIPT)] + (["--dry-run"] if dry_run else [])
     return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+
+
+def _fresh_backup_log(tmp_path: Path) -> Path:
+    log = tmp_path / "backup-watch.log"
+    if not log.exists():
+        log.write_text("stub\n", encoding="utf-8")
+    return log
 
 
 def _all_healthy() -> dict[str, str | None]:
@@ -386,7 +399,8 @@ def test_an_unknown_argument_refuses_to_run(tmp_path):
     """A typo'd rehearsal (`--dryrun`) must not become a live send."""
     result = subprocess.run(
         [str(SCRIPT), "--dryrun"], capture_output=True, text=True, timeout=60,
-        env={**os.environ, "HEALTH_WATCH_STATE_DIR": str(tmp_path)},
+        env={**os.environ, "HEALTH_WATCH_STATE_DIR": str(tmp_path),
+             "BACKUP_WATCH_LOG": str(_fresh_backup_log(tmp_path))},
     )
     assert result.returncode == 64 and "usage" in result.stderr
     assert not (tmp_path / "health-watch.log").exists()
@@ -418,7 +432,8 @@ def test_a_daemon_outage_does_not_erase_the_restart_baseline(tmp_path):
         [str(SCRIPT)], capture_output=True, text=True, timeout=60,
         env={**os.environ, "DOCKER_STUB_DAEMON_DOWN": "1",
              "DOCKER_BIN": str(_stub_docker(tmp_path, {})), "CURL_BIN": str(_stub_curl(tmp_path, "200")),
-             "HEALTH_WATCH_STATE_DIR": str(tmp_path), "HEALTH_WATCH_CONFIRM_RUNS": "2"},
+             "HEALTH_WATCH_STATE_DIR": str(tmp_path), "HEALTH_WATCH_CONFIRM_RUNS": "2",
+             "BACKUP_WATCH_LOG": str(_fresh_backup_log(tmp_path))},
     )
     assert down.returncode in (0, 1)
     assert "restart_hermes=" in (tmp_path / "health-watch.state").read_text(encoding="utf-8")
@@ -433,7 +448,51 @@ def test_a_state_file_it_cannot_write_is_said_out_loud(tmp_path):
     # read-only directory does not (these tests run as root on the deployment host).
     (state_dir / "health-watch.state.tmp").mkdir()
     env = dict(os.environ, DOCKER_BIN=str(_stub_docker(tmp_path, _all_healthy())),
-               CURL_BIN=str(_stub_curl(tmp_path, "200")), HEALTH_WATCH_STATE_DIR=str(state_dir))
+               CURL_BIN=str(_stub_curl(tmp_path, "200")), HEALTH_WATCH_STATE_DIR=str(state_dir),
+               BACKUP_WATCH_LOG=str(_fresh_backup_log(tmp_path)))
     result = subprocess.run([str(SCRIPT)], capture_output=True, text=True, env=env, timeout=60)
     assert "STATE WRITE FAILED" in result.stderr
     assert "STATE-WRITE-FAILED" in (state_dir / "health-watch.log").read_text(encoding="utf-8")
+
+
+@posix_only
+def test_a_backup_watch_that_stopped_writing_is_reported(tmp_path):
+    """The two watches are each other's only observer — what notices that a watch has stopped
+    cannot be that watch."""
+    stale = tmp_path / "backup-watch.log"
+    stale.write_text("old\n", encoding="utf-8")
+    os.utime(stale, (0, 0))                                   # 1970: far past a day
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "DOCKER_BIN": str(_stub_docker(tmp_path, _all_healthy())),
+             "HEALTH_WATCH_STATE_DIR": str(tmp_path), "HEALTH_WATCH_CONFIRM_RUNS": "1",
+             "BACKUP_WATCH_LOG": str(stale)},
+    )
+    assert result.returncode == 1
+    assert "백업 감시가" in result.stdout and "crontab" in result.stdout
+
+
+@posix_only
+def test_a_backup_watch_log_that_was_never_written_is_reported(tmp_path):
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "DOCKER_BIN": str(_stub_docker(tmp_path, _all_healthy())),
+             "HEALTH_WATCH_STATE_DIR": str(tmp_path), "HEALTH_WATCH_CONFIRM_RUNS": "1",
+             "BACKUP_WATCH_LOG": str(tmp_path / "never-written.log")},
+    )
+    assert result.returncode == 1 and "한 번도 돌지 않았습니다" in result.stdout
+
+
+@posix_only
+def test_a_docker_outage_does_not_hide_the_other_watch(tmp_path):
+    """Reading a log's mtime needs no daemon, so this check must survive one being unreachable."""
+    stale = tmp_path / "backup-watch.log"
+    stale.write_text("old\n", encoding="utf-8")
+    os.utime(stale, (0, 0))
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run"], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "DOCKER_STUB_DAEMON_DOWN": "1",
+             "DOCKER_BIN": str(_stub_docker(tmp_path, {})), "HEALTH_WATCH_STATE_DIR": str(tmp_path),
+             "HEALTH_WATCH_CONFIRM_RUNS": "1", "BACKUP_WATCH_LOG": str(stale)},
+    )
+    assert "docker 데몬" in result.stdout and "백업 감시가" in result.stdout
