@@ -376,21 +376,49 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     return chain[0] if len(chain) == 1 else FailoverProvider(chain)
 
 
+def _slug_from_env(env_var: str, default: str) -> str:
+    """This machine's model slug for one vendor, or the code default when it named none.
+
+    ``os.environ.get(env_var, default)`` is the obvious spelling and it is wrong here, in a
+    way that cost nine days of silent outage. Compose forwards these slugs as
+    ``${MVP_GROQ_MODEL:-}``, which does NOT omit the key when ``.env`` names no value — it
+    injects the key with an empty string. The key is therefore present, ``.get``'s default
+    is never reached, and the vendor is asked for the model named ``""``. Groq answers that
+    with HTTP 404 (*"The model `` does not exist"*), classified ``PROVIDER_TRANSPORT``: no
+    retry, no failover, and indistinguishable from the decommissioned-slug outage #790 had
+    just fixed.
+
+    #801 wired the slugs through so a vendor retirement would be an ``.env`` edit instead
+    of a rebuild, on the stated belief that "unset keeps the code default"; that belief was
+    this function's absence, and the passthrough silently un-did #790 on every service it
+    reached. Measured 2026-09-07: eight consecutive proposer fires at zero proposals, a
+    third weekly data review degraded, and the front desk answering only slash commands —
+    while ``DEFAULT_GROQ_MODEL`` sat correct and unreachable in the image.
+
+    So: **empty means unset**, which is the contract the compose comment already advertises
+    and the shape :func:`select_validator_provider` already uses for the selector it reads.
+    The deployment form is not the bug and is left alone — for a *selector* an empty value
+    is the inert path and correctly means "off"; a model slug has no inert value, because
+    there is no such thing as a request for no model.
+    """
+    return (os.environ.get(env_var) or "").strip() or default
+
+
 def _hosted_factories() -> dict[str, Any]:
     """The gated hosted-provider factories, shared by the specialist and validator
     selections — one catalogue, so a provider cannot exist for one selection and not the
     other, and both read the model-name env vars only after their gate has opened."""
     return {
         GOOGLE_AI_STUDIO: lambda authorization: GoogleAIStudioProvider(
-            model=os.environ.get(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL).strip(),
+            model=_slug_from_env(HOSTED_MODEL_ENV, DEFAULT_HOSTED_MODEL),
             authorization=authorization,
         ),
         GROQ: lambda authorization: GroqProvider(
-            model=os.environ.get(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL).strip(),
+            model=_slug_from_env(GROQ_MODEL_ENV, DEFAULT_GROQ_MODEL),
             authorization=authorization,
         ),
         OPENROUTER: lambda authorization: OpenRouterProvider(
-            model=os.environ.get(OPENROUTER_MODEL_ENV, DEFAULT_OPENROUTER_MODEL).strip(),
+            model=_slug_from_env(OPENROUTER_MODEL_ENV, DEFAULT_OPENROUTER_MODEL),
             authorization=authorization,
         ),
     }
@@ -401,15 +429,15 @@ def _tier_factories() -> dict[str, Any]:
     only after its gate has opened, exactly like ``_hosted_factories``."""
     return {
         OPENROUTER_LIGHT: lambda authorization: OpenRouterLightProvider(
-            model=os.environ.get(OPENROUTER_MODEL_LIGHT_ENV, DEFAULT_OPENROUTER_MODEL_LIGHT).strip(),
+            model=_slug_from_env(OPENROUTER_MODEL_LIGHT_ENV, DEFAULT_OPENROUTER_MODEL_LIGHT),
             authorization=authorization,
         ),
         OPENROUTER_STANDARD: lambda authorization: OpenRouterStandardProvider(
-            model=os.environ.get(OPENROUTER_MODEL_STANDARD_ENV, DEFAULT_OPENROUTER_MODEL_STANDARD).strip(),
+            model=_slug_from_env(OPENROUTER_MODEL_STANDARD_ENV, DEFAULT_OPENROUTER_MODEL_STANDARD),
             authorization=authorization,
         ),
         OPENROUTER_HEAVY: lambda authorization: OpenRouterHeavyProvider(
-            model=os.environ.get(OPENROUTER_MODEL_HEAVY_ENV, DEFAULT_OPENROUTER_MODEL_HEAVY).strip(),
+            model=_slug_from_env(OPENROUTER_MODEL_HEAVY_ENV, DEFAULT_OPENROUTER_MODEL_HEAVY),
             authorization=authorization,
         ),
     }
