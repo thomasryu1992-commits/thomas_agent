@@ -27,6 +27,7 @@ from runtime.mvp_runtime.providers import (
     select_tiered_provider,
     select_validator_provider,
 )
+from runtime.mvp_runtime import providers as providers_module
 from runtime.mvp_runtime import safety_gate
 from runtime.mvp_runtime.safety_gate import (
     MODEL_INVOCATION,
@@ -783,3 +784,63 @@ def test_malformed_usage_metadata_fails_closed(monkeypatch, usage):
     with pytest.raises(ProviderError) as exc:
         GoogleAIStudioProvider(authorization=_AUTH).generate("x", max_output_tokens=100, timeout_seconds=5)
     assert exc.value.reason_code == "MALFORMED_RESPONSE"
+
+# --- the model slug an empty environment resolves to -------------------------------------
+#
+# The regression these pin is not hypothetical and was not caught by any existing test: for
+# nine days every Groq call on the fleet asked for the model named "" and got HTTP 404,
+# because compose forwards `${MVP_GROQ_MODEL:-}` (present, empty) and the code read it with
+# `os.environ.get(name, DEFAULT)` (defaults only when ABSENT). The correct default sat in
+# the image the whole time. See providers._slug_from_env.
+
+_SLUG_ENVS = (
+    (providers_module.GROQ_MODEL_ENV, providers_module.DEFAULT_GROQ_MODEL),
+    (providers_module.HOSTED_MODEL_ENV, providers_module.DEFAULT_HOSTED_MODEL),
+    (providers_module.OPENROUTER_MODEL_ENV, providers_module.DEFAULT_OPENROUTER_MODEL),
+    (providers_module.OPENROUTER_MODEL_LIGHT_ENV, providers_module.DEFAULT_OPENROUTER_MODEL_LIGHT),
+    (providers_module.OPENROUTER_MODEL_STANDARD_ENV,
+     providers_module.DEFAULT_OPENROUTER_MODEL_STANDARD),
+    (providers_module.OPENROUTER_MODEL_HEAVY_ENV, providers_module.DEFAULT_OPENROUTER_MODEL_HEAVY),
+)
+
+
+@pytest.mark.parametrize("env_var, default", _SLUG_ENVS)
+def test_an_empty_slug_env_resolves_to_the_code_default(monkeypatch, env_var, default):
+    """Set-and-empty is how compose forwards a slug .env does not name — it must mean unset."""
+    monkeypatch.setenv(env_var, "")
+    assert providers_module._slug_from_env(env_var, default) == default
+
+
+@pytest.mark.parametrize("env_var, default", _SLUG_ENVS)
+def test_an_absent_slug_env_resolves_to_the_code_default(monkeypatch, env_var, default):
+    monkeypatch.delenv(env_var, raising=False)
+    assert providers_module._slug_from_env(env_var, default) == default
+
+
+@pytest.mark.parametrize("env_var, default", _SLUG_ENVS)
+def test_a_whitespace_only_slug_is_not_a_slug(monkeypatch, env_var, default):
+    """A slug of spaces would 404 exactly like the empty one; the old code stripped it to ""."""
+    monkeypatch.setenv(env_var, "   ")
+    assert providers_module._slug_from_env(env_var, default) == default
+
+
+@pytest.mark.parametrize("env_var, default", _SLUG_ENVS)
+def test_a_named_slug_still_wins_over_the_default(monkeypatch, env_var, default):
+    """The override must keep working — this is the whole point of the 2026-08-30 passthrough."""
+    monkeypatch.setenv(env_var, "  vendor/some-model  ")
+    assert providers_module._slug_from_env(env_var, default) == "vendor/some-model"
+
+
+def test_the_groq_factory_never_builds_a_provider_with_no_model(monkeypatch):
+    """End to end through the factory that actually broke, not just the helper.
+
+    ``GroqProvider(model="")`` is silently accepted — ``_model = model if model is not None``
+    — so an empty slug reaches the wire as a real request for a nonexistent model. The
+    factory is where that must already be impossible.
+    """
+    monkeypatch.setenv(providers_module.GROQ_MODEL_ENV, "")
+    authorization = make_gate_authorization(
+        flags=(MODEL_INVOCATION, NETWORK_ACCESS), provider_id=providers_module.GROQ)
+    provider = providers_module._hosted_factories()[providers_module.GROQ](authorization)
+    assert provider._model == providers_module.DEFAULT_GROQ_MODEL
+    assert provider.model_version == providers_module.DEFAULT_GROQ_MODEL
