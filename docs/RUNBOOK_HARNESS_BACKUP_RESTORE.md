@@ -7,6 +7,7 @@
 ```bash
 install -m 700 scripts/ops/harness_backup.sh /root/backups/backup-governance-state.sh
 install -m 700 scripts/ops/rotate_hermes_mcp_log.sh /root/backups/rotate-hermes-mcp-log.sh
+install -m 700 scripts/ops/backup_watch.sh /root/backups/backup-watch.sh
 ```
 
 ## 1. What is backed up
@@ -25,7 +26,15 @@ Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 M
 
 The snapshot step runs inside the container as uid 10000 (`docker exec -u 10000 hermes hermes backup --quick -l daily`). If the container is down the tar still runs and the log line ends in `hermes-snapshot=FAILED` — a visible hole rather than a silent one. Only the newest snapshot directory is kept on disk (33 MB each); older ones live in older archives.
 
-**Check the backup ran** (cron is silent — there is no MTA on this host):
+**Check the backup ran.** `backup_watch.sh` does this daily at 08:00Z, fifteen minutes after the core
+job, and messages the operator's registered control chat when a check fails — cron itself is silent
+and there is no MTA on this host, which is why four consecutive failures went unseen in 2026-09-04..07.
+It checks three things: the newest core archive is younger than 26 h, the last `mode=core` line in
+`backup.log` reads OK, and the newest candle archive is younger than 8 days. It says nothing when all
+three pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
+its absence. `--dry-run` prints the message instead of sending it. The control-bot token comes from
+`.env` through a curl config on stdin (never argv, never a log) and the chat id from
+`operator_registration.json` rather than a second copy of it. By hand:
 
 ```bash
 tail -3 /root/backups/governance-state/backup.log          # OK mode=core govstate-… 25M kept=7 hermes-snapshot=ok
@@ -119,7 +128,8 @@ docker inspect hermes --format '{{.State.Health.Status}} {{json .Config.Healthch
 docker exec hermes sh -c 'ps -o args | grep shutdownd' | grep -o '\-g [0-9]*'        # -g 25000
 grep restart_drain_timeout /root/hermes-trial/data/config.yaml
 tail -1 /root/hermes-trial/data/logs/container-boot.log | grep -o 'prior_exit=[a-z]*' # clean after any stop
-crontab -l | grep backups/                                                            # 07:40 rotate, 07:45 core, Sun 08:15 candles
+crontab -l | grep backups/                                     # 07:40 rotate, 07:45 core, 08:00 watch, Sun 08:15 candles
+/root/backups/backup-watch.sh --dry-run                        # OK — 백업 최신 …, or the message it would send
 ```
 
 ## 4. What is still not covered
@@ -127,3 +137,8 @@ crontab -l | grep backups/                                                      
 - `docker logs` of the Thomas services (rotation only, no archive).
 - Hermes `logs/` and `sandboxes/` by decision — not state.
 - The Mac pull verifies the tar (`tar tzf`) but does not test-restore; a restore rehearsal on a scratch directory is the missing drill.
+- Container health. `backup_watch.sh` watches backups only; nothing reads `docker inspect --format '{{.State.Health.Status}}'` or acts on `unhealthy`, and nothing restarts a container on it (§3).
+- The watcher's own delivery. A failed send is recorded in `watch.log` with the HTTP code and not retried — the next run is 24 h later. Nothing checks that `watch.log` is still growing, so a watcher that dies is as quiet as the failure it was meant to catch. Read it when reading the backup log:
+  ```bash
+  tail -3 /root/backups/governance-state/watch.log      # one line per day: OK checks=3
+  ```
