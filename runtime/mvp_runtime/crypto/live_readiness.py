@@ -739,7 +739,9 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             # delete any more. `console_cli kill` is what replaces it and is strictly the better
             # instruction — it writes control state, so it lands on the RUNNING scheduler at its
             # next guard rather than at the next restart, and the close path is exempt from it.
-            # Both env-based alternatives are worse: MVP_LIVE_MANUAL_KILL_SWITCH needs a restart,
+            # Both env-based alternatives are worse: MVP_LIVE_MANUAL_KILL_SWITCH needs a restart
+            # AND is not forwarded to any service, so on this deployment it cannot be engaged
+            # here at all (2026-09-07; it is pinned as undeployed in the passthrough gate),
             # and clearing MVP_LIVE_TRADING needs a restart AND strands open positions, because
             # the close guard still requires the opt-in. Named in that order, because this line
             # is read in a hurry.

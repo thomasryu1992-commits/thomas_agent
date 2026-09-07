@@ -95,6 +95,19 @@ NOT_DEPLOYED = {
         "R10 approval consumption is a deliberate operator act via approval_cli consume — "
         "a standing service-wide enablement is exactly what it must not become."
     ),
+    live_order.MANUAL_KILL_SWITCH_ENV: (
+        "Pinned 2026-09-07, and honestly: this one was not a decision, it was a gap. "
+        "CRYPTO_LIVE_EXECUTION_V0.1.md lists it under 'Standing controls' as the softer "
+        "halt, and no service has ever been forwarded it — so a value in .env never "
+        "arrived and the documented restart changed nothing, on the very service the "
+        "autonomous entry path runs on. It reads correctly only in a shell that exports "
+        "it, which is the manual door it was written for. It stays undeployed here "
+        "because forwarding anything on the live-trading surface is Thomas's call "
+        "(the 2026-07-27 precedent above), NOT because withholding it was reasoned. "
+        "The open question is forward-or-strike; until it is answered the console "
+        "`kill` verb is the only halt that acts on a running scheduler, and the runbook "
+        "now says so."
+    ),
 }
 
 
