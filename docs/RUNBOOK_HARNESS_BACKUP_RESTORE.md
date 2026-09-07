@@ -19,7 +19,7 @@ One archive a day, `govstate-<UTC stamp>.tar.gz` under `/root/backups/governance
 | `thomas_agent/THOMAS_CORE/activations`, `…/approvals` | root | the Core activation pointer's targets — mounted read-only into five services; **were in no backup before 2026-09-04** | — |
 | `thomas_agent/workspace` | 10001 | content-lane deliverables (`POST.md`, `PASTE.txt`, …) | — |
 | `thomas_agent/.env` | root, 0600 | the single secret source (see `DEPLOYMENT.md` → *Secret boundary*) | — |
-| `hermes-trial/data`, `hermes-trial/docker-compose.yml` | 10000:10000, 0700 | `SOUL.md`, `config.yaml`, `mcp/` shims, `skills/`, `cron/jobs.json`, `memories/`, `sessions/`, `auth.json`, and `state-snapshots/<stamp>-daily/` — a **consistent** `state.db` copy made by `hermes backup --quick` (sqlite backup API) moments before the tar | the live `state.db*`, `kanban.db*`, `cron/executions.db*` (WAL-mode databases copied mid-write are not backups — the snapshot directory carries them); `cache/`, `lazy-packages/`, `home/`, `bin/`, `.local/` (installed packages, recreated on boot); `logs/`, `sandboxes/`, `image_cache/`, `audio_cache/`, `models_dev_cache.json` |
+| `hermes-trial/data` | 10000:10000, 0700 | `SOUL.md`, `config.yaml`, `mcp/` shims, `skills/`, `cron/jobs.json`, `memories/`, `sessions/`, `auth.json`, and `state-snapshots/<stamp>-daily/` — a **consistent** `state.db` copy made by `hermes backup --quick` (sqlite backup API) moments before the tar | the live `state.db*`, `kanban.db*`, `cron/executions.db*` (WAL-mode databases copied mid-write are not backups — the snapshot directory carries them); `cache/`, `lazy-packages/`, `home/`, `bin/`, `.local/` (installed packages, recreated on boot); `logs/`, `sandboxes/`, `image_cache/`, `audio_cache/`, `models_dev_cache.json` |
 
 Measured 2026-09-04: **25 MB, 4.8 s** (the previous Thomas-only archive was 15 MB). Off-host: the Mac pull (`com.thomas.govstate-pull`, daily 18:00 KST, 90-day retention) globs `govstate-*.tar.gz`, so it picked the new shape up without reinstalling.
 
@@ -31,8 +31,14 @@ The snapshot step runs inside the container as uid 10000 (`docker exec -u 10000 
 tail -3 /root/backups/governance-state/backup.log          # OK mode=core govstate-… 25M kept=7 hermes-snapshot=ok
 tar tzf /root/backups/governance-state/govstate-$(date -u +%Y%m%d)-0745.tar.gz | awk -F/ '{print $1"/"$2}' | sort | uniq -c
 # expect thomas_agent/.runtime_governance_state, thomas_agent/THOMAS_CORE, thomas_agent/workspace, thomas_agent/.env,
-#        hermes-trial/data, hermes-trial/docker-compose.yml
+#        hermes-trial/data
 ```
+
+A member that is not on disk makes `tar` exit 2, and this script deletes the half-written archive
+rather than pass it off as a backup — so one absent path costs the whole day. The script now checks
+the six members first and logs `FAILED … missing=<path>`; a bare `rc=2` in the log predates that
+check. This is not hypothetical: PR5 retired `/root/hermes-trial/docker-compose.yml` on 2026-09-04
+while it was still a member, and the daily archive failed silently until 2026-09-06.
 
 ## 2. Restore
 
@@ -47,6 +53,12 @@ tar xzf /root/backups/governance-state/govstate-candles-<stamp>.tar.gz -C /root 
 chown -R 10001:10001 /root/thomas_agent/.runtime_governance_state
 docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml up -d
 ```
+
+Since PR5 there is **one** compose project (`thomas_agent`, nine services), so this `stop` stops
+Hermes as well — expected here, because 2.3 restores its data next. Always pass `-p thomas_agent`
+and `-f <clean-main-worktree>/docker-compose.yml`: without `-p` the directory name becomes the
+project and the running containers are left alone, and a working tree that is not on `main` carries
+a compose file that does not match what is deployed.
 
 The sockets under `bridge/` and `internal/` are not in the archive; the door and worker processes recreate them on start. The candle loss window is up to 7 days by decision (2026-08-31).
 
@@ -63,18 +75,22 @@ tar xzf govstate-<stamp>.tar.gz -C /root thomas_agent/.env && chown root:root /r
 The archive holds the data directory **without** the live databases, and a snapshot directory **with** consistent copies of them. Put the copies where the live files go, and delete any WAL/shared-memory files next to them — a stale `-wal` beside a restored `state.db` corrupts it on first open.
 
 ```bash
-docker compose --env-file /root/thomas_agent/.env stop
-tar xzf /root/backups/governance-state/govstate-<stamp>.tar.gz -C /root hermes-trial/data hermes-trial/docker-compose.yml
+docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml stop hermes
+tar xzf /root/backups/governance-state/govstate-<stamp>.tar.gz -C /root hermes-trial/data
 SNAP=$(ls -1d /root/hermes-trial/data/state-snapshots/*/ | sort | tail -1)
 cp "$SNAP/state.db" /root/hermes-trial/data/state.db
 cp "$SNAP/kanban.db" /root/hermes-trial/data/kanban.db                   # if present
 cp "$SNAP/cron/executions.db" /root/hermes-trial/data/cron/executions.db   # if present
 rm -f /root/hermes-trial/data/{state.db,kanban.db}-{wal,shm} /root/hermes-trial/data/cron/executions.db-{wal,shm}
 chown -R 10000:10000 /root/hermes-trial/data
-docker compose --env-file /root/thomas_agent/.env up -d --wait
+docker compose -p thomas_agent --env-file /root/thomas_agent/.env -f <clean-main-worktree>/docker-compose.yml up -d --wait hermes
 ```
 
-`hermes.env` is retired (PR2); the compose file reads its three values from `/root/thomas_agent/.env`, so restore 2.2's `.env` first. Session continuity: `gateway_routing` keys sessions by the absolute `/opt/data/sessions` path, so keep the mount path.
+The assistant's compose definition is not in the archive and must not be restored from one: since
+PR5 it is the `hermes` service of this repository's `docker-compose.yml`, and the retired
+`/root/hermes-trial/docker-compose.yml` (kept as `docker-compose.retired-pr5.yml`) defines a second,
+standalone gateway — bringing it back gives the same data directory two writers. `hermes.env` is
+retired too (PR2); the compose file reads its three values from `/root/thomas_agent/.env`, so restore 2.2's `.env` first. Session continuity: `gateway_routing` keys sessions by the absolute `/opt/data/sessions` path, so keep the mount path.
 
 ### 2.4 After any restore
 
