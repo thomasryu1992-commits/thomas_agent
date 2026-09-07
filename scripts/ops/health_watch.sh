@@ -21,6 +21,10 @@
 #                           so a rise is the restart policy acting on a process that died
 #   OOM killed              .State.OOMKilled — this host runs with ~1.5 GiB available and three
 #                           services have mem_limits
+#   backup watch quiet      backup_watch.sh has not written its log for over a day. The two watches
+#                           are each other's only observer: what notices that a watch has stopped
+#                           cannot be that watch. This one runs every ten minutes, so it is the
+#                           faster half of that pair
 #
 # Two rules keep it from becoming noise, which is the way a watch dies:
 #   * Each problem must be seen CONFIRM_RUNS times before it is sent — counted per problem, never
@@ -56,6 +60,8 @@ REGISTRATION="${OPERATOR_REGISTRATION:-/root/thomas_agent/.runtime_governance_st
 DOCKER="${DOCKER_BIN:-docker}"
 CURL="${CURL_BIN:-curl}"
 CONFIRM_RUNS="${HEALTH_WATCH_CONFIRM_RUNS:-2}"
+BACKUP_WATCH_LOG="${BACKUP_WATCH_LOG:-/root/backups/governance-state/watch.log}"
+BACKUP_WATCH_MAX_AGE_H=26   # backup_watch.sh runs daily at 08:00Z
 MISS_TOLERANCE=2          # clean runs in a row before a pending problem is forgotten
 STUCK_START_MINUTES=15
 SILENCE_MAX_HOURS=6
@@ -176,6 +182,19 @@ for name in "${SERVICES[@]+"${SERVICES[@]}"}"; do
       note "$name:health-$health" "$name — 헬스 상태 $health" ;;
   esac
 done
+
+# The other watch. These two scripts are each other's only observer: cron drops a line, a script is
+# edited into a syntax error, a host comes back from an image with a shorter crontab — and the watch
+# that would have told you is the thing that is gone. Reading a log's mtime needs no docker, so this
+# runs even when the daemon could not be reached.
+if [ ! -f "$BACKUP_WATCH_LOG" ]; then
+  note "watch:backup-missing" "백업 감시 로그가 없습니다 ($BACKUP_WATCH_LOG) — backup-watch.sh가 한 번도 돌지 않았습니다"
+else
+  bw_age_h=$(( (NOW - $(number "$(stat -c %Y "$BACKUP_WATCH_LOG" 2>/dev/null)")) / 3600 ))
+  if [ "$bw_age_h" -lt 0 ] || [ "$bw_age_h" -gt "$BACKUP_WATCH_MAX_AGE_H" ]; then
+    note "watch:backup-stale" "백업 감시가 ${bw_age_h}시간째 아무 기록도 남기지 않았습니다 (매일 08:00Z) — crontab -l | grep backup-watch"
+  fi
+fi
 
 # Confirmation is counted PER PROBLEM, and a problem is not required to be seen on consecutive
 # runs. Counting per problem *set* stayed silent through a widening cascade (each new failure reset

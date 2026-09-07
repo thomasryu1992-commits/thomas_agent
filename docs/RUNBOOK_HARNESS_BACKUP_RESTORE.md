@@ -30,8 +30,9 @@ The snapshot step runs inside the container as uid 10000 (`docker exec -u 10000 
 **Check the backup ran.** `backup_watch.sh` does this daily at 08:00Z, fifteen minutes after the core
 job, and messages the operator's registered control chat when a check fails — cron itself is silent
 and there is no MTA on this host, which is why four consecutive failures went unseen in 2026-09-04..07.
-It checks three things: the newest core archive is younger than 26 h, the last `mode=core` line in
-`backup.log` reads OK, and the newest candle archive is younger than 8 days. It says nothing when all
+It checks four things: the newest core archive is younger than 26 h, the last `mode=core` line in
+`backup.log` reads OK, the newest candle archive is younger than 8 days, and `health-watch.log` has
+been written in the last 30 minutes (see *The two watches watch each other* below). It says nothing when all
 three pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
 its absence. `--dry-run` prints the message instead of sending it. The control-bot token comes from
 `.env` through a curl config on stdin (never argv, never a log) and the chat id from
@@ -163,6 +164,22 @@ A suppressed alert is *held*, not swallowed — when the silence lapses the prob
 The same is true of a failed send: it is recorded with its HTTP code and retried on the next run,
 because one network blip must not bury an outage until the problem set happens to change.
 
+### The two watches watch each other
+
+Neither script can notice its own absence: cron drops a line, an edit leaves a syntax error, a host
+comes back from an image with a shorter crontab — and the watch that would have said so is the thing
+that is gone. So each reads the other's log and treats a stale one as a problem of its own.
+
+| observer | watches | stale after | how late it can be |
+|---|---|---|---|
+| `health_watch.sh` (every 10 min) | `governance-state/watch.log` | 26 h | 20 minutes |
+| `backup_watch.sh` (daily 08:00Z) | `health-watch.log` | 30 min | a day |
+
+A log dated in the future counts as stale in both directions, so a clock that steps back cannot buy
+either of them silence. What remains uncovered is both stopping at once — a crontab wiped whole, or
+a host that never boots. Nothing on this machine can report that; the off-host Mac pull noticing no
+new `govstate-*` file is the only signal outside it, and it is a manual read.
+
 **What it does not see.** It reports docker's verdict, and docker's verdict is only as deep as each
 service's probe. Four of the nine read a heartbeat (`heartbeat_cli` for operator and the two lanes;
 the age of `gateway.heartbeat` for Hermes), so a lane that keeps stamping while dropping its cycles
@@ -170,7 +187,6 @@ still passes. The other five test that a socket file exists (`test -S`), which a
 holding an open listener passes too. A green watch means the containers are up, not that the work is
 moving — the ledger and `scheduler_events` answer that question, not this.
 
-And nothing watches the watcher: if cron loses the line, `health-watch.log` simply stops growing.
 Two operational notes: putting `DOCKER_BIN=` in the cron line is not needed and, if it points
 anywhere but the real docker, the send is refused as a test; and the state file is a plain
 `key=value` list — editing it by hand is fine, but a non-numeric counter is ignored rather than
@@ -194,7 +210,7 @@ crontab -l | grep backups/                            # 07:40 rotate, 07:45 core
 - The Mac pull verifies the tar (`tar tzf`) but does not test-restore; a restore rehearsal on a scratch directory is the missing drill.
 - Acting on `unhealthy`. `health_watch.sh` (§3) reports it now, but nothing restarts a container on it — still a separate decision.
 - Work that stops inside a healthy container. The healthchecks read heartbeats, so a lane that keeps stamping while dropping cycles passes both the probe and the watch.
-- The watchers' own liveness. Nothing checks that `watch.log` or `health-watch.log` is still growing, so a watch that dies is as quiet as the failure it was meant to catch. (The backup watch does not retry a failed send either — its next run is 24 h out; the health watch does, every 10 minutes.) Read them:
+- Both watches stopping at once — a crontab wiped whole, a host that does not come back. They cover each other (§3), not themselves together. Off-host, the Mac pull seeing no new `govstate-*` file is the only remaining signal, and reading it is manual. The backup watch also does not retry a failed send, its next run being 24 h out; the health watch retries every 10 minutes. Read both logs:
   ```bash
   tail -3 /root/backups/governance-state/watch.log      # one line per day: OK checks=3
   tail -3 /root/backups/health-watch.log                # one line per 10 min: OK services=9
