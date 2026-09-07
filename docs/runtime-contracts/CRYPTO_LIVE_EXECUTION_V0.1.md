@@ -347,8 +347,15 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
   so it lands on the running service at its next guard, and closes remain permitted
   (`kill_blocks: external_execution`). Since 2026-07-28 this is the *only* control that acts on
   a running scheduler — it replaced "delete the grant file", which no longer exists.
-- **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true`. Refuses entries, closes
-  still permitted. Env-based, so it needs the service restarted.
+- **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true` and restart the
+  scheduler. Refuses entries, closes still permitted. Reach for `kill` above first — it lands on
+  the *running* service, this one waits for a restart.
+  History worth keeping, because this bullet was false for longer than anyone would guess: until
+  2026-09-07 `docker-compose.yml` forwarded this variable to no service, so setting it in `.env`
+  and restarting halted nothing on the scheduler the autonomous entry path runs on, and the
+  compose comment next to it had claimed "both kill switches" the whole time. It was found while
+  tracing an unrelated env-passthrough fault, not by anyone trying to use it — which is the
+  argument for testing that a documented control is reachable, not just that it is implemented.
 - **Do NOT clear `MVP_LIVE_TRADING` to halt.** It needs a restart *and* it shuts the close path,
   because `evaluate_live_close_guard` requires the opt-in — it would strand open positions.
 - **Daily-loss breaker:** entries halt for the UTC day once realized live loss reaches the

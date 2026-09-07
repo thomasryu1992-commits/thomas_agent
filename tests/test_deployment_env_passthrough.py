@@ -145,6 +145,12 @@ LIVE_TRADING_SURFACE = {
     account.ACCOUNT_FEED_ENV: "the account feed selector",
     account.ACCOUNT_API_KEY_ENV: "the account key — the same key that can trade",
     account.ACCOUNT_API_SECRET_ENV: "the account secret — the same secret that can trade",
+    # Added 2026-09-07 (Thomas). Not a new capability — a documented one that was never
+    # deployed: the runbook has listed the manual kill under "Standing controls" all along
+    # while no service received it, so setting it in .env and restarting halted nothing on
+    # the scheduler that trades. Forwarding is the one direction on this surface that
+    # REMOVES capability rather than granting it; the inert default still means not engaged.
+    live_order.MANUAL_KILL_SWITCH_ENV: "the manual halt — refuses entries, closes still permitted",
 }
 
 
@@ -432,7 +438,10 @@ def test_the_list_covers_the_whole_live_surface():
     and every one must be named above. A rename that emptied the list would otherwise leave
     every test in this section vacuously green — in BOTH directions now, since the same list
     drives the scheduler's forwarding requirement and the operator's prohibition."""
-    assert len(LIVE_TRADING_SURFACE) == 8
+    # 8 -> 9 on 2026-09-07: the manual kill switch joined the forwarded surface. Bumping this
+    # number is the deliberate act the guard is for — it is the one line that cannot be edited
+    # by accident, which is why the addition is recorded at the list itself rather than here.
+    assert len(LIVE_TRADING_SURFACE) == 9
     for env_var in LIVE_TRADING_SURFACE:
         assert env_var.startswith(("MVP_", "BINANCE_")), env_var
 

@@ -294,6 +294,15 @@ services:
       MVP_LIVE_ORDER_API_SECRET: ${MVP_LIVE_ORDER_API_SECRET:-}
       MVP_LIVE_CONFIRMATION: ${MVP_LIVE_CONFIRMATION:-}
       MVP_LIVE_CANARY_CONFIRMATION: ${MVP_LIVE_CANARY_CONFIRMATION:-}
+      # The softer halt (Thomas decision 2026-09-07). The comment above has claimed "both kill
+      # switches" since this block was written, and for that whole time this one reached no
+      # service: the runbook's "set it and restart" did nothing on the very service the
+      # autonomous entry path runs on. Forwarded now so the documented control exists where it
+      # is documented to. Empty is the inert path (`_env_bool` reads absent and "" alike as
+      # not engaged), so this line arms nothing by itself. It does NOT replace `console_cli
+      # kill`, which remains the halt to reach for first because it lands on the RUNNING
+      # scheduler at its next guard; this one needs a restart to take effect.
+      MVP_LIVE_MANUAL_KILL_SWITCH: ${MVP_LIVE_MANUAL_KILL_SWITCH:-}
 
   # The MAINTENANCE-lane tick loop (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): factory,
   # null_control, candle archive, analysis, prune, rotate, report, propose, data review —
