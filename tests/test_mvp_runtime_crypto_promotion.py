@@ -780,6 +780,40 @@ def test_a_multi_symbol_strategy_occupies_every_symbol_it_is_scoped_to():
     assert "ETHUSDT 4h" in exc.value.reason
 
 
+def test_a_shared_raw_id_does_not_lend_one_lineage_the_other_s_direction():
+    """The factory restarts strategy_id at S001 every generation, so a promotion batch
+    routinely holds distinct lineages that share a raw id — and `predicted_pool_entries`
+    hands them to this gate UNRESOLVED, because the install door derives `{id}-{generation}`
+    only later. The direction check used to collect directions into one dict keyed by that
+    id, so whichever lineage was read last lent its direction to every context the others
+    occupied. Measured 2026-09-10 on the live pool: a BNB 4h pair that was long on both sides
+    refused as "S006 SHORT", because a DOGE short in the same batch was also S006."""
+    entries = [
+        _routable("S6", symbol="BNBUSDT", timeframe="4h"),
+        _routable("S7", symbol="BNBUSDT", timeframe="4h"),
+        _opposing(_routable("S6", symbol="DOGEUSDT", timeframe="4h")),   # read last
+    ]
+    pool.assert_pool_within_size_cap(entries)        # BNB agrees; the DOGE short sits alone
+
+
+def test_a_shared_raw_id_cannot_hide_a_real_split():
+    """The dangerous direction of the same collision: a genuine split admitted. ETH 4h holds
+    a long S6 against a short S8, but another S8 elsewhere is long and read last — under the
+    old keying ETH read as two longs and the split went through. The gate has to read each
+    occupant's own spec, so ETH refuses and names the short on the record."""
+    entries = [
+        _routable("S6", symbol="ETHUSDT", timeframe="4h"),
+        _opposing(_routable("S8", symbol="ETHUSDT", timeframe="4h")),
+        _routable("S8", symbol="SOLUSDT", timeframe="4h"),               # read last, long
+    ]
+    with pytest.raises(MvpRuntimeError) as exc:
+        pool.assert_pool_within_size_cap(entries)
+    assert exc.value.reason_code == "POOL_CONTEXT_DIRECTION_SPLIT"
+    assert "ETHUSDT 4h" in exc.value.reason
+    assert "S6 LONG" in exc.value.reason and "S8 SHORT" in exc.value.reason
+    assert "SOLUSDT" not in exc.value.reason
+
+
 # --- what the sizing cap and the directional cap do to each other ----------------
 #
 # An interaction, not a standalone idea, and it exists because a context holds one strategy
