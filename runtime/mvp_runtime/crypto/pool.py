@@ -1056,22 +1056,32 @@ def assert_pool_within_size_cap(entries: Sequence[Mapping[str, Any]]) -> None:
     # The slow-context condition (Thomas 2026-09-02): two occupants of a 4h/1d context must
     # agree on direction. Read the spec the way the router does (`Direction.SHORT` is an enum,
     # so `str()` on it matches nothing — see `routable_directional_capacity`).
-    split: dict[tuple[str, str], list[str]] = {}
-    directions_of: dict[str, str] = {}
+    #
+    # Each occupant's direction is paired with it where its own spec is read, and never looked
+    # up by id afterwards. The ask hands this gate `promotion.predicted_pool_entries`, whose
+    # batch rows still carry the factory's RAW strategy_id — the factory restarts at S001
+    # every generation, and only the install door derives a unique `{id}-{generation}` — so
+    # two lineages in one batch routinely share an id. A dict keyed by that id let whichever
+    # was read last lend its direction to every context the others occupied: a false refusal
+    # one way, and the other way a real split admitted (measured 2026-09-10, both directions
+    # pinned by `test_a_shared_raw_id_*`). The contexts are enumerated exactly as
+    # `routable_context_map` enumerates them for the cap above — scope times timeframe.
+    occupants: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for entry in occupying:
         spec = StrategySpec.from_dict(entry["strategy_spec"])
-        directions_of[str(entry.get("strategy_id"))] = (
-            "SHORT" if spec.direction is Direction.SHORT else "LONG"
-        )
-    for (sym, tf), ids in contexts.items():
-        if str(tf) in FAST_ROUTING_TIMEFRAMES or len(ids) < 2:
-            continue
-        if len({directions_of[i] for i in ids}) > 1:
-            split[(sym, tf)] = ids
+        direction = "SHORT" if spec.direction is Direction.SHORT else "LONG"
+        for scoped_symbol in spec.symbol_scope:
+            occupants.setdefault((str(scoped_symbol), str(spec.timeframe)), []).append(
+                (str(entry.get("strategy_id")), direction)
+            )
+    split = {
+        (sym, tf): pairs for (sym, tf), pairs in occupants.items()
+        if str(tf) not in FAST_ROUTING_TIMEFRAMES and len({d for _, d in pairs}) > 1
+    }
     if split:
         listed = "; ".join(
-            f"{sym} {tf}: " + ", ".join(f"{i} {directions_of[i]}" for i in sorted(ids))
-            for (sym, tf), ids in sorted(split.items())
+            f"{sym} {tf}: " + ", ".join(f"{i} {d}" for i, d in sorted(pairs))
+            for (sym, tf), pairs in sorted(split.items())
         )
         raise ToolError(
             "POOL_CONTEXT_DIRECTION_SPLIT",
