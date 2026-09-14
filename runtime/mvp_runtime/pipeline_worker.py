@@ -33,9 +33,10 @@ model quota and reach the research APIs; it cannot place an order.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from . import socket_door, task_registry, timeutil
+from .workflow import ATTEMPT_ID_KEY, ATTEMPT_ID_PATTERN, WORKFLOW_ID_KEY, WORKFLOW_ID_PATTERN, WORKFLOW_OPTIONS_KEY
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .naver_research import MAX_SEED_CHARS
@@ -66,8 +67,20 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 # nowhere that decides anything. `proto` never crosses: the dialect is the door's business.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
-     "proposal_inputs", "ideation_inputs", socket_door.CLIENT_ID_KEY}
+     "proposal_inputs", "ideation_inputs", socket_door.CLIENT_ID_KEY,
+     ATTEMPT_ID_KEY, WORKFLOW_ID_KEY, WORKFLOW_OPTIONS_KEY}
 )
+
+# The attempt frame (sequence 2, P05). The workflow manager — inside the dispatch-bridge
+# process, this socket's one client — names the attempt it opened, and this worker echoes it
+# on the reply so the manager's fence can tell a live result from a late one. The registry row
+# such a run opens is origin WORKFLOW (the manager's own to reconcile, never a worker
+# restart's). `workflow_options` may raise the assurance policy for one attempt (the reviewer,
+# the one revision) and never lower it: the manager reserved those calls against the plan's
+# budget before it sent the frame. None of these keys is in `dispatch_bridge._ALLOWED_KEYS`,
+# so the assistant cannot send them; a frame carrying them came from the manager or did not
+# come through the door — and the worker checks their shape either way.
+_WORKFLOW_OPTION_KEYS: frozenset[str] = frozenset({"independent_validation", "revise"})
 
 # The terminal a worker writes on an entry whose run raised rather than answered: the run
 # reached no outcome, so the registry must not say RUNNING forever (the door relays the
@@ -271,6 +284,14 @@ def apply_work(
         )
     profile = _ACTOR_PROFILES[profile_name]
 
+    attempt = _attempt_fields(request, profile_name=profile_name)
+    if attempt is not None:
+        options = attempt["options"]
+        if options.get("independent_validation"):
+            independent_validation = True
+        if options.get("revise"):
+            revise = True
+
     raw_seeds = request.get("naver_keywords")
     if raw_seeds is None:
         naver_keywords = None
@@ -309,7 +330,8 @@ def apply_work(
     entry: RegistryEntry | None = None
     if profile_name == ASSISTANT_PROFILE:
         entry = task_registry.record_submission(
-            registry, request_text=text.strip(), origin=task_registry.AGENT_ORIGIN,
+            registry, request_text=text.strip(),
+            origin=task_registry.WORKFLOW_ORIGIN if attempt is not None else task_registry.AGENT_ORIGIN,
             requester_id=profile["requester_id"], now=stamp, request_kind=kind,
         )
     # Attribution on the task record: `created_by` is the one free-text audit field the task
@@ -353,6 +375,7 @@ def apply_work(
     identity = _identity(result)
     finished = now or timeutil.utc_now_iso()
     entry_id = entry.registry_entry_id if entry is not None else None
+    echo = _attempt_echo(attempt, result)
     if result.get("status") == "COMPLETED":
         trace_id = identity.get("trace_id")
         task_registry.close_entry(
@@ -368,6 +391,7 @@ def apply_work(
             "registry_entry_id": entry_id,
             "final_response": result.get("final_response", ""),
             "actor": profile["requester_id"],
+            **echo,
         }
     # A pipeline BLOCK is a real answer, not a worker error: it names its `kind`, so the door
     # completes the idempotency claim and relays it — the assistant reports "the runtime
@@ -387,7 +411,59 @@ def apply_work(
         "reason_code": block.get("reason_code", "DISPATCH_BLOCKED"),
         "reason": block.get("message", "the runtime blocked this dispatch"),
         "actor": profile["requester_id"],
+        **echo,
     }
+
+
+def _attempt_fields(request: Mapping[str, Any], *, profile_name: str) -> dict[str, Any] | None:
+    """The attempt frame's fields, validated, or None for an ordinary dispatch.
+
+    Refused rather than ignored, every way it can be wrong: a malformed id, options without an
+    attempt, an option outside the two named, a non-boolean, or the scheduler's profile
+    carrying an attempt (the manager speaks for the assistant's profile only)."""
+    attempt_id = request.get(ATTEMPT_ID_KEY)
+    workflow_id = request.get(WORKFLOW_ID_KEY)
+    raw_options = request.get(WORKFLOW_OPTIONS_KEY)
+    if attempt_id is None and workflow_id is None and raw_options is None:
+        return None
+    if not isinstance(attempt_id, str) or not ATTEMPT_ID_PATTERN.match(attempt_id):
+        raise ControlBlocked("MALFORMED_REQUEST", f"'{ATTEMPT_ID_KEY}' must be a workflow attempt id when given")
+    if not isinstance(workflow_id, str) or not WORKFLOW_ID_PATTERN.match(workflow_id):
+        raise ControlBlocked("MALFORMED_REQUEST", f"an attempt frame names its '{WORKFLOW_ID_KEY}'")
+    if profile_name != ASSISTANT_PROFILE:
+        raise ControlBlocked(
+            "MALFORMED_REQUEST", "an attempt frame is the workflow manager's and runs as the assistant's profile",
+        )
+    options: dict[str, bool] = {}
+    if raw_options is not None:
+        if not isinstance(raw_options, dict) or set(raw_options) - _WORKFLOW_OPTION_KEYS:
+            raise ControlBlocked(
+                "MALFORMED_REQUEST",
+                f"'{WORKFLOW_OPTIONS_KEY}' carries {sorted(_WORKFLOW_OPTION_KEYS)} only, as booleans",
+            )
+        for key, value in raw_options.items():
+            if not isinstance(value, bool):
+                raise ControlBlocked("MALFORMED_REQUEST", f"'{WORKFLOW_OPTIONS_KEY}.{key}' must be a boolean")
+            options[key] = value
+    return {"attempt_id": attempt_id, "workflow_id": workflow_id, "options": options}
+
+
+def _attempt_echo(attempt: Mapping[str, Any] | None, result: Mapping[str, Any]) -> dict[str, Any]:
+    """What an attempt frame's reply carries beside the run: the ids echoed for the manager's
+    fence, and the run's recorded spend (the ledger's ``budget_usage`` row, or None when the
+    run blocked before one was written) so the manager can confirm its reservation."""
+    if attempt is None:
+        return {}
+    usage_row = (result.get("records") or {}).get("budget_usage")
+    usage = None
+    if isinstance(usage_row, Mapping):
+        usage = {
+            "model_calls": int(usage_row.get("model_calls") or 0),
+            "tokens_used": int(usage_row.get("tokens_used") or 0),
+            "agent_invocations": int(usage_row.get("agent_invocations") or 0),
+            "revision_cycles": int(usage_row.get("revision_cycles") or 0),
+        }
+    return {ATTEMPT_ID_KEY: attempt["attempt_id"], WORKFLOW_ID_KEY: attempt["workflow_id"], "usage": usage}
 
 
 def reconcile_worker_entries(registry: TaskRegistryStore | None, *, now: str) -> list[RegistryEntry]:

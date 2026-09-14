@@ -536,3 +536,12 @@ def test_iter_records_trace_prescreen_yields_that_runs_rows_and_the_caller_still
     ledger.append_records("trace_c", {"agent_output": {"trace_a": "a key that happens to spell the id"}})
     screened = list(ledger.iter_records(trace_id="trace_a"))
     assert len(screened) == 3 and [r["trace_id"] for r in screened if r["trace_id"] == "trace_a"] == ["trace_a", "trace_a"]
+
+
+def test_a_workflow_attempt_entry_is_marked_as_the_workflows(tmp_path):
+    """Sequence 2, P05: the manager's attempts sit beside the operator's and the assistant's
+    own requests, and must read as neither."""
+    store = _registry(tmp_path)
+    _entry(store, text="워크플로 단계", status=RUNNING, now=NOW, origin="WORKFLOW")
+    reply = _apply(("TASKS", None), registry=store)["reply"]
+    assert "[실행 중 · 워크플로]" in reply

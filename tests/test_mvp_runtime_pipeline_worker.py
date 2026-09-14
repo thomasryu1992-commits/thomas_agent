@@ -732,3 +732,99 @@ def test_the_worker_accepts_client_id_and_still_refuses_proto(tmp_path, captured
         pipeline_worker.apply_work(_valid(client_id="bad name"), control_store=ControlStore(tmp_path))
     assert exc.value.reason_code == "MALFORMED_REQUEST"
     assert not captured_run_task
+
+
+# --- the attempt frame (sequence 2, P05) ------------------------------------------------------
+#
+# The workflow manager names the attempt it opened; the worker echoes it and reports the run's
+# recorded spend, and the registry row is origin WORKFLOW — the manager's to reconcile.
+
+_ATTEMPT = "wfa_" + "a" * 20
+_WORKFLOW = "wf_" + "b" * 20
+
+
+def _attempt_frame(**over):
+    req = _valid(attempt_id=_ATTEMPT, workflow_id=_WORKFLOW)
+    req.update(over)
+    return req
+
+
+@pytest.fixture
+def run_task_with_spend(monkeypatch):
+    calls: list[dict] = []
+
+    def _fake(raw_request, **kwargs):
+        calls.append({"raw_request": raw_request, **kwargs})
+        return {
+            "status": "COMPLETED", "final_response": "ok",
+            "records": {
+                "received_task": {"identity": {"task_id": "task_1", "trace_id": "trace_1"}},
+                "budget_usage": {"model_calls": 2, "tokens_used": 1234, "agent_invocations": 2, "revision_cycles": 0},
+            },
+        }
+
+    monkeypatch.setattr(pipeline_worker, "run_task", _fake)
+    return calls
+
+
+def test_an_attempt_frame_opens_a_workflow_row_and_echoes_its_ids_and_spend(tmp_path, run_task_with_spend):
+    from runtime.mvp_runtime import task_registry
+    from runtime.mvp_runtime.task_registry import TaskRegistryStore
+
+    registry = TaskRegistryStore(tmp_path)
+    reply = pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path), registry=registry)
+    assert reply["ok"] and reply["attempt_id"] == _ATTEMPT and reply["workflow_id"] == _WORKFLOW
+    assert reply["usage"] == {"model_calls": 2, "tokens_used": 1234, "agent_invocations": 2, "revision_cycles": 0}
+    (entry,) = registry.latest()
+    assert entry.origin == task_registry.WORKFLOW_ORIGIN and entry.status == task_registry.DELIVERED
+    assert entry.registry_entry_id == reply["registry_entry_id"] and entry.request_kind == "analysis"
+    assert entry.trace_id == "trace_1" and entry.result_ref == "ledger:trace_1"
+
+
+def test_an_ordinary_dispatch_carries_no_attempt_keys_and_stays_origin_agent(tmp_path, run_task_with_spend):
+    from runtime.mvp_runtime import task_registry
+    from runtime.mvp_runtime.task_registry import TaskRegistryStore
+
+    registry = TaskRegistryStore(tmp_path)
+    reply = pipeline_worker.apply_work(_valid(), control_store=ControlStore(tmp_path), registry=registry)
+    assert reply["ok"] and not ({"attempt_id", "workflow_id", "usage"} & set(reply))
+    assert registry.latest()[0].origin == task_registry.AGENT_ORIGIN
+
+
+@pytest.mark.parametrize("frame, code", [
+    (_attempt_frame(attempt_id="attempt-1"), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_id="nope"), "MALFORMED_REQUEST"),
+    (_valid(workflow_options={"revise": True}), "MALFORMED_REQUEST"),          # options without an attempt
+    (_attempt_frame(workflow_options={"write_output": True}), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_options={"revise": "yes"}), "MALFORMED_REQUEST"),
+    (_attempt_frame(actor_profile="scheduler"), "MALFORMED_REQUEST"),
+])
+def test_attempt_fields_are_refused_when_malformed_partial_or_not_the_assistants(tmp_path, captured_run_task, frame, code):
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == code
+    assert not captured_run_task
+
+
+def test_workflow_options_raise_the_assurance_policy_and_never_lower_it(tmp_path, captured_run_task):
+    pipeline_worker.apply_work(_attempt_frame(workflow_options={"independent_validation": True, "revise": True}),
+                               control_store=ControlStore(tmp_path))
+    assert captured_run_task[-1]["independent_validation"] is True and captured_run_task[-1]["revise"] is True
+    pipeline_worker.apply_work(_attempt_frame(workflow_options={"independent_validation": False}),
+                               control_store=ControlStore(tmp_path), independent_validation=True, revise=True)
+    assert captured_run_task[-1]["independent_validation"] is True and captured_run_task[-1]["revise"] is True
+    pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path))
+    assert captured_run_task[-1]["independent_validation"] is False and captured_run_task[-1]["revise"] is False
+
+
+def test_a_blocked_attempt_run_still_echoes_and_reports_what_it_spent(tmp_path, monkeypatch):
+    def _blocked(raw_request, **kwargs):
+        return {"status": "BLOCKED", "final_response": None,
+                "block": {"reason_code": "VALIDATION_BLOCK", "message": "no"},
+                "records": {"received_task": {"identity": {"task_id": "task_2", "trace_id": "trace_2"}},
+                            "budget_usage": {"model_calls": 1, "tokens_used": 50}}}
+
+    monkeypatch.setattr(pipeline_worker, "run_task", _blocked)
+    reply = pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path))
+    assert reply["ok"] is False and reply["reason_code"] == "VALIDATION_BLOCK"
+    assert reply["attempt_id"] == _ATTEMPT and reply["usage"]["model_calls"] == 1 and reply["usage"]["tokens_used"] == 50
