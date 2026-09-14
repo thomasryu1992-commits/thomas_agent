@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -44,7 +46,7 @@ if str(ROOT) not in sys.path:
 from runtime.mvp_runtime.audit import build_promotion_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
-from runtime.mvp_runtime.memory import is_expired, promote_candidate  # noqa: E402
+from runtime.mvp_runtime.memory import EXPIRES_AT, is_expired, promote_candidate  # noqa: E402
 from runtime.mvp_runtime.paths import repo_root as _repo_root  # noqa: E402
 from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
@@ -52,6 +54,93 @@ from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore  # noqa: E402
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore, find_candidate, mark_promoted  # noqa: E402
 
 
+
+
+def _retention_state(candidate: Mapping[str, Any], reference: str) -> str:
+    """``live`` / ``expired`` / ``no-ttl`` — the three states, kept distinct on purpose.
+
+    ``is_expired`` folds the last two together (an entry with no ``expires_at`` is "not
+    expired", so retention never surprise-deletes what it did not stamp). That is right for
+    retention and wrong for a reader: rows with no TTL are the ones ``memory_prune`` can
+    never remove, so they accumulate silently and a listing that calls them ``live`` hides
+    exactly the pile that needs an operator decision. Measured on this host 2026-09-14:
+    20 of 28 rows carry no TTL, all created 2026-07-16, and every prune since has reported
+    ``pruned:0``."""
+    if not candidate.get(EXPIRES_AT):
+        return "no-ttl"
+    return "expired" if is_expired(candidate, reference) else "live"
+
+
+def _render_candidate_list(candidates: Sequence[Mapping[str, Any]], reference: str) -> str:
+    """One line per DISTINCT finding, carrying the three facts a promotion decision needs.
+
+    **The defect this closes.** The listing printed one line per ROW and a bare count, so a
+    reader could not see that rows were copies of one another, that some had already expired,
+    or that none was promotable at all. The weekly decision digest reads exactly this output,
+    and on 2026-09-14 it recommended promoting "24 candidates" that were 28 rows collapsing to
+    13 distinct findings, of which **zero** carried ``promotable: true`` — 20 of them four
+    copies each of five 2026-07-16 boilerplate lines. The digest was not careless; the list it
+    was given could not be read correctly. A listing whose reader cannot act correctly on it is
+    the defect, not the reader.
+
+    Copies are collapsed rather than dropped: the count is the signal that a finding keeps
+    being re-derived, and the id shown is the newest copy, which is the one a promotion
+    should name. Ordering puts what can actually be acted on first — promotable, then live
+    before undated before expired, then newest — because the first lines are the ones a
+    summary quotes."""
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for candidate in candidates:
+        groups.setdefault(str(candidate.get("content") or ""), []).append(candidate)
+
+    _STATE_RANK = {"live": 0, "no-ttl": 1, "expired": 2}
+    rows = []
+    for content, copies in groups.items():
+        newest = max(copies, key=lambda c: str(c.get("created_at") or ""))
+        rows.append({
+            "id": str(newest.get("candidate_id")),
+            "type": str(newest.get("candidate_type")),
+            "promotable": bool(newest.get("promotable")),
+            "state": _retention_state(newest, reference),
+            "copies": len(copies),
+            "created": str(newest.get("created_at") or "")[:10],
+            "content": content,
+        })
+    rows.sort(key=lambda r: (not r["promotable"], _STATE_RANK.get(r["state"], 3),
+                             _invert(r["created"]), r["id"]))
+
+    lines = [f"{'candidate_id':<24}  {'type':<24}  {'promotable':<10}  {'state':<7}  "
+             f"{'copies':<6}  {'created':<10}  content"]
+    for r in rows:
+        lines.append(
+            f"{r['id']:<24}  {r['type'][:24]:<24}  {('yes' if r['promotable'] else 'no'):<10}  "
+            f"{r['state']:<7}  {('x' + str(r['copies'])):<6}  {r['created']:<10}  {r['content'][:70]}"
+        )
+
+    promotable = sum(1 for r in rows if r["promotable"])
+    expired = sum(1 for r in rows if r["state"] == "expired")
+    undated = sum(1 for r in rows if r["state"] == "no-ttl")
+    # Counts below the arrow are over DISTINCT findings, not rows: "24 candidates" was the
+    # number that made the digest recommend a bulk promotion, and it was a row count.
+    lines.append(
+        f"({len(candidates)} row(s) -> {len(rows)} distinct: {promotable} promotable, "
+        f"{expired} expired, {undated} undated)"
+    )
+    if promotable == 0 and rows:
+        # Stated rather than left to inference: the whole failure mode this listing had was a
+        # reader concluding "these are candidates, so promote them" from a list that never said
+        # otherwise. `promote_candidate` refuses these anyway; saying so here is what stops the
+        # recommendation from being written in the first place.
+        lines.append("Nothing here is promotable: every distinct finding carries "
+                     "promotable=false, and promotion would be refused.")
+    if undated:
+        lines.append(f"{undated} distinct finding(s) carry no expiry and cannot be pruned; "
+                     "they stay until an operator removes them.")
+    return "\n".join(lines)
+
+
+def _invert(stamp: str) -> str:
+    """Sort key that orders timestamps newest-first inside an otherwise ascending sort."""
+    return "".join(chr(0x10FFFD - ord(ch)) if ord(ch) < 0x10FFFD else ch for ch in stamp)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -92,9 +181,7 @@ def main(argv: list[str] | None = None, *, store: WorkingMemoryStore | None = No
         return 2
 
     if args.list:
-        for cand in candidates:
-            print(f"{cand.get('candidate_id')}\t{cand.get('candidate_type')}\t{cand.get('content', '')[:70]}")
-        print(f"({len(candidates)} candidate(s))")
+        print(_render_candidate_list(candidates, now or timeutil.utc_now_iso()))
         return 0
 
     if not (args.candidate_id and args.promoted_by and args.reason):

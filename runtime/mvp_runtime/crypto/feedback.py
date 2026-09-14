@@ -93,6 +93,31 @@ RECOMMEND_REPEAT_IN_PAPER = "REPEAT_IN_PAPER"
 RECOMMEND_DROP_CANDIDATE_PROFILE = "DROP_CANDIDATE_PROFILE"
 RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT = "CREATE_CANDIDATE_PROFILE_DRAFT"
 
+# What a recommendation IS, rendered beside it. Every string above is review-only vocabulary:
+# nothing in `runtime/` or `scripts/` consumes one, and the module header already says so
+# ("a recommendation is a string for Thomas, not a state change"). The header is not where the
+# reader is. The weekly decision digest reads the RENDERED report, and twice now it has taken
+# `DROP_CANDIDATE_PROFILE` for a command and invented an execution path for it — "disable the
+# profile or delete it from the codebase" (2026-08-24, and again 2026-09-14, where it also read
+# one profile-wide figure as a verdict on paper trading itself while the loss sat in two
+# lineages). A recommendation that cannot say what it is gets acted on as if it were an
+# instruction, so each one now names the door that does change state, or says there is none.
+_RECOMMENDATION_NEXT_STEP: dict[str, str] = {
+    RECOMMEND_EXPAND_TEST_COVERAGE:
+        "advisory, no executor - widen the paper sample before judging this profile",
+    RECOMMEND_REPEAT_IN_PAPER:
+        "advisory, no executor - leave the pool as it stands and let the sample grow",
+    RECOMMEND_DROP_CANDIDATE_PROFILE:
+        "advisory, no executor - and NOT an instruction to stop paper trading. This figure is "
+        "profile-wide; read '-- by strategy --' below for the lineages carrying the loss and "
+        "retire each by name with scripts/retire_strategies.py "
+        "(--request, Thomas /approve, then --approval-id ... --confirm)",
+    RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT:
+        "advisory, no executor - promote a named candidate with "
+        "scripts/promote_strategy_candidates.py",
+}
+_RECOMMENDATION_UNKNOWN = "advisory, no executor reads this string"
+
 
 def summarize_outcomes(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Core outcome metrics over R (source math verbatim; drawdown is peak-to-trough
@@ -417,6 +442,8 @@ def render_report_text(report: Mapping[str, Any]) -> str:
         "=== paper performance report ===",
         f"status          : {report.get('status')}",
         f"recommendation  : {report.get('recommendation')}",
+        "                  " + _RECOMMENDATION_NEXT_STEP.get(
+            str(report.get("recommendation")), _RECOMMENDATION_UNKNOWN),
         f"sample (closed) : {report.get('sample_size')} ({report.get('independent_event_count')} independent events)",
         f"expectancy      : {summary.get('expectancy')} R/trade  (GROSS — intended fills, no costs)",
     ]
@@ -440,7 +467,12 @@ def render_report_text(report: Mapping[str, Any]) -> str:
     by_strategy = summary.get("by_strategy") or {}
     if by_strategy:
         lines.append("-- by strategy --")
-        for strategy_id in sorted(by_strategy):
+        # Worst expectancy first, not alphabetical: this block exists to answer "which lineage
+        # do I retire", and a name sort buries that under whichever id starts with the earliest
+        # letter. Ties keep a stable id order so the rendering stays deterministic.
+        for strategy_id in sorted(
+            by_strategy, key=lambda sid: (_f(by_strategy[sid].get("expectancy")), sid)
+        ):
             b = by_strategy[strategy_id]
             lines.append(
                 f"{strategy_id:16}: {b['closed_count']} closed, expectancy {b['expectancy']}, "

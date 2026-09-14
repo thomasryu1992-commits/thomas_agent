@@ -206,6 +206,48 @@ def test_render_contains_the_decision_inputs():
     assert report["performance_report_id"] in text
 
 
+def _losing_rows():
+    return [_outcome(-1.0, f"2026-07-{d:02d}T00:00:00Z") for d in (18, 19, 20, 21)]
+
+
+def test_render_says_the_recommendation_is_advisory_and_names_the_door_that_is_not():
+    """Two weekly decision digests read this rendering and took `DROP_CANDIDATE_PROFILE` for a
+    command, inventing "disable the profile or delete it from the codebase" (2026-08-24, and
+    again 2026-09-14, where one profile-wide figure also became a verdict on paper trading
+    itself). Nothing in `runtime/` or `scripts/` consumes these strings. The module header says
+    so; the header is not where the reader is, so the rendered line has to say it too."""
+    report = build_performance_report(_losing_rows(), now=NOW)
+    assert report["recommendation"] == RECOMMEND_DROP_CANDIDATE_PROFILE
+    text = render_report_text(report)
+    assert "advisory, no executor" in text
+    assert "NOT an instruction to stop paper trading" in text
+    assert "scripts/retire_strategies.py" in text
+
+
+def test_no_recommendation_renders_bare():
+    """The failure mode is a reader supplying the missing half themselves, so every value in
+    the vocabulary carries its own next step — including the two that are simply "wait"."""
+    for rows, expected in (
+        ([], RECOMMEND_EXPAND_TEST_COVERAGE),
+        (SPREAD[:2], RECOMMEND_REPEAT_IN_PAPER),
+        (_losing_rows(), RECOMMEND_DROP_CANDIDATE_PROFILE),
+        (SPREAD, RECOMMEND_CREATE_CANDIDATE_PROFILE_DRAFT),
+    ):
+        report = build_performance_report(rows, now=NOW)
+        assert report["recommendation"] == expected
+        assert "advisory, no executor" in render_report_text(report)
+
+
+def test_by_strategy_is_ordered_worst_first():
+    """This block exists to answer "which lineage do I retire". Sorted by name the worst sits
+    wherever its id happens to fall, and the 2026-09-14 digest read the alphabetical list and
+    reported a profile rather than the lineage carrying the loss."""
+    rows = [_outcome(1.0, f"2026-07-{d:02d}T00:00:00Z", strategy_id="AAA_GOOD") for d in (18, 19)]
+    rows += [_outcome(-1.0, f"2026-07-{d:02d}T06:00:00Z", strategy_id="ZZZ_BAD") for d in (18, 19)]
+    body = render_report_text(build_performance_report(rows, now=NOW)).split("-- by strategy --")[1]
+    assert body.index("ZZZ_BAD") < body.index("AAA_GOOD")
+
+
 # --- store integration --------------------------------------------------------
 
 def test_run_paper_performance_report_reads_store(tmp_path):
