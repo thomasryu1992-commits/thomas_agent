@@ -37,6 +37,8 @@ from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .workflow_manager import DEFAULT_CONCURRENCY, DEFAULT_POLL_SECONDS, WorkflowManager
 from .workflow_store import WorkflowStore
+from . import schedule_delegation
+from .scheduler import ScheduleStore
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -103,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
            workflow_store: WorkflowStore | None) -> int:
+    # P09: the schedule store and the policy's delegated scope ride with the v3 surface. The
+    # scope is read once at start (None = no clause = every change refused); a policy change is
+    # a redeploy, which is how every other policy-read service here behaves.
+    schedule_store = ScheduleStore.default() if workflow_store is not None else None
+    delegation = schedule_delegation.load_delegation() if workflow_store is not None else None
     return serve_door_forever(
         label="DISPATCH_BRIDGE", path=path,
         open_server=lambda: dispatch_bridge.open_door(
@@ -116,6 +123,7 @@ def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
             # The same store the manager loop writes: v3 commands are served from it, and only
             # when the loop runs here — otherwise they are refused by name (A18).
             workflow_store=workflow_store,
+            schedule_store=schedule_store, delegation=delegation,
             manager_enabled=manager is not None,
         ),
         banner=lambda server: (

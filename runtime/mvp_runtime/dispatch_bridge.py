@@ -120,10 +120,14 @@ COMMAND_KEY = "command"
 V3_COMMANDS: frozenset[str] = frozenset({
     "capabilities", "workflow.submit", "workflow.status", "workflow.list", "workflow.events", "workflow.cancel",
     "workflow.retry_step", "workflow.propose_update", "workflow.report_usage",
+    # P09 (V0.2 §1.3, conditional): a schedule change inside the policy's delegated scope is
+    # applied, outside it recorded as a proposal, on a financial kind refused. Dormant —
+    # every change refused — until the policy carries `assistant_schedule` (1.6.0).
+    "schedule.propose_change",
 })
 _V3_KEYS: frozenset[str] = frozenset(
     {COMMAND_KEY, bridge_idempotency.REQUEST_ID_KEY, "plan", "workflow_id", "expected_version",
-     "reason", "after_cursor", "limit", "step_key", "reported_usage"}
+     "reason", "after_cursor", "limit", "step_key", "reported_usage", "change"}
 ) | socket_door.ENVELOPE_KEYS
 _V3_READS: frozenset[str] = frozenset({"capabilities", "workflow.status", "workflow.list", "workflow.events"})
 MAX_LIST = 50
@@ -215,6 +219,8 @@ def apply_dispatch(
     registry: TaskRegistryStore | None = None,
     workflow_store: WorkflowStore | None = None,
     manager_enabled: bool = False,
+    schedule_store: Any | None = None,
+    delegation: Any | None = None,
 ) -> dict[str, Any]:
     """Validate one dispatch request and forward it, or raise a typed ``ControlBlocked``.
 
@@ -228,6 +234,7 @@ def apply_dispatch(
     if COMMAND_KEY in request:
         return apply_workflow_command(
             request, control_store=control_store, workflow_store=workflow_store, now=now,
+            schedule_store=schedule_store, ledger=ledger, delegation=delegation,
             manager_enabled=manager_enabled,
         )
 
@@ -383,6 +390,9 @@ def apply_workflow_command(
     workflow_store: WorkflowStore | None,
     now: str | None = None,
     manager_enabled: bool = False,
+    schedule_store: Any | None = None,
+    ledger: LedgerStore | None = None,
+    delegation: Any | None = None,
 ) -> dict[str, Any]:
     """Door API v3: one workflow command, or a typed refusal (sequence 2, P05).
 
@@ -467,6 +477,28 @@ def apply_workflow_command(
         data = {"events": events, "next_cursor": next_cursor, "count": len(events), "as_of": stamp}
         return socket_door.envelope(
             {"ok": True, "command": command, "reply": workflow_console.render_events(events, next_cursor)},
+            request=request, data=data,
+        )
+
+    if command == "schedule.propose_change":
+        # P09. The principal is this door's peer; the scope is the policy's; the store and the
+        # ledger are the scheduler's own (the same rows and events scheduler_cli writes).
+        from . import schedule_delegation                 # noqa: PLC0415 — loaded for this command only
+        if schedule_store is None:
+            raise ControlBlocked("SCHEDULES_UNAVAILABLE", "this door was opened without the schedule store")
+        state = control_store.load()
+        if not state.execution_allowed:
+            raise ControlBlocked(state.refusal_reason_code(),
+                                 f"runtime is {state.mode}; schedule changes wait for an authenticated resume")
+        change = schedule_delegation.ChangeRequest.parse(request.get("change"))
+        outcome = schedule_delegation.apply_change(
+            schedule_store, ledger, change, actor=socket_door.ASSISTANT_ACTOR, now=stamp,
+            delegation=delegation, bounded=True,
+        )
+        data = {"verdict": outcome.verdict, "action": change.action, "reasons": list(outcome.reasons),
+                "schedule": outcome.schedule.as_record() if outcome.schedule is not None else None, "as_of": stamp}
+        return socket_door.envelope(
+            {"ok": True, "command": command, "reply": schedule_delegation.render_outcome(change, outcome)},
             request=request, data=data,
         )
 
@@ -564,6 +596,8 @@ def open_door(
     registry: TaskRegistryStore | None = None,
     workflow_store: WorkflowStore | None = None,
     manager_enabled: bool = False,
+    schedule_store: Any | None = None,
+    delegation: Any | None = None,
 ) -> socket_door.SocketDoor:
     """Listen on ``path``, validate, and forward to the worker at ``worker_socket``.
 
@@ -609,6 +643,7 @@ def open_door(
         return apply_dispatch(
             request, control_store=control_store, ledger=ledger, execute=_forward,
             registry=registry, workflow_store=workflow_store, manager_enabled=manager_enabled,
+            schedule_store=schedule_store, delegation=delegation,
         )
 
     return socket_door.SocketDoor(

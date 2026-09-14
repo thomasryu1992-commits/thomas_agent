@@ -56,6 +56,15 @@ SHARED_ACROSS_MODULES = frozenset({
     # operator reading the code back is looking at the same fact either way: the ideation job
     # was asked to run with nothing to work from.
     "IDEATION_INPUTS_REQUIRED",
+    # Added 2026-09-14 with sequence 2 P09. `SCHEDULES_UNAVAILABLE`: a door opened without the
+    # schedule store — the read door (`store_reads`) and now the dispatch door's
+    # `schedule.propose_change` say the same thing about the same missing store.
+    # `UNKNOWN_KIND`: a schedule kind outside `scheduler.KINDS` — `scheduler.build_schedule`
+    # refuses it at registration and `schedule_delegation` refuses it before the delegation
+    # check for the same reason. `WORKFLOW_UNAVAILABLE`: no workflow store / manager here — the
+    # dispatch door refuses v3 commands by that name and a `workflow_plan` schedule fire fails
+    # by it; one fact ("the manager never ran on this runtime"), two depths.
+    "SCHEDULES_UNAVAILABLE", "UNKNOWN_KIND", "WORKFLOW_UNAVAILABLE",
     # Added 2026-08-10 with the scheduler's analysis_task delegation. Both callers of the
     # pipeline worker report the same thing under this code — "the engine did not answer, so
     # nothing ran" — and neither falls back to running the work itself. `dispatch_bridge`

@@ -245,6 +245,24 @@ template's fourth job (워크플로 서술, every 30 minutes) calls it once and 
 (`[SILENT]`) on no change. Narration guarantees nothing about delivery and says so; the ending
 or the waited-for decision reached Thomas through the operator's push above.
 
+### Scheduled workflows — the `workflow_plan` kind (P09; A20)
+
+A schedule of kind `workflow_plan` (maintenance lane) carries a `workflow_plan.v0.1` object as
+its request, validated at registration by `workflow.validate_plan`. Its fire does one thing:
+`WorkflowStore.submit(principal="scheduler", request_id=<schedule_run_id>, plan)`. The
+occurrence's own `schedule_run_id` is the request id, so the store's request table makes it
+at-most-once per occurrence: a duplicate tick claims nothing (`claim_due`), a re-fire of the
+same occurrence replays the accepted workflow, a clock jump fires once on the grid and a restart
+never catches up (`next_occurrence`). The manager runs the workflow like any other; without a
+workflow store on the runtime the fire fails by name (`WORKFLOW_UNAVAILABLE`). This is a second
+process submitting to `workflows`/`requests` — serialised by SQLite's writer lock like the door's
+own submit; the manager remains the only writer of step and attempt transitions.
+
+Who may register one is the scheduler's question, not this store's: `schedule_delegation`
+(P09) applies a change inside the policy's delegated scope, records a proposal outside it, and
+refuses every financial kind — dormant until policy 1.6.0 names the scope
+(`docs/runtime-contracts/POLICY_1_6_0_DRAFT.md`).
+
 ### Recovery — the manager and the registry row (P06; A10, A28)
 
 Every attempt the worker runs opens a registry row of origin `WORKFLOW` carrying the
