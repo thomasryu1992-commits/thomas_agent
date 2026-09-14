@@ -68,8 +68,9 @@ REGISTRY_REL = ".runtime_governance_state/task_registry.jsonl"
 # such key, and `from_record` reads a missing one as None — which IS the analysis routing they
 # were queued with, so old rows keep meaning exactly what they meant.
 # v0.3 (sequence 2, P03) adds the origin `WORKFLOW` to the enum and nothing else; v0.1/v0.2
-# rows are read unchanged.
-SCHEMA_VERSION = "task_registry_entry.v0.3"
+# rows are read unchanged. v0.4 (P06) adds `attempt_id` — the workflow attempt a WORKFLOW row is
+# the run of, null for every other origin; older rows read as null.
+SCHEMA_VERSION = "task_registry_entry.v0.4"
 
 # Lifecycle. Terminal statuses are final — the registry is a record of what happened, so a
 # terminal entry is never re-opened (a re-run is a new submission with its own entry).
@@ -156,6 +157,9 @@ class RegistryEntry:
     trace_id: str | None = None
     result_ref: str | None = None
     last_reason_code: str | None = None
+    # v0.4: the workflow attempt this row is the run of (origin WORKFLOW). The manager's join
+    # key: a reply lost between the worker and the manager is recovered from this row.
+    attempt_id: str | None = None
 
     def as_record(self) -> dict[str, Any]:
         return {
@@ -174,6 +178,7 @@ class RegistryEntry:
             "trace_id": self.trace_id,
             "result_ref": self.result_ref,
             "last_reason_code": self.last_reason_code,
+            "attempt_id": self.attempt_id,
         }
 
     @classmethod
@@ -202,6 +207,7 @@ class RegistryEntry:
                 trace_id=_opt_str(r.get("trace_id")),
                 result_ref=_opt_str(r.get("result_ref")),
                 last_reason_code=_opt_str(r.get("last_reason_code")),
+                attempt_id=_opt_str(r.get("attempt_id")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise TaskRegistryBlocked(
@@ -252,6 +258,7 @@ def build_entry(
     flags: Mapping[str, bool] | None = None,
     request_kind: str | None = None,
     status: str = QUEUED,
+    attempt_id: str | None = None,
 ) -> RegistryEntry:
     """Validate inputs and build a new entry with a deterministic id. Fail-closed.
 
@@ -287,9 +294,15 @@ def build_entry(
             f"request kind {kind!r} is not routable; known kinds: "
             f"{sorted(REQUEST_KIND_CAPABILITIES)}",
         )
+    attempt = attempt_id.strip() if isinstance(attempt_id, str) and attempt_id.strip() else None
+    if attempt is not None and origin != WORKFLOW_ORIGIN:
+        raise TaskRegistryBlocked("UNKNOWN_ORIGIN", "an attempt_id belongs to a WORKFLOW row and no other origin")
+    if origin == WORKFLOW_ORIGIN and attempt is None:
+        raise TaskRegistryBlocked("MISSING_REQUESTER", "a WORKFLOW row names the attempt it is the run of")
     entry_id = integrity.short_id(
         "treg",
-        {"request": text, "origin": origin, "requester_id": requester_id.strip(), "submitted_at": now},
+        {"request": text, "origin": origin, "requester_id": requester_id.strip(), "submitted_at": now,
+         **({"attempt_id": attempt} if attempt else {})},
     )
     return RegistryEntry(
         registry_entry_id=entry_id,
@@ -301,6 +314,7 @@ def build_entry(
         status=status,
         submitted_at=now,
         started_at=now if status == RUNNING else None,
+        attempt_id=attempt,
     )
 
 
@@ -439,6 +453,15 @@ class TaskRegistryStore:
             )
         return matches[0] if matches else None
 
+    def find_by_attempt(self, attempt_id: str) -> RegistryEntry | None:
+        """The current state of the WORKFLOW row that ran one attempt, or None. The workflow
+        manager's recovery join (sequence 2, P06): exact match, one row per attempt by
+        construction (the attempt id is in the row's id seed)."""
+        if not (isinstance(attempt_id, str) and attempt_id.strip()):
+            return None
+        matches = [e for e in self.latest() if e.attempt_id == attempt_id.strip()]
+        return matches[0] if matches else None
+
     def submit(self, entry: RegistryEntry) -> RegistryEntry:
         """Record a new submission."""
         with self._lock():
@@ -572,6 +595,7 @@ def record_submission(
     now: str,
     flags: Mapping[str, bool] | None = None,
     request_kind: str | None = None,
+    attempt_id: str | None = None,
 ) -> RegistryEntry | None:
     """Open a RUNNING entry for a request that is about to be executed inline.
 
@@ -586,7 +610,7 @@ def record_submission(
     try:
         entry = build_entry(
             request_text=request_text, origin=origin, requester_id=requester_id,
-            now=now, flags=flags, request_kind=request_kind, status=RUNNING,
+            now=now, flags=flags, request_kind=request_kind, status=RUNNING, attempt_id=attempt_id,
         )
         return store.submit(entry)
     except (TaskRegistryBlocked, PersistenceError):

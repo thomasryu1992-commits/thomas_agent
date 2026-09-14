@@ -27,7 +27,16 @@ because this part needs no gate widening to be useful.
 
 ## The entry
 
-`schemas/task_registry_entry.v0.2.schema.json` (closed, `additionalProperties: false`).
+`schemas/task_registry_entry.v0.4.schema.json` (closed, `additionalProperties: false`).
+
+**v0.3 (2026-09-14, sequence 2 P03)** adds the origin `WORKFLOW` — one attempt of a workflow step,
+opened and closed by the pipeline worker on the workflow manager's attempt frame — and nothing
+else. It is owned by `MANAGER_ORIGINS`, deliberately outside `WORKER_ORIGINS`: a worker restart
+must not abandon an attempt the manager still leases. **v0.4 (2026-09-14, P06)** adds `attempt_id`
+(null for every other origin): the join key the manager uses to recover a reply lost between the
+worker and itself — a DELIVERED row completes the attempt without a second model call, a
+FAILED/BLOCKED row fails it under the row's reason, a RUNNING row past the lease is closed
+`RUN_ABANDONED` by the manager. Older rows read as `attempt_id: null`.
 
 **v0.2 (2026-07-27)** adds one field, `request_kind`: the architecture §8.5 routing kind a
 request was submitted with, or `null` for the default analysis routing. A string beside the

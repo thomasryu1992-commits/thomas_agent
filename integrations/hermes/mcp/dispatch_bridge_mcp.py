@@ -270,5 +270,23 @@ def cancel_workflow(workflow_id: str, expected_version: str, reason: str) -> str
                           "expected_version": int(expected_version.strip()), "reason": reason.strip()})
 
 
+@mcp.tool()
+def retry_workflow_step(workflow_id: str, step_key: str, expected_version: str, reason: str) -> str:
+    """Re-open ONE settled step of a workflow that is WAITING_REPLAN — a step that FAILED below the
+    attempt cap, was blocked by the budget, or needs reconciliation. Steps that succeeded are never
+    re-run; steps blocked by that step wait for it again. `expected_version` is the `row_version`
+    from workflow_status. Refused on a step blocked by a failed dependency (retry the dependency),
+    at the attempt cap (ATTEMPTS_EXHAUSTED), or beyond the budget (BUDGET_EXHAUSTED)."""
+    wid = (workflow_id or "").strip()
+    if not wid or not (step_key or "").strip():
+        return "REFUSED: workflow_id and step_key are required."
+    if not (expected_version or "").strip().isdigit():
+        return "REFUSED: expected_version must be the row_version read from workflow_status."
+    if not (reason or "").strip():
+        return "REFUSED: a reason is required and is recorded."
+    return _workflow_ask({"command": "workflow.retry_step", "workflow_id": wid, "step_key": step_key.strip(),
+                          "expected_version": int(expected_version.strip()), "reason": reason.strip()})
+
+
 if __name__ == "__main__":
     mcp.run()

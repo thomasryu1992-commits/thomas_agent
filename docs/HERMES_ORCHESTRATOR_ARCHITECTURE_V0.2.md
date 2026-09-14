@@ -87,7 +87,7 @@ Hermes는 Thomas의 요청을 나누고(dispatch), 결과를 종합하고, 스�
 
 ### 4. Hermes ≠ executor
 
-- 실행은 `pipeline_worker.py`(uid 10001)와 두 스케줄러 레인이 한다. Hermes가 낼 수 있는 것은 dispatch 문의 kind 4종(`analysis/research/translation/content`, P3, `dispatch_bridge.py:94`)뿐이며 `development`는 의도적으로 제외돼 있다. **test** `tests/test_mvp_runtime_dispatch_bridge.py:72,78`.
+- 실행은 `pipeline_worker.py`(uid 10001)와 두 스케줄러 레인이 한다. Hermes가 낼 수 있는 것은 dispatch 문의 kind 4종(`analysis/research/translation/content`, P3, `dispatch_bridge._ALLOWED_KINDS`)뿐이며 `development`는 의도적으로 제외돼 있다. **test** `tests/test_mvp_runtime_dispatch_bridge.py:72,78`.
 - 워커 소켓은 `internal/`에 있고 `bridge/` 경로를 거부하며 peer uid 10001만 받는다(`docker-compose.yml:566-570` 리터럴) — Hermes 마운트로는 도달 불가. **test** `tests/test_mvp_runtime_pipeline_worker.py:208,217`.
 - 문을 통한 모든 효과는 상수 actor `assistant_bridge`로 기록되고 intake에는 `requester_type=agent`로만 들어간다. 역할 레지스트리에 assistant/orchestrator 슬롯은 없고 Hermes는 requester 축이다.
 - **정정(V0.1 §7):** "워커는 registry를 모른다(`task_registry` 참조 0)"는 PR8(2026-09-04) 이후 거짓이다. 워커는 ASSISTANT_PROFILE 런마다 origin `AGENT` 행을 best-effort로 열고 닫는다(`pipeline_worker.py:301-315`, 참조 12건, `a789bec`). 실행 주체가 워커라는 불변식은 그대로다. **test** `tests/test_mvp_runtime_task_registry.py:296`(AGENT 행은 워커 집합만 reconcile), `tests/test_mvp_runtime_pipeline_worker.py:690-708`.
@@ -229,7 +229,7 @@ typed/versioned frame(PR7), registry `AGENT`(PR8), `request_id` 멱등 재생(PR
 ### 4.3 상태 전이
 
 - **Workflow:** `RECEIVED → VALIDATED → RUNNING → COMPLETED`. 진행 중 `WAITING_APPROVAL`, `WAITING_REPLAN`, `CANCELLING`. 종결 `FAILED` / `BLOCKED` / `CANCELLED`.
-- **Step:** `PENDING → READY → RUNNING → SUCCEEDED`. 실패 유형에 따라 `RETRY_WAIT`, `WAITING_APPROVAL`, `FAILED`, `BLOCKED`. `NEEDS_RECONCILIATION`은 `effect_class=external`에서만. 취소는 `CANCEL_REQUESTED` 뒤 실제 중단 확인을 거쳐 `CANCELLED`.
+- **Step:** `PENDING → READY → RUNNING → SUCCEEDED`. 실패 유형에 따라 `RETRY_WAIT`, `WAITING_APPROVAL`, `FAILED`, `BLOCKED`. `NEEDS_RECONCILIATION`은 `effect_class=external`에서만. 취소는 `CANCEL_REQUESTED` 뒤 실제 중단 확인을 거쳐 `CANCELLED`. **P06 구현 정정:** `FAILED`·`BLOCKED`는 종결이 아니라 *정착(settled)* 상태다 — 자동 정책이 소진된 것이며 결정(`workflow.retry_step`, P07의 계획 변경)만이 새 attempt를 연다. 종결은 `SUCCEEDED`·`CANCELLED`뿐이고, 하드 캡 3회에 닿은 `FAILED`만 workflow를 `FAILED`로 끝낸다. 그 전까지 workflow는 `WAITING_REPLAN`에서 결정을 기다린다.
 - **Attempt:** 새 attempt만 재시도다. fence = `attempt_id`. 워커는 결과 생성 후 기존 pipeline의 감사·결과 저장을 먼저 완료하고 `attempt_id`·`trace_id`·참조를 응답한다. Manager는 fence와 전이 조건을 확인한 트랜잭션에서 step과 이벤트를 갱신한다. 감사 저장과 SQLite는 한 트랜잭션이 아니므로, 응답 유실(브리지 재기동·연결 끊김) 시 `trace_id`·`attempt_id`로 감사 원장을 대조해 완료시키고 모델을 재호출하지 않는다(A10). 감사 저장 실패는 기존 규칙대로 성공 전달하지 않는다(A09).
 - **전달:** workflow 완료와 메시지 전달은 구분한다. `deliveries`의 `PENDING/CONFIRMED/UNCERTAIN`. 외부 알림까지 exactly-once라고 약속하지 않는다.
 - **기본 상한(설계 시작점, 부하 시험으로 확정):** worker 동시 2(`pipeline_worker.py:164`), workflow 단계 10, 서버 전체 미실행 step 20. revise 1회 유지, Manager 재시도·Hermes 재계획을 합친 총 호출·토큰 예산을 별도로 둔다.
@@ -299,10 +299,11 @@ grep -nE 'RUNTIME_GOVERNANCE: ' governance/GOVERNANCE_POLICY.yaml           # RU
 python -m pytest tests/test_mvp_runtime_switch_bridge.py -q -k "cannot_be_named or resume_is_absent"
 # 불변식 3 — 문에 schedule 변경 verb 없음 (조회 verb schedules·scheduler_events는 있다)
 python -m pytest tests/test_mvp_runtime_read_bridge.py -q -k "no_mutating or no_control_verb or mutating_and_unknown"
-grep -nE '"(add|enable|disable|remove)"' runtime/mvp_runtime/read_bridge.py runtime/mvp_runtime/switch_bridge.py   # 없음
+grep -nE '"(add|remove)"|schedule' runtime/mvp_runtime/switch_bridge.py                      # 스케줄 verb 없음 (enable/disable은 그 문의 스위치 verb)
+grep -nE '"(add|enable|disable|remove)"' runtime/mvp_runtime/read_bridge.py                    # 없음
 # 불변식 4 — 실행은 워커·레인, kind는 4종. 워커는 AGENT 행을 쓴다(PR8) — 0이 아니다
 grep -c 'task_registry' runtime/mvp_runtime/pipeline_worker.py             # 12 (0이면 PR8이 되돌려진 것)
-sed -n '94p' runtime/mvp_runtime/dispatch_bridge.py                        # _ALLOWED_KINDS 4종
+grep -n '^_ALLOWED_KINDS' runtime/mvp_runtime/dispatch_bridge.py             # 4종 (analysis, research, translation, content)
 grep -nE '^WORKER_ORIGINS|^AGENT_ORIGIN' runtime/mvp_runtime/task_registry.py   # WORKER_ORIGINS = {AGENT}; P03 이후에도 WORKFLOW는 여기 없어야 한다
 python -m pytest tests/test_mvp_runtime_task_registry.py -q -k "ownership_sets or origin_enum or only_the_worker_set"
 # 불변식 5·7 — depends_on 없음, 문 env 정확집합, 라이브 변수는 scheduler만, hermes는 bridge/만 마운트

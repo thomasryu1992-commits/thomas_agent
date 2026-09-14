@@ -195,11 +195,12 @@ def test_dependents_wait_for_every_dependency_and_receive_the_results_they_named
     assert view["budget"]["confirmed_model_calls"] == 4 and view["budget"]["confirmed_tokens"] == 1200
 
 
-def test_a_failed_dependency_blocks_everything_downstream_and_fails_the_workflow(store):
+def test_a_failed_dependency_blocks_everything_downstream_and_the_workflow_waits_for_a_decision(store):
     wid = _submit(store, _multi()).workflow_id
     (research,) = store.claim_ready(now=NOW)
     out = store.record_result(research.attempt_id, now=LATER, succeeded=False, reason_code="PROVIDER_UNAVAILABLE")
-    assert out["step_status"] == wf.S_FAILED and out["workflow_status"] == wf.W_FAILED
+    assert out["step_status"] == wf.S_FAILED and out["workflow_status"] == wf.W_WAITING_REPLAN
+    assert store.status_view(wid, now=LATER)["last_reason_code"] == "PROVIDER_UNAVAILABLE"
     statuses = {s["key"]: (s["status"], s["last_reason_code"]) for s in store.status_view(wid, now=LATER)["steps"]}
     assert statuses["research"] == (wf.S_FAILED, "PROVIDER_UNAVAILABLE")
     assert statuses["draft1"] == statuses["draft2"] == statuses["review"] == (wf.S_BLOCKED, "DEPENDENCY_FAILED")
@@ -213,8 +214,20 @@ def test_a_failure_retries_while_attempts_remain_and_then_fails(store):
     (second,) = store.claim_ready(now=LATER)
     assert second.attempt_number == 2 and second.attempt_id != first.attempt_id
     out = store.record_result(second.attempt_id, now=MUCH_LATER, succeeded=False, reason_code="TIMEOUT")
-    assert out["step_status"] == wf.S_FAILED and out["workflow_status"] == wf.W_FAILED
+    assert out["step_status"] == wf.S_FAILED and out["workflow_status"] == wf.W_WAITING_REPLAN   # 2 < the cap of 3
     assert store.status_view(wid, now=MUCH_LATER)["last_reason_code"] == "TIMEOUT"
+
+
+def test_a_step_at_the_hard_attempt_cap_ends_the_workflow_failed(store):
+    wid = _submit(store, _plan(steps=[{"id": "research", "capability": "research", "request": "x", "reason": "r",
+                                       "max_attempts": 3}], budget={"max_model_calls": 3})).workflow_id
+    for stamp in (NOW, LATER, MUCH_LATER):
+        (a,) = store.claim_ready(now=stamp)
+        out = store.record_result(a.attempt_id, now=stamp, succeeded=False, reason_code="X")
+    assert out["workflow_status"] == wf.W_FAILED
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "research", expected_version=store.status_view(wid, now=NOW)["row_version"], reason="again", now=NOW)
+    assert exc.value.reason_code == "WORKFLOW_TERMINAL"
 
 
 # --- the fence and the lease (A07, A08, A12) -------------------------------------------------
@@ -245,7 +258,7 @@ def test_expiry_policy_follows_the_effect_class(store, monkeypatch):
     (a,) = store.claim_ready(now=NOW)
     store.expire_overdue(now=MUCH_LATER)
     assert _step(store, wid, "research")["status"] == wf.S_FAILED
-    assert store.status_view(wid, now=MUCH_LATER)["status"] == wf.W_FAILED
+    assert store.status_view(wid, now=MUCH_LATER)["status"] == wf.W_WAITING_REPLAN   # one attempt of three: a decision may retry
     # external -> NEEDS_RECONCILIATION, never a silent retry:
     monkeypatch.setitem(wf.CAPABILITIES, "research", wf.Capability("research", wf.EFFECT_EXTERNAL))
     wid2 = _submit(store, request_id="hermes-2").workflow_id
@@ -270,8 +283,11 @@ def test_a_lapsed_reservation_is_never_refunded_and_exhaustion_blocks(store):
     assert store.budget_summary(wid)["remaining_model_calls"] == 0
     assert store.claim_ready(now="2026-09-14T08:00:00Z") == []
     step = _step(store, wid, "research")
-    assert step["status"] == wf.S_BLOCKED and step["last_reason_code"] == "BUDGET_EXHAUSTED"
-    assert store.status_view(wid, now=NOW)["status"] == wf.W_BLOCKED
+    assert step["status"] == wf.S_BLOCKED and step["last_reason_code"] == wf.BUDGET_EXHAUSTED
+    assert store.status_view(wid, now=NOW)["status"] == wf.W_WAITING_REPLAN   # a budget decision could still move it
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "research", expected_version=store.status_view(wid, now=NOW)["row_version"], reason="r", now=NOW)
+    assert exc.value.reason_code == wf.BUDGET_EXHAUSTED
 
 
 def test_an_unconfirmed_success_keeps_its_reservation_unconfirmed(store):
@@ -392,3 +408,60 @@ def test_the_worker_frame_carries_what_the_worker_must_echo(store):
     assert claimed.options == {"independent_validation": True, "revise": True}
     assert claimed.naver_keywords == "사장님, 마케팅" and claimed.reason == "why"
     assert store.budget_summary(wid)["reserved_model_calls"] == 3
+
+
+# --- retry by decision (P06; acceptance A16) ---------------------------------------------------
+
+def test_retry_step_re_opens_one_failed_step_and_nothing_already_delivered_runs_again(store):
+    """Research succeeds, draft1 fails (one attempt), draft2 succeeds: the workflow waits for a
+    decision with review blocked behind draft1. A retry re-opens draft1 only; review follows."""
+    plan = _multi()
+    plan["steps"][1]["max_attempts"] = 1
+    wid = _submit(store, plan).workflow_id
+    (research,) = store.claim_ready(now=NOW)
+    store.record_result(research.attempt_id, now=NOW, succeeded=True, result_ref="ledger:r", model_calls=1)
+    drafts = {d.step_key: d for d in store.claim_ready(now=NOW, limit=5)}
+    store.record_result(drafts["draft1"].attempt_id, now=LATER, succeeded=False, reason_code="PROVIDER_UNAVAILABLE")
+    assert store.status_view(wid, now=LATER)["status"] == wf.W_RUNNING              # draft2 still running
+    store.record_result(drafts["draft2"].attempt_id, now=LATER, succeeded=True, result_ref="ledger:d2", model_calls=1)
+    view = store.status_view(wid, now=LATER)
+    statuses = {s["key"]: s["status"] for s in view["steps"]}
+    assert view["status"] == wf.W_WAITING_REPLAN
+    assert statuses == {"research": wf.S_SUCCEEDED, "draft1": wf.S_FAILED, "draft2": wf.S_SUCCEEDED, "review": wf.S_BLOCKED}
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "review", expected_version=view["row_version"], reason="r", now=LATER)
+    assert exc.value.reason_code == "RETRY_NOT_APPLICABLE"                            # blocked by draft1, not its own failure
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "draft1", expected_version=view["row_version"] + 1, reason="r", now=LATER)
+    assert exc.value.reason_code == "VERSION_CONFLICT"
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "research", expected_version=view["row_version"], reason="r", now=LATER)
+    assert exc.value.reason_code == "RETRY_NOT_APPLICABLE"                            # succeeded: never re-run
+    view = store.retry_step(wid, "draft1", expected_version=view["row_version"], reason="공급자 복구됨", now=MUCH_LATER)
+    statuses = {s["key"]: s["status"] for s in view["steps"]}
+    assert view["status"] == wf.W_RUNNING
+    assert statuses == {"research": wf.S_SUCCEEDED, "draft1": wf.S_READY, "draft2": wf.S_SUCCEEDED, "review": wf.S_PENDING}
+    (retry,) = store.claim_ready(now=MUCH_LATER, limit=5)                            # only draft1 is dispatched
+    assert retry.step_key == "draft1" and retry.attempt_number == 2 and retry.input_refs == {"research": "ledger:r"}
+    store.record_result(retry.attempt_id, now=MUCH_LATER, succeeded=True, result_ref="ledger:d1", model_calls=1)
+    (review,) = store.claim_ready(now=MUCH_LATER, limit=5)
+    assert review.step_key == "review" and review.input_refs == {"draft1": "ledger:d1", "draft2": "ledger:d2"}
+    store.record_result(review.attempt_id, now=MUCH_LATER, succeeded=True, result_ref="ledger:rv", model_calls=1)
+    final = store.status_view(wid, now=MUCH_LATER)
+    assert final["status"] == wf.W_COMPLETED
+    assert {s["key"]: s["attempts_opened"] for s in final["steps"]} == {"research": 1, "draft1": 2, "draft2": 1, "review": 1}
+    events, _ = store.events_after(0, limit=500)
+    assert [e for e in events if e["reason_code"] == "RETRY_REQUESTED"][0]["detail"] == "공급자 복구됨"
+
+
+def test_a_reconciling_step_can_be_retried_or_cancelled_by_decision(store, monkeypatch):
+    monkeypatch.setitem(wf.CAPABILITIES, "research", wf.Capability("research", wf.EFFECT_EXTERNAL))
+    wid = _submit(store).workflow_id
+    (a,) = store.claim_ready(now=NOW)
+    store.expire_overdue(now=MUCH_LATER)
+    view = store.status_view(wid, now=MUCH_LATER)
+    assert view["status"] == wf.W_WAITING_REPLAN and view["steps"][0]["status"] == wf.S_NEEDS_RECONCILIATION
+    view = store.retry_step(wid, "research", expected_version=view["row_version"], reason="확인함: 효과 없음", now=MUCH_LATER)
+    assert view["status"] == wf.W_RUNNING and view["steps"][0]["status"] == wf.S_READY
+    view = store.request_cancel(wid, expected_version=view["row_version"], reason="그만", now=MUCH_LATER)
+    assert view["status"] == wf.W_CANCELLED

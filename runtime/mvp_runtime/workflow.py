@@ -90,7 +90,9 @@ WORKFLOW_TERMINAL = frozenset({W_COMPLETED, W_FAILED, W_BLOCKED, W_CANCELLED})
 WORKFLOW_TRANSITIONS: dict[str, frozenset[str]] = {
     W_RECEIVED: frozenset({W_VALIDATED, W_BLOCKED}),
     W_VALIDATED: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED}),
-    W_RUNNING: frozenset({W_WAITING_APPROVAL, W_WAITING_REPLAN, W_CANCELLING,
+    # A cancel with nothing in flight completes at once (RUNNING -> CANCELLED); with an attempt
+    # in flight it is honoured through CANCELLING.
+    W_RUNNING: frozenset({W_WAITING_APPROVAL, W_WAITING_REPLAN, W_CANCELLING, W_CANCELLED,
                           W_COMPLETED, W_FAILED, W_BLOCKED}),
     W_WAITING_APPROVAL: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
     W_WAITING_REPLAN: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
@@ -114,7 +116,12 @@ S_FAILED = "FAILED"
 S_BLOCKED = "BLOCKED"
 S_CANCEL_REQUESTED = "CANCEL_REQUESTED"
 S_CANCELLED = "CANCELLED"
-STEP_TERMINAL = frozenset({S_SUCCEEDED, S_FAILED, S_BLOCKED, S_CANCELLED})
+# Two kinds of "done". SUCCEEDED and CANCELLED are terminal. FAILED and BLOCKED are *settled*:
+# the automatic policy is exhausted, and only a decision — `workflow.retry_step` by the
+# assistant or the operator (P06), a budget change (P07) — opens a new attempt. That decision
+# is the one forward edge out of them; nothing re-opens a SUCCEEDED or CANCELLED step.
+STEP_TERMINAL = frozenset({S_SUCCEEDED, S_CANCELLED})
+STEP_SETTLED = frozenset({S_FAILED, S_BLOCKED})
 STEP_TRANSITIONS: dict[str, frozenset[str]] = {
     S_PENDING: frozenset({S_READY, S_CANCELLED, S_BLOCKED}),
     S_READY: frozenset({S_RUNNING, S_CANCELLED, S_BLOCKED}),
@@ -124,14 +131,17 @@ STEP_TRANSITIONS: dict[str, frozenset[str]] = {
     S_WAITING_APPROVAL: frozenset({S_READY, S_CANCELLED, S_BLOCKED, S_FAILED}),
     S_NEEDS_RECONCILIATION: frozenset({S_SUCCEEDED, S_FAILED, S_READY, S_CANCELLED, S_BLOCKED}),
     S_CANCEL_REQUESTED: frozenset({S_CANCELLED, S_SUCCEEDED, S_FAILED}),
+    S_FAILED: frozenset({S_READY, S_CANCELLED}),            # retry_step, or the cancel that ends it
+    S_BLOCKED: frozenset({S_PENDING, S_READY, S_CANCELLED}),  # a retried dependency, or a budget decision
     S_SUCCEEDED: frozenset(),
-    S_FAILED: frozenset(),
-    S_BLOCKED: frozenset(),
     S_CANCELLED: frozenset(),
 }
-# The step statuses that still owe the workflow work.
-STEP_OPEN = frozenset({S_PENDING, S_READY, S_RUNNING, S_RETRY_WAIT, S_WAITING_APPROVAL,
-                       S_NEEDS_RECONCILIATION, S_CANCEL_REQUESTED})
+# The step statuses that still owe the workflow work on their own; a settled or reconciling
+# step owes it a decision instead.
+STEP_ACTIVE = frozenset({S_PENDING, S_READY, S_RUNNING, S_RETRY_WAIT, S_CANCEL_REQUESTED})
+STEP_OPEN = STEP_ACTIVE | frozenset({S_WAITING_APPROVAL, S_NEEDS_RECONCILIATION})
+BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
 
 # --- attempt lifecycle -----------------------------------------------------------------------
 A_RUNNING = "RUNNING"
@@ -323,24 +333,45 @@ def ready_keys(status_by_key: Mapping[str, str], deps: Mapping[str, Sequence[str
     )
 
 
-def workflow_status_for(step_statuses: Iterable[str], *, cancelling: bool) -> str:
+def step_needs_decision(step: Mapping[str, Any]) -> bool:
+    """A settled or reconciling step that a decision could still move: a FAILED step below the
+    hard attempt cap (`retry_step`), a budget-blocked step (a budget change, P07), or a step
+    waiting to be reconciled. A step blocked by a failed dependency is decided through that
+    dependency, and a FAILED step at the cap is final."""
+    status = step.get("status")
+    if status == S_NEEDS_RECONCILIATION:
+        return True
+    if status == S_FAILED:
+        return int(step.get("attempts_opened") or 0) < MAX_ATTEMPTS_PER_STEP
+    if status == S_BLOCKED:
+        return step.get("last_reason_code") == BUDGET_EXHAUSTED
+    return False
+
+
+def workflow_status_for(steps: Iterable[Mapping[str, Any]], *, cancelling: bool) -> str:
     """The workflow status its steps imply, once no step transition is pending.
 
-    Open work keeps the workflow RUNNING (or CANCELLING while a cancel is being honoured); then
-    every step SUCCEEDED is COMPLETED; a cancelled step with no failure is CANCELLED; any failure
-    is FAILED; otherwise a step was BLOCKED (budget, dependency) and so is the workflow.
+    Active work keeps the workflow RUNNING (CANCELLING while a cancel is being honoured); a
+    step waiting for an approval makes it WAITING_APPROVAL; every step SUCCEEDED is COMPLETED;
+    a cancel with nothing left active ends it CANCELLED; a settled step a decision could still
+    move (`step_needs_decision`) makes it WAITING_REPLAN — the state `retry_step` and a plan
+    change act on; a FAILED step at the cap is FAILED; otherwise BLOCKED.
     """
-    statuses = list(step_statuses)
-    if any(s in STEP_OPEN for s in statuses):
+    rows = [dict(s) for s in steps]
+    statuses = [r.get("status") for r in rows]
+    if any(s in STEP_ACTIVE for s in statuses):
         return W_CANCELLING if cancelling else W_RUNNING
-    if statuses and all(s == S_SUCCEEDED for s in statuses):
+    if any(s == S_WAITING_APPROVAL for s in statuses):
+        return W_WAITING_APPROVAL
+    if rows and all(s == S_SUCCEEDED for s in statuses):
         return W_COMPLETED
+    if cancelling or (any(s == S_CANCELLED for s in statuses)
+                      and not any(s in (S_FAILED, S_BLOCKED, S_NEEDS_RECONCILIATION) for s in statuses)):
+        return W_CANCELLED
+    if any(step_needs_decision(r) for r in rows):
+        return W_WAITING_REPLAN
     if any(s == S_FAILED for s in statuses):
         return W_FAILED
-    if any(s == S_CANCELLED for s in statuses) and not any(s == S_BLOCKED for s in statuses):
-        return W_CANCELLED
-    if any(s == S_CANCELLED for s in statuses) and cancelling:
-        return W_CANCELLED
     return W_BLOCKED
 
 

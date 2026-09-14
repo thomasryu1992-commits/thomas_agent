@@ -299,3 +299,115 @@ def test_a_reply_that_echoes_another_attempt_is_not_applied(tmp_path):
     step = store.status_view(wid, now=NOW)["steps"][0]
     assert step["status"] == wf.S_RUNNING and step["result_ref"] is None
     assert any("ATTEMPT_ECHO_MISMATCH" in line for line in manager.logs)
+
+
+# --- recovery: a lost reply is recovered from the worker's own row (P06; A10, A28) ----------------
+
+from runtime.mvp_runtime import task_registry
+from runtime.mvp_runtime.task_registry import TaskRegistryStore
+
+
+def _manager_with_registry(tmp_path, call, **kw):
+    store, manager = _manager(tmp_path, call, **kw)
+    registry = TaskRegistryStore(tmp_path)
+    manager._registry = registry
+    return store, manager, registry
+
+
+def _lose_reply(store, manager, wid):
+    """One tick whose worker call gets no answer: the attempt stays RUNNING, nothing recorded."""
+    manager.tick()
+    step = store.status_view(wid, now=NOW)["steps"][0]
+    assert step["status"] == wf.S_RUNNING
+    return step["current_attempt_id"]
+
+
+def _row(registry, attempt_id, status, *, trace="trace_9", reason=None):
+    entry = task_registry.record_submission(
+        registry, request_text="조사", origin=task_registry.WORKFLOW_ORIGIN, requester_id="assistant_bridge",
+        now=NOW, request_kind="research", attempt_id=attempt_id)
+    if status != task_registry.RUNNING:
+        registry.transition(entry.registry_entry_id, status, now=LATER, task_id="task_9", trace_id=trace,
+                            result_ref=f"ledger:{trace}" if status == task_registry.DELIVERED else None, reason_code=reason)
+    return entry
+
+
+def test_a_delivered_row_completes_a_lost_attempt_without_a_second_model_call(tmp_path):
+    calls = []
+
+    def lost(path, frame, *, deadline_seconds):
+        calls.append(frame)
+        raise ControlBlocked("DOOR_UNREACHABLE", "the reply never came")
+
+    store, manager, registry = _manager_with_registry(tmp_path, lost)
+    wid = _submit(store)
+    attempt_id = _lose_reply(store, manager, wid)
+    entry = _row(registry, attempt_id, task_registry.DELIVERED)
+    report = manager.reconcile(now=LATER)
+    assert report["reconciled"] == 1 and report["abandoned"] == 0
+    view = store.status_view(wid, now=LATER)
+    assert view["status"] == wf.W_COMPLETED and view["steps"][0]["result_ref"] == "ledger:trace_9"
+    assert store.attempt(attempt_id)["registry_entry_id"] == entry.registry_entry_id
+    assert len(calls) == 1                                    # the model was not asked again
+    assert manager.tick()["claimed"] == 0
+
+
+def test_a_failed_row_fails_the_lost_attempt_under_the_rows_reason_and_the_step_retries(tmp_path):
+    def lost(path, frame, *, deadline_seconds):
+        raise ControlBlocked("DOOR_UNREACHABLE", "gone")
+
+    store, manager, registry = _manager_with_registry(tmp_path, lost)
+    wid = _submit(store)
+    attempt_id = _lose_reply(store, manager, wid)
+    _row(registry, attempt_id, task_registry.BLOCKED, reason="VALIDATION_BLOCK")
+    assert manager.reconcile(now=LATER)["reconciled"] == 1
+    assert store.attempt(attempt_id)["reason_code"] == "VALIDATION_BLOCK"
+    assert store.status_view(wid, now=LATER)["steps"][0]["status"] == wf.S_READY   # one attempt left
+
+
+def test_a_row_still_running_past_the_lease_is_closed_by_the_manager_and_the_attempt_lapses(tmp_path):
+    def lost(path, frame, *, deadline_seconds):
+        raise ControlBlocked("DOOR_UNREACHABLE", "gone")
+
+    clock = _Clock()
+    store, manager, registry = _manager_with_registry(tmp_path, lost, clock=clock)
+    wid = _submit(store)
+    attempt_id = _lose_reply(store, manager, wid)
+    entry = _row(registry, attempt_id, task_registry.RUNNING)
+    assert manager.reconcile(now=LATER) == {"reconciled": 0, "abandoned": 0, "reconcile_errors": 0}   # inside the lease: a run still going
+    assert registry.find(entry.registry_entry_id).status == task_registry.RUNNING
+    clock.now = MUCH_LATER
+    report = manager.tick()
+    assert report["abandoned"] == 1 and report["expired"] == 1
+    closed = registry.find(entry.registry_entry_id)
+    assert closed.status == task_registry.FAILED and closed.last_reason_code == task_registry.ABANDONED_REASON_CODE
+    assert store.status_view(wid, now=MUCH_LATER)["steps"][0]["attempts_opened"] == 2
+
+
+def test_a_fresh_manager_recovers_what_the_previous_process_lost_at_startup(tmp_path):
+    """A28: the bridge restarted between the worker finishing and the reply landing."""
+    def lost(path, frame, *, deadline_seconds):
+        raise ControlBlocked("DOOR_UNREACHABLE", "process died")
+
+    store, manager, registry = _manager_with_registry(tmp_path, lost)
+    wid = _submit(store)
+    attempt_id = _lose_reply(store, manager, wid)
+    _row(registry, attempt_id, task_registry.DELIVERED, trace="trace_after_restart")
+    fresh = WorkflowManager(WorkflowStore(tmp_path), control_store=ControlStore(tmp_path),
+                            worker_socket=tmp_path / "x.sock", log=lambda s: None, registry=TaskRegistryStore(tmp_path))
+    report = fresh.startup_report(now=LATER)
+    assert report["inherited_running_attempts"] == 1 and report["reconciled"] == 1
+    assert WorkflowStore(tmp_path).status_view(wid, now=LATER)["status"] == wf.W_COMPLETED
+
+
+def test_without_a_registry_nothing_is_reconciled_and_the_lease_still_rules(tmp_path):
+    def lost(path, frame, *, deadline_seconds):
+        raise ControlBlocked("DOOR_UNREACHABLE", "gone")
+
+    clock = _Clock()
+    store, manager = _manager(tmp_path, lost, clock=clock)
+    wid = _submit(store)
+    _lose_reply(store, manager, wid)
+    assert manager.reconcile(now=LATER) == {"reconciled": 0, "abandoned": 0, "reconcile_errors": 0}
+    clock.now = MUCH_LATER
+    assert manager.tick()["expired"] == 1

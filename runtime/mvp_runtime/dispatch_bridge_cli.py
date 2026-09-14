@@ -84,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         manager = WorkflowManager(
             workflow_store, control_store=ControlStore.default(), worker_socket=worker_socket,
             concurrency=args.workflow_concurrency, poll_seconds=args.workflow_poll_seconds,
+            # The worker's rows are how a reply lost between it and this process is recovered
+            # (P06): the manager reads them and closes only its own origin.
+            registry=TaskRegistryStore.default(),
         )
         manager.start()
 

@@ -141,13 +141,36 @@ def test_ready_keys_waits_for_every_dependency():
     assert wf.ready_keys(status, deps) == ("review",)
 
 
+def _row(status, attempts=1, reason=None):
+    return {"status": status, "attempts_opened": attempts, "last_reason_code": reason}
+
+
 def test_workflow_status_follows_its_steps():
-    assert wf.workflow_status_for([wf.S_SUCCEEDED, wf.S_RUNNING], cancelling=False) == wf.W_RUNNING
-    assert wf.workflow_status_for([wf.S_SUCCEEDED, wf.S_RUNNING], cancelling=True) == wf.W_CANCELLING
-    assert wf.workflow_status_for([wf.S_SUCCEEDED, wf.S_SUCCEEDED], cancelling=False) == wf.W_COMPLETED
-    assert wf.workflow_status_for([wf.S_SUCCEEDED, wf.S_FAILED, wf.S_BLOCKED], cancelling=False) == wf.W_FAILED
-    assert wf.workflow_status_for([wf.S_SUCCEEDED, wf.S_CANCELLED], cancelling=True) == wf.W_CANCELLED
-    assert wf.workflow_status_for([wf.S_BLOCKED, wf.S_BLOCKED], cancelling=False) == wf.W_BLOCKED
+    ok, run = _row(wf.S_SUCCEEDED), _row(wf.S_RUNNING)
+    assert wf.workflow_status_for([ok, run], cancelling=False) == wf.W_RUNNING
+    assert wf.workflow_status_for([ok, run], cancelling=True) == wf.W_CANCELLING
+    assert wf.workflow_status_for([ok, ok], cancelling=False) == wf.W_COMPLETED
+    assert wf.workflow_status_for([ok, _row(wf.S_CANCELLED)], cancelling=True) == wf.W_CANCELLED
+    assert wf.workflow_status_for([ok, _row(wf.S_WAITING_APPROVAL)], cancelling=False) == wf.W_WAITING_APPROVAL
+    # a settled step a decision could still move waits for that decision
+    failed_below_cap = _row(wf.S_FAILED, attempts=1)
+    dep_blocked = _row(wf.S_BLOCKED, reason=wf.DEPENDENCY_FAILED)
+    assert wf.workflow_status_for([ok, failed_below_cap, dep_blocked], cancelling=False) == wf.W_WAITING_REPLAN
+    assert wf.workflow_status_for([_row(wf.S_BLOCKED, reason=wf.BUDGET_EXHAUSTED)], cancelling=False) == wf.W_WAITING_REPLAN
+    assert wf.workflow_status_for([ok, _row(wf.S_NEEDS_RECONCILIATION)], cancelling=False) == wf.W_WAITING_REPLAN
+    # at the hard cap the failure is final; a dependency-blocked step alone is BLOCKED
+    assert wf.workflow_status_for([ok, _row(wf.S_FAILED, attempts=wf.MAX_ATTEMPTS_PER_STEP), dep_blocked], cancelling=False) == wf.W_FAILED
+    assert wf.workflow_status_for([dep_blocked], cancelling=False) == wf.W_BLOCKED
+    # a cancel decides the settled ones too
+    assert wf.workflow_status_for([failed_below_cap, _row(wf.S_CANCELLED)], cancelling=True) == wf.W_CANCELLED
+
+
+def test_settled_steps_are_retriable_by_decision_and_terminal_ones_are_not():
+    assert wf.STEP_TERMINAL == {wf.S_SUCCEEDED, wf.S_CANCELLED} and wf.STEP_SETTLED == {wf.S_FAILED, wf.S_BLOCKED}
+    wf.assert_transition("step", wf.S_FAILED, wf.S_READY, "x")
+    wf.assert_transition("step", wf.S_BLOCKED, wf.S_PENDING, "x")
+    for s in wf.STEP_TERMINAL:
+        assert not wf.STEP_TRANSITIONS[s]
 
 
 # --- identities and events -------------------------------------------------------------------

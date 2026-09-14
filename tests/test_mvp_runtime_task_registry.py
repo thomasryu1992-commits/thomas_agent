@@ -339,9 +339,11 @@ def test_a_workflow_attempt_row_is_closed_by_no_service_restart_only_by_the_mana
     store = _store(tmp_path)
     entry = task_registry.record_submission(
         store, request_text="초안 작성", origin=task_registry.WORKFLOW_ORIGIN,
-        requester_id="assistant_bridge", now=NOW, request_kind="content",
+        requester_id="assistant_bridge", now=NOW, request_kind="content", attempt_id="wfa_" + "c" * 20,
     )
     assert entry is not None and entry.status == RUNNING and entry.origin == "WORKFLOW"
+    assert entry.attempt_id == "wfa_" + "c" * 20 and store.find_by_attempt("wfa_" + "c" * 20) == entry
+    assert store.find_by_attempt("wfa_" + "d" * 20) is None
     for origins in (task_registry.OPERATOR_ORIGINS, task_registry.SCHEDULER_ORIGINS, task_registry.WORKER_ORIGINS):
         assert reconcile_stale_running(store, now=LATER, origins=origins) == []
     assert store.find(entry.registry_entry_id).status == RUNNING
@@ -355,7 +357,18 @@ def test_older_rows_are_read_unchanged_under_the_new_schema_version(tmp_path):
     store = _store(tmp_path)
     entry = store.submit(_entry(status=RUNNING))
     rows = [json.loads(line) for line in store.path.read_text(encoding="utf-8").splitlines()]
-    assert rows[-1]["schema_version"] == task_registry.SCHEMA_VERSION == "task_registry_entry.v0.3"
+    assert rows[-1]["schema_version"] == task_registry.SCHEMA_VERSION == "task_registry_entry.v0.4"
     rows[-1]["schema_version"] = "task_registry_entry.v0.2"
+    del rows[-1]["attempt_id"]                       # a v0.2 row never had one
     store.path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
-    assert store.find(entry.registry_entry_id).status == RUNNING
+    found = store.find(entry.registry_entry_id)
+    assert found.status == RUNNING and found.attempt_id is None
+
+
+def test_an_attempt_id_belongs_to_a_workflow_row_and_a_workflow_row_names_one():
+    with pytest.raises(TaskRegistryBlocked) as exc:
+        _entry(origin="AGENT", requester_id="assistant_bridge", attempt_id="wfa_" + "a" * 20)
+    assert exc.value.reason_code == "UNKNOWN_ORIGIN"
+    with pytest.raises(TaskRegistryBlocked) as exc:
+        _entry(origin="WORKFLOW", requester_id="assistant_bridge")
+    assert exc.value.reason_code == "MISSING_REQUESTER"

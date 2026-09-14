@@ -4878,8 +4878,18 @@ delegation goes live only with its own policy bump.
       dispatch door — `capabilities`, `workflow.submit/status/list/events/cancel`, served only with the manager and
       refused by name otherwise (#857); the dispatch shim's six workflow tools, skill §7 and the SOUL tool list
       (part 3). v2 unchanged with the flag off. The read-door verbs and their policy clause are deferred to P09/P11.
-- [ ] **P06 — retry / reconcile / cancel / recovery**; fence = `attempt_id`, lease = connection lifetime +
-      deadline, `effect_class` policy; the container-split question is re-decided here on measurements.
+- [x] **P06 — retry / reconcile / cancel / recovery** (2026-09-14)**.** `task_registry_entry.v0.4` carries the
+      `attempt_id` a WORKFLOW row ran; the manager reconciles every RUNNING attempt against that row at start and
+      at the head of every tick — DELIVERED completes it with no second model call, FAILED/BLOCKED fails it under
+      the row's reason, RUNNING past the lease is closed RUN_ABANDONED by the manager (A10, A28). FAILED/BLOCKED
+      steps are settled, not terminal: the workflow waits in WAITING_REPLAN and `workflow.retry_step` (door +
+      shim tool) re-opens one step at the version read, never re-running what was delivered (A16); the hard cap
+      of three attempts ends the workflow FAILED. **Container split re-decided: stay embedded.** The three
+      criteria of V0.2 Q18: (1) `BRIDGE_BUSY` from the loop — the loop takes no door slot (its worker calls run in
+      their own threads, the door's ceiling is unchanged at 2); (2) a loop failure reaching v2 — a tick never
+      raises, and a loop crash is a process crash the same restart policy covers, which is today's failure shape;
+      (3) DB protection against a compromised worker — the worker already writes the whole governance root, so a
+      separate uid would protect nothing it does not already reach. Re-open only if the pilot measures otherwise.
 - [ ] **P07 — composite workflows**, plan versions, approval wait bound to approval id + fingerprint + plan version.
 - [ ] **P08 — events cursor, Operator push (`deliveries`), Hermes narration by polling, two-layer budget.**
 - [ ] **P09 — bounded non-financial schedule delegation** (invariant 3 amendment; policy bump in the same PR).

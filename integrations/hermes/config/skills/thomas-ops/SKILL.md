@@ -239,5 +239,9 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
 6. **취소는 `cancel_workflow(workflow_id, expected_version, reason)`** — `expected_version`은 방금
    읽은 `row_version`. `CANCELLING`은 아직 취소가 아니다: 실행 중인 단계가 경계에서 멈추거나 lease가
    끝나야 `CANCELLED`가 된다. 응답이 말하기 전에 취소됐다고 말하지 마라.
-7. **워크플로는 승인·거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인은
+7. **실패한 단계는 `WAITING_REPLAN`에서 네 결정을 기다린다.** 원인이 사라졌으면(공급자 복구 등)
+   `retry_workflow_step(workflow_id, step_key, expected_version, reason)`으로 그 단계만 다시 연다 — 성공한
+   단계는 다시 돌지 않는다. 의존 단계 때문에 차단된 단계는 원인 단계를 재시도한다. 세 번째 시도까지
+   실패하면 `FAILED`로 끝나고, 그때는 계획을 새로 낸다. 원인이 남아 있으면 재시도 대신 `cancel_workflow`.
+8. **워크플로는 승인·거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인은
    §5·§5.1 그대로다.

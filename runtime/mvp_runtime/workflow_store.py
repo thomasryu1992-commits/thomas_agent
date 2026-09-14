@@ -422,6 +422,14 @@ class WorkflowStore:
                 "SELECT COUNT(*) FROM steps WHERE status IN (?, ?, ?, ?)",
                 (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL)).fetchone()[0])
 
+    def overdue_attempts(self, *, now: str) -> list[dict[str, Any]]:
+        """RUNNING attempts past their lease — the ones the manager reconciles against the
+        registry before `expire_overdue` lapses what is left."""
+        with self._read() as conn:
+            rows = conn.execute("SELECT * FROM attempts WHERE status=? AND deadline_at < ? ORDER BY deadline_at",
+                                (wf.A_RUNNING, now)).fetchall()
+            return [dict(r) for r in rows]
+
     def running_attempts(self) -> list[dict[str, Any]]:
         """Every attempt still RUNNING — after a restart, the ones whose connection died with
         the previous process and will lapse at their leases unless reconciled (P06)."""
@@ -489,9 +497,9 @@ class WorkflowStore:
                 over_tokens = (budget["max_tokens"] is not None
                                and budget["confirmed_tokens"] >= budget["max_tokens"])
                 if budget["remaining_model_calls"] < calls or over_tokens:
-                    self._set_step(conn, s, wf.S_BLOCKED, now, reason_code="BUDGET_EXHAUSTED")
+                    self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=wf.BUDGET_EXHAUSTED)
                     self._block_dependents(conn, step_id, workflow_id, now)
-                    self._recompute_workflow(conn, workflow_id, now, reason_code="BUDGET_EXHAUSTED")
+                    self._recompute_workflow(conn, workflow_id, now, reason_code=wf.BUDGET_EXHAUSTED)
                     continue
                 number = int(s["attempts_opened"]) + 1
                 attempt_id = wf.attempt_id_for(step_id, number)
@@ -662,13 +670,86 @@ class WorkflowStore:
                 )
             steps = conn.execute("SELECT * FROM steps WHERE workflow_id=?", (workflow_id,)).fetchall()
             for s in steps:
-                if s["status"] in (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL):
+                if s["status"] in (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL,
+                                   wf.S_FAILED, wf.S_BLOCKED, wf.S_NEEDS_RECONCILIATION):
                     self._set_step(conn, s, wf.S_CANCELLED, now, reason_code="CANCEL_REQUESTED")
                 elif s["status"] == wf.S_RUNNING:
                     self._set_step(conn, s, wf.S_CANCEL_REQUESTED, now, reason_code="CANCEL_REQUESTED")
             conn.execute("UPDATE workflows SET cancel_reason=? WHERE workflow_id=?", (str(reason)[:2000], workflow_id))
             self._recompute_workflow(conn, workflow_id, now, reason_code="CANCEL_REQUESTED", cancelling=True)
         return self.status_view(workflow_id, now=now)
+
+    def retry_step(self, workflow_id: str, step_key: str, *, expected_version: int, reason: str, now: str) -> dict[str, Any]:
+        """A decision re-opens a settled step (V0.2 §4.2 `workflow.retry_step`; acceptance A16).
+
+        Allowed on a FAILED step below the hard attempt cap, a budget-blocked step once the
+        budget covers one more attempt, and a NEEDS_RECONCILIATION step a person has looked at.
+        Refused on a step blocked by a failed dependency (retry the dependency instead), on a
+        step at the cap (`ATTEMPTS_EXHAUSTED`), and on a workflow that has ended. The step goes
+        READY (PENDING if a dependency is not yet SUCCEEDED) with one more attempt allowed, its
+        dependents blocked by it come back to PENDING, and the workflow runs again. Succeeded
+        steps are untouched — nothing already delivered is re-run.
+        """
+        with self._write() as conn:
+            w = conn.execute("SELECT * FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()
+            if w is None:
+                raise WorkflowBlocked("WORKFLOW_NOT_FOUND", f"no workflow {workflow_id}")
+            if w["status"] in wf.WORKFLOW_TERMINAL:
+                raise WorkflowBlocked("WORKFLOW_TERMINAL", f"workflow {workflow_id} is already {w['status']}")
+            if int(w["row_version"]) != int(expected_version):
+                raise WorkflowBlocked(
+                    "VERSION_CONFLICT",
+                    f"workflow {workflow_id} is at version {w['row_version']}, not {expected_version}; re-read and retry",
+                )
+            s = conn.execute("SELECT * FROM steps WHERE workflow_id=? AND step_key=?", (workflow_id, step_key)).fetchone()
+            if s is None:
+                raise WorkflowBlocked("STEP_NOT_FOUND", f"workflow {workflow_id} has no step {step_key!r}")
+            if s["status"] == wf.S_BLOCKED and s["last_reason_code"] == wf.DEPENDENCY_FAILED:
+                raise WorkflowBlocked(
+                    "RETRY_NOT_APPLICABLE",
+                    f"step {step_key!r} is blocked by a failed dependency; retry that step instead",
+                )
+            if s["status"] not in (wf.S_FAILED, wf.S_BLOCKED, wf.S_NEEDS_RECONCILIATION):
+                raise WorkflowBlocked("RETRY_NOT_APPLICABLE", f"step {step_key!r} is {s['status']}; only a settled step is retried")
+            if int(s["attempts_opened"]) >= wf.MAX_ATTEMPTS_PER_STEP:
+                raise WorkflowBlocked(
+                    "ATTEMPTS_EXHAUSTED",
+                    f"step {step_key!r} has opened {s['attempts_opened']} attempts, the cap of {wf.MAX_ATTEMPTS_PER_STEP}",
+                )
+            options = json.loads(s["options"])
+            calls = 1 + int(bool(options.get("independent_validation"))) + int(bool(options.get("revise")))
+            if self._budget_locked(conn, workflow_id)["remaining_model_calls"] < calls:
+                raise WorkflowBlocked(
+                    wf.BUDGET_EXHAUSTED, f"the workflow's budget does not cover one more attempt of {step_key!r}",
+                )
+            deps = [d["depends_on"] for d in conn.execute("SELECT depends_on FROM dependencies WHERE step_id=?", (s["step_id"],)).fetchall()]
+            dep_ok = all(conn.execute("SELECT status FROM steps WHERE step_id=?", (d,)).fetchone()["status"] == wf.S_SUCCEEDED for d in deps)
+            target = wf.S_READY if dep_ok else wf.S_PENDING
+            conn.execute("UPDATE steps SET max_attempts=? WHERE step_id=?",
+                         (max(int(s["max_attempts"]), int(s["attempts_opened"]) + 1), s["step_id"]))
+            self._set_step(conn, s, target, now, reason_code=None)
+            self._event(conn, workflow_id=workflow_id, step_id=s["step_id"], entity="step", from_status=target,
+                        to_status=target, reason_code="RETRY_REQUESTED", created_at=now, detail=str(reason)[:2000])
+            self._unblock_dependents(conn, s["step_id"], now)
+            self._recompute_workflow(conn, workflow_id, now, reason_code=None)
+        return self.status_view(workflow_id, now=now)
+
+    def _unblock_dependents(self, conn: sqlite3.Connection, step_id: str, now: str) -> None:
+        """Steps blocked because this one failed come back to PENDING, transitively — they will
+        wait for it again through the ordinary release."""
+        frontier = [step_id]
+        seen: set[str] = set()
+        while frontier:
+            current = frontier.pop()
+            for d in conn.execute("SELECT step_id FROM dependencies WHERE depends_on=?", (current,)).fetchall():
+                dep_id = d["step_id"]
+                if dep_id in seen:
+                    continue
+                seen.add(dep_id)
+                s = conn.execute("SELECT * FROM steps WHERE step_id=?", (dep_id,)).fetchone()
+                if s["status"] == wf.S_BLOCKED and s["last_reason_code"] == wf.DEPENDENCY_FAILED:
+                    self._set_step(conn, s, wf.S_PENDING, now, reason_code=None)
+                frontier.append(dep_id)
 
     def confirm_cancelled(self, attempt_id: str, *, now: str) -> dict[str, Any]:
         """The worker stopped at a step boundary: the attempt and its step are CANCELLED now."""
@@ -764,7 +845,7 @@ class WorkflowStore:
                 seen.add(dep_id)
                 s = conn.execute("SELECT * FROM steps WHERE step_id=?", (dep_id,)).fetchone()
                 if s["status"] in (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL):
-                    self._set_step(conn, s, wf.S_BLOCKED, now, reason_code="DEPENDENCY_FAILED")
+                    self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=wf.DEPENDENCY_FAILED)
                 frontier.append(dep_id)
 
     @staticmethod
@@ -779,11 +860,14 @@ class WorkflowStore:
         if current in wf.WORKFLOW_TERMINAL:
             return
         is_cancelling = cancelling if cancelling is not None else current == wf.W_CANCELLING
-        statuses = [r["status"] for r in conn.execute("SELECT status FROM steps WHERE workflow_id=?", (workflow_id,)).fetchall()]
-        target = wf.workflow_status_for(statuses, cancelling=is_cancelling)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT status, attempts_opened, last_reason_code FROM steps WHERE workflow_id=?", (workflow_id,)).fetchall()]
+        statuses = [r["status"] for r in rows]
+        target = wf.workflow_status_for(rows, cancelling=is_cancelling)
         if target == current:
             return
         if current == wf.W_VALIDATED and target == wf.W_RUNNING and not any(s in (wf.S_RUNNING, wf.S_CANCEL_REQUESTED) for s in statuses):
             return   # nothing has been claimed yet; VALIDATED stays until the first attempt opens
         self._set_workflow(conn, workflow_id, current, target, now,
-                           reason_code=reason_code if target in wf.WORKFLOW_TERMINAL or target == wf.W_CANCELLING else None)
+                           reason_code=reason_code if target in wf.WORKFLOW_TERMINAL
+                           or target in (wf.W_CANCELLING, wf.W_WAITING_REPLAN) else None)

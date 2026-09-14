@@ -42,9 +42,10 @@ def _registry(tmp_path) -> TaskRegistryStore:
     return TaskRegistryStore(tmp_path)
 
 
-def _entry(store, *, text="구독형 세차 사업 아이디어 분석", status=RUNNING, now=NOW, origin="TELEGRAM"):
+def _entry(store, *, text="구독형 세차 사업 아이디어 분석", status=RUNNING, now=NOW, origin="TELEGRAM",
+           attempt_id=None):
     return store.submit(build_entry(
-        request_text=text, origin=origin, requester_id="tg-12345", now=now, status=status,
+        request_text=text, origin=origin, requester_id="tg-12345", now=now, status=status, attempt_id=attempt_id,
     ))
 
 
@@ -542,6 +543,6 @@ def test_a_workflow_attempt_entry_is_marked_as_the_workflows(tmp_path):
     """Sequence 2, P05: the manager's attempts sit beside the operator's and the assistant's
     own requests, and must read as neither."""
     store = _registry(tmp_path)
-    _entry(store, text="워크플로 단계", status=RUNNING, now=NOW, origin="WORKFLOW")
+    _entry(store, text="워크플로 단계", status=RUNNING, now=NOW, origin="WORKFLOW", attempt_id="wfa_" + "e" * 20)
     reply = _apply(("TASKS", None), registry=store)["reply"]
     assert "[실행 중 · 워크플로]" in reply
