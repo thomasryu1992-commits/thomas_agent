@@ -86,6 +86,9 @@ SHARED_ACROSS_MODULES = frozenset({
     # site was build_activation_record, removed with the rest of the retired selectors.
     "UNKNOWN_REQUEST_KIND", "USAGE",
     "VALIDATION_RESULT_INVALID", "VERB_NOT_PERMITTED",
+    # The forward-only lifecycle refusal, raised by the task registry (F1) and by the workflow
+    # model (sequence 2, P03) for the same reason: an edge the lifecycle table does not name.
+    "TRANSITION_INVALID",
 })
 
 

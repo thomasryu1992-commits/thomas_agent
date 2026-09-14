@@ -150,3 +150,15 @@ class KnowledgeBlocked(MvpRuntimeError):
     Fail-closed in the direction of *storing nothing*: a knowledge base answers later
     questions, so a document admitted as garbage is not one bad call, it is a wrong answer
     with a citation attached, arriving weeks later with nothing pointing back here."""
+
+
+class WorkflowBlocked(MvpRuntimeError):
+    """A workflow-manager operation was refused (sequence 2, P03).
+
+    Raised when a submitted plan fails its closed schema or is not a DAG over known steps, when
+    a request id is reused with a different plan, when a lifecycle edge is not a legal one, when
+    a result arrives for an attempt that is no longer the step's current one (the fence), when
+    the workflow's or the server's capacity or budget is exhausted, or when the store is
+    unreadable. Fail-closed in the direction of *not* executing: a plan the manager cannot
+    validate is refused before a row is written, and a result it cannot attribute is recorded
+    as a late result rather than applied."""

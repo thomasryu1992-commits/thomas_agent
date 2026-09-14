@@ -4863,8 +4863,11 @@ delegation goes live only with its own policy bump.
       client, their tests, config templates, a compatibility manifest (#852); the read shim carries `data` as a `[data]` line
       and the runtime's readiness/funds reads answer with a view that keeps `infrastructure_ready`, armed strategies,
       the recorded gate's staleness and `live_entry_possible` apart (part 2). Host install waits for the runtime deploy.
-- [ ] **P03 — workflow model + SQLite store** (`workflow.py`, `workflow_store.py`, two schemas);
-      `task_registry_entry.v0.3` adds origin `WORKFLOW`, excluded from `WORKER_ORIGINS`.
+- [x] **P03 — workflow model + SQLite store** (2026-09-14)**.** `workflow.py` (closed plan schema, DAG, lifecycles, effect class),
+      `workflow_store.py` (one-transaction accept, replay/conflict, claim with lease and reservation, fence, expiry by effect
+      class, two-phase cancel, event cursor, backup-API snapshot), `workflow_plan.v0.1` / `workflow_event.v0.1`,
+      `task_registry_entry.v0.3` with origin `WORKFLOW` in `MANAGER_ORIGINS` and outside `WORKER_ORIGINS`; contract
+      `runtime-contracts/WORKFLOW_V0.1.md`.
 - [ ] **P04 — Manager loop inside dispatch-bridge** (`--workflow-manager`), `workflow_cli`
       (snapshot / inspect / reconcile). No new service, uid, volume or healthcheck.
 - [ ] **P05 — v3 async single task**: submit → attempt frame → pipeline → audit → result; `WORKFLOW`

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "workflow_event.v0.1.schema.json",
+  "title": "Workflow Event v0.1 — one coordination transition of a workflow, step or attempt",
+  "description": "A row of the workflow store's `events` table, in the shape it is validated in before insert. Coordination only: not an audit event and not hash-chained — the run's evidence stays in the durable ledger's audit chain (docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md §3.2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workflow_id",
+    "step_id",
+    "attempt_id",
+    "entity",
+    "from_status",
+    "to_status",
+    "reason_code",
+    "detail",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "workflow_event.v0.1"
+    },
+    "workflow_id": {
+      "type": "string",
+      "pattern": "^wf_[0-9a-f]{20}$"
+    },
+    "step_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wfs_[0-9a-f]{20}$"
+    },
+    "attempt_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^wfa_[0-9a-f]{20}$"
+    },
+    "entity": {
+      "enum": [
+        "workflow",
+        "step",
+        "attempt"
+      ]
+    },
+    "from_status": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "to_status": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    }
+  }
+}
