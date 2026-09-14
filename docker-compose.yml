@@ -457,9 +457,12 @@ services:
   # parses the assistant's frames holds no credential, which is the point of the split. And as
   # always no money variable — no BINANCE_*, no MVP_LIVE_*, no venue or order key.
   #
-  # No Core mounts either: binding a Task needs them and binding happens in the worker now,
-  # so the #380 failure signature (BRIDGE_ERROR on a missing THOMAS_CORE path) moved with it —
-  # if a dispatch fails that way, look at thomas-pipeline-worker's mounts, not this service's.
+  # Core mounts, read-only, since sequence 2 (review of P07, 2026-09-14): a dispatch binds its
+  # Task in the worker, but the workflow manager loop that runs in THIS process (when started
+  # with --workflow-manager) mints a gated step's approval ask, and minting binds a Task to the
+  # active Core. Without these two mounts every ask failed BINDING_FAILED and a gated step waited
+  # forever with nothing in front of Thomas. They carry governance records, no credential; a
+  # dispatch that fails on a missing THOMAS_CORE path is still the worker's mounts (#380).
   dispatch-bridge:
     image: thomas-agent-runtime
     build: .
@@ -473,6 +476,8 @@ services:
         max-file: "3"
     volumes:
       - ${THOMAS_STATE_DIR:-./.runtime_governance_state}:/app/.runtime_governance_state
+      - ${THOMAS_CORE_ACTIVATIONS_DIR:-./THOMAS_CORE/activations}:/app/THOMAS_CORE/activations:ro
+      - ${THOMAS_CORE_APPROVALS_DIR:-./THOMAS_CORE/approvals}:/app/THOMAS_CORE/approvals:ro
     healthcheck:
       test: ["CMD", "test", "-S", "/app/.runtime_governance_state/bridge/dispatch.sock"]
       interval: 60s

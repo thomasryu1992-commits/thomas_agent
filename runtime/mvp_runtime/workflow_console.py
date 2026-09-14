@@ -7,6 +7,7 @@ reads like a task read.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
 from . import workflow as wf
@@ -66,6 +67,18 @@ _PUSH_MARK = {
 }
 
 
+_COMMAND_LIKE = re.compile(r"(^|\s)/+")
+
+
+def _one_line(text: Any, cap: int) -> str:
+    """Assistant-authored text on the control chat (a goal, a cancel reason): one line, capped,
+    and no token that begins like a bot command — the window `/approve` is read in must not
+    carry something that reads as one (review of P08, 2026-09-14)."""
+    flat = " ".join(str(text or "").split())
+    flat = _COMMAND_LIKE.sub(lambda m: m.group(1), flat)
+    return flat if len(flat) <= cap else flat[: cap - 1] + "…"
+
+
 def render_push(event: Mapping[str, Any], view: Mapping[str, Any] | None) -> str:
     """One control-channel message for a workflow's arrival at a pushed state (P08). Short:
     what happened, to which goal, and — when a decision is waited on — which steps and why.
@@ -74,7 +87,7 @@ def render_push(event: Mapping[str, Any], view: Mapping[str, Any] | None) -> str
     status = str(event.get("to_status"))
     mark = _PUSH_MARK.get(status, status)
     wid = str(event.get("workflow_id"))
-    goal = str((view or {}).get("goal") or "")[:80]
+    goal = _one_line((view or {}).get("goal"), 80)
     head = f"[workflow] {mark}  {wid}"
     lines = [head + (f"  — {goal}" if goal else "")]
     if event.get("reason_code"):
@@ -95,7 +108,7 @@ def render_push(event: Mapping[str, Any], view: Mapping[str, Any] | None) -> str
             lines.append(f"  • {s['key']} {_STEP_MARK.get(s['status'], s['status'])}"
                          + (f" [{s['last_reason_code']}]" if s.get("last_reason_code") else ""))
         if (view or {}).get("cancel_reason"):
-            lines.append(f"  취소 사유: {view['cancel_reason']}")
+            lines.append(f"  취소 사유: {_one_line(view['cancel_reason'], 120)}")
     lines.append(f"  {event.get('created_at')}  event #{event.get('cursor')}")
     return "\n".join(lines)
 

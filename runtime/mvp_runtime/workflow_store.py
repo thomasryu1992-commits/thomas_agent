@@ -36,7 +36,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from . import timeutil, workflow as wf
 from .errors import PersistenceError, WorkflowBlocked
@@ -511,6 +511,12 @@ class WorkflowStore:
                 " attempted_at=excluded.attempted_at, detail=excluded.detail",
                 (channel, int(event_cursor), status, now, detail[:500] if isinstance(detail, str) else None))
 
+    def delivery(self, channel: str, event_cursor: int) -> dict[str, Any] | None:
+        with self._read() as conn:
+            row = conn.execute("SELECT * FROM deliveries WHERE channel=? AND event_cursor=?",
+                               (channel, int(event_cursor))).fetchone()
+        return dict(row) if row is not None else None
+
     def deliveries(self, channel: str, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         with self._read() as conn:
             if status is None:
@@ -573,6 +579,17 @@ class WorkflowStore:
                 "output_tokens": int(row["output_tokens"]), "estimated_cost_usd": float(row["estimated_cost_usd"]),
                 "cost_status": row["cost_status"], "source": row["source"], "as_of": row["as_of"],
                 "reported_at": row["reported_at"]}
+
+    def open_workflows_by_request_prefix(self, principal: str, prefix: str) -> list[dict[str, Any]]:
+        """Workflows accepted for ``principal`` under a request id starting with ``prefix`` that
+        have not ended, oldest first (a scheduled workflow_plan's previous occurrences)."""
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT w.workflow_id, w.status, w.created_at FROM requests r JOIN workflows w ON w.workflow_id = r.workflow_id"
+                " WHERE r.principal=? AND r.request_id LIKE ? ESCAPE '\\' ORDER BY w.created_at",
+                (principal, like)).fetchall()
+        return [dict(r) for r in rows if r["status"] not in wf.WORKFLOW_TERMINAL]
 
     def open_step_count(self) -> int:
         with self._read() as conn:
@@ -854,6 +871,8 @@ class WorkflowStore:
                 raise WorkflowBlocked("WORKFLOW_NOT_FOUND", f"no workflow {workflow_id}")
             if w["status"] in wf.WORKFLOW_TERMINAL:
                 raise WorkflowBlocked("WORKFLOW_TERMINAL", f"workflow {workflow_id} is already {w['status']}")
+            if w["status"] == wf.W_CANCELLING:
+                raise WorkflowBlocked("WORKFLOW_CANCELLING", f"workflow {workflow_id} is being cancelled; nothing is re-opened")
             if int(w["row_version"]) != int(expected_version):
                 raise WorkflowBlocked(
                     "VERSION_CONFLICT",
@@ -916,6 +935,14 @@ class WorkflowStore:
 
     # --- gated steps (P07) ----------------------------------------------------------------------
 
+    def step(self, step_id: str) -> dict[str, Any] | None:
+        """One step row with its workflow's current plan version, or None."""
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT s.*, w.plan_version AS workflow_plan_version FROM steps s"
+                " JOIN workflows w ON w.workflow_id = s.workflow_id WHERE s.step_id=?", (step_id,)).fetchone()
+        return dict(row) if row is not None else None
+
     def waiting_approval_steps(self) -> list[dict[str, Any]]:
         """Steps waiting for Thomas, with what the manager needs to mint or spend their ask."""
         with self._read() as conn:
@@ -937,15 +964,25 @@ class WorkflowStore:
                         from_status=wf.S_WAITING_APPROVAL, to_status=wf.S_WAITING_APPROVAL,
                         reason_code="APPROVAL_REQUESTED", created_at=now, detail=approval_id)
 
-    def approve_step(self, step_id: str, *, approval_id: str, now: str) -> dict[str, Any]:
+    def approve_step(self, step_id: str, *, approval_id: str, plan_version: int, now: str) -> dict[str, Any]:
         """The bound grant was spent (by the manager, through the shared single-use ladder): the
-        step is READY. The store checks only that the spent id is the bound one."""
+        step is READY. The store rechecks, in the writing transaction, that the spent id is still
+        the bound one AND that the binding and the workflow are still at the plan version the
+        manager compared the grant against — a plan update between the manager's read and this
+        write must not be overridden (review of P07, 2026-09-14)."""
         with self._write() as conn:
             s = conn.execute("SELECT * FROM steps WHERE step_id=?", (step_id,)).fetchone()
             if s is None or s["status"] != wf.S_WAITING_APPROVAL:
                 raise WorkflowBlocked("TRANSITION_INVALID", f"step {step_id} is not waiting for an approval")
-            if s["approval_id"] != approval_id:
-                raise WorkflowBlocked("APPROVAL_NOT_BOUND", f"step {step_id} is bound to {s['approval_id']!r}, not {approval_id!r}")
+            current_version = conn.execute("SELECT plan_version FROM workflows WHERE workflow_id=?",
+                                           (s["workflow_id"],)).fetchone()["plan_version"]
+            if (s["approval_id"] != approval_id or s["approval_plan_version"] != int(plan_version)
+                    or int(current_version) != int(plan_version)):
+                raise WorkflowBlocked(
+                    "APPROVAL_NOT_BOUND",
+                    f"step {step_id} is bound to {s['approval_id']!r} at plan v{s['approval_plan_version']} (workflow at "
+                    f"v{current_version}), not {approval_id!r} at v{plan_version}",
+                )
             self._set_step(conn, s, wf.S_READY, now, reason_code=None)
             self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
                         from_status=wf.S_READY, to_status=wf.S_READY, reason_code="APPROVAL_CONSUMED",
@@ -953,19 +990,27 @@ class WorkflowStore:
             self._recompute_workflow(conn, s["workflow_id"], now)
         return self.status_view(s["workflow_id"], now=now)
 
-    def refuse_step_approval(self, step_id: str, *, reason_code: str, detail: str, now: str) -> dict[str, Any]:
+    def refuse_step_approval(self, step_id: str, *, approval_id: str | None, reason_code: str, detail: str,
+                             now: str) -> dict[str, Any]:
         """The ask was rejected, expired, spent elsewhere or no longer describes the step: the
-        step is BLOCKED under that reason and the workflow waits for a decision."""
+        step is BLOCKED under that reason and the workflow waits for a decision. A refusal decided
+        on an ask the step is no longer bound to (a plan update re-bound it meanwhile) changes
+        nothing — the decision was about a different ask."""
         with self._write() as conn:
             s = conn.execute("SELECT * FROM steps WHERE step_id=?", (step_id,)).fetchone()
             if s is None or s["status"] != wf.S_WAITING_APPROVAL:
                 raise WorkflowBlocked("TRANSITION_INVALID", f"step {step_id} is not waiting for an approval")
-            self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=reason_code)
-            self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
-                        from_status=wf.S_BLOCKED, to_status=wf.S_BLOCKED, reason_code=reason_code,
-                        created_at=now, detail=detail)
-            self._block_dependents(conn, step_id, s["workflow_id"], now)
-            self._recompute_workflow(conn, s["workflow_id"], now, reason_code=reason_code)
+            if s["approval_id"] != approval_id:
+                stale_decision = True
+            else:
+                stale_decision = False
+            if not stale_decision:
+                self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=reason_code)
+                self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
+                            from_status=wf.S_BLOCKED, to_status=wf.S_BLOCKED, reason_code=reason_code,
+                            created_at=now, detail=detail)
+                self._block_dependents(conn, step_id, s["workflow_id"], now)
+                self._recompute_workflow(conn, s["workflow_id"], now, reason_code=reason_code)
         return self.status_view(s["workflow_id"], now=now)
 
     # --- plan versions (P07) -------------------------------------------------------------------
@@ -990,11 +1035,32 @@ class WorkflowStore:
                 raise WorkflowBlocked("WORKFLOW_NOT_FOUND", f"no workflow {workflow_id}")
             if w["status"] in wf.WORKFLOW_TERMINAL:
                 raise WorkflowBlocked("WORKFLOW_TERMINAL", f"workflow {workflow_id} is already {w['status']}")
+            if w["status"] == wf.W_CANCELLING:
+                raise WorkflowBlocked("WORKFLOW_CANCELLING", f"workflow {workflow_id} is being cancelled; no new version is accepted")
             if int(w["row_version"]) != int(expected_version):
                 raise WorkflowBlocked("VERSION_CONFLICT",
                                       f"workflow {workflow_id} is at version {w['row_version']}, not {expected_version}; re-read and retry")
             current = {s["step_key"]: s for s in conn.execute("SELECT * FROM steps WHERE workflow_id=?", (workflow_id,)).fetchall()}
             new_keys = {s.key for s in validated.steps}
+            # A gate is one-way: a step that asked for Thomas's signature keeps asking. Otherwise a
+            # rejected (or unanswered) step could be run by a version that simply drops the flag.
+            ungated = sorted(k for k, s in current.items() if s["requires_approval"] and k in new_keys
+                             and not validated.step(k).requires_approval)
+            if ungated:
+                raise WorkflowBlocked("PLAN_CONFLICT",
+                                      f"steps {ungated} require approval; a new version cannot remove requires_approval")
+            # The server-wide ceiling submit enforces holds for a version that adds steps too.
+            waiting = (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL)
+            added = len(new_keys - set(current))
+            dropped = sum(1 for k, s in current.items() if k not in new_keys and s["status"] in waiting)
+            if added > dropped:
+                open_steps = conn.execute("SELECT COUNT(*) FROM steps WHERE status IN (?, ?, ?, ?)", waiting).fetchone()[0]
+                if open_steps + added - dropped > MAX_OPEN_STEPS:
+                    raise WorkflowBlocked(
+                        "CAPACITY_EXHAUSTED",
+                        f"{open_steps} step(s) are already waiting; this version adds {added - dropped} more, past the "
+                        f"server ceiling of {MAX_OPEN_STEPS}",
+                    )
             budget = self._budget_locked(conn, workflow_id)
             if validated.budget.max_model_calls < budget["reserved_model_calls"]:
                 raise WorkflowBlocked("PLAN_CONFLICT",
@@ -1036,6 +1102,7 @@ class WorkflowStore:
                 if key not in new_keys and s["status"] not in started and s["status"] != wf.S_CANCELLED:
                     self._set_step(conn, s, wf.S_CANCELLED, now, reason_code=wf.PLAN_UPDATED)
             # dependencies are rebuilt for every step (started ones were checked unchanged)
+            stored_deps = {s["step_id"]: self._dep_keys_locked(conn, s["step_id"]) for s in current.values()}
             for s in current.values():
                 conn.execute("DELETE FROM dependencies WHERE step_id=?", (s["step_id"],))
             for position, key in enumerate(validated.order):
@@ -1052,8 +1119,15 @@ class WorkflowStore:
                 if s["status"] in started:
                     conn.execute("UPDATE steps SET position=? WHERE step_id=?", (position, s["step_id"]))
                     continue
+                # Material = anything about what the step would run: for a gated step every such
+                # change invalidates the ask or the grant it was released by, not only the request
+                # the grant's hash names (review of P07, 2026-09-14).
                 material = (s["request"] != step.request or s["capability"] != step.capability
-                            or bool(s["requires_approval"]) != step.requires_approval)
+                            or bool(s["requires_approval"]) != step.requires_approval
+                            or json.loads(s["options"]) != dict(step.options)
+                            or (s["naver_keywords"] or None) != (step.naver_keywords or None)
+                            or sorted(json.loads(s["input_refs"])) != sorted(step.input_refs)
+                            or sorted(stored_deps.get(s["step_id"], ())) != sorted(step.depends_on))
                 conn.execute(
                     "UPDATE steps SET position=?, capability=?, effect_class=?, request=?, reason=?, options=?, input_refs=?,"
                     " naver_keywords=?, max_attempts=?, requires_approval=?, row_version=row_version+1, updated_at=?"
@@ -1064,16 +1138,44 @@ class WorkflowStore:
                      max(step.max_attempts, int(s["attempts_opened"])), 1 if step.requires_approval else 0, now, s["step_id"]))
                 fresh = conn.execute("SELECT * FROM steps WHERE step_id=?", (s["step_id"],)).fetchone()
                 # a waiting or ready step follows its new gate; a budget-blocked step is released
-                # when the new budget covers it
+                # (the claim re-checks the budget); a step blocked by a refused ask is asked again
+                # when the version changes it — an unchanged step keeps the refusal
                 if fresh["status"] in (wf.S_READY, wf.S_WAITING_APPROVAL) and material:
                     target = wf.S_WAITING_APPROVAL if step.requires_approval else wf.S_READY
                     if target != fresh["status"]:
                         self._set_step(conn, fresh, target, now)
                 elif fresh["status"] == wf.S_BLOCKED and fresh["last_reason_code"] == wf.BUDGET_EXHAUSTED:
                     self._set_step(conn, fresh, wf.S_PENDING, now, reason_code=None)
+                elif fresh["status"] == wf.S_BLOCKED and fresh["last_reason_code"] in wf.APPROVAL_BLOCKS and material:
+                    self._set_step(conn, fresh, wf.S_PENDING, now, reason_code=None)
+            self._reconcile_dependencies(conn, workflow_id, validated.order, now)
             self._release_dependents(conn, workflow_id, now)
             self._recompute_workflow(conn, workflow_id, now)
         return self.status_view(workflow_id, now=now)
+
+    def _reconcile_dependencies(self, conn: sqlite3.Connection, workflow_id: str, order: Iterable[str], now: str) -> None:
+        """After a new plan version rebuilt the DAG: every unstarted step is put where its
+        dependencies now say, in plan order so a block propagates. A step waiting on a dead
+        dependency is BLOCKED (DEPENDENCY_FAILED); a step blocked by a dependency that is no longer
+        dead waits again (PENDING); a READY or asked step with a dependency not yet delivered goes
+        back to PENDING and loses its binding, since it will be asked again when its turn comes.
+        The ordinary release then makes READY / WAITING_APPROVAL whatever is due."""
+        for key in order:
+            s = conn.execute("SELECT * FROM steps WHERE workflow_id=? AND step_key=?", (workflow_id, key)).fetchone()
+            if s is None:
+                continue
+            deps = [conn.execute("SELECT status FROM steps WHERE step_id=?", (d["depends_on"],)).fetchone()["status"]
+                    for d in conn.execute("SELECT depends_on FROM dependencies WHERE step_id=?", (s["step_id"],)).fetchall()]
+            dead = any(d in wf.DEAD_DEPENDENCY_STATUSES for d in deps)
+            delivered = all(d == wf.S_SUCCEEDED for d in deps)
+            status = s["status"]
+            if dead and status in (wf.S_PENDING, wf.S_READY, wf.S_WAITING_APPROVAL):
+                self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=wf.DEPENDENCY_FAILED)
+            elif not dead and status == wf.S_BLOCKED and s["last_reason_code"] == wf.DEPENDENCY_FAILED:
+                self._set_step(conn, s, wf.S_PENDING, now, reason_code=None)
+            elif not delivered and status in (wf.S_READY, wf.S_WAITING_APPROVAL):
+                conn.execute("UPDATE steps SET approval_id=NULL, approval_plan_version=NULL WHERE step_id=?", (s["step_id"],))
+                self._set_step(conn, s, wf.S_PENDING, now, reason_code=None)
 
     @staticmethod
     def _dep_keys_locked(conn: sqlite3.Connection, step_id: str) -> list[str]:

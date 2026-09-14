@@ -17,6 +17,7 @@ the same either way; the clause is the switch.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -71,11 +72,34 @@ def _change(**kw):
 
 # --- the clause is the switch ------------------------------------------------------------------------
 
-def test_the_committed_policy_delegates_nothing_yet_and_the_draft_clause_parses():
-    assert sd.load_delegation() is None                                   # 1.5.0: dormant
-    scope = sd.Delegation.from_clause(SCOPE)
-    assert scope.kinds == frozenset({KIND_TASK, KIND_WORKFLOW}) and scope.min_interval_seconds == 3600
-    assert not (scope.kinds & sd.FINANCIAL_KINDS)
+def _bump_script():
+    import importlib.util
+    import pathlib as _pl
+
+    path = _pl.Path(__file__).resolve().parents[1] / "scripts" / "ops" / "policy_bump_1_6_0.py"
+    spec = importlib.util.spec_from_file_location("policy_bump_1_6_0", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_committed_policy_and_the_draft_clause_agree_with_the_runtime():
+    """Before the bump the committed policy has no clause and the door is dormant; after it the
+    scope the door loads IS the clause. Either way the draft block the bump script writes loads as
+    a scope that reaches no financial kind — checked here, not first at bump time (review of P09)."""
+    import yaml
+
+    policy = yaml.safe_load((pathlib.Path(__file__).resolve().parents[1] / "governance" / "GOVERNANCE_POLICY.yaml")
+                            .read_text(encoding="utf-8"))
+    clause = (policy.get("control_channel") or {}).get(sd.CLAUSE)
+    if clause is None:
+        assert sd.load_delegation() is None
+    else:
+        assert sd.load_delegation() == sd.Delegation.from_clause(clause)
+    draft = sd.Delegation.from_clause(yaml.safe_load(_bump_script().SCHEDULE_BLOCK)[sd.CLAUSE])
+    assert not (draft.kinds & sd.FINANCIAL_KINDS) and draft.kinds <= scheduler.MAINTENANCE_KINDS
+    assert draft.min_interval_seconds >= 3600 and draft.max_validity_days * 86_400 > draft.min_interval_seconds
+    assert sd.Delegation.from_clause(SCOPE).kinds == frozenset({KIND_TASK, KIND_WORKFLOW})
 
 
 @pytest.mark.parametrize("bad", [
@@ -281,7 +305,8 @@ def test_a_workflow_plan_fire_submits_once_per_occurrence_and_a_re_fire_replays(
     (row,) = workflows.list_workflows()
     assert row["principal"] == scheduler.WORKFLOW_PRINCIPAL and row["status"] == wf.W_VALIDATED
     # the same occurrence re-fired (a retry after a crash between submit and record) replays
-    outcome = workflows.submit(principal=scheduler.WORKFLOW_PRINCIPAL, request_id=run_id, plan=_plan(), now=T1)
+    outcome = workflows.submit(principal=scheduler.WORKFLOW_PRINCIPAL, request_id=f"{sched.schedule_id}:{run_id}",
+                               plan=_plan(), now=T1)
     assert outcome.replayed and outcome.workflow_id == row["workflow_id"] and len(workflows.list_workflows()) == 1
     # a duplicate tick at the same instant claims nothing: one occurrence, one acceptance
     again = run_due(store, now=T1, control_store=control, ledger=ledger, workflow_store=workflows)
@@ -345,3 +370,90 @@ def test_the_workflow_kind_belongs_to_the_maintenance_lane_and_the_kind_sets_sta
     assert KIND_WORKFLOW in scheduler.MAINTENANCE_KINDS and KIND_WORKFLOW not in scheduler.RISK_KINDS
     assert scheduler.RISK_KINDS | scheduler.MAINTENANCE_KINDS == scheduler.KINDS
     assert not (scheduler.RISK_KINDS & scheduler.MAINTENANCE_KINDS)
+
+
+
+# --- independent review of P09 (2026-09-14) ----------------------------------------------------------
+
+def test_renewing_an_expired_delegated_schedule_is_proposed_not_applied(stores, delegation):
+    store, ledger = stores
+    first = sd.apply_change(store, ledger, _change(), actor=ASSISTANT_ACTOR, now=T0, delegation=delegation, bounded=True)
+    run_due(store, now="2026-10-16T09:00:00Z", control_store=ControlStore(store.path.parents[1]), ledger=ledger)
+    assert store.list()[0].enabled is False                                          # expired by the tick
+    again = sd.apply_change(store, ledger, _change(), actor=ASSISTANT_ACTOR, now="2026-10-16T10:00:00Z",
+                            delegation=delegation, bounded=True)
+    assert again.proposed and any("renewing it is Thomas's decision" in r for r in again.reasons)
+    enable = sd.apply_change(store, ledger, _change(action="enable", schedule_id=first.schedule.schedule_id, kind=None,
+                                                   request=None, interval_seconds=None),
+                             actor=ASSISTANT_ACTOR, now="2026-10-16T10:00:00Z", delegation=delegation, bounded=True)
+    assert enable.proposed and len(store.list()) == 1 and store.list()[0].enabled is False
+
+
+def test_an_interval_that_could_never_fire_inside_the_validity_is_proposed(stores, delegation):
+    store, ledger = stores
+    out = sd.apply_change(store, ledger, _change(interval_seconds=30 * 86_400), actor=ASSISTANT_ACTOR, now=T0,
+                          delegation=delegation, bounded=True)
+    assert out.proposed and any("could never run" in r for r in out.reasons) and store.list() == []
+
+
+def test_a_retried_create_returns_the_schedule_the_lost_reply_made(stores, delegation):
+    store, ledger = stores
+    first = sd.apply_change(store, ledger, _change(), actor=ASSISTANT_ACTOR, now=T0, delegation=delegation, bounded=True)
+    retry = sd.apply_change(store, ledger, _change(), actor=ASSISTANT_ACTOR, now=T1, delegation=delegation, bounded=True)
+    assert retry.applied and retry.schedule.schedule_id == first.schedule.schedule_id and len(store.list()) == 1
+    assert [e["action"] for e in _events(ledger)] == ["created"]
+
+
+def test_concurrent_creates_cannot_pass_the_ceiling_together(stores, delegation):
+    import threading
+
+    store, ledger = stores
+    barrier = threading.Barrier(6)
+    outcomes = []
+
+    def create(i):
+        barrier.wait()
+        outcomes.append(sd.apply_change(store, None, _change(request=f"조사 {i}"), actor=ASSISTANT_ACTOR, now=T0,
+                                        delegation=delegation, bounded=True))
+
+    threads = [threading.Thread(target=create, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert sum(1 for o in outcomes if o.applied) == delegation.max_active == 2
+    assert sum(1 for s in store.list() if s.enabled) == 2 and sum(1 for o in outcomes if o.proposed) == 4
+
+
+def test_an_invalid_clause_refuses_every_change_by_name_and_does_not_take_the_door_down(tmp_path, stores, monkeypatch):
+    store, ledger = stores
+    policy = tmp_path / "governance" / "GOVERNANCE_POLICY.yaml"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("control_channel:\n  assistant_schedule:\n    mutation_allowed: true\n    delegated_kinds: [some_future_kind]\n",
+                      encoding="utf-8")
+    loaded = sd.load_delegation_safely(tmp_path)
+    assert isinstance(loaded, sd.InvalidDelegation) and "SCHEDULE_DELEGATION_INVALID" in loaded.reason
+    with pytest.raises(ControlBlocked) as exc:
+        _door({"command": "schedule.propose_change", "change": {"action": "create", "reason": "r", "kind": KIND_TASK,
+                                                                 "request": "x", "interval_seconds": 7200}},
+              tmp_path, schedule_store=store, ledger=ledger, delegation=loaded)
+    assert exc.value.reason_code == "SCHEDULE_DELEGATION_INVALID" and store.list() == []
+
+
+def test_a_workflow_plan_occurrence_is_dropped_while_the_previous_one_is_still_open(tmp_path, stores):
+    store, ledger = stores
+    workflows = WorkflowStore(tmp_path)
+    store.add(build_schedule(kind=KIND_WORKFLOW, request=json.dumps(_plan()), interval_seconds=3600,
+                             created_by=LOCAL_ACTOR, now=T0))
+    control = ControlStore(tmp_path)
+    first = run_due(store, now=T1, control_store=control, ledger=ledger, workflow_store=workflows)
+    assert first["results"][0]["status"].endswith(":VALIDATED")
+    # no manager runs it; the next hour's occurrence must not pile up behind it
+    second = run_due(store, now="2026-09-15T11:00:00Z", control_store=control, ledger=ledger, workflow_store=workflows)
+    assert second["results"][0]["status"].startswith("workflow:skipped:previous occurrence wf_")
+    assert len(workflows.list_workflows()) == 1
+    # once it ends, the next occurrence submits again
+    (att,) = workflows.claim_ready(now="2026-09-15T11:30:00Z")
+    workflows.record_result(att.attempt_id, now="2026-09-15T11:30:00Z", succeeded=True, result_ref="ledger:t", model_calls=1)
+    third = run_due(store, now="2026-09-15T12:00:00Z", control_store=control, ledger=ledger, workflow_store=workflows)
+    assert third["results"][0]["status"].endswith(":VALIDATED") and len(workflows.list_workflows()) == 2

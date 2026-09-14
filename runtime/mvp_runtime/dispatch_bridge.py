@@ -306,7 +306,8 @@ def apply_dispatch(
                 "V2_INTAKE_CLOSED",
                 "this door no longer takes single dispatches: the entry point is being cut over to "
                 "workflows (door API v3, submit_workflow); nothing was started. A retry of a "
-                "request_id accepted before the close still replays",
+                "request_id whose run completed before the close still replays; a run that was "
+                "interrupted mid-flight is found with task_list",
             )
     if request_id is not None and ledger is None:
         # Fail closed rather than running unprotected: a caller that sent an id asked for
@@ -346,6 +347,16 @@ def apply_dispatch(
             ledger, door=_DOOR, request_id=request_id,
             request_fingerprint=fingerprint, now=stamp,
         )
+        if prior is None and not v2_intake:
+            # The lookup above saw a live row, but it lapsed before the claim: this is a NEW claim,
+            # and a closed intake takes no new work — release it and refuse (review of P10).
+            bridge_idempotency.release(ledger, door=_DOOR, request_id=request_id,
+                                       request_fingerprint=fingerprint, now=stamp)
+            raise ControlBlocked(
+                "V2_INTAKE_CLOSED",
+                "this door no longer takes single dispatches (the request_id's earlier claim has lapsed); "
+                "nothing was started",
+            )
         if prior is not None:
             return socket_door.envelope(
                 bridge_idempotency.replay_reply(prior), request=request,
@@ -561,6 +572,15 @@ def apply_workflow_command(
     reason = request.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ControlBlocked("REASON_REQUIRED", f"'{command}' must state its reason; it is recorded")
+    if command in ("workflow.propose_update", "workflow.retry_step"):
+        # Both (re)open work, so they are refused while halted exactly as a submit is; a cancel
+        # only stops work and stays available (review of P07, 2026-09-14).
+        state = control_store.load()
+        if not state.execution_allowed:
+            raise ControlBlocked(
+                state.refusal_reason_code(),
+                f"runtime is {state.mode}; '{command}' reopens work and waits for an authenticated resume",
+            )
     if command == "workflow.propose_update":
         plan = request.get("plan")
         if not isinstance(plan, dict):

@@ -31,8 +31,11 @@ operator's general requests → the maintenance lane's `analysis_task` schedules
 same three moves; do one entry point per day and watch a full cycle before the next.
 
 1. **Close the entry point's new intake.** For the assistant's dispatches this is the door:
-   add `--v2-intake closed` to the `dispatch-bridge` command in `docker-compose.yml` (or set
-   `MVP_DISPATCH_V2_INTAKE=closed` in its environment) and `docker compose up -d dispatch-bridge`.
+   add `--v2-intake closed` to the `dispatch-bridge` command in `docker-compose.yml` and
+   `docker compose up -d dispatch-bridge`. (The `MVP_DISPATCH_V2_INTAKE` variable the CLI also reads
+   is not a deployment path: the door's compose environment is pinned to its two peer variables by
+   `tests/test_deployment_env_passthrough.py`, so adding it is a governance change of its own. An
+   empty value reads as `open`.)
    From that moment a new `analyze` / `research` / `translate` / `draft_content` is refused as
    `V2_INTAKE_CLOSED` — nothing is started, nothing is claimed — while `submit_workflow`, the reads,
    and **the replay of any request_id accepted before the close** keep working. The door says which
@@ -41,7 +44,7 @@ same three moves; do one entry point per day and watch a full cycle before the n
    ```bash
    docker exec thomas-dispatch-bridge python -m runtime.mvp_runtime.workflow_cli drain
    ```
-   `drained: true` means no RUNNING legacy row (by origin) and no running workflow attempt. A
+   `drained: true` means no QUEUED or RUNNING legacy row (by origin) and no running workflow attempt. A
    legacy run closes itself when the worker answers (or is reconciled `RUN_ABANDONED` at the
    worker's next start); a workflow attempt lands or lapses at its lease (660 s). Do not proceed
    on `false`; do not "help" a run finish.
@@ -87,7 +90,8 @@ docker exec -u 10001 thomas-dispatch-bridge python -m runtime.mvp_runtime.workfl
 ```
 
 then tars `.runtime_governance_state/` **with** `workflow/snapshots/<stamp>/` (the copy and its
-manifest) and **without** `workflow/workflow.db*`, keeps only the newest snapshot directory, and
+manifest) and **without** `workflow/workflow.db*`, keeps only the newest snapshot directory once
+today's copy succeeded (a failed run removes its partial directory and keeps the previous one), and
 writes `workflow-snapshot=ok | absent | FAILED` on the log line (`absent` = the manager never
 created the store here; not a failure). `backup_watch.sh` reads that marker daily and messages the
 control chat on `FAILED` or on a line without it (an old backup script). Re-install both scripts
@@ -97,15 +101,23 @@ pre-P10 ones and the watch's fifth check is not live.
 **Restore** (an addition to `RUNBOOK_HARNESS_BACKUP_RESTORE.md` §2.1, run after its `tar xzf`):
 
 ```bash
-SNAP=$(ls -1d /root/thomas_agent/.runtime_governance_state/workflow/snapshots/*/ | sort | tail -1)
-docker run --rm --user 10001 -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state \
-    --entrypoint python thomas-agent-runtime:latest -m runtime.mvp_runtime.workflow_cli verify --snapshot "$SNAP"/workflow-*.db
-cp "$SNAP"/workflow-*.db /root/thomas_agent/.runtime_governance_state/workflow/workflow.db
+ARCHIVE=/root/backups/governance-state/govstate-<stamp>.tar.gz                   # the archive being restored
+SNAP_REL=$(tar tzf "$ARCHIVE" | grep -m1 -E '^thomas_agent/\.runtime_governance_state/workflow/snapshots/[^/]+/$')
+SNAP=/root/$SNAP_REL                        # THAT archive's snapshot, not the newest directory on disk
+COPY=$(ls -1 "$SNAP"workflow-*.db | head -1)                                     # the host path of the copy
+IN_CONTAINER=/app/.runtime_governance_state/workflow/snapshots/$(basename "$SNAP")/$(basename "$COPY")
+docker run --rm --user 10001 -w /app -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state \
+    --entrypoint python thomas-agent-runtime:latest -m runtime.mvp_runtime.workflow_cli verify --snapshot "$IN_CONTAINER"
+cp "$COPY" /root/thomas_agent/.runtime_governance_state/workflow/workflow.db
 rm -f /root/thomas_agent/.runtime_governance_state/workflow/workflow.db-{wal,shm}
 chown -R 10001:10001 /root/thomas_agent/.runtime_governance_state/workflow
 ```
 
-`verify` opens the copy alone (never the live store) and prints its integrity verdict, schema
+The snapshot is taken from the archive's own member list: `tar xzf` does not remove the
+snapshot directories already on disk, so "the newest directory" would put a later night's workflow
+store beside an earlier approval store and registry. `verify` runs inside a container, so it is given
+the copy's CONTAINER path (the host path does not
+exist there and would read as `WORKFLOW_SNAPSHOT_MISSING`). It opens the copy alone (never the live store) and prints its integrity verdict, schema
 version, highest event cursor, row counts and whether the manifest beside it agrees; a non-zero exit
 means do not restore that copy. A stale `-wal`/`-shm` beside a restored file corrupts it on first
 open — the `rm` is not optional. After the restore the manager's startup reconciles any attempt the

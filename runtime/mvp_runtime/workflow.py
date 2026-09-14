@@ -101,7 +101,9 @@ WORKFLOW_TRANSITIONS: dict[str, frozenset[str]] = {
     W_RECEIVED: frozenset({W_VALIDATED, W_BLOCKED}),
     # A gated root step waits for Thomas from the moment the plan is accepted (P07), so a
     # workflow can be waiting before its first attempt opens.
-    W_VALIDATED: frozenset({W_RUNNING, W_WAITING_APPROVAL, W_CANCELLING, W_CANCELLED, W_BLOCKED}),
+    # ...and a workflow nothing was claimed in can already wait for a decision: its gated step
+    # was refused, or a new plan version left only settled steps (review of P07, 2026-09-14).
+    W_VALIDATED: frozenset({W_RUNNING, W_WAITING_APPROVAL, W_WAITING_REPLAN, W_CANCELLING, W_CANCELLED, W_BLOCKED}),
     # A cancel with nothing in flight completes at once (RUNNING -> CANCELLED); with an attempt
     # in flight it is honoured through CANCELLING.
     W_RUNNING: frozenset({W_WAITING_APPROVAL, W_WAITING_REPLAN, W_CANCELLING, W_CANCELLED,
@@ -140,11 +142,13 @@ STEP_TERMINAL = frozenset({S_SUCCEEDED, S_CANCELLED})
 STEP_SETTLED = frozenset({S_FAILED, S_BLOCKED})
 STEP_TRANSITIONS: dict[str, frozenset[str]] = {
     S_PENDING: frozenset({S_READY, S_WAITING_APPROVAL, S_CANCELLED, S_BLOCKED}),
-    S_READY: frozenset({S_RUNNING, S_CANCELLED, S_BLOCKED}),
+    # A new plan version (P07) may give an unstarted step a dependency (-> PENDING) or change a
+    # gated step the grant already covered (-> WAITING_APPROVAL, asked again).
+    S_READY: frozenset({S_RUNNING, S_CANCELLED, S_BLOCKED, S_PENDING, S_WAITING_APPROVAL}),
     S_RUNNING: frozenset({S_SUCCEEDED, S_RETRY_WAIT, S_FAILED, S_BLOCKED,
                           S_NEEDS_RECONCILIATION, S_WAITING_APPROVAL, S_CANCEL_REQUESTED}),
     S_RETRY_WAIT: frozenset({S_READY, S_CANCELLED, S_BLOCKED, S_FAILED}),
-    S_WAITING_APPROVAL: frozenset({S_READY, S_CANCELLED, S_BLOCKED, S_FAILED}),
+    S_WAITING_APPROVAL: frozenset({S_READY, S_CANCELLED, S_BLOCKED, S_FAILED, S_PENDING}),
     S_NEEDS_RECONCILIATION: frozenset({S_SUCCEEDED, S_FAILED, S_READY, S_CANCELLED, S_BLOCKED}),
     S_CANCEL_REQUESTED: frozenset({S_CANCELLED, S_SUCCEEDED, S_FAILED}),
     S_FAILED: frozenset({S_READY, S_WAITING_APPROVAL, S_CANCELLED}),            # retry_step (re-asking a gated step), or the cancel that ends it
@@ -166,6 +170,9 @@ APPROVAL_STALE = "APPROVAL_STALE"      # the grant no longer describes this step
 APPROVAL_REUSED = "APPROVAL_REUSED"    # the grant was already spent
 PLAN_UPDATED = "PLAN_UPDATED"
 _DECISION_BLOCKS = frozenset({BUDGET_EXHAUSTED, APPROVAL_REJECTED, APPROVAL_EXPIRED, APPROVAL_STALE, APPROVAL_REUSED})
+APPROVAL_BLOCKS = frozenset({APPROVAL_REJECTED, APPROVAL_EXPIRED, APPROVAL_STALE, APPROVAL_REUSED})
+# A dependency in one of these will not deliver without a decision: what waits on it is blocked.
+DEAD_DEPENDENCY_STATUSES = frozenset({S_FAILED, S_BLOCKED, S_CANCELLED, S_NEEDS_RECONCILIATION})
 # The approval a gated step is bound to names the step, and its content hash names the plan
 # version and the request — so a grant for one version cannot be spent on the next.
 APPROVAL_TARGET_PREFIX = "workflow_step:"

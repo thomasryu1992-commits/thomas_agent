@@ -63,11 +63,15 @@ case "$MODE" in
     WF_DIR="$THOMAS/.runtime_governance_state/workflow"
     WF_NOTE="workflow-snapshot=ok"
     if [ -e "$HOST_ROOT/$WF_DIR/workflow.db" ]; then
-      if ! docker exec -u 10001 thomas-dispatch-bridge python -m runtime.mvp_runtime.workflow_cli snapshot \
+      if docker exec -u 10001 thomas-dispatch-bridge python -m runtime.mvp_runtime.workflow_cli snapshot \
              --dest "/app/.runtime_governance_state/workflow/snapshots/$STAMP" >/dev/null 2>&1; then
+        # Prune only after a good copy exists: the previous snapshot is the archive's only copy
+        # until this one is (review of P10, 2026-09-14 — a failed run used to delete it).
+        ls -1dt "$HOST_ROOT/$WF_DIR/snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
+      else
         WF_NOTE="workflow-snapshot=FAILED"
+        rm -rf "${HOST_ROOT:?}/$WF_DIR/snapshots/$STAMP"      # a partial copy is not a snapshot; keep the last good one
       fi
-      ls -1dt "$HOST_ROOT/$WF_DIR/snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
     else
       WF_NOTE="workflow-snapshot=absent"
     fi

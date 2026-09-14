@@ -99,8 +99,11 @@ def drain_status(root: Path | None, *, now: str) -> dict[str, Any]:
     legacy path's RUNNING registry rows by origin, and the workflow store's running attempts.
     Reads only; ``drained`` is True when nothing is in flight anywhere."""
     from .task_registry import TaskRegistryStore
+    from .task_registry import OPEN_STATUSES
     registry = TaskRegistryStore.default(root)
-    running = [e for e in registry.latest() if e.status == "RUNNING"]
+    # QUEUED counts as in flight: a queued operator request has not run yet, and retiring its
+    # entry point's writer before it is picked up would strand it (review of P10, 2026-09-14).
+    running = [e for e in registry.latest() if e.status in OPEN_STATUSES]
     by_origin: dict[str, list[str]] = {}
     for entry in running:
         by_origin.setdefault(entry.origin, []).append(entry.registry_entry_id)
@@ -111,6 +114,7 @@ def drain_status(root: Path | None, *, now: str) -> dict[str, Any]:
         attempts = [{"attempt_id": a["attempt_id"], "workflow_id": a["workflow_id"], "deadline_at": a["deadline_at"]}
                     for a in store.running_attempts()]
     return {"as_of": now, "legacy_running": {k: sorted(v) for k, v in sorted(by_origin.items())},
+            "legacy_open_statuses": list(OPEN_STATUSES),
             "workflow_attempts_running": attempts, "workflow_store": "present" if store_present else "absent",
             "drained": not running and not attempts}
 

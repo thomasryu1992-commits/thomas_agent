@@ -732,3 +732,16 @@ def test_memory_ceilings_sit_on_everything_but_the_money_path():
     assert limited == {ASSISTANT, "pipeline-worker", "operator"}, sorted(limited)
     for lane in LANES:
         assert "mem_limit" not in compose["services"][lane] and "memswap_limit" not in compose["services"][lane]
+
+
+
+def test_the_dispatch_door_can_bind_a_task_because_its_manager_mints_approval_asks():
+    """Sequence 2 (review of P07, 2026-09-14): the workflow manager runs inside dispatch-bridge and
+    mints a gated step's ask, which binds a Task to the active Core. Without the two Core mounts
+    every ask failed BINDING_FAILED in the container and a gated step waited forever — a defect no
+    pytest saw, because the suite binds against the checkout's own Core. Read-only, like every
+    other service that binds."""
+    mounts = [str(v) for v in _service("dispatch-bridge")["volumes"]]
+    for target in ("/app/THOMAS_CORE/activations", "/app/THOMAS_CORE/approvals"):
+        (mount,) = [m for m in mounts if f":{target}" in m]
+        assert mount.endswith(":ro"), mount

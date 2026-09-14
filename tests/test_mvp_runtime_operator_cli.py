@@ -304,3 +304,15 @@ def test_the_operator_never_creates_the_workflow_store(tmp_path, monkeypatch):
     WorkflowStore(tmp_path).initialize()                       # the manager created it: now the loop pushes
     assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), repo_root=tmp_path) == 0
     assert calls == [1]
+
+
+
+def test_the_suite_never_reaches_the_checkouts_own_workflow_store(monkeypatch):
+    """Review of P09 (2026-09-14): `main` without `repo_root` asks `WorkflowStore.exists()` for the
+    checkout's state directory. The conftest isolation redirects that default like every other
+    store's, so a checkout that holds a real workflow.db is never pushed from or written by a test."""
+    from runtime.mvp_runtime.paths import repo_root
+    from runtime.mvp_runtime.workflow_store import WorkflowStore
+
+    assert WorkflowStore.default().path.parents[2] != repo_root()
+    assert WorkflowStore.default(readonly=True).path.parents[2] != repo_root()

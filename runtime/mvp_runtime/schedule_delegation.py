@@ -83,6 +83,22 @@ class Delegation:
         return cls(kinds=frozenset(kinds), **numbers)
 
 
+@dataclass(frozen=True)
+class InvalidDelegation:
+    """A clause that is present but does not load: every change is refused with the reason, and
+    the door stays up (review of P09, 2026-09-14: the error used to escape at bridge start and
+    restart-loop the whole dispatch door)."""
+
+    reason: str
+
+
+def load_delegation_safely(root: Path | None = None) -> "Delegation | InvalidDelegation | None":
+    try:
+        return load_delegation(root)
+    except ControlBlocked as exc:
+        return InvalidDelegation(f"{exc.reason_code}: {exc}")
+
+
 def load_delegation(root: Path | None = None) -> Delegation | None:
     """The delegated scope the committed policy names, or None while the policy has no
     ``assistant_schedule`` clause (1.5.0 and earlier): dormant, every change refused."""
@@ -171,17 +187,31 @@ def proposal_event(change: ChangeRequest, existing: scheduler.Schedule | None, *
 
 
 def _out_of_scope(change: ChangeRequest, existing: scheduler.Schedule | None, *, store: scheduler.ScheduleStore,
-                  actor: str, delegation: Delegation) -> tuple[str, ...]:
-    """Why a change is outside the delegated scope; empty when it is inside."""
+                  actor: str, delegation: Delegation, now: str) -> tuple[str, ...]:
+    """Why a change is outside the delegated scope; empty when it is inside. The ceiling on active
+    delegated schedules is not checked here: it is enforced atomically with the write."""
     reasons: list[str] = []
     kind = change.kind if existing is None else existing.kind
     if kind not in delegation.kinds:
         reasons.append(f"kind {kind!r} is not delegated (delegated: {sorted(delegation.kinds)})")
     if existing is not None and existing.created_by != actor:
         reasons.append(f"schedule {existing.schedule_id} was created by {existing.created_by!r}, not by the assistant")
+    validity_seconds = delegation.max_validity_days * 86_400
+    # Renewal is Thomas's (review of P09): an expired delegated schedule is not re-enabled, and
+    # the same schedule is not re-created once its validity ran out, by the assistant.
+    if change.action == "enable" and existing is not None and existing.expires_at and existing.expires_at <= now:
+        reasons.append(f"schedule {existing.schedule_id} expired at {existing.expires_at}; renewing it is Thomas's decision")
     if change.action == "create":
         if change.interval_seconds is not None and change.interval_seconds < delegation.min_interval_seconds:
             reasons.append(f"interval {change.interval_seconds}s is below the delegated minimum {delegation.min_interval_seconds}s")
+        if change.interval_seconds is not None and change.interval_seconds >= validity_seconds:
+            reasons.append(f"interval {change.interval_seconds}s would first fire after the {delegation.max_validity_days}-day "
+                           "validity ends; it could never run")
+        expired_twin = next((r for r in store.list() if r.created_by == actor and r.kind == kind
+                             and r.request == change.request and r.expires_at and r.expires_at <= now), None)
+        if expired_twin is not None:
+            reasons.append(f"the same schedule ({expired_twin.schedule_id}) expired at {expired_twin.expires_at}; "
+                           "renewing it is Thomas's decision")
         if kind == scheduler.KIND_WORKFLOW:
             try:
                 plan = scheduler.workflow_plan_of(change.request)
@@ -190,12 +220,16 @@ def _out_of_scope(change: ChangeRequest, existing: scheduler.Schedule | None, *,
             if plan is not None and int(plan["budget"]["max_model_calls"]) > delegation.max_model_calls_per_run:
                 reasons.append(f"the plan's budget ({plan['budget']['max_model_calls']} calls) exceeds the delegated "
                                f"{delegation.max_model_calls_per_run} per run")
-    if change.action in ("create", "enable"):
-        active = [s for s in store.list() if s.enabled and s.created_by == actor
-                  and (existing is None or s.schedule_id != existing.schedule_id)]
-        if len(active) >= delegation.max_active:
-            reasons.append(f"{len(active)} delegated schedule(s) are already active; the delegated ceiling is {delegation.max_active}")
     return tuple(reasons)
+
+
+def _ceiling_check(actor: str, delegation: Delegation, *, excluding: str | None = None):
+    def check(rows: list[scheduler.Schedule]) -> list[str]:
+        active = [r for r in rows if r.enabled and r.created_by == actor and r.schedule_id != excluding]
+        if len(active) >= delegation.max_active:
+            return [f"{len(active)} delegated schedule(s) are already active; the delegated ceiling is {delegation.max_active}"]
+        return []
+    return check
 
 
 def apply_change(
@@ -217,6 +251,12 @@ def apply_change(
     kind = change.kind if existing is None else existing.kind
     expires_at: str | None = None
     if bounded:
+        if isinstance(delegation, InvalidDelegation):
+            raise ControlBlocked(
+                "SCHEDULE_DELEGATION_INVALID",
+                f"the governance policy's assistant_schedule clause does not load ({delegation.reason}); "
+                "nothing was changed — it delegates nothing until it is corrected",
+            )
         if delegation is None:
             raise ControlBlocked(
                 "SCHEDULE_DELEGATION_DISABLED",
@@ -230,20 +270,32 @@ def apply_change(
             )
         if change.action == "create" and kind not in scheduler.KINDS:
             raise SchedulerBlocked("UNKNOWN_KIND", f"schedule kind must be one of {sorted(scheduler.KINDS)}")
-        reasons = _out_of_scope(change, existing, store=store, actor=actor, delegation=delegation)
+        reasons = _out_of_scope(change, existing, store=store, actor=actor, delegation=delegation, now=now)
         if reasons:
-            event = proposal_event(change, existing, actor=actor, now=now, reasons=reasons)
-            if ledger is not None:
-                ledger.append_scheduler_event(event)
-            return ChangeOutcome(applied=False, proposed=True, schedule=existing, reasons=reasons, event=event)
+            return _propose(ledger, change, existing, actor=actor, now=now, reasons=reasons)
         expires_at = timeutil.plus_seconds(now, delegation.max_validity_days * 86_400) if change.action == "create" else None
 
+    def _propose_ceiling(reasons: list[str]) -> ChangeOutcome:
+        return _propose(ledger, change, existing, actor=actor, now=now, reasons=tuple(reasons))
+
     if change.action == "create":
+        if bounded:
+            # A retry of a create whose reply was lost must not make a second schedule: the same
+            # enabled schedule by the same actor is the answer (review of P09, 2026-09-14).
+            twin = next((r for r in store.list() if r.enabled and r.created_by == actor and r.kind == kind
+                         and r.request == change.request and r.interval_seconds == change.interval_seconds), None)
+            if twin is not None:
+                return ChangeOutcome(applied=True, proposed=False, schedule=twin, reasons=(), event=None)
         sched = scheduler.build_schedule(
             kind=kind, request=change.request, interval_seconds=int(change.interval_seconds or 0),
             created_by=actor, now=now, reason=change.reason, enabled=change.enabled, expires_at=expires_at,
         )
-        store.add(sched)
+        if bounded:
+            reasons = store.add_checked(sched, _ceiling_check(actor, delegation))
+            if reasons:
+                return _propose_ceiling(reasons)
+        else:
+            store.add(sched)
         event = scheduler.mutation_event(scheduler.ACTION_CREATED, sched, now=now)
         if ledger is not None:
             ledger.append_scheduler_event(event)
@@ -253,6 +305,12 @@ def apply_change(
     if change.action == "remove":
         affected = store.remove(existing.schedule_id)
         action = scheduler.ACTION_REMOVED
+    elif change.action == "enable" and bounded:
+        affected, reasons = store.set_enabled_checked(existing.schedule_id, True,
+                                                      _ceiling_check(actor, delegation, excluding=existing.schedule_id))
+        if reasons:
+            return _propose_ceiling(reasons)
+        action = scheduler.ACTION_ENABLED
     else:
         affected = store.set_enabled(existing.schedule_id, change.action == "enable")
         action = scheduler.ACTION_ENABLED if change.action == "enable" else scheduler.ACTION_DISABLED
@@ -264,6 +322,14 @@ def apply_change(
     after = affected if change.action == "remove" else next(
         (s for s in store.list() if s.schedule_id == existing.schedule_id), affected)
     return ChangeOutcome(applied=True, proposed=False, schedule=after, reasons=(), event=event)
+
+
+def _propose(ledger: Any, change: ChangeRequest, existing: scheduler.Schedule | None, *, actor: str, now: str,
+             reasons: tuple[str, ...]) -> ChangeOutcome:
+    event = proposal_event(change, existing, actor=actor, now=now, reasons=reasons)
+    if ledger is not None:
+        ledger.append_scheduler_event(event)
+    return ChangeOutcome(applied=False, proposed=True, schedule=existing, reasons=reasons, event=event)
 
 
 def render_outcome(change: ChangeRequest, outcome: ChangeOutcome) -> str:

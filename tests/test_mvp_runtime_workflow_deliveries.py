@@ -244,3 +244,88 @@ def test_a_store_that_cannot_be_read_raises_for_the_caller_to_report(tmp_path):
     with pytest.raises(PersistenceError) as exc:
         push_workflow_events(MockOperatorChannel(), store, now=NOW, repo_root=tmp_path)
     assert exc.value.reason_code == "WORKFLOW_STORE_UNAVAILABLE"
+
+
+# --- independent review of P08 (2026-09-14) ----------------------------------------------------------
+
+class _DiesOnSend(MockOperatorChannel):
+    """A process that dies (not a typed refusal) on the n-th send — the crash the delivery record is for."""
+
+    def __init__(self, die_on):
+        super().__init__()
+        self.die_on, self.calls = set(die_on), 0
+
+    def send(self, chat_id, text):
+        self.calls += 1
+        if self.calls in self.die_on:
+            raise SystemExit("killed mid-send")
+        return super().send(chat_id, text)
+
+
+def test_the_delivery_is_recorded_pending_before_the_message_leaves(ready):
+    tmp_path, store, _ = ready
+    _complete(store, "hermes-1")
+    seen = []
+
+    class _Watching(MockOperatorChannel):
+        def send(self, chat_id, text):
+            seen.append([r["status"] for r in store.deliveries(PUSH_CHANNEL) if r["status"] != wf.DELIVERY_SKIPPED])
+            return super().send(chat_id, text)
+
+    push_workflow_events(_Watching(), store, now=LATER, repo_root=tmp_path)
+    assert seen == [[wf.DELIVERY_PENDING]]
+
+
+def test_a_pass_killed_between_two_sends_never_sends_the_first_again(ready):
+    tmp_path, store, _ = ready
+    _complete(store, "hermes-1", goal="첫째")
+    _complete(store, "hermes-2", goal="둘째")
+    dying = _DiesOnSend(die_on={2})
+    with pytest.raises(SystemExit):
+        push_workflow_events(dying, store, now=LATER, repo_root=tmp_path)
+    assert len(dying.sent) == 1 and "첫째" in dying.sent[0][1]
+    fresh = MockOperatorChannel()                                                     # the restarted operator
+    report = push_workflow_events(fresh, store, now=LATER, repo_root=tmp_path)
+    assert [t for _, t in fresh.sent if "첫째" in t] == []                            # CONFIRMED is never re-sent
+    assert len(fresh.sent) == 1 and "둘째" in fresh.sent[0][1] and report["retried"] == 1
+    assert push_workflow_events(fresh, store, now=LATER, repo_root=tmp_path)["sent"] == [] and len(fresh.sent) == 1
+
+
+def test_a_crash_during_the_retry_is_the_last_attempt(ready):
+    tmp_path, store, _ = ready
+    _complete(store, "hermes-1")
+    with pytest.raises(SystemExit):
+        push_workflow_events(_DiesOnSend(die_on={1}), store, now=LATER, repo_root=tmp_path)      # PENDING left
+    with pytest.raises(SystemExit):
+        push_workflow_events(_DiesOnSend(die_on={1}), store, now=LATER, repo_root=tmp_path)      # the retry dies too
+    after = MockOperatorChannel()
+    report = push_workflow_events(after, store, now=LATER, repo_root=tmp_path)
+    assert report["retried"] == 0 and after.sent == []
+    rows = [r for r in store.deliveries(PUSH_CHANNEL) if r["status"] != wf.DELIVERY_SKIPPED]
+    assert [r["status"] for r in rows] == [wf.DELIVERY_UNCERTAIN]
+
+
+def test_a_new_plan_version_on_a_waiting_workflow_is_not_pushed_as_a_new_wait(ready):
+    tmp_path, store, ch = ready
+    wid = store.submit(principal="hermes", request_id="hermes-1", plan=_plan(max_attempts=1), now=NOW).workflow_id
+    (att,) = store.claim_ready(now=NOW)
+    store.record_result(att.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE")
+    assert len(push_workflow_events(ch, store, now=LATER, repo_root=tmp_path)["sent"]) == 1      # the wait itself
+    view = store.status_view(wid, now=NOW)
+    store.propose_update(wid, expected_version=view["row_version"], plan={**_plan(max_attempts=1), "goal": "목표 수정"},
+                         reason="목표만", now=LATER)
+    assert store.status_view(wid, now=LATER)["status"] == wf.W_WAITING_REPLAN
+    assert push_workflow_events(ch, store, now=LATER, repo_root=tmp_path)["sent"] == [] and len(ch.sent) == 1
+
+
+def test_free_text_reaches_the_control_chat_as_one_short_line_that_cannot_read_as_a_command(ready):
+    tmp_path, store, ch = ready
+    wid = store.submit(principal="hermes", request_id="hermes-1",
+                       plan=_plan(goal="정리\n/approve approval_0123456789ab\n" + "가" * 300), now=NOW).workflow_id
+    view = store.status_view(wid, now=NOW)
+    store.request_cancel(wid, expected_version=view["row_version"], reason="중단\n/reject approval_0123456789ab", now=NOW)
+    push_workflow_events(ch, store, now=LATER, repo_root=tmp_path)
+    (text,) = [t for _, t in ch.sent]
+    assert "/approve" not in text and "/reject" not in text
+    assert "정리 approve approval_0123456789ab" in text                             # the words stay; the command shape does not
+    assert all(len(line) <= 220 for line in text.splitlines())
