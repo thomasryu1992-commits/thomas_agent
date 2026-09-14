@@ -58,7 +58,7 @@ _PREVIEW_CHARS = 70
 # the word in the chat is the word in the record.
 # Rendered beside the status for the one origin that is not the operator's own request: an
 # assistant run listed among Thomas's would otherwise read as something he asked for.
-_ORIGIN_MARK = {task_registry.AGENT_ORIGIN: "비서"}
+_ORIGIN_MARK = {task_registry.AGENT_ORIGIN: "비서", task_registry.WORKFLOW_ORIGIN: "워크플로"}
 
 _STATUS_MARK = {
     task_registry.QUEUED: "대기",

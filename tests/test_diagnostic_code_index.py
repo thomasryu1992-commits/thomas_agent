@@ -89,6 +89,10 @@ SHARED_ACROSS_MODULES = frozenset({
     # The forward-only lifecycle refusal, raised by the task registry (F1) and by the workflow
     # model (sequence 2, P03) for the same reason: an edge the lifecycle table does not name.
     "TRANSITION_INVALID",
+    # Door API v3 (sequence 2, P05): the dispatch door refuses a plan that is not a plan object
+    # with the same code the workflow model uses for every other malformed plan, and refuses an
+    # unknown workflow command with the read/switch doors' own "not a verb here" code.
+    "PLAN_INVALID",
 })
 
 

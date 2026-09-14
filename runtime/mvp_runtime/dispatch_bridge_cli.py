@@ -78,21 +78,24 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     manager: WorkflowManager | None = None
+    workflow_store: WorkflowStore | None = None
     if args.workflow_manager:
+        workflow_store = WorkflowStore.default()
         manager = WorkflowManager(
-            WorkflowStore.default(), control_store=ControlStore.default(), worker_socket=worker_socket,
+            workflow_store, control_store=ControlStore.default(), worker_socket=worker_socket,
             concurrency=args.workflow_concurrency, poll_seconds=args.workflow_poll_seconds,
         )
         manager.start()
 
     try:
-        return _serve(path, worker_socket, manager)
+        return _serve(path, worker_socket, manager, workflow_store)
     finally:
         if manager is not None:
             manager.stop()
 
 
-def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None) -> int:
+def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
+           workflow_store: WorkflowStore | None) -> int:
     return serve_door_forever(
         label="DISPATCH_BRIDGE", path=path,
         open_server=lambda: dispatch_bridge.open_door(
@@ -103,6 +106,10 @@ def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None) -> 
             # Read-only here: the worker writes the entries; this door reads one back to
             # answer an idempotent replay with the run's status and result (door API v2).
             registry=TaskRegistryStore.default(),
+            # The same store the manager loop writes: v3 commands are served from it, and only
+            # when the loop runs here — otherwise they are refused by name (A18).
+            workflow_store=workflow_store,
+            manager_enabled=manager is not None,
         ),
         banner=lambda server: (
             f"kinds={sorted(dispatch_bridge._ALLOWED_KINDS)}, "

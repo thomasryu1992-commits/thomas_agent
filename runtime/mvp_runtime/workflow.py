@@ -25,6 +25,7 @@ one class for which an expired attempt is *reconciled* rather than retried (V0.2
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -37,6 +38,15 @@ from .paths import repo_root as _repo_root
 
 PLAN_SCHEMA_VERSION = "workflow_plan.v0.1"
 EVENT_SCHEMA_VERSION = "workflow_event.v0.1"
+
+# The attempt frame's keys (P05): what the manager adds to the worker's dispatch frame and the
+# worker echoes on its reply. Named once here so the two sides cannot spell them apart.
+ATTEMPT_ID_KEY = "attempt_id"
+WORKFLOW_ID_KEY = "workflow_id"
+WORKFLOW_OPTIONS_KEY = "workflow_options"
+WORKFLOW_ID_PATTERN = re.compile(r"^wf_[0-9a-f]{20}$")
+STEP_ID_PATTERN = re.compile(r"^wfs_[0-9a-f]{20}$")
+ATTEMPT_ID_PATTERN = re.compile(r"^wfa_[0-9a-f]{20}$")
 
 EFFECT_NONE = "none"
 EFFECT_EXTERNAL = "external"

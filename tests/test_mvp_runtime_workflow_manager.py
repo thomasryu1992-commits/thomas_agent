@@ -80,7 +80,8 @@ def test_a_tick_claims_a_ready_step_sends_the_v2_frame_and_records_the_result(tm
     (path, frame, deadline) = frames[0]
     assert path == tmp_path / "internal" / "pipeline.sock" and deadline == 600.0
     assert frame == {"request": "조사", "kind": "research", "reason": "why", "naver_keywords": "사장님",
-                     "client_id": f"{CLIENT_ID_PREFIX}{wid}"}
+                     "client_id": f"{CLIENT_ID_PREFIX}{wid}", "workflow_id": wid,
+                     "attempt_id": store.status_view(wid, now=NOW)["steps"][0]["current_attempt_id"]}
     view = store.status_view(wid, now=NOW)
     assert view["status"] == wf.W_COMPLETED
     (step,) = view["steps"]
@@ -90,14 +91,15 @@ def test_a_tick_claims_a_ready_step_sends_the_v2_frame_and_records_the_result(tm
     assert manager.tick()["claimed"] == 0
 
 
-def test_the_frame_carries_no_null_and_no_pipeline_options(tmp_path):
+def test_the_frame_carries_no_null_and_names_its_options_only_when_asked(tmp_path):
     frames = []
     store, manager = _manager(tmp_path, lambda p, f, *, deadline_seconds: frames.append(f) or _ok_reply(f))
     _submit(store, _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r",
-                                 "options": {"independent_validation": True, "revise": True}}]))
+                                 "options": {"independent_validation": True, "revise": False}}]))
     manager.tick()
     assert "naver_keywords" not in frames[0] and "options" not in frames[0]
-    assert set(frames[0]) == {"request", "kind", "reason", "client_id"}
+    assert set(frames[0]) == {"request", "kind", "reason", "client_id", "attempt_id", "workflow_id", "workflow_options"}
+    assert frames[0]["workflow_options"] == {"independent_validation": True}      # a False option does not travel
 
 
 def test_a_worker_block_fails_the_attempt_under_its_own_code_and_the_step_retries(tmp_path):
@@ -260,3 +262,40 @@ def test_the_manager_is_off_unless_the_compose_command_says_so():
     assert dispatch_bridge_cli._parse_args([]).workflow_manager is False
     args = dispatch_bridge_cli._parse_args(["--workflow-manager", "--workflow-concurrency", "1"])
     assert args.workflow_manager is True and args.workflow_concurrency == 1
+
+
+# --- the attempt frame (P05) ------------------------------------------------------------------
+
+def test_the_frame_names_the_attempt_and_carries_only_the_options_the_step_asked_for(tmp_path):
+    frames = []
+    store, manager = _manager(tmp_path, lambda p, f, *, deadline_seconds: frames.append(f) or _ok_reply(f))
+    wid = _submit(store, _plan(steps=[
+        {"id": "a", "capability": "analysis", "request": "x", "reason": "r", "options": {"independent_validation": True}},
+        {"id": "b", "capability": "analysis", "request": "y", "reason": "r"},
+    ], budget=6))
+    manager.tick(); manager.tick()
+    assert frames[0]["workflow_id"] == wid and frames[0]["attempt_id"].startswith("wfa_")
+    assert frames[0]["workflow_options"] == {"independent_validation": True}
+    assert "workflow_options" not in frames[1] and frames[1]["attempt_id"] != frames[0]["attempt_id"]
+
+
+def test_the_echoed_spend_confirms_the_reservation(tmp_path):
+    def call(path, frame, *, deadline_seconds):
+        return {**_ok_reply(frame), "attempt_id": frame["attempt_id"], "workflow_id": frame["workflow_id"],
+                "usage": {"model_calls": 2, "tokens_used": 900, "agent_invocations": 2, "revision_cycles": 0}}
+
+    store, manager = _manager(tmp_path, call)
+    wid = _submit(store)
+    manager.tick()
+    budget = store.budget_summary(wid)
+    assert budget["confirmed_model_calls"] == 2 and budget["confirmed_tokens"] == 900
+    assert budget["unconfirmed_model_calls"] == 0
+
+
+def test_a_reply_that_echoes_another_attempt_is_not_applied(tmp_path):
+    store, manager = _manager(tmp_path, lambda p, f, *, deadline_seconds: {**_ok_reply(f), "attempt_id": "wfa_" + "f" * 20})
+    wid = _submit(store)
+    manager.tick()
+    step = store.status_view(wid, now=NOW)["steps"][0]
+    assert step["status"] == wf.S_RUNNING and step["result_ref"] is None
+    assert any("ATTEMPT_ECHO_MISMATCH" in line for line in manager.logs)

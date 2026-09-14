@@ -39,7 +39,7 @@ from . import socket_door, timeutil, workflow as wf
 from .control import ControlStore
 from .dispatch_bridge import WORKER_DEADLINE_SECONDS
 from .errors import MvpRuntimeError
-from .workflow_store import DEFAULT_ATTEMPT_DEADLINE_SECONDS, ClaimedAttempt, WorkflowStore
+from .workflow_store import COST_OBSERVED, DEFAULT_ATTEMPT_DEADLINE_SECONDS, ClaimedAttempt, WorkflowStore
 
 DEFAULT_CONCURRENCY = 2          # the worker's own MAX_CONCURRENT_REQUESTS; a third would only queue
 DEFAULT_POLL_SECONDS = 2.0
@@ -168,12 +168,19 @@ class WorkflowManager:
 
     @staticmethod
     def worker_frame(attempt: ClaimedAttempt) -> dict[str, Any]:
-        """The v2 dispatch frame the worker speaks today. Optional keys travel only when present
-        (the worker's closed key set never sees a null); the attribution names the workflow."""
+        """The attempt frame (P05): the v2 dispatch frame plus the attempt's identity for the
+        worker to echo, and the step's assurance options when it asked for any. Optional keys
+        travel only when present (the worker's closed key set never sees a null); the
+        attribution names the workflow."""
         frame: dict[str, Any] = {"request": attempt.request, "kind": attempt.capability, "reason": attempt.reason}
         if attempt.naver_keywords:
             frame["naver_keywords"] = attempt.naver_keywords
         frame[socket_door.CLIENT_ID_KEY] = f"{CLIENT_ID_PREFIX}{attempt.workflow_id}"
+        frame[wf.ATTEMPT_ID_KEY] = attempt.attempt_id
+        frame[wf.WORKFLOW_ID_KEY] = attempt.workflow_id
+        options = {key: True for key in ("independent_validation", "revise") if attempt.options.get(key)}
+        if options:
+            frame[wf.WORKFLOW_OPTIONS_KEY] = options
         return frame
 
     def _run_attempt(self, attempt: ClaimedAttempt) -> None:
@@ -205,17 +212,31 @@ class WorkflowManager:
         if not isinstance(reply, dict):
             self._store.record_result(attempt.attempt_id, now=now, succeeded=False, reason_code="DOOR_REPLY_MALFORMED")
             return
+        echoed = reply.get(wf.ATTEMPT_ID_KEY)
+        if echoed is not None and echoed != attempt.attempt_id:
+            # A reply that names another attempt is not this attempt's answer. Not applied and
+            # not failed: whatever ran, this frame's own fate is what the lease will rule on.
+            self._log(f"WORKFLOW_MANAGER[ATTEMPT_ECHO_MISMATCH]: attempt {attempt.attempt_id} got a reply "
+                      f"for {echoed!r}; not applied, left to its lease {attempt.deadline_at}")
+            return
         trace_id = reply.get("trace_id") if isinstance(reply.get("trace_id"), str) else None
         entry_id = reply.get("registry_entry_id") if isinstance(reply.get("registry_entry_id"), str) else None
+        usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else None
+        spend: dict[str, Any] = {}
+        if usage is not None:
+            # The run's recorded spend confirms the reservation (observed, never estimated
+            # here). Without it the reservation stays unconfirmed and keeps counting (A12).
+            spend = {"model_calls": int(usage.get("model_calls") or 0),
+                     "tokens": int(usage.get("tokens_used") or 0), "cost_status": COST_OBSERVED}
         if reply.get("ok"):
             self._store.record_result(
                 attempt.attempt_id, now=now, succeeded=True, trace_id=trace_id, registry_entry_id=entry_id,
-                result_ref=f"ledger:{trace_id}" if trace_id else None,
+                result_ref=f"ledger:{trace_id}" if trace_id else None, **spend,
             )
             return
         reason = reply.get("reason_code") if isinstance(reply.get("reason_code"), str) else "DISPATCH_BLOCKED"
         self._store.record_result(attempt.attempt_id, now=now, succeeded=False, trace_id=trace_id,
-                                  registry_entry_id=entry_id, reason_code=reason)
+                                  registry_entry_id=entry_id, reason_code=reason, **spend)
 
 
 def _worker_reachable(path: Path) -> bool:
