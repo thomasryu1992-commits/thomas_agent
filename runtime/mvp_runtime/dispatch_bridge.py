@@ -128,8 +128,13 @@ Executor = Callable[[str, str, str, "str | None", "str | None"], dict[str, Any]]
 
 # How long the door waits for the worker's answer. A real run on the free-tier chain is
 # minute-plus; the assistant's own client gives up at 280s, but the run must be allowed to
-# finish and land in the ledger regardless. NB: the worker writes no task-registry entry, so
-# the read door's `result`/`history` CANNOT fetch it — a missed reply is a lost report (v2).
+# finish and land in the ledger regardless. Since PR8 (2026-09-04) the worker opens an `AGENT`
+# registry entry for every assistant run and closes it with the outcome, so a reply that
+# misses the client's window is NOT lost: the same `request_id` replays
+# `{task_id, status, result}` from that entry and the ledger (`_replay_data` below), and the
+# read door's `result <registry_entry_id>` fetches the same text. This deadline bounds only how
+# long THIS connection waits. (Before PR8 the entry did not exist and a missed reply really was
+# a lost report; the note that stood here said so and outlived the fix by ten days.)
 WORKER_DEADLINE_SECONDS = 600.0
 
 # The largest result a replay carries inline (door API v2, D-4). `call_door` reads at most
