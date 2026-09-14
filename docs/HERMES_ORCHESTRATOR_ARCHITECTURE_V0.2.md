@@ -229,7 +229,7 @@ typed/versioned frame(PR7), registry `AGENT`(PR8), `request_id` 멱등 재생(PR
 ### 4.3 상태 전이
 
 - **Workflow:** `RECEIVED → VALIDATED → RUNNING → COMPLETED`. 진행 중 `WAITING_APPROVAL`, `WAITING_REPLAN`, `CANCELLING`. 종결 `FAILED` / `BLOCKED` / `CANCELLED`.
-- **Step:** `PENDING → READY → RUNNING → SUCCEEDED`. 실패 유형에 따라 `RETRY_WAIT`, `WAITING_APPROVAL`, `FAILED`, `BLOCKED`. `NEEDS_RECONCILIATION`은 `effect_class=external`에서만. 취소는 `CANCEL_REQUESTED` 뒤 실제 중단 확인을 거쳐 `CANCELLED`.
+- **Step:** `PENDING → READY → RUNNING → SUCCEEDED`. 실패 유형에 따라 `RETRY_WAIT`, `WAITING_APPROVAL`, `FAILED`, `BLOCKED`. `NEEDS_RECONCILIATION`은 `effect_class=external`에서만. 취소는 `CANCEL_REQUESTED` 뒤 실제 중단 확인을 거쳐 `CANCELLED`. **P06 구현 정정:** `FAILED`·`BLOCKED`는 종결이 아니라 *정착(settled)* 상태다 — 자동 정책이 소진된 것이며 결정(`workflow.retry_step`, P07의 계획 변경)만이 새 attempt를 연다. 종결은 `SUCCEEDED`·`CANCELLED`뿐이고, 하드 캡 3회에 닿은 `FAILED`만 workflow를 `FAILED`로 끝낸다. 그 전까지 workflow는 `WAITING_REPLAN`에서 결정을 기다린다.
 - **Attempt:** 새 attempt만 재시도다. fence = `attempt_id`. 워커는 결과 생성 후 기존 pipeline의 감사·결과 저장을 먼저 완료하고 `attempt_id`·`trace_id`·참조를 응답한다. Manager는 fence와 전이 조건을 확인한 트랜잭션에서 step과 이벤트를 갱신한다. 감사 저장과 SQLite는 한 트랜잭션이 아니므로, 응답 유실(브리지 재기동·연결 끊김) 시 `trace_id`·`attempt_id`로 감사 원장을 대조해 완료시키고 모델을 재호출하지 않는다(A10). 감사 저장 실패는 기존 규칙대로 성공 전달하지 않는다(A09).
 - **전달:** workflow 완료와 메시지 전달은 구분한다. `deliveries`의 `PENDING/CONFIRMED/UNCERTAIN`. 외부 알림까지 exactly-once라고 약속하지 않는다.
 - **기본 상한(설계 시작점, 부하 시험으로 확정):** worker 동시 2(`pipeline_worker.py:164`), workflow 단계 10, 서버 전체 미실행 step 20. revise 1회 유지, Manager 재시도·Hermes 재계획을 합친 총 호출·토큰 예산을 별도로 둔다.

@@ -227,3 +227,28 @@ def test_the_door_opened_with_the_store_serves_v3_and_the_flag_decides(tmp_path,
         assert out["data"]["workflow_manager"] is True
     finally:
         server.server_close()
+
+
+# --- retry by decision (P06) --------------------------------------------------------------------
+
+def test_retry_step_re_opens_a_settled_step_at_the_version_read(tmp_path):
+    store = WorkflowStore(tmp_path)
+    wid = _submit(store, tmp_path, plan=_plan(steps=[{"id": "research", "capability": "research", "request": "x",
+                                                     "reason": "r", "max_attempts": 1}]))["data"]["workflow_id"]
+    (attempt,) = store.claim_ready(now=NOW)
+    store.record_result(attempt.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE")
+    view = _apply({"command": "workflow.status", "workflow_id": wid}, tmp_path, store=store)["data"]
+    assert view["status"] == wf.W_WAITING_REPLAN
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "workflow.retry_step", "workflow_id": wid, "expected_version": view["row_version"],
+                "reason": "r"}, tmp_path, store=store)
+    assert exc.value.reason_code == "MALFORMED_REQUEST"                              # no step_key
+    out = _apply({"command": "workflow.retry_step", "workflow_id": wid, "step_key": "research",
+                  "expected_version": view["row_version"], "reason": "공급자 복구"}, tmp_path, store=store)
+    assert out["ok"] and out["reply"].startswith("RETRY OPENED") and out["data"]["status"] == wf.W_RUNNING
+    assert out["data"]["steps"][0]["status"] == wf.S_READY
+    with pytest.raises(WorkflowBlocked) as exc:
+        _apply({"command": "workflow.retry_step", "workflow_id": wid, "step_key": "research",
+                "expected_version": view["row_version"], "reason": "again"}, tmp_path, store=store)
+    assert exc.value.reason_code in {"VERSION_CONFLICT", "RETRY_NOT_APPLICABLE"}
+    assert "workflow.retry_step" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]

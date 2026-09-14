@@ -35,10 +35,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from . import socket_door, timeutil, workflow as wf
+from . import socket_door, task_registry, timeutil, workflow as wf
 from .control import ControlStore
 from .dispatch_bridge import WORKER_DEADLINE_SECONDS
 from .errors import MvpRuntimeError
+from .task_registry import TaskRegistryStore
 from .workflow_store import COST_OBSERVED, DEFAULT_ATTEMPT_DEADLINE_SECONDS, ClaimedAttempt, WorkflowStore
 
 DEFAULT_CONCURRENCY = 2          # the worker's own MAX_CONCURRENT_REQUESTS; a third would only queue
@@ -68,8 +69,10 @@ class WorkflowManager:
         clock: Callable[[], str] = timeutil.utc_now_iso,
         log: Callable[[str], None] | None = None,
         synchronous: bool = False,
+        registry: TaskRegistryStore | None = None,
     ):
         self._store = store
+        self._registry = registry
         self._control = control_store
         self._worker_socket = Path(worker_socket)
         self._worker_deadline = float(worker_deadline_seconds)
@@ -91,13 +94,71 @@ class WorkflowManager:
 
     def startup_report(self, *, now: str | None = None) -> dict[str, Any]:
         """What this process inherits: attempts still RUNNING in the store belong to a bridge
-        that is gone. Their connections died with it, so they lapse at their leases (P06 adds
-        reconciliation against the ledger for the ones that finished in the meantime)."""
+        that is gone. Their connections died with it. The registry row each one opened says
+        what happened meanwhile — a finished run is applied here without a second model call
+        (A10, A28); the rest lapse at their leases."""
         now = now or self._clock()
         self._store.initialize()
         inherited = self._store.running_attempts()
+        reconciled = self.reconcile(now=now)
         return {"inherited_running_attempts": len(inherited), "as_of": now,
-                "attempt_ids": [a["attempt_id"] for a in inherited]}
+                "attempt_ids": [a["attempt_id"] for a in inherited], **reconciled}
+
+    def reconcile(self, *, now: str | None = None) -> dict[str, Any]:
+        """Recover what a lost reply left behind (V0.2 §4.3). For every RUNNING attempt the
+        WORKFLOW registry row that ran it is the worker's own record: DELIVERED applies the
+        result (trace, registry id, `ledger:<trace>`) with no second model call; FAILED/BLOCKED
+        fails the attempt under the row's reason; a row still RUNNING past the lease is closed
+        RUN_ABANDONED by the manager — the origin it owns — so /tasks stops saying RUNNING, and
+        `expire_overdue` then rules on the attempt by effect class. A row still RUNNING inside
+        the lease is a run still going: nothing is touched. No registry, nothing reconciled."""
+        report = {"reconciled": 0, "abandoned": 0, "reconcile_errors": 0}
+        if self._registry is None:
+            return report
+        now = now or self._clock()
+        for attempt in self._store.running_attempts():
+            try:
+                entry = self._registry.find_by_attempt(attempt["attempt_id"])
+            except MvpRuntimeError as exc:
+                report["reconcile_errors"] += 1
+                self._log(f"WORKFLOW_MANAGER[{exc.reason_code}]: registry unreadable while reconciling "
+                          f"{attempt['attempt_id']}: {exc}")
+                continue
+            if entry is None:
+                continue
+            try:
+                if entry.status == task_registry.DELIVERED:
+                    trace = entry.trace_id
+                    self._store.record_result(
+                        attempt["attempt_id"], now=now, succeeded=True, trace_id=trace,
+                        registry_entry_id=entry.registry_entry_id,
+                        result_ref=entry.result_ref or (f"ledger:{trace}" if trace else None),
+                    )
+                    report["reconciled"] += 1
+                    self._log(f"WORKFLOW_MANAGER[RECONCILED]: attempt {attempt['attempt_id']} completed from "
+                              f"registry row {entry.registry_entry_id} without a second run")
+                elif entry.status in (task_registry.FAILED, task_registry.BLOCKED):
+                    self._store.record_result(
+                        attempt["attempt_id"], now=now, succeeded=False, trace_id=entry.trace_id,
+                        registry_entry_id=entry.registry_entry_id,
+                        reason_code=entry.last_reason_code or entry.status,
+                    )
+                    report["reconciled"] += 1
+                elif entry.status == task_registry.RUNNING and attempt["deadline_at"] < now:
+                    self._registry.transition(
+                        entry.registry_entry_id, task_registry.FAILED, now=now,
+                        reason_code=task_registry.ABANDONED_REASON_CODE,
+                    )
+                    report["abandoned"] += 1
+                    self._log(f"WORKFLOW_MANAGER[{task_registry.ABANDONED_REASON_CODE}]: registry row "
+                              f"{entry.registry_entry_id} of attempt {attempt['attempt_id']} was still RUNNING "
+                              f"past the lease {attempt['deadline_at']}; closed by the manager")
+            except MvpRuntimeError as exc:
+                # ATTEMPT_FENCED here means the store already moved on (a late row); recorded by
+                # the store as a late result, nothing else to do.
+                report["reconcile_errors"] += 1
+                self._log(f"WORKFLOW_MANAGER[{exc.reason_code}]: reconciling {attempt['attempt_id']}: {exc}")
+        return report
 
     def start(self) -> threading.Thread:
         """Run the loop in a daemon thread beside the door's own server loop."""
@@ -133,6 +194,7 @@ class WorkflowManager:
         self.ticks += 1
         report: dict[str, Any] = {"as_of": now, "expired": 0, "claimed": 0, "skipped": None, "error": None}
         try:
+            report.update(self.reconcile(now=now))
             report["expired"] = len(self._store.expire_overdue(now=now))
             state = self._control.load()
             if not state.execution_allowed:

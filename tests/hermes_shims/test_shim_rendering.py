@@ -190,10 +190,11 @@ def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatc
 _WID = "wf_" + "1" * 20
 
 
-def test_dispatch_tools_are_the_four_dispatches_plus_the_six_workflow_tools():
+def test_dispatch_tools_are_the_four_dispatches_plus_the_seven_workflow_tools():
     assert set(dispatch_shim.mcp.tools) == {
         "analyze", "research", "translate", "draft_content",
-        "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events", "cancel_workflow",
+        "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events",
+        "cancel_workflow", "retry_workflow_step",
     }
 
 
@@ -265,3 +266,16 @@ def test_the_data_line_is_one_helper_shared_by_the_shims():
     assert read_shim._render(answer, with_data=True).endswith('[data] {"a":[1,2],"b":1}')
     big = door.data_line(_answer("read", {"ok": True, "reply": "r", "data": {"rows": ["x" * 100] * 100}}), max_chars=500)
     assert "[data truncated at 500 chars]" in big
+
+
+def test_retry_step_sends_its_shape_and_refuses_locally_what_the_door_would(monkeypatch):
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or _answer(
+        "dispatch", {"ok": True, "command": p["command"], "reply": "RETRY OPENED", "data": {"status": "RUNNING"}}))
+    out = dispatch_shim.retry_workflow_step(_WID, "draft1", "4", "공급자 복구")
+    assert out.startswith("RETRY OPENED") and '"status":"RUNNING"' in out
+    assert seen == [{"command": "workflow.retry_step", "workflow_id": _WID, "step_key": "draft1",
+                     "expected_version": 4, "reason": "공급자 복구"}]
+    assert dispatch_shim.retry_workflow_step(_WID, "", "4", "r").startswith("REFUSED: workflow_id and step_key")
+    assert dispatch_shim.retry_workflow_step(_WID, "draft1", "four", "r").startswith("REFUSED: expected_version")
+    assert len(seen) == 1

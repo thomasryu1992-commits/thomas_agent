@@ -119,10 +119,11 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 COMMAND_KEY = "command"
 V3_COMMANDS: frozenset[str] = frozenset({
     "capabilities", "workflow.submit", "workflow.status", "workflow.list", "workflow.events", "workflow.cancel",
+    "workflow.retry_step",
 })
 _V3_KEYS: frozenset[str] = frozenset(
     {COMMAND_KEY, bridge_idempotency.REQUEST_ID_KEY, "plan", "workflow_id", "expected_version",
-     "reason", "after_cursor", "limit"}
+     "reason", "after_cursor", "limit", "step_key"}
 ) | socket_door.ENVELOPE_KEYS
 _V3_READS: frozenset[str] = frozenset({"capabilities", "workflow.status", "workflow.list", "workflow.events"})
 MAX_LIST = 50
@@ -479,16 +480,27 @@ def apply_workflow_command(
         return socket_door.envelope({"ok": True, "command": command, "reply": workflow_console.render_view(view)},
                                     request=request, data=view)
 
-    # workflow.cancel
+    # workflow.cancel / workflow.retry_step — both act at the version the caller read
     expected = request.get("expected_version")
     if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
         raise ControlBlocked(
             "MALFORMED_REQUEST",
-            "'workflow.cancel' needs the 'expected_version' the caller read (workflow.status → row_version)",
+            f"'{command}' needs the 'expected_version' the caller read (workflow.status → row_version)",
         )
     reason = request.get("reason")
     if not isinstance(reason, str) or not reason.strip():
-        raise ControlBlocked("REASON_REQUIRED", "a cancel must state its reason; it is recorded")
+        raise ControlBlocked("REASON_REQUIRED", f"'{command}' must state its reason; it is recorded")
+    if command == "workflow.retry_step":
+        step_key = request.get("step_key")
+        if not isinstance(step_key, str) or not step_key.strip():
+            raise ControlBlocked("MALFORMED_REQUEST", "'workflow.retry_step' names the 'step_key' to re-open")
+        view = workflow_store.retry_step(workflow_id, step_key.strip(), expected_version=expected,
+                                         reason=reason.strip(), now=stamp)
+        return socket_door.envelope(
+            {"ok": True, "command": command,
+             "reply": f"RETRY OPENED for step {step_key.strip()!r}\n{workflow_console.render_view(view)}"},
+            request=request, data=view,
+        )
     view = workflow_store.request_cancel(workflow_id, expected_version=expected, reason=reason.strip(), now=stamp)
     done = view["status"] == wf.W_CANCELLED
     head = "CANCELLED" if done else f"CANCELLING (status={view['status']}; a running attempt stops at its next boundary or its lease)"

@@ -333,6 +333,7 @@ def apply_work(
             registry, request_text=text.strip(),
             origin=task_registry.WORKFLOW_ORIGIN if attempt is not None else task_registry.AGENT_ORIGIN,
             requester_id=profile["requester_id"], now=stamp, request_kind=kind,
+            attempt_id=attempt["attempt_id"] if attempt is not None else None,
         )
     # Attribution on the task record: `created_by` is the one free-text audit field the task
     # schema leaves to the caller and nothing reads for authority. `requester_id` stays the

@@ -51,14 +51,20 @@ not a dependency, a duplicate id and a budget below one attempt of every step ar
   or `FAILED`; `WAITING_APPROVAL`; `NEEDS_RECONCILIATION` (effect class `external` only);
   `BLOCKED` (budget, or a dependency that will never succeed — `DEPENDENCY_FAILED`, transitive);
   cancel is `CANCEL_REQUESTED → CANCELLED` for a running step and `CANCELLED` at once for a
-  waiting one.
+  waiting one. **Two kinds of done (P06):** `SUCCEEDED` and `CANCELLED` are terminal; `FAILED` and
+  `BLOCKED` are *settled* — the automatic policy is exhausted and only a decision re-opens them
+  (`FAILED → READY`, `BLOCKED → PENDING|READY` through `retry_step`; a cancel ends either).
 - **Attempt:** `RUNNING → SUCCEEDED | FAILED | EXPIRED | CANCELLED`. A retry is a **new** attempt;
-  a completed attempt is never re-opened.
+  a completed attempt is never re-opened. `MAX_ATTEMPTS_PER_STEP` (3) is the hard cap across
+  automatic retries and decisions.
 
 The workflow's status is recomputed from its steps after every change
-(`workflow.workflow_status_for`): open work keeps it `RUNNING` (`CANCELLING` while a cancel is
-being honoured), all `SUCCEEDED` is `COMPLETED`, any `FAILED` is `FAILED`, a cancelled step with
-no failure is `CANCELLED`, otherwise `BLOCKED`.
+(`workflow.workflow_status_for`): active work keeps it `RUNNING` (`CANCELLING` while a cancel is
+being honoured); a step waiting for an approval makes it `WAITING_APPROVAL`; all `SUCCEEDED` is
+`COMPLETED`; a cancel with nothing active ends it `CANCELLED`; a settled or reconciling step a
+decision could still move — a `FAILED` step below the cap, a budget-blocked step, a
+`NEEDS_RECONCILIATION` step — makes it **`WAITING_REPLAN`**, the state `retry_step` and a plan
+change (P07) act on; a `FAILED` step at the cap is `FAILED`; otherwise `BLOCKED`.
 
 ## Fence, lease, effect class
 
@@ -106,6 +112,28 @@ otherwise), the dependencies, the opening events. The same `(principal, request_
 same plan hash replays the accepted workflow (`replayed: true`); with a different plan it is
 `REQUEST_ID_CONFLICT`. A submission that would push the server past `MAX_OPEN_STEPS` (20) is
 `CAPACITY_EXHAUSTED`. Nothing answers `accepted` before the commit (A03).
+
+### Retry by decision — `retry_step(workflow_id, step_key, expected_version, reason, now)` (P06)
+
+On a `WAITING_REPLAN` (or `RUNNING`) workflow at the version the caller read: a `FAILED` step
+below the cap, a budget-blocked step the budget now covers, or a `NEEDS_RECONCILIATION` step a
+person has looked at goes `READY` (`PENDING` while a dependency is not yet `SUCCEEDED`) with one
+more attempt allowed; steps blocked by it (`DEPENDENCY_FAILED`) come back to `PENDING`; nothing
+already delivered is re-run (acceptance A16). Refused: a step blocked by a failed dependency
+(`RETRY_NOT_APPLICABLE` — retry the dependency), a step at the cap (`ATTEMPTS_EXHAUSTED`), a
+budget that does not cover one more attempt (`BUDGET_EXHAUSTED`), an ended workflow.
+
+### Recovery — the manager and the registry row (P06; A10, A28)
+
+Every attempt the worker runs opens a registry row of origin `WORKFLOW` carrying the
+`attempt_id` (`task_registry_entry.v0.4`). When the reply is lost between the worker and the
+manager — a connection drop, a bridge restart — `WorkflowManager.reconcile` reads that row: a
+`DELIVERED` row completes the attempt with its trace and `ledger:<trace>` and **no second model
+call**; a `FAILED`/`BLOCKED` row fails it under the row's reason; a row still `RUNNING` past the
+lease is closed `RUN_ABANDONED` by the manager (`MANAGER_ORIGINS`, its own to close) and
+`expire_overdue` rules on the attempt by effect class. A row still `RUNNING` inside the lease is a
+run still going and is left alone. Reconciliation runs at manager start and at the head of every
+tick.
 
 ### Claim, result, expiry, cancel
 
