@@ -438,3 +438,16 @@ def test_approval_status_data_keys_are_exactly_the_named_fields(tmp_path):
     outcome = store_reads.read_approval_status(store, "approval_fields01", now="2026-09-04T00:05:00Z")
     assert set(outcome["data"]) == set(store_reads.APPROVAL_STATUS_FIELDS)
     assert not ({"approved_action_snapshot", "action_fingerprint", "permission_decision_id"} & set(outcome["data"]))
+
+
+# --- the readiness read carries its view (sequence 2, P02) --------------------
+
+def test_the_readiness_read_carries_the_view_a_summariser_needs(tmp_path):
+    """`data` for the crypto reads used to be `{action}`; the view is what lets a v2 client
+    say `infrastructure_ready` and `live_entry_possible` are different facts."""
+    out = _apply({"command": "crypto_readiness"}, ControlStore(tmp_path), repo_root=tmp_path)
+    data = out["data"]
+    assert {"as_of", "infrastructure_ready", "live_armed_strategies", "recorded_gate",
+            "live_entry_possible", "checks"} <= set(data)
+    assert data["infrastructure_ready"] is False and data["live_entry_possible"] is None
+    assert "reply" not in data and out["reply"].startswith("=== live trading readiness ===")

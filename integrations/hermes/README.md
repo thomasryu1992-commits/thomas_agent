@@ -18,6 +18,10 @@ Sequence 2, **P02** (2026-09-14). Decision record: [`docs/HERMES_ORCHESTRATOR_AR
 
 Not here, on purpose: the container environment (three values from `.env`, see `docs/DEPLOYMENT.md`), sessions, memories, `state.db` and its snapshots, `auth.json`, logs and caches, and the `hermes-agent` build context (its own repository).
 
+## What the read shim adds beside the console text
+
+Five reads — `trading_readiness`, `current_funds`, `heartbeat`, `approval_status`, `runtime_status` — append the reply's structured `data` as one `[data]` JSON line (capped at 4,000 characters, named when truncated). For readiness the runtime's view keeps `infrastructure_ready`, `live_armed_strategies.armed`, `recorded_gate.stale` and `live_entry_possible` apart; for funds it carries `as_of`, `age_seconds` and `stale` with the figures. Reads whose data is large or already legible as text (`schedules`, `task_list`, boards) stay text-only. An older runtime answers `{action}` for the two crypto reads and the line still renders.
+
 ## Check for drift, install
 
 ```bash

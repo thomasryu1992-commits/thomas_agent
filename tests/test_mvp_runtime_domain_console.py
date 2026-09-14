@@ -233,3 +233,25 @@ def test_both_verbs_carry_a_named_authority():
         clause = operator.CHANNEL_VERB_AUTHORITY[verb]
         assert "INTERNAL_READ" in clause
         assert "read_only_status" in clause
+
+
+# --- a handler may answer with its view (sequence 2, P02) --------------------
+
+def test_a_handler_may_answer_with_a_structured_view_beside_its_text(monkeypatch):
+    _stub(monkeypatch, name="readiness", fn=lambda *, now, root: ("board", {"infrastructure_ready": False}))
+    outcome = apply_domain_command(("CRYPTO", "readiness"), operator_id="tg-12345", now=NOW)
+    assert outcome["reply"] == "board" and outcome["action"] == "CRYPTO_READINESS"
+    assert outcome["data"] == {"infrastructure_ready": False}
+
+
+def test_a_text_only_handler_carries_no_data_key(monkeypatch):
+    _stub(monkeypatch)
+    outcome = apply_domain_command(("CRYPTO", "status"), operator_id="tg-12345", now=NOW)
+    assert "data" not in outcome
+
+
+def test_the_real_readiness_handler_answers_with_the_view(tmp_path):
+    outcome = apply_domain_command(("CRYPTO", "readiness"), operator_id="tg-12345", now=NOW,
+                                   repo_root=tmp_path)
+    assert outcome["reply"].startswith("=== live trading readiness ===")
+    assert {"infrastructure_ready", "live_entry_possible", "recorded_gate", "live_armed_strategies"} <= set(outcome["data"])
