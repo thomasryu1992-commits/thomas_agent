@@ -1,0 +1,196 @@
+# TEMPLATE — the live file is /root/hermes-trial/data/config.yaml (uid 10000). Sequence 2, P02.
+# Secrets never live in this file: the container reads OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN and
+# TELEGRAM_ALLOWED_USERS from its environment (docs/DEPLOYMENT.md, secret ownership matrix). The
+# operator's Telegram ids are the only host-specific values and are placeholders here.
+# Keep the four mcp_servers entries and the cron toolset allowlist (no thomas-switch) as they are:
+# both are decisions recorded in docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md.
+
+model: google/gemini-2.5-pro
+database:
+  journal_mode: wal
+agent:
+  max_turns: 500
+  restart_drain_timeout: 20   # PR4 2026-09-04: in-flight turn drain budget on stop/restart (s6 SIGKILL at 25s)
+  verbose: false
+  reasoning_effort: high
+  personalities: {}
+terminal:
+  backend: local
+  cwd: .
+  timeout: 180
+  home_mode: auto
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+  docker_mount_cwd_to_workspace: false
+  lifetime_seconds: 300
+browser:
+  inactivity_timeout: 120
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
+compression:
+  enabled: true
+  progress_notices: false
+  threshold: 0.5
+  target_ratio: 0.2
+  protect_last_n: 20
+  min_tail_user_messages: 1
+  max_attempts: 3
+  proactive_prune_tokens: 0
+  proactive_prune_min_result_chars: 8000
+  proactive_prune_min_reclaim_tokens: 4096
+  protect_first_n: 3
+  codex_gpt55_autoraise: true
+  codex_app_server_auto: native
+  idle_compact_after_seconds: 1800
+prompt_caching:
+  cache_ttl: 5m
+display:
+  compact: false
+  busy_input_mode: interrupt
+  bell_on_complete: false
+  show_reasoning: false
+  streaming: true
+  skin: default
+  interim_assistant_messages: true
+  tool_progress: all
+  cleanup_progress: false
+  long_running_notifications: true
+  busy_ack_detail: true
+  background_process_notifications: all
+stt:
+  enabled: true
+  language: en
+  local:
+    model: base
+  openai:
+    model: whisper-1
+    language: ''
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  nudge_interval: 10
+  flush_min_turns: 6
+delegation:
+  max_iterations: 50
+skills:
+  creation_nudge_interval: 15
+code_execution:
+  timeout: 300
+  max_tool_calls: 50
+# Kanban dispatch stays OFF (Thomas 결정 Q12-a, 2026-09-03): Thomas의 task_registry가 유일한
+# 작업 원장이고, 게이트웨이가 칸반 카드를 스스로 집어 실행하면 그 원장 밖에서 도는 두 번째
+# 실행 경로가 생긴다. 코드 기본값이 true라서 이 줄이 없으면 켜진다 (2026-09-04에 확인).
+kanban:
+  dispatch_in_gateway: false
+
+tools:
+  tool_search:
+    enabled: 'off'
+streaming:
+  enabled: false
+onboarding:
+  seen:
+    profile_build_offered: true
+    busy_input_prompt: true
+telemetry:
+  shared_metrics:
+    enabled: false
+updates:
+  pre_update_backup: false
+  backup_keep: 5
+  non_interactive_local_changes: stash
+_config_version: 33
+session_reset:
+  mode: none
+  idle_minutes: 1440
+  at_hour: 4
+group_sessions_per_user: true
+platform_toolsets:
+  cli:
+    - hermes-cli
+  telegram:
+    - hermes-telegram
+  # cron (2026-09-04, decision ③): the same core toolset, and every Thomas door EXCEPT the
+  # switch — a scheduled run must never stop or resume the runtime on its own. Listing MCP
+  # servers here makes the list an allowlist (thomas-switch is the one left out).
+  cron:
+    - hermes-cron
+    - thomas-read
+    - thomas-dispatch
+    - thomas-knowledge
+mcp_servers:
+  thomas-read:
+    command: /opt/hermes/.venv/bin/python
+    args:
+      - /opt/data/mcp/read_bridge_mcp.py
+  thomas-dispatch:
+    command: /opt/hermes/.venv/bin/python
+    args:
+      - /opt/data/mcp/dispatch_bridge_mcp.py
+  thomas-switch:
+    command: /opt/hermes/.venv/bin/python
+    args:
+      - /opt/data/mcp/switch_bridge_mcp.py
+  thomas-knowledge:
+    command: /opt/hermes/.venv/bin/python
+    args:
+      - /opt/data/mcp/knowledge_bridge_mcp.py
+platforms:
+  telegram:
+    enabled: true
+    home_channel:
+      platform: telegram
+      chat_id: '${HERMES_HOME_CHAT_ID}'
+      name: Thomas
+      user_id: '${HERMES_HOME_USER_ID}'
+
+# ── Security ──────────────────────────────────────────────────────────
+# Secret redaction is ON by default — strings that look like API keys,
+# tokens, and passwords are masked in tool output, logs, and chat
+# responses before the model or user ever sees them. Set redact_secrets
+# to false to disable (e.g. when developing the redactor itself).
+# tirith pre-exec scanning is enabled by default when the tirith binary
+# is available. Configure via security.tirith_* keys or env vars
+# (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+#
+# security:
+#   redact_secrets: true
+#   tirith_enabled: true
+#   tirith_path: "tirith"
+#   tirith_timeout: 5
+#   tirith_fail_open: true
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
+#
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
