@@ -67,7 +67,9 @@ REGISTRY_REL = ".runtime_governance_state/task_registry.jsonl"
 # v0.2 adds `request_kind` (architecture 8.5). Additive: v0.1 rows already on disk carry no
 # such key, and `from_record` reads a missing one as None — which IS the analysis routing they
 # were queued with, so old rows keep meaning exactly what they meant.
-SCHEMA_VERSION = "task_registry_entry.v0.2"
+# v0.3 (sequence 2, P03) adds the origin `WORKFLOW` to the enum and nothing else; v0.1/v0.2
+# rows are read unchanged.
+SCHEMA_VERSION = "task_registry_entry.v0.3"
 
 # Lifecycle. Terminal statuses are final — the registry is a record of what happened, so a
 # terminal entry is never re-opened (a re-run is a new submission with its own entry).
@@ -98,7 +100,12 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 # `record_submission` swallow REGISTRY_RECORD_INVALID and return None — a silent non-record.
 # A test pins the two sets equal.
 AGENT_ORIGIN = "AGENT"
-ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK", AGENT_ORIGIN})
+# `WORKFLOW` is one attempt of a workflow step: opened RUNNING and closed by the pipeline worker
+# on the workflow manager's attempt frame (sequence 2, P05). The step's and the workflow's own
+# state live in the workflow store, never here — this row is the attempt-level view /tasks
+# shows, and the join key (`task_id`/`trace_id`) to the ledger.
+WORKFLOW_ORIGIN = "WORKFLOW"
+ORIGINS = frozenset({"TELEGRAM", "CLI", "SCHEDULER", "FRONTDESK", AGENT_ORIGIN, WORKFLOW_ORIGIN})
 
 # WHICH SERVICE EXECUTES an entry of each origin — that is, whose death strands it at RUNNING.
 # The shipped deployment is TWO long-lived processes sharing ONE state volume (see
@@ -112,6 +119,11 @@ SCHEDULER_ORIGINS = frozenset({"SCHEDULER"})
 # after, so the worker records only the assistant profile, and one run stays one entry. The
 # worker service's restart is what may honestly close a stranded one.
 WORKER_ORIGINS = frozenset({AGENT_ORIGIN})
+# The workflow manager's own. A WORKFLOW row stranded at RUNNING is closed by the manager's
+# recovery (it holds the attempt's deadline and fence; a worker restart does not), so
+# `WORKFLOW` is deliberately outside WORKER_ORIGINS: the worker service restarting must not
+# abandon an attempt the manager still owns (V0.2 §1.4, acceptance A23).
+MANAGER_ORIGINS = frozenset({WORKFLOW_ORIGIN})
 _FLAG_NAMES = ("important", "independent_validation", "revise", "write_output")
 
 # The terminal supplied by the next startup for an entry whose process died mid-run.

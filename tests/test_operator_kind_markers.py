@@ -54,7 +54,7 @@ def test_no_kind_is_the_behavior_the_registry_already_had():
     entry = _entry()
     assert entry.request_kind is None
     assert entry.as_record()["request_kind"] is None
-    assert entry.as_record()["schema_version"] == "task_registry_entry.v0.2"
+    assert entry.as_record()["schema_version"] == task_registry.SCHEMA_VERSION
 
 
 def test_a_kind_round_trips_through_the_record():

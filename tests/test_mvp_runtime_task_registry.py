@@ -277,20 +277,24 @@ def test_the_origin_enum_in_the_schema_is_exactly_the_code_constant():
     REGISTRY_RECORD_INVALID and return None — a run that simply never appears in /tasks."""
     from pathlib import Path
     schema = json.loads(
-        (Path(task_registry.__file__).resolve().parents[2] / "schemas" / "task_registry_entry.v0.2.schema.json")
+        (Path(task_registry.__file__).resolve().parents[2] / "schemas" / f"{task_registry.SCHEMA_VERSION}.schema.json")
         .read_text(encoding="utf-8")
     )
     assert set(schema["properties"]["origin"]["enum"]) == set(task_registry.ORIGINS)
     assert task_registry.AGENT_ORIGIN in task_registry.ORIGINS
+    assert task_registry.WORKFLOW_ORIGIN in task_registry.ORIGINS
 
 
-def test_the_three_ownership_sets_are_disjoint_and_the_worker_owns_agent():
-    sets = (task_registry.OPERATOR_ORIGINS, task_registry.SCHEDULER_ORIGINS, task_registry.WORKER_ORIGINS)
+def test_the_four_ownership_sets_are_disjoint_and_the_worker_owns_agent_only():
+    sets = (task_registry.OPERATOR_ORIGINS, task_registry.SCHEDULER_ORIGINS, task_registry.WORKER_ORIGINS,
+            task_registry.MANAGER_ORIGINS)
     for i, a in enumerate(sets):
         for b in sets[i + 1:]:
             assert not (a & b)
     assert task_registry.WORKER_ORIGINS == {task_registry.AGENT_ORIGIN}
-    assert (task_registry.OPERATOR_ORIGINS | task_registry.SCHEDULER_ORIGINS | task_registry.WORKER_ORIGINS) <= task_registry.ORIGINS
+    assert task_registry.MANAGER_ORIGINS == {task_registry.WORKFLOW_ORIGIN}
+    assert (task_registry.OPERATOR_ORIGINS | task_registry.SCHEDULER_ORIGINS | task_registry.WORKER_ORIGINS
+            | task_registry.MANAGER_ORIGINS) == task_registry.ORIGINS - {"CLI"}
 
 
 def test_an_agent_entry_records_and_only_the_worker_set_reconciles_it(tmp_path):
@@ -324,3 +328,34 @@ def test_find_resolves_a_runs_own_ids_exactly_and_refuses_a_shared_one(tmp_path)
         store.find("task_abc")
     assert exc.value.reason_code == "AMBIGUOUS_ENTRY_ID"
     assert store.find("trace_other").registry_entry_id == twin.registry_entry_id
+
+
+# --- origin WORKFLOW (sequence 2, P03) --------------------------------------------------------
+
+def test_a_workflow_attempt_row_is_closed_by_no_service_restart_only_by_the_manager(tmp_path):
+    """Acceptance A23. The worker opens the row on the manager's attempt frame, but the manager
+    holds the attempt's lease and fence — so a worker restart (WORKER_ORIGINS) must leave it
+    RUNNING, as must the operator's and the scheduler's. Only the manager's own set closes it."""
+    store = _store(tmp_path)
+    entry = task_registry.record_submission(
+        store, request_text="초안 작성", origin=task_registry.WORKFLOW_ORIGIN,
+        requester_id="assistant_bridge", now=NOW, request_kind="content",
+    )
+    assert entry is not None and entry.status == RUNNING and entry.origin == "WORKFLOW"
+    for origins in (task_registry.OPERATOR_ORIGINS, task_registry.SCHEDULER_ORIGINS, task_registry.WORKER_ORIGINS):
+        assert reconcile_stale_running(store, now=LATER, origins=origins) == []
+    assert store.find(entry.registry_entry_id).status == RUNNING
+    closed = reconcile_stale_running(store, now=LATER, origins=task_registry.MANAGER_ORIGINS)
+    assert [e.registry_entry_id for e in closed] == [entry.registry_entry_id]
+
+
+def test_older_rows_are_read_unchanged_under_the_new_schema_version(tmp_path):
+    """v0.3 adds an origin and nothing else: a v0.2 row on disk (no WORKFLOW anywhere) is the
+    same entry it always was."""
+    store = _store(tmp_path)
+    entry = store.submit(_entry(status=RUNNING))
+    rows = [json.loads(line) for line in store.path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["schema_version"] == task_registry.SCHEMA_VERSION == "task_registry_entry.v0.3"
+    rows[-1]["schema_version"] = "task_registry_entry.v0.2"
+    store.path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert store.find(entry.registry_entry_id).status == RUNNING
