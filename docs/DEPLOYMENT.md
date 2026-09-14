@@ -98,6 +98,15 @@ and does not touch it. `hermes` depends on no service and none on it
 (`test_no_service_depends_on_any_other`) — a lane or the operator being recreated leaves the
 assistant running, and vice versa.
 
+**The assistant's MCP shims and prompt templates are versioned in this repository since P02
+(2026-09-14):** `integrations/hermes/` holds the five shim files the gateway spawns from
+`/root/hermes-trial/data/mcp/`, the operational prompt (`SOUL.md`), the `thomas-ops` skill, and
+scrubbed templates of `config.yaml` and the cron jobs; `integrations/hermes/MANIFEST.yaml` records the
+image, shim revision and runtime they were measured with. `scripts/ops/install_hermes_shims.sh` (default
+`--check`) reports drift between the host copy and the repository; `--install` copies the repository
+files over with backups and never restarts anything. The repository copy is the source of truth; the
+host copy is what runs.
+
 **Compose is the only way this is deployed. Do not `docker run` the services and do not
 build private `thomas-agent-operator:<tag>` images to deploy from.** The services own
 the fixed names `thomas-operator`, `thomas-scheduler`, and `thomas-scheduler-maint`; a
