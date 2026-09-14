@@ -4851,11 +4851,11 @@ Decision record: [`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`](HERMES_ORCHESTRATO
 is a deploy or a permission activation — P11 is a separate deploy decision and P09's schedule
 delegation goes live only with its own policy bump.
 
-- [ ] **P00 — the V0.2 record** (this item's source). Invariants 3·4 amended, the concept-by-concept
+- [x] **P00 — the V0.2 record** (2026-09-14, #850). Invariants 3·4 amended, the concept-by-concept
       authority table, `effect_class`, the notification owner, the v3 command/state contract, and §7
       revalidation commands corrected (the V0.1 expectations "0 `task_registry` references in the worker"
       and "no `schedule` string in the doors" had been false since PR8/PR10).
-- [ ] **P01 — baseline and defect separation.** The renderer emits `translated_text`; the stale
+- [x] **P01 — baseline and defect separation** (2026-09-14)**.** The renderer emits `translated_text` and every other Role-contract key; the stale
       worker/registry comment in `dispatch_bridge.py:131`; the running image differs from `main` in three
       files (`crypto/pool.py` #848, `crypto/feedback.py` and `scripts/promote_memory_candidate.py` #849);
       isolated test environment.

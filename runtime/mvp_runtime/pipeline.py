@@ -173,6 +173,50 @@ def _provider_for_role(provider: Provider, spec: Mapping[str, str] | None) -> Pr
     return MockTrialProvider(dict(spec))
 
 
+# A Role's deliverable, rendered before the analysis sections in this order. A Role declares
+# at most one of these; the text is what the caller asked for and the sections after it are
+# the review of it.
+_DELIVERABLE_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("content_draft", "## Draft"),
+    ("translated_text", "## Translation"),
+)
+_DELIVERABLE_KEYS = frozenset(key for key, _ in _DELIVERABLE_SECTIONS)
+# The business analyst's own keys. `key_findings` and `perspectives` have their named sections;
+# `evidence_quality` and `unresolved_questions` were never part of the reply. All four stay out
+# of the generic loop so `general.specialist` output does not change by a byte
+# (tests/test_mvp_runtime_role_rendering.py pins it).
+_ANALYSIS_NATIVE_KEYS = frozenset({"key_findings", "perspectives", "evidence_quality", "unresolved_questions"})
+# Where the humanised key would collide or mislead. The research role's `sources` are what the
+# model says it relied on; `## Sources` below is the search hits the worker actually fed it.
+_ROLE_KEY_HEADINGS = {"sources": "Cited sources"}
+
+
+def _inline(value: Any) -> str:
+    """One value on one line, whatever its shape."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Mapping):
+        return "; ".join(f"{k}: {_inline(v)}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_inline(v) for v in value)
+    return str(value)
+
+
+def _render_role_value(value: Any) -> list[str]:
+    """The lines for one Role-contract value, by its shape — ``[]`` when there is nothing to
+    show, so an absent or empty value grows no heading."""
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, Mapping):
+        return [f"- {k}: {_inline(v)}" for k, v in value.items() if v not in (None, "", [], {})]
+    if isinstance(value, (list, tuple)):
+        items = [_inline(v) for v in value if v not in (None, "", [], {})]
+        return [f"- {item}" for item in items if item]
+    if value is None:
+        return []
+    return [str(value)]
+
+
 def render_response(
     agent_output: dict[str, Any],
     *,
@@ -180,6 +224,12 @@ def render_response(
     search_hits: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render a human-readable final response from a validated Agent Output.
+
+    The selected Role's deliverable (``content_draft``, ``translated_text``) is rendered first,
+    and every other key the Role's contract declared renders generically from its shape after
+    the findings — a Role's product reaches the reader without a renderer change per Role.
+    The business analyst's own keys keep their named sections and nothing else, so that reply
+    is byte-identical to what it was.
 
     ``independently_validated`` states what actually happened to THIS run: a delivered
     response only exists when the stricter merged outcome PASSed, so if the independent
@@ -194,16 +244,17 @@ def render_response(
     evidence actually was."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
-    # The content role's deliverable IS the draft. This renderer special-cases the analysis
-    # keys (key_findings, perspectives) and dropped every other role's own product — so a
-    # content.general run wrote a complete draft into the ledger while the delivered reply
-    # showed only the meta-analysis around it, and the caller reasonably concluded the run
-    # "produced an analysis instead of a draft" (measured 2026-08-10, the lane's first
-    # draft_content dispatch). Rendered FIRST because it is what was asked for; the analysis
-    # sections that follow are the review of it.
-    draft = rso.get("content_draft")
-    if isinstance(draft, str) and draft.strip():
-        lines += ["## Draft", "", draft.strip(), ""]
+    # The Role's deliverable IS the reply, rendered FIRST because it is what was asked for; the
+    # analysis sections that follow are the review of it. Measured twice: a content.general run
+    # wrote a complete draft into the ledger while the delivered reply showed only the
+    # meta-analysis around it (2026-08-10, the lane's first draft_content dispatch), and a
+    # translation.general run's `translated_text` — the key its contract requires — never
+    # reached the reply at all (2026-09-13 review, reproduced on this function). Neither run
+    # failed; the delivery did.
+    for key, heading in _DELIVERABLE_SECTIONS:
+        text = rso.get(key)
+        if isinstance(text, str) and text.strip():
+            lines += [heading, "", text.strip(), ""]
     findings = rso.get("key_findings", [])
     if findings:
         lines.append("## Key findings")
@@ -222,6 +273,17 @@ def render_response(
             for p in perspectives
         ]
         lines.append("")
+    # Every other key the Role's contract declared (terminology_notes, sources, publishing_risks,
+    # …) is the Role's product too, and until 2026-09-14 the renderer dropped all of them.
+    # Rendered from the value's shape so a new Role's contract reaches the reader without a
+    # renderer change; the analyst's own keys are excluded to keep that reply byte-identical.
+    for key, value in rso.items():
+        if key in _ANALYSIS_NATIVE_KEYS or key in _DELIVERABLE_KEYS:
+            continue
+        body = _render_role_value(value)
+        if body:
+            heading = _ROLE_KEY_HEADINGS.get(key, str(key).replace("_", " ").capitalize())
+            lines += [f"## {heading}", *body, ""]
     rec = agent_output.get("recommendation")
     if rec:
         lines += ["## Recommendation", f"{rec['action']} — {rec['reason']}", ""]
