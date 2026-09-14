@@ -1,0 +1,13 @@
+# CI-only compose override (sequence 2, P11 preparation; acceptance A26 / A28). Layered on top of
+# docker-compose.yml by .github/workflows/docker-image.yml to start the dispatch door WITH the
+# workflow manager loop, which the deployment file deliberately does not do: turning the manager
+# on in production is a deploy decision (docs/DEPLOYMENT_PLAN_SEQUENCE2.md), and this file lets CI
+# prove the compose definition + image combination serves door API v3 before that decision is
+# taken. Nothing else is overridden; the peer gate, mounts and environment are the deployment's.
+services:
+  dispatch-bridge:
+    command:
+      - python
+      - -m
+      - runtime.mvp_runtime.dispatch_bridge_cli
+      - --workflow-manager
