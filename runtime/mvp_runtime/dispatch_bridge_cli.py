@@ -26,6 +26,8 @@ off this process is byte-for-byte the v2 door it was.
 
 from __future__ import annotations
 
+import os
+
 import argparse
 from pathlib import Path
 
@@ -38,6 +40,10 @@ from .task_registry import TaskRegistryStore
 from .workflow_manager import DEFAULT_CONCURRENCY, DEFAULT_POLL_SECONDS, WorkflowManager
 from .workflow_store import WorkflowStore
 from . import schedule_delegation
+
+# P10: the entry-point cutover switch. `closed` on the compose command line (or this variable)
+# refuses new single dispatches by name and leaves everything else the door does untouched.
+V2_INTAKE_ENV = "MVP_DISPATCH_V2_INTAKE"
 from .scheduler import ScheduleStore
 
 
@@ -69,7 +75,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help=f"how often the manager loop looks for work (default {DEFAULT_POLL_SECONDS}s)")
     parser.add_argument("--workflow-concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"attempts in flight at once (default {DEFAULT_CONCURRENCY}, the worker's own ceiling)")
-    return parser.parse_args(argv)
+    intake_default = os.environ.get(V2_INTAKE_ENV, "open")
+    parser.add_argument("--v2-intake", choices=("open", "closed"), default=intake_default,
+                        help="P10 cutover: 'closed' refuses NEW single dispatches (V2_INTAKE_CLOSED) while v3 commands, "
+                             f"reads and replays keep working (default: ${V2_INTAKE_ENV}, else open)")
+    args = parser.parse_args(argv)
+    if args.v2_intake not in ("open", "closed"):
+        parser.error(f"{V2_INTAKE_ENV} must be 'open' or 'closed', not {args.v2_intake!r}")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,14 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         manager.start()
 
     try:
-        return _serve(path, worker_socket, manager, workflow_store)
+        return _serve(path, worker_socket, manager, workflow_store, v2_intake=(args.v2_intake == "open"))
     finally:
         if manager is not None:
             manager.stop()
 
 
 def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
-           workflow_store: WorkflowStore | None) -> int:
+           workflow_store: WorkflowStore | None, *, v2_intake: bool = True) -> int:
     # P09: the schedule store and the policy's delegated scope ride with the v3 surface. The
     # scope is read once at start (None = no clause = every change refused); a policy change is
     # a redeploy, which is how every other policy-read service here behaves.
@@ -123,7 +136,7 @@ def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
             # The same store the manager loop writes: v3 commands are served from it, and only
             # when the loop runs here — otherwise they are refused by name (A18).
             workflow_store=workflow_store,
-            schedule_store=schedule_store, delegation=delegation,
+            schedule_store=schedule_store, delegation=delegation, v2_intake=v2_intake,
             manager_enabled=manager is not None,
         ),
         banner=lambda server: (

@@ -268,6 +268,12 @@ def _append(ledger: LedgerStore, row: Mapping[str, Any]) -> None:
     )
 
 
+def lookup(ledger: LedgerStore, *, door: str, request_id: str, now: str) -> dict[str, Any] | None:
+    """The live row for ``(door, request_id)`` without claiming anything (P10): a closed intake
+    uses it to tell a retry of an accepted request — which must still replay — from new work."""
+    return _live_record(ledger, door=door, request_id=request_id, now=now)
+
+
 def _live_record(
     ledger: LedgerStore, *, door: str, request_id: str, now: str,
 ) -> dict[str, Any] | None:

@@ -4935,7 +4935,21 @@ delegation goes live only with its own policy bump.
       `scripts/ops/policy_bump_1_6_0.py --apply` (its `--check` passes on this tree); until then
       `load_delegation()` is None and the door refuses every change as `SCHEDULE_DELEGATION_DISABLED`. The read
       door's verb set is unchanged (the workflow reads stay v3 commands on the dispatch door).
-- [ ] **P10 — backup snapshot / restore rehearsal / entry-point cutover runbook / rollback rehearsal.**
+- [x] **P10 — backup snapshot, restore rehearsal, cutover runbook, rollback rehearsal** (2026-09-14)**.**
+      `harness_backup.sh core` now has the dispatch bridge copy `workflow.db` with the backup API (uid 10001) into
+      `workflow/snapshots/<stamp>/`, tars the copy, excludes the live `workflow.db*`, keeps one snapshot directory,
+      and marks the log line `workflow-snapshot=ok|absent|FAILED`; `backup_watch.sh` reads the marker as its fifth
+      check. `workflow_cli verify --snapshot` reports a copy from the copy alone (integrity, schema version, cursor,
+      counts, manifest agreement) and `workflow_cli drain` says what is in flight on both paths. The restore loop is
+      rehearsed in `tests/test_mvp_runtime_workflow_backup.py` (A24): snapshot under concurrent writes → verify →
+      restore into a fresh root → results, cursor, schema intact and the store still completes work. The dispatch
+      door gained the cutover switch `--v2-intake closed` / `MVP_DISPATCH_V2_INTAKE`: new single dispatches refused
+      by name (`V2_INTAKE_CLOSED`, rendered by the shim as a cutover), v3 commands, reads and pre-close replays
+      untouched; `docs/RUNBOOK_WORKFLOW_CUTOVER.md` writes the procedure (close → drain → switch, per entry point) and
+      both rollbacks, rehearsed in `tests/test_mvp_runtime_workflow_migration.py` (A22: no legacy writer after the
+      switch, disjoint id namespaces; A25: flag off keeps the store readable and a later manager finishes it).
+      **Host untouched:** the installed `/root/backups/*.sh` are still the pre-P10 copies; re-installing them and
+      adding the compose flags are P11 steps.
 - [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).
 
 ## Per-machine setup that does NOT travel via git

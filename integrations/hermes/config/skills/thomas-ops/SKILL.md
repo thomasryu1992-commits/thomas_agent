@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.3
+version: 1.5.4
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -214,6 +214,10 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
 2. `task_result(<task_id 또는 treg_ id>)` — 응답이나 `task_history`에 있는 id로.
 
 "실패했다"고 단정하지 마라. "실행 중이거나 완료됐고, request_id로 회수 가능"이 정확한 보고다.
+
+`CUTOVER [V2_INTAKE_CLOSED]`가 돌아오면 이 런타임은 단일 dispatch를 더 받지 않는다는 뜻이다 — 같은 일을
+§7의 `submit_workflow`로 한 단계짜리 계획으로 내라(아무것도 시작되지 않았다). 전환 전에 받은 `request_id`는
+같은 id로 다시 부르면 여전히 재생된다. `thomas_capabilities`의 `v2_intake`가 그 상태를 미리 말해 준다.
 
 ## 7. 복합 업무를 맡길 때 (thomas-dispatch, 도구 API v3)
 

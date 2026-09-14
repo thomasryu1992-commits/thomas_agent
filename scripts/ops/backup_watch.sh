@@ -17,6 +17,9 @@
 #   3. the newest candle archive is younger than 8 days
 #   4. health_watch.sh has written its log in the last 30 minutes — the two watches are each
 #      other's only observer, because the thing that notices a watch has stopped cannot be itself (the weekly job plus a day)
+#   5. that same core line carries `workflow-snapshot=ok` or `=absent` (P10): the workflow store's
+#      backup-API copy was made, or there was no store to copy; FAILED or a line without the
+#      marker means the archive holds no fresh copy of the one database the manager owns
 #
 # Secrets: the control-bot token is read from the single secret source (/root/thomas_agent/.env,
 # 0600 root) and handed to curl through a config file on stdin, so it never reaches argv or the log.
@@ -74,6 +77,14 @@ else
     *" OK mode=core "*) ;;   # the backup script's own word for a complete archive
     *) PROBLEMS+=("마지막 core 실행이 실패로 끝났습니다: $last_core"); BACKUP_PROBLEM=1 ;;
   esac
+  # 5. the workflow snapshot marker on that same line (P10)
+  case "$last_core" in
+    *" workflow-snapshot=ok"*|*" workflow-snapshot=absent"*) ;;
+    *" workflow-snapshot=FAILED"*)
+      PROBLEMS+=("워크플로 저장소 스냅샷이 실패했습니다 — 아카이브에 workflow.db 사본이 없습니다: $last_core"); BACKUP_PROBLEM=1 ;;
+    *)
+      PROBLEMS+=("마지막 core 기록에 workflow-snapshot 표기가 없습니다 — 백업 스크립트가 P10 이전 판입니다: $last_core"); BACKUP_PROBLEM=1 ;;
+  esac
 fi
 
 # 3. the weekly candle archive
@@ -105,7 +116,7 @@ fi
 
 if [ "${#PROBLEMS[@]}" -eq 0 ]; then
   [ "$DRY_RUN" -eq 1 ] && echo "OK — 백업 최신 (core $(basename "${core:-none}"), candles $(basename "${candle:-none}"))"
-  log "OK checks=3"
+  log "OK checks=5"
   exit 0
 fi
 

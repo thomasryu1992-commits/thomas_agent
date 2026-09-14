@@ -98,6 +98,13 @@ def _render(answer: door.Answer, *, kind: str, request_id: str) -> str:
             f"(status={data.get('status') or 'RUNNING'}). Nothing new was started. Wait, then "
             "call again with the same request_id, or check task_list."
         )
+    if answer.reason_code == V2_INTAKE_CLOSED:
+        return (
+            f"CUTOVER [{V2_INTAKE_CLOSED}]: this runtime no longer takes single {kind} dispatches on this "
+            "door — the entry point has moved to workflows. Nothing was started. Send the same work as a "
+            "one-step plan with submit_workflow (thomas-ops §7); a request_id accepted before the cutover "
+            "still replays if you call again with it."
+        )
     return answer.refused_text(suffix=" Nothing was delivered.")
 
 
@@ -162,6 +169,7 @@ async def draft_content(request: str, reason: str, naver_keywords: str = "", req
 # --- door API v3: workflows -------------------------------------------------------------------
 
 WORKFLOW_UNAVAILABLE = "WORKFLOW_UNAVAILABLE"
+V2_INTAKE_CLOSED = "V2_INTAKE_CLOSED"     # P10: the door's single-dispatch intake is closed for the cutover
 PLAN_SCHEMA_VERSION = "workflow_plan.v0.1"
 
 
@@ -198,8 +206,10 @@ def _workflow_ask(payload: dict[str, object], *, request_id: str | None = None) 
 @mcp.tool()
 def thomas_capabilities() -> str:
     """What this runtime's dispatch door serves: the v3 workflow commands, the four kinds, the
-    plan schema, and whether the workflow manager is running (`workflow_manager` on the `[data]`
-    line). Call it once before the first submit_workflow of a session."""
+    plan schema, whether the workflow manager is running (`workflow_manager` on the `[data]`
+    line), and whether single dispatches are still taken (`v2_intake`: open | closed — closed
+    means analyze/research/translate/draft_content are refused and the work goes through
+    submit_workflow). Call it once before the first submit_workflow of a session."""
     return _workflow_ask({"command": "capabilities"})
 
 
