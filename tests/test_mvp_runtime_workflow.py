@@ -152,6 +152,9 @@ def test_workflow_status_follows_its_steps():
     assert wf.workflow_status_for([ok, ok], cancelling=False) == wf.W_COMPLETED
     assert wf.workflow_status_for([ok, _row(wf.S_CANCELLED)], cancelling=True) == wf.W_CANCELLED
     assert wf.workflow_status_for([ok, _row(wf.S_WAITING_APPROVAL)], cancelling=False) == wf.W_WAITING_APPROVAL
+    # a PENDING dependent behind the gate does not make the workflow RUNNING; a READY sibling does
+    assert wf.workflow_status_for([_row(wf.S_WAITING_APPROVAL), _row(wf.S_PENDING)], cancelling=False) == wf.W_WAITING_APPROVAL
+    assert wf.workflow_status_for([_row(wf.S_WAITING_APPROVAL), _row(wf.S_READY)], cancelling=False) == wf.W_RUNNING
     # a settled step a decision could still move waits for that decision
     failed_below_cap = _row(wf.S_FAILED, attempts=1)
     dep_blocked = _row(wf.S_BLOCKED, reason=wf.DEPENDENCY_FAILED)

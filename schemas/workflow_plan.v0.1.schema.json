@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "workflow_plan.v0.1.schema.json",
   "title": "Workflow Plan v0.1 — a validated multi-step plan the assistant submits",
-  "description": "What Hermes proposes and the workflow manager executes (docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md §4). Closed: a plan cannot name an effect class, an actor or a permission — the capability table in runtime/mvp_runtime/workflow.py owns the effect class, the door's peer owns the principal, and the runtime's Prime owns the role. Steps form a DAG over `depends_on`; `input_refs` names the dependency steps whose results feed a step.",
+  "description": "What Hermes proposes and the workflow manager executes (docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md §4). Closed: a plan cannot name an effect class, an actor or a permission — the capability table in runtime/mvp_runtime/workflow.py owns the effect class, the door's peer owns the principal, and the runtime's Prime owns the role. Steps form a DAG over `depends_on`; `input_refs` names the dependency steps whose results feed a step. A step may ask for Thomas's approval before it runs (`requires_approval`); a plan cannot carry an approval, only ask for one.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -97,6 +97,10 @@
                 "type": "boolean"
               }
             }
+          },
+          "requires_approval": {
+            "description": "The step runs only after Thomas approves it on the control bot (sequence 2, P07). The manager mints the ask; the plan never carries an approval id or a decision — those keys are refused by this closed schema.",
+            "type": "boolean"
           }
         }
       }

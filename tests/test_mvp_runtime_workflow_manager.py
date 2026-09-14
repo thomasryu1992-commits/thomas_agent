@@ -411,3 +411,23 @@ def test_without_a_registry_nothing_is_reconciled_and_the_lease_still_rules(tmp_
     assert manager.reconcile(now=LATER) == {"reconciled": 0, "abandoned": 0, "reconcile_errors": 0}
     clock.now = MUCH_LATER
     assert manager.tick()["expired"] == 1
+
+
+# --- the inputs a step reads (P07) -----------------------------------------------------------------
+
+def test_the_frame_carries_the_dependency_results_a_step_named_and_nothing_for_a_root(tmp_path):
+    frames = []
+    store, manager = _manager(tmp_path, lambda p, f, *, deadline_seconds: frames.append(f) or {
+        **_ok_reply(f), "trace_id": f"trace_{len(frames)}"})
+    wid = _submit(store, _plan(steps=[
+        {"id": "a", "capability": "research", "request": "x", "reason": "r"},
+        {"id": "b", "capability": "content", "request": "y", "reason": "r", "depends_on": ["a"], "input_refs": ["a"]},
+        {"id": "c", "capability": "content", "request": "z", "reason": "r", "depends_on": ["a"]},   # depends, reads nothing
+    ], budget=6))
+    manager.tick(); manager.tick()
+    assert "workflow_inputs" not in frames[0]
+    by_request = {f["request"]: f for f in frames[1:]}
+    assert by_request["y"]["workflow_inputs"] == {"a": "ledger:trace_1"}
+    assert "workflow_inputs" not in by_request["z"]
+    view = store.status_view(wid, now=NOW)
+    assert next(s for s in view["steps"] if s["key"] == "b")["inputs"] == {"a": "ledger:trace_1"}

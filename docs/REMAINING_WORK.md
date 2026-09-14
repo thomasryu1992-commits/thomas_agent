@@ -4890,7 +4890,21 @@ delegation goes live only with its own policy bump.
       raises, and a loop crash is a process crash the same restart policy covers, which is today's failure shape;
       (3) DB protection against a compromised worker — the worker already writes the whole governance root, so a
       separate uid would protect nothing it does not already reach. Re-open only if the pilot measures otherwise.
-- [ ] **P07 — composite workflows**, plan versions, approval wait bound to approval id + fingerprint + plan version.
+- [x] **P07 — composite workflows, plan versions, gated steps** (2026-09-14)**.** `requires_approval` on a plan
+      step binds it to the existing ask machinery — the manager mints the ask (Core-bound task, APPROVAL_REQUIRED
+      decision under RUNTIME_GOVERNANCE with target `workflow_step:<wf>:<step>`, what Thomas signs is the step at
+      one plan version with one request hash), the operator announces it on the control channel (never mirrored),
+      and the grant is spent through the shared single-use ladder with the snapshot compared to the step as it is
+      now; the manager never writes APPROVED (A13: forged field, rejected, expired ask or grant, spent elsewhere,
+      re-pointed after a plan change — all block the step under their own reason; only the consumption runs it).
+      `workflow.propose_update` (door + shim tool) is a new plan version at the version read: unstarted steps
+      change, steps are added or dropped, the budget rises, running/delivered steps are immutable
+      (`PLAN_CONFLICT`), a changed gated step is asked again. `input_refs` resolve to result references that ride
+      the attempt frame (`workflow_inputs`), land on the run's `source_ref`, and show in `workflow.status` (A15:
+      research → three drafts → review through the real worker function with the model call faked). Store schema
+      v2 with in-place migration. **Not done here, on purpose:** the pipeline does not yet read a prior step's
+      result into the next step's prompt — the reference is carried and recorded (a P3 evidence-model decision,
+      not a transport one); A09's audit-write-failure injection moves to P08.
 - [ ] **P08 — events cursor, Operator push (`deliveries`), Hermes narration by polling, two-layer budget.**
 - [ ] **P09 — bounded non-financial schedule delegation** (invariant 3 amendment; policy bump in the same PR).
 - [ ] **P10 — backup snapshot / restore rehearsal / entry-point cutover runbook / rollback rehearsal.**

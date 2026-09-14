@@ -1037,12 +1037,14 @@ def announce_pending_approvals(
     failure is one stderr line, never a re-announcement — the control channel push is the
     authority, and a second pointer would only widen this loop's partial-failure window.
 
-    **Only the switch door's asks.** ``pending()`` returns every scope, and the rest are
-    already in front of Thomas by the flow that minted them — announcing those would put a
-    memory candidate's full text and a strategy-pool ask into the control channel for no gain.
-    The filter is the target prefix, imported from ``permission`` which mints it, because both
-    switch asks share ``RUNTIME_GOVERNANCE`` with strategy promotion and only the target says
-    what is being started.
+    **Only the switch door's asks — and, since sequence 2 P07, the workflow manager's gated-step
+    asks.** ``pending()`` returns every scope, and the rest are already in front of Thomas by
+    the flow that minted them — announcing those would put a memory candidate's full text and a
+    strategy-pool ask into the control channel for no gain. The filter is the target prefix,
+    imported from ``permission`` which mints it, because these asks share ``RUNTIME_GOVERNANCE``
+    with strategy promotion and only the target says what is being started. A workflow-step ask
+    is announced on the control channel and **never mirrored** to the assistant's window
+    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``).
 
     Expired asks are never announced: a dead id cannot be approved, and sending one invites
     Thomas to answer something that will refuse him.
@@ -1055,10 +1057,11 @@ def announce_pending_approvals(
         pending = approval_store.pending()
     except MvpRuntimeError:
         raise
+    switch_prefixes = (permission.TRADING_SWITCH_TARGET_PREFIX, permission.NONFINANCIAL_RESUME_TARGET_PREFIX)
     switch_asks = [
         a for a in pending
         if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
-            (permission.TRADING_SWITCH_TARGET_PREFIX, permission.NONFINANCIAL_RESUME_TARGET_PREFIX)
+            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX,)
         )
         and not approval.is_expired(a, now=now)
     ]
@@ -1088,7 +1091,8 @@ def announce_pending_approvals(
         )
         announced.add(approval_id)
         sent.append(approval_id)
-        if mirror is not None:
+        target = str((ask.get("approved_action_snapshot") or {}).get("target_ref") or "")
+        if mirror is not None and target.startswith(switch_prefixes):
             try:
                 notify_operator(mirror, mirror_message(ask, decision), repo_root=repo_root)
             except MvpRuntimeError as exc:

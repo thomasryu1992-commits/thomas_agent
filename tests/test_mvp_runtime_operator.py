@@ -1204,6 +1204,41 @@ def test_a_switch_ask_is_mirrored_with_a_different_body_to_the_same_registered_c
     assert len(primary.sent) == 1 and len(mirror.sent) == 1
 
 
+@requires_local_core
+def test_a_workflow_step_ask_is_announced_on_the_control_channel_and_never_mirrored(tmp_path):
+    """Sequence 2 P07: the manager's gated-step ask reaches the window `/approve` is read in,
+    once, like a switch ask — and policy 1.5.0 mirrors switch-door asks only, so the copy to
+    the assistant's window is not sent for it."""
+    from runtime.mvp_runtime import workflow as _wf
+
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    task = build_task("워크플로 단계 승인 검토", now=_ANN_NOW, channel="agent", requester_type="agent",
+                      requester_id="assistant_bridge")
+    _, bound = bind_task_to_core(task, now=_ANN_NOW)
+    wid = "wf_" + "c" * 20
+    content = _wf.approval_content(workflow_id=wid, step_key="publish_draft", plan_version=1, capability="content",
+                                   request="초안을 게시용으로 정리")
+    permdec = _permission.build_workflow_step_permission_decision(
+        bound, workflow_id=wid, step_key="publish_draft", plan_version=1, capability="content",
+        request_sha256=content["request_sha256"], request_preview="초안을 게시용으로 정리", now=_ANN_NOW)
+    ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
+    store.append([ask])
+    store.append_permission_decision(permdec)
+    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+
+    sent = announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror)
+
+    assert sent == [ask["approval_id"]]
+    assert len(primary.sent) == 1 and mirror.sent == []
+    chat_id, text = primary.sent[0]
+    assert chat_id == "chat-registered" and ask["approval_id"] in text and "publish_draft" in text
+    assert f"/approve {ask['approval_id']}" in text
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == []
+    assert len(primary.sent) == 1 and mirror.sent == []
+
+
 class _RefusingMirror(MockOperatorChannel):
     def send(self, chat_id: str, text: str) -> str | None:
         raise OperatorBlocked("NO_BOT_TOKEN", "environment variable HERMES_BOT_TOKEN is not set")

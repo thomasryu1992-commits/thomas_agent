@@ -828,3 +828,38 @@ def test_a_blocked_attempt_run_still_echoes_and_reports_what_it_spent(tmp_path, 
     reply = pipeline_worker.apply_work(_attempt_frame(), control_store=ControlStore(tmp_path))
     assert reply["ok"] is False and reply["reason_code"] == "VALIDATION_BLOCK"
     assert reply["attempt_id"] == _ATTEMPT and reply["usage"]["model_calls"] == 1 and reply["usage"]["tokens_used"] == 50
+
+
+# --- the inputs an attempt was handed (sequence 2, P07) -----------------------------------------
+
+def test_workflow_inputs_are_recorded_on_the_runs_source_and_lift_nothing(tmp_path, run_task_with_spend):
+    reply = pipeline_worker.apply_work(
+        _attempt_frame(workflow_inputs={"draft2": "ledger:trace_b2", "draft1": "ledger:trace_b1"}),
+        control_store=ControlStore(tmp_path),
+    )
+    assert reply["ok"] and reply["attempt_id"] == _ATTEMPT
+    call = run_task_with_spend[0]
+    assert call["source_ref"] == "assistant_bridge:dispatch: operator asked inputs=draft1=ledger:trace_b1,draft2=ledger:trace_b2"
+    assert call["independent_validation"] is False and call["revise"] is False
+    assert "workflow_inputs" not in call and "write_path" not in call
+
+
+@pytest.mark.parametrize("frame, code", [
+    (_valid(workflow_inputs={"a": "ledger:trace_1"}), "MALFORMED_REQUEST"),               # inputs without an attempt
+    (_attempt_frame(workflow_inputs={}), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_inputs=["ledger:trace_1"]), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_inputs={"Bad Key": "ledger:trace_1"}), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_inputs={"a": "trace_1"}), "MALFORMED_REQUEST"),               # not a ledger reference
+    (_attempt_frame(workflow_inputs={"a": "ledger:../etc"}), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_inputs={"a": None}), "MALFORMED_REQUEST"),
+    (_attempt_frame(workflow_inputs={f"s{i}": "ledger:trace_1" for i in range(11)}), "MALFORMED_REQUEST"),
+])
+def test_workflow_inputs_are_refused_when_malformed(tmp_path, captured_run_task, frame, code):
+    with pytest.raises(ControlBlocked) as exc:
+        pipeline_worker.apply_work(frame, control_store=ControlStore(tmp_path))
+    assert exc.value.reason_code == code
+    assert not captured_run_task
+
+
+def test_the_assistant_cannot_send_workflow_inputs_through_the_door():
+    assert "workflow_inputs" not in dispatch_bridge._ALLOWED_KEYS and "workflow_inputs" in pipeline_worker._ALLOWED_KEYS

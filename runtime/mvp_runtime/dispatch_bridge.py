@@ -119,7 +119,7 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 COMMAND_KEY = "command"
 V3_COMMANDS: frozenset[str] = frozenset({
     "capabilities", "workflow.submit", "workflow.status", "workflow.list", "workflow.events", "workflow.cancel",
-    "workflow.retry_step",
+    "workflow.retry_step", "workflow.propose_update",
 })
 _V3_KEYS: frozenset[str] = frozenset(
     {COMMAND_KEY, bridge_idempotency.REQUEST_ID_KEY, "plan", "workflow_id", "expected_version",
@@ -490,6 +490,16 @@ def apply_workflow_command(
     reason = request.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ControlBlocked("REASON_REQUIRED", f"'{command}' must state its reason; it is recorded")
+    if command == "workflow.propose_update":
+        plan = request.get("plan")
+        if not isinstance(plan, dict):
+            raise WorkflowBlocked("PLAN_INVALID", "'plan' must be a JSON object (workflow_plan.v0.1) — the whole new version")
+        view = workflow_store.propose_update(workflow_id, expected_version=expected, plan=plan, reason=reason.strip(), now=stamp)
+        return socket_door.envelope(
+            {"ok": True, "command": command,
+             "reply": f"PLAN UPDATED to v{view['plan_version']}\n{workflow_console.render_view(view)}"},
+            request=request, data=view,
+        )
     if command == "workflow.retry_step":
         step_key = request.get("step_key")
         if not isinstance(step_key, str) or not step_key.strip():

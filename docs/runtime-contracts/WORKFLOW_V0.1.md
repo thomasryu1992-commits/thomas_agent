@@ -32,7 +32,7 @@ execution. No new gate, permission scope or safety flag.
 | field | meaning |
 |---|---|
 | `goal` | what the workflow is for; rendered, never executed |
-| `steps[]` | 1–10 steps: `id` (`^[a-z][a-z0-9_-]{0,31}$`), `capability` (one of `analysis`, `research`, `translation`, `content` — exactly the dispatch door's kinds, pinned by a test), `request`, `reason`, `depends_on`, `input_refs` (⊆ `depends_on`), optional `naver_keywords`, `max_attempts` (1–3), `options` (`independent_validation`, `revise`, `important`) |
+| `steps[]` | 1–10 steps: `id` (`^[a-z][a-z0-9_-]{0,31}$`), `capability` (one of `analysis`, `research`, `translation`, `content` — exactly the dispatch door's kinds, pinned by a test), `request`, `reason`, `depends_on`, `input_refs` (⊆ `depends_on`), optional `naver_keywords`, `max_attempts` (1–3), `options` (`independent_validation`, `revise`, `important`), `requires_approval` (P07: the step runs only after Thomas's grant for it is spent — a plan can **ask** for an approval and cannot carry one) |
 | `budget` | `max_model_calls` (1–100), optional `max_tokens` |
 
 What a plan **cannot** say: an effect class, an actor, a permission, a Role. `effect_class`
@@ -46,21 +46,30 @@ not a dependency, a duplicate id and a budget below one attempt of every step ar
 
 - **Workflow:** `RECEIVED → VALIDATED → RUNNING → COMPLETED`; in flight `WAITING_APPROVAL`,
   `WAITING_REPLAN`, `CANCELLING`; terminal `COMPLETED | FAILED | BLOCKED | CANCELLED`. A stored
-  workflow is at least `VALIDATED` — validation precedes the accepting transaction.
+  workflow is at least `VALIDATED` — validation precedes the accepting transaction. A gated root
+  step waits from acceptance (`VALIDATED → WAITING_APPROVAL`, P07), and the two waiting states
+  move between each other — a refused ask blocks the step (`→ WAITING_REPLAN`), a retry or a new
+  plan version asks again (`→ WAITING_APPROVAL`). Forward-only is a claim about the terminal
+  states, which have no outgoing edge.
 - **Step:** `PENDING → READY → RUNNING → SUCCEEDED`; on failure `RETRY_WAIT` (attempts remain)
   or `FAILED`; `WAITING_APPROVAL`; `NEEDS_RECONCILIATION` (effect class `external` only);
   `BLOCKED` (budget, or a dependency that will never succeed — `DEPENDENCY_FAILED`, transitive);
   cancel is `CANCEL_REQUESTED → CANCELLED` for a running step and `CANCELLED` at once for a
   waiting one. **Two kinds of done (P06):** `SUCCEEDED` and `CANCELLED` are terminal; `FAILED` and
   `BLOCKED` are *settled* — the automatic policy is exhausted and only a decision re-opens them
-  (`FAILED → READY`, `BLOCKED → PENDING|READY` through `retry_step`; a cancel ends either).
+  (`FAILED → READY`, `BLOCKED → PENDING|READY` through `retry_step`; a cancel ends either). A
+  gated step (P07) goes `PENDING|FAILED|BLOCKED → WAITING_APPROVAL` where an ungated one would go
+  `READY`; `WAITING_APPROVAL → READY` only when its bound grant is spent, `→ BLOCKED` under
+  `APPROVAL_REJECTED | APPROVAL_EXPIRED | APPROVAL_REUSED | APPROVAL_STALE` when it cannot be.
 - **Attempt:** `RUNNING → SUCCEEDED | FAILED | EXPIRED | CANCELLED`. A retry is a **new** attempt;
   a completed attempt is never re-opened. `MAX_ATTEMPTS_PER_STEP` (3) is the hard cap across
   automatic retries and decisions.
 
 The workflow's status is recomputed from its steps after every change
 (`workflow.workflow_status_for`): active work keeps it `RUNNING` (`CANCELLING` while a cancel is
-being honoured); a step waiting for an approval makes it `WAITING_APPROVAL`; all `SUCCEEDED` is
+being honoured) — a `PENDING` step is not active work, it waits on a dependency, so a gated root
+with dependents behind it is `WAITING_APPROVAL`, not `RUNNING`; a step waiting for an approval
+with nothing else runnable makes it `WAITING_APPROVAL`; all `SUCCEEDED` is
 `COMPLETED`; a cancel with nothing active ends it `CANCELLED`; a settled or reconciling step a
 decision could still move — a `FAILED` step below the cap, a budget-blocked step, a
 `NEEDS_RECONCILIATION` step — makes it **`WAITING_REPLAN`**, the state `retry_step` and a plan
@@ -84,13 +93,15 @@ change (P07) act on; a `FAILED` step at the cap is `FAILED`; otherwise `BLOCKED`
 
 ## The store — `runtime/mvp_runtime/workflow_store.py`
 
-`.runtime_governance_state/workflow/workflow.db`, SQLite in WAL mode, schema version 1.
+`.runtime_governance_state/workflow/workflow.db`, SQLite in WAL mode, schema version 2 (P07
+added `requires_approval`, `approval_id`, `approval_plan_version` to `steps`; a version-1 file
+is migrated in place when opened, under the same write lock).
 
 | table | writer | holds |
 |---|---|---|
 | `workflows` | manager | id, principal, goal, status, plan version, row version, budget caps, cancel reason |
 | `plan_versions` | manager | the plan as submitted, its hash, a reason per version |
-| `steps` | manager | key, position, capability, effect class, request, options, input refs, status, attempts opened, current attempt, result ref, row version |
+| `steps` | manager | key, position, capability, effect class, request, options, input refs, status, attempts opened, current attempt, result ref, row version, gate + the bound approval id and the plan version it was asked for (P07) |
 | `dependencies` | manager | `step_id → depends_on` |
 | `attempts` | manager | number, status, opened/deadline/closed, trace id, registry entry id, result ref, reason |
 | `requests` | manager | `(principal, request_id) → fingerprint, workflow_id` — the idempotency key |
@@ -123,6 +134,62 @@ already delivered is re-run (acceptance A16). Refused: a step blocked by a faile
 (`RETRY_NOT_APPLICABLE` — retry the dependency), a step at the cap (`ATTEMPTS_EXHAUSTED`), a
 budget that does not cover one more attempt (`BUDGET_EXHAUSTED`), an ended workflow.
 
+### Gated steps — `requires_approval` (P07; A13)
+
+A gated step becomes `WAITING_APPROVAL` where an ungated one would become `READY` (at
+acceptance for a root step, when its dependencies deliver otherwise, on `retry_step`, and on a
+new plan version that changes it). The manager (`WorkflowManager.approvals`, each tick before
+it claims) binds it to the **existing** ask machinery — nothing new is minted, scoped or gated:
+
+- **The ask.** A Core-bound task, `permission.build_workflow_step_permission_decision`
+  (APPROVAL_REQUIRED, scope `RUNTIME_GOVERNANCE` like the switch asks, risk ORANGE, target
+  `workflow_step:<workflow_id>:<step_key>`), `approval.build_approval_request`. What Thomas
+  signs is `normalized_parameters = {workflow_id, step_key, plan_version, capability,
+  request_sha256}` — the step at this plan version with this exact request. The store records
+  the bound id and version on the step (`bind_approval`); the operator announces the ask on the
+  control channel like a switch ask and never mirrors it (policy 1.5.0 mirrors switch-door asks
+  only). The same action fingerprints to the same approval id, as every ask does: a re-ask after
+  a refusal is a new PENDING record under it, and the trail keeps the decision.
+- **The spend.** An APPROVED record is spent through the shared single-use ladder
+  (`validate_spendable_approval`, `spend_lock`, `build_consumed_record`, consumption ref
+  `workflow:<id>:<step>:v<n>`), and only after the snapshot is compared with the step *as it is
+  now* — target, plan version, request hash. Then `approve_step` makes the step `READY` and the
+  next tick claims it. **The manager never writes APPROVED**; only Thomas's verified decision
+  does, and the only path that runs a gated step is the consumption of its bound grant.
+- **Refusals.** Rejected → `APPROVAL_REJECTED`; expired (ask or grant) → `APPROVAL_EXPIRED`;
+  already consumed → `APPROVAL_REUSED`; missing, re-pointed, another version or a changed
+  request → `APPROVAL_STALE`. Each blocks the step (`refuse_step_approval`), blocks its
+  dependents, and leaves the workflow `WAITING_REPLAN` — a retry or a new plan version asks
+  again; a plan can carry no approval field at all (`PLAN_INVALID` at the closed schema). A
+  halted runtime (kill/pause) spends nothing and the grant waits (`approvals_deferred`).
+
+### Plan versions — `propose_update(workflow_id, expected_version, plan, reason, now)` (P07)
+
+A whole new plan (`workflow_plan.v0.1`, validated like a submission) for a workflow that has not
+ended, at the version the caller read (`VERSION_CONFLICT` otherwise). **May change:** steps not
+yet started (request, options, dependencies, inputs, gate, keywords, attempt cap), the goal, the
+budget (never below what is already reserved), and the step set — a new step is inserted
+`PENDING`/`READY`/`WAITING_APPROVAL` by its dependencies and gate, a dropped unstarted step is
+`CANCELLED` under `PLAN_UPDATED`. **May not change (`PLAN_CONFLICT`):** the capability, request,
+dependencies, inputs or keywords of a step that is running or delivered, nor drop such a step;
+a cancelled step's key cannot be reused. Dependencies are rebuilt from the new plan; a material
+change to a gated step clears its binding so it is asked again at the new version (an old grant
+compared against the new request refuses `APPROVAL_STALE`); a budget-blocked step the new budget
+covers goes back to `PENDING` and is released like any other. `plan_versions` gains a row with
+the reason; nothing delivered is re-run. Door command `workflow.propose_update`, shim tool
+`propose_workflow_update`.
+
+### Inputs — what a step reads (P07; A15)
+
+`input_refs` (⊆ `depends_on`) names the dependency steps whose results feed a step. At claim
+the store resolves them to result references (`{step_key: "ledger:<trace>"}`), the manager sends
+them on the attempt frame as `workflow_inputs`, the worker validates the shape (a closed key set:
+1–10 step keys, `ledger:` references) and records them on the run's `source_ref` after the
+reason, and `workflow.status` shows each step's `input_refs` and their live resolution `inputs`
+— so the link from a step to what it was given is one fact, readable at every end. What a run
+*does* with a prior result is the pipeline's evidence model and is not in this increment: the
+reference travels and is recorded, it is not yet rendered into the specialist's prompt.
+
 ### Recovery — the manager and the registry row (P06; A10, A28)
 
 Every attempt the worker runs opens a registry row of origin `WORKFLOW` carrying the
@@ -151,5 +218,6 @@ releases or blocks dependents. `expire_overdue(now)` lapses leases by effect cla
 The manager loop that calls these (P04, inside the dispatch-bridge process), the worker's
 attempt frame and the `WORKFLOW` registry rows it writes (P05), recovery after a bridge
 restart and the reconciliation of a `NEEDS_RECONCILIATION` step against the ledger (P06),
-plan versions beyond the first and approval-bound steps (P07), and the operator's `deliveries`
-(P08).
+plan versions and approval-bound steps (P07) are in. Still ahead: the operator's `deliveries`
+and the events push (P08), and a prior step's result rendered into the next step's prompt as
+evidence (a pipeline decision; today the reference is carried and recorded, not read).

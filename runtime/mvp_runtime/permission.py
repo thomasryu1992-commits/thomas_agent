@@ -187,6 +187,9 @@ TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates r
 # copies of a string in two modules is how a discriminator stops discriminating.
 TRADING_SWITCH_TARGET_PREFIX = "trading_switch:"
 NONFINANCIAL_RESUME_TARGET_PREFIX = "runtime_resume:"
+# A gated workflow step's ask (sequence 2, P07): `workflow_step:<workflow_id>:<step_key>`. Read
+# by the operator's announcement (announced, never mirrored) and by the manager's spend.
+WORKFLOW_STEP_TARGET_PREFIX = "workflow_step:"
 
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
@@ -1103,6 +1106,86 @@ def build_nonfinancial_resume_permission_decision(
         permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
         required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_workflow_step_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    workflow_id: str,
+    step_key: str,
+    plan_version: int,
+    capability: str,
+    request_sha256: str,
+    request_preview: str,
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas for ONE gated workflow step
+    (sequence 2, P07 — V0.2 §1.2: a step that needs approval is bound to the existing ask
+    machinery, and the manager never creates APPROVED).
+
+    Same scope as the switch asks (RUNTIME_GOVERNANCE — no policy edit, no new scope) and the
+    same single-use spend ladder. What Thomas signs is the step at this plan version with this
+    exact request: ``workflow_id``, ``step_key``, ``plan_version`` and the request's hash ride in
+    ``normalized_parameters`` and in ``content_sha256``, so the grant cannot be re-pointed at a
+    changed request or a later version (``invalidated_by_any_material_field_change``), and the
+    ``target_ref`` prefix is what the announcement and the spend read to know what this is.
+
+    ORANGE and not YELLOW for the switch builder's own reason: the step is an ordinary P3
+    dispatch — a model call, reads, workspace writes — that the plan chose to put behind a
+    signature; spending the grant restores exactly that autonomous work for one step, and §10
+    says take the higher perspective. It cannot reach an order or a publication.
+    """
+    if not (isinstance(workflow_id, str) and workflow_id.strip() and isinstance(step_key, str) and step_key.strip()):
+        raise PlannerBlocked("INVALID_TARGET", "a workflow-step ask names its workflow and step")
+    if not (isinstance(request_sha256, str) and request_sha256.startswith("sha256:")):
+        raise PlannerBlocked("INVALID_CONTENT_HASH", "a workflow-step ask binds the request by its sha256")
+    content = {
+        "workflow_id": workflow_id.strip(), "step_key": step_key.strip(), "plan_version": int(plan_version),
+        "capability": str(capability), "request_sha256": request_sha256,
+    }
+    preview = " ".join(str(request_preview).split())[:200]
+    action = _ActionSpec(
+        action_type="workflow.step.run",
+        target_suffix="workflow_step",
+        tool_id=None,
+        data_scope=("workflow.plan", "task.evidence"),
+        normalized_parameters=dict(content),
+        risk_reason=(
+            f"Runs one gated step of workflow {content['workflow_id']} — step {content['step_key']!r}, "
+            f"kind {content['capability']} — as an ordinary P3 dispatch: a model call, reads and "
+            f"workspace writes. No order, no publication, no other approval consumed. Request: "
+            f"\"{preview}\". The request is bound by hash and the plan by version; a changed "
+            "request or a new plan version refuses this grant."
+        ),
+        authority_reason="Prime may prepare a gated workflow step for Thomas review.",
+        decision_reason=(
+            "The plan marked this step requires_approval; it runs only on exact Thomas approval "
+            "on the verified control channel."
+        ),
+        constraint=(
+            "Approval is single-use and authorizes this one step at this plan version with this "
+            "exact request only. It grants no capability the step's kind does not already run at P3."
+        ),
+        target_ref=f"{WORKFLOW_STEP_TARGET_PREFIX}{content['workflow_id']}:{content['step_key']}",
+        content_sha256=integrity.sha256_record(content),
+        risk_level="ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
+        required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         now=now,
         actor_id=actor_id,
         ttl_minutes=ttl_minutes,
