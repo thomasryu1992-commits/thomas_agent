@@ -397,6 +397,13 @@ class WorkflowStore:
                 "SELECT COUNT(*) FROM steps WHERE status IN (?, ?, ?, ?)",
                 (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL)).fetchone()[0])
 
+    def running_attempts(self) -> list[dict[str, Any]]:
+        """Every attempt still RUNNING — after a restart, the ones whose connection died with
+        the previous process and will lapse at their leases unless reconciled (P06)."""
+        with self._read() as conn:
+            rows = conn.execute("SELECT * FROM attempts WHERE status=? ORDER BY opened_at", (wf.A_RUNNING,)).fetchall()
+            return [dict(r) for r in rows]
+
     def attempt(self, attempt_id: str) -> dict[str, Any] | None:
         with self._read() as conn:
             row = conn.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
