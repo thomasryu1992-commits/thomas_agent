@@ -4972,9 +4972,10 @@ delegation goes live only with its own policy bump.
       0 duplicated, overload refused as `CAPACITY_EXHAUSTED`); the CI compose step (A26/A28, `.github/ci-compose.workflow.yml`
       + `docker-image.yml`: the door serves door API v3 with the manager from its compose definition, the risk lane
       survives the door's stop, the door answers again within 120 s); and `docs/DEPLOYMENT_PLAN_SEQUENCE2.md` — the
-      candidate build and its assertion, the compatible combination (runtime after #863, shims 2.9, skill 1.5.4, schema 3,
-      policy 1.5.0), the host installs (shims, backup scripts, the fourth cron job), the one-line compose PR that turns
-      the manager on, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
+      candidate build and its assertion, the compatible combination (runtime after #865, shims 2.10, skill 1.5.5, schema 3,
+      policy 1.5.0), the promote, the one-line compose PR that turns the manager on, and only then the Hermes side
+      (shims with the installer, prompt and skill by hand, the fourth cron job, a hermes restart) and the backup
+      scripts, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
       Thomas's to decide and run:** the deploy itself, the `--workflow-manager` line, the later `--v2-intake closed`
       cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
 

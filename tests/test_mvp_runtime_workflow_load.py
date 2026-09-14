@@ -65,6 +65,7 @@ def test_a_hundred_submissions_are_accepted_exactly_once_fast_and_overload_is_re
             out = submit(i)
         except WorkflowBlocked as exc:
             assert exc.reason_code == "CAPACITY_EXHAUSTED"            # overload is refused by name, and only that way
+            assert store.open_step_count() + 1 > MAX_OPEN_STEPS        # ...and only at the ceiling, never below it
             refusals += 1
             manager.tick()                                            # the client backs off; the manager drains
             continue
@@ -84,7 +85,6 @@ def test_a_hundred_submissions_are_accepted_exactly_once_fast_and_overload_is_re
     assert replays == 0                                                          # nothing was re-submitted by accident
     p95 = statistics.quantiles(latencies, n=20)[-1]
     assert p95 < 2.0, f"p95 accept latency {p95:.3f}s"
-    # every refusal happened at the ceiling, never below it
     assert store.open_step_count() <= MAX_OPEN_STEPS
     # the manager finishes every one of them, running each exactly once
     for _ in range(200):

@@ -170,14 +170,19 @@ jobs:
           # compose file whose `--lane` the image does not know crash-loops right here.
           docker compose up -d scheduler scheduler-maint
           for service in scheduler scheduler-maint; do
+            # Logs are captured first and grepped second: `docker compose logs | grep -q` under
+            # pipefail fails when grep exits on the match while logs is still writing (SIGPIPE) —
+            # a false "never started ticking" measured on #863's first smoke run.
+            logs=""
             for _ in $(seq 1 30); do
               sleep 2
-              if docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking"; then
+              logs=$(docker compose logs "${service}" 2>&1 || true)
+              if grep -q "SCHEDULER: ticking" <<<"${logs}"; then
                 break
               fi
             done
-            docker compose logs "${service}"
-            docker compose logs "${service}" 2>&1 | grep -q "SCHEDULER: ticking" || {
+            echo "${logs}"
+            grep -q "SCHEDULER: ticking" <<<"${logs}" || {
               echo "the ${service} service never started ticking"; exit 1; }
           done
           for pair in thomas-scheduler thomas-scheduler-maint; do
@@ -212,25 +217,32 @@ jobs:
                             "commands": (reply.get("data") or {}).get("commands")}))
           PY
           }
-          wait_for_door() {
-            for _ in $(seq 1 60); do
-              if out=$(ask 2>/dev/null) && echo "${out}" | grep -q '"ok": true'; then echo "${out}"; return 0; fi
+          wait_for_door() {  # a wall-clock deadline, not an attempt count; diagnostics go to stderr so $(...) keeps them
+            local deadline=$((SECONDS + 120))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              if out=$(ask 2>/dev/null) && grep -q '"ok": true' <<<"${out}"; then echo "${out}"; return 0; fi
               sleep 2
             done
-            docker compose logs dispatch-bridge; echo "the dispatch door did not answer within 120 s"; return 1
+            docker compose logs dispatch-bridge >&2
+            echo "the dispatch door did not answer within 120 s" >&2
+            return 1
           }
           out=$(wait_for_door)
-          echo "${out}" | grep -q '"manager": true' || { echo "the manager loop is not on in the CI override"; exit 1; }
-          echo "${out}" | grep -q '"v2_intake": "open"' || { echo "the door did not report its intake state"; exit 1; }
-          echo "${out}" | grep -q 'workflow.submit' || { echo "door API v3 is not served"; exit 1; }
+          grep -q '"manager": true' <<<"${out}" || { echo "the manager loop is not on in the CI override"; exit 1; }
+          grep -q '"v2_intake": "open"' <<<"${out}" || { echo "the door did not report its intake state"; exit 1; }
+          grep -q 'workflow.submit' <<<"${out}" || { echo "door API v3 is not served"; exit 1; }
           # A26: stop the door (its loop dies with it); the risk lane must keep passing on its
           # own. Its heartbeat file is stamped once per completed pass (every 30 s on the
           # compose command line), so a stamp that advances after the stop is a pass that ran
           # without the door.
           beat=ci-state/heartbeats/scheduler-risk.json
           test -f "${beat}" || { echo "the risk lane never wrote a heartbeat"; exit 1; }
-          before=$(stat -c %Y "${beat}")
           docker compose stop dispatch-bridge
+          # The baseline is read only once the door is gone: `stop` returns after the container
+          # exited, so a stamp newer than this one is a pass made without the door.
+          state=$(docker inspect -f '{{.State.Status}}' thomas-dispatch-bridge)
+          [ "${state}" = "exited" ] || { echo "thomas-dispatch-bridge is ${state} after stop"; exit 1; }
+          before=$(stat -c %Y "${beat}")
           after="${before}"
           for _ in $(seq 1 45); do
             sleep 2
@@ -241,7 +253,9 @@ jobs:
           docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk
           # A28: the door comes back and answers within the target.
           docker compose -f docker-compose.yml -f .github/ci-compose.workflow.yml start dispatch-bridge
+          started=${SECONDS}
           wait_for_door > /dev/null
+          echo "the restarted door answered after $((SECONDS - started)) s (target 120 s)"
           echo "door API v3 served; risk lane survived the door's stop; door answered again after restart"
 
       - name: Tear down
