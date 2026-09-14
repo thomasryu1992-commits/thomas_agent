@@ -661,7 +661,7 @@ def test_the_ownership_matrix_is_documented_verbatim():
 # ── The assistant as the ninth service (PR5, 2026-09-04) ──────────────────────────────────
 #
 # "One compose, runtimes stay split" (Thomas, 2026-09-03). What a compose file can express of
-# the eight invariants in docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md is pinned here; the
+# the eight invariants in docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md is pinned here; the
 # rest (uid gate, approval path, closed kind set) lives in the door modules and their tests.
 ASSISTANT = "hermes"
 LANES = ("scheduler", "scheduler-maint")

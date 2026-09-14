@@ -4803,8 +4803,8 @@ schedule row is a state write, and no row means no fire.
 
 ## K. Hermes orchestrator integration — decided 2026-09-03, documentation first
 
-Decision record and invariants: [`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md).
-Sequence is fixed; each PR starts after the previous one merges.
+Decision record and invariants: [`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md)
+(V0.2 since 2026-09-14; V0.1 is the 2026-09-03 record). Sequence is fixed; each PR starts after the previous one merges.
 
 - [x] **PR1 — the architecture document** (this section's source). Eight invariants named with what
       enforces each today; decisions Q1–Q17; PR sequence.
@@ -4842,6 +4842,38 @@ Sequence is fixed; each PR starts after the previous one merges.
       (`blog_content.py:455,470,491` — three defects) and its first weekly fire is 2026-09-06; the
       dispatch door's docstring and the Hermes skill both promise a `result <task_id>` recovery path
       that does not exist (the worker never writes `task_registry`).
+
+### K.2 Workflow manager — decided 2026-09-14, sequence 2
+
+Decision record: [`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md) §3.1–§5.2
+(supersedes V0.1). The execution plan and the 31-row acceptance matrix live on the host
+(`/root/thomas_refactor_plan_2026-09-14/`); the record above is the in-repo authority. Nothing below
+is a deploy or a permission activation — P11 is a separate deploy decision and P09's schedule
+delegation goes live only with its own policy bump.
+
+- [ ] **P00 — the V0.2 record** (this item's source). Invariants 3·4 amended, the concept-by-concept
+      authority table, `effect_class`, the notification owner, the v3 command/state contract, and §7
+      revalidation commands corrected (the V0.1 expectations "0 `task_registry` references in the worker"
+      and "no `schedule` string in the doors" had been false since PR8/PR10).
+- [ ] **P01 — baseline and defect separation.** The renderer emits `translated_text`; the stale
+      worker/registry comment in `dispatch_bridge.py:131`; the running image differs from `main` in three
+      files (`crypto/pool.py` #848, `crypto/feedback.py` and `scripts/promote_memory_candidate.py` #849);
+      isolated test environment.
+- [ ] **P02 — Hermes adapter under version control** (`integrations/hermes/`): the four shims, the door
+      client, their tests, config templates, a compatibility manifest; the read shim passes `data` through.
+- [ ] **P03 — workflow model + SQLite store** (`workflow.py`, `workflow_store.py`, two schemas);
+      `task_registry_entry.v0.3` adds origin `WORKFLOW`, excluded from `WORKER_ORIGINS`.
+- [ ] **P04 — Manager loop inside dispatch-bridge** (`--workflow-manager`), `workflow_cli`
+      (snapshot / inspect / reconcile). No new service, uid, volume or healthcheck.
+- [ ] **P05 — v3 async single task**: submit → attempt frame → pipeline → audit → result; `WORKFLOW`
+      registry rows; v2 unchanged byte-for-byte with the flag off.
+- [ ] **P06 — retry / reconcile / cancel / recovery**; fence = `attempt_id`, lease = connection lifetime +
+      deadline, `effect_class` policy; the container-split question is re-decided here on measurements.
+- [ ] **P07 — composite workflows**, plan versions, approval wait bound to approval id + fingerprint + plan version.
+- [ ] **P08 — events cursor, Operator push (`deliveries`), Hermes narration by polling, two-layer budget.**
+- [ ] **P09 — bounded non-financial schedule delegation** (invariant 3 amendment; policy bump in the same PR).
+- [ ] **P10 — backup snapshot / restore rehearsal / entry-point cutover runbook / rollback rehearsal.**
+- [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).
 
 ## Per-machine setup that does NOT travel via git
 

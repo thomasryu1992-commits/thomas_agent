@@ -1,5 +1,7 @@
 # Hermes 오케스트레이터 아키텍처 V0.1 — 결정 기록과 불변식
 
+**Superseded (2026-09-14):** [V0.2](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md)가 이 문서를 대체한다. 이 파일은 2026-09-03 결정의 기록으로 남기며 더 갱신하지 않는다. §7의 재검증 기대값 두 개(`task_registry` 참조 0, schedule 문자열 없음)는 PR8·PR10 이후 틀렸고 V0.2 §7이 정정했다.
+
 **Status:** 결정됨 (Thomas, 2026-09-03) · 구현 전. 이 문서는 통합 시퀀스(§5)의 입력이다.
 **Normative authority:** None — 권한의 정본은 [`governance/GOVERNANCE_POLICY.yaml`](../governance/GOVERNANCE_POLICY.yaml)이고, 불변식은 코드·테스트·정책이 강제한다. 이 문서는 그것들에 이름을 붙이고, 통합이 무엇을 보존해야 하는지를 적는다.
 **Baseline:** `origin/main` `ab9ec51`(2026-09-03), hermes-agent `9accf79`(2026-07-30 빌드 고정), 호스트 실측 2026-09-03. 아래 `path:line`은 모두 이 커밋 기준이다.
