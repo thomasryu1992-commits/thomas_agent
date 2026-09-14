@@ -87,7 +87,7 @@ Hermes는 Thomas의 요청을 나누고(dispatch), 결과를 종합하고, 스�
 
 ### 4. Hermes ≠ executor
 
-- 실행은 `pipeline_worker.py`(uid 10001)와 두 스케줄러 레인이 한다. Hermes가 낼 수 있는 것은 dispatch 문의 kind 4종(`analysis/research/translation/content`, P3, `dispatch_bridge.py:94`)뿐이며 `development`는 의도적으로 제외돼 있다. **test** `tests/test_mvp_runtime_dispatch_bridge.py:72,78`.
+- 실행은 `pipeline_worker.py`(uid 10001)와 두 스케줄러 레인이 한다. Hermes가 낼 수 있는 것은 dispatch 문의 kind 4종(`analysis/research/translation/content`, P3, `dispatch_bridge._ALLOWED_KINDS`)뿐이며 `development`는 의도적으로 제외돼 있다. **test** `tests/test_mvp_runtime_dispatch_bridge.py:72,78`.
 - 워커 소켓은 `internal/`에 있고 `bridge/` 경로를 거부하며 peer uid 10001만 받는다(`docker-compose.yml:566-570` 리터럴) — Hermes 마운트로는 도달 불가. **test** `tests/test_mvp_runtime_pipeline_worker.py:208,217`.
 - 문을 통한 모든 효과는 상수 actor `assistant_bridge`로 기록되고 intake에는 `requester_type=agent`로만 들어간다. 역할 레지스트리에 assistant/orchestrator 슬롯은 없고 Hermes는 requester 축이다.
 - **정정(V0.1 §7):** "워커는 registry를 모른다(`task_registry` 참조 0)"는 PR8(2026-09-04) 이후 거짓이다. 워커는 ASSISTANT_PROFILE 런마다 origin `AGENT` 행을 best-effort로 열고 닫는다(`pipeline_worker.py:301-315`, 참조 12건, `a789bec`). 실행 주체가 워커라는 불변식은 그대로다. **test** `tests/test_mvp_runtime_task_registry.py:296`(AGENT 행은 워커 집합만 reconcile), `tests/test_mvp_runtime_pipeline_worker.py:690-708`.
@@ -299,10 +299,11 @@ grep -nE 'RUNTIME_GOVERNANCE: ' governance/GOVERNANCE_POLICY.yaml           # RU
 python -m pytest tests/test_mvp_runtime_switch_bridge.py -q -k "cannot_be_named or resume_is_absent"
 # 불변식 3 — 문에 schedule 변경 verb 없음 (조회 verb schedules·scheduler_events는 있다)
 python -m pytest tests/test_mvp_runtime_read_bridge.py -q -k "no_mutating or no_control_verb or mutating_and_unknown"
-grep -nE '"(add|enable|disable|remove)"' runtime/mvp_runtime/read_bridge.py runtime/mvp_runtime/switch_bridge.py   # 없음
+grep -nE '"(add|remove)"|schedule' runtime/mvp_runtime/switch_bridge.py                      # 스케줄 verb 없음 (enable/disable은 그 문의 스위치 verb)
+grep -nE '"(add|enable|disable|remove)"' runtime/mvp_runtime/read_bridge.py                    # 없음
 # 불변식 4 — 실행은 워커·레인, kind는 4종. 워커는 AGENT 행을 쓴다(PR8) — 0이 아니다
 grep -c 'task_registry' runtime/mvp_runtime/pipeline_worker.py             # 12 (0이면 PR8이 되돌려진 것)
-sed -n '94p' runtime/mvp_runtime/dispatch_bridge.py                        # _ALLOWED_KINDS 4종
+grep -n '^_ALLOWED_KINDS' runtime/mvp_runtime/dispatch_bridge.py             # 4종 (analysis, research, translation, content)
 grep -nE '^WORKER_ORIGINS|^AGENT_ORIGIN' runtime/mvp_runtime/task_registry.py   # WORKER_ORIGINS = {AGENT}; P03 이후에도 WORKFLOW는 여기 없어야 한다
 python -m pytest tests/test_mvp_runtime_task_registry.py -q -k "ownership_sets or origin_enum or only_the_worker_set"
 # 불변식 5·7 — depends_on 없음, 문 env 정확집합, 라이브 변수는 scheduler만, hermes는 bridge/만 마운트
