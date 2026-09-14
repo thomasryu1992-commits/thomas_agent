@@ -532,6 +532,12 @@ def build_schedule(
     )
 
 
+def workflow_request_prefix(schedule: Schedule) -> str:
+    """A `workflow_plan` occurrence submits under ``<schedule_id>:<schedule_run_id>``: the run id
+    keeps it at-most-once per occurrence, the schedule id lets the next fire find the last one."""
+    return f"{schedule.schedule_id}:"
+
+
 def workflow_plan_of(request: str) -> dict[str, Any]:
     """The plan a `workflow_plan` schedule carries in its request: JSON text of a
     `workflow_plan.v0.1` object, validated by the workflow module's own rules. Refused with a
@@ -585,6 +591,31 @@ class ScheduleStore:
     def add(self, schedule: Schedule) -> None:
         with self._lock():
             self._save([*self.list(), schedule])
+
+    def add_checked(self, schedule: Schedule, check: Callable[[list[Schedule]], list[str]]) -> list[str]:
+        """Add ``schedule`` only if ``check`` (run on the current rows, under the same lock that
+        writes) returns no reasons; returns the reasons. The count-then-add of a ceiling is one
+        atomic step here, so two concurrent requests cannot both pass it (review of P09)."""
+        with self._lock():
+            rows = self.list()
+            reasons = list(check(rows))
+            if not reasons:
+                self._save([*rows, schedule])
+            return reasons
+
+    def set_enabled_checked(self, schedule_id: str, enabled: bool,
+                            check: Callable[[list[Schedule]], list[str]]) -> tuple[Schedule | None, list[str]]:
+        """`set_enabled` behind a ``check`` run under the writing lock: ``(pre-state, reasons)``;
+        nothing changes when there are reasons or the schedule is gone."""
+        with self._lock():
+            rows = self.list()
+            previous = next((r for r in rows if r.schedule_id == schedule_id), None)
+            if previous is None:
+                return None, []
+            reasons = list(check(rows))
+            if not reasons:
+                self._save([replace(r, enabled=enabled) if r.schedule_id == schedule_id else r for r in rows])
+            return previous, reasons
 
     def remove(self, schedule_id: str) -> Schedule | None:
         """Remove one schedule. Returns it as it was, or None if there was nothing to remove.
@@ -1857,7 +1888,17 @@ def _execute(
             )
         if run_id is None:
             raise SchedulerBlocked("SCHEDULER_EVENT_INVALID", "a workflow_plan fire needs its schedule_run_id")
-        outcome = workflow_store.submit(principal=WORKFLOW_PRINCIPAL, request_id=run_id,
+        # Coalesce to one open workflow per schedule (review of P09): while this schedule's
+        # previous occurrence has not ended — the manager is off, or slower than the cadence —
+        # this occurrence is dropped with its reason instead of queueing behind it, so a manager
+        # that comes back never faces a burst of stale occurrences and the server's open-step
+        # ceiling is never filled by one schedule.
+        prefix = workflow_request_prefix(schedule)
+        still_open = workflow_store.open_workflows_by_request_prefix(WORKFLOW_PRINCIPAL, prefix)
+        if still_open:
+            first = still_open[0]
+            return f"workflow:skipped:previous occurrence {first['workflow_id']} still {first['status']}"
+        outcome = workflow_store.submit(principal=WORKFLOW_PRINCIPAL, request_id=f"{prefix}{run_id}",
                                         plan=workflow_plan_of(schedule.request), now=now)
         return f"workflow:{outcome.workflow_id}:{outcome.status}" + (":replayed" if outcome.replayed else "")
     if schedule.kind != KIND_TASK:

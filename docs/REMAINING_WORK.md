@@ -4950,6 +4950,23 @@ delegation goes live only with its own policy bump.
       switch, disjoint id namespaces; A25: flag off keeps the store readable and a later manager finishes it).
       **Host untouched:** the installed `/root/backups/*.sh` are still the pre-P10 copies; re-installing them and
       adding the compose flags are P11 steps.
+- [x] **Independent review of P07–P11** (2026-09-14)**.** Fifteen read-only reviewers (five increments × correctness,
+      governance, tests/ops) raised 69 findings; each was reproduced in the main session before it was fixed, and every
+      new regression test fails on the pre-fix code. Fixed here: a new plan version now re-derives every unstarted step's
+      place in the DAG (a READY step given an undelivered dependency waits; a step on a dead dependency is blocked; a
+      released or dropped cause releases its dependents), refuses a workflow being cancelled, respects `MAX_OPEN_STEPS`,
+      and cannot remove a gate (`requires_approval` is one-way — a rejected step could be un-gated and run); any change to
+      what a gated step would run asks again; approve/refuse recheck the binding and plan version where they write; one
+      step's mint failure no longer stops every workflow's claims; **the dispatch bridge mounts the Core read-only**, without
+      which no ask could ever be minted in the container. The push never re-sends an event that has a delivery row, turns
+      a crash-left PENDING UNCERTAIN before its one retry, skips same-status events, and flattens assistant-authored text.
+      The dormant schedule delegation enforces the ceiling under the store lock, refuses renewal of expired rows by the
+      assistant, dedupes a retried create, coalesces `workflow_plan` fires to one open workflow per schedule, and survives
+      an invalid clause; the 1.6.0 bump script refuses without the deployed approval store and corrects the stale
+      read-clause comment. The backup keeps the last good snapshot on failure; the restore runbook verifies the archive's
+      own snapshot by its container path; `drain` counts QUEUED rows; the closed intake takes no fresh claim. Workflow-step
+      asks say that approving runs the step. The per-finding skeptic stage was dropped mid-run (one agent at a time on
+      this 2-CPU host); reproduction was the verification.
 - [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).
 
 ## Per-machine setup that does NOT travel via git

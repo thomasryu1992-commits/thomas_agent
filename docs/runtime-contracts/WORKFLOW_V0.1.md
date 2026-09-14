@@ -162,9 +162,18 @@ it claims) binds it to the **existing** ask machinery — nothing new is minted,
 - **Refusals.** Rejected → `APPROVAL_REJECTED`; expired (ask or grant) → `APPROVAL_EXPIRED`;
   already consumed → `APPROVAL_REUSED`; missing, re-pointed, another version or a changed
   request → `APPROVAL_STALE`. Each blocks the step (`refuse_step_approval`), blocks its
-  dependents, and leaves the workflow `WAITING_REPLAN` — a retry or a new plan version asks
-  again; a plan can carry no approval field at all (`PLAN_INVALID` at the closed schema). A
-  halted runtime (kill/pause) spends nothing and the grant waits (`approvals_deferred`).
+  dependents, and leaves the workflow `WAITING_REPLAN` — a retry, or a new plan version that
+  changes the step, asks again (an unchanged step keeps the refusal through unrelated updates); a
+  plan can carry no approval field at all (`PLAN_INVALID` at the closed schema). A halted runtime
+  (kill/pause) spends nothing and the grant waits (`approvals_deferred`).
+- **The binding is rechecked where it is written** (review, 2026-09-14). The manager re-reads the
+  step just before spending and spends nothing if it changed; `approve_step` then checks, in its own
+  transaction, that the step is still bound to that grant at that plan version (`APPROVAL_NOT_BOUND`
+  otherwise — the grant is spent and the step waits to be asked again, the safe direction); a refusal
+  decided on an ask the step is no longer bound to changes nothing. A failure minting one step's ask
+  — typed or not — is logged and backed off and never stops the tick's claims for other workflows.
+- **The dispatch bridge mounts the Core read-only** (`docker-compose.yml`): minting binds a Task to
+  the active Core, and without the mounts every ask in the container failed `BINDING_FAILED`.
 
 ### Plan versions — `propose_update(workflow_id, expected_version, plan, reason, now)` (P07)
 
@@ -175,11 +184,20 @@ budget (never below what is already reserved), and the step set — a new step i
 `PENDING`/`READY`/`WAITING_APPROVAL` by its dependencies and gate, a dropped unstarted step is
 `CANCELLED` under `PLAN_UPDATED`. **May not change (`PLAN_CONFLICT`):** the capability, request,
 dependencies, inputs or keywords of a step that is running or delivered, nor drop such a step;
-a cancelled step's key cannot be reused. Dependencies are rebuilt from the new plan; a material
-change to a gated step clears its binding so it is asked again at the new version (an old grant
-compared against the new request refuses `APPROVAL_STALE`); a budget-blocked step the new budget
-covers goes back to `PENDING` and is released like any other. `plan_versions` gains a row with
-the reason; nothing delivered is re-run. Door command `workflow.propose_update`, shim tool
+a cancelled step's key cannot be reused; **a gate cannot be removed** — `requires_approval` goes
+false→true, never back, so a rejected or unanswered step cannot be run by a version that drops the
+flag. Refused as well: a workflow being cancelled (`WORKFLOW_CANCELLING`, like `retry_step`), a
+version that adds more waiting steps than the server's `MAX_OPEN_STEPS` leaves room for
+(`CAPACITY_EXHAUSTED`, like `submit`), and — at the door — any version while the runtime is halted.
+Dependencies are rebuilt from the new plan and every unstarted step is put where they now say, in
+plan order: a READY or asked step given a dependency not yet delivered goes back to `PENDING` (and
+loses its binding); a step waiting on a dead dependency (`FAILED`, `BLOCKED`, `CANCELLED`,
+`NEEDS_RECONCILIATION`) is `BLOCKED (DEPENDENCY_FAILED)`; a step so blocked whose dead dependency was
+dropped or released waits again. For a gated step, **any change to what it would run** — request,
+capability, options, keywords, inputs, dependencies — clears its binding and it is asked again,
+whether it was still waiting or already released by a spent grant. A budget-blocked step goes back
+to `PENDING` (the claim re-checks the budget) and its dependents with it. `plan_versions` gains a row
+with the reason; nothing delivered is re-run. Door command `workflow.propose_update`, shim tool
 `propose_workflow_update`.
 
 ### Inputs — what a step reads (P07; A15)
@@ -209,10 +227,15 @@ reading `/approve`. It is the **one** pusher and the only writer of `deliveries`
   `WAITING_APPROVAL` is not pushed here because the ask itself is that push
   (`announce_pending_approvals`) — one event, one pusher.
 - **Delivery record:** `PENDING` is written before the send and `CONFIRMED` or `UNCERTAIN`
-  after it. A crash between the two leaves `PENDING`, which the next pass retries **once**;
-  a second failure settles it `UNCERTAIN`. `UNCERTAIN` (the send raised) is kept and never
-  re-sent — the channel may have delivered it. This is at-least-once; nothing promises
+  after it. A crash between the two leaves `PENDING`, which the next pass retries **once** — the
+  row turns `UNCERTAIN` before the retry leaves, so a process that dies during the retry does not
+  retry again. `UNCERTAIN` is kept and never re-sent — the channel may have delivered it. An event
+  that already has a delivery row is never pushed again, so a pass killed after a send but before
+  it moved the cursor re-sends nothing. This is at-least-once for one retry; nothing promises
   exactly-once to the outside (V0.2 §4.3).
+- **Arrivals only:** a same-status workflow event (a new plan version on a workflow that is already
+  waiting) is not pushed. Assistant-authored text in the message (the goal, a cancel reason) is one
+  line, capped, with no token that begins like a bot command.
 - **Cursor:** the first pass adopts the current tail and sends nothing (a deploy must not
   open with every ending since the store was created; the adopted tail is a `SKIPPED` row).
   Each pass reads a page of events past the cursor, pushes at most `MAX_PUSHES_PER_PASS`, and
@@ -249,8 +272,12 @@ or the waited-for decision reached Thomas through the operator's push above.
 
 A schedule of kind `workflow_plan` (maintenance lane) carries a `workflow_plan.v0.1` object as
 its request, validated at registration by `workflow.validate_plan`. Its fire does one thing:
-`WorkflowStore.submit(principal="scheduler", request_id=<schedule_run_id>, plan)`. The
-occurrence's own `schedule_run_id` is the request id, so the store's request table makes it
+`WorkflowStore.submit(principal="scheduler", request_id="<schedule_id>:<schedule_run_id>", plan)` —
+**unless this schedule's previous occurrence has not ended**, in which case the occurrence is dropped
+with that reason (`workflow:skipped:previous occurrence wf_… still <status>`): one open workflow per
+schedule, so a manager that is off or slower than the cadence never comes back to a burst of stale
+occurrences and one schedule never fills the server's open-step ceiling. The occurrence's own
+`schedule_run_id` is in the request id, so the store's request table makes it
 at-most-once per occurrence: a duplicate tick claims nothing (`claim_due`), a re-fire of the
 same occurrence replays the accepted workflow, a clock jump fires once on the grid and a restart
 never catches up (`next_occurrence`). The manager runs the workflow like any other; without a

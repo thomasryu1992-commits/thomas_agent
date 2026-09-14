@@ -200,3 +200,53 @@ def test_the_bridge_reads_its_intake_mode_from_the_command_line_and_the_environm
     monkeypatch.setenv(cli.V2_INTAKE_ENV, "sideways")
     with pytest.raises(SystemExit):
         cli._parse_args([])
+
+
+
+def test_a_closed_intake_takes_no_new_run_even_when_the_old_claim_lapses_between_lookup_and_claim(tmp_path, executor, monkeypatch):
+    from runtime.mvp_runtime import bridge_idempotency
+
+    ledger = LedgerStore(tmp_path / "ledger")
+    store = WorkflowStore(tmp_path)
+    assert _door(_v2(request_id="hermes-edge"), tmp_path, execute=executor, store=store, ledger=ledger)["ok"]
+    real_claim = bridge_idempotency.claim
+    monkeypatch.setattr(bridge_idempotency, "claim", lambda ledger, **kw: real_claim(ledger, **{**kw, "now": "2026-09-16T00:00:00Z"}))
+    with pytest.raises(ControlBlocked) as exc:                                 # the lookup saw the row; the claim did not
+        _door(_v2(request_id="hermes-edge"), tmp_path, execute=executor, store=store, ledger=ledger, v2_intake=False)
+    assert exc.value.reason_code == "V2_INTAKE_CLOSED" and len(executor.calls) == 1
+
+
+
+def test_the_intake_flag_reaches_the_door_the_bridge_serves_and_no_flag_means_no_store(monkeypatch):
+    """Review of P10 (2026-09-14): the rehearsals called `apply_dispatch` directly, so a bridge
+    that dropped `v2_intake` on the way to `open_door` — or created the workflow store without the
+    manager flag — passed every test. This runs the CLI's own wiring with the socket stubbed."""
+    from runtime.mvp_runtime import dispatch_bridge_cli as cli
+
+    served = []
+    monkeypatch.setattr(cli, "serve_door_forever", lambda **kw: served.append(kw) or 0)
+    opened = []
+    monkeypatch.setattr(cli.dispatch_bridge, "open_door", lambda path, **kw: opened.append(kw) or object())
+    monkeypatch.setattr(cli.WorkflowManager, "start", lambda self: None)
+    monkeypatch.setattr(cli.WorkflowManager, "stop", lambda self: None)
+    monkeypatch.delenv(cli.V2_INTAKE_ENV, raising=False)
+
+    assert cli.main(["--v2-intake", "closed"]) == 0
+    served[-1]["open_server"]()
+    assert opened[-1]["v2_intake"] is False and opened[-1]["workflow_store"] is None
+    assert opened[-1]["manager_enabled"] is False and not WorkflowStore.exists()   # no flag, no store
+
+    assert cli.main(["--workflow-manager"]) == 0
+    served[-1]["open_server"]()
+    assert opened[-1]["v2_intake"] is True and opened[-1]["workflow_store"] is not None and opened[-1]["manager_enabled"]
+
+    monkeypatch.setenv(cli.V2_INTAKE_ENV, "")
+    assert cli._parse_args([]).v2_intake == "open"                                  # a blank variable never stops the door
+
+
+def test_drain_counts_a_queued_legacy_request_as_in_flight(tmp_path):
+    registry = TaskRegistryStore(tmp_path)
+    queued, _position = task_registry.enqueue(registry, request_text="아직 대기", origin="TELEGRAM",
+                                              requester_id="thomas", now=NOW)
+    report = workflow_cli.drain_status(tmp_path, now=NOW)
+    assert report["drained"] is False and queued.registry_entry_id in sum(report["legacy_running"].values(), [])

@@ -182,6 +182,24 @@ def _default_state_lands_in_tmp(tmp_path_factory, monkeypatch):
 
         monkeypatch.setattr(store_cls, "default", classmethod(_default))
 
+    # The workflow store (sequence 2) takes keyword arguments beside the root and has a second
+    # root-defaulting entry point, `exists`, that the operator and the scheduler ask before they
+    # open it — both redirected, or an operator test run from a checkout whose state directory
+    # holds a real workflow.db pushes that store's events and writes its delivery rows
+    # (review of P09, 2026-09-14).
+    workflow_store = importlib.import_module("runtime.mvp_runtime.workflow_store").WorkflowStore
+    original_wf_default = workflow_store.default.__func__
+    original_wf_exists = workflow_store.exists.__func__
+
+    def _wf_default(cls, root=None, *, _original=original_wf_default, _fallback=state_root, **kwargs):
+        return _original(cls, root if root is not None else _fallback, **kwargs)
+
+    def _wf_exists(cls, root=None, *, _original=original_wf_exists, _fallback=state_root):
+        return _original(cls, root if root is not None else _fallback)
+
+    monkeypatch.setattr(workflow_store, "default", classmethod(_wf_default))
+    monkeypatch.setattr(workflow_store, "exists", classmethod(_wf_exists))
+
     # The state writers that are plain functions rather than store classes.
     heartbeat = importlib.import_module("runtime.mvp_runtime.heartbeat")
     original_beat = heartbeat.write_heartbeat

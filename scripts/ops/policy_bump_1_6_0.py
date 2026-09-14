@@ -8,8 +8,8 @@ fixture carrying `policy_version: 1.5.0`, both replay bundles rebuilt with the v
 `rebuild_bundle` and the kernel's own fingerprint payload, the one comment that cites the version
 (`policy_fingerprint.py`), and the pin test.
 
-    python scripts/ops/policy_bump_1_6_0.py --check    # what would change; non-zero if anything is off
-    python scripts/ops/policy_bump_1_6_0.py --apply    # write it (refuses unless --check would pass)
+    python scripts/ops/policy_bump_1_6_0.py --check --state-root /root/thomas_agent   # what would change; non-zero if anything is off
+    python scripts/ops/policy_bump_1_6_0.py --apply --state-root /root/thomas_agent   # write it (refuses unless --check would pass)
 
 It refuses when: the policy is not at 1.5.0; an approval is PENDING and not expired (an ask must
 not straddle two policy versions); a literal site outside the known file classes carries the old
@@ -57,6 +57,12 @@ PREVIOUS_BUMP_REL = "scripts/ops/policy_bump_1_5_0.py"
 FINGERPRINT_SCHEMA = "read_only_runtime_input_bundle_fingerprint_payload.v0.1"
 
 MIRROR_TAIL = "    mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals\n"
+# 1.5.0's read clause says schedule mutations "reach no socket"; with this clause that stops being
+# true of the dispatch door, so the comment is corrected in the same bump (review of P09).
+READ_CLAUSE_COMMENT_OLD = "  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and\n  # reach no socket; the approval read is a summary and never the record.\n"
+READ_CLAUSE_COMMENT_NEW = ("  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and,\n"
+                           "  # within assistant_schedule's delegated scope only, the dispatch door's\n"
+                           "  # schedule.propose_change (1.6.0); the approval read is a summary and never the record.\n")
 LIFETIME_HEAD = "approval_lifetime:\n"
 
 SCHEDULE_BLOCK = """  # The assistant's schedule lane (sequence 2, P09; V0.2 §1.3 — the conditional amendment of
@@ -160,17 +166,25 @@ def _stray_sites(known: set[Path]) -> list[Path]:
     return stray
 
 
-def _pending_live() -> list[str]:
+STATE_ROOT: Path = ROOT       # --state-root: the checkout whose .runtime_governance_state is the DEPLOYED state
+
+
+def _pending_live() -> tuple[list[str], str | None]:
+    """(live PENDING ids, problem). A store that is absent or unreadable is a problem, never
+    "nothing pending": the check exists to read the real store, and a clean checkout has none
+    (review of P09, 2026-09-14 — the 1.5.0 script treated that as READY)."""
     from runtime.mvp_runtime import approval
     from runtime.mvp_runtime.approval_store import ApprovalStore
     from runtime.mvp_runtime.timeutil import utc_now_iso
+    store = ApprovalStore.default(STATE_ROOT)
+    if not store.path.is_file():
+        return [], (f"no approval store at {store.path} — pass --state-root /root/thomas_agent (the deployed state) "
+                    "so zero-PENDING is checked against the real store")
     try:
-        store = ApprovalStore.default()
         now = utc_now_iso()
-        return [str(a["approval_id"]) for a in store.pending() if not approval.is_expired(a, now=now)]
-    except Exception as exc:  # noqa: BLE001 — a missing store is "nothing pending" on a clean checkout
-        print(f"  (approval store not readable here: {exc.__class__.__name__}; treating as none pending)")
-        return []
+        return [str(a["approval_id"]) for a in store.pending() if not approval.is_expired(a, now=now)], None
+    except Exception as exc:  # noqa: BLE001 — unreadable is not zero
+        return [], f"the approval store at {store.path} cannot be read ({exc.__class__.__name__}: {exc})"
 
 
 def check() -> tuple[list[str], list[str]]:
@@ -219,9 +233,13 @@ def check() -> tuple[list[str], list[str]]:
         problems.append(f"the clause does not load as a delegation scope: {exc}")
     plan.append(f"write {PIN_TEST_REL}")
 
-    pending = _pending_live()
+    pending, pending_problem = _pending_live()
+    if pending_problem:
+        problems.append(pending_problem)
     if pending:
         problems.append(f"{len(pending)} live PENDING approval(s): {', '.join(pending)} — bump at zero PENDING")
+    if policy.count(READ_CLAUSE_COMMENT_OLD) != 1:
+        problems.append("the assistant_read comment that says schedule changes 'reach no socket' is not where 1.5.0 left it")
     return plan, problems
 
 
@@ -230,6 +248,7 @@ def apply() -> None:
     policy = policy_path.read_text(encoding="utf-8")
     policy = policy.replace(f"policy_version: {OLD}\n", f"policy_version: {NEW}\n", 1)
     policy = policy.replace(MIRROR_TAIL + "\n" + LIFETIME_HEAD, MIRROR_TAIL + SCHEDULE_BLOCK + "\n" + LIFETIME_HEAD, 1)
+    policy = policy.replace(READ_CLAUSE_COMMENT_OLD, READ_CLAUSE_COMMENT_NEW, 1)
     policy_path.write_text(policy, encoding="utf-8", newline="\n")
 
     validator_path = ROOT / VALIDATOR_REL
@@ -284,7 +303,12 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--apply", action="store_true")
+    parser.add_argument("--state-root", type=Path, default=ROOT,
+                        help="the checkout whose .runtime_governance_state holds the DEPLOYED approval store "
+                             "(e.g. /root/thomas_agent); the zero-PENDING check reads it")
     args = parser.parse_args(argv)
+    global STATE_ROOT
+    STATE_ROOT = args.state_root
     plan, problems = check()
     print(f"policy bump {OLD} -> {NEW}")
     for line in plan:

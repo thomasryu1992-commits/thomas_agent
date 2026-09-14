@@ -298,3 +298,33 @@ def test_report_usage_records_the_reported_layer_and_the_reply_says_it_is_not_en
     assert "보고된 사용량(Hermes, 강제 아님)" in status["reply"] and "62,456" in status["reply"]
     assert status["data"]["budget"]["reserved_model_calls"] == 0                      # untouched by the report
     assert "workflow.report_usage" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]
+
+
+def test_a_halted_runtime_accepts_no_new_plan_version_and_no_retry_but_still_a_cancel(tmp_path, monkeypatch):
+    store = WorkflowStore(tmp_path)
+    wid = _submit(store, tmp_path)["data"]["workflow_id"]
+    (attempt,) = store.claim_ready(now=NOW)
+    store.record_result(attempt.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE")
+    view = _apply({"command": "workflow.status", "workflow_id": wid}, tmp_path, store=store)["data"]
+    control = ControlStore(tmp_path)
+
+    class _Killed:
+        mode = "KILLED"
+        execution_allowed = False
+
+        @staticmethod
+        def refusal_reason_code():
+            return "KILLED"
+
+    monkeypatch.setattr(control, "load", lambda: _Killed())
+    for request in ({"command": "workflow.propose_update", "workflow_id": wid, "expected_version": view["row_version"],
+                     "plan": _plan(goal="수정"), "reason": "r"},
+                    {"command": "workflow.retry_step", "workflow_id": wid, "step_key": "research",
+                     "expected_version": view["row_version"], "reason": "r"}):
+        with pytest.raises(ControlBlocked) as exc:
+            _apply(request, tmp_path, store=store, control=control)
+        assert exc.value.reason_code == "KILLED"
+    assert store.status_view(wid, now=NOW)["row_version"] == view["row_version"]          # nothing changed
+    out = _apply({"command": "workflow.cancel", "workflow_id": wid, "expected_version": view["row_version"], "reason": "중단"},
+                 tmp_path, store=store, control=control)
+    assert out["ok"]                                                                      # stopping is always allowed

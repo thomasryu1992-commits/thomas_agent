@@ -28,9 +28,14 @@ else:
   (`memory_prune`, `ledger_rotate`, `dispatch_spend_watch`, `content_ideation`) are not delegated
   either; a change to them is a proposal.
 - **Cadence:** no delegated schedule tighter than hourly (`min_interval_seconds: 3600`).
-- **Count:** at most 3 enabled schedules created by the assistant at once (`max_active`).
+- **Count:** at most 3 enabled schedules created by the assistant at once (`max_active`), counted and
+  written under the schedule store's lock so concurrent requests cannot pass it together; a create
+  retried after a lost reply returns the schedule it made instead of a second one.
 - **Validity:** a delegated schedule carries `expires_at = created_at + 30 days` and disables itself
-  at its first occurrence past that (`expired` scheduler event); Thomas renews by hand.
+  at its first occurrence past that (`expired` scheduler event). Renewal is Thomas's: the assistant's
+  re-enable of an expired row and its re-create of the same schedule (same kind and request) are
+  proposals, not changes; an interval that could not fire once inside the validity is a proposal too.
+  A *different* schedule is a new delegation and counts against the ceiling like any other.
 - **Budget:** a `workflow_plan` schedule's plan may reserve at most 6 model calls per occurrence.
 - **Ownership:** the assistant may enable/disable/remove only rows it created; anything Thomas
   created is a proposal.
@@ -93,13 +98,16 @@ The numbers are the proposal. Thomas may lower any of them in the clause before 
 `scripts/ops/policy_bump_1_6_0.py` does every row mechanically: `--check` prints what would change
 and exits non-zero if anything is unexpected (a literal site the table does not know, a live PENDING
 approval, a working tree not on 1.5.0, a clause that does not load as a scope); `--apply` writes.
-`--check` passed on the P09 tree (2026-09-14) without writing anything.
+`--check` passed on the P09 tree (2026-09-14) without writing anything; since the review fixes it
+additionally refuses without a readable deployed approval store.
 
 ## 3. Preconditions and the order of operations
 
-1. **Zero live PENDING approvals** — the script checks the real store.
-2. On a clean checkout of `origin/main`: `python scripts/ops/policy_bump_1_6_0.py --check`, read it.
-3. `python scripts/ops/policy_bump_1_6_0.py --apply`.
+1. **Zero live PENDING approvals** — the script checks the DEPLOYED store, named with `--state-root
+   /root/thomas_agent`; an absent or unreadable store is NOT READY, never "nothing pending".
+2. On a clean checkout of `origin/main`: `python scripts/ops/policy_bump_1_6_0.py --check --state-root /root/thomas_agent`, read it.
+3. `python scripts/ops/policy_bump_1_6_0.py --apply --state-root /root/thomas_agent`. The bump also corrects the
+   `assistant_read` comment that says schedule changes "reach no socket", which this clause makes untrue.
 4. Validate, all of them:
    ```bash
    python scripts/validate_permission_approval_contracts.py
@@ -111,8 +119,14 @@ approval, a working tree not on 1.5.0, a clause that does not load as a scope); 
 5. One PR, one commit, Thomas's own authorship — the 1.5.0 commit message is the template. Merge
    through the five required checks like any other PR.
 6. **The clause takes effect on the next restart of the dispatch bridge** (the door reads the
-   policy at start): `docker compose restart thomas-dispatch-bridge` after the deploy that carries
-   both this policy and the P09 runtime. Until then the door refuses every change by name.
+   policy at start, and serves `schedule.propose_change` only when it runs with `--workflow-manager`
+   — without it every v3 command, this one included, is `WORKFLOW_UNAVAILABLE`): after the deploy that
+   carries both this policy and the P09 runtime and the manager flag
+   (`docs/DEPLOYMENT_PLAN_SEQUENCE2.md` §5), `docker compose -p thomas_agent --env-file /root/thomas_agent/.env
+   -f <clean-main-worktree>/docker-compose.yml restart dispatch-bridge` (the compose SERVICE name, not the
+   container name). Until then the door refuses every change by name. A clause
+   that does not load refuses every change as `SCHEDULE_DELEGATION_INVALID` and says so on the
+   bridge's stderr; the door itself stays up.
 7. Update this file's status to IMPLEMENTED, V0.2 §1.3 from "시행 대기" to "시행", and SKILL §7
    item 13 from "정책이 위임하면" to the applied scope.
 

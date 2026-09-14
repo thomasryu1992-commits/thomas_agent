@@ -200,3 +200,36 @@ def test_the_manifest_describes_the_copy_even_when_the_source_moves_after_the_ba
     assert report["manifest_agrees"] is True and report["ok"] is True
     assert report["counts"]["workflows"] == 1                               # the copy predates the late commit
     assert store.max_event_cursor() > report["max_event_cursor"]
+
+
+
+def test_a_failed_workflow_snapshot_keeps_the_last_good_one(tmp_path):
+    """Review of P10 (2026-09-14): the backup script used to prune snapshot directories whether or
+    not today's snapshot succeeded, deleting the only good copy. Run the script's snapshot block
+    with a docker stub that fails, against a scratch host root."""
+    import os
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("harness_backup.sh is a bash script")
+    host = tmp_path / "host"
+    wf_dir = host / "thomas_agent" / ".runtime_governance_state" / "workflow"
+    good = wf_dir / "snapshots" / "20260913-0745"
+    good.mkdir(parents=True)
+    (good / "workflow-20260913-074500.db").write_text("good", encoding="utf-8")
+    (wf_dir / "workflow.db").write_text("live", encoding="utf-8")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "docker").write_text("#!/bin/bash\nexit 2\n", encoding="utf-8")
+    (stub / "docker").chmod(0o755)
+    block = _SCRIPT.read_text(encoding="utf-8")
+    start = block.index('    WF_DIR="$THOMAS/.runtime_governance_state/workflow"')
+    end = block.index('    SNAP_NOTE="$SNAP_NOTE $WF_NOTE"')
+    snippet = "set -u\nHOST_ROOT=%s\nTHOMAS=thomas_agent\nSTAMP=20260914-0745\nSNAP_NOTE=\n" % host + block[start:end] + 'echo "$WF_NOTE"\n'
+    (wf_dir / "snapshots" / "20260914-0745").mkdir()                     # what a partial run leaves behind
+    out = subprocess.run(["bash", "-c", snippet], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"})
+    assert out.stdout.strip() == "workflow-snapshot=FAILED", out
+    assert (good / "workflow-20260913-074500.db").is_file()
+    assert not (wf_dir / "snapshots" / "20260914-0745").exists()

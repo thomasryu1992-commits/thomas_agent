@@ -509,9 +509,9 @@ def test_the_bound_grant_releases_the_step_and_anything_else_blocks_it_for_a_dec
     store.bind_approval(step["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
     assert _step(store, wid, "a")["approval_id"] == "approval_1"
     with pytest.raises(WorkflowBlocked) as exc:
-        store.approve_step(step["step_id"], approval_id="approval_other", now=NOW)
+        store.approve_step(step["step_id"], approval_id="approval_other", plan_version=1, now=NOW)
     assert exc.value.reason_code == "APPROVAL_NOT_BOUND"
-    view = store.approve_step(step["step_id"], approval_id="approval_1", now=LATER)
+    view = store.approve_step(step["step_id"], approval_id="approval_1", plan_version=1, now=LATER)
     assert view["status"] == wf.W_RUNNING and view["steps"][0]["status"] == wf.S_READY
     (claimed,) = store.claim_ready(now=LATER)
     assert claimed.step_key == "a"
@@ -520,7 +520,7 @@ def test_the_bound_grant_releases_the_step_and_anything_else_blocks_it_for_a_dec
                                         "requires_approval": True}]), request_id="hermes-2").workflow_id
     (b,) = store.status_view(wid2, now=NOW)["steps"]
     store.bind_approval(b["step_id"], approval_id="approval_2", plan_version=1, now=NOW)
-    view = store.refuse_step_approval(b["step_id"], reason_code=wf.APPROVAL_EXPIRED, detail="expired", now=LATER)
+    view = store.refuse_step_approval(b["step_id"], approval_id="approval_2", reason_code=wf.APPROVAL_EXPIRED, detail="expired", now=LATER)
     assert view["status"] == wf.W_WAITING_REPLAN and view["steps"][0]["status"] == wf.S_BLOCKED
     assert view["steps"][0]["last_reason_code"] == wf.APPROVAL_EXPIRED
     view = store.retry_step(wid2, "b", expected_version=view["row_version"], reason="다시 요청", now=LATER)
@@ -595,10 +595,12 @@ def test_a_new_version_re_asks_a_changed_gated_step_and_releases_a_budget_blocke
     assert a2["status"] == wf.S_WAITING_APPROVAL and a2["approval_id"] is None and a2["approval_plan_version"] is None
     (waiting,) = store.waiting_approval_steps()
     assert waiting["workflow_plan_version"] == 2
-    # the gate can be lifted by a new version: the step becomes READY
+    # a gate is one-way: a version that drops requires_approval is refused and changes nothing
     lifted = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x (수정)", "reason": "r"}], budget={"max_model_calls": 1})
-    view = store.propose_update(wid, expected_version=view["row_version"], plan=lifted, reason="게이트 해제", now=LATER)
-    assert view["steps"][0]["status"] == wf.S_READY and view["status"] == wf.W_RUNNING
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid, expected_version=view["row_version"], plan=lifted, reason="게이트 해제", now=LATER)
+    assert exc.value.reason_code == "PLAN_CONFLICT"
+    assert _step(store, wid, "a")["status"] == wf.S_WAITING_APPROVAL
     # budget: a second step the budget cannot cover is blocked; a bigger budget releases it
     two = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 2},
                        {"id": "b", "capability": "analysis", "request": "y", "reason": "r", "depends_on": ["a"]}],
@@ -679,3 +681,242 @@ def test_a_usage_report_for_an_unknown_workflow_is_refused(store):
         store.record_reported_usage("wf_" + "0" * 20, principal="assistant_bridge", usage={
             "input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.0, "cost_status": "unmeasured", "source": "s"}, now=NOW)
     assert exc.value.reason_code == "WORKFLOW_NOT_FOUND"
+
+
+# --- independent review of P07 (2026-09-14): plan versions must keep the DAG, the gate and the ceiling ---
+
+def _gated_root(request="초안", **step_over):
+    step = {"id": "a", "capability": "content", "request": request, "reason": "r", "requires_approval": True}
+    step.update(step_over)
+    return _plan(steps=[step], budget={"max_model_calls": 4})
+
+
+def test_a_new_dependency_on_a_ready_step_sends_it_back_to_wait(store):
+    two = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r"},
+                       {"id": "b", "capability": "analysis", "request": "y", "reason": "r"}], budget={"max_model_calls": 4})
+    wid = _submit(store, two).workflow_id
+    assert _step(store, wid, "b")["status"] == wf.S_READY
+    chained = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r"},
+                           {"id": "b", "capability": "analysis", "request": "y", "reason": "r", "depends_on": ["a"]}],
+                    budget={"max_model_calls": 4})
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=chained,
+                                reason="b는 a 뒤에", now=LATER)
+    assert {s["key"]: s["status"] for s in view["steps"]} == {"a": wf.S_READY, "b": wf.S_PENDING}
+    (claimed,) = store.claim_ready(now=LATER, limit=5)
+    assert claimed.step_key == "a"                                            # b never runs before its dependency
+
+
+def test_a_plan_update_that_releases_a_budget_blocked_step_releases_its_dependents_too(store):
+    plan = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 3},
+                        {"id": "b", "capability": "analysis", "request": "y", "reason": "r", "depends_on": ["a"]},
+                        {"id": "c", "capability": "analysis", "request": "z", "reason": "r", "depends_on": ["b"]}],
+                 budget={"max_model_calls": 3})
+    wid = _submit(store, plan).workflow_id
+    for outcome in (False, False, True):                                        # a spends all three calls
+        (a,) = store.claim_ready(now=NOW)
+        store.record_result(a.attempt_id, now=NOW, succeeded=outcome, result_ref="ledger:a" if outcome else None,
+                            reason_code=None if outcome else "PROVIDER_UNAVAILABLE", model_calls=1)
+    assert store.claim_ready(now=NOW) == []                                     # b: no call left
+    assert _step(store, wid, "b")["last_reason_code"] == wf.BUDGET_EXHAUSTED
+    assert _step(store, wid, "c")["status"] == wf.S_BLOCKED and _step(store, wid, "c")["last_reason_code"] == wf.DEPENDENCY_FAILED
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"],
+                                plan={**plan, "budget": {"max_model_calls": 6}}, reason="예산 증액", now=LATER)
+    statuses = {s["key"]: s["status"] for s in view["steps"]}
+    assert statuses == {"a": wf.S_SUCCEEDED, "b": wf.S_READY, "c": wf.S_PENDING} and view["status"] == wf.W_RUNNING
+
+
+def test_dropping_a_failed_step_releases_what_waited_on_it(store):
+    plan = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 1},
+                        {"id": "b", "capability": "analysis", "request": "y", "reason": "r", "depends_on": ["a"]}],
+                 budget={"max_model_calls": 4})
+    wid = _submit(store, plan).workflow_id
+    (a,) = store.claim_ready(now=NOW)
+    store.record_result(a.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE", model_calls=1)
+    assert _step(store, wid, "b")["last_reason_code"] == wf.DEPENDENCY_FAILED
+    without_a = _plan(steps=[{"id": "b", "capability": "analysis", "request": "y", "reason": "r"}], budget={"max_model_calls": 4})
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=without_a,
+                                reason="a 없이", now=LATER)
+    statuses = {s["key"]: s["status"] for s in view["steps"]}
+    assert statuses == {"a": wf.S_CANCELLED, "b": wf.S_READY} and view["status"] == wf.W_RUNNING
+
+
+def test_a_new_step_that_depends_on_a_dead_step_is_blocked_not_left_pending(store):
+    plan = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 1}],
+                 budget={"max_model_calls": 4})
+    wid = _submit(store, plan).workflow_id
+    (a,) = store.claim_ready(now=NOW)
+    store.record_result(a.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE", model_calls=1)
+    grown = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 1},
+                         {"id": "b", "capability": "analysis", "request": "y", "reason": "r", "depends_on": ["a"]}],
+                  budget={"max_model_calls": 4})
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=grown,
+                                reason="b 추가", now=LATER)
+    b = next(s for s in view["steps"] if s["key"] == "b")
+    assert b["status"] == wf.S_BLOCKED and b["last_reason_code"] == wf.DEPENDENCY_FAILED
+
+
+def test_a_gate_cannot_be_removed_by_a_new_version(store):
+    wid = _submit(store, _gated_root()).workflow_id
+    (a,) = store.status_view(wid, now=NOW)["steps"]
+    store.bind_approval(a["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    store.refuse_step_approval(a["step_id"], approval_id="approval_1", reason_code=wf.APPROVAL_REJECTED,
+                               detail="rejected", now=NOW)
+    ungated = _plan(steps=[{"id": "a", "capability": "content", "request": "초안", "reason": "r"}], budget={"max_model_calls": 4})
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=ungated,
+                             reason="게이트 제거", now=LATER)
+    assert exc.value.reason_code == "PLAN_CONFLICT" and "requires_approval" in str(exc.value)
+    assert _step(store, wid, "a")["status"] == wf.S_BLOCKED                    # Thomas's rejection stands
+
+
+def test_any_change_to_an_approved_but_unstarted_gated_step_asks_again(store):
+    wid = _submit(store, _gated_root()).workflow_id
+    (a,) = store.status_view(wid, now=NOW)["steps"]
+    store.bind_approval(a["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    store.approve_step(a["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    assert _step(store, wid, "a")["status"] == wf.S_READY
+    changed = _gated_root(options={"revise": True})                            # not the request: an option the grant did not name
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=changed,
+                                reason="수정 켜기", now=LATER)
+    step = view["steps"][0]
+    assert step["status"] == wf.S_WAITING_APPROVAL and step["approval_id"] is None
+    assert store.claim_ready(now=LATER) == []
+    # an unrelated change elsewhere (the goal) leaves the approved step as it was
+    wid2 = _submit(store, _gated_root(), request_id="hermes-2").workflow_id
+    (a2,) = store.status_view(wid2, now=NOW)["steps"]
+    store.bind_approval(a2["step_id"], approval_id="approval_2", plan_version=1, now=NOW)
+    store.approve_step(a2["step_id"], approval_id="approval_2", plan_version=1, now=NOW)
+    view = store.propose_update(wid2, expected_version=store.status_view(wid2, now=NOW)["row_version"],
+                                plan={**_gated_root(), "goal": "다른 목표"}, reason="목표만", now=LATER)
+    assert view["steps"][0]["status"] == wf.S_READY
+
+
+def test_a_change_to_a_step_blocked_by_a_refused_ask_asks_again(store):
+    wid = _submit(store, _gated_root()).workflow_id
+    (a,) = store.status_view(wid, now=NOW)["steps"]
+    store.bind_approval(a["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    view = store.refuse_step_approval(a["step_id"], approval_id="approval_1", reason_code=wf.APPROVAL_REJECTED,
+                                      detail="rejected", now=NOW)
+    assert view["status"] == wf.W_WAITING_REPLAN
+    # unchanged step: the rejection stands through an unrelated update
+    view = store.propose_update(wid, expected_version=view["row_version"], plan={**_gated_root(), "goal": "목표 수정"},
+                                reason="목표만", now=LATER)
+    assert view["steps"][0]["status"] == wf.S_BLOCKED
+    view = store.propose_update(wid, expected_version=view["row_version"], plan=_gated_root(request="초안 (근거 보강)"),
+                                reason="거절 사유 반영", now=LATER)
+    assert view["steps"][0]["status"] == wf.S_WAITING_APPROVAL and view["status"] == wf.W_WAITING_APPROVAL
+
+
+def test_a_refused_gate_on_a_never_claimed_workflow_can_still_be_replanned(store):
+    plan = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r"},
+                        {"id": "g", "capability": "content", "request": "y", "reason": "r", "requires_approval": True}],
+                 budget={"max_model_calls": 4})
+    wid = _submit(store, plan).workflow_id
+    g = _step(store, wid, "g")
+    store.bind_approval(g["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    store.refuse_step_approval(g["step_id"], approval_id="approval_1", reason_code=wf.APPROVAL_REJECTED, detail="r", now=NOW)
+    assert store.status_view(wid, now=NOW)["status"] == wf.W_VALIDATED                     # a is READY, nothing claimed
+    only_g = _plan(steps=[{"id": "g", "capability": "content", "request": "y", "reason": "r", "requires_approval": True}],
+                   budget={"max_model_calls": 4})
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=only_g,
+                                reason="a 제거", now=LATER)
+    assert view["status"] == wf.W_WAITING_REPLAN
+
+
+def test_a_plan_update_or_a_retry_is_refused_while_a_cancel_is_being_honoured(store):
+    wid = _submit(store, _multi()).workflow_id
+    (att,) = store.claim_ready(now=NOW)
+    view = store.request_cancel(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], reason="중단", now=NOW)
+    assert view["status"] == wf.W_CANCELLING
+    grown = _multi()
+    grown["steps"].append({"id": "extra", "capability": "analysis", "request": "추가", "reason": "r"})
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid, expected_version=view["row_version"], plan=grown, reason="추가", now=LATER)
+    assert exc.value.reason_code == "WORKFLOW_CANCELLING"
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.retry_step(wid, "research", expected_version=view["row_version"], reason="r", now=LATER)
+    assert exc.value.reason_code == "WORKFLOW_CANCELLING"
+
+
+def test_a_plan_update_cannot_push_the_server_past_its_open_step_ceiling(store, monkeypatch):
+    monkeypatch.setattr(ws, "MAX_OPEN_STEPS", 3)
+    wid = _submit(store, _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r"},
+                                      {"id": "b", "capability": "analysis", "request": "y", "reason": "r"}],
+                               budget={"max_model_calls": 6})).workflow_id
+    grown = _plan(steps=[{"id": k, "capability": "analysis", "request": k, "reason": "r"} for k in ("a", "b", "c", "d")],
+                  budget={"max_model_calls": 6})
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=grown,
+                             reason="확장", now=LATER)
+    assert exc.value.reason_code == "CAPACITY_EXHAUSTED"
+    swapped = _plan(steps=[{"id": k, "capability": "analysis", "request": k, "reason": "r"} for k in ("a", "c", "d")],
+                    budget={"max_model_calls": 6})                                   # one dropped, two added: 3 open
+    view = store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=swapped,
+                                reason="교체", now=LATER)
+    assert sum(1 for s in view["steps"] if s["status"] in wf.STEP_OPEN) == 3
+
+
+def test_a_delivered_step_is_as_immutable_as_a_running_one_and_the_reservation_floor_refuses(store):
+    wid = _submit(store, _multi()).workflow_id
+    (research,) = store.claim_ready(now=NOW)
+    store.record_result(research.attempt_id, now=NOW, succeeded=True, result_ref="ledger:r", model_calls=1)
+    delivered_changed = _multi()
+    delivered_changed["steps"][0]["request"] = "다른 조사"
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"], plan=delivered_changed,
+                             reason="r", now=LATER)
+    assert exc.value.reason_code == "PLAN_CONFLICT" and "research" in str(exc.value)
+    one = _plan(steps=[{"id": "a", "capability": "analysis", "request": "x", "reason": "r", "max_attempts": 3}],
+                budget={"max_model_calls": 5})
+    wid2 = _submit(store, one, request_id="hermes-2").workflow_id
+    for n in range(3):                                                               # two failed, the third running: 3 reserved
+        (att,) = [x for x in store.claim_ready(now=NOW, limit=5) if x.workflow_id == wid2]
+        if n < 2:
+            store.record_result(att.attempt_id, now=NOW, succeeded=False, reason_code="PROVIDER_UNAVAILABLE", model_calls=1)
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.propose_update(wid2, expected_version=store.status_view(wid2, now=NOW)["row_version"],
+                             plan={**one, "budget": {"max_model_calls": 2}}, reason="r", now=LATER)
+    assert exc.value.reason_code == "PLAN_CONFLICT" and "below what is already reserved" in str(exc.value)
+
+
+def test_approve_and_refuse_act_only_on_the_binding_the_manager_decided_on(store):
+    wid = _submit(store, _gated_root()).workflow_id
+    (a,) = store.status_view(wid, now=NOW)["steps"]
+    store.bind_approval(a["step_id"], approval_id="approval_1", plan_version=1, now=NOW)
+    # a plan update moved the workflow to v2 while the manager held a v1 read
+    store.propose_update(wid, expected_version=store.status_view(wid, now=NOW)["row_version"],
+                         plan={**_gated_root(), "budget": {"max_model_calls": 5}}, reason="예산", now=LATER)
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.approve_step(a["step_id"], approval_id="approval_1", plan_version=1, now=LATER)
+    assert exc.value.reason_code == "APPROVAL_NOT_BOUND"
+    assert _step(store, wid, "a")["status"] == wf.S_WAITING_APPROVAL
+    # a refusal decided on an ask the step is no longer bound to changes nothing
+    store.bind_approval(a["step_id"], approval_id="approval_2", plan_version=2, now=LATER)
+    view = store.refuse_step_approval(a["step_id"], approval_id="approval_1", reason_code=wf.APPROVAL_EXPIRED,
+                                      detail="old ask expired", now=LATER)
+    assert view["steps"][0]["status"] == wf.S_WAITING_APPROVAL and view["steps"][0]["approval_id"] == "approval_2"
+
+
+def test_a_version_one_store_is_migrated_in_place_and_keeps_its_rows(tmp_path):
+    path = tmp_path / ws.WORKFLOW_DIR_REL / ws.DB_FILENAME
+    path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(str(path))
+    # the P03 schema: the steps table without the P07 columns, and no P08 tables
+    v1 = [d.replace(", requires_approval INTEGER NOT NULL DEFAULT 0, approval_id TEXT, approval_plan_version INTEGER", "")
+          for d in ws._DDL if "delivery_cursors" not in d and "reported_usage" not in d]
+    for ddl in v1:
+        conn.execute(ddl)
+    conn.execute("INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)", (NOW,))
+    conn.commit()
+    conn.close()
+    assert "requires_approval" not in {r[1] for r in sqlite3.connect(str(path)).execute("PRAGMA table_info(steps)")}
+    store = ws.WorkflowStore(tmp_path)
+    wid = _submit(store, _gated_root()).workflow_id                                  # a write that needs the new columns
+    assert _step(store, wid, "a")["status"] == wf.S_WAITING_APPROVAL
+    conn = sqlite3.connect(str(path))
+    try:
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == ws.SCHEMA_VERSION
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"delivery_cursors", "reported_usage"} <= tables
+    finally:
+        conn.close()

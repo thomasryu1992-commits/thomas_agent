@@ -169,6 +169,8 @@ async def draft_content(request: str, reason: str, naver_keywords: str = "", req
 # --- door API v3: workflows -------------------------------------------------------------------
 
 WORKFLOW_UNAVAILABLE = "WORKFLOW_UNAVAILABLE"
+_MUTATING_COMMANDS = frozenset({"workflow.cancel", "workflow.retry_step", "workflow.propose_update",
+                                "workflow.report_usage", "schedule.propose_change"})
 V2_INTAKE_CLOSED = "V2_INTAKE_CLOSED"     # P10: the door's single-dispatch intake is closed for the cutover
 PLAN_SCHEMA_VERSION = "workflow_plan.v0.1"
 
@@ -180,6 +182,14 @@ def _render_workflow(answer: door.Answer, *, command: str, request_id: str | Non
             f"be accepted. Do NOT submit it again under a new id — call submit_workflow again with "
             f"request_id=\"{request_id}\" (the door replays an accepted workflow, never accepts it twice), "
             "or workflow_status if you already have the workflow_id."
+        )
+    if answer.failure == door.TIMEOUT_AFTER_SEND and command in _MUTATING_COMMANDS:
+        # Sent, no reply: the door may have applied it. "Nothing was started" was false here, and
+        # a retry on that word made a second schedule (review of P09, 2026-09-14).
+        return (
+            f"UNCONFIRMED: the {command} frame was sent and no reply arrived; it MAY HAVE BEEN APPLIED. Read the "
+            "state first (workflow_status for a workflow, schedules for a schedule) and only then decide whether "
+            "to call again."
         )
     if answer.failure:
         text = answer.failure_text()
@@ -469,14 +479,18 @@ def _read_hermes_usage(*, session_id: str | None, since: str | None) -> dict[str
         return None
     input_tokens = sum(int(r[0] or 0) for r in rows)
     output_tokens = sum(int(r[1] or 0) for r in rows)
-    actual = sum(float(r[3] or 0.0) for r in rows)
-    estimated = sum(float(r[2] or 0.0) for r in rows)
-    if actual > 0 and all(float(r[3] or 0.0) > 0 for r in rows):
-        cost, status = actual, "observed"
-    elif estimated > 0:
-        cost, status = estimated, "estimated"
+    # Per row, the best number that row has: its actual cost when billed, else its estimate. The
+    # total is "observed" only when every row was billed, "estimated" when any row is only an
+    # estimate, "unmeasured" when no row carries a cost — a mix of billed and estimated rows keeps
+    # the billed part instead of discarding it (review of P08, 2026-09-14).
+    per_row = [(float(r[3] or 0.0), float(r[2] or 0.0)) for r in rows]
+    cost = sum(actual if actual > 0 else estimate for actual, estimate in per_row)
+    if all(actual > 0 for actual, _ in per_row):
+        status = "observed"
+    elif cost > 0:
+        status = "estimated"
     else:
-        cost, status = 0.0, "unmeasured"
+        status = "unmeasured"
     return {"input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost_usd": round(cost, 6),
             "cost_status": status, "source": source, "as_of": _now_iso()}
 

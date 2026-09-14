@@ -416,3 +416,40 @@ def test_propose_schedule_change_sends_the_closed_change_and_refuses_locally_wha
     refused = dispatch_shim._render_workflow(_answer("dispatch", {"ok": False, "reason_code": "SCHEDULE_DELEGATION_DISABLED",
                                                                   "reason": "no clause"}), command="schedule.propose_change")
     assert refused.startswith("REFUSED [SCHEDULE_DELEGATION_DISABLED]") and "Nothing was changed" in refused
+
+
+def test_billed_and_estimated_rows_keep_both_parts_of_the_cost(monkeypatch, tmp_path):
+    db = tmp_path / "state.db"
+    _state_db(db, [("s1", "paid", 10, 5, 0.10, 0.40, "actual", 1.0), ("s1", "free", 10, 5, 0.02, 0.0, "estimated", 2.0),
+                   ("s2", "free", 10, 5, 0.0, 0.0, None, 3.0)])
+    monkeypatch.setenv(dispatch_shim.STATE_DB_ENV, str(db))
+    mixed = dispatch_shim._read_hermes_usage(session_id="s1", since=None)
+    assert mixed["estimated_cost_usd"] == 0.42 and mixed["cost_status"] == "estimated"
+    assert dispatch_shim._read_hermes_usage(session_id="s2", since=None)["cost_status"] == "unmeasured"
+
+
+def test_the_first_narration_walks_every_page_to_the_real_tail(monkeypatch, tmp_path):
+    monkeypatch.setenv(dispatch_shim.CURSOR_FILE_ENV, str(tmp_path / "cursor.json"))
+    tail = 437
+    asked = []
+
+    def paged(d, p, **kw):                                              # a door that honours after_cursor AND limit
+        asked.append((p["after_cursor"], p.get("limit")))
+        start = p["after_cursor"] + 1
+        end = min(tail, p["after_cursor"] + int(p.get("limit") or 50))
+        rows = [{"cursor": c} for c in range(start, end + 1)]
+        return _events_answer(rows, rows[-1]["cursor"] if rows else p["after_cursor"])
+
+    monkeypatch.setattr(door, "ask", paged)
+    assert dispatch_shim.workflow_changes().startswith(f"커서 초기화 (cursor={tail})")
+    assert json.loads((tmp_path / "cursor.json").read_text())["cursor"] == tail
+    assert len(asked) >= 3                                               # more than one page was read
+
+
+
+def test_a_mutation_sent_without_a_reply_is_unconfirmed_never_nothing_started():
+    for command in ("schedule.propose_change", "workflow.cancel", "workflow.retry_step", "workflow.propose_update"):
+        out = dispatch_shim._render_workflow(_answer("dispatch", failure=door.TIMEOUT_AFTER_SEND, sent=True), command=command)
+        assert out.startswith("UNCONFIRMED") and "MAY HAVE BEEN APPLIED" in out and "Nothing was started" not in out
+    down = dispatch_shim._render_workflow(_answer("dispatch", failure=door.NO_SOCKET), command="schedule.propose_change")
+    assert down.startswith("UNAVAILABLE") and "Nothing was started" in down                # not sent: the honest answer

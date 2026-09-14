@@ -53,6 +53,7 @@ from .permission import (
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_TARGET_PREFIX,
     TRIAL_PERMISSION_SCOPE,
+    WORKFLOW_STEP_TARGET_PREFIX,
 )
 
 from . import _scripts_bridge  # noqa: F401  (side effect: scripts/ on sys.path, once)
@@ -465,6 +466,10 @@ def format_request(approval: Mapping[str, Any]) -> str:
     target_ref = str(snapshot.get("target_ref") or "")
     arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
     switch = arms_live or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX)
+    # The workflow manager's gated-step asks (sequence 2, P07) are spent by the manager itself on
+    # its next pass — no operator step follows the approval — so the closing paragraph every other
+    # branch carries ("approval alone runs nothing") was false for them (review of P07, 2026-09-14).
+    workflow_step = target_ref.startswith(WORKFLOW_STEP_TARGET_PREFIX)
     lines = [
         "Approval Request",
         "",
@@ -487,6 +492,8 @@ def format_request(approval: Mapping[str, Any]) -> str:
          # (as this line did for three weeks) misprices the decision in the wrong direction.
          "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다"
          if switch else
+         "되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"
+         if workflow_step else
          "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",
@@ -495,9 +502,17 @@ def format_request(approval: Mapping[str, Any]) -> str:
         "(id 뒤에 이유를 적으면 결정 기록에 남습니다 — 예: /reject "
         f"{approval['approval_id']} 근거 문서가 부족함)",
         "",
-        "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.",
+        ("승인하면 워크플로 관리자가 다음 패스에서 이 승인을 1회 소비하고 이 단계 하나를 실행합니다. "
+         "런타임이 정지(KILLED/PAUSED)면 소비하지 않고 기다립니다."
+         if workflow_step else
+         "이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다."),
     ]
-    if switch:
+    if workflow_step:
+        lines += [
+            "이 승인은 이 계획 버전의 이 요청(해시)에만 묶입니다. 계획이 바뀌거나 단계가 바뀌면 이 승인은",
+            "APPROVAL_STALE로 거부되고 새 요청이 올라옵니다. 거절하면 단계는 멈추고 워크플로는 결정을 기다립니다.",
+        ]
+    elif switch:
         lines += [
             "이 승인은 `approval_cli consume`으로 쓰지 않습니다. 어시스턴트가 같은 approval id로",
             "스위치 문을 다시 호출할 때 1회만 소비됩니다 — approval_consumption 세이프티 플래그와",

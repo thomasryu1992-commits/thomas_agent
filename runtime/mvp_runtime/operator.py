@@ -1167,6 +1167,8 @@ def push_workflow_events(
         return True
 
     # 1. A PENDING row is a send this process (or its predecessor) never confirmed: retry once.
+    #    "Once" is recorded before the retry leaves — the row turns UNCERTAIN first, so a process
+    #    that dies during the retry leaves UNCERTAIN, which is never sent again (review of P08).
     for row in workflow_store.deliveries(channel_name, status=wf.DELIVERY_PENDING, limit=limit):
         event = workflow_store.event(int(row["event_cursor"]))
         if event is None:
@@ -1174,6 +1176,8 @@ def push_workflow_events(
                                            detail="event row missing")
             continue
         report["retried"] += 1
+        workflow_store.record_delivery(channel_name, int(row["event_cursor"]), wf.DELIVERY_UNCERTAIN, now=now,
+                                       detail="retrying a send a previous pass left PENDING; not retried again")
         _deliver(event)
 
     # 2. New events past the cursor. The first pass adopts the backlog and sends nothing — a
@@ -1192,7 +1196,14 @@ def push_workflow_events(
     budget = max(0, int(limit) - len(report["sent"]) - len(report["uncertain"]))
     advanced_to = cursor
     for event in events:
-        pushed = event.get("entity") == "workflow" and event.get("to_status") in wf.PUSHED_WORKFLOW_STATUSES
+        # An arrival, not a restatement: a same-status workflow event (a new plan version on a
+        # waiting workflow) is not a new state Thomas has to hear about (review of P08).
+        pushed = (event.get("entity") == "workflow" and event.get("to_status") in wf.PUSHED_WORKFLOW_STATUSES
+                  and event.get("from_status") != event.get("to_status"))
+        if pushed and workflow_store.delivery(channel_name, int(event["cursor"])) is not None:
+            # Already sent or attempted by a pass that died before it moved the cursor: the row is
+            # the answer, and a CONFIRMED or UNCERTAIN event is never sent twice (review of P08).
+            pushed = False
         if pushed:
             if budget <= 0:
                 break                                  # the rest waits for the next pass; the cursor stays before it

@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.4
+version: 1.5.5
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -250,11 +250,14 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
 8. **계획을 고치려면 `propose_workflow_update(workflow_id, expected_version, plan_json, reason)`** — 계획
    전체를 새 버전으로 낸다(제출과 같은 모양). 아직 시작하지 않은 단계의 요청·의존·게이트 변경, 단계 추가·삭제,
    목표 변경, 예산 증액만 된다. 실행 중이거나 끝난 단계를 바꾸면 `PLAN_CONFLICT`로 거부되고 아무것도 바뀌지
-   않는다. 예산 때문에 `WAITING_REPLAN`에 멈춘 단계는 예산을 올린 새 버전이 풀어준다.
+   않는다. 예산 때문에 `WAITING_REPLAN`에 멈춘 단계는 예산을 올린 새 버전이 풀어준다. 취소 중인 워크플로
+   (`WORKFLOW_CANCELLING`)와 런타임 정지 중에는 새 버전도 재시도도 받지 않는다 — 취소만 된다.
 9. **`requires_approval: true`인 단계는 Thomas의 승인을 기다린다.** 그 단계 차례가 오면 상태가
    `WAITING_APPROVAL`이 되고 승인 요청은 관제봇 창에 자동으로 올라간다 — 네가 상신하거나 승인 id를 만들
    일은 없다(계획에 승인 필드를 넣으면 `PLAN_INVALID`). 거부·만료되면 단계는 `BLOCKED`로 `WAITING_REPLAN`에
-   서고, `retry_workflow_step`이 다시 요청한다. 승인 뒤 계획을 고치면 그 단계는 새 버전으로 다시 물어본다.
+   서고, `retry_workflow_step`이 다시 요청한다. 승인 뒤 그 단계를 고치면(요청·옵션·의존 무엇이든) 다시 물어본다.
+   **게이트는 떼지 못한다** — 새 버전에서 `requires_approval`을 빼면 `PLAN_CONFLICT`다. Thomas가 거절한 단계를
+   게이트를 떼서 돌리려 하지 마라; 거절 사유를 반영해 요청을 고친 새 버전을 내면 다시 물어본다.
 10. **워크플로는 거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인 명령은
    §5·§5.1 그대로다.
 11. **서술은 `workflow_changes`로 한다.** 커서는 도구가 기억하므로 넘길 것이 없다. '변화 없음'이면
@@ -269,5 +272,7 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
    `APPLIED`면 적용된 것이고, `PROPOSED`면 아무것도 바뀌지 않았으니 §5 양식으로 상신한다(실행 란에 그 변경을
    적어라). `REFUSED [SCHEDULE_DELEGATION_DISABLED]`는 정책이 아직 아무 일정도 위임하지 않는다는 뜻이다 —
    그때 일정은 전부 Thomas의 것이고 상신만 한다. `crypto_*` 일정은 어떤 경우에도 이 도구로 바꾸지 못한다
-   (`FINANCIAL_SCHEDULE_REFUSED`). 네가 만든 일정은 30일 뒤 스스로 꺼진다(`expired`) — 연장은 Thomas가 한다.
+   (`FINANCIAL_SCHEDULE_REFUSED`). 네가 만든 일정은 30일 뒤 스스로 꺼진다(`expired`) — 연장은 Thomas가 한다:
+   만료된 일정을 다시 켜거나 똑같이 다시 만들면 `PROPOSED`다. 응답이 `UNCONFIRMED`면 적용됐을 수 있으니
+   `schedules`로 확인한 뒤에만 다시 불러라(같은 일정을 다시 만들면 새로 생기지 않고 기존 것이 돌아온다).
    `workflow_plan` 종류는 매 회차 계획 하나를 접수한다; 회차당 접수는 한 번이고 놓친 회차는 따라잡지 않는다.

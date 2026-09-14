@@ -27,6 +27,7 @@ off this process is byte-for-byte the v2 door it was.
 from __future__ import annotations
 
 import os
+import sys
 
 import argparse
 from pathlib import Path
@@ -75,7 +76,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help=f"how often the manager loop looks for work (default {DEFAULT_POLL_SECONDS}s)")
     parser.add_argument("--workflow-concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"attempts in flight at once (default {DEFAULT_CONCURRENCY}, the worker's own ceiling)")
-    intake_default = os.environ.get(V2_INTAKE_ENV, "open")
+    # An empty value is "not set" (compose `${VAR:-}` injects an empty string), never a refusal to
+    # start: a door that dies on a blank variable takes every assistant tool down (review of P10).
+    intake_default = (os.environ.get(V2_INTAKE_ENV) or "open").strip() or "open"
     parser.add_argument("--v2-intake", choices=("open", "closed"), default=intake_default,
                         help="P10 cutover: 'closed' refuses NEW single dispatches (V2_INTAKE_CLOSED) while v3 commands, "
                              f"reads and replays keep working (default: ${V2_INTAKE_ENV}, else open)")
@@ -122,7 +125,9 @@ def _serve(path: Path, worker_socket: Path, manager: WorkflowManager | None,
     # scope is read once at start (None = no clause = every change refused); a policy change is
     # a redeploy, which is how every other policy-read service here behaves.
     schedule_store = ScheduleStore.default() if workflow_store is not None else None
-    delegation = schedule_delegation.load_delegation() if workflow_store is not None else None
+    delegation = schedule_delegation.load_delegation_safely() if workflow_store is not None else None
+    if isinstance(delegation, schedule_delegation.InvalidDelegation):
+        sys.stderr.write(f"DISPATCH_BRIDGE: schedule delegation OFF — the policy clause does not load ({delegation.reason})\n")
     return serve_door_forever(
         label="DISPATCH_BRIDGE", path=path,
         open_server=lambda: dispatch_bridge.open_door(

@@ -309,3 +309,81 @@ def test_the_ask_is_recorded_only_as_metadata_and_never_as_a_grant(tmp_path):
     assert [r["status"] for r in mine] == ["PENDING", "APPROVED", "CONSUMED"]
     assert mine[1]["approver"]["approved_by"] == approval_mod.REQUIRED_APPROVER
     assert mine[1]["approver"]["identity_verification_method"] == approval_mod.TELEGRAM_VERIFICATION_METHOD
+
+
+# --- independent review of P07 (2026-09-14) ----------------------------------------------------------
+
+@requires_local_core
+def test_a_budget_only_version_asks_again_and_only_the_new_grant_runs_the_step(tmp_path):
+    store, approvals, manager, wid, step = _to_the_gate(tmp_path)
+    old_id = step["approval_id"]
+    view = store.status_view(wid, now=NOW)
+    store.propose_update(wid, expected_version=view["row_version"], plan=_plan(budget=7), reason="예산만", now=SOON)
+    assert next(s for s in store.status_view(wid, now=SOON)["steps"] if s["key"] == "publish_draft")["approval_id"] == old_id
+    manager.clock.now = SOON
+    report = manager.tick()
+    assert report["asks_minted"] == 1 and report["claimed"] == 0                 # v2 is asked for, not the v1 ask spent
+    fresh = next(s for s in store.status_view(wid, now=SOON)["steps"] if s["key"] == "publish_draft")
+    assert fresh["approval_id"] != old_id and fresh["approval_plan_version"] == 2
+    _decide(approvals, fresh["approval_id"], granted=True)
+    report = manager.tick()
+    assert report["approvals_spent"] == 1 and report["claimed"] == 1
+    assert approvals.get(old_id)["status"] == approval_mod.STATUS_PENDING         # the v1 ask was never spent
+
+
+def test_a_mint_that_fails_with_an_untyped_error_is_backed_off_and_other_workflows_still_run(tmp_path, monkeypatch):
+    from runtime.mvp_runtime import workflow_manager as wm
+
+    store, approvals, manager = _harness(tmp_path)
+    gated = {"schema_version": "workflow_plan.v0.1", "goal": "게이트",
+             "steps": [{"id": "g", "capability": "content", "request": "y", "reason": "r", "requires_approval": True}],
+             "budget": {"max_model_calls": 2}}
+    plain = {"schema_version": "workflow_plan.v0.1", "goal": "일반",
+             "steps": [{"id": "a", "capability": "analysis", "request": "x", "reason": "r"}], "budget": {"max_model_calls": 2}}
+    store.submit(principal="hermes", request_id="hermes-g", plan=gated, now=NOW)
+    plain_id = store.submit(principal="hermes", request_id="hermes-p", plan=plain, now=NOW).workflow_id
+    calls = []
+
+    def broken(*a, **k):
+        calls.append(1)
+        raise KeyError("identity")
+
+    monkeypatch.setattr(wm, "build_task", broken)
+    report = manager.tick()
+    assert report["error"] is None and report["claimed"] == 1 and report["asks_minted"] == 0
+    assert store.status_view(plain_id, now=NOW)["status"] == wf.W_COMPLETED
+    assert any("KeyError" in line for line in manager.logs)
+    for _ in range(3):
+        manager.tick()
+    assert len(calls) == 1                                                       # backed off, not retried every tick
+
+
+@requires_local_core
+def test_a_plan_update_between_the_read_and_the_spend_spends_nothing(tmp_path, monkeypatch):
+    store, approvals, manager, wid, step = _to_the_gate(tmp_path)
+    _decide(approvals, step["approval_id"], granted=True)
+    real = approval_mod.validate_spendable_approval
+
+    def racing(*a, **k):
+        out = real(*a, **k)
+        view = store.status_view(wid, now=SOON)                                   # the assistant updates the plan mid-spend
+        store.propose_update(wid, expected_version=view["row_version"], plan=_plan(budget=9), reason="동시 수정", now=SOON)
+        return out
+
+    monkeypatch.setattr(approval_mod, "validate_spendable_approval", racing)
+    manager.clock.now = SOON
+    report = manager.tick()
+    assert report["approvals_spent"] == 0 and report["claimed"] == 0
+    assert approvals.get(step["approval_id"])["status"] == approval_mod.STATUS_APPROVED      # the grant was not spent
+    monkeypatch.undo()
+    assert manager.tick()["asks_minted"] == 1                                    # the new version is asked for
+
+
+@requires_local_core
+def test_the_ask_tells_thomas_that_approving_runs_the_step_and_never_that_it_runs_nothing(tmp_path):
+    store, approvals, manager, wid, step = _to_the_gate(tmp_path)
+    ask = approvals.get(step["approval_id"])
+    text = approval_mod.request_message(ask, approvals.get_permission_decision(ask["permission_decision_id"]))
+    assert "다음 패스에서 이 승인을 1회 소비하고 이 단계 하나를 실행합니다" in text
+    assert "REVIEW_ONLY" not in text and "validated memory" not in text and "approval_consumption" not in text
+    assert f"/approve {step['approval_id']}" in text and "APPROVAL_STALE" in text

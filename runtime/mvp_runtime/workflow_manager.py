@@ -40,7 +40,7 @@ from .approval_store import ApprovalStore
 from .binding import bind_task_to_core
 from .control import ControlStore
 from .dispatch_bridge import WORKER_DEADLINE_SECONDS
-from .errors import ApprovalBlocked, MvpRuntimeError
+from .errors import ApprovalBlocked, MvpRuntimeError, WorkflowBlocked
 from .intake import build_task
 from .task_registry import TaskRegistryStore
 from .workflow_store import COST_OBSERVED, DEFAULT_ATTEMPT_DEADLINE_SECONDS, ClaimedAttempt, WorkflowStore
@@ -208,7 +208,14 @@ class WorkflowManager:
         try:
             report.update(self.reconcile(now=now))
             report["expired"] = len(self._store.expire_overdue(now=now))
-            report.update(self.approvals(now=now))
+            # Gated steps are one workflow's business; a failure there must not stop every other
+            # workflow's claims (review of P07, 2026-09-14: an untyped mint error aborted the tick
+            # before the claim, on every tick).
+            try:
+                report.update(self.approvals(now=now))
+            except Exception as exc:  # noqa: BLE001 — the claim below must still run
+                report["approvals_error"] = f"{type(exc).__name__}: {exc}"
+                self._log(f"WORKFLOW_MANAGER[APPROVALS_FAILED]: {type(exc).__name__}: {exc}")
             state = self._control.load()
             if not state.execution_allowed:
                 report["skipped"] = f"runtime is {state.mode}; claiming nothing"
@@ -275,7 +282,7 @@ class WorkflowManager:
                 elif status == approval_mod.STATUS_APPROVED:
                     outcome = self._spend(step, now)
                     if outcome is None:
-                        report["approvals_deferred"] += 1       # halted runtime: the grant waits, unspent
+                        report["approvals_deferred"] += 1       # halted, or the step changed first: the grant waits, unspent
                     elif outcome:
                         report["approvals_spent"] += 1
                     else:
@@ -283,11 +290,11 @@ class WorkflowManager:
                 else:
                     self._refuse(step, wf.APPROVAL_STALE, f"ask {step['approval_id']} is {status!r}", now)
                     report["approvals_refused"] += 1
-            except MvpRuntimeError as exc:
-                if step["approval_id"] is None:
+            except Exception as exc:  # noqa: BLE001 — one step's failure is logged and backed off, never the loop's
+                if step["approval_id"] is None or step["approval_plan_version"] != step["workflow_plan_version"]:
                     self._mint_failures[step_id] = self.ticks
-                self._log(f"WORKFLOW_MANAGER[{exc.reason_code}]: gated step {step['step_key']} of "
-                          f"{step['workflow_id']}: {exc}")
+                code = exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+                self._log(f"WORKFLOW_MANAGER[{code}]: gated step {step['step_key']} of {step['workflow_id']}: {exc}")
         return report
 
     def _mint(self, step: Mapping[str, Any], now: str) -> None:
@@ -344,6 +351,18 @@ class WorkflowManager:
                 or dict(snapshot.get("normalized_parameters") or {}) != expected):
             self._refuse(step, wf.APPROVAL_STALE, f"grant {approval_id} describes another step, version or request", now)
             return False
+        # Re-read the step just before spending: a plan update since this tick's read may have
+        # changed or re-bound it, and the grant must not be spent on a read that is no longer true.
+        # The store rechecks the same binding again inside `approve_step`'s own transaction; a
+        # change landing between the two leaves the grant spent and the step waiting, which is
+        # the safe direction (the next tick asks again).
+        now_row = self._store.step(step["step_id"])
+        if (now_row is None or now_row["status"] != wf.S_WAITING_APPROVAL or now_row["approval_id"] != approval_id
+                or now_row["approval_plan_version"] != step["workflow_plan_version"]
+                or now_row["workflow_plan_version"] != step["workflow_plan_version"]):
+            self._log(f"WORKFLOW_MANAGER[APPROVAL_NOT_BOUND]: step {step['step_key']} of {step['workflow_id']} changed "
+                      f"before {approval_id} was spent; nothing spent")
+            return None
         with approval_mod.spend_lock(self._approval_store, approval_id):
             fresh = self._approval_store.get(approval_id)
             consumed = approval_mod.build_consumed_record(
@@ -352,12 +371,19 @@ class WorkflowManager:
                 repo_root=self._repo_root,
             )
             self._approval_store.append([consumed])
-            self._store.approve_step(step["step_id"], approval_id=approval_id, now=now)
+        try:
+            self._store.approve_step(step["step_id"], approval_id=approval_id,
+                                     plan_version=step["workflow_plan_version"], now=now)
+        except WorkflowBlocked as exc:
+            self._log(f"WORKFLOW_MANAGER[{exc.reason_code}]: grant {approval_id} was spent but step {step['step_key']} of "
+                      f"{step['workflow_id']} changed meanwhile and was not released; it will be asked again")
+            return False
         self._log(f"WORKFLOW_MANAGER[APPROVAL_CONSUMED]: step {step['step_key']} of {step['workflow_id']} released by {approval_id}")
         return True
 
     def _refuse(self, step: Mapping[str, Any], reason_code: str, detail: str, now: str) -> None:
-        self._store.refuse_step_approval(step["step_id"], reason_code=reason_code, detail=detail, now=now)
+        self._store.refuse_step_approval(step["step_id"], approval_id=step["approval_id"], reason_code=reason_code,
+                                         detail=detail, now=now)
         self._log(f"WORKFLOW_MANAGER[{reason_code}]: step {step['step_key']} of {step['workflow_id']} blocked: {detail}")
 
     def _launch(self, attempt: ClaimedAttempt) -> None:
