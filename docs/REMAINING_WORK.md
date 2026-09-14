@@ -4868,8 +4868,11 @@ delegation goes live only with its own policy bump.
       class, two-phase cancel, event cursor, backup-API snapshot), `workflow_plan.v0.1` / `workflow_event.v0.1`,
       `task_registry_entry.v0.3` with origin `WORKFLOW` in `MANAGER_ORIGINS` and outside `WORKER_ORIGINS`; contract
       `runtime-contracts/WORKFLOW_V0.1.md`.
-- [ ] **P04 — Manager loop inside dispatch-bridge** (`--workflow-manager`), `workflow_cli`
-      (snapshot / inspect / reconcile). No new service, uid, volume or healthcheck.
+- [x] **P04 — Manager loop inside dispatch-bridge** (2026-09-14)**.** `workflow_manager.py` runs in the dispatch-bridge
+      process behind `--workflow-manager` (off by default; a compose-command decision): lapse leases, claim READY steps
+      while the runtime is ACTIVE, speak the v2 frame to the worker socket, record results through the fence; a
+      transport failure records nothing and the lease decides. `workflow_cli` list / inspect / events / snapshot,
+      read-only. No new service, uid, volume or healthcheck.
 - [ ] **P05 — v3 async single task**: submit → attempt frame → pipeline → audit → result; `WORKFLOW`
       registry rows; v2 unchanged byte-for-byte with the flag off.
 - [ ] **P06 — retry / reconcile / cancel / recovery**; fence = `attempt_id`, lease = connection lifetime +

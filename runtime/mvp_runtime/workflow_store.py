@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +54,13 @@ MAX_OPEN_STEPS = 20
 # that lands at the deadline is not already late.
 DEFAULT_ATTEMPT_DEADLINE_SECONDS = 660
 BUSY_TIMEOUT_SECONDS = 5.0
+# The first open of a file switches it to WAL, which needs the whole file to itself. Several
+# handles opening one new file at once — four submit threads, a reader beside a writer — race
+# for that instant, and on Windows the loser is told "database is locked" at once rather than
+# waiting out the busy timeout (measured in CI, 2026-09-14). A handle serialises its own
+# threads with a lock and retries the switch a bounded number of times for every other handle.
+INIT_ATTEMPTS = 20
+INIT_RETRY_SECONDS = 0.1
 
 _DDL = (
     "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -140,6 +149,7 @@ class WorkflowStore:
         self._path = self._root / WORKFLOW_DIR_REL / DB_FILENAME
         self._readonly = readonly
         self._initialized = False
+        self._init_lock = threading.Lock()
 
     @classmethod
     def default(cls, root: Path | None = None, *, readonly: bool = False) -> "WorkflowStore":
@@ -152,26 +162,41 @@ class WorkflowStore:
     # --- connections ------------------------------------------------------------------------
 
     def initialize(self) -> None:
-        """Create the file, the tables and WAL mode. Idempotent; a no-op read-only."""
-        if self._readonly:
+        """Create the file, the tables and WAL mode. Idempotent; a no-op read-only. Serialised
+        within this handle and retried against other handles (see INIT_ATTEMPTS)."""
+        if self._readonly or self._initialized:
             return
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(self._path), timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA foreign_keys=ON")
-                for statement in _DDL:
-                    conn.execute(statement)
-                conn.execute(
-                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                    (SCHEMA_VERSION, timeutil.utc_now_iso()),
-                )
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE", f"the workflow store cannot be opened: {exc}") from exc
-        self._initialized = True
+        with self._init_lock:
+            if self._initialized:
+                return
+            last: sqlite3.Error | None = None
+            for _ in range(INIT_ATTEMPTS):
+                try:
+                    self._path.parent.mkdir(parents=True, exist_ok=True)
+                    conn = sqlite3.connect(str(self._path), timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute("PRAGMA foreign_keys=ON")
+                        for statement in _DDL:
+                            conn.execute(statement)
+                        conn.execute(
+                            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                            (SCHEMA_VERSION, timeutil.utc_now_iso()),
+                        )
+                    finally:
+                        conn.close()
+                    self._initialized = True
+                    return
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                        raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE",
+                                               f"the workflow store cannot be opened: {exc}") from exc
+                    last = exc
+                    time.sleep(INIT_RETRY_SECONDS)
+                except sqlite3.Error as exc:
+                    raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE", f"the workflow store cannot be opened: {exc}") from exc
+            raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE",
+                                   f"the workflow store stayed locked through {INIT_ATTEMPTS} opening attempts: {last}")
 
     def _connect(self) -> sqlite3.Connection:
         if self._readonly:
@@ -396,6 +421,13 @@ class WorkflowStore:
             return int(conn.execute(
                 "SELECT COUNT(*) FROM steps WHERE status IN (?, ?, ?, ?)",
                 (wf.S_PENDING, wf.S_READY, wf.S_RETRY_WAIT, wf.S_WAITING_APPROVAL)).fetchone()[0])
+
+    def running_attempts(self) -> list[dict[str, Any]]:
+        """Every attempt still RUNNING — after a restart, the ones whose connection died with
+        the previous process and will lapse at their leases unless reconciled (P06)."""
+        with self._read() as conn:
+            rows = conn.execute("SELECT * FROM attempts WHERE status=? ORDER BY opened_at", (wf.A_RUNNING,)).fetchall()
+            return [dict(r) for r in rows]
 
     def attempt(self, attempt_id: str) -> dict[str, Any] | None:
         with self._read() as conn:
