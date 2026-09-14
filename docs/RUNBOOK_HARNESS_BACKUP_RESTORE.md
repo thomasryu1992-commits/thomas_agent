@@ -18,6 +18,7 @@ One archive a day, `govstate-<UTC stamp>.tar.gz` under `/root/backups/governance
 | Root (member prefix) | Owner on disk | What it is | Excluded |
 |---|---|---|---|
 | `thomas_agent/.runtime_governance_state` | 10001:10001, 0700 | approvals and permission decisions, the hash-chained audit ledger, `records.jsonl` + archive, `schedules.jsonl`, task registry, control state, crypto state (pool, snapshots, budget and risk-limit records), working memory, knowledge corpus | `crypto/candle_archive` (weekly archive instead); the five unix sockets |
+| `thomas_agent/.runtime_governance_state/workflow/snapshots/<stamp>/` | 10001 | a **consistent** copy of the workflow store (`workflow-<stamp>.db` + manifest) made by the dispatch bridge with the SQLite backup API moments before the tar (P10; `workflow-snapshot=ok\|absent\|FAILED` on the log line) | the live `workflow/workflow.db*` — restore from the copy, `RUNBOOK_WORKFLOW_CUTOVER.md` §4 |
 | `thomas_agent/THOMAS_CORE/activations`, `…/approvals` | root | the Core activation pointer's targets — mounted read-only into five services; **were in no backup before 2026-09-04** | — |
 | `thomas_agent/workspace` | 10001 | content-lane deliverables (`POST.md`, `PASTE.txt`, …) | — |
 | `thomas_agent/.env` | root, 0600 | the single secret source (see `DEPLOYMENT.md` → *Secret boundary*) | — |
@@ -30,10 +31,11 @@ The snapshot step runs inside the container as uid 10000 (`docker exec -u 10000 
 **Check the backup ran.** `backup_watch.sh` does this daily at 08:00Z, fifteen minutes after the core
 job, and messages the operator's registered control chat when a check fails — cron itself is silent
 and there is no MTA on this host, which is why four consecutive failures went unseen in 2026-09-04..07.
-It checks four things: the newest core archive is younger than 26 h, the last `mode=core` line in
-`backup.log` reads OK, the newest candle archive is younger than 8 days, and `health-watch.log` has
-been written in the last 30 minutes (see *The two watches watch each other* below). It says nothing when all
-three pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
+It checks five things: the newest core archive is younger than 26 h, the last `mode=core` line in
+`backup.log` reads OK, that same line carries `workflow-snapshot=ok` or `=absent` (P10 — the workflow
+store's copy was made, or there was none to make), the newest candle archive is younger than 8 days,
+and `health-watch.log` has been written in the last 30 minutes (see *The two watches watch each other*
+below). It says nothing when all five pass, and appends one line per run to `watch.log` so its own silence stays distinguishable from
 its absence. `--dry-run` prints the message instead of sending it. The control-bot token comes from
 `.env` through a curl config on stdin (never argv, never a log) and the chat id from
 `operator_registration.json` rather than a second copy of it. By hand:
@@ -72,6 +74,10 @@ project and the running containers are left alone, and a working tree that is no
 a compose file that does not match what is deployed.
 
 The sockets under `bridge/` and `internal/` are not in the archive; the door and worker processes recreate them on start. The candle loss window is up to 7 days by decision (2026-08-31).
+
+The workflow store comes back from its snapshot copy, not from the (excluded) live file: after
+the `tar xzf` above, follow `RUNBOOK_WORKFLOW_CUTOVER.md` §4 — `workflow_cli verify` the copy,
+put it at `workflow/workflow.db`, delete any `-wal`/`-shm` beside it, chown — before `up -d`.
 
 ### 2.2 Core activation, workspace, the secret file
 

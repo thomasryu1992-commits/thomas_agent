@@ -263,6 +263,15 @@ Who may register one is the scheduler's question, not this store's: `schedule_de
 refuses every financial kind — dormant until policy 1.6.0 names the scope
 (`docs/runtime-contracts/POLICY_1_6_0_DRAFT.md`).
 
+### Backup, cutover, rollback (P10; A22, A24, A25)
+
+The live file is never tarred: `harness_backup.sh` has the bridge write a backup-API copy into
+`workflow/snapshots/<stamp>/` and archives that; `workflow_cli verify --snapshot` reads a copy on
+its own and `workflow_cli drain` says what is in flight on both paths. The entry-point cutover is
+the door's `--v2-intake closed` (new single dispatches refused as `V2_INTAKE_CLOSED`; v3, reads
+and pre-close replays untouched), then drain, then the client switch; rollback keeps the store and
+a compatible manager finishes it. Procedure and rehearsals: `docs/RUNBOOK_WORKFLOW_CUTOVER.md`.
+
 ### Recovery — the manager and the registry row (P06; A10, A28)
 
 Every attempt the worker runs opens a registry row of origin `WORKFLOW` carrying the

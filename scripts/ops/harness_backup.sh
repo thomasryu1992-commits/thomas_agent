@@ -23,8 +23,13 @@
 #
 # Live SQLite files are NOT tarred (a WAL-mode database copied mid-write is not a backup). The
 # assistant's own `hermes backup --quick` copies state.db with the sqlite backup API into
-# data/state-snapshots/<stamp>-daily/, and that directory IS tarred. Recreatable caches, installed
-# packages and logs are excluded — they are not state.
+# data/state-snapshots/<stamp>-daily/, and that directory IS tarred. The workflow store (sequence 2,
+# P10; V0.2 Q28) follows the same rule: the dispatch bridge copies workflow.db with the backup API
+# into .runtime_governance_state/workflow/snapshots/<stamp>/ as uid 10001, that directory is tarred,
+# the live workflow.db* is excluded, and the log line says `workflow-snapshot=ok|absent|FAILED`
+# (absent = the manager never created the store on this host; not a failure). Only the newest
+# snapshot directory is kept. Recreatable caches, installed packages and logs are excluded — they
+# are not state.
 set -u
 
 MODE="${1:-core}"
@@ -51,6 +56,22 @@ case "$MODE" in
     fi
     # Keep only the newest snapshot directory (33 MB each): older ones are in older archives.
     ls -1dt "$HOST_ROOT/$HERMES/data/state-snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
+    # 1b. A consistent copy of the workflow store (P10), made by the dispatch bridge as uid 10001
+    #     — the owner of the state directory, so the copy is the service's to write and to read
+    #     back. Non-fatal like the Hermes snapshot: the archive then carries the previous
+    #     snapshot directory and the log line says FAILED. No store = nothing to copy = absent.
+    WF_DIR="$THOMAS/.runtime_governance_state/workflow"
+    WF_NOTE="workflow-snapshot=ok"
+    if [ -e "$HOST_ROOT/$WF_DIR/workflow.db" ]; then
+      if ! docker exec -u 10001 thomas-dispatch-bridge python -m runtime.mvp_runtime.workflow_cli snapshot \
+             --dest "/app/.runtime_governance_state/workflow/snapshots/$STAMP" >/dev/null 2>&1; then
+        WF_NOTE="workflow-snapshot=FAILED"
+      fi
+      ls -1dt "$HOST_ROOT/$WF_DIR/snapshots"/*/ 2>/dev/null | tail -n +2 | xargs -r rm -rf
+    else
+      WF_NOTE="workflow-snapshot=absent"
+    fi
+    SNAP_NOTE="$SNAP_NOTE $WF_NOTE"
     # 2. One archive, two host roots, member paths prefixed with the directory they restore into.
     # A missing member makes tar exit 2 and this script delete the archive it just wrote, so the
     # whole backup is lost for the sake of one absent path. Name the absent path in the log —
@@ -69,6 +90,7 @@ case "$MODE" in
     fi
     tar czf "$OUT" --warning=no-file-changed -C "$HOST_ROOT" \
         --exclude="$THOMAS/.runtime_governance_state/crypto/candle_archive" \
+        --exclude="$WF_DIR/workflow.db" --exclude="$WF_DIR/workflow.db-*" \
         --exclude="$HERMES/data/state.db" --exclude="$HERMES/data/state.db-*" \
         --exclude="$HERMES/data/kanban.db" --exclude="$HERMES/data/kanban.db-*" \
         --exclude="$HERMES/data/cron/executions.db" --exclude="$HERMES/data/cron/executions.db-*" \

@@ -221,8 +221,14 @@ def apply_dispatch(
     manager_enabled: bool = False,
     schedule_store: Any | None = None,
     delegation: Any | None = None,
+    v2_intake: bool = True,
 ) -> dict[str, Any]:
     """Validate one dispatch request and forward it, or raise a typed ``ControlBlocked``.
+
+    ``v2_intake=False`` (P10, the entry-point cutover) refuses NEW single dispatches by name
+    (``V2_INTAKE_CLOSED``) while the v3 commands, the reads, and the replay of a request id
+    accepted before the close all keep working — closing an intake drains an entry point, it
+    does not lose what the entry point already took.
 
     Pure with respect to the transport on both sides — a decoded object in (plus an injected
     executor), a reply out — which is what makes the permission surface testable without a
@@ -235,7 +241,7 @@ def apply_dispatch(
         return apply_workflow_command(
             request, control_store=control_store, workflow_store=workflow_store, now=now,
             schedule_store=schedule_store, ledger=ledger, delegation=delegation,
-            manager_enabled=manager_enabled,
+            manager_enabled=manager_enabled, v2_intake=v2_intake,
         )
 
     unexpected = set(request) - _ALLOWED_KEYS
@@ -288,6 +294,20 @@ def apply_dispatch(
         naver_keywords = raw_seeds.strip()
 
     request_id = bridge_idempotency.request_id_of(request)
+    if not v2_intake:
+        # The cutover (P10): new single dispatches are refused here, by name, before anything
+        # is claimed or run. A retry of an id this door already accepted is not new work — it
+        # falls through to the claim below and replays, so a client that lost a reply during
+        # the close still gets its run back.
+        live = (bridge_idempotency.lookup(ledger, door=_DOOR, request_id=request_id, now=now or timeutil.utc_now_iso())
+                if request_id is not None and ledger is not None else None)
+        if live is None:
+            raise ControlBlocked(
+                "V2_INTAKE_CLOSED",
+                "this door no longer takes single dispatches: the entry point is being cut over to "
+                "workflows (door API v3, submit_workflow); nothing was started. A retry of a "
+                "request_id accepted before the close still replays",
+            )
     if request_id is not None and ledger is None:
         # Fail closed rather than running unprotected: a caller that sent an id asked for
         # at-most-once, and honouring the request while dropping the guarantee gives it the
@@ -393,6 +413,7 @@ def apply_workflow_command(
     schedule_store: Any | None = None,
     ledger: LedgerStore | None = None,
     delegation: Any | None = None,
+    v2_intake: bool = True,
 ) -> dict[str, Any]:
     """Door API v3: one workflow command, or a typed refusal (sequence 2, P05).
 
@@ -424,6 +445,7 @@ def apply_workflow_command(
             "commands": sorted(V3_COMMANDS), "kinds": sorted(_ALLOWED_KINDS),
             "plan_schema": wf.PLAN_SCHEMA_VERSION, "max_steps": wf.MAX_STEPS,
             "workflow_manager": bool(manager_enabled and workflow_store is not None),
+            "v2_intake": "open" if v2_intake else "closed",          # P10: the cutover state of this door
         }
         reply = f"door API v3: {', '.join(data['commands'])} (workflow manager " + ("on" if data["workflow_manager"] else "off") + ")"
         return socket_door.envelope({"ok": True, "command": command, "reply": reply}, request=request, data=data)
@@ -598,6 +620,7 @@ def open_door(
     manager_enabled: bool = False,
     schedule_store: Any | None = None,
     delegation: Any | None = None,
+    v2_intake: bool = True,
 ) -> socket_door.SocketDoor:
     """Listen on ``path``, validate, and forward to the worker at ``worker_socket``.
 
@@ -643,7 +666,7 @@ def open_door(
         return apply_dispatch(
             request, control_store=control_store, ledger=ledger, execute=_forward,
             registry=registry, workflow_store=workflow_store, manager_enabled=manager_enabled,
-            schedule_store=schedule_store, delegation=delegation,
+            schedule_store=schedule_store, delegation=delegation, v2_intake=v2_intake,
         )
 
     return socket_door.SocketDoor(

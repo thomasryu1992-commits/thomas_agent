@@ -18,8 +18,9 @@ SCRIPT = REPO_ROOT / "scripts" / "ops" / "backup_watch.sh"
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="backup_watch.sh is a bash script")
 
-OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz 28M kept=7 hermes-snapshot=ok\n"
-FAILED_LINE = "2026-09-07T07:45:05Z FAILED mode=core rc=2 hermes-snapshot=ok\n"
+OK_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=ok\n"
+PRE_P10_LINE = "2026-09-07T08:15:29Z OK mode=core govstate-20260907-0815.tar.gz 28M kept=7 hermes-snapshot=ok\n"
+FAILED_LINE = "2026-09-07T07:45:05Z FAILED mode=core rc=2 hermes-snapshot=ok workflow-snapshot=ok\n"
 
 
 def _dest(tmp_path: Path, *, core: bool = True, candles: bool = True, log: str = OK_LINE) -> Path:
@@ -116,3 +117,30 @@ def test_an_unknown_argument_refuses_to_run(tmp_path):
         env={**os.environ, "HARNESS_BACKUP_DEST": str(_dest(tmp_path))},
     )
     assert result.returncode == 64 and "usage" in result.stderr
+
+
+# --- P10: the workflow snapshot marker ------------------------------------------------------------
+
+OK_WITH_WORKFLOW = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=ok\n"
+OK_ABSENT = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=absent\n"
+OK_WF_FAILED = "2026-09-14T07:45:29Z OK mode=core govstate-20260914-0745.tar.gz 28M kept=7 hermes-snapshot=ok workflow-snapshot=FAILED\n"
+
+
+@posix_only
+@pytest.mark.parametrize("line", [OK_WITH_WORKFLOW, OK_ABSENT])
+def test_a_core_line_with_a_workflow_snapshot_or_none_to_take_is_quiet(tmp_path, line):
+    result = _run(tmp_path, _dest(tmp_path, log=line), _health_log(tmp_path))
+    assert result.returncode == 0 and "OK" in result.stdout
+
+
+@posix_only
+def test_a_failed_workflow_snapshot_is_reported_even_when_the_archive_was_written(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=OK_WF_FAILED), _health_log(tmp_path))
+    assert result.returncode == 1 and "워크플로 저장소 스냅샷이 실패" in result.stdout
+    assert "복구: /root/backups/backup-governance-state.sh core" in result.stdout
+
+
+@posix_only
+def test_a_core_line_without_the_marker_means_an_old_backup_script(tmp_path):
+    result = _run(tmp_path, _dest(tmp_path, log=PRE_P10_LINE), _health_log(tmp_path))
+    assert result.returncode == 1 and "workflow-snapshot 표기가 없습니다" in result.stdout
