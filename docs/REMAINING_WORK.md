@@ -4920,7 +4920,21 @@ delegation goes live only with its own policy bump.
       (워크플로 서술, 30 min, `[SILENT]` on no change). **Not done here:** a retention policy for old request
       ids (A06) and the audit-write-failure injection (A09) — both moved to the next increment that touches the
       worker path.
-- [ ] **P09 — bounded non-financial schedule delegation** (invariant 3 amendment; policy bump in the same PR).
+- [x] **P09 — bounded non-financial schedule delegation** (2026-09-14; invariant 3 amendment, **dormant until
+      Thomas applies policy 1.6.0**)**.** One change service, `schedule_delegation.apply_change`, runs the validation
+      and the recording for both the container CLI (unbounded, Thomas's console) and the dispatch door's new
+      `schedule.propose_change` (bounded by the policy's `assistant_schedule` clause): inside the delegated scope —
+      non-financial kinds, hourly-or-slower, a ceiling on active delegated rows, a 30-day validity the schedule
+      enforces on itself (`expired`), a per-run budget for `workflow_plan` — the change is applied and recorded like an
+      operator's; outside it a `proposed` scheduler event is recorded and nothing is applied; every `crypto_*` kind
+      and `candle_archive` are refused by name and never proposed (A21). `workflow_plan` is a new maintenance-lane
+      kind whose fire submits its plan under the occurrence's `schedule_run_id` as request id — one acceptance per
+      occurrence across duplicate ticks, clock jumps and restarts, a re-fire replays, a miss is dropped (A20).
+      Shim tool `propose_schedule_change` (2.8). **The policy is not changed by this PR** (decision Q2): the clause
+      is written in `docs/runtime-contracts/POLICY_1_6_0_DRAFT.md` and applied mechanically by
+      `scripts/ops/policy_bump_1_6_0.py --apply` (its `--check` passes on this tree); until then
+      `load_delegation()` is None and the door refuses every change as `SCHEDULE_DELEGATION_DISABLED`. The read
+      door's verb set is unchanged (the workflow reads stay v3 commands on the dispatch door).
 - [ ] **P10 — backup snapshot / restore rehearsal / entry-point cutover runbook / rollback rehearsal.**
 - [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).
 

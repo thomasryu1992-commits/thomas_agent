@@ -471,5 +471,41 @@ def _read_hermes_usage(*, session_id: str | None, since: str | None) -> dict[str
             "cost_status": status, "source": source, "as_of": _now_iso()}
 
 
+# --- P09: schedule changes inside the delegated scope --------------------------------------------
+
+SCHEDULE_ACTIONS = ("create", "enable", "disable", "remove")
+
+
+@mcp.tool()
+def propose_schedule_change(action: str, reason: str, kind: str = "", request: str = "",
+                            interval_seconds: str = "", schedule_id: str = "") -> str:
+    """Change ONE schedule inside the scope the governance policy delegates to you, or record a
+    proposal for Thomas when the change is outside it. `action`: create (with `kind`, `request`,
+    `interval_seconds`) | enable | disable | remove (with `schedule_id` from `schedules`). Inside
+    the delegated scope (non-financial kinds only, a minimum interval, a ceiling on active
+    delegated schedules, a validity period) the reply says APPLIED and the schedule exists;
+    outside it the reply says PROPOSED and nothing changed — put it in a [상신] for Thomas, who
+    applies it in the container. A crypto/financial schedule is REFUSED and never proposed here.
+    While the policy delegates nothing (SCHEDULE_DELEGATION_DISABLED) every change is refused:
+    then schedules are Thomas's alone, as before. `reason` is required and recorded."""
+    act = (action or "").strip().lower()
+    if act not in SCHEDULE_ACTIONS:
+        return f"REFUSED: action must be one of {', '.join(SCHEDULE_ACTIONS)}. Nothing was sent."
+    if not (reason or "").strip():
+        return "REFUSED: a reason is required and is recorded. Nothing was sent."
+    change: dict[str, object] = {"action": act, "reason": reason.strip()}
+    if act == "create":
+        if not (kind or "").strip():
+            return "REFUSED: kind is required to create a schedule. Nothing was sent."
+        if not (interval_seconds or "").strip().isdigit():
+            return "REFUSED: interval_seconds must be a whole number of seconds. Nothing was sent."
+        change.update({"kind": kind.strip(), "request": request or "", "interval_seconds": int(interval_seconds.strip())})
+    else:
+        if not (schedule_id or "").strip():
+            return f"REFUSED: schedule_id is required to {act} a schedule (see schedules). Nothing was sent."
+        change["schedule_id"] = schedule_id.strip()
+    return _workflow_ask({"command": "schedule.propose_change", "change": change})
+
+
 if __name__ == "__main__":
     mcp.run()

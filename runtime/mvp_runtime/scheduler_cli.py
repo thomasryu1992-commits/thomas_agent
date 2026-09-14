@@ -40,16 +40,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import heartbeat, operator, policy_fingerprint, scheduler, task_registry, timeutil
+from . import heartbeat, operator, policy_fingerprint, scheduler, task_registry, timeutil, schedule_delegation
 from .cli_common import EXIT_BLOCKED, EXIT_OK, force_utf8_io, gate_banners, report_block
 from .control import ControlStore
-from .errors import MvpRuntimeError
+from .errors import MvpRuntimeError, SchedulerBlocked
 from .programization import ProgramizationStore
 from .scheduler import ScheduleStore
 from .state_guard import assert_state_writable
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
 from .working_memory import WorkingMemoryStore
+from .workflow_store import WorkflowStore
 
 LOCAL_ACTOR = "local_scheduler_cli"
 GAP_ALERT_KEY = "startup_gap"
@@ -279,15 +280,15 @@ def main(
         # which is the one failure at-most-once execution must not have.
         assert_state_writable(repo_root)
         if args.command == "add":
+            # P09: the same validation and recording the dispatch door runs for the assistant
+            # (`schedule_delegation.apply_change`), unbounded here — this is Thomas's console.
             stamp = now or timeutil.utc_now_iso()
-            sched = scheduler.build_schedule(
-                kind=args.kind, request=args.request, interval_seconds=args.interval_seconds,
-                created_by=LOCAL_ACTOR, now=stamp, reason=args.reason, enabled=not args.disabled,
+            change = schedule_delegation.ChangeRequest(
+                action="create", reason=args.reason, kind=args.kind, request=args.request,
+                interval_seconds=args.interval_seconds, enabled=not args.disabled,
             )
-            store.add(sched)
-            ledger.append_scheduler_event(
-                scheduler.mutation_event(scheduler.ACTION_CREATED, sched, now=stamp)
-            )
+            sched = schedule_delegation.apply_change(store, ledger, change, actor=LOCAL_ACTOR, now=stamp).schedule
+            assert sched is not None
             sys.stdout.write(f"added schedule {sched.schedule_id} ({sched.kind}, every {sched.interval_seconds}s, "
                              f"next {sched.next_run_at})\n")
             return EXIT_OK
@@ -303,27 +304,21 @@ def main(
             return EXIT_OK
 
         if args.command in ("remove", "enable", "disable"):
-            # Mutate, then record — the same order `add` above uses. A ledger write that
-            # fails after the store one leaves the gap this whole change closes, so the
-            # ordering is only defensible because `assert_state_writable` above already
-            # refused the unwritable case at the door, for the store and ledger alike.
+            # Mutate, then record — the same order `add` above uses, through the same service
+            # (P09). A ledger write that fails after the store one leaves the gap this whole
+            # change closes, so the ordering is only defensible because `assert_state_writable`
+            # above already refused the unwritable case at the door, for the store and ledger
+            # alike. The event carries the PRE-mutation `enabled`, so a re-issued command — a
+            # real operator action that changed nothing — is recorded as exactly that.
             stamp = now or timeutil.utc_now_iso()
-            enabling = args.command == "enable"
-            if args.command == "remove":
-                affected = store.remove(args.schedule_id)
-            else:
-                affected = store.set_enabled(args.schedule_id, enabling)
-            if affected is None:
+            change = schedule_delegation.ChangeRequest(action=args.command, reason="-", schedule_id=args.schedule_id)
+            try:
+                schedule_delegation.apply_change(store, ledger, change, actor=LOCAL_ACTOR, now=stamp)
+            except SchedulerBlocked as exc:
+                if exc.reason_code != "SCHEDULE_NOT_FOUND":
+                    raise
                 sys.stderr.write(f"BLOCKED NOT_FOUND: no schedule {args.schedule_id}\n")
                 return EXIT_BLOCKED
-            # `affected` is the PRE-mutation record, so its own `enabled` is the previous
-            # state — carried explicitly because a re-issued command is a real operator
-            # action that changed nothing, and the event has to be able to say so.
-            action = {"remove": scheduler.ACTION_REMOVED,
-                      "enable": scheduler.ACTION_ENABLED,
-                      "disable": scheduler.ACTION_DISABLED}[args.command]
-            ledger.append_scheduler_event(scheduler.mutation_event(
-                action, affected, now=stamp, previously_enabled=affected.enabled))
             sys.stdout.write(f"{args.command}d {args.schedule_id}\n")
             return EXIT_OK
 
@@ -428,6 +423,9 @@ def main(
                     # nothing while an unattended run held the tick.
                     registry=TaskRegistryStore.default(repo_root),
                     kinds=lane_kind_set,
+                    # P09: a workflow_plan fire submits to the store the manager owns — opened
+                    # only if it exists, so this process never creates an empty one.
+                    workflow_store=(WorkflowStore.default(repo_root) if WorkflowStore.exists(repo_root) else None),
                 )
                 total_fired += summary["fired"]
                 total_skipped += summary["skipped"]

@@ -192,12 +192,12 @@ def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatc
 _WID = "wf_" + "1" * 20
 
 
-def test_dispatch_tools_are_the_four_dispatches_plus_the_ten_workflow_tools():
+def test_dispatch_tools_are_the_four_dispatches_plus_the_eleven_workflow_tools():
     assert set(dispatch_shim.mcp.tools) == {
         "analyze", "research", "translate", "draft_content",
         "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events",
         "cancel_workflow", "retry_workflow_step", "propose_workflow_update",
-        "workflow_changes", "report_workflow_usage",
+        "workflow_changes", "report_workflow_usage", "propose_schedule_change",
     }
 
 
@@ -391,3 +391,28 @@ def test_the_reported_cost_status_follows_the_rows(monkeypatch, tmp_path):
         "input_tokens": 20, "output_tokens": 10, "estimated_cost_usd": 0.75, "cost_status": "observed",
         "source": "hermes:session_model_usage:session", "as_of": "-"}
     assert dispatch_shim._read_hermes_usage(session_id="s2", since=None)["cost_status"] == "unmeasured"
+
+
+# --- P09: schedule changes inside the delegated scope ----------------------------------------------
+
+def test_propose_schedule_change_sends_the_closed_change_and_refuses_locally_what_the_door_would(monkeypatch):
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or _answer(
+        "dispatch", {"ok": True, "command": "schedule.propose_change", "reply": "APPLIED: created schedule schedule_1",
+                     "data": {"verdict": "APPLIED"}}))
+    out = dispatch_shim.propose_schedule_change("create", "주간 시장 조사", kind="analysis_task", request="조사", interval_seconds="604800")
+    assert out.startswith("APPLIED: created schedule") and '"verdict":"APPLIED"' in out
+    assert seen[0] == {"command": "schedule.propose_change",
+                       "change": {"action": "create", "reason": "주간 시장 조사", "kind": "analysis_task", "request": "조사",
+                                  "interval_seconds": 604800}}
+    dispatch_shim.propose_schedule_change("disable", "더 필요 없음", schedule_id="schedule_1")
+    assert seen[1] == {"command": "schedule.propose_change", "change": {"action": "disable", "reason": "더 필요 없음", "schedule_id": "schedule_1"}}
+    assert dispatch_shim.propose_schedule_change("update", "r").startswith("REFUSED: action must be one of")
+    assert dispatch_shim.propose_schedule_change("create", "", kind="analysis_task", interval_seconds="60").startswith("REFUSED: a reason")
+    assert dispatch_shim.propose_schedule_change("create", "r", kind="", interval_seconds="60").startswith("REFUSED: kind is required")
+    assert dispatch_shim.propose_schedule_change("create", "r", kind="analysis_task", interval_seconds="1h").startswith("REFUSED: interval_seconds")
+    assert dispatch_shim.propose_schedule_change("remove", "r").startswith("REFUSED: schedule_id is required")
+    assert len(seen) == 2
+    refused = dispatch_shim._render_workflow(_answer("dispatch", {"ok": False, "reason_code": "SCHEDULE_DELEGATION_DISABLED",
+                                                                  "reason": "no clause"}), command="schedule.propose_change")
+    assert refused.startswith("REFUSED [SCHEDULE_DELEGATION_DISABLED]") and "Nothing was changed" in refused

@@ -10,7 +10,7 @@
 | 항목 | V0.1 (2026-09-03) | V0.2 (2026-09-14) |
 |---|---|---|
 | 비동기·복합 업무 | "2단계 — 비동기 dispatch(submit→id→poll)" 방향만 | **Workflow Manager**: 계획·단계·시도를 SQLite에 저장하고 dispatch-bridge 프로세스 안의 루프가 접수·claim·dispatch·복구(§3.1 Q18·Q19) |
-| 불변식 3 (스케줄) | 변경 verb를 만들지 않는다 | 지금은 그대로. P09에서 **사전 위임 범위의 비금융 일정 변경만** 조건부 허용(§1.3 개정, 미시행) |
+| 불변식 3 (스케줄) | 변경 verb를 만들지 않는다 | P09(2026-09-14)로 dispatch 문에 `schedule.propose_change`가 있으나 정책 1.6.0 조항이 없는 동안 모든 변경을 거부한다(휴면). 조항 적용 뒤에도 **사전 위임 범위의 비금융 일정 변경만**(§1.3 개정, 시행 대기) |
 | 불변식 4 (실행) | "워커는 registry를 모른다"(§7 재검증) | PR8 이후 거짓 — 워커는 origin `AGENT` 행을 쓴다. 불변식 자체(실행은 워커·레인)는 유지, 재검증 명령 정정(§7) |
 | 취소 | 1단계는 타임아웃만 | v2 동기 런은 그대로. workflow attempt는 P06부터 단계 경계 협력 취소(§4.3) |
 | 멱등 | `request_id` 재전송 시 `{task_id,status,result}` | v2 그대로. v3는 SQLite `requests`가 권위, `bridge_idempotency`에 claim하지 않음(§3.2) |
@@ -83,7 +83,7 @@ Hermes는 Thomas의 요청을 나누고(dispatch), 결과를 종합하고, 스�
 
 - 스케줄 행의 CRUD는 컨테이너 안 `scheduler_cli add/enable/disable/remove`뿐이다. 문 4개 어디에도 schedule **변경** verb가 없다. read 문의 `schedules`·`scheduler_events`는 조회다(`read_bridge.py:79-80,101-102`, `a789bec`). **code + test** `tests/test_mvp_runtime_read_bridge.py:49,58,71`(변경 verb 없음·미지 verb 거부).
 - 스케줄러는 Hermes를 호출하지 않는다. 역방향 접점 0. **구조적**
-- **V0.2 개정(조건부, 미시행):** P09에서 dispatch 문에 `schedule.propose_change`를 두고, **사전 위임 범위**(비금융 종류 · 최소 간격 · 최대 실행 수 · 유효기간 · 예산) 안의 변경만 직접 적용하며 그 밖은 변경안으로 상신한다. 금융 일정(risk 레인의 `crypto_*`)은 어떤 위임으로도 바꾸지 못한다. 회차의 고유 키는 기존 `schedule_run_id`이며 누락 회차는 종류별 정책(기본 drop, `scheduler.py:434` `next_occurrence`의 at-most-once·catch-up 없음)을 따른다. **시행 조건:** P09 PR(정책·테스트·API를 한 PR에서)과 정책 범프. 그 전까지 read/switch 문의 verb 집합은 그대로이고 위 테스트가 이를 핀한다. P09의 강제 테스트는 A20·A21(`tests/test_mvp_runtime_workflow_schedules.py`).
+- **V0.2 개정(조건부, 시행 대기 — 코드는 P09로 머지, 정책 1.6.0 적용은 Thomas):** P09에서 dispatch 문에 `schedule.propose_change`를 두고, **사전 위임 범위**(비금융 종류 · 최소 간격 · 최대 실행 수 · 유효기간 · 예산) 안의 변경만 직접 적용하며 그 밖은 변경안으로 상신한다. 금융 일정(risk 레인의 `crypto_*`)은 어떤 위임으로도 바꾸지 못한다. 회차의 고유 키는 기존 `schedule_run_id`이며 누락 회차는 종류별 정책(기본 drop, `scheduler.py:434` `next_occurrence`의 at-most-once·catch-up 없음)을 따른다. **시행 조건:** P09 PR(정책·테스트·API를 한 PR에서)과 정책 범프. 그 전까지 read/switch 문의 verb 집합은 그대로이고 위 테스트가 이를 핀한다. P09의 강제 테스트는 A20·A21(`tests/test_mvp_runtime_workflow_schedules.py`). **P09 상태(2026-09-14):** 공유 검증 서비스 `schedule_delegation.py`(CLI와 문이 같은 `apply_change`), 문 명령 `schedule.propose_change`, shim 도구 `propose_schedule_change`, `workflow_plan` 일정 종류(회차 키 = `schedule_run_id`, 재발화는 replay, 누락은 drop), 정책 초안 `docs/runtime-contracts/POLICY_1_6_0_DRAFT.md`와 범프 스크립트 `scripts/ops/policy_bump_1_6_0.py`가 머지됨. 조항이 없는 동안 문은 모든 변경을 `SCHEDULE_DELEGATION_DISABLED`로 거부한다(휴면); 금융 종류(`crypto_*`·`candle_archive`)는 위임 여부와 무관하게 `FINANCIAL_SCHEDULE_REFUSED`이며 제안 기록도 남기지 않는다. 시행은 Thomas가 범프 스크립트를 적용하고 dispatch-bridge를 재기동하는 순간이다.
 
 ### 4. Hermes ≠ executor
 

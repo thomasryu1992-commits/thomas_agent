@@ -66,6 +66,9 @@ FAILED_PREFIX = "failed:"
 # and exactly one terminal event after, both carrying the same ``schedule_run_id``.
 # ``abandoned`` is the terminal a fire killed mid-flight never got to write — supplied by
 # the next startup, which is the only vantage point that can see it.
+# P09: the principal a scheduled workflow submission is accepted under — the scheduler's own,
+# never the assistant's; the request id is the occurrence's `schedule_run_id`.
+WORKFLOW_PRINCIPAL = "scheduler"
 ACTION_STARTED = "started"
 ACTION_ABANDONED = "abandoned"
 TERMINAL_ACTIONS = frozenset({"fired", "failed", ACTION_ABANDONED})
@@ -90,13 +93,20 @@ ACTION_CREATED = "created"
 ACTION_ENABLED = "enabled"
 ACTION_DISABLED = "disabled"
 ACTION_REMOVED = "removed"
-MUTATION_ACTIONS = frozenset({ACTION_CREATED, ACTION_ENABLED, ACTION_DISABLED, ACTION_REMOVED})
+# P09: a delegated schedule carries `expires_at`; the tick disables it at that moment and records
+# it as `expired` — a mutation of the set, like an operator's disable, with the cause on record.
+ACTION_EXPIRED = "expired"
+MUTATION_ACTIONS = frozenset({ACTION_CREATED, ACTION_ENABLED, ACTION_DISABLED, ACTION_REMOVED, ACTION_EXPIRED})
+# P09: a change the assistant asked for outside its delegated scope is recorded and NOT applied —
+# the record is the proposal Thomas reads (`schedule_delegation.proposal_event`). Not a mutation.
+ACTION_PROPOSED = "proposed"
 # The post-mutation state each action leaves behind. ``created`` is deliberately absent: it
 # can leave EITHER state (`add --disabled`), so its status comes from the schedule itself.
 _MUTATION_STATUS = {
     ACTION_ENABLED: "enabled",
     ACTION_DISABLED: "disabled",
     ACTION_REMOVED: "removed",
+    ACTION_EXPIRED: "disabled",
 }
 
 # Schedule kinds. A task template is a request string (analysis_task), a maintenance action
@@ -194,6 +204,11 @@ KIND_NULL_CONTROL = "crypto_null_control"
 # The `request` column carries the seed keywords, comma separated, exactly as `crypto_factory`
 # carries a symbol list there. `target=<keyword>` among them overrides the week's selection.
 KIND_CONTENT_IDEATION = "content_ideation"
+# P09: a schedule whose fire SUBMITS a workflow plan (sequence 2) to the workflow store under the
+# occurrence's own `schedule_run_id` as request id — one acceptance per occurrence, a re-fire of
+# the same occurrence replays, a missed occurrence is dropped like every other kind's
+# (`next_occurrence`: at-most-once, no catch-up). The manager runs it; this fire only submits.
+KIND_WORKFLOW = "workflow_plan"
 # §6-3's spend watch (docs/proposals/HERMES_AGENT_DISPATCH_V0.1.md, Thomas 2026-07-30): sum
 # the day's assistant-dispatched cost and raise past 50 USD. Maintenance, not risk: it reads
 # the ledger and never touches money — the threshold is dormant on free tiers by the
@@ -202,7 +217,7 @@ KIND_DISPATCH_SPEND = "dispatch_spend_watch"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND})
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -261,7 +276,7 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND,
+    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -377,9 +392,10 @@ class Schedule:
     reason: str = ""
     last_run_at: str | None = None
     last_status: str | None = None
+    expires_at: str | None = None        # P09: a delegated schedule ends itself; None = no end
 
     def as_record(self) -> dict[str, Any]:
-        return {
+        record = {
             "record_type": RECORD_TYPE,
             "schedule_id": self.schedule_id,
             "kind": self.kind,
@@ -393,6 +409,9 @@ class Schedule:
             "last_run_at": self.last_run_at,
             "last_status": self.last_status,
         }
+        if self.expires_at is not None:
+            record["expires_at"] = self.expires_at
+        return record
 
     @classmethod
     def from_record(cls, r: Mapping[str, Any]) -> "Schedule":
@@ -422,12 +441,18 @@ class Schedule:
                 "fixed UTC form YYYY-MM-DDThh:mm:ssZ, which is the only form the due "
                 "comparison is correct for",
             )
+        expires_at = r.get("expires_at")
+        if expires_at is not None and not (isinstance(expires_at, str) and _TIMESTAMP_PATTERN.match(expires_at)):
+            raise SchedulerBlocked(
+                "SCHEDULE_RECORD_INVALID",
+                f"schedule {schedule_id} has expires_at={expires_at!r}; it must be the fixed UTC form or absent",
+            )
         return cls(
             schedule_id=schedule_id, kind=kind, request=str(r.get("request", "")),
             interval_seconds=interval_seconds, enabled=bool(r.get("enabled", True)),
             created_by=str(r.get("created_by", "unknown")), created_at=str(r.get("created_at", "")),
             next_run_at=next_run_at, reason=str(r.get("reason", "")),
-            last_run_at=r.get("last_run_at"), last_status=r.get("last_status"),
+            last_run_at=r.get("last_run_at"), last_status=r.get("last_status"), expires_at=expires_at,
         )
 
 
@@ -474,16 +499,20 @@ def next_occurrence(due_at: str, interval_seconds: int, *, now: str) -> str:
 
 def build_schedule(
     *, kind: str, request: str, interval_seconds: int, created_by: str, now: str,
-    reason: str = "", enabled: bool = True,
+    reason: str = "", enabled: bool = True, expires_at: str | None = None,
 ) -> Schedule:
     """Validate inputs and build a new Schedule (deterministic id). Fail-closed."""
     if kind not in KINDS:
         raise SchedulerBlocked("UNKNOWN_KIND", f"schedule kind must be one of {sorted(KINDS)}")
-    if not (isinstance(interval_seconds, int) and interval_seconds >= MIN_INTERVAL_SECONDS):
+    if isinstance(interval_seconds, bool) or not (isinstance(interval_seconds, int) and interval_seconds >= MIN_INTERVAL_SECONDS):
         raise SchedulerBlocked("INVALID_INTERVAL", f"interval_seconds must be an int >= {MIN_INTERVAL_SECONDS}")
     request = request.strip() if isinstance(request, str) else ""
     if kind == KIND_TASK and not request:
         raise SchedulerBlocked("MISSING_REQUEST", "an analysis_task schedule requires a non-empty request")
+    if kind == KIND_WORKFLOW:
+        workflow_plan_of(request)            # the plan is validated here, once, before the row exists
+    if expires_at is not None and not (isinstance(expires_at, str) and _TIMESTAMP_PATTERN.match(expires_at)):
+        raise SchedulerBlocked("INVALID_EXPIRY", "expires_at must be the fixed UTC form YYYY-MM-DDThh:mm:ssZ")
     if kind == KIND_CONTENT_IDEATION and not request:
         raise SchedulerBlocked(
             "MISSING_REQUEST",
@@ -499,8 +528,27 @@ def build_schedule(
     return Schedule(
         schedule_id=schedule_id, kind=kind, request=request, interval_seconds=interval_seconds,
         enabled=enabled, created_by=created_by.strip(), created_at=now,
-        next_run_at=timeutil.plus_seconds(now, interval_seconds), reason=reason,
+        next_run_at=timeutil.plus_seconds(now, interval_seconds), reason=reason, expires_at=expires_at,
     )
+
+
+def workflow_plan_of(request: str) -> dict[str, Any]:
+    """The plan a `workflow_plan` schedule carries in its request: JSON text of a
+    `workflow_plan.v0.1` object, validated by the workflow module's own rules. Refused with a
+    typed reason, never stored half-parsed."""
+    from . import workflow as wf                   # noqa: PLC0415 — the scheduler loads it only for this kind
+    from .errors import WorkflowBlocked
+    try:
+        plan = json.loads(request or "")
+    except ValueError as exc:
+        raise SchedulerBlocked("INVALID_PLAN", f"a workflow_plan schedule's request must be JSON: {exc}") from exc
+    if not isinstance(plan, dict):
+        raise SchedulerBlocked("INVALID_PLAN", "a workflow_plan schedule's request must be a JSON object (workflow_plan.v0.1)")
+    try:
+        wf.validate_plan(plan)
+    except WorkflowBlocked as exc:
+        raise SchedulerBlocked("INVALID_PLAN", f"{exc.reason_code}: {exc}") from exc
+    return plan
 
 
 class ScheduleStore:
@@ -1077,7 +1125,7 @@ def delegate_proposal_generation(
 def _execute(
     schedule: Schedule, *, now: str, ledger: Any, working_memory: Any, programization: Any,
     repo_root: Path | None, executor: Callable[..., dict[str, Any]],
-    registry: Any = None, run_id: str | None = None,
+    registry: Any = None, run_id: str | None = None, workflow_store: Any = None,
 ) -> str:
     """Execute one due schedule and return a short status string.
 
@@ -1796,6 +1844,22 @@ def _execute(
         return (f"candle_archive symbols={summary['symbols']} books={summary['books']} "
                 f"kept={summary['written']} degraded={summary['degraded']} "
                 f"deferred={summary.get('deferred', 0)}")
+    if schedule.kind == KIND_WORKFLOW:
+        # P09: submit the plan under the occurrence's own run id. The workflow store's request
+        # table makes this at-most-once per occurrence: the same run id replays the accepted
+        # workflow and never accepts it twice, and the plan itself was validated at
+        # registration. Without a store (the manager never ran here) the fire fails by name.
+        if workflow_store is None:
+            raise SchedulerBlocked(
+                "WORKFLOW_UNAVAILABLE",
+                "this runtime has no workflow store; a workflow_plan schedule needs the dispatch bridge "
+                "started with --workflow-manager",
+            )
+        if run_id is None:
+            raise SchedulerBlocked("SCHEDULER_EVENT_INVALID", "a workflow_plan fire needs its schedule_run_id")
+        outcome = workflow_store.submit(principal=WORKFLOW_PRINCIPAL, request_id=run_id,
+                                        plan=workflow_plan_of(schedule.request), now=now)
+        return f"workflow:{outcome.workflow_id}:{outcome.status}" + (":replayed" if outcome.replayed else "")
     if schedule.kind != KIND_TASK:
         # Every branch above tests one kind, and this used to be a bare fall-through: a
         # schedule of ANY unrecognised kind ran the analysis pipeline below — a real model
@@ -2137,6 +2201,7 @@ def run_due(
     notifier: Callable[[str, str], None] | None = None,
     registry: Any = None,
     kinds: frozenset[str] | None = None,
+    workflow_store: Any = None,
 ) -> dict[str, Any]:
     """Fire every enabled schedule whose ``next_run_at`` is at or before ``now``. Kill-switch bound.
 
@@ -2337,6 +2402,15 @@ def run_due(
         # if the PROCESS dies mid-fire this orphaned event is the only evidence the
         # occurrence was ever attempted (find_abandoned_runs pairs it up next startup).
         run_id = schedule_run_id(claimed, claimed_at=now)
+        if claimed.expires_at is not None and claimed.expires_at <= now:
+            # P09: a delegated schedule past its validity ends here — disabled and recorded,
+            # never fired. The claim already advanced next_run_at, so nothing re-fires it.
+            previous = store.set_enabled(claimed.schedule_id, False)
+            if ledger is not None and previous is not None:
+                ledger.append_scheduler_event(mutation_event(
+                    ACTION_EXPIRED, replace(previous, enabled=False), now=now, previously_enabled=previous.enabled))
+            results.append({"schedule_id": claimed.schedule_id, "action": ACTION_EXPIRED, "status": "disabled"})
+            continue
         if ledger is not None:
             ledger.append_scheduler_event(
                 _scheduler_event(ACTION_STARTED, claimed, now=now, status="running", run_id=run_id))
@@ -2346,7 +2420,8 @@ def run_due(
         try:
             status = _execute(claimed, now=now, ledger=ledger, working_memory=working_memory,
                               programization=programization, registry=registry,
-                              repo_root=repo_root, executor=executor, run_id=run_id)
+                              repo_root=repo_root, executor=executor, run_id=run_id,
+                              workflow_store=workflow_store)
             if claimed.kind == KIND_FACTORY and status == STATUS_FACTORY_SPAWNED:
                 # The bracket stays open on purpose: the terminal event belongs to the pass
                 # that collects the child (`_collect_factory_child`), under this same

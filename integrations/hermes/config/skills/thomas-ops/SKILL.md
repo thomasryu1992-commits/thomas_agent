@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.2
+version: 1.5.3
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -261,3 +261,9 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
    `since`)로 네 모델 사용량을 적어 보낸다. 이 숫자는 `workflow_status`의 '보고된 사용량' 줄에 강제 아님으로
    표시되며 Thomas 측 예약(모델 호출 수)과 섞이지 않는다. 예산 판단은 예약 줄로 하고, 보고 줄은 비용 설명에만
    쓴다. 세션 id를 모르면 `since`에 접수 시각을 넣어라 — 상한값이라고 말해라.
+13. **일정 변경은 정책이 위임한 범위 안에서만** `propose_schedule_change(action, reason, …)`로 한다. 응답이
+   `APPLIED`면 적용된 것이고, `PROPOSED`면 아무것도 바뀌지 않았으니 §5 양식으로 상신한다(실행 란에 그 변경을
+   적어라). `REFUSED [SCHEDULE_DELEGATION_DISABLED]`는 정책이 아직 아무 일정도 위임하지 않는다는 뜻이다 —
+   그때 일정은 전부 Thomas의 것이고 상신만 한다. `crypto_*` 일정은 어떤 경우에도 이 도구로 바꾸지 못한다
+   (`FINANCIAL_SCHEDULE_REFUSED`). 네가 만든 일정은 30일 뒤 스스로 꺼진다(`expired`) — 연장은 Thomas가 한다.
+   `workflow_plan` 종류는 매 회차 계획 하나를 접수한다; 회차당 접수는 한 번이고 놓친 회차는 따라잡지 않는다.
