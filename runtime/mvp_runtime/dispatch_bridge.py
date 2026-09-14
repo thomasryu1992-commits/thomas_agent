@@ -75,6 +75,9 @@ from typing import Any, Callable
 
 from . import bridge_idempotency, registry_console, socket_door, task_registry, timeutil
 from .control import ControlStore
+from . import workflow as wf, workflow_console
+from .errors import WorkflowBlocked
+from .workflow_store import WorkflowStore
 from .errors import ControlBlocked, PersistenceError, TaskRegistryBlocked
 from .naver_research import MAX_SEED_CHARS
 from .store import LedgerStore
@@ -104,6 +107,26 @@ _DEFAULT_KIND = "analysis"
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", bridge_idempotency.REQUEST_ID_KEY}
 ) | socket_door.ENVELOPE_KEYS
+
+# Door API v3 (sequence 2, P05): a frame carrying `command` is a workflow command, never a
+# dispatch. Its own closed key set — a v3 frame that also carries v2 keys is refused, and a v2
+# frame never sees these keys. Served only when the door was opened with the workflow store
+# (`--workflow-manager`); otherwise every v3 command is refused by name (WORKFLOW_UNAVAILABLE)
+# and nothing falls back to a v2 run (acceptance A18). The reads (`workflow.status`,
+# `workflow.list`, `workflow.events`) live on this door rather than the read door because the
+# store is this process's — the manager loop writes it here — and because the policy's closed
+# `assistant_read` verb list (1.5.0) is a governance change Thomas applies, not a door's.
+COMMAND_KEY = "command"
+V3_COMMANDS: frozenset[str] = frozenset({
+    "capabilities", "workflow.submit", "workflow.status", "workflow.list", "workflow.events", "workflow.cancel",
+})
+_V3_KEYS: frozenset[str] = frozenset(
+    {COMMAND_KEY, bridge_idempotency.REQUEST_ID_KEY, "plan", "workflow_id", "expected_version",
+     "reason", "after_cursor", "limit"}
+) | socket_door.ENVELOPE_KEYS
+_V3_READS: frozenset[str] = frozenset({"capabilities", "workflow.status", "workflow.list", "workflow.events"})
+MAX_LIST = 50
+MAX_EVENTS = 200
 
 # `naver_keywords` (optional): comma-separated seeds for the Naver keyword brief, forwarded
 # so the worker's run carries measured demand as [K#] evidence. Admitted on every kind this
@@ -189,6 +212,8 @@ def apply_dispatch(
     execute: Executor | None = None,
     now: str | None = None,
     registry: TaskRegistryStore | None = None,
+    workflow_store: WorkflowStore | None = None,
+    manager_enabled: bool = False,
 ) -> dict[str, Any]:
     """Validate one dispatch request and forward it, or raise a typed ``ControlBlocked``.
 
@@ -198,6 +223,12 @@ def apply_dispatch(
     """
     if not isinstance(request, dict):
         raise ControlBlocked("MALFORMED_REQUEST", "request must be a JSON object")
+
+    if COMMAND_KEY in request:
+        return apply_workflow_command(
+            request, control_store=control_store, workflow_store=workflow_store, now=now,
+            manager_enabled=manager_enabled,
+        )
 
     unexpected = set(request) - _ALLOWED_KEYS
     if unexpected:
@@ -344,6 +375,137 @@ def apply_dispatch(
     )
 
 
+def apply_workflow_command(
+    request: dict[str, Any],
+    *,
+    control_store: ControlStore,
+    workflow_store: WorkflowStore | None,
+    now: str | None = None,
+    manager_enabled: bool = False,
+) -> dict[str, Any]:
+    """Door API v3: one workflow command, or a typed refusal (sequence 2, P05).
+
+    The principal is this door's peer — the assistant actor — never a value in the frame.
+    ``workflow.submit`` requires ``request_id`` (at-most-once is not optional for a plan), is
+    refused while the runtime is PAUSED/KILLED, and answers ``accepted`` only after the store's
+    transaction committed. The reads and ``workflow.cancel`` answer while halted: a read is a
+    read, and stopping the assistant's own work needs no gate.
+    """
+    unexpected = set(request) - _V3_KEYS
+    if unexpected:
+        raise ControlBlocked(
+            "ARGUMENT_NOT_ACCEPTED",
+            f"a workflow command accepts only {sorted(_V3_KEYS)}; it will not act on {sorted(unexpected)}",
+        )
+    _proto, _client_id = socket_door.validate_envelope(request)
+    command = request.get(COMMAND_KEY)
+    if not isinstance(command, str) or command.strip().lower() not in V3_COMMANDS:
+        raise ControlBlocked(
+            "VERB_NOT_PERMITTED",
+            f"{command!r} is not a workflow command this door serves; it carries {sorted(V3_COMMANDS)}",
+        )
+    command = command.strip().lower()
+    stamp = now or timeutil.utc_now_iso()
+
+    if command == "capabilities":
+        data = {
+            "proto": max(socket_door.SUPPORTED_PROTOS),
+            "commands": sorted(V3_COMMANDS), "kinds": sorted(_ALLOWED_KINDS),
+            "plan_schema": wf.PLAN_SCHEMA_VERSION, "max_steps": wf.MAX_STEPS,
+            "workflow_manager": bool(manager_enabled and workflow_store is not None),
+        }
+        reply = f"door API v3: {', '.join(data['commands'])} (workflow manager " + ("on" if data["workflow_manager"] else "off") + ")"
+        return socket_door.envelope({"ok": True, "command": command, "reply": reply}, request=request, data=data)
+
+    if workflow_store is None:
+        # Refused by name, never a v2 run in disguise: a client that asked for v3 on a door
+        # that does not serve it must learn that here (A18).
+        raise ControlBlocked(
+            "WORKFLOW_UNAVAILABLE",
+            "this door was opened without the workflow manager; workflow commands are not served "
+            "here and nothing was run",
+        )
+
+    if command == "workflow.submit":
+        state = control_store.load()
+        if not state.execution_allowed:
+            raise ControlBlocked(
+                state.refusal_reason_code(),
+                f"runtime is {state.mode}; new workflows are not accepted until an authenticated resume",
+            )
+        request_id = bridge_idempotency.request_id_of(request)
+        if request_id is None:
+            raise ControlBlocked("REQUEST_ID_REQUIRED", "a workflow submission carries a request_id; it is its name")
+        plan = request.get("plan")
+        if not isinstance(plan, dict):
+            raise WorkflowBlocked("PLAN_INVALID", "'plan' must be a JSON object (workflow_plan.v0.1)")
+        outcome = workflow_store.submit(principal=socket_door.ASSISTANT_ACTOR, request_id=request_id, plan=plan, now=stamp)
+        data = {"workflow_id": outcome.workflow_id, "status": outcome.status, "accepted_at": outcome.accepted_at,
+                "replayed": outcome.replayed, "request_id": request_id}
+        head = "REPLAYED (not re-accepted)" if outcome.replayed else "ACCEPTED"
+        reply = f"{head}: workflow {outcome.workflow_id} [{outcome.status}] request_id={request_id}"
+        return socket_door.envelope(
+            {"ok": True, "command": command, "reply": reply, "replayed": outcome.replayed,
+             bridge_idempotency.REQUEST_ID_KEY: request_id},
+            request=request, data=data,
+        )
+
+    if command == "workflow.list":
+        limit = _bounded_int(request.get("limit"), default=20, cap=MAX_LIST, name="limit")
+        rows = workflow_store.list_workflows(limit=limit)
+        data = {"workflows": [{k: r.get(k) for k in ("workflow_id", "status", "goal", "created_at", "updated_at",
+                                                     "row_version", "last_reason_code")} for r in rows],
+                "count": len(rows), "as_of": stamp}
+        return socket_door.envelope({"ok": True, "command": command, "reply": workflow_console.render_list(rows)},
+                                    request=request, data=data)
+
+    if command == "workflow.events":
+        after = _bounded_int(request.get("after_cursor"), default=0, cap=None, name="after_cursor")
+        limit = _bounded_int(request.get("limit"), default=50, cap=MAX_EVENTS, name="limit")
+        events, next_cursor = workflow_store.events_after(after, limit=limit)
+        data = {"events": events, "next_cursor": next_cursor, "count": len(events), "as_of": stamp}
+        return socket_door.envelope(
+            {"ok": True, "command": command, "reply": workflow_console.render_events(events, next_cursor)},
+            request=request, data=data,
+        )
+
+    workflow_id = request.get("workflow_id")
+    if not isinstance(workflow_id, str) or not wf.WORKFLOW_ID_PATTERN.match(workflow_id.strip()):
+        raise ControlBlocked("MALFORMED_REQUEST", f"'{command}' needs a 'workflow_id' (wf_…)")
+    workflow_id = workflow_id.strip()
+
+    if command == "workflow.status":
+        view = workflow_store.status_view(workflow_id, now=stamp)
+        return socket_door.envelope({"ok": True, "command": command, "reply": workflow_console.render_view(view)},
+                                    request=request, data=view)
+
+    # workflow.cancel
+    expected = request.get("expected_version")
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
+        raise ControlBlocked(
+            "MALFORMED_REQUEST",
+            "'workflow.cancel' needs the 'expected_version' the caller read (workflow.status → row_version)",
+        )
+    reason = request.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ControlBlocked("REASON_REQUIRED", "a cancel must state its reason; it is recorded")
+    view = workflow_store.request_cancel(workflow_id, expected_version=expected, reason=reason.strip(), now=stamp)
+    done = view["status"] == wf.W_CANCELLED
+    head = "CANCELLED" if done else f"CANCELLING (status={view['status']}; a running attempt stops at its next boundary or its lease)"
+    return socket_door.envelope(
+        {"ok": True, "command": command, "reply": f"{head}\n{workflow_console.render_view(view)}"},
+        request=request, data=view,
+    )
+
+
+def _bounded_int(value: Any, *, default: int, cap: int | None, name: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ControlBlocked("MALFORMED_REQUEST", f"'{name}' must be a non-negative integer when given")
+    return min(value, cap) if cap is not None else value
+
+
 # The narrowest ceiling of the doors, and the only one where the ceiling is about cost rather
 # than only about liveness. A slot is held for the length of a full analysis (the door waits on
 # the worker's answer), and each forwarded run can invoke a model on a quota shared with the
@@ -361,8 +523,14 @@ def open_door(
     worker_socket: Path,
     worker_deadline_seconds: float = WORKER_DEADLINE_SECONDS,
     registry: TaskRegistryStore | None = None,
+    workflow_store: WorkflowStore | None = None,
+    manager_enabled: bool = False,
 ) -> socket_door.SocketDoor:
     """Listen on ``path``, validate, and forward to the worker at ``worker_socket``.
+
+    ``workflow_store`` (sequence 2, P05): the store the workflow manager loop writes in this
+    process; when given, door API v3 commands are served from it. Without it every v3 command
+    is refused by name.
 
     Framing, deadline, size cap, peer check, concurrency ceiling and error envelope come from
     ``socket_door``, shared with the other doors so a malformed frame cannot be answered two
@@ -401,7 +569,7 @@ def open_door(
     def _apply(request: Any) -> dict[str, Any]:
         return apply_dispatch(
             request, control_store=control_store, ledger=ledger, execute=_forward,
-            registry=registry,
+            registry=registry, workflow_store=workflow_store, manager_enabled=manager_enabled,
         )
 
     return socket_door.SocketDoor(
