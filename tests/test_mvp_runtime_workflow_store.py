@@ -630,3 +630,52 @@ def test_the_view_shows_what_each_step_reads_and_what_it_resolved_to(store):
     assert by_key["draft1"]["inputs"] == {"research": "ledger:trace_r"}
     (draft,) = store.claim_ready(now=NOW, limit=1)
     assert draft.input_refs == by_key[draft.step_key]["inputs"]
+
+
+# --- the reported budget layer (P08; V0.2 Q24, A12) --------------------------------------------------
+
+def test_reported_usage_is_shown_beside_the_budget_and_never_added_to_it(store):
+    wid = _submit(store, _plan()).workflow_id
+    (att,) = store.claim_ready(now=NOW)
+    store.record_result(att.attempt_id, now=NOW, succeeded=True, result_ref="ledger:r", model_calls=1, tokens=300)
+    before = store.status_view(wid, now=NOW)["budget"]
+    assert before["reported"] is None
+    view = store.record_reported_usage(wid, principal="assistant_bridge", usage={
+        "input_tokens": 62456, "output_tokens": 1816, "estimated_cost_usd": 0.002393, "cost_status": "estimated",
+        "source": "hermes:session_model_usage:session", "as_of": LATER}, now=LATER)
+    after = view["budget"]
+    assert after["reported"] == {"principal": "assistant_bridge", "input_tokens": 62456, "output_tokens": 1816,
+                                 "estimated_cost_usd": 0.002393, "cost_status": "estimated",
+                                 "source": "hermes:session_model_usage:session", "as_of": LATER, "reported_at": LATER}
+    assert {k: v for k, v in after.items() if k != "reported"} == {k: v for k, v in before.items() if k != "reported"}
+    # a later report replaces the earlier one (latest wins); the enforced counters still do not move
+    view = store.record_reported_usage(wid, principal="assistant_bridge", usage={
+        "input_tokens": 70000, "output_tokens": 2000, "estimated_cost_usd": 0.003, "cost_status": "estimated",
+        "source": "hermes:session_model_usage:session"}, now=MUCH_LATER)
+    assert view["budget"]["reported"]["input_tokens"] == 70000 and view["budget"]["reported"]["as_of"] == MUCH_LATER
+    assert view["budget"]["confirmed_tokens"] == 300 and view["budget"]["reserved_model_calls"] == 1
+
+
+@pytest.mark.parametrize("usage, code", [
+    ("not a dict", "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.0, "cost_status": "estimated"}, "REPORTED_USAGE_INVALID"),  # no source
+    ({"input_tokens": -1, "output_tokens": 1, "estimated_cost_usd": 0.0, "cost_status": "estimated", "source": "s"}, "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": -0.5, "cost_status": "estimated", "source": "s"}, "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.1, "cost_status": "actual", "source": "s"}, "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.1, "cost_status": "observed", "source": "s", "extra": 1}, "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.1, "cost_status": "observed", "source": "s", "as_of": "yesterday"}, "REPORTED_USAGE_INVALID"),
+    ({"input_tokens": True, "output_tokens": 1, "estimated_cost_usd": 0.1, "cost_status": "observed", "source": "s"}, "REPORTED_USAGE_INVALID"),
+])
+def test_a_malformed_usage_report_is_refused_unrecorded(store, usage, code):
+    wid = _submit(store, _plan()).workflow_id
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.record_reported_usage(wid, principal="assistant_bridge", usage=usage, now=NOW)
+    assert exc.value.reason_code == code
+    assert store.status_view(wid, now=NOW)["budget"]["reported"] is None
+
+
+def test_a_usage_report_for_an_unknown_workflow_is_refused(store):
+    with pytest.raises(WorkflowBlocked) as exc:
+        store.record_reported_usage("wf_" + "0" * 20, principal="assistant_bridge", usage={
+            "input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.0, "cost_status": "unmeasured", "source": "s"}, now=NOW)
+    assert exc.value.reason_code == "WORKFLOW_NOT_FOUND"

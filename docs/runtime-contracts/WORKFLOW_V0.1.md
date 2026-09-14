@@ -93,9 +93,10 @@ change (P07) act on; a `FAILED` step at the cap is `FAILED`; otherwise `BLOCKED`
 
 ## The store — `runtime/mvp_runtime/workflow_store.py`
 
-`.runtime_governance_state/workflow/workflow.db`, SQLite in WAL mode, schema version 2 (P07
-added `requires_approval`, `approval_id`, `approval_plan_version` to `steps`; a version-1 file
-is migrated in place when opened, under the same write lock).
+`.runtime_governance_state/workflow/workflow.db`, SQLite in WAL mode, schema version 3 (P07
+added `requires_approval`, `approval_id`, `approval_plan_version` to `steps`; P08 added the
+`delivery_cursors` and `reported_usage` tables; an older file is migrated in place when opened,
+under the same write lock — columns by `ALTER TABLE`, tables by `CREATE IF NOT EXISTS`).
 
 | table | writer | holds |
 |---|---|---|
@@ -107,7 +108,9 @@ is migrated in place when opened, under the same write lock).
 | `requests` | manager | `(principal, request_id) → fingerprint, workflow_id` — the idempotency key |
 | `events` | manager | the append-only cursor of every transition, validated against `workflow_event.v0.1` before insert; coordination, not audit |
 | `budget_reservations` | manager | per-attempt reservation, `cost_status` (`unconfirmed` / `observed` / `estimated`), confirmed usage |
-| `deliveries` | operator (P08) | per-channel delivery state of pushed events |
+| `deliveries` | operator (P08) | per-channel delivery state of pushed events: `PENDING` (recorded before the send) → `CONFIRMED` / `UNCERTAIN`; `SKIPPED` marks a backlog the first pass adopted |
+| `delivery_cursors` | operator (P08) | where the push has read up to per channel — advanced past events it does not push |
+| `reported_usage` | manager (P08, through the door) | Hermes's own usage per workflow as it reported it: tokens in/out, estimated cost, `cost_status`, source, `as_of`; latest report wins; never summed into the reservations |
 
 **One writer per table**, every write one short `BEGIN IMMEDIATE` transaction, no transaction
 open across a model call. **Read rule (Q19):** a `mode=ro` handle only from the same uid on the
@@ -190,6 +193,58 @@ reason, and `workflow.status` shows each step's `input_refs` and their live reso
 *does* with a prior result is the pipeline's evidence model and is not in this increment: the
 reference travels and is recorded, it is not yet rendered into the specialist's prompt.
 
+### Deliveries — the operator's push (P08; V0.2 Q23, A19)
+
+`operator.push_workflow_events` runs once per operator pass, after the approval announcer,
+with the same posture: best-effort, one stderr line on failure, never a reason the loop stops
+reading `/approve`. It is the **one** pusher and the only writer of `deliveries` and
+`delivery_cursors`; the store is opened only if the manager has created it
+(`WorkflowStore.exists`), so an operator on a host without the manager creates nothing.
+
+- **What is pushed:** a workflow's arrival at `COMPLETED`, `FAILED`, `BLOCKED`, `CANCELLED`
+  or `WAITING_REPLAN` (`wf.PUSHED_WORKFLOW_STATUSES`) — one message to the registered control
+  chat (`workflow_console.render_push`: the goal, the reason, the settled steps, and for
+  `WAITING_REPLAN` where the decision is made — the Hermes window, never a control-bot
+  command). Step and attempt events are Hermes's to narrate; `CANCELLING` is not a cancel; and
+  `WAITING_APPROVAL` is not pushed here because the ask itself is that push
+  (`announce_pending_approvals`) — one event, one pusher.
+- **Delivery record:** `PENDING` is written before the send and `CONFIRMED` or `UNCERTAIN`
+  after it. A crash between the two leaves `PENDING`, which the next pass retries **once**;
+  a second failure settles it `UNCERTAIN`. `UNCERTAIN` (the send raised) is kept and never
+  re-sent — the channel may have delivered it. This is at-least-once; nothing promises
+  exactly-once to the outside (V0.2 §4.3).
+- **Cursor:** the first pass adopts the current tail and sends nothing (a deploy must not
+  open with every ending since the store was created; the adopted tail is a `SKIPPED` row).
+  Each pass reads a page of events past the cursor, pushes at most `MAX_PUSHES_PER_PASS`, and
+  advances the cursor past every event it read — including the ones it does not push — but
+  never past an event the cap left unsent. A restarted operator resumes from the stored
+  cursor; an unchanged store is silence.
+
+### Reported usage — `record_reported_usage(workflow_id, principal, usage, now)` (P08; V0.2 Q24, A12)
+
+The second budget layer. The **enforced** layer is the reservations above: Thomas-side calls,
+in model calls and tokens, reserved before the frame is sent and never refunded on an
+unconfirmed outcome. The **reported** layer is Hermes's own model usage — its `state.db`
+`session_model_usage`, uid 10000's alone — which this side cannot read and cannot enforce.
+Decision (Q24, taken here): Hermes reads its own snapshot and sends it through the door —
+the shim tool `report_workflow_usage(workflow_id, session_id | since)` sums the rows for one
+session (exact) or every session since a timestamp (an upper bound, named as such by its
+`source`) and sends `workflow.report_usage` with `{input_tokens, output_tokens,
+estimated_cost_usd, cost_status, source, as_of}`. `cost_status` is `observed`, `estimated` or
+`unmeasured`, from the rows. The store keeps one row per workflow (latest wins), the view shows
+it as `budget.reported` and the console as a separate line marked *강제 아님*; the enforced
+counters never include it, and no decision reads it. A malformed report is refused unrecorded
+(`REPORTED_USAGE_INVALID`).
+
+### Narration — Hermes polls (P08; V0.2 Q23)
+
+Hermes narrates by polling `workflow.events`; the shim tool `workflow_changes` keeps its cursor
+in a file beside the shim (`THOMAS_WORKFLOW_CURSOR_FILE`), adopts the tail on its first call,
+answers *변화 없음* when nothing moved, and advances only after a page was rendered. The cron
+template's fourth job (워크플로 서술, every 30 minutes) calls it once and stays silent
+(`[SILENT]`) on no change. Narration guarantees nothing about delivery and says so; the ending
+or the waited-for decision reached Thomas through the operator's push above.
+
 ### Recovery — the manager and the registry row (P06; A10, A28)
 
 Every attempt the worker runs opens a registry row of origin `WORKFLOW` carrying the
@@ -218,6 +273,8 @@ releases or blocks dependents. `expire_overdue(now)` lapses leases by effect cla
 The manager loop that calls these (P04, inside the dispatch-bridge process), the worker's
 attempt frame and the `WORKFLOW` registry rows it writes (P05), recovery after a bridge
 restart and the reconciliation of a `NEEDS_RECONCILIATION` step against the ledger (P06),
-plan versions and approval-bound steps (P07) are in. Still ahead: the operator's `deliveries`
-and the events push (P08), and a prior step's result rendered into the next step's prompt as
-evidence (a pipeline decision; today the reference is carried and recorded, not read).
+plan versions and approval-bound steps (P07), the operator's push with `deliveries`, the
+reported budget layer and the polling narration (P08) are in. Still ahead: a prior step's
+result rendered into the next step's prompt as evidence (a pipeline decision; today the
+reference is carried and recorded, not read), a retention policy for old request ids (A06),
+and the audit-write-failure injection (A09).

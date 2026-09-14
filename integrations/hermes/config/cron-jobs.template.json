@@ -69,6 +69,29 @@
         "times": null
       },
       "deliver": "${HERMES_DELIVER_TARGET}"
+    },
+    {
+      "id": "c4f2a9d17e63",
+      "name": "워크플로 서술",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "expr": "*/30 * * * *",
+        "display": "*/30 * * * *"
+      },
+      "prompt": "thomas-ops 스킬 §7의 서술 규칙(11번)을 따라라. workflow_changes 를 정확히 한 번 부른다. 응답이 '변화 없음'이거나 '커서 초기화'면 다른 말 없이 [SILENT] 네 글자만 출력해라. 변화가 있으면 바뀐 workflow 를 workflow_status 로 읽고 5줄 이내로 설명해라 — 무엇이 끝났고 무엇이 기다리는지, 결정이 필요하면 어떤 결정인지(retry_workflow_step / propose_workflow_update / cancel_workflow). 승인을 기다리는 단계는 '승인 대기 중'이라고만 말해라 — 그 요청은 관제봇 창에 이미 올라가 있고 승인 명령은 거기서만 읽힌다. 전달을 보장한다거나 Thomas 에게 알렸다고 말하지 마라 — 완료·실패·결정 대기의 전달은 Thomas 런타임의 Operator 가 따로 한다. 이 서술은 설명이지 알림이 아니다.",
+      "model": "qwen/qwen3.7-flash",
+      "provider": "openrouter",
+      "enabled_toolsets": null,
+      "skills": [],
+      "skill": null,
+      "no_agent": false,
+      "context_from": null,
+      "origin": null,
+      "repeat": {
+        "times": null
+      },
+      "deliver": "${HERMES_DELIVER_TARGET}"
     }
   ]
 }

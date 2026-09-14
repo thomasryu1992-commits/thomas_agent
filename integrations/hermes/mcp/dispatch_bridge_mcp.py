@@ -22,6 +22,10 @@ same id and you get the result, never a duplicate.
 Korean seeds the runtime turns into measured Naver demand ([K#] evidence). The far side
 validates it like every other field.
 
+P08 (2026-09-14): ``workflow_changes`` narrates by polling with a cursor kept on this side, and
+``report_workflow_usage`` sends Hermes's own usage (read from this container's ``state.db``) as
+the reported budget layer — shown beside the runtime's enforced budget, never added to it.
+
 v3 (2026-09-14, sequence 2 P05): ``submit_workflow`` hands the runtime a PLAN — several steps
 over the same four kinds, with dependencies and a model-call budget — and returns at once
 with a ``workflow_id``. The runtime's workflow manager runs the steps and keeps the state;
@@ -34,6 +38,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -316,6 +324,151 @@ def propose_workflow_update(workflow_id: str, expected_version: str, plan_json: 
     plan.setdefault("schema_version", PLAN_SCHEMA_VERSION)
     return _workflow_ask({"command": "workflow.propose_update", "workflow_id": wid,
                           "expected_version": int(expected_version.strip()), "plan": plan, "reason": reason.strip()})
+
+
+# --- P08: narration by polling, and the reported budget layer ----------------------------------
+
+CURSOR_FILE_ENV = "THOMAS_WORKFLOW_CURSOR_FILE"
+STATE_DB_ENV = "HERMES_STATE_DB"
+DEFAULT_STATE_DB = "/opt/data/state.db"
+USAGE_SOURCE = "hermes:session_model_usage"
+
+
+def _cursor_path() -> Path:
+    return Path(os.environ.get(CURSOR_FILE_ENV) or Path(__file__).with_name(".workflow_cursor.json"))
+
+
+def _load_cursor() -> int | None:
+    """The cursor the last narration advanced to; None when this side has never narrated (or
+    the file is unreadable — then the tail is adopted rather than the whole history replayed)."""
+    try:
+        raw = json.loads(_cursor_path().read_text(encoding="utf-8"))
+        cursor = raw.get("cursor")
+        return int(cursor) if isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0 else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _save_cursor(cursor: int) -> None:
+    path = _cursor_path()
+    path.write_text(json.dumps({"cursor": int(cursor), "updated_at": _now_iso()}), encoding="utf-8")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+@mcp.tool()
+def workflow_changes(limit: str = "") -> str:
+    """What changed across all workflows since the LAST call of this tool — the cursor lives on
+    this side (a file beside the shim), so a cron job narrates without remembering anything.
+    Returns '변화 없음' when nothing moved: then stay silent. The first call ever adopts the
+    current position and narrates nothing. This is narration only — the delivery of core events
+    (a workflow ending, or waiting for a decision) to Thomas is the runtime operator's job and
+    is guaranteed there, not here; never claim to have delivered anything."""
+    cursor = _load_cursor()
+    if cursor is None:
+        probe = door.ask(_DOOR, {"command": "workflow.events", "after_cursor": 0, "limit": 1})
+        if not probe.ok:
+            return _render_workflow(probe, command="workflow.events")
+        tail = _tail_cursor(probe)
+        _save_cursor(tail)
+        return f"커서 초기화 (cursor={tail}); 이번에는 서술할 것이 없다. 변화 없음."
+    payload: dict[str, object] = {"command": "workflow.events", "after_cursor": cursor}
+    if limit and limit.strip().isdigit():
+        payload["limit"] = int(limit.strip())
+    answer = door.ask(_DOOR, payload)
+    if not answer.ok:
+        return _render_workflow(answer, command="workflow.events")
+    events = answer.data.get("events") or []
+    next_cursor = answer.data.get("next_cursor", cursor)
+    if not events or not isinstance(next_cursor, int):
+        return f"변화 없음 (cursor={cursor})."
+    _save_cursor(next_cursor)
+    return (f"{answer.reply}\n(cursor {cursor} → {next_cursor}; narrate only what changed — a workflow's ending or "
+            "waiting for a decision was already pushed to Thomas by the runtime operator)" + door.data_line(answer))
+
+
+def _tail_cursor(probe: door.Answer) -> int:
+    """The highest cursor the door knows: `workflow.events` answers `next_cursor` for the page it
+    returned, so ask again from there until the page is empty (bounded: each page is ≥ 1 row)."""
+    cursor = 0
+    for _ in range(10_000):
+        events = probe.data.get("events") or []
+        next_cursor = probe.data.get("next_cursor")
+        if not events or not isinstance(next_cursor, int) or next_cursor <= cursor:
+            return cursor
+        cursor = next_cursor
+        probe = door.ask(_DOOR, {"command": "workflow.events", "after_cursor": cursor, "limit": 200})
+        if not probe.ok:
+            return cursor
+    return cursor
+
+
+@mcp.tool()
+def report_workflow_usage(workflow_id: str, session_id: str = "", since: str = "") -> str:
+    """Report Hermes's OWN model usage for a workflow to the runtime — the reported budget layer.
+    Reads this container's state.db (`session_model_usage`) and sends the totals; the runtime shows
+    them beside its enforced budget (model-call reservations) and never adds them to it. Nothing is
+    enforced by this and it blocks nothing. Give `session_id` (exact: the session that planned and
+    narrated the workflow) or `since` (an ISO timestamp — every session's usage since then, a
+    coarse upper bound). Call it when a workflow ends or when Thomas asks what it cost."""
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return "REFUSED: workflow_id is required."
+    sid, since_iso = (session_id or "").strip(), (since or "").strip()
+    if bool(sid) == bool(since_iso):
+        return "REFUSED: give exactly one of session_id or since. Nothing was sent."
+    try:
+        usage = _read_hermes_usage(session_id=sid or None, since=since_iso or None)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        return f"REFUSED: cannot read Hermes usage from {_state_db_path()} ({exc}). Nothing was sent."
+    if usage is None:
+        return f"REFUSED: no usage rows for {'session ' + sid if sid else 'sessions since ' + since_iso}. Nothing was sent."
+    return _workflow_ask({"command": "workflow.report_usage", "workflow_id": wid, "reported_usage": usage})
+
+
+def _state_db_path() -> Path:
+    return Path(os.environ.get(STATE_DB_ENV) or DEFAULT_STATE_DB)
+
+
+def _read_hermes_usage(*, session_id: str | None, since: str | None) -> dict[str, object] | None:
+    """Sum `session_model_usage` for one session, or for every session seen since a timestamp.
+    Read-only (`mode=ro`), and the file is never created. `cost_status`: observed when every row
+    carries an actual cost, estimated when the rows are Hermes's estimates, unmeasured when the
+    rows carry tokens but no cost."""
+    path = _state_db_path()
+    if not path.is_file():
+        raise OSError(f"no state database at {path}")
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        if session_id is not None:
+            rows = conn.execute(
+                "SELECT input_tokens, output_tokens, estimated_cost_usd, actual_cost_usd, cost_status"
+                " FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+            source = f"{USAGE_SOURCE}:session"
+        else:
+            epoch = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+            rows = conn.execute(
+                "SELECT input_tokens, output_tokens, estimated_cost_usd, actual_cost_usd, cost_status"
+                " FROM session_model_usage WHERE last_seen >= ?", (epoch,)).fetchall()
+            source = f"{USAGE_SOURCE}:since"
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    input_tokens = sum(int(r[0] or 0) for r in rows)
+    output_tokens = sum(int(r[1] or 0) for r in rows)
+    actual = sum(float(r[3] or 0.0) for r in rows)
+    estimated = sum(float(r[2] or 0.0) for r in rows)
+    if actual > 0 and all(float(r[3] or 0.0) > 0 for r in rows):
+        cost, status = actual, "observed"
+    elif estimated > 0:
+        cost, status = estimated, "estimated"
+    else:
+        cost, status = 0.0, "unmeasured"
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost_usd": round(cost, 6),
+            "cost_status": status, "source": source, "as_of": _now_iso()}
 
 
 if __name__ == "__main__":

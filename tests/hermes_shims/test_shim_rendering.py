@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import thomas_door_client as door
 import read_bridge_mcp as read_shim
 import dispatch_bridge_mcp as dispatch_shim
@@ -190,11 +192,12 @@ def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatc
 _WID = "wf_" + "1" * 20
 
 
-def test_dispatch_tools_are_the_four_dispatches_plus_the_eight_workflow_tools():
+def test_dispatch_tools_are_the_four_dispatches_plus_the_ten_workflow_tools():
     assert set(dispatch_shim.mcp.tools) == {
         "analyze", "research", "translate", "draft_content",
         "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events",
         "cancel_workflow", "retry_workflow_step", "propose_workflow_update",
+        "workflow_changes", "report_workflow_usage",
     }
 
 
@@ -292,3 +295,99 @@ def test_propose_update_sends_the_whole_plan_at_the_version_read(monkeypatch):
     assert dispatch_shim.propose_workflow_update(_WID, "3", "{bad", "r").startswith("REFUSED: plan_json is not valid JSON")
     assert dispatch_shim.propose_workflow_update(_WID, "x", "{}", "r").startswith("REFUSED: expected_version")
     assert len(seen) == 1
+
+
+# --- P08: narration by polling, usage reporting ----------------------------------------------------
+
+def _events_answer(events, next_cursor):
+    return _answer("dispatch", {"ok": True, "command": "workflow.events", "reply": f"{len(events)} event(s)",
+                                "data": {"events": events, "next_cursor": next_cursor, "count": len(events)}})
+
+
+def test_workflow_changes_keeps_its_own_cursor_and_is_silent_when_nothing_moved(monkeypatch, tmp_path):
+    monkeypatch.setenv(dispatch_shim.CURSOR_FILE_ENV, str(tmp_path / "cursor.json"))
+    pages = {0: _events_answer([{"cursor": 41}], 41), 41: _events_answer([], 41)}
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or pages.get(p["after_cursor"], _events_answer([], p["after_cursor"])))
+    # first call ever: adopt the tail, narrate nothing
+    first = dispatch_shim.workflow_changes()
+    assert first.startswith("커서 초기화 (cursor=41)") and "변화 없음" in first
+    assert json.loads((tmp_path / "cursor.json").read_text())["cursor"] == 41
+    # nothing new: silent, cursor untouched
+    assert dispatch_shim.workflow_changes() == "변화 없음 (cursor=41)."
+    assert seen[-1] == {"command": "workflow.events", "after_cursor": 41}
+    # something new: rendered, cursor advanced
+    pages[41] = _events_answer([{"cursor": 42, "entity": "workflow", "to_status": "COMPLETED"}], 42)
+    out = dispatch_shim.workflow_changes("5")
+    assert out.startswith("1 event(s)") and "cursor 41 → 42" in out and '"next_cursor":42' in out
+    assert "pushed to Thomas by the runtime operator" in out
+    assert seen[-1] == {"command": "workflow.events", "after_cursor": 41, "limit": 5}
+    assert json.loads((tmp_path / "cursor.json").read_text())["cursor"] == 42
+    # a door that is down: rendered as such, cursor untouched
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: _answer("dispatch", failure=door.NO_SOCKET))
+    assert dispatch_shim.workflow_changes().startswith("UNAVAILABLE: no dispatch door")
+    assert json.loads((tmp_path / "cursor.json").read_text())["cursor"] == 42
+
+
+def test_a_corrupt_cursor_file_adopts_the_tail_instead_of_replaying_history(monkeypatch, tmp_path):
+    monkeypatch.setenv(dispatch_shim.CURSOR_FILE_ENV, str(tmp_path / "cursor.json"))
+    (tmp_path / "cursor.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: _events_answer([{"cursor": 9}], 9) if p["after_cursor"] == 0 else _events_answer([], 9))
+    assert dispatch_shim.workflow_changes().startswith("커서 초기화 (cursor=9)")
+
+
+def _state_db(path, rows):
+    import sqlite3
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE session_model_usage (session_id TEXT NOT NULL, model TEXT NOT NULL,
+        billing_provider TEXT NOT NULL DEFAULT '', billing_base_url TEXT NOT NULL DEFAULT '', billing_mode TEXT NOT NULL DEFAULT '',
+        task TEXT NOT NULL DEFAULT '', api_call_count INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost_usd REAL NOT NULL DEFAULT 0, actual_cost_usd REAL NOT NULL DEFAULT 0,
+        cost_status TEXT, cost_source TEXT, first_seen REAL, last_seen REAL)""")
+    conn.executemany("INSERT INTO session_model_usage (session_id, model, input_tokens, output_tokens, estimated_cost_usd,"
+                     " actual_cost_usd, cost_status, last_seen) VALUES (?,?,?,?,?,?,?,?)", rows)
+    conn.commit(); conn.close()
+
+
+def test_report_workflow_usage_reads_this_containers_accounting_and_sends_the_reported_layer(monkeypatch, tmp_path):
+    db = tmp_path / "state.db"
+    _state_db(db, [
+        ("cron_b8_20260914_080024", "qwen/qwen3.7-flash", 62456, 1816, 0.002393, 0.0, "estimated", 1789372870.0),
+        ("cron_b8_20260914_080024", "google/gemini-2.5-pro", 10000, 500, 0.01, 0.0, "estimated", 1789372900.0),
+        ("other_session", "qwen/qwen3.7-flash", 999, 99, 0.001, 0.0, "estimated", 1789372950.0),
+    ])
+    monkeypatch.setenv(dispatch_shim.STATE_DB_ENV, str(db))
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or _answer(
+        "dispatch", {"ok": True, "command": "workflow.report_usage", "reply": "USAGE REPORTED", "data": {"budget": {}}}))
+    out = dispatch_shim.report_workflow_usage(_WID, session_id="cron_b8_20260914_080024")
+    assert out.startswith("USAGE REPORTED")
+    (payload,) = seen
+    usage = payload["reported_usage"]
+    assert payload["command"] == "workflow.report_usage" and payload["workflow_id"] == _WID
+    assert usage["input_tokens"] == 72456 and usage["output_tokens"] == 2316 and usage["estimated_cost_usd"] == 0.012393
+    assert usage["cost_status"] == "estimated" and usage["source"] == "hermes:session_model_usage:session"
+    assert usage["as_of"].endswith("Z")
+    # `since`: every session after the stamp — an upper bound, named as such by its source
+    out = dispatch_shim.report_workflow_usage(_WID, since="2026-09-14T08:00:00Z")
+    assert out.startswith("USAGE REPORTED") and seen[-1]["reported_usage"]["source"] == "hermes:session_model_usage:since"
+    assert seen[-1]["reported_usage"]["input_tokens"] == 73455
+    # refusals: no rows, both or neither selector, no database — nothing sent
+    assert dispatch_shim.report_workflow_usage(_WID, session_id="nope").startswith("REFUSED: no usage rows")
+    assert dispatch_shim.report_workflow_usage(_WID).startswith("REFUSED: give exactly one")
+    assert dispatch_shim.report_workflow_usage(_WID, session_id="a", since="b").startswith("REFUSED: give exactly one")
+    monkeypatch.setenv(dispatch_shim.STATE_DB_ENV, str(tmp_path / "missing.db"))
+    assert dispatch_shim.report_workflow_usage(_WID, session_id="a").startswith("REFUSED: cannot read Hermes usage")
+    assert not (tmp_path / "missing.db").exists() and len(seen) == 2
+
+
+def test_the_reported_cost_status_follows_the_rows(monkeypatch, tmp_path):
+    db = tmp_path / "state.db"
+    _state_db(db, [("s1", "m", 10, 5, 0.0, 0.5, "actual", 1.0), ("s1", "m2", 10, 5, 0.0, 0.25, "actual", 2.0),
+                   ("s2", "m", 10, 5, 0.0, 0.0, None, 3.0)])
+    monkeypatch.setenv(dispatch_shim.STATE_DB_ENV, str(db))
+    assert dispatch_shim._read_hermes_usage(session_id="s1", since=None) | {"as_of": "-"} == {
+        "input_tokens": 20, "output_tokens": 10, "estimated_cost_usd": 0.75, "cost_status": "observed",
+        "source": "hermes:session_model_usage:session", "as_of": "-"}
+    assert dispatch_shim._read_hermes_usage(session_id="s2", since=None)["cost_status"] == "unmeasured"

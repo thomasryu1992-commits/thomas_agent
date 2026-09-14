@@ -1109,6 +1109,103 @@ def announce_pending_approvals(
     return sent
 
 
+# --- workflow core-event push (sequence 2, P08; V0.2 Q23, acceptance A19) -----------------------
+#
+# The operator holds the control-bot token and survives a Hermes outage, so it is the one
+# process that pushes a workflow's arrival at a state Thomas acts on or wants to know about —
+# `wf.PUSHED_WORKFLOW_STATUSES` — and the only writer of `deliveries` / `delivery_cursors`.
+# Everything else about a workflow is Hermes's to narrate by polling `workflow.events`. A
+# workflow waiting for an approval is not pushed here: the ask itself is that push
+# (`announce_pending_approvals`), and one event has exactly one pusher.
+#
+# Delivery is recorded before the send (PENDING) and after it (CONFIRMED / UNCERTAIN), so a
+# crash between the two leaves a PENDING row that the next pass retries once. That is
+# at-least-once; a message may arrive twice after a crash, and nothing promises exactly-once
+# to the outside (V0.2 §4.3). UNCERTAIN — the send raised — is kept as the answer and never
+# re-sent: the channel may well have delivered it. Like the mirror and the announcer, a push
+# failure is one stderr line and never reaches approval handling or the emergency console.
+
+PUSH_CHANNEL = "control"
+MAX_PUSHES_PER_PASS = 20
+PUSH_READ_PAGE = 500            # events read per pass; most are step/attempt rows that are not pushed
+
+
+def push_workflow_events(
+    channel: OperatorChannel,
+    workflow_store: Any,
+    *,
+    now: str,
+    repo_root: Path | None = None,
+    channel_name: str = PUSH_CHANNEL,
+    limit: int = MAX_PUSHES_PER_PASS,
+) -> dict[str, Any]:
+    """One pass of the push. Returns ``{"sent": [cursors], "uncertain": [cursors], "retried": n,
+    "cursor": int, "adopted": bool}``; raises only when the store itself cannot be read. ``limit``
+    caps the messages sent in one pass (retries included); the cursor stops before the first
+    event the cap left unsent, so the next pass takes it up."""
+    from . import workflow as wf                      # noqa: PLC0415 — the operator loads no workflow module at import
+    from . import workflow_console
+
+    report: dict[str, Any] = {"sent": [], "uncertain": [], "retried": 0, "cursor": None, "adopted": False}
+
+    def _deliver(event: Mapping[str, Any]) -> bool:
+        cursor = int(event["cursor"])
+        try:
+            view = workflow_store.status_view(str(event["workflow_id"]), now=now)
+        except MvpRuntimeError:
+            view = None
+        try:
+            notify_operator(channel, workflow_console.render_push(event, view), repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            workflow_store.record_delivery(channel_name, cursor, wf.DELIVERY_UNCERTAIN, now=now,
+                                           detail=f"{exc.reason_code}: {exc}"[:500])
+            report["uncertain"].append(cursor)
+            sys.stderr.write(f"OPERATOR: workflow event #{cursor} push UNCERTAIN ({exc.reason_code})\n")
+            return False
+        workflow_store.record_delivery(channel_name, cursor, wf.DELIVERY_CONFIRMED, now=now)
+        report["sent"].append(cursor)
+        return True
+
+    # 1. A PENDING row is a send this process (or its predecessor) never confirmed: retry once.
+    for row in workflow_store.deliveries(channel_name, status=wf.DELIVERY_PENDING, limit=limit):
+        event = workflow_store.event(int(row["event_cursor"]))
+        if event is None:
+            workflow_store.record_delivery(channel_name, int(row["event_cursor"]), wf.DELIVERY_UNCERTAIN, now=now,
+                                           detail="event row missing")
+            continue
+        report["retried"] += 1
+        _deliver(event)
+
+    # 2. New events past the cursor. The first pass adopts the backlog and sends nothing — a
+    #    deploy must not open with every ending since the store was created.
+    cursor = workflow_store.delivery_cursor(channel_name)
+    if cursor is None:
+        tail = workflow_store.max_event_cursor()
+        workflow_store.set_delivery_cursor(channel_name, tail, now=now)
+        if tail:
+            workflow_store.record_delivery(channel_name, tail, wf.DELIVERY_SKIPPED, now=now,
+                                           detail="first pass adopted the backlog; nothing sent")
+        report.update({"cursor": tail, "adopted": True})
+        return report
+
+    events, _next_cursor = workflow_store.events_after(cursor, limit=PUSH_READ_PAGE)
+    budget = max(0, int(limit) - len(report["sent"]) - len(report["uncertain"]))
+    advanced_to = cursor
+    for event in events:
+        pushed = event.get("entity") == "workflow" and event.get("to_status") in wf.PUSHED_WORKFLOW_STATUSES
+        if pushed:
+            if budget <= 0:
+                break                                  # the rest waits for the next pass; the cursor stays before it
+            budget -= 1
+            workflow_store.record_delivery(channel_name, int(event["cursor"]), wf.DELIVERY_PENDING, now=now)
+            _deliver(event)
+        advanced_to = int(event["cursor"])
+    if advanced_to != cursor:
+        workflow_store.set_delivery_cursor(channel_name, advanced_to, now=now)
+    report["cursor"] = advanced_to
+    return report
+
+
 class TelegramChannel:
     """Real Telegram Bot API control channel (long-poll ``getUpdates`` + ``sendMessage``).
 

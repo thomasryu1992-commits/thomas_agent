@@ -11,9 +11,9 @@ Sequence 2, **P02** (2026-09-14). Decision record: [`docs/HERMES_ORCHESTRATOR_AR
 | `mcp/thomas_door_client.py` | the one socket client for the four doors (door API v2 frames, one receive loop) | inside the `hermes` container, imported by the four shims |
 | `mcp/read_bridge_mcp.py`, `dispatch_bridge_mcp.py`, `switch_bridge_mcp.py`, `knowledge_bridge_mcp.py` | the stdio MCP shims the gateway spawns (`config.yaml` → `mcp_servers`) | inside the `hermes` container as `/opt/data/mcp/<shim>.py` |
 | `config/SOUL.md` | the operational prompt (Korean) | Hermes system prompt |
-| `config/skills/thomas-ops/` | the `thomas-ops` skill (`SKILL.md` 1.4.1) and its references | Hermes skill |
+| `config/skills/thomas-ops/` | the `thomas-ops` skill (`SKILL.md` 1.5.2) and its references | Hermes skill |
 | `config/config.template.yaml` | `config.yaml` with the operator's Telegram ids replaced by placeholders; no secret was ever in that file | template — copy, fill the two ids |
-| `config/cron-jobs.template.json` | the three cron jobs' configuration fields (schedule, prompt, model, toolsets); run state omitted; delivery target a placeholder | template |
+| `config/cron-jobs.template.json` | the four cron jobs' configuration fields (schedule, prompt, model, toolsets) — the fourth, 워크플로 서술, is P08's polling narration (install it when the runtime runs the workflow manager); run state omitted; delivery target a placeholder | template |
 | `MANIFEST.yaml` | which image, shim revision, prompt version and runtime were measured together | the record a deploy compares against |
 
 Not here, on purpose: the container environment (three values from `.env`, see `docs/DEPLOYMENT.md`), sessions, memories, `state.db` and its snapshots, `auth.json`, logs and caches, and the `hermes-agent` build context (its own repository).

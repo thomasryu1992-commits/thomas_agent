@@ -46,7 +46,7 @@ WORKFLOW_DIR_REL = ".runtime_governance_state/workflow"
 DB_FILENAME = "workflow.db"
 SNAPSHOT_DIR_NAME = "snapshots"
 # 1: sequence 2 P03. 2 (P07): steps gain `requires_approval`, `approval_id`, `approval_plan_version`.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Server-wide ceiling on steps that are accepted but not finished (V0.2 §4.3 starting point).
 MAX_OPEN_STEPS = 20
@@ -106,10 +106,25 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS deliveries ("
     " channel TEXT NOT NULL, event_cursor INTEGER NOT NULL, status TEXT NOT NULL,"
     " attempted_at TEXT NOT NULL, detail TEXT, PRIMARY KEY (channel, event_cursor))",
+    # P08: where the operator's push has read up to, per channel — advanced past events it
+    # does not push, so a burst of step events never pins the cursor. Same writer as
+    # `deliveries` (the operator); the manager never touches either.
+    "CREATE TABLE IF NOT EXISTS delivery_cursors ("
+    " channel TEXT PRIMARY KEY, cursor INTEGER NOT NULL, updated_at TEXT NOT NULL)",
+    # P08 (V0.2 Q24): the reported budget layer — Hermes's own usage for a workflow, as Hermes
+    # reported it through the door. One row per workflow, latest report wins; never summed
+    # into `budget_reservations`.
+    "CREATE TABLE IF NOT EXISTS reported_usage ("
+    " workflow_id TEXT PRIMARY KEY, principal TEXT NOT NULL, input_tokens INTEGER NOT NULL,"
+    " output_tokens INTEGER NOT NULL, estimated_cost_usd REAL NOT NULL, cost_status TEXT NOT NULL,"
+    " source TEXT NOT NULL, as_of TEXT NOT NULL, reported_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS steps_by_status ON steps (status, workflow_id)",
     "CREATE INDEX IF NOT EXISTS attempts_by_status ON attempts (status, deadline_at)",
     "CREATE INDEX IF NOT EXISTS events_by_workflow ON events (workflow_id, cursor)",
 )
+
+_REPORTED_REQUIRED = frozenset({"input_tokens", "output_tokens", "estimated_cost_usd", "cost_status", "source"})
+_REPORTED_KEYS = _REPORTED_REQUIRED | {"as_of"}
 
 COST_UNCONFIRMED = "unconfirmed"
 COST_OBSERVED = "observed"
@@ -156,6 +171,12 @@ class WorkflowStore:
     @classmethod
     def default(cls, root: Path | None = None, *, readonly: bool = False) -> "WorkflowStore":
         return cls(root if root is not None else _repo_root(), readonly=readonly)
+
+    @classmethod
+    def exists(cls, root: Path | None = None) -> bool:
+        """Whether the manager has ever created the store under ``root``. A reader that would
+        otherwise create an empty file (the operator, P08) asks this first."""
+        return ((root if root is not None else _repo_root()) / WORKFLOW_DIR_REL / DB_FILENAME).is_file()
 
     @property
     def path(self) -> Path:
@@ -404,6 +425,7 @@ class WorkflowStore:
             for d in deps:
                 by_step.setdefault(d["step_id"], []).append(d["step_key"])
             budget = self._budget_locked(conn, workflow_id)
+            budget["reported"] = self._reported_locked(conn, workflow_id)      # P08: shown, not enforced
             view = {
                 "workflow_id": workflow_id, "status": row["status"], "goal": row["goal"],
                 "principal": row["principal"], "plan_version": row["plan_version"],
@@ -451,6 +473,106 @@ class WorkflowStore:
         events = [dict(r) for r in rows]
         next_cursor = events[-1]["cursor"] if events else int(cursor)
         return events, next_cursor
+
+    def max_event_cursor(self) -> int:
+        with self._read() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(cursor), 0) AS tail FROM events").fetchone()
+        return int(row["tail"])
+
+    def event(self, cursor: int) -> dict[str, Any] | None:
+        with self._read() as conn:
+            row = conn.execute("SELECT * FROM events WHERE cursor=?", (int(cursor),)).fetchone()
+        return dict(row) if row is not None else None
+
+    # --- deliveries (P08; the operator's tables) -------------------------------------------------
+
+    def delivery_cursor(self, channel: str) -> int | None:
+        """Where the push for ``channel`` has read up to; None before its first pass."""
+        with self._read() as conn:
+            row = conn.execute("SELECT cursor FROM delivery_cursors WHERE channel=?", (channel,)).fetchone()
+        return int(row["cursor"]) if row is not None else None
+
+    def set_delivery_cursor(self, channel: str, cursor: int, *, now: str) -> None:
+        with self._write() as conn:
+            conn.execute("INSERT INTO delivery_cursors (channel, cursor, updated_at) VALUES (?,?,?)"
+                         " ON CONFLICT(channel) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at",
+                         (channel, int(cursor), now))
+
+    def record_delivery(self, channel: str, event_cursor: int, status: str, *, now: str,
+                        detail: str | None = None) -> None:
+        """The delivery state of one pushed event on one channel — written BEFORE the send as
+        PENDING and again after it as CONFIRMED or UNCERTAIN (A19). Latest state wins."""
+        if status not in wf.DELIVERY_STATUSES:
+            raise WorkflowBlocked("DELIVERY_STATUS_INVALID", f"{status!r} is not a delivery status")
+        with self._write() as conn:
+            conn.execute(
+                "INSERT INTO deliveries (channel, event_cursor, status, attempted_at, detail) VALUES (?,?,?,?,?)"
+                " ON CONFLICT(channel, event_cursor) DO UPDATE SET status=excluded.status,"
+                " attempted_at=excluded.attempted_at, detail=excluded.detail",
+                (channel, int(event_cursor), status, now, detail[:500] if isinstance(detail, str) else None))
+
+    def deliveries(self, channel: str, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        with self._read() as conn:
+            if status is None:
+                rows = conn.execute("SELECT * FROM deliveries WHERE channel=? ORDER BY event_cursor LIMIT ?",
+                                    (channel, max(1, int(limit)))).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM deliveries WHERE channel=? AND status=? ORDER BY event_cursor LIMIT ?",
+                                    (channel, status, max(1, int(limit)))).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- reported usage (P08; V0.2 Q24) ---------------------------------------------------------
+
+    def record_reported_usage(self, workflow_id: str, *, principal: str, usage: Any, now: str) -> dict[str, Any]:
+        """Hermes's own usage for a workflow, as reported. Shown beside the enforced budget and
+        never added to it: the numbers come from the reporter's accounting (`session_model_usage`),
+        and this side cannot verify them. Closed shape; anything else is refused unrecorded."""
+        if not isinstance(usage, dict) or set(usage) - _REPORTED_KEYS or not _REPORTED_REQUIRED <= set(usage):
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID",
+                                  f"reported_usage carries {sorted(_REPORTED_REQUIRED)} (+ optional 'as_of'), nothing else")
+        for key in ("input_tokens", "output_tokens"):
+            v = usage[key]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise WorkflowBlocked("REPORTED_USAGE_INVALID", f"reported_usage.{key} must be a non-negative integer")
+        cost = usage["estimated_cost_usd"]
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0 or cost != cost:
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID", "reported_usage.estimated_cost_usd must be a non-negative number")
+        if usage["cost_status"] not in wf.REPORTED_COST_STATUSES:
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID",
+                                  f"reported_usage.cost_status is one of {sorted(wf.REPORTED_COST_STATUSES)}")
+        source = usage["source"]
+        if not isinstance(source, str) or not source.strip() or len(source) > wf.REPORTED_SOURCE_MAX:
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID", "reported_usage.source names the reporter's accounting (short string)")
+        as_of = usage.get("as_of", now)
+        if not isinstance(as_of, str) or not as_of.strip():
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID", "reported_usage.as_of must be a timestamp when given")
+        try:
+            timeutil.parse_iso(as_of)
+        except (ValueError, TypeError) as exc:
+            raise WorkflowBlocked("REPORTED_USAGE_INVALID", f"reported_usage.as_of is not a timestamp: {exc}") from exc
+        with self._write() as conn:
+            if conn.execute("SELECT 1 FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone() is None:
+                raise WorkflowBlocked("WORKFLOW_NOT_FOUND", f"no workflow {workflow_id}")
+            conn.execute(
+                "INSERT INTO reported_usage (workflow_id, principal, input_tokens, output_tokens, estimated_cost_usd,"
+                " cost_status, source, as_of, reported_at) VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(workflow_id) DO UPDATE SET principal=excluded.principal, input_tokens=excluded.input_tokens,"
+                " output_tokens=excluded.output_tokens, estimated_cost_usd=excluded.estimated_cost_usd,"
+                " cost_status=excluded.cost_status, source=excluded.source, as_of=excluded.as_of,"
+                " reported_at=excluded.reported_at",
+                (workflow_id, principal, int(usage["input_tokens"]), int(usage["output_tokens"]), float(cost),
+                 usage["cost_status"], source.strip(), as_of, now))
+        return self.status_view(workflow_id, now=now)
+
+    @staticmethod
+    def _reported_locked(conn: sqlite3.Connection, workflow_id: str) -> dict[str, Any] | None:
+        row = conn.execute("SELECT * FROM reported_usage WHERE workflow_id=?", (workflow_id,)).fetchone()
+        if row is None:
+            return None
+        return {"principal": row["principal"], "input_tokens": int(row["input_tokens"]),
+                "output_tokens": int(row["output_tokens"]), "estimated_cost_usd": float(row["estimated_cost_usd"]),
+                "cost_status": row["cost_status"], "source": row["source"], "as_of": row["as_of"],
+                "reported_at": row["reported_at"]}
 
     def open_step_count(self) -> int:
         with self._read() as conn:
