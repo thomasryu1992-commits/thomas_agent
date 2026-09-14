@@ -25,7 +25,11 @@ from runtime.mvp_runtime.memory import (
 )
 from runtime.mvp_runtime.store import AUDIT_FILE, LedgerStore
 from runtime.mvp_runtime.working_memory import WorkingMemoryStore, find_candidate, mark_promoted
-from scripts.promote_memory_candidate import main as promote_main
+from scripts.promote_memory_candidate import (  # noqa: E402
+    _render_candidate_list,
+    _retention_state,
+    main as promote_main,
+)
 
 
 def _read_audit(ledger: LedgerStore) -> list[dict]:
@@ -274,3 +278,58 @@ def test_pipeline_never_promotes(tmp_path):
     run_task("이 사업 아이디어를 분석해줘: 구독형 반려동물 사료", provider=MockProvider(), working_memory=wm, now=NOW)
     assert wm.read_all()            # candidates were created
     assert wm.read_validated() == []  # but the run never promoted anything (no auto-promotion)
+
+
+# --- what the listing has to say for a reader to act correctly on it ----------
+#
+# The weekly decision digest reads `--list` verbatim. On 2026-09-14 it recommended promoting
+# "24 candidates" that were 28 rows collapsing to 13 distinct findings, none of which carried
+# `promotable: true`; 20 were four copies each of five 2026-07-16 boilerplate lines. The old
+# listing printed one line per row and a bare count, so none of that was visible. A listing
+# whose reader cannot act correctly on it is the defect, not the reader.
+
+def _listing_row(cid, content, *, promotable=False, created="2026-09-13T01:00:00Z",
+                 expires=None, ctype="reusable_knowledge"):
+    row = {"candidate_id": cid, "candidate_type": ctype, "content": content,
+           "promotable": promotable, "created_at": created, "status": "CANDIDATE"}
+    if expires is not None:
+        row["expires_at"] = expires
+    return row
+
+
+def test_the_listing_collapses_copies_and_counts_distinct_findings():
+    rows = [_listing_row(f"memcand_dup{i}", "same finding", created="2026-07-16T01:00:00Z")
+            for i in range(4)]
+    rows.append(_listing_row("memcand_one", "a distinct finding", promotable=True,
+                             expires="2026-12-01T00:00:00Z"))
+    text = _render_candidate_list(rows, "2026-09-14T00:00:00Z")
+    assert "5 row(s) -> 2 distinct" in text
+    assert "1 promotable" in text
+    assert "x4" in text                      # the four copies are one line carrying their count
+    assert text.count("same finding") == 1
+    # What can be acted on leads, because the first lines are the ones a summary quotes.
+    assert text.index("memcand_one") < text.index("memcand_dup")
+
+
+def test_the_listing_refuses_to_imply_a_promotion_that_would_be_refused():
+    """The exact sentence the digest could not infer: every row said CANDIDATE and nothing
+    said none of them could be promoted."""
+    text = _render_candidate_list([_listing_row("memcand_np", "x")], "2026-09-14T00:00:00Z")
+    assert "0 promotable" in text
+    assert "Nothing here is promotable" in text
+
+
+def test_undated_rows_are_not_reported_as_live():
+    """`is_expired` folds "no expiry" into "not expired" — correct for retention, which must
+    never surprise-delete what it did not stamp, and wrong for a reader: those are precisely
+    the rows `memory_prune` can never remove. On this host 20 of 28 rows carried no TTL and
+    every prune reported `pruned:0`."""
+    live = _listing_row("memcand_live", "live one", expires="2026-12-01T00:00:00Z")
+    undated = _listing_row("memcand_undated", "undated one")
+    gone = _listing_row("memcand_gone", "expired one", expires="2026-08-01T00:00:00Z")
+    assert _retention_state(live, "2026-09-14T00:00:00Z") == "live"
+    assert _retention_state(undated, "2026-09-14T00:00:00Z") == "no-ttl"
+    assert _retention_state(gone, "2026-09-14T00:00:00Z") == "expired"
+    text = _render_candidate_list([live, undated, gone], "2026-09-14T00:00:00Z")
+    assert "1 expired, 1 undated" in text
+    assert "cannot be pruned" in text
