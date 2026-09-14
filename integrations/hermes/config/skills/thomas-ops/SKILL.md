@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.4.1
+version: 1.5.0
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -214,3 +214,30 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
 2. `task_result(<task_id 또는 treg_ id>)` — 응답이나 `task_history`에 있는 id로.
 
 "실패했다"고 단정하지 마라. "실행 중이거나 완료됐고, request_id로 회수 가능"이 정확한 보고다.
+
+## 7. 복합 업무를 맡길 때 (thomas-dispatch, 도구 API v3)
+
+한 번에 끝나는 일은 §6대로 `analyze`·`research`·`translate`·`draft_content`를 쓴다. 단계가 여럿이고
+서로 의존하면(조사 → 초안 → 검토) 계획 하나를 `submit_workflow`로 맡긴다. 런타임이 단계를 순서대로
+돌리고 상태를 보존하므로 네 세션이 끊겨도 진행은 남는다.
+
+1. **세션에서 처음 한 번** `thomas_capabilities`를 부른다. `[data]`의 `workflow_manager`가 `false`면
+   이 런타임은 워크플로를 받지 않는다 — §6으로 한 단계씩 하고, Thomas에게 관리자 활성화가
+   필요하다고 말한다. `REFUSED [WORKFLOW_UNAVAILABLE]`도 같은 뜻이다.
+2. **계획은 JSON 객체 하나다.** `steps`는 최대 10개, 각 단계는 `id`·`capability`(네 종류 중 하나)·
+   `request`·`reason`, 의존은 `depends_on`, 앞 단계 결과를 읽으면 `input_refs`(depends_on의 부분집합).
+   `budget.max_model_calls`는 단계당 최소 1(검토자·수정을 켠 단계는 2~3). 효과 등급·actor·권한은
+   적을 수 없다 — 문이 거부한다.
+3. **`request_id`를 기억해라.** `submit_workflow`는 즉시 `workflow_id`를 돌려준다. 응답이 없으면
+   (`SUBMITTED_BUT_UNCONFIRMED`) **같은 request_id로 다시 부른다** — 같은 계획은 재생(replayed)되고
+   두 번 접수되지 않는다. 새 id로 다시 내지 마라.
+4. **진행은 `workflow_status`로 읽는다.** 단계 상태(대기·준비·실행 중·성공·재시도 대기·실패·차단·
+   취소)와 `attempts`, 완료 단계의 `result_ref`(`ledger:trace_…` — 본문은 `task_result`로). 예산 줄의
+   "미확인"은 응답이 유실된 시도의 예약이며 0이 아니다.
+5. **바뀐 것만 보려면 `workflow_events`** — 응답의 `next_cursor`를 기억해 다음에 넘긴다. 같은 커서는
+   같은 행을 돌려준다. 상태가 그대로면 보고하지 않는다.
+6. **취소는 `cancel_workflow(workflow_id, expected_version, reason)`** — `expected_version`은 방금
+   읽은 `row_version`. `CANCELLING`은 아직 취소가 아니다: 실행 중인 단계가 경계에서 멈추거나 lease가
+   끝나야 `CANCELLED`가 된다. 응답이 말하기 전에 취소됐다고 말하지 마라.
+7. **워크플로는 승인·거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인은
+   §5·§5.1 그대로다.

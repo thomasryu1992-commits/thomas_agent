@@ -183,3 +183,85 @@ def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatc
     without = [read_shim.trading_status(), read_shim.task_list(), read_shim.schedules(),
                read_shim.task_history(), read_shim.paper_performance(), read_shim.memory_candidates()]
     assert all("[data]" not in text for text in without)
+
+
+# --- the dispatch shim's door API v3 tools (v2.4, sequence 2 P05) ---------------------------------
+
+_WID = "wf_" + "1" * 20
+
+
+def test_dispatch_tools_are_the_four_dispatches_plus_the_six_workflow_tools():
+    assert set(dispatch_shim.mcp.tools) == {
+        "analyze", "research", "translate", "draft_content",
+        "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events", "cancel_workflow",
+    }
+
+
+def test_submit_sends_the_plan_under_a_request_id_and_renders_accepted_or_replayed(monkeypatch):
+    seen = []
+
+    def ask(d, p, **kw):
+        seen.append((p, kw))
+        return _answer("dispatch", {"ok": True, "command": "workflow.submit", "reply": "ACCEPTED: workflow " + _WID,
+                                    "replayed": False, "data": {"workflow_id": _WID, "status": "VALIDATED", "replayed": False}})
+
+    monkeypatch.setattr(door, "ask", ask)
+    out = dispatch_shim.submit_workflow('{"goal": "g", "steps": [], "budget": {"max_model_calls": 2}}')
+    assert out.startswith("ACCEPTED") and "Keep this request_id" in out and '"workflow_id":"' + _WID + '"' in out
+    payload, kw = seen[0]
+    assert payload["command"] == "workflow.submit" and payload["plan"]["schema_version"] == "workflow_plan.v0.1"
+    assert kw["request_id"].startswith("hermes-")
+    dispatch_shim.submit_workflow('{"goal": "g", "steps": [], "budget": {"max_model_calls": 2}}', request_id="hermes-given")
+    assert seen[1][1]["request_id"] == "hermes-given"
+
+
+def test_submit_refuses_bad_json_locally_and_sends_nothing(monkeypatch):
+    monkeypatch.setattr(door, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called")))
+    assert dispatch_shim.submit_workflow("").startswith("REFUSED: plan_json is required")
+    assert dispatch_shim.submit_workflow("{not json").startswith("REFUSED: plan_json is not valid JSON")
+    assert dispatch_shim.submit_workflow("[1, 2]").startswith("REFUSED: plan_json must be a JSON object")
+
+
+def test_a_v2_only_runtime_and_an_unconfirmed_submit_read_differently():
+    unavailable = dispatch_shim._render_workflow(
+        _answer("dispatch", {"ok": False, "reason_code": "WORKFLOW_UNAVAILABLE", "reason": "r"}),
+        command="workflow.submit", request_id="hermes-1")
+    assert unavailable.startswith("REFUSED [WORKFLOW_UNAVAILABLE]") and "nothing was started" in unavailable
+    assert "analyze / research / translate / draft_content" in unavailable
+    slow = dispatch_shim._render_workflow(_answer("dispatch", failure=door.TIMEOUT_AFTER_SEND, sent=True, detail="t"),
+                                          command="workflow.submit", request_id="hermes-1")
+    assert slow.startswith("SUBMITTED_BUT_UNCONFIRMED") and 'request_id="hermes-1"' in slow and "new id" in slow
+    dead = dispatch_shim._render_workflow(_answer("dispatch", failure=door.NOT_SENT, detail="refused"),
+                                          command="workflow.status", request_id=None)
+    assert dead.startswith("UNAVAILABLE") and dead.endswith("Nothing was started.")
+    refused = dispatch_shim._render_workflow(
+        _answer("dispatch", {"ok": False, "reason_code": "VERSION_CONFLICT", "reason": "v"}), command="workflow.cancel")
+    assert refused == "REFUSED [VERSION_CONFLICT]: v. Nothing was changed."
+
+
+def test_status_list_events_and_cancel_send_their_shapes_and_carry_data(monkeypatch):
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((p, kw)) or _answer(
+        "dispatch", {"ok": True, "command": p["command"], "reply": "r", "data": {"row_version": 3}}))
+    assert '[data] {"row_version":3}' in dispatch_shim.workflow_status(_WID)
+    dispatch_shim.workflow_list("7"); dispatch_shim.workflow_events("12", "5"); dispatch_shim.workflow_events()
+    dispatch_shim.cancel_workflow(_WID, "3", "그만")
+    assert seen[0][0] == {"command": "workflow.status", "workflow_id": _WID}
+    assert seen[1][0] == {"command": "workflow.list", "limit": 7}
+    assert seen[2][0] == {"command": "workflow.events", "after_cursor": 12, "limit": 5}
+    assert seen[3][0] == {"command": "workflow.events", "after_cursor": 0}
+    assert seen[4][0] == {"command": "workflow.cancel", "workflow_id": _WID, "expected_version": 3, "reason": "그만"}
+    assert all(kw == {"request_id": None} for _, kw in seen)          # only a submit carries an id
+    assert dispatch_shim.cancel_workflow(_WID, "three", "x").startswith("REFUSED: expected_version")
+    assert dispatch_shim.cancel_workflow(_WID, "3", " ").startswith("REFUSED: a reason")
+    assert dispatch_shim.workflow_status(" ").startswith("REFUSED: workflow_id")
+    assert len(seen) == 5
+
+
+def test_the_data_line_is_one_helper_shared_by_the_shims():
+    answer = _answer("read", {"ok": True, "reply": "r", "data": {"b": 1, "a": [1, 2]}})
+    assert door.data_line(answer) == '\n\n[data] {"a":[1,2],"b":1}'
+    assert door.data_line(_answer("read", {"ok": True, "reply": "r", "data": {}})) == ""
+    assert read_shim._render(answer, with_data=True).endswith('[data] {"a":[1,2],"b":1}')
+    big = door.data_line(_answer("read", {"ok": True, "reply": "r", "data": {"rows": ["x" * 100] * 100}}), max_chars=500)
+    assert "[data truncated at 500 chars]" in big

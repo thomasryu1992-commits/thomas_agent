@@ -200,6 +200,22 @@ def encode(payload: dict[str, Any]) -> bytes:
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+DATA_MAX_CHARS = 4000
+
+
+def data_line(answer: "Answer", *, max_chars: int = DATA_MAX_CHARS) -> str:
+    """The reply's ``data`` as one compact JSON line, or nothing when the door sent none
+    (v2.3, sequence 2). Capped and named when truncated, so a large view cannot crowd the reply
+    and a cut one reads as cut. Shared by every shim that shows structured fields."""
+    data = answer.data
+    if not data:
+        return ""
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"…[data truncated at {max_chars} chars]"
+    return f"\n\n[data] {text}"
+
+
 def stamp(reply: str) -> str:
     """Prefix a rendered board with the instant it was rendered — the 2026-08-10 rule.
 

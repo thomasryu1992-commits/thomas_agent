@@ -22,6 +22,10 @@ Not here, on purpose: the container environment (three values from `.env`, see `
 
 Five reads — `trading_readiness`, `current_funds`, `heartbeat`, `approval_status`, `runtime_status` — append the reply's structured `data` as one `[data]` JSON line (capped at 4,000 characters, named when truncated). For readiness the runtime's view keeps `infrastructure_ready`, `live_armed_strategies.armed`, `recorded_gate.stale` and `live_entry_possible` apart; for funds it carries `as_of`, `age_seconds` and `stale` with the figures. Reads whose data is large or already legible as text (`schedules`, `task_list`, boards) stay text-only. An older runtime answers `{action}` for the two crypto reads and the line still renders.
 
+## Door API v3 in the dispatch shim (2.4)
+
+`thomas_capabilities`, `submit_workflow`, `workflow_status`, `workflow_list`, `workflow_events`, `cancel_workflow` speak the workflow commands of P05 (#857). They need a runtime with P05 **and** a dispatch bridge started with `--workflow-manager`; any other door answers `WORKFLOW_UNAVAILABLE` and the shim says so instead of running anything. A submit whose reply is lost is retried under the **same** `request_id` (the door replays, never accepts twice). The procedure the model follows is `config/skills/thomas-ops/SKILL.md` §7.
+
 ## Check for drift, install
 
 ```bash

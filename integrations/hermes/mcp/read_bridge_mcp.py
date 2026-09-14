@@ -32,8 +32,6 @@ the reply's structured `data` as one `[data]` line after the board. Until now th
 
 from __future__ import annotations
 
-import json
-
 from mcp.server.fastmcp import FastMCP
 
 import thomas_door_client as door
@@ -41,26 +39,13 @@ import thomas_door_client as door
 mcp = FastMCP("thomas-read")
 
 _DOOR = "read"
-_DATA_MAX_CHARS = 4000
-
-
-def _data_line(answer: door.Answer) -> str:
-    """The reply's `data` as one compact JSON line, or nothing when the door sent none.
-    The cap is named when it bites, so a truncated view reads as truncated."""
-    data = answer.data
-    if not data:
-        return ""
-    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    if len(text) > _DATA_MAX_CHARS:
-        text = text[:_DATA_MAX_CHARS] + f"…[data truncated at {_DATA_MAX_CHARS} chars]"
-    return f"\n\n[data] {text}"
 
 
 def _render(answer: door.Answer, *, with_data: bool = False) -> str:
     if answer.failure:
         return answer.failure_text()
     if answer.ok:
-        return door.stamp(answer.reply) + (_data_line(answer) if with_data else "")
+        return door.stamp(answer.reply) + (door.data_line(answer) if with_data else "")
     return answer.refused_text()
 
 
