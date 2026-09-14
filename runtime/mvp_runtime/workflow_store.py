@@ -1116,14 +1116,19 @@ class WorkflowStore:
                 dst = sqlite3.connect(str(target))
                 try:
                     src.backup(dst)
+                    # The manifest describes the COPY, so it is read from the copy. Reading the
+                    # source after the backup (as this did until P10) raced a concurrent writer:
+                    # a commit landing between the two left a manifest naming events the copy
+                    # does not hold — measured 1 in 45 copies under a busy writer, and on CI.
+                    max_cursor = dst.execute("SELECT COALESCE(MAX(cursor), 0) FROM events").fetchone()[0]
+                    version = dst.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
                 finally:
                     dst.close()
-                max_cursor = src.execute("SELECT COALESCE(MAX(cursor), 0) FROM events").fetchone()[0]
             finally:
                 src.close()
         except sqlite3.Error as exc:
             raise PersistenceError("WORKFLOW_SNAPSHOT_FAILED", f"the workflow store could not be snapshotted: {exc}") from exc
-        manifest = {"schema_version": SCHEMA_VERSION, "created_at": now, "max_event_cursor": int(max_cursor),
+        manifest = {"schema_version": int(version), "created_at": now, "max_event_cursor": int(max_cursor),
                     "source": self._path.as_posix(), "snapshot": target.name}
         (dest_dir / f"workflow-{stamp}.manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return target

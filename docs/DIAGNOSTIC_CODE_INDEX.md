@@ -1092,7 +1092,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 821 | `request_cancel` | `w is None` |
 | `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 854 | `retry_step` | `w is None` |
 | `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 990 | `propose_update` | `w is None` |
-| `WORKFLOW_SNAPSHOT_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 1125 | `snapshot` | `—` |
+| `WORKFLOW_SNAPSHOT_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 1130 | `snapshot` | `—` |
 | `WORKFLOW_SNAPSHOT_MISSING` | `PersistenceError` | `runtime/mvp_runtime/workflow_cli.py` | 63 | `verify_snapshot` | `not path.is_file()` |
 | `WORKFLOW_SNAPSHOT_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_cli.py` | 76 | `verify_snapshot` | `—` |
 | `WORKFLOW_SNAPSHOT_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_cli.py` | 87 | `verify_snapshot` | `manifest_path.is_file()` |

@@ -10,6 +10,7 @@ its results, its cursor and its schema — and keeps working.
 from __future__ import annotations
 
 import json
+import pathlib
 import shutil
 import sqlite3
 import threading
@@ -130,7 +131,7 @@ def test_the_cli_snapshot_lands_in_a_per_stamp_directory_verifies_and_skips_an_a
     assert workflow_cli.main(["snapshot", "--dest", str(dest)], repo_root=tmp_path, now=NOW) == 0
     line = capsys.readouterr().out.strip()
     copy = line.split(": ", 1)[1]
-    assert copy.startswith(dest.as_posix()) and (dest / "workflow-20260914-130000.manifest.json").is_file()
+    assert pathlib.Path(copy).parent == dest and (dest / "workflow-20260914-130000.manifest.json").is_file()
     assert workflow_cli.main(["verify", "--snapshot", copy], repo_root=tmp_path, now=NOW) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] and report["schema_version"] == SCHEMA_VERSION and report["counts"]["workflows"] == 1
@@ -157,9 +158,7 @@ def test_verify_refuses_a_copy_whose_manifest_disagrees_or_a_file_that_is_not_a_
 
 # --- the backup script and the watch (static pins; the script itself needs docker) ---------------------
 
-import pathlib as _pathlib
-
-_SCRIPT = _pathlib.Path(__file__).resolve().parents[1] / "scripts" / "ops" / "harness_backup.sh"
+_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "ops" / "harness_backup.sh"
 
 
 def test_the_backup_script_snapshots_the_store_as_its_owner_excludes_the_live_file_and_marks_the_log():
@@ -172,3 +171,32 @@ def test_the_backup_script_snapshots_the_store_as_its_owner_excludes_the_live_fi
     assert 'SNAP_NOTE="$SNAP_NOTE $WF_NOTE"' in text                  # the marker reaches both log lines
     # the snapshot directory is inside the tarred root, so the archive carries the copy
     assert "/app/.runtime_governance_state/workflow/snapshots/$STAMP" in text
+
+
+def test_the_manifest_describes_the_copy_even_when_the_source_moves_after_the_backup(tmp_path, monkeypatch):
+    """The race CI caught (P10): the manifest's cursor used to be read from the source after the
+    backup, so a commit landing in between named events the copy does not hold. Forced here by
+    committing from inside the backup call, after the pages were copied."""
+    import sqlite3 as _sqlite3
+
+    store = WorkflowStore(tmp_path)
+    _complete(store, "r1")
+    real_connect = store._connect
+
+    class _Src:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def backup(self, dst):
+            self._conn.backup(dst)
+            store.submit(principal="hermes", request_id="between", plan=_plan("사이"), now=LATER)   # the source moves on
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(store, "_connect", lambda: _Src(real_connect()))
+    copy = store.snapshot(tmp_path / "snap", now=LATER)
+    report = workflow_cli.verify_snapshot(copy)
+    assert report["manifest_agrees"] is True and report["ok"] is True
+    assert report["counts"]["workflows"] == 1                               # the copy predates the late commit
+    assert store.max_event_cursor() > report["max_event_cursor"]
