@@ -191,8 +191,9 @@ decided to run both systems under one compose project with Hermes orchestrating 
 conversation, while every guarantee above stays: approval decisions are made only on the control
 bot, schedule rows are changed only by the in-container CLI, execution stays with the worker and the
 scheduler lanes, resume needs a Thomas-approved single-use grant, and the door processes keep no
-credentials. The eight invariants, the decisions, and the PR sequence are in
-[`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md); this section
+credentials. The eight invariants, the decisions, and the PR sequences are in
+[`HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`](HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md) (V0.2, 2026-09-14,
+adds the workflow manager decisions; V0.1 stays as the 2026-09-03 record); this section
 stays the record of what the doors enforce today.
 
 A second domain package, `predmarket/` (PM-series, observe-only), stood beside `crypto/` until

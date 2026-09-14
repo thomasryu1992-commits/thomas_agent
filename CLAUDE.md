@@ -179,7 +179,7 @@ core thin while lanes grow, stated as rules:
   out of band); the candidate-tag flow above never rebuilds or retags it, and `up -d` recreates it only
   when its own service block changed. Its boundary — bridge-only mount, three `.env` values, no
   `depends_on` — is pinned in `tests/test_deployment_env_passthrough.py`; changing that block is a
-  governance change, not a deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.1.md`).
+  governance change, not a deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`).
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
 
