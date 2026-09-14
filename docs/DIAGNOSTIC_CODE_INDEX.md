@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **512** distinct codes across **946** raise sites
+- **512** distinct codes across **948** raise sites
 - **22** exception classes carry them
 - **64** codes are raised from more than one module (see below)
 - **121** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -164,11 +164,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 664 | `apply_switch` | `approval_id is not None and 'scope' in request` |
 | `ASSIGNMENT_LINEAGE_MISMATCH` | `KernelBlocked` | `runtime/read_only_kernel/router.py` | 18 | `select_route` | `assignment.get('assignment_id') != routing.get('role_assignment_ids', [None])[0]` |
 | `ASSIGNMENT_SCHEMA_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 199 | `build_role_assignment` | `—` |
-| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 545 | `record_result` | `fenced is not None` |
-| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 550 | `record_result` | `a['status'] != wf.A_RUNNING or s['current_attempt_id'] != attempt_id` |
-| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 656 | `confirm_cancelled` | `a['status'] != wf.A_RUNNING or s['current_attempt_id'] != attempt_id` |
-| `ATTEMPT_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 531 | `record_result` | `a is None` |
-| `ATTEMPT_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 653 | `confirm_cancelled` | `a is None` |
+| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 570 | `record_result` | `fenced is not None` |
+| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 575 | `record_result` | `a['status'] != wf.A_RUNNING or s['current_attempt_id'] != attempt_id` |
+| `ATTEMPT_FENCED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 681 | `confirm_cancelled` | `a['status'] != wf.A_RUNNING or s['current_attempt_id'] != attempt_id` |
+| `ATTEMPT_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 556 | `record_result` | `a is None` |
+| `ATTEMPT_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 678 | `confirm_cancelled` | `a is None` |
 | `AUDIT_EVENT_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 162 | `_make_event` | `—` |
 | `AUTHORITY_INSUFFICIENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 598 | `build_permission_decision` | `not authority_sufficient and disposition != 'BLOCK'` |
 | `AUTHORITY_INVARIANT` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 90 | `build_role_assignment` | `not invariant_holds` |
@@ -225,7 +225,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_VERSION_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 288 | `select_candidate_role` | `version is not None and role.get('version') != version` |
 | `CAPABILITY_EXCEEDS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 75 | `build_role_assignment` | `not set(required_capabilities).issubset(capabilities)` |
 | `CAPABILITY_NOT_PERMITTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | 240 | `validate_plan` | `cap is None` |
-| `CAPACITY_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 272 | `submit` | `open_steps + len(validated.steps) > MAX_OPEN_STEPS` |
+| `CAPACITY_EXHAUSTED` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 297 | `submit` | `open_steps + len(validated.steps) > MAX_OPEN_STEPS` |
 | `CHANNEL_PARTIAL_DELIVERY` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1296 | `send` | `—` |
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1160 | `_call` | `—` |
 | `CHANNEL_TRANSPORT` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1162 | `_call` | `not isinstance(payload, dict) or not payload.get('ok')` |
@@ -629,7 +629,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_ORDER_NOTIONAL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 243 | `build_live_order_intent` | `notional_usdt <= 0` |
 | `MISSING_ORDER_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 241 | `build_live_order_intent` | `quantity <= 0` |
 | `MISSING_POSITION_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 182 | `build_live_position` | `quantity <= 0` |
-| `MISSING_PRINCIPAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 246 | `submit` | `not (isinstance(principal, str) and principal.strip())` |
+| `MISSING_PRINCIPAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 271 | `submit` | `not (isinstance(principal, str) and principal.strip())` |
 | `MISSING_RATIONALE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 420 | `build_core_candidate` | `not (isinstance(rationale, str) and rationale.strip())` |
 | `MISSING_REASON` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 498 | `decide_core_candidate` | `not (isinstance(reason, str) and reason.strip())` |
 | `MISSING_REASON` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 599 | `promote_candidate` | `not (isinstance(reason, str) and reason.strip())` |
@@ -639,7 +639,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_REQUEST` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 486 | `build_schedule` | `kind == KIND_TASK and (not request)` |
 | `MISSING_REQUEST` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 488 | `build_schedule` | `kind == KIND_CONTENT_IDEATION and (not request)` |
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 267 | `build_entry` | `not (isinstance(requester_id, str) and requester_id.strip())` |
-| `MISSING_REQUEST_ID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 248 | `submit` | `not (isinstance(request_id, str) and request_id.strip())` |
+| `MISSING_REQUEST_ID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 273 | `submit` | `not (isinstance(request_id, str) and request_id.strip())` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 239 | `build_live_order_intent` | `not symbol` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 178 | `build_live_position` | `not symbol` |
 | `MISSING_TASK_ID` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 602 | `apply_command` | `not (isinstance(arg, str) and arg.strip())` |
@@ -865,7 +865,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `REGISTRY_UNRESOLVABLE` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 259 | `apply_registration` | `—` |
 | `REGISTRY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/task_registry.py` | 350 | `_append` | `—` |
 | `REQUEST_EXISTS` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 153 | `create_program_request` | `any((row.get('candidate_id') == candidate_id for row in store.read_requests()))` |
-| `REQUEST_ID_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 259 | `submit` | `prior['fingerprint'] != validated.plan_hash` |
+| `REQUEST_ID_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 284 | `submit` | `prior['fingerprint'] != validated.plan_hash` |
 | `REQUEST_ID_REUSED` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | 141 | `claim` | `prior.get('request_sha256') != request_fingerprint` |
 | `REQUEST_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 238 | `main` | `not (args.program_id and args.program_version)` |
 | `REQUEST_IN_FLIGHT` | `ControlBlocked` | `runtime/mvp_runtime/bridge_idempotency.py` | 152 | `claim` | `prior.get('state') == STATE_CLAIMED` |
@@ -922,7 +922,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `STATE_NOT_WRITABLE` | `PersistenceError` | `runtime/mvp_runtime/state_guard.py` | 209 | `assert_state_writable` | `offenders` |
 | `STOP_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 534 | `_spend` | `stop_ref(current) != approved_stop` |
 | `STOP_NOT_NAMED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 527 | `_spend` | `not isinstance(approved_stop, str) or not approved_stop` |
-| `STORE_READ_ONLY` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 195 | `_write` | `self._readonly` |
+| `STORE_READ_ONLY` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 220 | `_write` | `self._readonly` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1511 | `assert_pool_identity_unique` | `strategy_id in seen_strategy` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1516 | `assert_pool_identity_unique` | `candidate_id in seen_candidate` |
 | `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1532 | `load_active_pool` | `—` |
@@ -998,7 +998,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 121 | `apply_knowledge` | `command not in _COMMANDS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/read_bridge.py` | 149 | `apply_read` | `command not in _READS` |
 | `VERB_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 603 | `apply_switch` | `command not in _ALLOWED_COMMANDS` |
-| `VERSION_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 634 | `request_cancel` | `int(w['row_version']) != int(expected_version)` |
+| `VERSION_CONFLICT` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 659 | `request_cancel` | `int(w['row_version']) != int(expected_version)` |
 | `WINDOW_TOO_EARLY` | `ToolError` | `runtime/mvp_runtime/naver_research.py` | 775 | `trend` | `start_date < self.EARLIEST_PERIOD` |
 | `WORKER_SOCKET_IN_ASSISTANT_DIR` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 622 | `open_door` | `'bridge' in {part.lower() for part in path.parts}` |
 | `WORKER_UID_ALLOWLIST_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 611 | `open_door` | `not socket_door.resolve_client_uids()` |
@@ -1009,15 +1009,17 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `WORKER_UNAVAILABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 950 | `delegate_data_review` | `not isinstance(record, dict) or not record.get('review_id')` |
 | `WORKER_UNAVAILABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 994 | `delegate_content_ideation` | `not reply.get('package_id')` |
 | `WORKER_UNAVAILABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1070 | `delegate_proposal_generation` | `not isinstance(generation, dict) or 'raw' not in generation` |
-| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 341 | `status_view` | `row is None` |
-| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 421 | `_budget_locked` | `row is None` |
-| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 630 | `request_cancel` | `w is None` |
-| `WORKFLOW_SNAPSHOT_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 689 | `snapshot` | `—` |
-| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 173 | `initialize` | `—` |
-| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 179 | `_connect` | `not self._path.is_file()` |
-| `WORKFLOW_STORE_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 216 | `_read` | `—` |
-| `WORKFLOW_STORE_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 206 | `_write` | `—` |
-| `WORKFLOW_TERMINAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 632 | `request_cancel` | `w['status'] in wf.WORKFLOW_TERMINAL` |
+| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 366 | `status_view` | `row is None` |
+| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 446 | `_budget_locked` | `row is None` |
+| `WORKFLOW_NOT_FOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 655 | `request_cancel` | `w is None` |
+| `WORKFLOW_SNAPSHOT_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 714 | `snapshot` | `—` |
+| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 192 | `initialize` | `'locked' not in str(exc).lower() and 'busy' not in str(exc).lower()` |
+| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 197 | `initialize` | `—` |
+| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 198 | `initialize` | `—` |
+| `WORKFLOW_STORE_UNAVAILABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 204 | `_connect` | `not self._path.is_file()` |
+| `WORKFLOW_STORE_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 241 | `_read` | `—` |
+| `WORKFLOW_STORE_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/workflow_store.py` | 231 | `_write` | `—` |
+| `WORKFLOW_TERMINAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 657 | `request_cancel` | `w['status'] in wf.WORKFLOW_TERMINAL` |
 | `WORKING_MEMORY_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/working_memory.py` | 167 | `prune_expired` | `removed` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 140 | `write` | `—` |
 | `WRITE_FAILED` | `ToolError` | `runtime/mvp_runtime/workspace.py` | 145 | `write` | `—` |
