@@ -22,9 +22,17 @@ carries `data`, and four reads the console never rendered arrive — `schedules`
 `scheduler_events`, `heartbeat`, `approval_status`. The normative rules live in SOUL.md and the
 thomas-ops skill; the docstrings below are deliberately short because `tool_search` is off and
 every docstring rides along on every turn.
+
+v2.3 (2026-09-14, sequence 2 P02): the reads whose numbers must not travel without their
+`as_of` / `stale` / scope — readiness, funds, heartbeat, approval status, runtime status — carry
+the reply's structured `data` as one `[data]` line after the board. Until now the shim dropped
+`data` on the floor and the model re-parsed prose (the 2026-09-13 review: `ready` read as
+"live trading is on" with zero armed strategies). Capped, so a large view cannot crowd the reply.
 """
 
 from __future__ import annotations
+
+import json
 
 from mcp.server.fastmcp import FastMCP
 
@@ -33,21 +41,34 @@ import thomas_door_client as door
 mcp = FastMCP("thomas-read")
 
 _DOOR = "read"
+_DATA_MAX_CHARS = 4000
 
 
-def _render(answer: door.Answer) -> str:
+def _data_line(answer: door.Answer) -> str:
+    """The reply's `data` as one compact JSON line, or nothing when the door sent none.
+    The cap is named when it bites, so a truncated view reads as truncated."""
+    data = answer.data
+    if not data:
+        return ""
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if len(text) > _DATA_MAX_CHARS:
+        text = text[:_DATA_MAX_CHARS] + f"…[data truncated at {_DATA_MAX_CHARS} chars]"
+    return f"\n\n[data] {text}"
+
+
+def _render(answer: door.Answer, *, with_data: bool = False) -> str:
     if answer.failure:
         return answer.failure_text()
     if answer.ok:
-        return door.stamp(answer.reply)
+        return door.stamp(answer.reply) + (_data_line(answer) if with_data else "")
     return answer.refused_text()
 
 
-def _ask(command: str, argument: str | None = None) -> str:
+def _ask(command: str, argument: str | None = None, *, with_data: bool = False) -> str:
     payload: dict[str, object] = {"command": command}
     if argument:
         payload["argument"] = argument
-    return _render(door.ask(_DOOR, payload))
+    return _render(door.ask(_DOOR, payload), with_data=with_data)
 
 
 @mcp.tool()
@@ -62,8 +83,12 @@ def trading_readiness() -> str:
     """Live-trading readiness board — call it fresh every time. Every gate between this machine
     and a live order, today's realized P&L against the limit. Rendered in YOUR container: env
     rows always FAIL here; read the conclusion from `live_gate_recorded` and
-    `live_armed_strategies`, and never say live trading is disabled because of an env row."""
-    return _ask("crypto_readiness")
+    `live_armed_strategies`, and never say live trading is disabled because of an env row.
+    The `[data]` line keeps four things apart — say which one you mean: `infrastructure_ready`
+    (this process's checks), `live_armed_strategies.armed`, `recorded_gate` (with `stale`), and
+    `live_entry_possible` (armed > 0 AND gate open AND not stale; `null` = unknown). `ready`
+    alone never means "live trading is on"."""
+    return _ask("crypto_readiness", with_data=True)
 
 
 @mcp.tool()
@@ -75,8 +100,8 @@ def paper_performance() -> str:
 @mcp.tool()
 def runtime_status() -> str:
     """Runtime ACTIVE/PAUSED/KILLED and why — call it fresh, and always after a stop to confirm
-    it landed."""
-    return _ask("runtime_status")
+    it landed. `[data]` carries the mode and reason as fields."""
+    return _ask("runtime_status", with_data=True)
 
 
 @mcp.tool()
@@ -104,8 +129,9 @@ def current_funds() -> str:
     """Account balance and realized return — a 15-minute snapshot written by the scheduler,
     never a live exchange call. Say the `as of` time with every number; a `!! STALE` banner
     means say that first. `REFUSED [ACCOUNT_SNAPSHOT_MISSING]` = no snapshot yet; never invent
-    a number. Read `net` (after fees and funding)."""
-    return _ask("crypto_funds")
+    a number. Read `net` (after fees and funding). The `[data]` line carries `as_of`,
+    `age_seconds`, `stale` and the figures; a stale snapshot is stale there too."""
+    return _ask("crypto_funds", with_data=True)
 
 
 @mcp.tool()
@@ -133,8 +159,9 @@ def scheduler_events(limit: str = "") -> str:
 @mcp.tool()
 def heartbeat() -> str:
     """Whether the three loops are alive — operator, scheduler-risk, scheduler-maintenance —
-    each FRESH / STALE / MISSING with its age. `all_fresh` is the one-word answer."""
-    return _ask("heartbeat")
+    each FRESH / STALE / MISSING with its age. `all_fresh` is the one-word answer (on the
+    `[data]` line as a field)."""
+    return _ask("heartbeat", with_data=True)
 
 
 @mcp.tool()
@@ -142,8 +169,9 @@ def approval_status(approval_id: str) -> str:
     """Where one approval stands: recorded status and the EFFECTIVE status with the clock
     applied (a PENDING ask past `expires_at` reads EXPIRED here even though the file still
     says PENDING). Never the ask's content or fingerprint, and this cannot decide anything —
-    the decision is Thomas's `/approve` on the control bot."""
-    return _ask("approval_status", approval_id)
+    the decision is Thomas's `/approve` on the control bot. `[data]` carries the recorded and
+    effective status and `expires_at` as fields."""
+    return _ask("approval_status", approval_id, with_data=True)
 
 
 if __name__ == "__main__":

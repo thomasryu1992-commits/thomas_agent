@@ -1035,3 +1035,77 @@ def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_en
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["recorded_gate"]["known"] is False
     assert live_readiness.contradicts_recorded_gate(status) is False
+
+# --- the structured view (sequence 2, P02) -----------------------------------
+#
+# One word cannot carry what this board says. The 2026-09-13 review found `ready: true` beside
+# zero armed strategies read through the assistant door as "live trading is on". The view keeps
+# the four facts apart as fields, so a consumer never derives one from the prose of another.
+
+def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, gate_open=True,
+                     gate_stale=False):
+    return {
+        "created_at": NOW,
+        "ready": ready,
+        "checks": [{"check": "live_trading_opt_in", "ok": ready, "detail": ""}],
+        "recorded_gate": {
+            "known": gate_known, "open": gate_open if gate_known else None,
+            "status": "HELD" if gate_known else None, "recorded_at": NOW if gate_known else None,
+            "age_seconds": 60.0 if gate_known else None, "stale": gate_stale, "error": None,
+        },
+        "live_armed_strategies": {
+            "known": armed_known, "armed": armed if armed_known else None,
+            "occupying": 15 if armed_known else None,
+            "error": None if armed_known else "POOL_UNREADABLE",
+        },
+        "guard_dry_run": {"status": "BLOCKED", "blocks": [], "repairs": []},
+        "guard_dry_run_symbol": "BTCUSDT",
+        "submitted_today": 0, "counter_error": None,
+        "order_path_implemented": True, "autonomous_routing_wired": True,
+    }
+
+
+def test_ready_infrastructure_with_no_armed_strategy_is_not_live_entry_possible():
+    data = live_readiness.readiness_data(_status_for_view(ready=True, armed=0))
+    assert data["infrastructure_ready"] is True
+    assert data["live_armed_strategies"] == {"known": True, "armed": 0, "occupying": 15, "error": None}
+    assert data["live_entry_possible"] is False
+
+
+def test_an_armed_strategy_behind_an_open_fresh_gate_is_live_entry_possible():
+    data = live_readiness.readiness_data(_status_for_view(armed=1))
+    assert data["live_entry_possible"] is True
+    assert data["recorded_gate"]["open"] is True and data["recorded_gate"]["stale"] is False
+
+
+def test_a_stale_or_closed_recorded_gate_means_no_entry_and_says_which():
+    stale = live_readiness.readiness_data(_status_for_view(armed=1, gate_stale=True))
+    assert stale["live_entry_possible"] is False and stale["recorded_gate"]["stale"] is True
+    closed = live_readiness.readiness_data(_status_for_view(armed=1, gate_open=False))
+    assert closed["live_entry_possible"] is False and closed["recorded_gate"]["open"] is False
+
+
+def test_an_unknown_fact_answers_none_never_a_guess():
+    pool_unreadable = live_readiness.readiness_data(_status_for_view(armed_known=False))
+    assert pool_unreadable["live_entry_possible"] is None
+    assert pool_unreadable["live_armed_strategies"]["error"] == "POOL_UNREADABLE"
+    no_cycle = live_readiness.readiness_data(_status_for_view(armed=1, gate_known=False))
+    assert no_cycle["live_entry_possible"] is None and no_cycle["recorded_gate"]["known"] is False
+
+
+def test_the_view_carries_the_boards_instant_and_is_json_safe():
+    data = live_readiness.readiness_data(_status_for_view())
+    assert data["as_of"] == NOW and data["env_scope"] == "this_process"
+    assert data["checks"] == [{"check": "live_trading_opt_in", "ok": True}]
+    json.dumps(data)
+
+
+def test_the_real_board_on_a_fresh_machine_has_the_view(tmp_path, clean_env):
+    """Built from the real board, not a hand-made status: a fresh machine is not ready and
+    knows neither its pool nor a recorded gate, so entry is unknown — not False."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    data = live_readiness.readiness_data(status)
+    assert data["infrastructure_ready"] is False
+    assert data["live_entry_possible"] is None
+    assert {c["check"] for c in data["checks"]} == {c["check"] for c in status["checks"]}
+    json.dumps(data)

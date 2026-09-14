@@ -86,10 +86,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 |---|---|---|---|---|---|
 | `ABSOLUTE_PATH` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 173 | `resolve_target` | `candidate.is_absolute() or candidate.drive or relative_path.startswith(('/', '\\'))` |
 | `ACCEPT_REQUIRES_SHADOW_PASS` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 587 | `transition_candidate` | `action == 'accept' and shadow.get('status') != 'PASS'` |
-| `ACCOUNT_FEED_NOT_CONFIGURED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 283 | `load_funds_board` | `not body.get('configured', False)` |
-| `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 288 | `load_funds_board` | `body.get('degraded')` |
-| `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 276 | `load_funds_board` | `body is None` |
-| `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 271 | `load_funds_board` | `snapshot_path(root).is_file()` |
+| `ACCOUNT_FEED_NOT_CONFIGURED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 321 | `load_funds_view` | `not body.get('configured', False)` |
+| `ACCOUNT_SNAPSHOT_DEGRADED` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 326 | `load_funds_view` | `body.get('degraded')` |
+| `ACCOUNT_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 314 | `load_funds_view` | `body is None` |
+| `ACCOUNT_SNAPSHOT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/account_store.py` | 309 | `load_funds_view` | `snapshot_path(root).is_file()` |
 | `ACTIVATION_CHANGED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 172 | `assert_authorization` | `current != authorization.activation_sha256` |
 | `ACTIVATION_EXPIRED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 133 | `assert_authorization` | `now >= authorization.expires_at` |
 | `ACTIVATION_REVOKED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 159 | `assert_authorization` | `not record_path.is_file()` |
@@ -946,8 +946,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 376 | `apply_registry_command` | `—` |
 | `UNKNOWN_CORE_CANDIDATE_DECISION` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 491 | `decide_core_candidate` | `decision not in CORE_CANDIDATE_DECISIONS` |
 | `UNKNOWN_CORE_CANDIDATE_TYPE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 413 | `build_core_candidate` | `candidate_type not in CORE_CANDIDATE_TYPES` |
-| `UNKNOWN_DOMAIN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 195 | `apply_domain_command` | `verb not in _SUBCOMMANDS` |
-| `UNKNOWN_DOMAIN_SUBCOMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 202 | `apply_domain_command` | `handler is None` |
+| `UNKNOWN_DOMAIN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 201 | `apply_domain_command` | `verb not in _SUBCOMMANDS` |
+| `UNKNOWN_DOMAIN_SUBCOMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 208 | `apply_domain_command` | `handler is None` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 264 | `build_entry` | `unknown` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 481 | `build_schedule` | `kind not in KINDS` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1810 | `_execute` | `schedule.kind != KIND_TASK` |

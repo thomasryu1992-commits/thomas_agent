@@ -65,8 +65,10 @@ __all__ = [
     "ACCOUNT_SNAPSHOT_UNREADABLE",
     "REFRESH_AFTER_SECONDS",
     "STALE_AFTER_SECONDS",
+    "funds_data",
     "is_due",
     "load_funds_board",
+    "load_funds_view",
     "read_refresh_mark",
     "read_snapshot",
     "refresh_snapshot",
@@ -258,12 +260,48 @@ def render_funds_text(body: Mapping[str, Any], *, now: str) -> str:
     return "\n".join(lines)
 
 
-def load_funds_board(*, now: str, root: Path | None = None) -> str:
-    """The funds board, or a typed refusal. Reads a file; opens no socket.
+def funds_data(body: Mapping[str, Any], *, now: str) -> dict[str, Any]:
+    """The board's structured view: the figures with their ``as_of``, their age and the same
+    ``stale`` verdict the text banner uses (sequence 2, P02). A realized window carries ``net``
+    — the figure to read — beside ``withheld`` for a window the venue did not fill, so a
+    consumer cannot mistake a withheld window for a zero one."""
+    as_of = str(body.get("as_of") or "") or None
+    age = _age_seconds(as_of, now)
+    windows_out: dict[str, Any] = {}
+    windows = body.get("realized_windows")
+    if isinstance(windows, Mapping):
+        for key, value in windows.items():
+            if value is None:
+                windows_out[str(key)] = {"net": None, "withheld": True}
+            elif isinstance(value, Mapping):
+                windows_out[str(key)] = {"net": value.get("net"), "withheld": False}
+            else:
+                windows_out[str(key)] = {"net": value, "withheld": False}
+    warnings = body.get("warnings")
+    return {
+        "as_of": as_of,
+        "age_seconds": age,
+        "stale": age is None or age > STALE_AFTER_SECONDS,
+        "stale_after_seconds": STALE_AFTER_SECONDS,
+        "asset": body.get("asset") or "USDT",
+        "wallet_balance": body.get("wallet_balance"),
+        "margin_balance": body.get("margin_balance"),
+        "available_balance": body.get("available_balance"),
+        "unrealized_pnl": body.get("unrealized_pnl"),
+        "open_position_count": body.get("open_position_count"),
+        "realized_windows": windows_out,
+        "warnings": [str(w) for w in warnings] if isinstance(warnings, list) else [],
+    }
+
+
+def load_funds_view(*, now: str, root: Path | None = None) -> tuple[str, dict[str, Any]]:
+    """The funds board and its structured view, or a typed refusal. Reads a file; opens no
+    socket.
 
     Refuses rather than renders zeros when there is nothing to render — a board of zeros is
     indistinguishable from an emptied account, which is the one reading that must never be
-    produced by accident.
+    produced by accident. The view refuses exactly where the board refuses: there is one
+    reading of the file, rendered two ways.
     """
     body = read_snapshot(root)
     if body is None:
@@ -290,4 +328,10 @@ def load_funds_board(*, now: str, root: Path | None = None) -> str:
             f"the last stored account read was degraded "
             f"({body.get('error_reason_code') or body.get('degraded_reason_code')})",
         )
-    return render_funds_text(body, now=now)
+    return render_funds_text(body, now=now), funds_data(body, now=now)
+
+
+def load_funds_board(*, now: str, root: Path | None = None) -> str:
+    """The rendered funds board alone — ``load_funds_view`` with the view dropped."""
+    text, _data = load_funds_view(now=now, root=root)
+    return text

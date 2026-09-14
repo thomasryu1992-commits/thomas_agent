@@ -247,3 +247,36 @@ def test_the_refresh_asks_the_venue_with_a_bounded_timeout(tmp_path, monkeypatch
     monkeypatch.setattr("runtime.mvp_runtime.crypto.account.read_account", _capture)
     account_store.refresh_snapshot(now=NOW, root=tmp_path)
     assert seen["timeout_seconds"] <= 5
+
+
+# --- the structured view (sequence 2, P02) -----------------------------------
+
+def test_the_view_carries_the_figures_with_their_age_and_the_same_stale_verdict(tmp_path):
+    _store(tmp_path, _record())
+    text, data = account_store.load_funds_view(now=NOW, root=tmp_path)
+    assert "STALE" not in text
+    assert data["stale"] is False and data["age_seconds"] == 120.0
+    assert data["as_of"] == "2026-08-23T11:58:00Z" and data["asset"] == "USDT"
+    assert data["wallet_balance"] == 1234.5678 and data["open_position_count"] == 3
+    assert data["realized_windows"]["1d"] == {"net": 2.5, "withheld": False}
+    assert data["realized_windows"]["30d"] == {"net": None, "withheld": True}
+    assert data["stale_after_seconds"] == account_store.STALE_AFTER_SECONDS
+    json.dumps(data)
+
+
+def test_a_stale_snapshot_is_stale_in_the_view_too(tmp_path):
+    _store(tmp_path, _record(as_of="2026-08-23T05:00:00Z"))
+    text, data = account_store.load_funds_view(now=NOW, root=tmp_path)
+    assert "!! STALE" in text and data["stale"] is True and data["age_seconds"] == 25200.0
+
+
+def test_the_view_refuses_exactly_where_the_board_refuses(tmp_path):
+    with pytest.raises(ToolError) as exc:
+        account_store.load_funds_view(now=NOW, root=tmp_path)
+    assert exc.value.reason_code == account_store.ACCOUNT_SNAPSHOT_MISSING
+
+
+def test_the_board_is_the_views_text(tmp_path):
+    _store(tmp_path, _record())
+    text, _data = account_store.load_funds_view(now=NOW, root=tmp_path)
+    assert account_store.load_funds_board(now=NOW, root=tmp_path) == text

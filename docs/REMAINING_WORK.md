@@ -4859,8 +4859,10 @@ delegation goes live only with its own policy bump.
       worker/registry comment in `dispatch_bridge.py:131`; the running image differs from `main` in three
       files (`crypto/pool.py` #848, `crypto/feedback.py` and `scripts/promote_memory_candidate.py` #849);
       isolated test environment.
-- [ ] **P02 — Hermes adapter under version control** (`integrations/hermes/`): the four shims, the door
-      client, their tests, config templates, a compatibility manifest; the read shim passes `data` through.
+- [x] **P02 — Hermes adapter under version control** (2026-09-14, two PRs)**.** `integrations/hermes/`: the four shims, the door
+      client, their tests, config templates, a compatibility manifest (#852); the read shim carries `data` as a `[data]` line
+      and the runtime's readiness/funds reads answer with a view that keeps `infrastructure_ready`, armed strategies,
+      the recorded gate's staleness and `live_entry_possible` apart (part 2). Host install waits for the runtime deploy.
 - [ ] **P03 — workflow model + SQLite store** (`workflow.py`, `workflow_store.py`, two schemas);
       `task_registry_entry.v0.3` adds origin `WORKFLOW`, excluded from `WORKER_ORIGINS`.
 - [ ] **P04 — Manager loop inside dispatch-bridge** (`--workflow-manager`), `workflow_cli`

@@ -571,6 +571,62 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     }
 
 
+def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The board's structured view — the facts a reader must keep apart, as fields a JSON
+    consumer reads instead of parsing the rendered rows (sequence 2, P02).
+
+    One word cannot carry what this board says. Four fields keep the meanings apart:
+
+    * ``infrastructure_ready`` — every check row ok, i.e. "can THIS process place a live
+      order". Read through the assistant door it describes that door's container, which
+      carries no ``MVP_LIVE_*``; ``env_scope`` and ``env_out_of_scope`` say so.
+    * ``live_armed_strategies`` — how many occupying strategies are ``live_tier=LIVE``.
+      Zero armed beside ``ready: true`` is this host's normal state (2026-09-13 review) and
+      the one a summariser turns into "live trading is on".
+    * ``recorded_gate`` — the trading process's own last word about its gate, dated, with
+      the ``stale`` verdict the text banner uses.
+    * ``live_entry_possible`` — whether a real position can open now: at least one armed
+      strategy AND the recorded gate OPEN and not stale. ``None`` when either fact is unknown
+      (an unreadable pool, no cycle recorded yet) — never a guess in either direction.
+    """
+    armed = status.get("live_armed_strategies") or {}
+    gate = status.get("recorded_gate") or {}
+    armed_count = armed.get("armed") if armed.get("known") else None
+    entry_possible: bool | None
+    if not isinstance(armed_count, int) or not gate.get("known"):
+        entry_possible = None
+    else:
+        entry_possible = bool(armed_count > 0 and gate.get("open") and not gate.get("stale"))
+    guard = status.get("guard_dry_run") or {}
+    return {
+        "as_of": status.get("created_at"),
+        "infrastructure_ready": bool(status.get("ready")),
+        "env_scope": "this_process",
+        "env_out_of_scope": contradicts_recorded_gate(status),
+        "checks": [
+            {"check": check.get("check"), "ok": bool(check.get("ok"))}
+            for check in status.get("checks") or ()
+        ],
+        "live_armed_strategies": {
+            "known": bool(armed.get("known")),
+            "armed": armed.get("armed"),
+            "occupying": armed.get("occupying"),
+            "error": armed.get("error"),
+        },
+        "recorded_gate": {
+            "known": bool(gate.get("known")),
+            "open": gate.get("open"),
+            "status": gate.get("status"),
+            "recorded_at": gate.get("recorded_at"),
+            "age_seconds": gate.get("age_seconds"),
+            "stale": bool(gate.get("stale")),
+        },
+        "live_entry_possible": entry_possible,
+        "guard_dry_run_status": guard.get("status"),
+        "submitted_today": status.get("submitted_today"),
+    }
+
+
 def _opted_in(status: Mapping[str, Any]) -> bool:
     return any(c["check"] == "live_trading_opt_in" and c["ok"] for c in status.get("checks") or ())
 

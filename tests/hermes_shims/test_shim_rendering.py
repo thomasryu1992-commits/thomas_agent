@@ -150,3 +150,36 @@ def test_knowledge_ask_returns_the_frame_or_a_sentence(monkeypatch):
     monkeypatch.setattr(door, "ask", lambda d, p, **kw: _answer("knowledge", {"ok": False, "reason_code": "KILLED", "reason": "k"}))
     assert knowledge_shim._ask({"command": "add_document"}) == "REFUSED [KILLED]: k."
     assert set(knowledge_shim.mcp.tools) == {"file_document", "file_pdf", "search_knowledge", "knowledge_stats"}
+
+
+# --- the read shim's [data] line (v2.3, sequence 2 P02) -----------------------------------
+
+def test_read_carries_the_data_line_only_where_asked_and_verbatim():
+    frame = {"ok": True, "reply": "board", "data": {
+        "infrastructure_ready": True, "live_entry_possible": False,
+        "live_armed_strategies": {"armed": 0, "known": True}, "recorded_gate": {"stale": True}}}
+    plain = read_shim._render(_answer("read", frame))
+    assert plain.endswith("board") and "[data]" not in plain
+    rich = read_shim._render(_answer("read", frame), with_data=True)
+    assert "\n\n[data] " in rich and rich.index("board") < rich.index("[data]")
+    for needle in ('"infrastructure_ready":true', '"live_entry_possible":false', '"armed":0', '"stale":true'):
+        assert needle in rich, needle
+    # refusals and failures never grow a data line, and an empty `data` grows none either
+    assert "[data]" not in read_shim._render(_answer("read", {"ok": False, "reason_code": "X", "reason": "r", "data": {"k": 1}}), with_data=True)
+    assert "[data]" not in read_shim._render(_answer("read", {"ok": True, "reply": "r", "data": {}}), with_data=True)
+
+
+def test_read_data_line_is_capped_and_says_so():
+    text = read_shim._render(_answer("read", {"ok": True, "reply": "r", "data": {"rows": ["x" * 100] * 100}}), with_data=True)
+    assert "[data truncated at 4000 chars]" in text
+    assert len(text) < 4000 + 300
+
+
+def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatch):
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: _answer("read", {"ok": True, "reply": "r", "data": {"k": 1}}))
+    with_data = [read_shim.trading_readiness(), read_shim.current_funds(), read_shim.heartbeat(),
+                 read_shim.approval_status("approval_a"), read_shim.runtime_status()]
+    assert all("[data] {\"k\":1}" in text for text in with_data)
+    without = [read_shim.trading_status(), read_shim.task_list(), read_shim.schedules(),
+               read_shim.task_history(), read_shim.paper_performance(), read_shim.memory_candidates()]
+    assert all("[data]" not in text for text in without)

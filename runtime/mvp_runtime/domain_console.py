@@ -108,10 +108,13 @@ def _crypto_status(*, now: str, root: Path | None) -> str:
     return dashboard.render_status_text(dashboard.build_status(root, now=now))
 
 
-def _crypto_readiness(*, now: str, root: Path | None) -> str:
+def _crypto_readiness(*, now: str, root: Path | None) -> tuple[str, dict[str, Any]]:
     from .crypto import live_readiness
 
-    return live_readiness.render_readiness_text(live_readiness.build_readiness(root, now=now))
+    # One board, rendered two ways: the text the console shows and the view a v2 door client
+    # reads (`infrastructure_ready` ≠ `live_entry_possible`; sequence 2, P02).
+    status = live_readiness.build_readiness(root, now=now)
+    return live_readiness.render_readiness_text(status), live_readiness.readiness_data(status)
 
 
 def _crypto_paper(*, now: str, root: Path | None) -> str:
@@ -132,7 +135,7 @@ def _crypto_paper(*, now: str, root: Path | None) -> str:
 
 
 
-def _crypto_funds(*, now: str, root: Path | None) -> str:
+def _crypto_funds(*, now: str, root: Path | None) -> tuple[str, dict[str, Any]]:
     """Current balance, from the snapshot the scheduler wrote. Opens no socket.
 
     The console never asks the venue — `test_the_board_is_never_asked_for_the_account` pins
@@ -142,10 +145,12 @@ def _crypto_funds(*, now: str, root: Path | None) -> str:
     """
     from .crypto import account_store
 
-    return account_store.load_funds_board(now=now, root=root)
+    return account_store.load_funds_view(now=now, root=root)
 
 
-_SUBCOMMANDS: dict[str, dict[str, Callable[..., str]]] = {
+# A handler answers with its rendered text, or with `(text, data)` — the structured view a v2
+# door client reads beside the console reply. Either way the text passes through untouched.
+_SUBCOMMANDS: dict[str, dict[str, Callable[..., str | tuple[str, dict[str, Any]]]]] = {
     CRYPTO_COMMAND: {
         "status": _crypto_status,
         "readiness": _crypto_readiness,
@@ -169,7 +174,8 @@ def apply_domain_command(
     now: str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Execute a parsed domain-console command and return ``{"reply", "action"}``.
+    """Execute a parsed domain-console command and return ``{"reply", "action"}`` — plus
+    ``"data"`` when the handler answers with a structured view beside its text.
 
     Raises ``OperatorBlocked`` for every refusal so the caller renders one typed REFUSED
     reply. An unreadable store is **reported, never softened into an empty board**: the
@@ -205,11 +211,15 @@ def apply_domain_command(
         )
 
     try:
-        text = handler(now=stamp, root=repo_root)
+        result = handler(now=stamp, root=repo_root)
     except MvpRuntimeError as exc:
         raise OperatorBlocked(
             exc.reason_code,
             f"{verb} {name} 조회에 실패했습니다 ({exc.reason_code}) — 상태를 확인할 수 없습니다.",
         ) from exc
 
-    return {"reply": text, "action": f"{verb.upper()}_{name.upper()}"}
+    action = f"{verb.upper()}_{name.upper()}"
+    if isinstance(result, tuple):
+        text, data = result
+        return {"reply": text, "action": action, "data": dict(data)}
+    return {"reply": result, "action": action}
