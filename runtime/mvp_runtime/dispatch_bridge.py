@@ -119,11 +119,11 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 COMMAND_KEY = "command"
 V3_COMMANDS: frozenset[str] = frozenset({
     "capabilities", "workflow.submit", "workflow.status", "workflow.list", "workflow.events", "workflow.cancel",
-    "workflow.retry_step", "workflow.propose_update",
+    "workflow.retry_step", "workflow.propose_update", "workflow.report_usage",
 })
 _V3_KEYS: frozenset[str] = frozenset(
     {COMMAND_KEY, bridge_idempotency.REQUEST_ID_KEY, "plan", "workflow_id", "expected_version",
-     "reason", "after_cursor", "limit", "step_key"}
+     "reason", "after_cursor", "limit", "step_key", "reported_usage"}
 ) | socket_door.ENVELOPE_KEYS
 _V3_READS: frozenset[str] = frozenset({"capabilities", "workflow.status", "workflow.list", "workflow.events"})
 MAX_LIST = 50
@@ -479,6 +479,23 @@ def apply_workflow_command(
         view = workflow_store.status_view(workflow_id, now=stamp)
         return socket_door.envelope({"ok": True, "command": command, "reply": workflow_console.render_view(view)},
                                     request=request, data=view)
+
+    if command == "workflow.report_usage":
+        # The reported budget layer (P08, V0.2 Q24): what the assistant says it spent on this
+        # workflow, from its own accounting. Recorded and shown beside the enforced budget,
+        # never added to it, never a reason to block anything.
+        usage = request.get("reported_usage")
+        if not isinstance(usage, dict):
+            raise ControlBlocked("MALFORMED_REQUEST", "'workflow.report_usage' carries a 'reported_usage' object")
+        view = workflow_store.record_reported_usage(workflow_id, principal=socket_door.ASSISTANT_ACTOR, usage=usage, now=stamp)
+        reported = view["budget"]["reported"]
+        return socket_door.envelope(
+            {"ok": True, "command": command,
+             "reply": (f"USAGE REPORTED for {workflow_id}: {reported['input_tokens']} in / {reported['output_tokens']} out tokens,"
+                       f" ≈${reported['estimated_cost_usd']:.4f} [{reported['cost_status']}] — shown beside the budget, not enforced\n"
+                       + workflow_console.render_view(view))},
+            request=request, data=view,
+        )
 
     # workflow.cancel / workflow.retry_step — both act at the version the caller read
     expected = request.get("expected_version")

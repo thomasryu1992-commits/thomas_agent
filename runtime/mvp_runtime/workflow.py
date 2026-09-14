@@ -170,6 +170,22 @@ _DECISION_BLOCKS = frozenset({BUDGET_EXHAUSTED, APPROVAL_REJECTED, APPROVAL_EXPI
 # version and the request — so a grant for one version cannot be spent on the next.
 APPROVAL_TARGET_PREFIX = "workflow_step:"
 
+# --- what leaves the store (P08) --------------------------------------------------------------
+# The operator pushes a workflow's arrival at one of these states to the control channel and
+# records the delivery; step and attempt events are Hermes's to narrate by polling. A workflow
+# waiting for an approval is not pushed here: the ask itself is the push for that state
+# (`operator.announce_pending_approvals`), and one event has one pusher.
+PUSHED_WORKFLOW_STATUSES = frozenset({W_WAITING_REPLAN, W_COMPLETED, W_FAILED, W_BLOCKED, W_CANCELLED})
+DELIVERY_PENDING = "PENDING"        # recorded before the send; a crash here is retried once
+DELIVERY_CONFIRMED = "CONFIRMED"    # the channel accepted the message
+DELIVERY_UNCERTAIN = "UNCERTAIN"    # the send raised; it may or may not have arrived — never re-sent
+DELIVERY_SKIPPED = "SKIPPED"        # the first pass adopted a backlog without sending it
+DELIVERY_STATUSES = frozenset({DELIVERY_PENDING, DELIVERY_CONFIRMED, DELIVERY_UNCERTAIN, DELIVERY_SKIPPED})
+# The reported budget layer (V0.2 Q24): Hermes's own model usage, shown beside the enforced
+# reservations and never added to them. `cost_status` follows Hermes's own accounting.
+REPORTED_COST_STATUSES = frozenset({"observed", "estimated", "unmeasured"})
+REPORTED_SOURCE_MAX = 120
+
 # --- attempt lifecycle -----------------------------------------------------------------------
 A_RUNNING = "RUNNING"
 A_SUCCEEDED = "SUCCEEDED"

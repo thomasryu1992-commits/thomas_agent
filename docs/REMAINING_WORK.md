@@ -4905,7 +4905,21 @@ delegation goes live only with its own policy bump.
       v2 with in-place migration. **Not done here, on purpose:** the pipeline does not yet read a prior step's
       result into the next step's prompt — the reference is carried and recorded (a P3 evidence-model decision,
       not a transport one); A09's audit-write-failure injection moves to P08.
-- [ ] **P08 — events cursor, Operator push (`deliveries`), Hermes narration by polling, two-layer budget.**
+- [x] **P08 — Operator push with `deliveries`, Hermes narration by polling, the reported budget layer**
+      (2026-09-14)**.** `operator.push_workflow_events` runs once per operator pass after the announcer, with the
+      announcer's posture (best-effort, one stderr line, never a reason the loop stops reading `/approve`): a
+      workflow's arrival at COMPLETED / FAILED / BLOCKED / CANCELLED / WAITING_REPLAN goes to the registered
+      control chat once, `PENDING` recorded before the send and `CONFIRMED`/`UNCERTAIN` after it, a crash-left
+      PENDING retried once, UNCERTAIN kept and never re-sent (at-least-once, A19). WAITING_APPROVAL is not pushed
+      — the ask is that push — so one event has one pusher. The cursor lives in `delivery_cursors`; the first
+      pass adopts the backlog silently; a restart resumes; an unchanged store is silence. The operator opens the
+      store only if the manager created it. Reported budget layer (Q24, decided: snapshot read through the shim):
+      `report_workflow_usage` sums Hermes's own `session_model_usage` per session or since a timestamp and sends
+      `workflow.report_usage`; shown as `budget.reported` / a *강제 아님* console line, never summed into the
+      reservations (A12). Narration: shim `workflow_changes` with its own cursor file, and a fourth cron job
+      (워크플로 서술, 30 min, `[SILENT]` on no change). **Not done here:** a retention policy for old request
+      ids (A06) and the audit-write-failure injection (A09) — both moved to the next increment that touches the
+      worker path.
 - [ ] **P09 — bounded non-financial schedule delegation** (invariant 3 amendment; policy bump in the same PR).
 - [ ] **P10 — backup snapshot / restore rehearsal / entry-point cutover runbook / rollback rehearsal.**
 - [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).

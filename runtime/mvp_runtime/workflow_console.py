@@ -51,6 +51,52 @@ def render_view(view: Mapping[str, Any]) -> str:
         f"  예산: 모델 호출 {budget.get('reserved_model_calls', 0)}/{budget.get('max_model_calls', '?')} 예약"
         f" (확인 {budget.get('confirmed_model_calls', 0)}, 미확인 {budget.get('unconfirmed_model_calls', 0)})"
     )
+    reported = budget.get("reported")
+    if reported:
+        lines.append(
+            f"  보고된 사용량(Hermes, 강제 아님): 입력 {reported['input_tokens']:,}·출력 {reported['output_tokens']:,} 토큰,"
+            f" ≈${reported['estimated_cost_usd']:.4f} [{reported['cost_status']}] {reported['source']} as of {reported['as_of']}"
+        )
+    return "\n".join(lines)
+
+
+_PUSH_MARK = {
+    wf.W_COMPLETED: "✅ 완료", wf.W_FAILED: "⛔ 실패", wf.W_BLOCKED: "⛔ 차단", wf.W_CANCELLED: "⏹ 취소됨",
+    wf.W_WAITING_REPLAN: "⏸ 결정 대기",
+}
+
+
+def render_push(event: Mapping[str, Any], view: Mapping[str, Any] | None) -> str:
+    """One control-channel message for a workflow's arrival at a pushed state (P08). Short:
+    what happened, to which goal, and — when a decision is waited on — which steps and why.
+    Decisions on a workflow are Hermes-window actions (retry, a new plan version, cancel), so
+    the line says where to go; nothing here is a command the control bot reads."""
+    status = str(event.get("to_status"))
+    mark = _PUSH_MARK.get(status, status)
+    wid = str(event.get("workflow_id"))
+    goal = str((view or {}).get("goal") or "")[:80]
+    head = f"[workflow] {mark}  {wid}"
+    lines = [head + (f"  — {goal}" if goal else "")]
+    if event.get("reason_code"):
+        lines.append(f"  사유: {event['reason_code']}")
+    steps = list((view or {}).get("steps") or ())
+    if status == wf.W_COMPLETED:
+        done = [s for s in steps if s.get("status") == wf.S_SUCCEEDED]
+        lines.append(f"  단계 {len(done)}/{len(steps)} 성공; 결과는 Hermes 창에서 workflow_status → task_result")
+    elif status == wf.W_WAITING_REPLAN:
+        waiting = [s for s in steps if s.get("status") in (wf.S_FAILED, wf.S_BLOCKED, wf.S_NEEDS_RECONCILIATION)]
+        for s in waiting[:5]:
+            lines.append(f"  • {s['key']} {_STEP_MARK.get(s['status'], s['status'])}"
+                         + (f" [{s['last_reason_code']}]" if s.get("last_reason_code") else ""))
+        lines.append("  결정은 Hermes 창에서: retry_workflow_step / propose_workflow_update / cancel_workflow")
+    elif status in (wf.W_FAILED, wf.W_BLOCKED, wf.W_CANCELLED):
+        settled = [s for s in steps if s.get("status") in (wf.S_FAILED, wf.S_BLOCKED, wf.S_CANCELLED)]
+        for s in settled[:5]:
+            lines.append(f"  • {s['key']} {_STEP_MARK.get(s['status'], s['status'])}"
+                         + (f" [{s['last_reason_code']}]" if s.get("last_reason_code") else ""))
+        if (view or {}).get("cancel_reason"):
+            lines.append(f"  취소 사유: {view['cancel_reason']}")
+    lines.append(f"  {event.get('created_at')}  event #{event.get('cursor')}")
     return "\n".join(lines)
 
 

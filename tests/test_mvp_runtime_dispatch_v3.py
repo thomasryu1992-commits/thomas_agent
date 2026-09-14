@@ -278,3 +278,23 @@ def test_propose_update_replaces_the_plan_at_the_version_read(tmp_path):
                 "plan": plan, "reason": "again"}, tmp_path, store=store)
     assert exc.value.reason_code == "VERSION_CONFLICT"
     assert "workflow.propose_update" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]
+
+
+def test_report_usage_records_the_reported_layer_and_the_reply_says_it_is_not_enforced(tmp_path):
+    store = WorkflowStore(tmp_path)
+    wid = _submit(store, tmp_path)["data"]["workflow_id"]
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "workflow.report_usage", "workflow_id": wid}, tmp_path, store=store)
+    assert exc.value.reason_code == "MALFORMED_REQUEST"
+    with pytest.raises(WorkflowBlocked) as exc:
+        _apply({"command": "workflow.report_usage", "workflow_id": wid, "reported_usage": {"tokens": 5}}, tmp_path, store=store)
+    assert exc.value.reason_code == "REPORTED_USAGE_INVALID"
+    out = _apply({"command": "workflow.report_usage", "workflow_id": wid, "reported_usage": {
+        "input_tokens": 62456, "output_tokens": 1816, "estimated_cost_usd": 0.0024, "cost_status": "estimated",
+        "source": "hermes:session_model_usage:session"}}, tmp_path, store=store)
+    assert out["ok"] and out["reply"].startswith("USAGE REPORTED") and "not enforced" in out["reply"]
+    assert out["data"]["budget"]["reported"]["input_tokens"] == 62456 and out["data"]["budget"]["reported"]["as_of"] == NOW
+    status = _apply({"command": "workflow.status", "workflow_id": wid}, tmp_path, store=store)
+    assert "보고된 사용량(Hermes, 강제 아님)" in status["reply"] and "62,456" in status["reply"]
+    assert status["data"]["budget"]["reserved_model_calls"] == 0                      # untouched by the report
+    assert "workflow.report_usage" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]

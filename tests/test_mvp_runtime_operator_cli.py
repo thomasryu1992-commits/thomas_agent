@@ -259,3 +259,48 @@ def test_an_unchanged_policy_is_a_banner_and_nothing_else(tmp_path, capsys):
 
     assert ch.sent == [] and not (tmp_path / "blocks.jsonl").exists()
     assert "POLICY: 1.5.0" in capsys.readouterr().err
+
+
+# --- P08: the loop pushes workflow core events, best-effort ----------------------------------------
+
+def test_the_loop_pushes_workflow_events_with_the_injected_store_and_isolates_a_push_failure(monkeypatch, capsys):
+    import runtime.mvp_runtime.operator_cli as cli
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    seen: list = []
+    sentinel = object()
+
+    def fake_push(channel, workflow_store, *, now, repo_root=None):
+        seen.append(workflow_store)
+        return {"sent": [7], "uncertain": [], "retried": 0, "cursor": 7, "adopted": False}
+
+    monkeypatch.setattr(cli, "push_workflow_events", fake_push)
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), workflow_store=sentinel) == 0
+    assert seen == [sentinel]
+    assert "OPERATOR: pushed workflow event #7" in capsys.readouterr().err
+
+    def failing_push(channel, workflow_store, *, now, repo_root=None):
+        raise PersistenceError("WORKFLOW_STORE_UNREADABLE", "disk gone")
+
+    monkeypatch.setattr(cli, "push_workflow_events", failing_push)
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), workflow_store=sentinel) == 0
+    assert "OPERATOR: workflow events not pushed (WORKFLOW_STORE_UNREADABLE)" in capsys.readouterr().err
+
+
+def test_the_operator_never_creates_the_workflow_store(tmp_path, monkeypatch):
+    """The manager owns the store's existence; an operator started on a host without it must
+    not leave an empty workflow.db behind — the backup and the next deploy would read it as real."""
+    import runtime.mvp_runtime.operator_cli as cli
+    from runtime.mvp_runtime.workflow_store import WorkflowStore
+
+    calls: list = []
+    monkeypatch.setattr(cli, "push_workflow_events", lambda *a, **k: calls.append(1) or {"sent": [], "uncertain": [],
+                                                                                            "retried": 0, "cursor": 0, "adopted": False})
+    (tmp_path / ".runtime_governance_state").mkdir()
+    (tmp_path / ".runtime_governance_state" / "operator_registration.json").write_text(
+        json.dumps({"operator_id": "tg-1", "chat_id": "chat-1", "approver": "Thomas"}), encoding="utf-8")
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), repo_root=tmp_path) == 0
+    assert calls == [] and not WorkflowStore.exists(tmp_path)
+    WorkflowStore(tmp_path).initialize()                       # the manager created it: now the loop pushes
+    assert main([], channel=MockOperatorChannel(), registration=REG, provider=MockProvider(), repo_root=tmp_path) == 0
+    assert calls == [1]
