@@ -626,7 +626,12 @@ all on a **bare image with no secrets and no provisioned state**:
 - the operator refuses to act with no registration (`REGISTRATION_MISSING`);
 - a `kill` survives the container that issued it, and a corrupt control state reads as
   `KILLED`, never as "go";
-- the scheduler service starts from its compose definition and answers the healthcheck.
+- the scheduler service starts from its compose definition and answers the healthcheck;
+- (sequence 2, P11 preparation) with the CI-only override `.github/ci-compose.workflow.yml` the
+  dispatch door serves door API v3 with the manager loop from its compose definition, the risk
+  lane keeps ticking while the door (loop included) is stopped, and a restarted door answers
+  again within 120 s — proven before the deployment file ever carries `--workflow-manager`
+  (`docs/DEPLOYMENT_PLAN_SEQUENCE2.md`).
 
 So the fail-closed claims above are checked on every PR rather than trusted.
 

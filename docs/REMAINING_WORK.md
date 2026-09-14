@@ -4967,7 +4967,16 @@ delegation goes live only with its own policy bump.
       own snapshot by its container path; `drain` counts QUEUED rows; the closed intake takes no fresh claim. Workflow-step
       asks say that approving runs the step. The per-finding skeptic stage was dropped mid-run (one agent at a time on
       this 2-CPU host); reproduction was the verification.
-- [ ] **P11 — limited production cutover**, legacy writer retirement per entry point (separate deploy decision).
+- [ ] **P11 — limited production cutover** (separate deploy decision — **prepared 2026-09-14, not executed**).
+      Prepared: the in-process load acceptance (A27, `tests/test_mvp_runtime_workflow_load.py`: 100 accepts, 0 lost,
+      0 duplicated, overload refused as `CAPACITY_EXHAUSTED`); the CI compose step (A26/A28, `.github/ci-compose.workflow.yml`
+      + `docker-image.yml`: the door serves door API v3 with the manager from its compose definition, the risk lane
+      survives the door's stop, the door answers again within 120 s); and `docs/DEPLOYMENT_PLAN_SEQUENCE2.md` — the
+      candidate build and its assertion, the compatible combination (runtime after #863, shims 2.9, skill 1.5.4, schema 3,
+      policy 1.5.0), the host installs (shims, backup scripts, the fourth cron job), the one-line compose PR that turns
+      the manager on, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
+      Thomas's to decide and run:** the deploy itself, the `--workflow-manager` line, the later `--v2-intake closed`
+      cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
 
 ## Per-machine setup that does NOT travel via git
 

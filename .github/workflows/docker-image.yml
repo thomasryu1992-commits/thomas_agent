@@ -190,6 +190,60 @@ jobs:
           docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk
           docker compose exec -T scheduler-maint python -m runtime.mvp_runtime.heartbeat_cli scheduler-maintenance
 
+      - name: The dispatch door serves door API v3 from its compose definition, and the risk lane survives its stop and restart
+        run: |
+          set -euo pipefail
+          # Sequence 2, P11 preparation (A26, A28). The CI override starts the door WITH the
+          # manager loop — the deployment file does not, by decision — so this proves the
+          # compose definition and the image serve door API v3 together, that stopping the
+          # door (loop included) leaves the risk lane ticking, and that a restarted door
+          # answers again inside the 120 s recovery target. The scheduler is already up from
+          # the step above.
+          docker compose -f docker-compose.yml -f .github/ci-compose.workflow.yml up -d dispatch-bridge pipeline-worker
+          ask() {  # one v2 frame to the dispatch door, as the door's declared peer (uid 10000), from inside the container
+            docker compose exec -T -u 10000:10000 dispatch-bridge python - <<'PY'
+          import json, socket
+          s = socket.socket(socket.AF_UNIX); s.settimeout(20)
+          s.connect("/app/.runtime_governance_state/bridge/dispatch.sock")
+          s.sendall(json.dumps({"command": "capabilities", "proto": 2}).encode() + b"\n")
+          reply = json.loads(s.recv(65536).split(b"\n")[0])
+          print(json.dumps({"ok": reply.get("ok"), "manager": (reply.get("data") or {}).get("workflow_manager"),
+                            "v2_intake": (reply.get("data") or {}).get("v2_intake"),
+                            "commands": (reply.get("data") or {}).get("commands")}))
+          PY
+          }
+          wait_for_door() {
+            for _ in $(seq 1 60); do
+              if out=$(ask 2>/dev/null) && echo "${out}" | grep -q '"ok": true'; then echo "${out}"; return 0; fi
+              sleep 2
+            done
+            docker compose logs dispatch-bridge; echo "the dispatch door did not answer within 120 s"; return 1
+          }
+          out=$(wait_for_door)
+          echo "${out}" | grep -q '"manager": true' || { echo "the manager loop is not on in the CI override"; exit 1; }
+          echo "${out}" | grep -q '"v2_intake": "open"' || { echo "the door did not report its intake state"; exit 1; }
+          echo "${out}" | grep -q 'workflow.submit' || { echo "door API v3 is not served"; exit 1; }
+          # A26: stop the door (its loop dies with it); the risk lane must keep passing on its
+          # own. Its heartbeat file is stamped once per completed pass (every 30 s on the
+          # compose command line), so a stamp that advances after the stop is a pass that ran
+          # without the door.
+          beat=ci-state/heartbeats/scheduler-risk.json
+          test -f "${beat}" || { echo "the risk lane never wrote a heartbeat"; exit 1; }
+          before=$(stat -c %Y "${beat}")
+          docker compose stop dispatch-bridge
+          after="${before}"
+          for _ in $(seq 1 45); do
+            sleep 2
+            after=$(stat -c %Y "${beat}")
+            [ "${after}" -gt "${before}" ] && break
+          done
+          [ "${after}" -gt "${before}" ] || { docker compose logs scheduler; echo "the risk lane made no pass after the door stopped"; exit 1; }
+          docker compose exec -T scheduler python -m runtime.mvp_runtime.heartbeat_cli scheduler-risk
+          # A28: the door comes back and answers within the target.
+          docker compose -f docker-compose.yml -f .github/ci-compose.workflow.yml start dispatch-bridge
+          wait_for_door > /dev/null
+          echo "door API v3 served; risk lane survived the door's stop; door answered again after restart"
+
       - name: Tear down
         if: always()
         run: docker compose down --remove-orphans || true
