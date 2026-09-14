@@ -21,11 +21,19 @@ same id and you get the result, never a duplicate.
 ``research`` and ``draft_content`` additionally accept ``naver_keywords``: comma-separated
 Korean seeds the runtime turns into measured Naver demand ([K#] evidence). The far side
 validates it like every other field.
+
+v3 (2026-09-14, sequence 2 P05): ``submit_workflow`` hands the runtime a PLAN — several steps
+over the same four kinds, with dependencies and a model-call budget — and returns at once
+with a ``workflow_id``. The runtime's workflow manager runs the steps and keeps the state;
+``workflow_status`` / ``workflow_events`` read it, ``cancel_workflow`` stops it. A runtime whose
+dispatch door runs without the manager refuses every v3 tool by name (``WORKFLOW_UNAVAILABLE``)
+and nothing falls back to a v2 run; ``thomas_capabilities`` says beforehand which it is.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 
 from mcp.server.fastmcp import FastMCP
 
@@ -141,6 +149,125 @@ async def draft_content(request: str, reason: str, naver_keywords: str = "", req
     Describe the piece and its audience. `naver_keywords` as in `research`; `request_id` as
     in `analyze`."""
     return await _dispatch("content", request, reason, naver_keywords, request_id)
+
+
+# --- door API v3: workflows -------------------------------------------------------------------
+
+WORKFLOW_UNAVAILABLE = "WORKFLOW_UNAVAILABLE"
+PLAN_SCHEMA_VERSION = "workflow_plan.v0.1"
+
+
+def _render_workflow(answer: door.Answer, *, command: str, request_id: str | None = None) -> str:
+    if answer.failure == door.TIMEOUT_AFTER_SEND and command == "workflow.submit":
+        return (
+            f"SUBMITTED_BUT_UNCONFIRMED: the submit frame was sent and no reply arrived. The plan may "
+            f"be accepted. Do NOT submit it again under a new id — call submit_workflow again with "
+            f"request_id=\"{request_id}\" (the door replays an accepted workflow, never accepts it twice), "
+            "or workflow_status if you already have the workflow_id."
+        )
+    if answer.failure:
+        text = answer.failure_text()
+        return text if text.startswith("UNCLEAR") else f"{text} Nothing was started."
+    if answer.ok:
+        head = str(answer.reply or "")
+        if command == "workflow.submit":
+            head = f"{head}\nKeep this request_id; the same plan under it replays instead of re-running."
+        return head + door.data_line(answer)
+    if answer.reason_code == WORKFLOW_UNAVAILABLE:
+        return (
+            f"REFUSED [{WORKFLOW_UNAVAILABLE}]: this runtime's dispatch door runs without the workflow "
+            "manager, so workflows are not served here — nothing was started. Use analyze / research / "
+            "translate / draft_content one at a time, or tell Thomas the runtime needs the manager enabled."
+        )
+    return answer.refused_text(suffix=" Nothing was changed.")
+
+
+def _workflow_ask(payload: dict[str, object], *, request_id: str | None = None) -> str:
+    return _render_workflow(door.ask(_DOOR, payload, request_id=request_id),
+                            command=str(payload.get("command")), request_id=request_id)
+
+
+@mcp.tool()
+def thomas_capabilities() -> str:
+    """What this runtime's dispatch door serves: the v3 workflow commands, the four kinds, the
+    plan schema, and whether the workflow manager is running (`workflow_manager` on the `[data]`
+    line). Call it once before the first submit_workflow of a session."""
+    return _workflow_ask({"command": "capabilities"})
+
+
+@mcp.tool()
+def submit_workflow(plan_json: str, request_id: str = "") -> str:
+    """Submit a multi-step PLAN and return at once with its workflow_id (the runtime runs it;
+    minutes to hours). `plan_json` is a JSON object: {"schema_version": "workflow_plan.v0.1",
+    "goal": "...", "steps": [{"id": "research", "capability": "research"|"analysis"|"translation"|
+    "content", "request": "...", "reason": "...", "depends_on": ["..."], "input_refs": ["..."],
+    "naver_keywords": "optional", "max_attempts": 1-3, "options": {"independent_validation": bool,
+    "revise": bool}}], "budget": {"max_model_calls": N}} — at most 10 steps, a DAG over `depends_on`,
+    `input_refs` ⊆ `depends_on`, and no other key (the door refuses an effect class, an actor or a
+    permission). `request_id`: empty for a new plan (one is minted and returned — keep it); the
+    same id with the same plan replays the accepted workflow; the same id with a different plan is
+    refused. Read the reply's `[data]` for workflow_id and status."""
+    raw = (plan_json or "").strip()
+    if not raw:
+        return "REFUSED: plan_json is required — the plan object as JSON text."
+    try:
+        plan = json.loads(raw)
+    except ValueError as exc:
+        return f"REFUSED: plan_json is not valid JSON ({exc}). Nothing was sent."
+    if not isinstance(plan, dict):
+        return "REFUSED: plan_json must be a JSON object. Nothing was sent."
+    plan.setdefault("schema_version", PLAN_SCHEMA_VERSION)
+    rid = (request_id or "").strip() or door.new_request_id()
+    return _workflow_ask({"command": "workflow.submit", "plan": plan}, request_id=rid)
+
+
+@mcp.tool()
+def workflow_status(workflow_id: str) -> str:
+    """One workflow: its status, every step with attempts and result reference, the budget. The
+    `[data]` line carries `row_version` (needed by cancel_workflow) and each step's `result_ref`
+    — fetch a delivered step's text with task_result on that reference's trace id."""
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return "REFUSED: workflow_id is required."
+    return _workflow_ask({"command": "workflow.status", "workflow_id": wid})
+
+
+@mcp.tool()
+def workflow_list(limit: str = "") -> str:
+    """Recent workflows, newest first. `limit` is an optional count (default 20, max 50)."""
+    payload: dict[str, object] = {"command": "workflow.list"}
+    if limit and limit.strip().isdigit():
+        payload["limit"] = int(limit.strip())
+    return _workflow_ask(payload)
+
+
+@mcp.tool()
+def workflow_events(after_cursor: str = "0", limit: str = "") -> str:
+    """Coordination events after a cursor — what changed since you last looked. Remember the
+    reply's `next_cursor` and pass it back; the same cursor returns the same rows. Cheap on the
+    runtime side; the cost is your own context, so ask for what you will read."""
+    payload: dict[str, object] = {"command": "workflow.events",
+                                  "after_cursor": int(after_cursor) if (after_cursor or "").strip().isdigit() else 0}
+    if limit and limit.strip().isdigit():
+        payload["limit"] = int(limit.strip())
+    return _workflow_ask(payload)
+
+
+@mcp.tool()
+def cancel_workflow(workflow_id: str, expected_version: str, reason: str) -> str:
+    """Stop a workflow. `expected_version` is the `row_version` you read from workflow_status —
+    a stale version is refused (VERSION_CONFLICT: read again). Waiting steps are cancelled at
+    once; a running step stops at its next boundary or its lease, and the reply says CANCELLING
+    until then. Never report CANCELLED before the reply does."""
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return "REFUSED: workflow_id is required."
+    if not (expected_version or "").strip().isdigit():
+        return "REFUSED: expected_version must be the row_version read from workflow_status."
+    if not (reason or "").strip():
+        return "REFUSED: a reason is required and is recorded."
+    return _workflow_ask({"command": "workflow.cancel", "workflow_id": wid,
+                          "expected_version": int(expected_version.strip()), "reason": reason.strip()})
 
 
 if __name__ == "__main__":

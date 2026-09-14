@@ -152,6 +152,8 @@ would resume nothing"이라고 적혀 온다. 그 두 줄을 읽고 말해라.
     thomas-switch    trading_switch_status · stop_trading · pause_trading ·
                      start_trading · resume_runtime_only
     thomas-dispatch  analyze · research · translate · draft_content
+                     thomas_capabilities · submit_workflow · workflow_status · workflow_list ·
+                     workflow_events · cancel_workflow  (도구 API v3, 복합 업무 — 스킬 §7)
                      (실제 파이프라인이 돌아 1분 이상 걸린다. 응답의 request_id를 기억해라 —
                      STARTED_BUT_SLOW 뒤 같은 request_id로 다시 부르면 결과가 오고, 재실행은 없다)
     thomas-knowledge file_document · file_pdf · search_knowledge · knowledge_stats

@@ -4873,8 +4873,11 @@ delegation goes live only with its own policy bump.
       while the runtime is ACTIVE, speak the v2 frame to the worker socket, record results through the fence; a
       transport failure records nothing and the lease decides. `workflow_cli` list / inspect / events / snapshot,
       read-only. No new service, uid, volume or healthcheck.
-- [ ] **P05 — v3 async single task**: submit → attempt frame → pipeline → audit → result; `WORKFLOW`
-      registry rows; v2 unchanged byte-for-byte with the flag off.
+- [x] **P05 — v3 async single task** (2026-09-14, three PRs)**.** The attempt frame (worker echoes `attempt_id` and its
+      recorded spend, opens `WORKFLOW` rows, raises but never lowers the assurance policy; #856); door API v3 on the
+      dispatch door — `capabilities`, `workflow.submit/status/list/events/cancel`, served only with the manager and
+      refused by name otherwise (#857); the dispatch shim's six workflow tools, skill §7 and the SOUL tool list
+      (part 3). v2 unchanged with the flag off. The read-door verbs and their policy clause are deferred to P09/P11.
 - [ ] **P06 — retry / reconcile / cancel / recovery**; fence = `attempt_id`, lease = connection lifetime +
       deadline, `effect_class` policy; the container-split question is re-decided here on measurements.
 - [ ] **P07 — composite workflows**, plan versions, approval wait bound to approval id + fingerprint + plan version.
