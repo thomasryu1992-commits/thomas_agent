@@ -190,11 +190,11 @@ def test_the_five_structured_reads_ask_for_data_and_the_others_do_not(monkeypatc
 _WID = "wf_" + "1" * 20
 
 
-def test_dispatch_tools_are_the_four_dispatches_plus_the_seven_workflow_tools():
+def test_dispatch_tools_are_the_four_dispatches_plus_the_eight_workflow_tools():
     assert set(dispatch_shim.mcp.tools) == {
         "analyze", "research", "translate", "draft_content",
         "thomas_capabilities", "submit_workflow", "workflow_status", "workflow_list", "workflow_events",
-        "cancel_workflow", "retry_workflow_step",
+        "cancel_workflow", "retry_workflow_step", "propose_workflow_update",
     }
 
 
@@ -278,4 +278,17 @@ def test_retry_step_sends_its_shape_and_refuses_locally_what_the_door_would(monk
                      "expected_version": 4, "reason": "공급자 복구"}]
     assert dispatch_shim.retry_workflow_step(_WID, "", "4", "r").startswith("REFUSED: workflow_id and step_key")
     assert dispatch_shim.retry_workflow_step(_WID, "draft1", "four", "r").startswith("REFUSED: expected_version")
+    assert len(seen) == 1
+
+
+def test_propose_update_sends_the_whole_plan_at_the_version_read(monkeypatch):
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or _answer(
+        "dispatch", {"ok": True, "command": p["command"], "reply": "PLAN UPDATED to v2", "data": {"plan_version": 2}}))
+    out = dispatch_shim.propose_workflow_update(_WID, "3", '{"goal": "g", "steps": [], "budget": {"max_model_calls": 9}}', "예산 증액")
+    assert out.startswith("PLAN UPDATED") and '"plan_version":2' in out
+    assert seen[0]["command"] == "workflow.propose_update" and seen[0]["expected_version"] == 3
+    assert seen[0]["plan"]["schema_version"] == "workflow_plan.v0.1" and seen[0]["reason"] == "예산 증액"
+    assert dispatch_shim.propose_workflow_update(_WID, "3", "{bad", "r").startswith("REFUSED: plan_json is not valid JSON")
+    assert dispatch_shim.propose_workflow_update(_WID, "x", "{}", "r").startswith("REFUSED: expected_version")
     assert len(seen) == 1

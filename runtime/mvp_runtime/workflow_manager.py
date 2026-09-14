@@ -33,12 +33,15 @@ from __future__ import annotations
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
-from . import socket_door, task_registry, timeutil, workflow as wf
+from . import approval as approval_mod, permission, socket_door, task_registry, timeutil, workflow as wf
+from .approval_store import ApprovalStore
+from .binding import bind_task_to_core
 from .control import ControlStore
 from .dispatch_bridge import WORKER_DEADLINE_SECONDS
-from .errors import MvpRuntimeError
+from .errors import ApprovalBlocked, MvpRuntimeError
+from .intake import build_task
 from .task_registry import TaskRegistryStore
 from .workflow_store import COST_OBSERVED, DEFAULT_ATTEMPT_DEADLINE_SECONDS, ClaimedAttempt, WorkflowStore
 
@@ -46,6 +49,10 @@ DEFAULT_CONCURRENCY = 2          # the worker's own MAX_CONCURRENT_REQUESTS; a t
 DEFAULT_POLL_SECONDS = 2.0
 CLIENT_ID_PREFIX = "workflow:"   # attribution on the task record: `assistant_bridge:workflow:<id>`
 WORKER_UNAVAILABLE = "WORKER_UNAVAILABLE"
+# A gated step whose ask could not be minted (no Core binding, an unreadable store) is retried
+# after this many ticks rather than every poll, so one broken precondition is one log line a
+# minute and not thirty.
+MINT_RETRY_TICKS = 30
 
 Caller = Callable[..., Any]
 
@@ -70,9 +77,14 @@ class WorkflowManager:
         log: Callable[[str], None] | None = None,
         synchronous: bool = False,
         registry: TaskRegistryStore | None = None,
+        approval_store: ApprovalStore | None = None,
+        repo_root: Path | None = None,
     ):
         self._store = store
         self._registry = registry
+        self._approval_store = approval_store
+        self._repo_root = repo_root
+        self._mint_failures: dict[str, int] = {}
         self._control = control_store
         self._worker_socket = Path(worker_socket)
         self._worker_deadline = float(worker_deadline_seconds)
@@ -196,6 +208,7 @@ class WorkflowManager:
         try:
             report.update(self.reconcile(now=now))
             report["expired"] = len(self._store.expire_overdue(now=now))
+            report.update(self.approvals(now=now))
             state = self._control.load()
             if not state.execution_allowed:
                 report["skipped"] = f"runtime is {state.mode}; claiming nothing"
@@ -216,6 +229,137 @@ class WorkflowManager:
             self._log(f"WORKFLOW_MANAGER[{type(exc).__name__}]: {exc}")
         return report
 
+    # --- gated steps (P07; V0.2 §1.2, acceptance A13) --------------------------------------------
+
+    def approvals(self, *, now: str | None = None) -> dict[str, Any]:
+        """Mint the ask a waiting step has none for; spend the grant Thomas gave; refuse what a
+        grant cannot cover. The manager never creates APPROVED: it reads the approval store and
+        runs the shared single-use ladder (`validate_spendable_approval`, `spend_lock`,
+        `build_consumed_record`) — the same steps the switch door and memory promotion run. A
+        step whose bound ask is for an older plan version asks again; a rejected, expired, spent or
+        re-pointed grant blocks the step under that reason, and the workflow waits for a decision.
+        Without an approval store nothing is minted or spent and gated steps simply wait."""
+        report = {"asks_minted": 0, "approvals_spent": 0, "approvals_refused": 0, "approvals_deferred": 0}
+        if self._approval_store is None:
+            return report
+        now = now or self._clock()
+        for step in self._store.waiting_approval_steps():
+            step_id = step["step_id"]
+            try:
+                if step["approval_id"] is None or step["approval_plan_version"] != step["workflow_plan_version"]:
+                    last = self._mint_failures.get(step_id)
+                    if last is not None and self.ticks - last < MINT_RETRY_TICKS:
+                        continue
+                    self._mint(step, now)
+                    self._mint_failures.pop(step_id, None)
+                    report["asks_minted"] += 1
+                    continue
+                record = self._approval_store.get(step["approval_id"])
+                if record is None:
+                    self._refuse(step, wf.APPROVAL_STALE, f"ask {step['approval_id']} is not in the approval store", now)
+                    report["approvals_refused"] += 1
+                    continue
+                status = record.get("status")
+                if status == approval_mod.STATUS_PENDING:
+                    if approval_mod.is_expired(record, now=now):
+                        self._refuse(step, wf.APPROVAL_EXPIRED, f"ask {step['approval_id']} expired at "
+                                     f"{(record.get('validity') or {}).get('expires_at')}", now)
+                        report["approvals_refused"] += 1
+                    continue
+                if status == approval_mod.STATUS_REJECTED:
+                    self._refuse(step, wf.APPROVAL_REJECTED, f"ask {step['approval_id']} was rejected", now)
+                    report["approvals_refused"] += 1
+                elif status == approval_mod.STATUS_CONSUMED:
+                    self._refuse(step, wf.APPROVAL_REUSED, f"grant {step['approval_id']} was already spent", now)
+                    report["approvals_refused"] += 1
+                elif status == approval_mod.STATUS_APPROVED:
+                    outcome = self._spend(step, now)
+                    if outcome is None:
+                        report["approvals_deferred"] += 1       # halted runtime: the grant waits, unspent
+                    elif outcome:
+                        report["approvals_spent"] += 1
+                    else:
+                        report["approvals_refused"] += 1
+                else:
+                    self._refuse(step, wf.APPROVAL_STALE, f"ask {step['approval_id']} is {status!r}", now)
+                    report["approvals_refused"] += 1
+            except MvpRuntimeError as exc:
+                if step["approval_id"] is None:
+                    self._mint_failures[step_id] = self.ticks
+                self._log(f"WORKFLOW_MANAGER[{exc.reason_code}]: gated step {step['step_key']} of "
+                          f"{step['workflow_id']}: {exc}")
+        return report
+
+    def _mint(self, step: Mapping[str, Any], now: str) -> None:
+        """One ask per gated step per plan version, through the existing machinery: a Core-bound
+        task, an APPROVAL_REQUIRED decision naming the step and its request hash, the pending
+        approval request. Thomas decides on the control bot; the operator announces it."""
+        content = wf.approval_content(workflow_id=step["workflow_id"], step_key=step["step_key"],
+                                      plan_version=step["workflow_plan_version"], capability=step["capability"],
+                                      request=step["request"])
+        task = build_task(
+            f"워크플로 단계 승인 검토: {str(step.get('goal') or '')[:80]} / {step['step_key']}",
+            now=now, channel="agent", requester_type="agent", requester_id=socket_door.ASSISTANT_ACTOR,
+            authenticated=True,
+        )
+        _, bound = bind_task_to_core(task, now=now, repo_root=self._repo_root)
+        decision = permission.build_workflow_step_permission_decision(
+            bound, workflow_id=step["workflow_id"], step_key=step["step_key"],
+            plan_version=step["workflow_plan_version"], capability=step["capability"],
+            request_sha256=content["request_sha256"], request_preview=step["request"], now=now, repo_root=self._repo_root,
+        )
+        request = approval_mod.build_approval_request(decision, now=now, repo_root=self._repo_root)
+        self._approval_store.append_permission_decision(decision)
+        self._approval_store.append([request])
+        self._store.bind_approval(step["step_id"], approval_id=request["approval_id"],
+                                  plan_version=step["workflow_plan_version"], now=now)
+        self._log(f"WORKFLOW_MANAGER[APPROVAL_REQUESTED]: step {step['step_key']} of {step['workflow_id']} waits for "
+                  f"{request['approval_id']} (plan v{step['workflow_plan_version']})")
+
+    def _spend(self, step: Mapping[str, Any], now: str) -> bool | None:
+        """Spend the bound APPROVED grant once, through the shared ladder, and only if it still
+        describes this step at this plan version with this request. Returns True when the step
+        was released; False when the grant was refused (the step is blocked under the reason);
+        None while the runtime is halted (spending a grant is execution — the grant waits)."""
+        approval_id = step["approval_id"]
+        control_state = self._control.load()
+        if not control_state.execution_allowed:
+            return None
+        try:
+            _rec, decision, snapshot = approval_mod.validate_spendable_approval(
+                self._approval_store, approval_id, now=now, control_state=control_state,
+                expected_scope=permission.TRADING_SWITCH_PERMISSION_SCOPE,
+                kill_action="spending a workflow-step grant", refusal_phrase="the step is not run",
+                scope_refusal="is not a workflow-step grant",
+            )
+        except ApprovalBlocked as exc:
+            mapped = {"ALREADY_CONSUMED": wf.APPROVAL_REUSED, "APPROVAL_EXPIRED": wf.APPROVAL_EXPIRED,
+                      "NOT_APPROVED": wf.APPROVAL_REJECTED}.get(exc.reason_code, wf.APPROVAL_STALE)
+            self._refuse(step, mapped, f"grant {approval_id}: {exc.reason_code}", now)
+            return False
+        expected = wf.approval_content(workflow_id=step["workflow_id"], step_key=step["step_key"],
+                                       plan_version=step["workflow_plan_version"], capability=step["capability"],
+                                       request=step["request"])
+        if (snapshot.get("target_ref") != wf.approval_target_ref(step["workflow_id"], step["step_key"])
+                or dict(snapshot.get("normalized_parameters") or {}) != expected):
+            self._refuse(step, wf.APPROVAL_STALE, f"grant {approval_id} describes another step, version or request", now)
+            return False
+        with approval_mod.spend_lock(self._approval_store, approval_id):
+            fresh = self._approval_store.get(approval_id)
+            consumed = approval_mod.build_consumed_record(
+                fresh, decision, consumed_at=now,
+                consumption_ref=f"workflow:{step['workflow_id']}:{step['step_key']}:v{step['workflow_plan_version']}",
+                repo_root=self._repo_root,
+            )
+            self._approval_store.append([consumed])
+            self._store.approve_step(step["step_id"], approval_id=approval_id, now=now)
+        self._log(f"WORKFLOW_MANAGER[APPROVAL_CONSUMED]: step {step['step_key']} of {step['workflow_id']} released by {approval_id}")
+        return True
+
+    def _refuse(self, step: Mapping[str, Any], reason_code: str, detail: str, now: str) -> None:
+        self._store.refuse_step_approval(step["step_id"], reason_code=reason_code, detail=detail, now=now)
+        self._log(f"WORKFLOW_MANAGER[{reason_code}]: step {step['step_key']} of {step['workflow_id']} blocked: {detail}")
+
     def _launch(self, attempt: ClaimedAttempt) -> None:
         if self._synchronous:
             self._run_attempt(attempt)
@@ -231,7 +375,8 @@ class WorkflowManager:
     @staticmethod
     def worker_frame(attempt: ClaimedAttempt) -> dict[str, Any]:
         """The attempt frame (P05): the v2 dispatch frame plus the attempt's identity for the
-        worker to echo, and the step's assurance options when it asked for any. Optional keys
+        worker to echo, the step's assurance options when it asked for any, and (P07) the
+        result references of the dependency steps it named in `input_refs`. Optional keys
         travel only when present (the worker's closed key set never sees a null); the
         attribution names the workflow."""
         frame: dict[str, Any] = {"request": attempt.request, "kind": attempt.capability, "reason": attempt.reason}
@@ -243,6 +388,9 @@ class WorkflowManager:
         options = {key: True for key in ("independent_validation", "revise") if attempt.options.get(key)}
         if options:
             frame[wf.WORKFLOW_OPTIONS_KEY] = options
+        inputs = {key: ref for key, ref in attempt.input_refs.items() if ref}
+        if inputs:
+            frame[wf.WORKFLOW_INPUTS_KEY] = inputs            # P07: what this step reads, by result ref
         return frame
 
     def _run_attempt(self, attempt: ClaimedAttempt) -> None:

@@ -252,3 +252,29 @@ def test_retry_step_re_opens_a_settled_step_at_the_version_read(tmp_path):
                 "expected_version": view["row_version"], "reason": "again"}, tmp_path, store=store)
     assert exc.value.reason_code in {"VERSION_CONFLICT", "RETRY_NOT_APPLICABLE"}
     assert "workflow.retry_step" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]
+
+
+def test_propose_update_replaces_the_plan_at_the_version_read(tmp_path):
+    store = WorkflowStore(tmp_path)
+    wid = _submit(store, tmp_path)["data"]["workflow_id"]
+    view = _apply({"command": "workflow.status", "workflow_id": wid}, tmp_path, store=store)["data"]
+    with pytest.raises(WorkflowBlocked) as exc:
+        _apply({"command": "workflow.propose_update", "workflow_id": wid, "expected_version": view["row_version"],
+                "reason": "r"}, tmp_path, store=store)
+    assert exc.value.reason_code == "PLAN_INVALID"                                    # no plan
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "workflow.propose_update", "workflow_id": wid, "expected_version": view["row_version"],
+                "plan": _plan()}, tmp_path, store=store)
+    assert exc.value.reason_code == "REASON_REQUIRED"
+    plan = _plan(goal="목표 (수정)")
+    plan["steps"].append({"id": "summary", "capability": "analysis", "request": "요약", "reason": "r",
+                          "depends_on": ["research"], "input_refs": ["research"]})
+    out = _apply({"command": "workflow.propose_update", "workflow_id": wid, "expected_version": view["row_version"],
+                  "plan": plan, "reason": "요약 단계 추가"}, tmp_path, store=store)
+    assert out["ok"] and out["reply"].startswith("PLAN UPDATED to v2") and out["data"]["plan_version"] == 2
+    assert [s["key"] for s in out["data"]["steps"]] == ["research", "summary"] and out["data"]["goal"] == "목표 (수정)"
+    with pytest.raises(WorkflowBlocked) as exc:
+        _apply({"command": "workflow.propose_update", "workflow_id": wid, "expected_version": view["row_version"],
+                "plan": plan, "reason": "again"}, tmp_path, store=store)
+    assert exc.value.reason_code == "VERSION_CONFLICT"
+    assert "workflow.propose_update" in _apply({"command": "capabilities"}, tmp_path, store=store)["data"]["commands"]

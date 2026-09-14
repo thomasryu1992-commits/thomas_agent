@@ -288,5 +288,35 @@ def retry_workflow_step(workflow_id: str, step_key: str, expected_version: str, 
                           "expected_version": int(expected_version.strip()), "reason": reason.strip()})
 
 
+@mcp.tool()
+def propose_workflow_update(workflow_id: str, expected_version: str, plan_json: str, reason: str) -> str:
+    """Replace a workflow's plan with a NEW VERSION (the whole plan as JSON, same shape as
+    submit_workflow). Allowed: change steps that have not started, add steps, drop unstarted steps,
+    change the goal, raise the budget (never below what is reserved). Refused (PLAN_CONFLICT): a
+    running or delivered step's request, kind, dependencies or inputs; a cancelled step's key; a
+    budget below reservations. A changed gated step asks Thomas again; a budget-blocked step the
+    new budget covers is released. Nothing delivered is re-run. `expected_version` is the
+    `row_version` from workflow_status."""
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return "REFUSED: workflow_id is required."
+    if not (expected_version or "").strip().isdigit():
+        return "REFUSED: expected_version must be the row_version read from workflow_status."
+    if not (reason or "").strip():
+        return "REFUSED: a reason is required and is recorded with the version."
+    raw = (plan_json or "").strip()
+    if not raw:
+        return "REFUSED: plan_json is required — the whole new plan as JSON text."
+    try:
+        plan = json.loads(raw)
+    except ValueError as exc:
+        return f"REFUSED: plan_json is not valid JSON ({exc}). Nothing was sent."
+    if not isinstance(plan, dict):
+        return "REFUSED: plan_json must be a JSON object. Nothing was sent."
+    plan.setdefault("schema_version", PLAN_SCHEMA_VERSION)
+    return _workflow_ask({"command": "workflow.propose_update", "workflow_id": wid,
+                          "expected_version": int(expected_version.strip()), "plan": plan, "reason": reason.strip()})
+
+
 if __name__ == "__main__":
     mcp.run()

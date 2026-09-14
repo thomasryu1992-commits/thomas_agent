@@ -44,6 +44,16 @@ EVENT_SCHEMA_VERSION = "workflow_event.v0.1"
 ATTEMPT_ID_KEY = "attempt_id"
 WORKFLOW_ID_KEY = "workflow_id"
 WORKFLOW_OPTIONS_KEY = "workflow_options"
+# The resolved results of the dependency steps a step named in `input_refs` (P07): the manager
+# sends `{step_key: result_ref}` on the attempt frame, the worker records them on the run's
+# source, and the status view shows the same mapping — so the link from a step to what it read
+# is one fact, visible at both ends. What a run DOES with a prior result is the pipeline's
+# evidence model (not this increment): the reference travels and is recorded, it is not yet
+# rendered into the prompt.
+WORKFLOW_INPUTS_KEY = "workflow_inputs"
+STEP_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")          # the plan schema's step id
+RESULT_REF_PATTERN = re.compile(r"^ledger:[A-Za-z0-9._:-]{1,100}$")  # `ledger:<trace_id>`
+MAX_STEPS = 10
 WORKFLOW_ID_PATTERN = re.compile(r"^wf_[0-9a-f]{20}$")
 STEP_ID_PATTERN = re.compile(r"^wfs_[0-9a-f]{20}$")
 ATTEMPT_ID_PATTERN = re.compile(r"^wfa_[0-9a-f]{20}$")
@@ -89,13 +99,19 @@ W_CANCELLED = "CANCELLED"
 WORKFLOW_TERMINAL = frozenset({W_COMPLETED, W_FAILED, W_BLOCKED, W_CANCELLED})
 WORKFLOW_TRANSITIONS: dict[str, frozenset[str]] = {
     W_RECEIVED: frozenset({W_VALIDATED, W_BLOCKED}),
-    W_VALIDATED: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED}),
+    # A gated root step waits for Thomas from the moment the plan is accepted (P07), so a
+    # workflow can be waiting before its first attempt opens.
+    W_VALIDATED: frozenset({W_RUNNING, W_WAITING_APPROVAL, W_CANCELLING, W_CANCELLED, W_BLOCKED}),
     # A cancel with nothing in flight completes at once (RUNNING -> CANCELLED); with an attempt
     # in flight it is honoured through CANCELLING.
     W_RUNNING: frozenset({W_WAITING_APPROVAL, W_WAITING_REPLAN, W_CANCELLING, W_CANCELLED,
                           W_COMPLETED, W_FAILED, W_BLOCKED}),
-    W_WAITING_APPROVAL: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
-    W_WAITING_REPLAN: frozenset({W_RUNNING, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
+    # The two waiting states are projections of the steps and move between each other: a
+    # refused ask blocks the step (-> WAITING_REPLAN); a retry or a new plan version asks
+    # again (-> WAITING_APPROVAL). Forward-only holds for the terminal states, which have no
+    # outgoing edge at all.
+    W_WAITING_APPROVAL: frozenset({W_RUNNING, W_WAITING_REPLAN, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
+    W_WAITING_REPLAN: frozenset({W_RUNNING, W_WAITING_APPROVAL, W_CANCELLING, W_CANCELLED, W_BLOCKED, W_FAILED}),
     # A last in-flight attempt may still land while cancelling; the workflow honours it.
     W_CANCELLING: frozenset({W_CANCELLED, W_COMPLETED, W_FAILED, W_BLOCKED}),
     W_COMPLETED: frozenset(),
@@ -123,7 +139,7 @@ S_CANCELLED = "CANCELLED"
 STEP_TERMINAL = frozenset({S_SUCCEEDED, S_CANCELLED})
 STEP_SETTLED = frozenset({S_FAILED, S_BLOCKED})
 STEP_TRANSITIONS: dict[str, frozenset[str]] = {
-    S_PENDING: frozenset({S_READY, S_CANCELLED, S_BLOCKED}),
+    S_PENDING: frozenset({S_READY, S_WAITING_APPROVAL, S_CANCELLED, S_BLOCKED}),
     S_READY: frozenset({S_RUNNING, S_CANCELLED, S_BLOCKED}),
     S_RUNNING: frozenset({S_SUCCEEDED, S_RETRY_WAIT, S_FAILED, S_BLOCKED,
                           S_NEEDS_RECONCILIATION, S_WAITING_APPROVAL, S_CANCEL_REQUESTED}),
@@ -131,8 +147,8 @@ STEP_TRANSITIONS: dict[str, frozenset[str]] = {
     S_WAITING_APPROVAL: frozenset({S_READY, S_CANCELLED, S_BLOCKED, S_FAILED}),
     S_NEEDS_RECONCILIATION: frozenset({S_SUCCEEDED, S_FAILED, S_READY, S_CANCELLED, S_BLOCKED}),
     S_CANCEL_REQUESTED: frozenset({S_CANCELLED, S_SUCCEEDED, S_FAILED}),
-    S_FAILED: frozenset({S_READY, S_CANCELLED}),            # retry_step, or the cancel that ends it
-    S_BLOCKED: frozenset({S_PENDING, S_READY, S_CANCELLED}),  # a retried dependency, or a budget decision
+    S_FAILED: frozenset({S_READY, S_WAITING_APPROVAL, S_CANCELLED}),            # retry_step (re-asking a gated step), or the cancel that ends it
+    S_BLOCKED: frozenset({S_PENDING, S_READY, S_WAITING_APPROVAL, S_CANCELLED}),  # a retried dependency, a budget or approval decision
     S_SUCCEEDED: frozenset(),
     S_CANCELLED: frozenset(),
 }
@@ -142,6 +158,17 @@ STEP_ACTIVE = frozenset({S_PENDING, S_READY, S_RUNNING, S_RETRY_WAIT, S_CANCEL_R
 STEP_OPEN = STEP_ACTIVE | frozenset({S_WAITING_APPROVAL, S_NEEDS_RECONCILIATION})
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
+# A gated step's block reasons (P07): each is a decision away from moving again — a retry
+# re-asks, a plan change re-asks, a cancel ends it.
+APPROVAL_REJECTED = "APPROVAL_REJECTED"
+APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
+APPROVAL_STALE = "APPROVAL_STALE"      # the grant no longer describes this step at this plan version
+APPROVAL_REUSED = "APPROVAL_REUSED"    # the grant was already spent
+PLAN_UPDATED = "PLAN_UPDATED"
+_DECISION_BLOCKS = frozenset({BUDGET_EXHAUSTED, APPROVAL_REJECTED, APPROVAL_EXPIRED, APPROVAL_STALE, APPROVAL_REUSED})
+# The approval a gated step is bound to names the step, and its content hash names the plan
+# version and the request — so a grant for one version cannot be spent on the next.
+APPROVAL_TARGET_PREFIX = "workflow_step:"
 
 # --- attempt lifecycle -----------------------------------------------------------------------
 A_RUNNING = "RUNNING"
@@ -188,6 +215,7 @@ class PlanStep:
     naver_keywords: str | None
     max_attempts: int
     options: dict[str, bool] = field(default_factory=dict)
+    requires_approval: bool = False
 
     @property
     def calls_per_attempt(self) -> int:
@@ -282,6 +310,7 @@ def validate_plan(plan: Any) -> ValidatedPlan:
             request=str(raw["request"]).strip(), reason=str(raw["reason"]).strip(),
             depends_on=depends_on, input_refs=input_refs, naver_keywords=keywords,
             max_attempts=int(raw.get("max_attempts") or DEFAULT_MAX_ATTEMPTS), options=options,
+            requires_approval=bool(raw.get("requires_approval", False)),
         ))
         if not steps[-1].request or not steps[-1].reason:
             raise WorkflowBlocked("PLAN_INVALID", f"step {key!r} has a blank request or reason")
@@ -344,8 +373,24 @@ def step_needs_decision(step: Mapping[str, Any]) -> bool:
     if status == S_FAILED:
         return int(step.get("attempts_opened") or 0) < MAX_ATTEMPTS_PER_STEP
     if status == S_BLOCKED:
-        return step.get("last_reason_code") == BUDGET_EXHAUSTED
+        return step.get("last_reason_code") in _DECISION_BLOCKS
     return False
+
+
+# --- approval binding (P07) ------------------------------------------------------------------
+
+def approval_target_ref(workflow_id: str, step_key: str) -> str:
+    return f"{APPROVAL_TARGET_PREFIX}{workflow_id}:{step_key}"
+
+
+def approval_content(*, workflow_id: str, step_key: str, plan_version: int, capability: str, request: str) -> dict[str, Any]:
+    """What a gated step's approval is bound to: the step at this plan version with this exact
+    request. Hashed into the ask's content fingerprint, so a changed request or a new plan
+    version refuses the grant (acceptance A13)."""
+    return {
+        "workflow_id": workflow_id, "step_key": step_key, "plan_version": int(plan_version),
+        "capability": capability, "request_sha256": integrity.sha256_record({"request": request}),
+    }
 
 
 def workflow_status_for(steps: Iterable[Mapping[str, Any]], *, cancelling: bool) -> str:
@@ -359,7 +404,9 @@ def workflow_status_for(steps: Iterable[Mapping[str, Any]], *, cancelling: bool)
     """
     rows = [dict(s) for s in steps]
     statuses = [r.get("status") for r in rows]
-    if any(s in STEP_ACTIVE for s in statuses):
+    # A PENDING step never moves on its own — it waits on a dependency — so it does not make
+    # the workflow RUNNING: a gated root with dependents behind it is WAITING_APPROVAL (P07).
+    if any(s in STEP_ACTIVE and s != S_PENDING for s in statuses):
         return W_CANCELLING if cancelling else W_RUNNING
     if any(s == S_WAITING_APPROVAL for s in statuses):
         return W_WAITING_APPROVAL

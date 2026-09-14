@@ -45,7 +45,8 @@ from .paths import repo_root as _repo_root
 WORKFLOW_DIR_REL = ".runtime_governance_state/workflow"
 DB_FILENAME = "workflow.db"
 SNAPSHOT_DIR_NAME = "snapshots"
-SCHEMA_VERSION = 1
+# 1: sequence 2 P03. 2 (P07): steps gain `requires_approval`, `approval_id`, `approval_plan_version`.
+SCHEMA_VERSION = 2
 
 # Server-wide ceiling on steps that are accepted but not finished (V0.2 §4.3 starting point).
 MAX_OPEN_STEPS = 20
@@ -82,7 +83,8 @@ _DDL = (
     " input_refs TEXT NOT NULL, naver_keywords TEXT, max_attempts INTEGER NOT NULL,"
     " status TEXT NOT NULL, attempts_opened INTEGER NOT NULL, current_attempt_id TEXT,"
     " result_ref TEXT, last_reason_code TEXT, row_version INTEGER NOT NULL,"
-    " updated_at TEXT NOT NULL, UNIQUE (workflow_id, step_key))",
+    " updated_at TEXT NOT NULL, requires_approval INTEGER NOT NULL DEFAULT 0,"
+    " approval_id TEXT, approval_plan_version INTEGER, UNIQUE (workflow_id, step_key))",
     "CREATE TABLE IF NOT EXISTS dependencies ("
     " step_id TEXT NOT NULL, depends_on TEXT NOT NULL, PRIMARY KEY (step_id, depends_on))",
     "CREATE TABLE IF NOT EXISTS attempts ("
@@ -179,6 +181,7 @@ class WorkflowStore:
                         conn.execute("PRAGMA foreign_keys=ON")
                         for statement in _DDL:
                             conn.execute(statement)
+                        self._migrate(conn)
                         conn.execute(
                             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                             (SCHEMA_VERSION, timeutil.utc_now_iso()),
@@ -197,6 +200,19 @@ class WorkflowStore:
                     raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE", f"the workflow store cannot be opened: {exc}") from exc
             raise PersistenceError("WORKFLOW_STORE_UNAVAILABLE",
                                    f"the workflow store stayed locked through {INIT_ATTEMPTS} opening attempts: {last}")
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Additive migrations for a file created by an earlier schema version: a column that is
+        missing is added with its default. Never drops, never rewrites rows."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
+        for name, ddl in (
+            ("requires_approval", "ALTER TABLE steps ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0"),
+            ("approval_id", "ALTER TABLE steps ADD COLUMN approval_id TEXT"),
+            ("approval_plan_version", "ALTER TABLE steps ADD COLUMN approval_plan_version INTEGER"),
+        ):
+            if name not in columns:
+                conn.execute(ddl)
 
     def _connect(self) -> sqlite3.Connection:
         if self._readonly:
@@ -320,29 +336,45 @@ class WorkflowStore:
             for position, key in enumerate(validated.order):
                 step = validated.step(key)
                 step_id = wf.step_id_for(workflow_id, key)
-                status = wf.S_READY if not step.depends_on else wf.S_PENDING
-                conn.execute(
-                    "INSERT INTO steps (step_id, workflow_id, step_key, position, capability, effect_class,"
-                    " request, reason, options, input_refs, naver_keywords, max_attempts, status,"
-                    " attempts_opened, current_attempt_id, result_ref, last_reason_code, row_version, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,NULL,NULL,1,?)",
-                    (step_id, workflow_id, key, position, step.capability, step.effect_class,
-                     step.request, step.reason, json.dumps(step.options, sort_keys=True),
-                     json.dumps(list(step.input_refs)), step.naver_keywords, step.max_attempts, status, now),
-                )
-                for dep in step.depends_on:
-                    conn.execute("INSERT INTO dependencies (step_id, depends_on) VALUES (?, ?)",
-                                 (step_id, wf.step_id_for(workflow_id, dep)))
+                if step.depends_on:
+                    status = wf.S_PENDING
+                else:
+                    status = wf.S_WAITING_APPROVAL if step.requires_approval else wf.S_READY
+                self._insert_step(conn, workflow_id, key, position, step, status, now)
                 self._event(conn, workflow_id=workflow_id, step_id=step_id, entity="step",
                             to_status=wf.S_PENDING, created_at=now)
-                if status == wf.S_READY:
+                if status != wf.S_PENDING:
                     self._event(conn, workflow_id=workflow_id, step_id=step_id, entity="step",
-                                from_status=wf.S_PENDING, to_status=wf.S_READY, created_at=now)
+                                from_status=wf.S_PENDING, to_status=status, created_at=now)
             conn.execute(
                 "INSERT INTO requests (principal, request_id, fingerprint, workflow_id, accepted_at) VALUES (?,?,?,?,?)",
                 (principal, request_id, validated.plan_hash, workflow_id, now),
             )
-        return SubmitOutcome(workflow_id, wf.W_VALIDATED, now, replayed=False)
+            # A gated root step waits for Thomas from acceptance: the workflow says so at once.
+            # With only READY/PENDING steps the projection keeps VALIDATED until the first claim.
+            self._recompute_workflow(conn, workflow_id, now)
+            status = conn.execute("SELECT status FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()["status"]
+        return SubmitOutcome(workflow_id, status, now, replayed=False)
+
+    @staticmethod
+    def _insert_step(conn: sqlite3.Connection, workflow_id: str, key: str, position: int,
+                     step: wf.PlanStep, status: str, now: str) -> str:
+        step_id = wf.step_id_for(workflow_id, key)
+        conn.execute(
+            "INSERT INTO steps (step_id, workflow_id, step_key, position, capability, effect_class,"
+            " request, reason, options, input_refs, naver_keywords, max_attempts, status,"
+            " attempts_opened, current_attempt_id, result_ref, last_reason_code, row_version, updated_at,"
+            " requires_approval, approval_id, approval_plan_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,NULL,NULL,1,?,?,NULL,NULL)",
+            (step_id, workflow_id, key, position, step.capability, step.effect_class,
+             step.request, step.reason, json.dumps(step.options, sort_keys=True),
+             json.dumps(list(step.input_refs)), step.naver_keywords, step.max_attempts, status, now,
+             1 if step.requires_approval else 0),
+        )
+        for dep in step.depends_on:
+            conn.execute("INSERT INTO dependencies (step_id, depends_on) VALUES (?, ?)",
+                         (step_id, wf.step_id_for(workflow_id, dep)))
+        return step_id
 
     # --- reads ------------------------------------------------------------------------------
 
@@ -387,6 +419,10 @@ class WorkflowStore:
                         "current_attempt_id": s["current_attempt_id"], "result_ref": s["result_ref"],
                         "last_reason_code": s["last_reason_code"], "row_version": s["row_version"],
                         "depends_on": sorted(by_step.get(s["step_id"], [])),
+                        "input_refs": sorted(json.loads(s["input_refs"])),
+                        "inputs": self._input_refs_locked(conn, s),          # P07: resolved, live
+                        "requires_approval": bool(s["requires_approval"]),
+                        "approval_id": s["approval_id"], "approval_plan_version": s["approval_plan_version"],
                     }
                     for s in steps
                 ],
@@ -724,8 +760,13 @@ class WorkflowStore:
                 )
             deps = [d["depends_on"] for d in conn.execute("SELECT depends_on FROM dependencies WHERE step_id=?", (s["step_id"],)).fetchall()]
             dep_ok = all(conn.execute("SELECT status FROM steps WHERE step_id=?", (d,)).fetchone()["status"] == wf.S_SUCCEEDED for d in deps)
-            target = wf.S_READY if dep_ok else wf.S_PENDING
-            conn.execute("UPDATE steps SET max_attempts=? WHERE step_id=?",
+            if not dep_ok:
+                target = wf.S_PENDING
+            elif s["requires_approval"]:
+                target = wf.S_WAITING_APPROVAL      # a gated step asks again; the old grant is spent or dead
+            else:
+                target = wf.S_READY
+            conn.execute("UPDATE steps SET max_attempts=?, approval_id=NULL, approval_plan_version=NULL WHERE step_id=?",
                          (max(int(s["max_attempts"]), int(s["attempts_opened"]) + 1), s["step_id"]))
             self._set_step(conn, s, target, now, reason_code=None)
             self._event(conn, workflow_id=workflow_id, step_id=s["step_id"], entity="step", from_status=target,
@@ -750,6 +791,173 @@ class WorkflowStore:
                 if s["status"] == wf.S_BLOCKED and s["last_reason_code"] == wf.DEPENDENCY_FAILED:
                     self._set_step(conn, s, wf.S_PENDING, now, reason_code=None)
                 frontier.append(dep_id)
+
+    # --- gated steps (P07) ----------------------------------------------------------------------
+
+    def waiting_approval_steps(self) -> list[dict[str, Any]]:
+        """Steps waiting for Thomas, with what the manager needs to mint or spend their ask."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT s.*, w.plan_version AS workflow_plan_version, w.goal AS goal FROM steps s"
+                " JOIN workflows w ON w.workflow_id = s.workflow_id WHERE s.status=? ORDER BY w.created_at, s.position",
+                (wf.S_WAITING_APPROVAL,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def bind_approval(self, step_id: str, *, approval_id: str, plan_version: int, now: str) -> None:
+        """Record which ask a waiting step is bound to (the ask itself lives in the approval store)."""
+        with self._write() as conn:
+            s = conn.execute("SELECT * FROM steps WHERE step_id=?", (step_id,)).fetchone()
+            if s is None or s["status"] != wf.S_WAITING_APPROVAL:
+                raise WorkflowBlocked("TRANSITION_INVALID", f"step {step_id} is not waiting for an approval")
+            conn.execute("UPDATE steps SET approval_id=?, approval_plan_version=?, row_version=row_version+1, updated_at=?"
+                         " WHERE step_id=?", (approval_id, int(plan_version), now, step_id))
+            self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
+                        from_status=wf.S_WAITING_APPROVAL, to_status=wf.S_WAITING_APPROVAL,
+                        reason_code="APPROVAL_REQUESTED", created_at=now, detail=approval_id)
+
+    def approve_step(self, step_id: str, *, approval_id: str, now: str) -> dict[str, Any]:
+        """The bound grant was spent (by the manager, through the shared single-use ladder): the
+        step is READY. The store checks only that the spent id is the bound one."""
+        with self._write() as conn:
+            s = conn.execute("SELECT * FROM steps WHERE step_id=?", (step_id,)).fetchone()
+            if s is None or s["status"] != wf.S_WAITING_APPROVAL:
+                raise WorkflowBlocked("TRANSITION_INVALID", f"step {step_id} is not waiting for an approval")
+            if s["approval_id"] != approval_id:
+                raise WorkflowBlocked("APPROVAL_NOT_BOUND", f"step {step_id} is bound to {s['approval_id']!r}, not {approval_id!r}")
+            self._set_step(conn, s, wf.S_READY, now, reason_code=None)
+            self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
+                        from_status=wf.S_READY, to_status=wf.S_READY, reason_code="APPROVAL_CONSUMED",
+                        created_at=now, detail=approval_id)
+            self._recompute_workflow(conn, s["workflow_id"], now)
+        return self.status_view(s["workflow_id"], now=now)
+
+    def refuse_step_approval(self, step_id: str, *, reason_code: str, detail: str, now: str) -> dict[str, Any]:
+        """The ask was rejected, expired, spent elsewhere or no longer describes the step: the
+        step is BLOCKED under that reason and the workflow waits for a decision."""
+        with self._write() as conn:
+            s = conn.execute("SELECT * FROM steps WHERE step_id=?", (step_id,)).fetchone()
+            if s is None or s["status"] != wf.S_WAITING_APPROVAL:
+                raise WorkflowBlocked("TRANSITION_INVALID", f"step {step_id} is not waiting for an approval")
+            self._set_step(conn, s, wf.S_BLOCKED, now, reason_code=reason_code)
+            self._event(conn, workflow_id=s["workflow_id"], step_id=step_id, entity="step",
+                        from_status=wf.S_BLOCKED, to_status=wf.S_BLOCKED, reason_code=reason_code,
+                        created_at=now, detail=detail)
+            self._block_dependents(conn, step_id, s["workflow_id"], now)
+            self._recompute_workflow(conn, s["workflow_id"], now, reason_code=reason_code)
+        return self.status_view(s["workflow_id"], now=now)
+
+    # --- plan versions (P07) -------------------------------------------------------------------
+
+    _IMMUTABLE_ONCE_STARTED = ("capability", "request", "depends_on", "input_refs", "naver_keywords")
+
+    def propose_update(self, workflow_id: str, *, expected_version: int, plan: Any, reason: str, now: str) -> dict[str, Any]:
+        """A new plan version for a workflow that has not ended (V0.2 §4.2 `workflow.propose_update`).
+
+        What may change: steps not yet started (their request, options, dependencies, gate,
+        attempts), steps added, steps not yet started removed (CANCELLED as PLAN_UPDATED), the
+        goal, and the budget — never below what is already reserved. What may not: a step that is
+        running or delivered (its capability, request, dependencies and inputs are what its result
+        answers; `PLAN_CONFLICT`), and a cancelled step's key. A gated step whose request changed
+        loses its bound ask (the grant no longer describes it) and asks again; a budget-blocked step
+        the new budget covers is released. Nothing already delivered is re-run.
+        """
+        validated = wf.validate_plan(plan)
+        with self._write() as conn:
+            w = conn.execute("SELECT * FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()
+            if w is None:
+                raise WorkflowBlocked("WORKFLOW_NOT_FOUND", f"no workflow {workflow_id}")
+            if w["status"] in wf.WORKFLOW_TERMINAL:
+                raise WorkflowBlocked("WORKFLOW_TERMINAL", f"workflow {workflow_id} is already {w['status']}")
+            if int(w["row_version"]) != int(expected_version):
+                raise WorkflowBlocked("VERSION_CONFLICT",
+                                      f"workflow {workflow_id} is at version {w['row_version']}, not {expected_version}; re-read and retry")
+            current = {s["step_key"]: s for s in conn.execute("SELECT * FROM steps WHERE workflow_id=?", (workflow_id,)).fetchall()}
+            new_keys = {s.key for s in validated.steps}
+            budget = self._budget_locked(conn, workflow_id)
+            if validated.budget.max_model_calls < budget["reserved_model_calls"]:
+                raise WorkflowBlocked("PLAN_CONFLICT",
+                                      f"the new budget ({validated.budget.max_model_calls} calls) is below what is already reserved "
+                                      f"({budget['reserved_model_calls']})")
+            started = (wf.S_RUNNING, wf.S_CANCEL_REQUESTED, wf.S_SUCCEEDED)
+            for key, s in current.items():
+                if s["status"] in started or s["status"] == wf.S_CANCELLED:
+                    if key not in new_keys:
+                        if s["status"] == wf.S_CANCELLED:
+                            continue
+                        raise WorkflowBlocked("PLAN_CONFLICT", f"step {key!r} is {s['status']} and cannot be removed")
+                    if s["status"] == wf.S_CANCELLED:
+                        raise WorkflowBlocked("PLAN_CONFLICT", f"step {key!r} was cancelled; add it back under a new key")
+                    new = validated.step(key)
+                    stored = {"capability": s["capability"], "request": s["request"],
+                              "depends_on": tuple(sorted(self._dep_keys_locked(conn, s["step_id"]))),
+                              "input_refs": tuple(sorted(json.loads(s["input_refs"]))), "naver_keywords": s["naver_keywords"]}
+                    proposed = {"capability": new.capability, "request": new.request,
+                                "depends_on": tuple(sorted(new.depends_on)), "input_refs": tuple(sorted(new.input_refs)),
+                                "naver_keywords": new.naver_keywords}
+                    changed = [f for f in self._IMMUTABLE_ONCE_STARTED if stored[f] != proposed[f]]
+                    if changed:
+                        raise WorkflowBlocked("PLAN_CONFLICT",
+                                              f"step {key!r} is {s['status']}; {changed} cannot change under a new version")
+            version = int(w["plan_version"]) + 1
+            conn.execute(
+                "INSERT INTO plan_versions (workflow_id, version, plan_hash, validated_plan, reason, created_at) VALUES (?,?,?,?,?,?)",
+                (workflow_id, version, validated.plan_hash, json.dumps(validated.plan, ensure_ascii=False, sort_keys=True),
+                 str(reason)[:2000], now))
+            conn.execute(
+                "UPDATE workflows SET goal=?, plan_version=?, max_model_calls=?, max_tokens=?, row_version=row_version+1, updated_at=?"
+                " WHERE workflow_id=?",
+                (validated.goal, version, validated.budget.max_model_calls, validated.budget.max_tokens, now, workflow_id))
+            self._event(conn, workflow_id=workflow_id, entity="workflow", from_status=w["status"], to_status=w["status"],
+                        reason_code=wf.PLAN_UPDATED, created_at=now, detail=f"plan v{version}: {str(reason)[:1900]}")
+            # steps not started and absent from the new plan are cancelled
+            for key, s in current.items():
+                if key not in new_keys and s["status"] not in started and s["status"] != wf.S_CANCELLED:
+                    self._set_step(conn, s, wf.S_CANCELLED, now, reason_code=wf.PLAN_UPDATED)
+            # dependencies are rebuilt for every step (started ones were checked unchanged)
+            for s in current.values():
+                conn.execute("DELETE FROM dependencies WHERE step_id=?", (s["step_id"],))
+            for position, key in enumerate(validated.order):
+                step = validated.step(key)
+                s = current.get(key)
+                if s is None:
+                    self._insert_step(conn, workflow_id, key, position, step, wf.S_PENDING, now)
+                    self._event(conn, workflow_id=workflow_id, step_id=wf.step_id_for(workflow_id, key), entity="step",
+                                to_status=wf.S_PENDING, reason_code=wf.PLAN_UPDATED, created_at=now)
+                    continue
+                for dep in step.depends_on:
+                    conn.execute("INSERT INTO dependencies (step_id, depends_on) VALUES (?, ?)",
+                                 (s["step_id"], wf.step_id_for(workflow_id, dep)))
+                if s["status"] in started:
+                    conn.execute("UPDATE steps SET position=? WHERE step_id=?", (position, s["step_id"]))
+                    continue
+                material = (s["request"] != step.request or s["capability"] != step.capability
+                            or bool(s["requires_approval"]) != step.requires_approval)
+                conn.execute(
+                    "UPDATE steps SET position=?, capability=?, effect_class=?, request=?, reason=?, options=?, input_refs=?,"
+                    " naver_keywords=?, max_attempts=?, requires_approval=?, row_version=row_version+1, updated_at=?"
+                    + (", approval_id=NULL, approval_plan_version=NULL" if material else "")
+                    + " WHERE step_id=?",
+                    (position, step.capability, step.effect_class, step.request, step.reason,
+                     json.dumps(step.options, sort_keys=True), json.dumps(list(step.input_refs)), step.naver_keywords,
+                     max(step.max_attempts, int(s["attempts_opened"])), 1 if step.requires_approval else 0, now, s["step_id"]))
+                fresh = conn.execute("SELECT * FROM steps WHERE step_id=?", (s["step_id"],)).fetchone()
+                # a waiting or ready step follows its new gate; a budget-blocked step is released
+                # when the new budget covers it
+                if fresh["status"] in (wf.S_READY, wf.S_WAITING_APPROVAL) and material:
+                    target = wf.S_WAITING_APPROVAL if step.requires_approval else wf.S_READY
+                    if target != fresh["status"]:
+                        self._set_step(conn, fresh, target, now)
+                elif fresh["status"] == wf.S_BLOCKED and fresh["last_reason_code"] == wf.BUDGET_EXHAUSTED:
+                    self._set_step(conn, fresh, wf.S_PENDING, now, reason_code=None)
+            self._release_dependents(conn, workflow_id, now)
+            self._recompute_workflow(conn, workflow_id, now)
+        return self.status_view(workflow_id, now=now)
+
+    @staticmethod
+    def _dep_keys_locked(conn: sqlite3.Connection, step_id: str) -> list[str]:
+        return [r["step_key"] for r in conn.execute(
+            "SELECT s.step_key FROM dependencies d JOIN steps s ON s.step_id = d.depends_on WHERE d.step_id=?",
+            (step_id,)).fetchall()]
 
     def confirm_cancelled(self, attempt_id: str, *, now: str) -> dict[str, Any]:
         """The worker stopped at a step boundary: the attempt and its step are CANCELLED now."""
@@ -829,7 +1037,7 @@ class WorkflowStore:
             "SELECT depends_on FROM dependencies WHERE step_id=?", (s["step_id"],)).fetchall()] for s in steps}
         for s in steps:
             if s["status"] == wf.S_PENDING and all(status_by_id.get(d) == wf.S_SUCCEEDED for d in deps[s["step_id"]]):
-                self._set_step(conn, s, wf.S_READY, now)
+                self._set_step(conn, s, wf.S_WAITING_APPROVAL if s["requires_approval"] else wf.S_READY, now)
 
     def _block_dependents(self, conn: sqlite3.Connection, step_id: str, workflow_id: str, now: str) -> None:
         """A step that will never succeed blocks everything downstream of it, transitively, with

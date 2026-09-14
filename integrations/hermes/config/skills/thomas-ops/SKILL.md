@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.0
+version: 1.5.1
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -243,5 +243,13 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
    `retry_workflow_step(workflow_id, step_key, expected_version, reason)`으로 그 단계만 다시 연다 — 성공한
    단계는 다시 돌지 않는다. 의존 단계 때문에 차단된 단계는 원인 단계를 재시도한다. 세 번째 시도까지
    실패하면 `FAILED`로 끝나고, 그때는 계획을 새로 낸다. 원인이 남아 있으면 재시도 대신 `cancel_workflow`.
-8. **워크플로는 승인·거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인은
+8. **계획을 고치려면 `propose_workflow_update(workflow_id, expected_version, plan_json, reason)`** — 계획
+   전체를 새 버전으로 낸다(제출과 같은 모양). 아직 시작하지 않은 단계의 요청·의존·게이트 변경, 단계 추가·삭제,
+   목표 변경, 예산 증액만 된다. 실행 중이거나 끝난 단계를 바꾸면 `PLAN_CONFLICT`로 거부되고 아무것도 바뀌지
+   않는다. 예산 때문에 `WAITING_REPLAN`에 멈춘 단계는 예산을 올린 새 버전이 풀어준다.
+9. **`requires_approval: true`인 단계는 Thomas의 승인을 기다린다.** 그 단계 차례가 오면 상태가
+   `WAITING_APPROVAL`이 되고 승인 요청은 관제봇 창에 자동으로 올라간다 — 네가 상신하거나 승인 id를 만들
+   일은 없다(계획에 승인 필드를 넣으면 `PLAN_INVALID`). 거부·만료되면 단계는 `BLOCKED`로 `WAITING_REPLAN`에
+   서고, `retry_workflow_step`이 다시 요청한다. 승인 뒤 계획을 고치면 그 단계는 새 버전으로 다시 물어본다.
+10. **워크플로는 거래·게시를 하지 않는다.** 네 종류의 일반 작업만 돌린다. 거래 스위치와 승인 명령은
    §5·§5.1 그대로다.

@@ -36,7 +36,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from . import socket_door, task_registry, timeutil
-from .workflow import ATTEMPT_ID_KEY, ATTEMPT_ID_PATTERN, WORKFLOW_ID_KEY, WORKFLOW_ID_PATTERN, WORKFLOW_OPTIONS_KEY
+from .workflow import (
+    ATTEMPT_ID_KEY, ATTEMPT_ID_PATTERN, MAX_STEPS, RESULT_REF_PATTERN, STEP_KEY_PATTERN,
+    WORKFLOW_ID_KEY, WORKFLOW_ID_PATTERN, WORKFLOW_INPUTS_KEY, WORKFLOW_OPTIONS_KEY,
+)
 from .control import ControlStore
 from .errors import ControlBlocked, MvpRuntimeError
 from .naver_research import MAX_SEED_CHARS
@@ -68,7 +71,7 @@ SOCKET_ENV = "MVP_PIPELINE_WORKER_SOCKET"
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"request", "kind", "reason", "naver_keywords", "actor_profile", "job", "inventory",
      "proposal_inputs", "ideation_inputs", socket_door.CLIENT_ID_KEY,
-     ATTEMPT_ID_KEY, WORKFLOW_ID_KEY, WORKFLOW_OPTIONS_KEY}
+     ATTEMPT_ID_KEY, WORKFLOW_ID_KEY, WORKFLOW_OPTIONS_KEY, WORKFLOW_INPUTS_KEY}
 )
 
 # The attempt frame (sequence 2, P05). The workflow manager — inside the dispatch-bridge
@@ -77,9 +80,12 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 # such a run opens is origin WORKFLOW (the manager's own to reconcile, never a worker
 # restart's). `workflow_options` may raise the assurance policy for one attempt (the reviewer,
 # the one revision) and never lower it: the manager reserved those calls against the plan's
-# budget before it sent the frame. None of these keys is in `dispatch_bridge._ALLOWED_KEYS`,
-# so the assistant cannot send them; a frame carrying them came from the manager or did not
-# come through the door — and the worker checks their shape either way.
+# budget before it sent the frame. `workflow_inputs` (P07) names the dependency results the
+# step reads — `{step_key: "ledger:<trace>"}` — and is recorded on the run's source so the
+# task record says what it was given; it lifts nothing and is not (yet) read into the prompt.
+# None of these keys is in `dispatch_bridge._ALLOWED_KEYS`, so the assistant cannot send
+# them; a frame carrying them came from the manager or did not come through the door — and
+# the worker checks their shape either way.
 _WORKFLOW_OPTION_KEYS: frozenset[str] = frozenset({"independent_validation", "revise"})
 
 # The terminal a worker writes on an entry whose run raised rather than answered: the run
@@ -360,7 +366,7 @@ def apply_work(
             requester_id=profile["requester_id"],
             requester_type=profile["requester_type"],
             channel=profile["channel"],
-            source_ref=_source_ref(reason, profile),
+            source_ref=_source_ref(reason, profile, inputs=attempt["inputs"] if attempt is not None else None),
             authenticated=True,
             **attribution,
         )
@@ -425,7 +431,8 @@ def _attempt_fields(request: Mapping[str, Any], *, profile_name: str) -> dict[st
     attempt_id = request.get(ATTEMPT_ID_KEY)
     workflow_id = request.get(WORKFLOW_ID_KEY)
     raw_options = request.get(WORKFLOW_OPTIONS_KEY)
-    if attempt_id is None and workflow_id is None and raw_options is None:
+    raw_inputs = request.get(WORKFLOW_INPUTS_KEY)
+    if attempt_id is None and workflow_id is None and raw_options is None and raw_inputs is None:
         return None
     if not isinstance(attempt_id, str) or not ATTEMPT_ID_PATTERN.match(attempt_id):
         raise ControlBlocked("MALFORMED_REQUEST", f"'{ATTEMPT_ID_KEY}' must be a workflow attempt id when given")
@@ -446,7 +453,22 @@ def _attempt_fields(request: Mapping[str, Any], *, profile_name: str) -> dict[st
             if not isinstance(value, bool):
                 raise ControlBlocked("MALFORMED_REQUEST", f"'{WORKFLOW_OPTIONS_KEY}.{key}' must be a boolean")
             options[key] = value
-    return {"attempt_id": attempt_id, "workflow_id": workflow_id, "options": options}
+    inputs: dict[str, str] = {}
+    if raw_inputs is not None:
+        if not isinstance(raw_inputs, dict) or not raw_inputs or len(raw_inputs) > MAX_STEPS:
+            raise ControlBlocked(
+                "MALFORMED_REQUEST",
+                f"'{WORKFLOW_INPUTS_KEY}' maps 1..{MAX_STEPS} dependency step keys to their result references",
+            )
+        for key, ref in raw_inputs.items():
+            if not (isinstance(key, str) and STEP_KEY_PATTERN.match(key)
+                    and isinstance(ref, str) and RESULT_REF_PATTERN.match(ref)):
+                raise ControlBlocked(
+                    "MALFORMED_REQUEST",
+                    f"'{WORKFLOW_INPUTS_KEY}' entries are a step key and a 'ledger:<trace_id>' reference",
+                )
+            inputs[key] = ref
+    return {"attempt_id": attempt_id, "workflow_id": workflow_id, "options": options, "inputs": inputs}
 
 
 def _attempt_echo(attempt: Mapping[str, Any] | None, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -656,14 +678,19 @@ def _identity(result: Any) -> dict[str, Any]:
     return identity if isinstance(identity, dict) else {}
 
 
-def _source_ref(reason: str, profile: dict[str, str]) -> str:
+def _source_ref(reason: str, profile: dict[str, str], *, inputs: Mapping[str, str] | None = None) -> str:
     """The reason, recorded on the task's source, stamped per the caller's profile.
 
     The assistant's keeps the `dispatch` tag from before the split so its ledger attribution
     reads identically across it; the scheduler states its own ref verbatim
-    (``scheduler:<schedule_id>``), which is the string its in-process runs recorded.
+    (``scheduler:<schedule_id>``), which is the string its in-process runs recorded. An attempt
+    that was handed dependency results (P07) records them after the reason, sorted by step key,
+    so the task record itself says which prior runs this one was given.
     """
-    return profile["source_ref_format"].format(reason=reason)[:_MAX_REASON_ON_SOURCE]
+    ref = profile["source_ref_format"].format(reason=reason)[:_MAX_REASON_ON_SOURCE]
+    if inputs:
+        ref += " inputs=" + ",".join(f"{key}={inputs[key]}" for key in sorted(inputs))
+    return ref
 
 
 def open_door(

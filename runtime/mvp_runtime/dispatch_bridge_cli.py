@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import dispatch_bridge, pipeline_worker, socket_door
 from .cli_common import force_utf8_io, serve_door_forever
+from .approval_store import ApprovalStore
 from .control import ControlStore
 from .store import LedgerStore
 from .task_registry import TaskRegistryStore
@@ -87,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
             # The worker's rows are how a reply lost between it and this process is recovered
             # (P06): the manager reads them and closes only its own origin.
             registry=TaskRegistryStore.default(),
+            # Gated steps (P07): the manager mints their asks into, and spends their grants from,
+            # the same approval store the operator decides in. It never writes APPROVED.
+            approval_store=ApprovalStore.default(),
         )
         manager.start()
 
