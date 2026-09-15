@@ -269,9 +269,11 @@ class BinanceFuturesAccountFeed:
                 # deliberately does not paginate; unlike a fee measurement, a possibly
                 # truncated P&L answer must not travel at all, because ``bucket_income``
                 # would read the missing newest rows as a comfortable zero. Withholding
-                # the windows makes ``venue_daily_realized_net`` answer ``None`` and the
-                # breaker fall back to the local ledger — the breaker can only trip
-                # earlier from this, never later.
+                # the windows makes ``venue_daily_realized_net`` answer ``None``, and every
+                # entry path reads that as a tripped breaker (``live_risk_snapshot(
+                # venue_required=True)``). It used to say the local-ledger fallback "can only
+                # trip earlier, never later" — false: that ledger cannot see venue-side closes
+                # and read "nothing closed today" as 0.0 (2026-09-15).
                 income = None
                 warnings.append(
                     f"realized P&L income page full ({INCOME_PAGE_LIMIT} rows); "

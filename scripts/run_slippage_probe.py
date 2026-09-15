@@ -446,12 +446,15 @@ def run_fire(
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
         venue_realized_pnl_usdt=venue_daily_realized_net(snapshot.realized_windows),
+        # A probe opens a position: no venue figure is a tripped breaker (2026-09-15).
+        venue_required=True,
     )
     if risk["daily_loss_limit_breached"]:
         raise _Refusal(
             probe.PROBE_DAILY_LOSS_BREAKER,
             f"daily loss breaker: realized {risk['daily_realized_pnl_usdt']} USDT against "
-            f"limit {risk['daily_loss_limit_usdt']} (source {risk['pnl_source']})",
+            f"limit {risk['daily_loss_limit_usdt']} (source {risk['pnl_source']}"
+            + (f", {risk['history_error']}" if risk.get("history_error") else "") + ")",
         )
     breaker = bracket_breaker_status(root)
     if breaker["tripped"]:

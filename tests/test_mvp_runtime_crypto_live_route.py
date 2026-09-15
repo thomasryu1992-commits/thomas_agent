@@ -713,6 +713,63 @@ def test_a_held_cycle_with_no_entry_still_says_nothing(monkeypatch):
     assert _notified(quiet, monkeypatch) == []
 
 
+# --- the daily loss breaker needs the venue's own figure on the entry path (2026-09-15) ------
+
+def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows):
+    """Drive the gated leg up to the entry decision and hand back what it was judged on.
+
+    Everything before the planner is real except the venue reads: a configured 20 USDT daily
+    limit, no open position, and an account snapshot whose realized windows are the variable."""
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    snapshot = AccountSnapshot(
+        asset="USDT", wallet_balance=500.0, margin_balance=500.0, available_balance=400.0,
+        unrealized_pnl=0.0, positions=[], realized_windows=realized_windows,
+        source="fake", collected_at=NOW,
+    )
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (snapshot, {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: [])
+    limits = LiveOrderLimits(
+        max_order_notional_usdt=60.0, max_daily_order_count=2, max_open_notional_usdt=120.0,
+        daily_loss_limit_usdt=20.0, min_clean_canary_orders=3, confirmation=LIVE_CONFIRMATION_PHRASE,
+    )
+    monkeypatch.setattr(live_route, "resolve_live_order_limits",
+                        lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": [SYMBOL]}))
+    seen: dict[str, Any] = {}
+
+    def _plan(plan, **kw):
+        seen.update(kw)
+        return {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]}
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _plan)
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    return seen, record
+
+
+def test_an_account_read_with_no_realized_figure_trips_the_entry_breaker(tmp_path, monkeypatch):
+    """The verified fail-open: balances read, income did not, and the leg judged the entry on
+    the local ledger's 0.0. The planner must now see a tripped breaker, and the cycle record
+    must say why — not "limit reached"."""
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING
+
+    seen, record = _entry_decision_inputs(tmp_path, monkeypatch, realized_windows={})
+    assert seen["daily_loss_breached"] is True
+    assert LIVE_PNL_VENUE_FIGURE_MISSING in record["live_reason_codes"]
+
+
+def test_a_venue_figure_under_the_limit_leaves_the_entry_breaker_clear(tmp_path, monkeypatch):
+    """The companion: the rule trips on a MISSING figure only, never on a present one."""
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING
+
+    seen, record = _entry_decision_inputs(
+        tmp_path, monkeypatch, realized_windows={"today": {"net": -5.0}, "1d": {"net": -5.0}})
+    assert seen["daily_loss_breached"] is False
+    assert LIVE_PNL_VENUE_FIGURE_MISSING not in record["live_reason_codes"]
+
+
 # --- settle and enter are mutually exclusive within one cycle -------------------------------
 
 def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):

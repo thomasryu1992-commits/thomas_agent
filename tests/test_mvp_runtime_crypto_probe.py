@@ -647,6 +647,23 @@ def test_fire_refuses_on_the_daily_loss_breaker(tmp_path, monkeypatch):
     assert exc.value.reason_code == probe.PROBE_DAILY_LOSS_BREAKER
 
 
+def test_fire_refuses_when_the_account_read_carries_no_realized_figure(tmp_path, monkeypatch):
+    """A probe opens a position, so it takes the entry rule (2026-09-15): the REAL breaker, a
+    snapshot with no realized windows, and the door refuses naming why."""
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING
+
+    _active_plan(tmp_path)
+    monkeypatch.setattr(cli.live_execution, "select_order_adapter",
+                        lambda now=None, root=None: _VenueMustNotBeTouched())
+    monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
+    _arm_limits(monkeypatch)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))   # realized_windows={}
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_DAILY_LOSS_BREAKER
+    assert LIVE_PNL_VENUE_FIGURE_MISSING in str(exc.value)
+
+
 def test_fire_refuses_on_the_bracket_breaker(tmp_path, monkeypatch):
     _active_plan(tmp_path)
     monkeypatch.setattr(cli.live_execution, "select_order_adapter",

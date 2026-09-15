@@ -24,6 +24,25 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **An entry path no longer measures the daily loss on a ledger that cannot see the loss**
+  (hotfix H1, Thomas decision 6, 2026-09-15; `live_pnl.live_risk_snapshot(venue_required=True)`,
+  `LIVE_PNL_VENUE_FIGURE_MISSING`). The execution-authority audit verified a fail-open on the USDT
+  daily-loss breaker: the account read can succeed while its income call fails or returns a full
+  1,000-row page, and the windows are then withheld — correctly — as unusable. The breaker then fell
+  back to the local outcome ledger, which venue-side and operator-side closes never reach, and "no
+  closed row today" read as 0.0, so the autonomous leg, the canary door and the probe door each went
+  on to open a position with the daily cap bounding nothing. `account.py`'s comment said the fallback
+  "can only trip earlier, never later"; for exactly this state it could only trip later. The readiness
+  board already failed the same state as NO DATA SOURCE, so the board and the money path disagreed
+  about one fact. Now the three callers that open positions pass `venue_required`, and a snapshot with
+  no venue figure is a TRIPPED breaker with its own reason code (the guard's text only knows a bool and
+  would have said "limit reached"); the board, once it has read the account, uses the same rule. The
+  local branch stays for callers that open nothing. What this deliberately does not do: touch the close
+  path (a reduceOnly close was never behind this breaker), or change the guard's signature (PR1 changes
+  it). Cost accepted: a venue whose income endpoint is down, or an account busy enough to fill a page in
+  the window, now halts entries until the figure comes back — the direction a loss guard is allowed to
+  be wrong in.
+
 - **Which policy is this image running under — and did it change?** (decision Q7-a, 2026-09-03).
   The governance policy is copied into the image, never mounted, so it moves only when a different
   image is deployed — and nothing said so: the 1.4.0 → 1.5.0 bump rode in on `candidate-839`

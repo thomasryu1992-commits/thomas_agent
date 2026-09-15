@@ -563,6 +563,71 @@ def test_the_venue_figure_is_the_authority_when_given():
     assert snap["history_error"] is None       # a real figure is not a missing one
 
 
+# --- a caller about to open a position does not fall back to the local ledger (2026-09-15) ---
+
+def test_an_entry_caller_reads_a_missing_venue_figure_as_tripped(tmp_path):
+    """The fail-open the execution-authority audit verified: the account read succeeded, its
+    income call did not, and the local ledger — which cannot see a venue-side close — answered
+    "nothing closed today" as 0.0, so the entry went ahead with the daily cap bounding nothing.
+    For a caller that is about to open a position the missing figure is the trip."""
+    from runtime.mvp_runtime.crypto.live_pnl import (
+        LIVE_PNL_VENUE_FIGURE_MISSING, PNL_SOURCE_LOCAL_LEDGER, live_risk_snapshot,
+    )
+
+    snap = live_risk_snapshot(limit_usdt=20.0, root=tmp_path, now=NOW,
+                              venue_realized_pnl_usdt=None, venue_required=True)
+    assert snap["daily_loss_limit_breached"] is True
+    assert snap["history_error"] == LIVE_PNL_VENUE_FIGURE_MISSING
+    assert snap["pnl_source"] == PNL_SOURCE_LOCAL_LEDGER
+
+
+def test_a_venue_figure_still_decides_for_an_entry_caller(tmp_path):
+    """The rule only replaces the fallback; a real figure is judged exactly as before."""
+    from runtime.mvp_runtime.crypto.live_pnl import PNL_SOURCE_VENUE, live_risk_snapshot
+
+    clear = live_risk_snapshot(limit_usdt=20.0, root=tmp_path, now=NOW,
+                               venue_realized_pnl_usdt=-5.0, venue_required=True)
+    assert (clear["daily_loss_limit_breached"], clear["history_error"], clear["pnl_source"]) == (
+        False, None, PNL_SOURCE_VENUE)
+    hit = live_risk_snapshot(limit_usdt=20.0, root=tmp_path, now=NOW,
+                             venue_realized_pnl_usdt=-20.0, venue_required=True)
+    assert hit["daily_loss_limit_breached"] is True
+
+
+def test_a_reporting_caller_keeps_the_local_branch(tmp_path):
+    """Pins the default: a caller that opens nothing (a fresh machine's board, the dashboard)
+    still gets the local ledger's reading and its NO_SOURCE marker, unchanged."""
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_NO_SOURCE, live_risk_snapshot
+
+    snap = live_risk_snapshot(limit_usdt=20.0, root=tmp_path, now=NOW, venue_realized_pnl_usdt=None)
+    assert snap["daily_loss_limit_breached"] is False
+    assert snap["history_error"] == LIVE_PNL_NO_SOURCE
+
+
+def test_a_board_that_read_the_account_trips_on_a_missing_figure(tmp_path, monkeypatch):
+    """The board and the entry paths give one answer: once the board has read the account for
+    the breaker, a snapshot carrying no realized figure fails the row with the entry paths' own
+    reason, rather than a comfortable local-ledger reading."""
+    from runtime.mvp_runtime.crypto import account, live_readiness
+    from runtime.mvp_runtime.crypto.account import AccountSnapshot
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING
+
+    monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
+    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    snapshot = AccountSnapshot(
+        asset="USDT", wallet_balance=500.0, margin_balance=500.0, available_balance=400.0,
+        unrealized_pnl=0.0, positions=[], realized_windows={}, source="fake", collected_at=NOW,
+    )
+    monkeypatch.setattr(live_readiness, "read_account", lambda **kw: (snapshot, {}))
+
+    board = live_readiness.build_readiness(root=tmp_path, now=NOW)
+
+    row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False
+    assert LIVE_PNL_VENUE_FIGURE_MISSING in row["detail"]
+
+
 def test_an_unconfigured_board_opens_no_socket_and_still_fails_the_row(tmp_path, monkeypatch):
     """The property that keeps the board usable as a diagnostic: no feed configured means no
     outbound call, and the breaker row fails for want of a source rather than passing."""
