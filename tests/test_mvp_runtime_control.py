@@ -38,6 +38,16 @@ def _store(tmp_path):
     return ControlStore(tmp_path)
 
 
+class _UnwrittenStore:
+    """A control store whose save is the failure — for asserting a refusal changed nothing."""
+
+    def load(self):
+        return ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="armed", trading_armed=True)
+
+    def save(self, state):  # pragma: no cover - reaching here IS the failure
+        raise AssertionError("a refused control verb wrote state")
+
+
 def _task_msg(text="이 사업 아이디어를 분석해줘: 구독형 반려동물 사료"):
     return InboundMessage(text=text, sender_id="tg-12345", chat_id="chat-777", chat_type="private",
                           is_forwarded=False, channel="telegram_private")
@@ -500,11 +510,18 @@ def test_console_verbs_stay_within_the_policy_grant():
     )
     allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
     policy_name = {control.CMD_STOP: "stop_task"}  # the policy names the stop verb stop_task
-    for verb in control.COMMANDS:
+    for verb in control.COMMANDS - control.POLICY_GATED_COMMANDS:
         assert policy_name.get(verb, verb) in allowed, (
             f"console verb {verb!r} is not granted by the Governance Policy - "
             "either drop the verb or extend emergency_controls_allowed explicitly"
         )
+    # A policy-gated verb may be absent from the grant — but then it must refuse by name, which
+    # is what makes shipping it ahead of the policy edit safe (the other half is pinned below).
+    for verb in control.POLICY_GATED_COMMANDS:
+        if verb not in allowed:
+            with pytest.raises(ControlBlocked) as exc:
+                control.apply_command(_UnwrittenStore(), verb, actor="op", now=NOW)
+            assert exc.value.reason_code == control.VERB_NOT_GRANTED
 
 
 def test_every_channel_verb_names_the_authority_that_permits_it():
@@ -549,7 +566,7 @@ def test_every_channel_verb_names_the_authority_that_permits_it():
     policy_name = {control.CMD_STOP: "stop_task"}
     for verb, authority in operator.CHANNEL_VERB_AUTHORITY.items():
         assert authority.strip(), f"{verb!r} has an empty authority"
-        if authority == operator._EMERGENCY_GRANT:
+        if authority == operator._EMERGENCY_GRANT and verb not in control.POLICY_GATED_COMMANDS:
             assert policy_name.get(verb, verb) in allowed, (
                 f"{verb!r} claims the emergency grant but the policy does not list it"
             )
@@ -559,3 +576,116 @@ def test_every_channel_verb_names_the_authority_that_permits_it():
     # matches raw tokens, so it also carries the `stop_task` alias the inventory canonicalizes.)
     mutating = {control._ALIASES.get(v, v) for v in operator._MUTATING_VERBS}
     assert mutating <= inventory
+
+
+# --- the Trading Soft Halt (Thomas decision 7, 2026-09-15) -----------------------
+#
+# `/pause` and `/kill` stop the scheduler and the paper step, so position management stops with
+# them. `halt_trading` refuses new live entries and leaves the runtime ACTIVE. It is policy-gated:
+# until the 1.5.1 policy names it, it refuses by name.
+
+@pytest.fixture
+def halt_granted(monkeypatch):
+    granted = frozenset({"pause", "stop_task", "kill", "status", "audit", "recovery", "resume",
+                         control.CMD_HALT_TRADING})
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: granted)
+
+
+def _armed(tmp_path):
+    store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="armed", trading_armed=True))
+    return store
+
+
+def test_halt_trading_refuses_by_name_while_the_policy_does_not_grant_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: frozenset({"kill"}))
+    store = _armed(tmp_path)
+    before = store.path.read_text(encoding="utf-8")
+    with pytest.raises(ControlBlocked) as exc:
+        control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW,
+                              halt_may_release_stop=True)
+    assert exc.value.reason_code == control.VERB_NOT_GRANTED
+    assert store.path.read_text(encoding="utf-8") == before
+
+
+def test_an_unreadable_policy_grants_the_gated_verb_nothing_and_never_touches_kill(tmp_path, monkeypatch):
+    """Fail-closed on the gated verb only: a policy that cannot be read must not be able to take
+    `/kill` away, because `/kill` never consults it."""
+    monkeypatch.setattr(control, "_repo_root", lambda: tmp_path / "no-such-repo")
+    assert control.granted_emergency_controls() == frozenset()
+    store = _armed(tmp_path)
+    with pytest.raises(ControlBlocked):
+        control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    assert store.load().mode == KILLED
+
+
+def test_the_soft_halt_keeps_the_runtime_active_and_disarms_entries(tmp_path, halt_granted):
+    store, ledger = _armed(tmp_path), FakeLedger()
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW,
+                                arg="변동성 급등", ledger=ledger)
+    state = store.load()
+    assert (out["changed"], out["mode"], out["action"]) == (True, ACTIVE, control.CMD_HALT_TRADING)
+    assert state.execution_allowed is True, "the soft halt must not stop position management"
+    assert state.trading_allowed is False
+    assert state.reason == "변동성 급등"
+    event = ledger.control[-1]
+    assert event["action"] == control.CMD_HALT_TRADING
+    assert event["resulting_mode"] == ACTIVE and event["resulting_trading_armed"] is False
+
+
+def test_a_soft_halt_on_halted_entries_changes_nothing(tmp_path, halt_granted):
+    store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="held", trading_armed=False))
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg="again")
+    assert out["changed"] is False
+    assert store.load().reason == "held"
+    assert "기록되지 않았습니다" in out["reply"]
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_the_authenticated_operator_moves_a_stop_to_the_soft_halt_in_one_step(tmp_path, halt_granted, stop):
+    """No window with entries armed: /resume then /halt_trading would leave one."""
+    store = _armed(tmp_path)
+    control.apply_command(store, stop, actor="op", now=NOW)
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW,
+                                halt_may_release_stop=True)
+    state = store.load()
+    assert out["changed"] is True
+    assert (state.mode, state.trading_armed) == (ACTIVE, False)
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_a_caller_that_may_not_release_a_stop_leaves_it(tmp_path, halt_granted, stop):
+    """The default — what the assistant's switch door gets. Halting entries is always allowed;
+    releasing a stop through this verb is the authenticated operator's alone."""
+    store = _armed(tmp_path)
+    control.apply_command(store, stop, actor="op", now=NOW)
+    before = store.load()
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW)
+    assert out["changed"] is False
+    assert store.load() == before
+
+
+def test_resume_re_arms_after_a_soft_halt(tmp_path, halt_granted):
+    """`/resume` keeps its meaning (decision 7): it re-arms."""
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW)
+    control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW)
+    assert store.load().trading_allowed is True
+
+
+def test_every_state_change_records_the_arm_on_the_ledger(tmp_path):
+    store, ledger = _armed(tmp_path), FakeLedger()
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, ledger=ledger)
+    control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW, ledger=ledger)
+    assert [e["resulting_trading_armed"] for e in ledger.control] == [False, True]
+
+
+def test_the_telegram_channel_reaches_the_soft_halt_as_the_authenticated_operator(tmp_path, halt_granted):
+    store, ledger = _armed(tmp_path), LedgerStore(tmp_path / "ledger")
+    control.apply_command(store, control.CMD_KILL, actor="tg-12345", now=NOW)
+    reply = handle_operator_message(_task_msg(text="/halt_trading 포지션은 관리"), registration=REG,
+                                    control_store=store, store=ledger, now=NOW)
+    assert reply.status == "CONTROL" and reply.reason_code == control.CMD_HALT_TRADING
+    assert (store.load().mode, store.load().trading_armed) == (ACTIVE, False)

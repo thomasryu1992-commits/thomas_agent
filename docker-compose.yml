@@ -284,7 +284,8 @@ services:
       # registered budget, the canary evidence, both kill switches, and the loss breaker - each
       # a computed row on `python -m runtime.mvp_runtime.crypto.live_readiness`.
       #
-      # To halt a scheduler that is trading: `console_cli kill`. Do NOT clear MVP_LIVE_TRADING -
+      # To stop new entries and keep managing positions: `console_cli halt_trading` (policy 1.5.1).
+      # `console_cli kill` stops position management too. Do NOT clear MVP_LIVE_TRADING -
       # it only takes effect on restart, and the close guard needs it, so it strands positions.
       MVP_ACCOUNT_FEED: ${MVP_ACCOUNT_FEED:-}
       BINANCE_ACCOUNT_API_KEY: ${BINANCE_ACCOUNT_API_KEY:-}

@@ -156,9 +156,29 @@ def test_an_unreadable_state_file_disarms_as_well_as_kills(tmp_path):
     assert (state.mode, state.trading_armed) == (KILLED, False)
 
 
-def test_a_fresh_deployment_is_armed(tmp_path):
-    """No file at all is a fresh machine, not a stop — the pre-existing rule, extended."""
-    assert ControlStore(tmp_path).load().trading_armed is True
+def test_a_fresh_deployment_is_active_but_unarmed(tmp_path):
+    """No file at all is a fresh machine, not a stop — so ACTIVE — but live entries wait for an
+    operator to arm them (Thomas decision 10, 2026-09-15). This test used to pin "armed"; that
+    default is what let a lost state file silently re-arm a runtime-only resume."""
+    state = ControlStore(tmp_path).load()
+    assert state.mode == ACTIVE and state.execution_allowed is True
+    assert state.trading_armed is False and state.trading_allowed is False
+
+
+def test_losing_the_file_of_a_disarmed_runtime_does_not_re_arm_it(tmp_path):
+    """The verified defect (audit M-8): ACTIVE + disarmed, state file lost, came back armed."""
+    from runtime.mvp_runtime.store import LedgerStore
+
+    store = ControlStore(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_KILL, actor="a", now=NOW, reason="x", ledger=ledger)
+    control.apply_command(store, control.CMD_RESUME, actor="a", now=NOW, reason="x",
+                          resume_arms=False, ledger=ledger)
+    assert (store.load().mode, store.load().trading_armed) == (ACTIVE, False)
+    store.path.unlink()
+    recovered = store.load()
+    assert recovered.mode == ACTIVE
+    assert recovered.trading_allowed is False
 
 
 def test_the_arm_round_trips_through_the_file(tmp_path):
@@ -217,6 +237,7 @@ def test_a_non_arming_resume_preserves_and_cannot_disarm(tmp_path):
     """`resume_arms=False` means "leave it", never "clear it". Otherwise the cheap grant would
     have an effect the expensive one does not, on a runtime that was already trading."""
     store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, trading_armed=True))   # a runtime that was trading
     control.apply_command(
         store, control.CMD_RESUME, actor="a", now=NOW, reason="x", resume_arms=False,
     )
@@ -368,6 +389,7 @@ def test_a_runtime_grant_against_an_armed_runtime_reports_what_is_true(tmp_path,
     it armed. The reply reads the state back rather than assuming — the one place this change
     could have reported a disarm that did not happen."""
     store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, trading_armed=True))   # armed, then an unrelated stop request
     control.apply_command(store, control.CMD_STOP, actor="a", now=NOW, arg="task_1")
     spendable.records["approval_test"] = _grant(
         prefix=NONFINANCIAL_RESUME_TARGET_PREFIX, store=store,

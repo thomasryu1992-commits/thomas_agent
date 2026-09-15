@@ -591,6 +591,15 @@ def _snapshot():
     return types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0)
 
 
+def _arm_runtime(tmp_path):
+    """An operator-armed runtime. A state root with no control file reads ACTIVE but UNARMED
+    (Thomas decision 10, 2026-09-15), and a probe is an entry, so the happy path arms first."""
+    from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
+
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW,
+                                             reason="armed", trading_armed=True))
+
+
 def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT")):
     limits = LiveOrderLimits(
         max_order_notional_usdt=150.0, max_daily_order_count=10,
@@ -772,6 +781,7 @@ class _HappyPathAdapter:
 
 def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     _active_plan(tmp_path)
+    _arm_runtime(tmp_path)
     adapter = _HappyPathAdapter()
     store, ledger, counter = _FakeStore(), _FakeLedger(), _FakeCounter()
 
@@ -833,6 +843,7 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     """Rule 2 on the probe path: stop refused -> the entry is closed, the cell comes
     back EMPTY with the reason, and nothing stays open."""
     _active_plan(tmp_path)
+    _arm_runtime(tmp_path)
 
     class _StopRefusingAdapter(_HappyPathAdapter):
         def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):

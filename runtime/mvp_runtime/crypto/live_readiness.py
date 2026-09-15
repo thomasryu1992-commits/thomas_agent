@@ -263,8 +263,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         trading_armed = state.trading_armed
         armed_detail = (
             "armed" if trading_armed else
-            "DISARMED - the runtime resumed without re-arming live entries; open positions "
-            "still close and paper is unaffected"
+            f"DISARMED ({state.reason}) - new live entries are refused"
+            + ("; the runtime is ACTIVE, so open positions are still managed and closed and paper "
+               "is unaffected" if state.execution_allowed else
+               f"; the runtime is {state.mode}, so position management is stopped too until /resume")
         )
     except MvpRuntimeError as exc:
         runtime_active, runtime_detail = False, f"control state unreadable ({exc.reason_code})"
@@ -812,11 +814,11 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             # and clearing MVP_LIVE_TRADING needs a restart AND strands open positions, because
             # the close guard still requires the opt-in. Named in that order, because this line
             # is read in a hurry.
-            lines.append("NOTE  : to stop new entries immediately, run:")
-            lines.append("          python -m runtime.mvp_runtime.console_cli kill --reason ...")
-            lines.append("        it takes effect on the running service and open positions can")
-            lines.append("        still close. Do NOT clear MVP_LIVE_TRADING to halt - it needs a")
-            lines.append("        restart and it shuts the close path too")
+            lines.append("NOTE  : to stop new entries and keep managing open positions, run:")
+            lines.append("          python -m runtime.mvp_runtime.console_cli halt_trading --reason ...")
+            lines.append("        (once the policy grants it). console_cli kill stops entries AND")
+            lines.append("        position management until resume. Do NOT clear MVP_LIVE_TRADING")
+            lines.append("        to halt - it needs a restart and it shuts the close path too")
         else:
             lines.append("NOTE  : autonomous routing is NOT wired - the only door is")
             lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")

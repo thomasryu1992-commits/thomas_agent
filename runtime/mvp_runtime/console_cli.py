@@ -8,6 +8,7 @@ ledger, so a `kill` issued here immediately blocks the loop's next task.
 
     python -m runtime.mvp_runtime.console_cli status
     python -m runtime.mvp_runtime.console_cli pause  --reason "investigating a bad run"
+    python -m runtime.mvp_runtime.console_cli halt_trading --reason "entries off, keep managing"
     python -m runtime.mvp_runtime.console_cli kill   --reason "halt now"
     python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
     python -m runtime.mvp_runtime.console_cli stop <task_id>
@@ -66,6 +67,8 @@ def main(
         outcome = control.apply_command(
             control_store, args.command, actor=LOCAL_ACTOR, now=now, reason=args.reason,
             arg=args.task_id, ledger=ledger,
+            # Host access is the operator authentication the console's /resume already rests on.
+            halt_may_release_stop=True,
         )
     except MvpRuntimeError as exc:
         return report_block(exc)

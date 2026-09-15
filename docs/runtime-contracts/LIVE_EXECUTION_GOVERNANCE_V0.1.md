@@ -336,7 +336,9 @@ Approving this packet does not enable live trading. It makes LP4 *buildable*. St
    **Removed by Thomas on 2026-07-28.** `MVP_LIVE_TRADING=real` is now the entire gate: no second
    factor, no expiry, no per-machine record. The reason was that a grant expiring while a position
    was open shut the CLOSE path too, and the halt of record is now the file-based `console_cli
-   kill`, which is exempt on that path. See `CRYPTO_LIVE_EXECUTION_V0.1.md` ("One env var is the
+   kill`, which is exempt on that path. *(Corrected 2026-09-15: the close guard exempts a kill, but a
+   KILLED runtime never reaches the close path — the scheduler drops the fire. The halt that keeps
+   closes running is the soft halt, `console_cli halt_trading`.)* See `CRYPTO_LIVE_EXECUTION_V0.1.md` ("One env var is the
    whole switch") and the 2026-07-28 entry in `docs/BUILD_HISTORY.md`.
 2. The confirmation phrase must be set, distinct from the canary and testnet phrases.
 3. All four caps must be configured; every one defaults to the blocking value.

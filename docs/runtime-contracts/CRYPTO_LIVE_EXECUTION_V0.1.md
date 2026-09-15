@@ -343,13 +343,24 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - [ ] Watch the daily-loss breaker and the open-exposure cap behave.
 
 **Standing controls — know these before you start**
-- **Stop new entries immediately:** the operator console `kill` verb. It writes control state,
-  so it lands on the running service at its next guard, and closes remain permitted
-  (`kill_blocks: external_execution`). Since 2026-07-28 this is the *only* control that acts on
-  a running scheduler — it replaced "delete the grant file", which no longer exists.
+- **Stop new entries and keep managing open positions:** the Trading Soft Halt —
+  `console_cli halt_trading` or `/halt_trading` (Thomas decision 7, 2026-09-15). The runtime stays
+  ACTIVE, so settlement, the protection re-check, the time exit and reconciliation keep running;
+  only new entries (autonomous, canary, probe) are refused, until `/resume`. From a PAUSED or
+  KILLED runtime the operator's `/halt_trading` moves it straight to that state. **It acts once
+  the 1.5.1 policy grants the verb; until then it refuses by name.**
+- **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
+  on the running service at its next fire — but it does **not** leave closes running. Corrected
+  2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries
+  `scheduler_execution` and `tool_write`, so the scheduler drops every `crypto_pipeline` fire and
+  the paper step refuses before the live leg; settlement, the protection re-check, the time exit,
+  reconciliation and the route/breaker watches all stop until `/resume`, and an open position is
+  held only by the brackets resting at the venue. The close guard's exemption from "both kill
+  switches" is real but reachable only while the runtime stays ACTIVE (the soft halt, the env switch
+  below). This bullet said "closes remain permitted" until then.
 - **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true` and restart the
-  scheduler. Refuses entries, closes still permitted. Reach for `kill` above first — it lands on
-  the *running* service, this one waits for a restart.
+  scheduler. Refuses entries; the runtime stays ACTIVE, so closes and management continue. Reach
+  for the soft halt above first — it lands on the *running* service, this one waits for a restart.
   History worth keeping, because this bullet was false for longer than anyone would guess: until
   2026-09-07 `docker-compose.yml` forwarded this variable to no service, so setting it in `.env`
   and restarting halted nothing on the scheduler the autonomous entry path runs on, and the

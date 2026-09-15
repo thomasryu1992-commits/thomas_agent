@@ -616,7 +616,10 @@ def test_an_incident_says_so_and_names_the_halt(monkeypatch):
     sent = _notified(record, monkeypatch)
     assert "[LIVE INCIDENT]" in sent[0]
     assert "ENTRY_NAKED_OPEN" in sent[0]
-    assert "console_cli kill" in sent[0]
+    # The verb that stops entries while positions stay managed comes first; kill carries its
+    # caveat, because during an incident a kill would also stop the settle/protect step.
+    assert "console_cli halt_trading" in sent[0]
+    assert "console_cli kill stops management too" in sent[0]
 
 
 @pytest.mark.parametrize("status", ["HELD", "SETTLED", "BLOCKED", "DISABLED", None])
@@ -768,6 +771,44 @@ def test_a_venue_figure_under_the_limit_leaves_the_entry_breaker_clear(tmp_path,
         tmp_path, monkeypatch, realized_windows={"today": {"net": -5.0}, "1d": {"net": -5.0}})
     assert seen["daily_loss_breached"] is False
     assert LIVE_PNL_VENUE_FIGURE_MISSING not in record["live_reason_codes"]
+
+
+# --- a soft-halted runtime still manages what it holds (audit M-6, decision 7) ---------------
+
+def test_a_soft_halted_runtime_manages_open_positions_and_refuses_entries(tmp_path, monkeypatch):
+    """The halt the soft-halt verb produces: ACTIVE with live entries disarmed. The leg must still
+    settle and protect the open position, and the entry decision must be told the runtime may not
+    open one. Nothing pinned `trading_allowed` on this path before (a regression to
+    `execution_allowed` would have passed every test)."""
+    from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="soft halt",
+                            trading_armed=False))
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    # The book agrees with the venue, so the leg reaches the entry decision after managing.
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[str] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append(position["position_id"]))
+    seen: dict[str, Any] = {}
+
+    def _plan(plan, **kw):
+        seen.update(kw)
+        return {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]}
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _plan)
+    live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path, control_store=store,
+    )
+    assert managed == ["p1"], "a soft halt must not stop position management"
+    assert seen["runtime_active"] is False
 
 
 # --- settle and enter are mutually exclusive within one cycle -------------------------------

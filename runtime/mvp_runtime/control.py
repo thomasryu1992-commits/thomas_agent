@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from runtime.read_only_kernel import integrity
 
@@ -63,8 +65,25 @@ CMD_STOP = "stop"
 # repairs anything — see `recovery_lines` for why repair is not on the table.
 CMD_AUDIT = "audit"
 CMD_RECOVERY = "recovery"
-COMMANDS = frozenset({CMD_STATUS, CMD_PAUSE, CMD_KILL, CMD_RESUME, CMD_STOP, CMD_AUDIT, CMD_RECOVERY})
+# The Trading Soft Halt (Thomas decision 7, 2026-09-15): refuse new live ENTRIES and keep
+# everything that manages an open position running. `/pause` and `/kill` keep their meaning —
+# they stop the scheduler and the paper step, so settlement, protection re-checks, the time exit
+# and reconciliation stop with them (the execution-authority audit verified that; the documents
+# had said a kill leaves closes running). This verb is the halt that does what those documents
+# described. It is policy-gated, see `POLICY_GATED_COMMANDS`.
+CMD_HALT_TRADING = "halt_trading"
+COMMANDS = frozenset({CMD_STATUS, CMD_PAUSE, CMD_KILL, CMD_RESUME, CMD_STOP, CMD_AUDIT, CMD_RECOVERY,
+                      CMD_HALT_TRADING})
 _ALIASES = {"stop_task": CMD_STOP}
+
+# Verbs the parser knows but that act only while the committed Governance Policy grants them
+# (`control_channel.local_operator_console.emergency_controls_allowed`). A new emergency verb is a
+# policy edit, and policy edits are applied by Thomas (decision Q2) — so the code lands dormant,
+# refuses by name, and switches on when the policy that names it is deployed. Read at use, not at
+# import: the policy is the switch, and a service that restarts onto a new policy picks it up.
+POLICY_GATED_COMMANDS = frozenset({CMD_HALT_TRADING})
+POLICY_REL = "governance/GOVERNANCE_POLICY.yaml"
+VERB_NOT_GRANTED = "CONTROL_VERB_NOT_GRANTED"
 
 # How many recent events `audit` shows by default. The verification always covers the whole
 # chain; this only bounds the excerpt printed back.
@@ -97,9 +116,12 @@ class ControlState:
     # via `trading_allowed`, and the readiness board, which reports it); every other consumer
     # keeps reading `execution_allowed` and is unaffected.
     #
-    # It does NOT gate closing. `live_route._run_gated_live_leg` settles and protects before it
-    # reads control state at all, deliberately — "a halt that traps an open position is worse
-    # than what the halt prevents" — so a disarmed runtime still exits its positions.
+    # It does NOT gate closing. `live_route._run_gated_live_leg` consumes it only in the entry
+    # decision, after settlement and protection have run — "a halt that traps an open position is
+    # worse than what the halt prevents" — so a disarmed runtime that is still ACTIVE exits its
+    # positions. A PAUSED or KILLED runtime does not: the scheduler drops the fire and the paper
+    # step refuses before the live leg, so nothing settles or protects until resume. That is why
+    # `halt_trading` exists (entries off, mode left ACTIVE).
     trading_armed: bool = True
 
     @classmethod
@@ -413,7 +435,17 @@ class ControlStore:
         if not self._path.is_file():
             recovered = self._mode_from_ledger()
             if recovered is None:
-                return ControlState.active_default()
+                # ACTIVE, so a fresh deployment is not bricked — but UNARMED (Thomas decision 10,
+                # 2026-09-15): live entries wait for an operator to arm them. Before this, a
+                # runtime-only resume (ACTIVE + disarmed) that lost its state file came back
+                # armed, with no event and no fail-closed marker, because control events never
+                # carried the arm. Losing the record of a disarm must not be a re-arm.
+                return replace(
+                    ControlState.active_default(),
+                    reason=("default active state (no operator stop in effect); live entries "
+                            "UNARMED because no control-state file exists - /resume arms them"),
+                    trading_armed=False,
+                )
             return ControlState(
                 mode=recovered, updated_by="system", updated_at="",
                 reason=(
@@ -500,8 +532,29 @@ def _control_event(action: str, state: ControlState, *, now: str, task_id: str |
     extra = {"task_id": task_id} if task_id is not None else {}
     return stamped_event(
         CONTROL_EVENT_TYPE, action=action, resulting_mode=state.mode,
+        # Recorded so the ledger answers "were live entries armed after this?" — a soft halt
+        # changes nothing else, and an event without it would read as a no-op.
+        resulting_trading_armed=bool(state.trading_armed),
         actor=state.updated_by, reason=state.reason, created_at=now, **extra,
     )
+
+
+def granted_emergency_controls(root: Path | None = None) -> frozenset[str]:
+    """The verbs the committed policy grants the operator console, read now.
+
+    Fail-closed: an unreadable or malformed policy grants nothing, so a policy-gated verb refuses.
+    The verbs that are not policy-gated do not consult this at all — a policy read failing must
+    never be able to take `/kill` away."""
+    path = (root if root is not None else _repo_root()) / POLICY_REL
+    try:
+        policy = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return frozenset()
+    console = ((policy or {}).get("control_channel") or {}).get("local_operator_console") or {}
+    allowed = console.get("emergency_controls_allowed") if isinstance(console, dict) else None
+    if not isinstance(allowed, list):
+        return frozenset()
+    return frozenset(v for v in allowed if isinstance(v, str))
 
 
 def command_verb(head: str, *, slash_seen: bool) -> str:
@@ -546,6 +599,7 @@ def apply_command(
     arg: str | None = None,
     ledger: Any | None = None,
     resume_arms: bool = True,
+    halt_may_release_stop: bool = False,
 ) -> dict[str, Any]:
     """Apply a console command and return ``{reply, mode, changed, action}``.
 
@@ -567,7 +621,15 @@ def apply_command(
     that existed before it did: the local console and the assistant's approved trading re-arm
     both restore live entries, unchanged. Passing False resumes the runtime and leaves the arm
     where it was — the one path that can start the analysis side without starting the money
-    side. It cannot be used to *disarm*: False preserves, it does not clear."""
+    side. It cannot be used to *disarm*: False preserves, it does not clear.
+
+    ``halt_may_release_stop`` applies to ``halt_trading`` alone. On an ACTIVE runtime the verb
+    only disarms. On a PAUSED or KILLED one it can move the runtime to the soft halt — ACTIVE,
+    entries disarmed — so positions are managed again without a moment in which entries are
+    armed (``/resume`` then ``/halt_trading`` would leave one). That releases a stop, which
+    ``resume_requires_thomas_authentication`` reserves for the authenticated operator, so only the
+    local console and the verified Telegram channel pass True. It defaults to False: the assistant's
+    switch door can halt entries but can never release a stop through this verb."""
     if command not in COMMANDS:
         raise ControlBlocked("UNKNOWN_COMMAND", f"unknown control command: {command!r}")
     stamp = now or timeutil.utc_now_iso()
@@ -637,11 +699,67 @@ def apply_command(
             "mode": new_state.mode, "changed": True, "action": CMD_STOP,
         }
 
-    # pause/kill/resume: the operator's own words, from `--reason` on the local console or from
-    # the text after the verb over Telegram. Recorded on the state and on the ledger event, and
-    # echoed back so the operator can see that it landed (and `/status` will still say it later).
+    # pause/kill/resume/halt_trading: the operator's own words, from `--reason` on the local
+    # console or from the text after the verb over Telegram. Recorded on the state and on the
+    # ledger event, and echoed back so the operator can see that it landed.
     stated = _stated_reason(reason, arg)
     reason_note = f"\n(이유 기록: {stated})" if stated else ""
+    not_recorded = "\n(상태가 그대로이므로 적어주신 이유는 기록되지 않았습니다.)" if stated else ""
+
+    if command == CMD_HALT_TRADING:
+        if command not in granted_emergency_controls():
+            raise ControlBlocked(
+                VERB_NOT_GRANTED,
+                "halt_trading is not granted by the committed Governance Policy yet "
+                "(control_channel.local_operator_console.emergency_controls_allowed); nothing "
+                "changed. /pause and /kill still stop entries, and they also stop position "
+                "management until /resume.",
+            )
+        if current.mode == ACTIVE:
+            if not current.trading_armed:
+                return {
+                    "reply": ("Live entries are already halted and the runtime is ACTIVE, so open "
+                              "positions are being managed. Nothing changed; /resume re-arms."
+                              + not_recorded),
+                    "mode": ACTIVE, "changed": False, "action": CMD_HALT_TRADING,
+                }
+            new_state = ControlState(
+                mode=ACTIVE, updated_by=actor, updated_at=stamp,
+                reason=stated or "live entries halted by operator (soft halt)",
+                stop_requested_task_ids=current.stop_requested_task_ids,
+                trading_armed=False,
+            )
+            verb_reply = (
+                "Live entries HALTED (soft halt). The runtime stays ACTIVE: open positions keep "
+                "being settled, protected, time-exited and reconciled, and paper keeps running. "
+                "New live entries — autonomous, canary and probe — are refused until /resume."
+                + reason_note
+            )
+        elif not halt_may_release_stop:
+            return {
+                "reply": (f"Runtime is {current.mode}, which already refuses every live entry (and "
+                          "also stops position management). Left as it is — this door cannot "
+                          "release a stop; the authenticated operator can move it to the soft "
+                          "halt with /halt_trading." + not_recorded),
+                "mode": current.mode, "changed": False, "action": CMD_HALT_TRADING,
+            }
+        else:
+            released = current.mode
+            new_state = ControlState(
+                mode=ACTIVE, updated_by=actor, updated_at=stamp,
+                reason=stated or f"soft halt (released {released}): entries halted, management resumed",
+                stop_requested_task_ids=current.stop_requested_task_ids,
+                trading_armed=False,
+            )
+            verb_reply = (
+                f"{released} -> soft halt. The runtime is ACTIVE again, so open positions are "
+                "managed (settle, protect, time exit, reconcile) and queued work resumes; new "
+                "live entries stay refused until /resume." + reason_note
+            )
+        store.save(new_state)
+        if ledger is not None:
+            ledger.append_control(_control_event(command, new_state, now=stamp))
+        return {"reply": verb_reply, "mode": new_state.mode, "changed": True, "action": command}
 
     if command == CMD_PAUSE:
         if current.mode == KILLED:

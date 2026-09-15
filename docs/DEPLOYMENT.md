@@ -360,8 +360,9 @@ change: the gate no longer expires on its own, so nothing turns this off but you
 
 **To halt a scheduler that is trading right now, do not clear `MVP_LIVE_TRADING`.** It takes
 effect only on the next start, and because the close guard also requires the opt-in it would
-strand every open position. Use the runtime kill below — it writes control state, lands on the
-running service at its next guard, and the close path is deliberately exempt from it.
+strand every open position. To stop new entries and keep managing positions, use the soft halt
+below (`halt_trading`, once the 1.5.1 policy grants it). A runtime `kill` lands on the running
+service too, but it stops position management with the entries (corrected 2026-09-15).
 
 ## Emergency controls on a running service
 
@@ -370,15 +371,21 @@ either path halts the loop's next task immediately:
 
 ```bash
 # From the host (works even if Telegram is unreachable):
+docker exec thomas-operator python -m runtime.mvp_runtime.console_cli halt_trading --reason "entries off, keep managing"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli kill --reason "halt now"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli status
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
-# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /stop <id>.
+# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading, /stop <id>.
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
 only the authenticated operator can `/resume`. A corrupt control file fails closed to `KILLED`.
+**A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
+protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
+are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management
+running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. A missing control
+file reads ACTIVE with live entries **unarmed** (Thomas decision 10) — `/resume` arms them.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 
 ## Secret boundary — one source, per-service projection (decided 2026-09-03, PR2)

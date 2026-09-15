@@ -199,10 +199,12 @@ def assert_authorization(
 # What is given up, stated so a future reader restoring the grant knows what they are restoring:
 # a second factor, an expiry, and an audited per-machine record of scope and authority level.
 #
-# What is NOT given up: revocation. For live trading, `console_cli kill` is file-based, instant,
-# checked by the order guard, and deliberately exempted by the close path — it stops new entries
-# without trapping a position, which is precisely what grant expiry could not do. For everything
-# else, revocation is the environment: unset the variable and restart the process.
+# What is NOT given up: revocation. For live trading the file-based halts are instant and checked
+# by the order guard. `console_cli halt_trading` (the soft halt) stops new entries without
+# trapping a position, which is precisely what grant expiry could not do. `console_cli kill` stops
+# them too but — corrected 2026-09-15, it said otherwise — also stops the scheduler, and with it
+# settlement and protection, until resume. For everything else, revocation is the environment:
+# unset the variable and restart the process.
 ENV_ONLY_EVIDENCE_PREFIX = "env_only:"
 
 

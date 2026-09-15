@@ -347,9 +347,10 @@ def _run_gated_live_leg(
     # leaves behind, and it is the one state where the two answers differ. Reading the weaker
     # flag here would make the arm decorative on the exact path it exists to gate.
     #
-    # This gates ENTRIES only, and deliberately: `_settle_or_protect` ran above, before any of
-    # this, so a disarmed runtime still closes what it holds. See step 2's comment for why that
-    # ordering is not an accident.
+    # This gates ENTRIES only, and deliberately: the value is consumed by the entry decision in
+    # step 3, after step 2 has settled and protected, so a disarmed runtime that is still ACTIVE
+    # closes what it holds. (A PAUSED or KILLED runtime never gets here — the scheduler drops the
+    # fire — which is why the soft halt, `control.CMD_HALT_TRADING`, exists.)
     runtime_active = control.load().trading_allowed
 
     snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
@@ -874,7 +875,8 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
         lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
     if status == ROUTE_INCIDENT:
         lines.append("")
-        lines.append("Check the venue. To stop new entries: console_cli kill --reason ...")
+        lines.append("Check the venue. To stop new entries and keep managing positions: "
+                     "console_cli halt_trading --reason ... (console_cli kill stops management too).")
     try:
         # Imported here, not at module scope: `operator` imports back into this package, and
         # the scheduler's crypto_report seam already takes this shape for the same reason.
