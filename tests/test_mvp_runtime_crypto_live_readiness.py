@@ -1,10 +1,11 @@
-"""LP6 tests — canary promotion evidence and the readiness board.
+"""LP6 tests — the readiness board.
 
-Under test: cleanliness is derived from the venue's answer and can never be asserted by a
-caller; damaged evidence counts as zero rather than as the last good number; a promotion
-minimum of zero is refused rather than trivially satisfied; and the readiness board reports
-every gate honestly, never raises on an unreadable input, and cannot say READY while no order
-path exists.
+Under test: the readiness board reports every gate honestly, never raises on an unreadable input,
+and cannot say READY while no order path exists.
+
+The canary promotion-evidence tests that opened this file went with the promotion gate
+(2026-09-15, PR1r): the count, the minimum and the `canary_evidence` row no longer exist. The
+verified reader of the frozen registry is tested in `test_mvp_runtime_canary_evidence.py`.
 """
 
 from __future__ import annotations
@@ -14,15 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
-from runtime.mvp_runtime.crypto.live_promotion import (
-    DEFAULT_MIN_CLEAN_CANARY_ORDERS,
-    clean_canary_order_count,
-    promotion_status,
-)
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
 from runtime.mvp_runtime.errors import ToolError
 
@@ -32,7 +27,7 @@ _LIVE_ENVS = (
     LIVE_TRADING_ENV, CONFIRMATION_ENV, "MVP_LIVE_MANUAL_KILL_SWITCH",
     "MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "MVP_LIVE_ABSOLUTE_MAX_NOTIONAL_USDT",
     "MVP_LIVE_MAX_DAILY_ORDER_COUNT", "MVP_LIVE_MAX_OPEN_NOTIONAL_USDT",
-    "MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "MVP_LIVE_MIN_CLEAN_CANARY_ORDERS",
+    "MVP_LIVE_DAILY_LOSS_LIMIT_USDT",
     "MVP_ACCOUNT_FEED", "BINANCE_ACCOUNT_API_KEY", "BINANCE_ACCOUNT_API_SECRET",
     "MVP_MARKET_DATA",
 )
@@ -46,132 +41,6 @@ def clean_env(monkeypatch):
     return monkeypatch
 
 
-def _canary(clean: bool = True, *, order_id: str = "o1", now: str = NOW, **extra):
-    """A registry row as it sits on disk, hashed the way the reader verifies it.
-
-    Raw rather than built: the builder went with the canary door on 2026-09-15 (PR1r), and the
-    rows these tests stand for were written by it long before. ``clean`` is stated here because
-    it is stored on the row; nothing in the read path derives it."""
-    body = {
-        "reconcile_status": "RECONCILED" if clean else "UNRECONCILED", "clean": clean,
-        "symbol": "BTCUSDT", "exchange_order_id": order_id, "client_order_id": f"c_{order_id}",
-        "mismatches": [] if clean else ["quantity"], "notional_usdt": 5.0,
-        "recorded_at_utc": now, "stage": "live_canary",
-        "provenance": live_promotion.CANARY_PROVENANCE, "canary_order_id": f"canary_{order_id}",
-        **extra,
-    }
-    body["record_sha256"] = integrity.sha256_record(body)
-    return body
-
-
-def _write(root, records):
-    target = state_dir(root)
-    target.mkdir(parents=True, exist_ok=True)
-    path = target / live_promotion.CANARY_ORDERS_FILENAME
-    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
-    return path
-
-
-# === canary evidence ================================================================
-
-def test_missing_registry_is_honestly_empty(tmp_path):
-    assert clean_canary_order_count(tmp_path) == (0, None)
-
-
-def test_counts_only_clean_orders(tmp_path):
-    _write(tmp_path, [_canary(True, order_id="a"), _canary(False, order_id="b"),
-                      _canary(True, order_id="c")])
-    assert clean_canary_order_count(tmp_path) == (2, None)
-
-
-def test_tampered_registry_counts_zero_and_names_why(tmp_path):
-    """Damaged evidence is no evidence — never the last good number."""
-    record = dict(_canary(True))
-    record["clean"] = True
-    record["reconcile_status"] = "UNRECONCILED"  # edited after hashing
-    _write(tmp_path, [record])
-    count, error = clean_canary_order_count(tmp_path)
-    assert count == 0
-    assert error == live_promotion.CANARY_HISTORY_TAMPERED
-
-
-def test_unreadable_registry_counts_zero(tmp_path):
-    target = state_dir(tmp_path)
-    target.mkdir(parents=True, exist_ok=True)
-    (target / live_promotion.CANARY_ORDERS_FILENAME).write_text("nope\n", encoding="utf-8")
-    count, error = clean_canary_order_count(tmp_path)
-    assert count == 0 and error == live_promotion.CANARY_HISTORY_UNREADABLE
-
-
-# === the promotion gate =============================================================
-
-def test_zero_minimum_is_refused_not_satisfied(tmp_path):
-    """Requiring no evidence is the one setting that must never read as ready."""
-    for minimum in (0, -1):
-        status = promotion_status(min_orders=minimum, root=tmp_path)
-        assert status["ready"] is False
-        assert any("no evidence" in r for r in status["reasons"])
-
-
-def test_below_threshold_is_not_ready(tmp_path):
-    _write(tmp_path, [_canary(True, order_id="a")])
-    status = promotion_status(min_orders=3, root=tmp_path)
-    assert status["ready"] is False and status["clean_count"] == 1
-
-
-def test_threshold_met_is_ready(tmp_path):
-    _write(tmp_path, [_canary(True, order_id=x) for x in ("a", "b", "c")])
-    status = promotion_status(min_orders=3, root=tmp_path)
-    assert status["ready"] is True and status["clean_count"] == 3
-
-
-def test_default_minimum_matches_the_source(tmp_path):
-    """The source value, and the single authority that carries it.
-
-    The name used to be a promise this test did not keep: it compared `live_promotion`'s
-    constant against the literal 3 and stopped there, while `live_order` declared its own
-    `DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3` for `LiveOrderLimits` to default to. Two authorities
-    for one safety threshold, and nothing comparing them — editing either alone left the suite
-    green with the guard and the promotion board requiring different numbers of canaries.
-
-    `live_order` now re-exports this one, and what pins that is the **source** check below,
-    not a comparison of values. Comparing the two constants cannot work: they would only
-    differ if someone edited one, and an `is` check is worse than useless here — CPython
-    caches small integers, so `live_order.DEFAULT_... is DEFAULT_...` is True for two
-    independent `= 3` declarations. That check was written first and passed against a
-    deliberately reintroduced duplicate. Counting declarations is the thing that holds.
-    """
-    import re
-
-    from runtime.mvp_runtime.crypto.live_order import LiveOrderLimits
-
-    assert DEFAULT_MIN_CLEAN_CANARY_ORDERS == 3
-    assert promotion_status(root=tmp_path)["required"] == 3
-    assert LiveOrderLimits().min_clean_canary_orders == DEFAULT_MIN_CLEAN_CANARY_ORDERS
-
-    crypto_dir = Path(live_readiness.__file__).parent
-    declaring = sorted(
-        path.name for path in crypto_dir.glob("*.py")
-        if re.search(r"^DEFAULT_MIN_CLEAN_CANARY_ORDERS\s*=", path.read_text(encoding="utf-8"), re.M)
-    )
-    assert declaring == ["live_promotion.py"], (
-        f"{len(declaring)} modules declare the clean-canary minimum: {declaring}. It is a "
-        f"safety threshold and must have one authority; import it rather than restating it."
-    )
-
-
-def test_tampered_history_blocks_even_with_enough_records(tmp_path):
-    """Three clean orders plus one corrupt row is not three clean orders."""
-    good = [_canary(True, order_id=x) for x in ("a", "b", "c")]
-    bad = dict(_canary(True, order_id="d"))
-    bad["clean"] = True
-    bad["symbol"] = "TAMPERED"
-    _write(tmp_path, good + [bad])
-    status = promotion_status(min_orders=3, root=tmp_path)
-    assert status["ready"] is False and status["clean_count"] == 0
-    assert status["history_error"] == live_promotion.CANARY_HISTORY_TAMPERED
-
-
 # === the readiness board ============================================================
 
 def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
@@ -180,7 +49,7 @@ def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="20
     from runtime.mvp_runtime.crypto import live_budget
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
                 max_daily_order_count=2, max_open_notional_usdt=120.0,
-                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+                daily_loss_limit_usdt=20.0)
     caps.update(cap_overrides)
     rec = live_budget.build_live_trading_budget_record(
         caps=caps, symbol_allowlist=list(symbol_allowlist), valid_from=valid_from,
@@ -199,8 +68,7 @@ def test_fresh_machine_is_not_ready(tmp_path, clean_env):
     assert status["ready"] is False
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
     # order_path_implemented now passes (LP4 landed); every AUTHORITY row must still fail.
-    assert {"live_trading_opt_in", "confirmation_phrase", "registered_budget",
-            "canary_evidence"} <= failed
+    assert {"live_trading_opt_in", "confirmation_phrase", "registered_budget"} <= failed
 
 
 def test_board_reports_every_gate(tmp_path, clean_env):
@@ -208,7 +76,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
-        "daily_loss_breaker", "bracket_breaker", "canary_evidence",
+        "daily_loss_breaker", "bracket_breaker",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired",
     }
@@ -258,14 +126,15 @@ def test_board_never_echoes_the_confirmation_phrase(tmp_path, clean_env):
     assert LIVE_CONFIRMATION_PHRASE not in json.dumps(status)
 
 
-def test_board_survives_an_unreadable_canary_registry(tmp_path, clean_env):
-    """An unreadable input is a failed check with a reason, never a crashed board."""
+def test_the_board_no_longer_reads_the_canary_registry(tmp_path, clean_env):
+    """Retired 2026-09-15 (PR1r): the `canary_evidence` row went with the promotion gate, so a
+    damaged frozen registry is the history board's news, not a failed gate here."""
     target = state_dir(tmp_path)
     target.mkdir(parents=True, exist_ok=True)
     (target / live_promotion.CANARY_ORDERS_FILENAME).write_text("garbage\n", encoding="utf-8")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    evidence = next(c for c in status["checks"] if c["check"] == "canary_evidence")
-    assert evidence["ok"] is False and "CANARY_HISTORY_UNREADABLE" in evidence["detail"]
+    assert not any("CANARY_HISTORY" in c["detail"] or "canary" in c["check"] for c in status["checks"])
+    assert "clean_canary_orders" not in status["guard_dry_run"]
 
 
 def test_guard_dry_run_is_the_authoritative_answer(tmp_path, clean_env):
@@ -292,7 +161,7 @@ def test_the_dry_run_reads_the_registered_allowlist(tmp_path, clean_env):
     whose default is EMPTY and blocks every symbol — so the one line the module calls the
     authoritative answer reported "no symbol allowlist backs this order" on every machine,
     however the budget was registered, and told the operator to register the budget they had
-    already registered. Both real doors (`live_route`, `place_canary_order`) read the scope off
+    already registered. Both real doors (`live_route`, `run_slippage_probe`) read the scope off
     the same budget the caps come from."""
     before = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert _allowlist_blocks(before)          # no budget: the block is real
@@ -300,8 +169,8 @@ def test_the_dry_run_reads_the_registered_allowlist(tmp_path, clean_env):
     _register_budget(tmp_path, symbol_allowlist=["BTCUSDT"])
     after = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert _allowlist_blocks(after) == []     # a registered scope is not an absent one
-    # It still refuses — on the doors that ARE shut (opt-in, phrase, canaries). The point is
-    # that the board no longer invents a thirteenth.
+    # It still refuses — on the doors that ARE shut (opt-in, phrase). The point is that the
+    # board no longer invents a thirteenth.
     assert after["guard_dry_run"]["approved"] is False
     assert after["guard_dry_run"]["blocks"]
 
@@ -353,14 +222,13 @@ def test_the_executor_handoff_flag_is_still_off():
 
 def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_path, clean_env):
     """Since LP4 the order-path row passes, so what must keep the board from READY is the
-    *authority* — no grant, no phrase, no registered budget. Configuring the old env caps and
-    three clean canaries is not enough."""
+    *authority* — no grant, no phrase, no registered budget. Configuring the old env caps is
+    not enough."""
     clean_env.setenv(CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE)
     clean_env.setenv("MVP_LIVE_MAX_ORDER_NOTIONAL_USDT", "60")
     clean_env.setenv("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "2")
     clean_env.setenv("MVP_LIVE_MAX_OPEN_NOTIONAL_USDT", "120")
     clean_env.setenv("MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "20")
-    _write(tmp_path, [_canary(True, order_id=x) for x in ("a", "b", "c")])
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert status["ready"] is False
     assert next(c for c in status["checks"] if c["check"] == "order_path_implemented")["ok"]
@@ -389,7 +257,7 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     assert "an order path EXISTS" in text and "a real order can be placed" in text
     # Which autonomous note is correct depends on the wiring, so assert the one that matches
     # rather than pinning the board to one era of the build. Both must say the consequential
-    # thing: unwired, that the only door is the deliberate canary; wired, that a scheduled run
+    # thing: unwired, that the only door is the deliberate probe; wired, that a scheduled run
     # moves real money and how to stop it.
     if live_readiness.AUTONOMOUS_ROUTING_WIRED:
         assert "WIRED" in text and "REAL positions" in text
@@ -409,7 +277,7 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
         assert "position management" in text
         assert "Do NOT clear MVP_LIVE_TRADING" in text
     else:
-        assert "LP5" in text and "place_canary_order.py" in text
+        assert "run_slippage_probe.py" in text
 
 
 def test_autonomous_routing_is_reported_and_never_fails_the_board(tmp_path, clean_env):
@@ -434,26 +302,27 @@ def test_the_board_prose_makes_no_build_claims(tmp_path, clean_env):
     assert "unbuilt" not in text.lower()
 
 
-def test_market_data_is_reported_as_a_canary_precondition(tmp_path, clean_env):
-    """Since the declared-notional check landed, no market data means no canary.
+def test_market_data_is_reported_as_a_live_precondition(tmp_path, clean_env):
+    """No market data means the collector is the synthetic mock, and nothing live runs on it.
 
-    `place_canary_order` verifies `--notional` against the venue's last close and refuses when
-    there is no usable price — so a machine without this feed cannot place the canaries that
-    the `canary_evidence` row is counting. A precondition only a docstring knows about is one
-    the operator discovers at a terminal holding real keys (#201's lesson), so it is a row.
+    The slippage probe's reference price refuses a synthesised one, and data health will not
+    trade on a synthetic feed. The row was first the canary door's precondition (its
+    declared-notional check), which went with the door on 2026-09-15. A precondition only a
+    docstring knows about is one the operator discovers at a terminal holding real keys (#201's
+    lesson), so it is a row.
     """
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
     assert row["ok"] is False
-    assert "canary" in row["detail"], "say what the operator loses without it"
+    assert "probe" in row["detail"], "say what the operator loses without it"
 
 
 def test_market_data_env_alone_passes_the_row(tmp_path, clean_env, monkeypatch):
     """The environment is the gate (Thomas 2026-08-10): the opt-in alone passes the row.
 
     The safety the old grant check bought is not lost, just relocated: without the opt-in
-    the selector returns the MOCK, whose synthesised price `place_canary_order`'s own
-    declared-notional check rejects — the test below pins that failing direction."""
+    the selector returns the MOCK, whose synthesised price the probe's reference-price read
+    rejects (`REFERENCE_PRICE_SYNTHETIC`) — the test below pins that failing direction."""
     monkeypatch.setenv("MVP_MARKET_DATA", "binance_futures")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     row = next(c for c in status["checks"] if c["check"] == "market_data_visibility")
@@ -622,47 +491,6 @@ def test_a_failing_account_read_leaves_the_row_failing(tmp_path, monkeypatch):
 
     row = next(c for c in board["checks"] if c["check"] == "daily_loss_breaker")
     assert row["ok"] is False
-
-
-# --- the evidence has to prove its own size -------------------------------------
-
-def test_the_board_says_when_the_evidence_cannot_prove_its_own_size(tmp_path):
-    """The other half of the repair. The subtraction was recorded and nothing read it, so an
-    operator could only find it by opening the JSONL — which is not a surface."""
-    import json
-
-    from runtime.read_only_kernel import integrity
-    from runtime.mvp_runtime.crypto import live_promotion
-
-    body = {
-        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
-        "exchange_order_id": 1, "client_order_id": "canary-1", "mismatches": [],
-        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
-        "stage": "live_canary", "provenance": live_promotion.CANARY_PROVENANCE,
-        "canary_order_id": "canary_abc",
-    }
-    body["record_sha256"] = integrity.sha256_record(body)
-    store = live_promotion.state_dir(tmp_path) / live_promotion.CANARY_ORDERS_FILENAME
-    store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_text(json.dumps(body) + "\n", encoding="utf-8")
-
-    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
-    assert status["ready"] is True, "an unprovable size must not change what the count means"
-    assert status["size_unproven"] == 1
-    assert status["largest_size_gap_usdt"] is None
-
-
-def test_a_recorded_size_gap_is_surfaced_rather_than_judged(tmp_path):
-    # The shape a post-#268 row carries: declared 65.0, the venue's filled 64.512.
-    record = _canary(True, notional_usdt=65.0, quantity=0.001, fill_avg_price=64512.0,
-                     fill_executed_qty=0.001, filled_notional_usdt=64.512,
-                     notional_declared_vs_filled_usdt=0.488)
-    _write(tmp_path, [record])
-
-    status = live_promotion.promotion_status(min_orders=1, root=tmp_path)
-    assert status["size_unproven"] == 0
-    assert status["largest_size_gap_usdt"] == pytest.approx(0.488, abs=1e-6)
-    assert status["ready"] is True          # surfaced, not judged
 
 
 # === the armed set (#648: occupying and allowed-to-spend are two facts) =============

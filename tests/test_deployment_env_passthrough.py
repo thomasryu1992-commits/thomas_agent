@@ -133,7 +133,7 @@ NOT_DEPLOYED = {
 # not merely a cost, and this list is a correspondingly bigger deal than when it was written.
 #
 # What still stands between a forwarded scheduler and an autonomous order: the confirmation
-# phrase, the registered budget, the canary evidence, both kill switches, the loss breaker, and
+# phrase, the registered budget, both kill switches, the loss breaker, and
 # the single-chokepoint property above. Each has its own row on the readiness board and each
 # has its own test. None of them is the env file.
 LIVE_TRADING_SURFACE = {

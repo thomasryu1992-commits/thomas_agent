@@ -191,7 +191,7 @@ def assert_authorization(
 # Why live trading left grants first: the grant was TTL-capped at 30 days and this system is
 # meant to run unattended for months. The sharper reason is that a grant expiring while a
 # position is OPEN blocks the CLOSE path too — `evaluate_live_close_guard` exempts a reduceOnly
-# close from the loss breaker, the daily count, the exposure cap, the promotion gate and both
+# close from the loss breaker, the daily count, the exposure cap and both
 # kill switches, and then requires the gate. A halt that traps an open position is what those
 # exemptions exist to prevent. The candle archive (2026-08-04) and the Naver lane (2026-08-09)
 # followed on the renewal-gap argument, and 2026-08-10 retired the renewal for the rest.

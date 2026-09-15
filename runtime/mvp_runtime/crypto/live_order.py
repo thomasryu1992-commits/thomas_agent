@@ -44,10 +44,6 @@ from .live_pnl import (
     state_dir,
     utc_day,
 )
-# The clean-canary minimum belongs to the module that owns promotion evidence. This file
-# used to declare its own `= 3` beside it — two authorities for one safety threshold, with
-# nothing comparing them. No cycle: live_promotion does not import this module.
-from .live_promotion import DEFAULT_MIN_CLEAN_CANARY_ORDERS
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"
@@ -57,10 +53,10 @@ STATUS_READY = "READY"
 # canary or testnet phrase must not authorize autonomous live trading.
 LIVE_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY"
 
-# ...and the converse: the autonomous phrase must not authorize a canary either. A canary is a
-# deliberate, one-at-a-time operator order placed to BUILD the promotion evidence, so it carries
-# its own phrase and its own env. One phrase per capability is the whole point — pasting the
-# wrong one authorizes nothing.
+# ...and the converse: the autonomous phrase must not authorize a canary-mode order either. That
+# is a deliberate, one-at-a-time operator order — since the canary door went (2026-09-15, PR1r),
+# only the slippage probe places one — so it carries its own phrase and its own env. One phrase
+# per capability is the whole point — pasting the wrong one authorizes nothing.
 CANARY_CONFIRMATION_PHRASE = "I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER"
 
 # The only three the operator sets. Everything else a live order is bounded by comes from the
@@ -146,7 +142,6 @@ class LiveOrderLimits:
     max_daily_order_count: int = 0
     max_open_notional_usdt: float = 0.0
     daily_loss_limit_usdt: float = 0.0
-    min_clean_canary_orders: int = DEFAULT_MIN_CLEAN_CANARY_ORDERS
     confirmation: str = ""
     canary_confirmation: str = ""
     manual_kill_switch: bool = False
@@ -323,13 +318,18 @@ def resolve_live_order_limits(
     no longer authorize an order; the registered budget supersedes them.
 
     **Both** confirmation phrases and the manual kill remain env, and are carried through on
-    every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous), ``MVP_LIVE_CANARY_CONFIRMATION`` (the
-    deliberate canary), ``MVP_LIVE_MANUAL_KILL_SWITCH``. A phrase proving intent and a halt are
-    operator state, not registered caps. The canary phrase was omitted here until 2026-07-26,
-    which left ``place_canary_order.py`` — the only live door there is, and the one that has to
-    work before any autonomous path can — permanently refused with "canary confirmation phrase
-    not present". Failing closed, but on the step the operator has to take next, and only
-    discoverable standing at the terminal with real keys."""
+    every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous entries and every close),
+    ``MVP_LIVE_CANARY_CONFIRMATION`` (canary mode — the slippage probe),
+    ``MVP_LIVE_MANUAL_KILL_SWITCH``. A phrase proving intent and a halt are operator state, not
+    registered caps. The canary phrase was omitted here until 2026-07-26, which left the canary
+    door of the day (``place_canary_order.py``, removed 2026-09-15) permanently refused with
+    "canary confirmation phrase not present". Failing closed, but on the step the operator has to
+    take next, and only discoverable standing at the terminal with real keys. The probe composes
+    the same join today.
+
+    The budget's retired ``caps.min_clean_canary_orders`` is never read here: a record registered
+    before PR1r still carries it (schema-accepted, self-hashed, ignored) and a newer one does not,
+    so indexing it would raise on the new shape — before the leg settles or protects anything."""
     from . import live_budget  # lazy: live_budget imports LiveOrderLimits
 
     status = live_budget.budget_status(root, now=now or timeutil.utc_now_iso())
@@ -342,7 +342,6 @@ def resolve_live_order_limits(
             max_daily_order_count=int(caps["max_daily_order_count"]),
             max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
             daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
-            min_clean_canary_orders=int(caps["min_clean_canary_orders"]),
             confirmation=env.confirmation,
             canary_confirmation=env.canary_confirmation,
             manual_kill_switch=env.manual_kill_switch,
@@ -364,7 +363,6 @@ def evaluate_live_order_guard(
     gate_open: bool,
     runtime_active: bool,
     daily_loss_breached: bool,
-    clean_canary_orders: int,
     submitted_today: int,
     # LP5.1: no default. This used to be `= 0.0` — the single fail-open path in an
     # otherwise fail-closed guard, because a caller that forgot it silently disabled the
@@ -398,21 +396,20 @@ def evaluate_live_order_guard(
     to ``False`` (fail-closed): a caller that does not resolve a budget cannot accidentally
     authorize an order on caps that no budget backs.
 
-    ``canary`` marks the deliberate operator canary — the one-at-a-time real order placed to
-    BUILD the promotion evidence. It changes exactly two things, and nothing else:
+    ``canary`` marks a deliberate one-at-a-time operator order — today only the slippage probe
+    (``scripts/run_slippage_probe.py --fire``). It changes exactly one thing: the confirmation
+    phrase compared is the **canary** phrase, not the autonomous one, so the autonomous phrase
+    cannot authorize a canary-mode order and the canary phrase cannot authorize autonomous
+    trading.
 
-    1. the **promotion gate is not applied**, because requiring >= 3 clean canaries before the
-       first canary can be placed is unsatisfiable — that check exists to gate the *autonomous*
-       path, and the canary is what earns it;
-    2. the confirmation phrase compared is the **canary** phrase, not the autonomous one, so the
-       autonomous phrase cannot authorize a canary (and the canary phrase cannot authorize
-       autonomous trading — that was already true).
-
-    Every other check — the opt-in, both kill switches, the loss breaker, the registered budget,
-    the size / daily-count / exposure caps, the connectivity refusal, the intent shape — applies
-    identically. Sharing one guard rather than writing a second one is deliberate: a check added
-    later cannot land on only one of the two paths. ``canary`` defaults to ``False``, so the
-    autonomous path keeps the promotion gate by default (fail-closed).
+    It used to change a second thing — the clean-canary promotion gate did not apply to it — and
+    that gate is gone for both modes (Thomas, 2026-09-15, PR1r, with the canary door). Every
+    check that remains — the opt-in, both kill switches, the loss breaker, the registered
+    budget, the symbol allowlist, the size / daily-count / exposure caps, the connectivity
+    refusal, the intent shape — applies identically. Sharing one guard rather than writing a
+    second one is deliberate: a check added later cannot land on only one of the two paths.
+    ``canary`` defaults to ``False``, so a caller that does not say otherwise is judged on the
+    autonomous phrase.
     """
     cfg = limits
     blocks: list[str] = []
@@ -430,9 +427,9 @@ def evaluate_live_order_guard(
         )
     # 0b. The symbol this budget authorizes. Registered from the first budget record and read
     #     by nothing until now, so the caps bound how MUCH could be traded while nothing bound
-    #     WHAT. Applied to the canary too: a canary is a smaller real order, not a different
-    #     kind of one, and the operator widens scope by re-registering rather than by aiming
-    #     the canary door somewhere the budget does not name.
+    #     WHAT. Applied in canary mode too: a probe is a smaller real order, not a different
+    #     kind of one, and the operator widens scope by re-registering rather than by aiming a
+    #     canary-mode order somewhere the budget does not name.
     allowlist = normalize_symbols(allowed_symbols)
     order_symbol = str(intent.get("symbol") or "").strip().upper()
     if not allowlist:
@@ -473,21 +470,9 @@ def evaluate_live_order_guard(
             blocks.append(
                 f"daily realized-loss limit {cfg.daily_loss_limit_usdt} USDT reached - halted for today"
             )
-    # 6. Promotion evidence: clean canary orders actually placed and reconciled. NOT applied to a
-    #    canary — that order is what earns this evidence, so gating it on the evidence would make
-    #    the first canary unplaceable and the count would stay 0 forever. The autonomous path
-    #    keeps the gate (canary defaults to False).
-    if not canary:
-        if cfg.min_clean_canary_orders <= 0:
-            blocks.append(
-                f"promotion minimum is not configured (would be promotion with no "
-                f"evidence); {REGISTER_BUDGET_HINT}"
-            )
-        elif clean_canary_orders < cfg.min_clean_canary_orders:
-            blocks.append(
-                f"live promotion not ready - need >= {cfg.min_clean_canary_orders} clean canary "
-                f"orders, have {clean_canary_orders}"
-            )
+    # 6. Retired 2026-09-15 (PR1r): the clean-canary promotion gate, removed with the canary door
+    #    on Thomas's decision. Nothing replaces it in this guard; the execution stage (PR1b) is the
+    #    planned gate for autonomous entries. The numbers below keep their places.
     # 7. A connectivity probe must never ride the autonomous path.
     if intent.get("connectivity_test"):
         blocks.append("connectivity_test intent cannot use the live order path")
@@ -544,7 +529,6 @@ def evaluate_live_order_guard(
         "max_daily_order_count": cfg.max_daily_order_count,
         "daily_loss_limit_usdt": cfg.daily_loss_limit_usdt,
         "daily_loss_breached": daily_loss_breached,
-        "clean_canary_orders": clean_canary_orders,
         # Structured alongside the prose block, so a caller decides on the field rather than by
         # matching an error string — the reason `blocks` is the report and never the interface.
         "order_symbol": order_symbol,
@@ -564,7 +548,7 @@ def evaluate_live_close_guard(
     """The deliberately narrower gate for closing an open live position.
 
     A reduceOnly close **reduces** risk, so it is exempt from the loss breaker, the daily
-    order count, the exposure cap, the promotion gate, and both kill switches. The reasoning
+    order count, the exposure cap, and both kill switches. The reasoning
     is the source system's and it is worth stating plainly: a halt that traps you in a losing
     position is more dangerous than the halt was meant to prevent. What survives is the
     structural boundary — the live-trading opt-in, the confirmation phrase, and reduceOnly

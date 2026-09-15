@@ -48,8 +48,7 @@
         "absolute_max_notional_usdt",
         "max_daily_order_count",
         "max_open_notional_usdt",
-        "daily_loss_limit_usdt",
-        "min_clean_canary_orders"
+        "daily_loss_limit_usdt"
       ],
       "properties": {
         "max_order_notional_usdt": {
@@ -77,6 +76,7 @@
           "exclusiveMinimum": 0
         },
         "min_clean_canary_orders": {
+          "description": "Retired 2026-09-15 (PR1r): accepted on records registered before, never written, never read. Kept declared because this object is closed and those records are self-hashed: dropping the property would make them schema-invalid, and stripping it from a record would break its hash.",
           "type": "integer",
           "minimum": 1
         }

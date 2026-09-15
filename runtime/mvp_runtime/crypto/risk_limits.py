@@ -29,7 +29,7 @@ Three properties worth stating, because each is a decision rather than an implem
 
 Registering one **grants nothing and enables no trading.** It cannot widen a breaker past the
 code bounds, and it is not a permission: the operator's live-trading opt-in, the confirmation
-phrase, the clean canary orders, the registered budget and both kill switches all still stand
+phrase, the registered budget and both kill switches all still stand
 where they stood. It can only move a breaker *within* limits this repo's code already accepts.
 (That first door was a per-machine `live_trading` grant until 2026-07-28, when Thomas replaced
 it with an environment opt-in. The door did not go away — only its shape did, and revoking it

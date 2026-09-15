@@ -3,14 +3,16 @@
 Operator step. Builds a self-hashed budget record from the approved caps and writes it to the
 per-machine state dir (gitignored). **This grants nothing and enables no trading** — it is a
 record, not a permission. The `MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, the
->= 3 clean canary orders, the P5 role, and LP4/LP5 all still stand between here and a live
-order (see LIVE_EXECUTION_GOVERNANCE_V0.1.md).
+P5 role, and LP4/LP5 all still stand between here and a live order (see
+LIVE_EXECUTION_GOVERNANCE_V0.1.md).
 
 Approved starting caps (Thomas, 2026-07-23): 60 USDT/order, 2 orders/day, 120 USDT open
-exposure, 20 USDT daily loss, >= 3 clean canary orders. Those are still this script's
-**defaults**, deliberately, including `--absolute-max-notional 200`: the hard ceiling a budget
-may declare rose to 500 on 2026-08-08 (`live_budget.HARD_CEILING_USDT`), but a default is what
-an omitted flag registers, and an omitted flag must never be the thing that widens a limit.
+exposure, 20 USDT daily loss. (A fifth, >= 3 clean canary orders, went with the canary door on
+2026-09-15 — PR1r — and so did its `--min-clean-canary-orders` flag: passing it now exits 2 and
+writes nothing.) Those are still this script's **defaults**, deliberately, including
+`--absolute-max-notional 200`: the hard ceiling a budget may declare rose to 500 on 2026-08-08
+(`live_budget.HARD_CEILING_USDT`), but a default is what an omitted flag registers, and an
+omitted flag must never be the thing that widens a limit.
 Every cap above the starting values is typed out by the operator, on purpose.
 
     python -m scripts.register_live_trading_budget --registered-by thomas --symbols BTCUSDT
@@ -20,9 +22,9 @@ Every cap above the starting values is typed out by the operator, on purpose.
 Changing a limit is a re-run: the id and self-hash derive from the caps, so a new cap is a new
 record, never a silent edit. **A re-run replaces the whole record, not the flags you passed** —
 every cap, the symbol allowlist and the validity window come out of this one invocation, so an
-omitted `--symbols` narrows the allowlist and an omitted `--min-clean-canary-orders` lowers the
-promotion bar, both silently. Read the registered caps back off the readiness board afterwards
-(`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than assuming the delta landed.
+omitted `--symbols` narrows the allowlist, silently. Read the registered caps back off the
+readiness board afterwards (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
+assuming the delta landed.
 """
 
 from __future__ import annotations
@@ -50,7 +52,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--max-daily-order-count", type=int, default=2)
     p.add_argument("--max-open-notional", type=float, default=120.0)
     p.add_argument("--daily-loss-limit", type=float, default=20.0)
-    p.add_argument("--min-clean-canary-orders", type=int, default=3)
     p.add_argument("--valid-days", type=int, default=30, help="validity window length in days (default 30)")
     p.add_argument("--root", type=Path, default=Path("."),
                    help="repo/state root (default cwd); the budget file lands under it")
@@ -84,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
         "max_daily_order_count": args.max_daily_order_count,
         "max_open_notional_usdt": args.max_open_notional,
         "daily_loss_limit_usdt": args.daily_loss_limit,
-        "min_clean_canary_orders": args.min_clean_canary_orders,
     }
 
     try:
@@ -103,12 +103,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  symbols:  {', '.join(record['symbol_allowlist'])}")
     print(f"  caps:     order<={caps['max_order_notional_usdt']} (ceiling {caps['absolute_max_notional_usdt']}), "
           f"{caps['max_daily_order_count']}/day, open<={caps['max_open_notional_usdt']}, "
-          f"loss<={caps['daily_loss_limit_usdt']}, canary>={caps['min_clean_canary_orders']}")
+          f"loss<={caps['daily_loss_limit_usdt']}")
     print(f"  valid:    {record['valid_from']} .. {record['valid_until']}")
     print(f"  sha256:   {record['record_sha256']}")
     print(f"  written:  {path}")
     print("This record grants nothing and enables no trading — MVP_LIVE_TRADING=real, the "
-          "confirmation phrase, >= 3 clean canary orders, the P5 role, and LP4/LP5 all still apply.")
+          "confirmation phrase, the P5 role, and LP4/LP5 all still apply.")
     return 0
 
 

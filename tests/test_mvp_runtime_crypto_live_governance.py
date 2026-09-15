@@ -113,8 +113,8 @@ def test_a_reconciled_order_is_recorded():
 
 
 def test_the_purpose_distinguishes_a_canary_from_an_autonomous_order():
-    """They are authorized by different confirmation phrases and the canary is exempt from the
-    promotion gate, so the trail must say which capability was exercised."""
+    """They are authorized by different confirmation phrases (canary mode is the slippage
+    probe's), so the trail must say which capability was exercised."""
     canary, _ = _audit(purpose=lg.PURPOSE_CANARY)
     autonomous, _ = _audit(purpose=lg.PURPOSE_AUTONOMOUS)
     assert "PURPOSE_CANARY" in canary["event"]["reason_codes"]

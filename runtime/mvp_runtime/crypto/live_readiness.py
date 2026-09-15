@@ -57,7 +57,7 @@ from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import live_promotion, pool
+from . import pool
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
@@ -88,8 +88,8 @@ from .risk_limits import limits_status as risk_limits_status
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
 # because it is a fact about the codebase, not about this machine — whether an order may
-# actually be sent is the live-trading opt-in, the confirmation phrase, the registered budget,
-# the kill switches, and the canary evidence, each of which the board checks on its own row.
+# actually be sent is the live-trading opt-in, the confirmation phrase, the registered budget
+# and the kill switches, each of which the board checks on its own row.
 # Kept in lockstep with the policy's `financial_transaction_execution_implemented`.
 ORDER_PATH_IMPLEMENTED = True
 
@@ -101,8 +101,8 @@ ORDER_PATH_IMPLEMENTED = True
 # the code cannot disagree.
 #
 # It is still deliberately NOT part of `ready`. Wired is not permitted: every door below it —
-# the opt-in, the confirmation phrase, the registered budget, the canary evidence, both kill
-# switches, the loss breaker — is unchanged, and each has its own row above.
+# the opt-in, the confirmation phrase, the registered budget, both kill switches, the loss
+# breaker — is unchanged, and each has its own row above.
 AUTONOMOUS_ROUTING_WIRED = True
 
 # The symbol the guard dry-run probes when no budget names one. Only reached on a machine with
@@ -435,29 +435,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         _check("bracket_breaker", bracket is not None and not bracket["tripped"], bracket_detail)
     )
 
-    # 7. Canary evidence.
-    promotion = live_promotion.promotion_status(
-        min_orders=limits.min_clean_canary_orders, root=root
-    )
-    # The count says how MANY orders back the promotion; this says whether they can prove what
-    # they were. The records gained a declared-versus-filled subtraction so it would stop being
-    # a memory, and then nothing read it — a number stored where the person the gate consists of
-    # never sees it is only half the repair. Appended rather than folded into `ready`: making a
-    # size disagreement block promotion would change what the count means, which is a separate
-    # decision the field's own author declined to take.
-    size_note = ""
-    if promotion["size_unproven"]:
-        size_note = (f" [{promotion['size_unproven']} of {promotion['clean_count']} cannot prove "
-                     "their size — no fill recorded]")
-    elif promotion["largest_size_gap_usdt"]:
-        size_note = f" [largest declared-vs-filled gap {promotion['largest_size_gap_usdt']:.2f} USDT]"
-    checks.append(_check(
-        "canary_evidence",
-        promotion["ready"],
-        f"{promotion['clean_count']}/{promotion['required']} clean canary orders"
-        + ("" if promotion["ready"] else " - " + "; ".join(promotion["reasons"]))
-        + size_note,
-    ))
+    # 7. Retired 2026-09-15 (PR1r): the `canary_evidence` row, with the promotion gate it reported.
+    #    The frozen canary history is still readable on its own board:
+    #    python -m runtime.mvp_runtime.crypto.live_promotion
 
     # 8. The account read (LP1) — not required to place an order, but going live without
     #    being able to see the account is flying blind, so it is reported. `account_configured`
@@ -469,13 +449,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         else f"{ACCOUNT_FEED_ENV} / {ACCOUNT_API_KEY_ENV} / {ACCOUNT_API_SECRET_ENV} not all set",
     ))
 
-    # 8b. Market data — a canary PRECONDITION since the declared-notional check landed, not a
-    #     nicety. `place_canary_order` verifies `--notional` against the venue's own last close
-    #     and refuses when there is no usable price, so a machine without this feed cannot place
-    #     the canaries that row 7 is counting. Checked as the env opt-in alone since 2026-08-10
-    #     — this feed kept its per-machine grant longer than live trading did (2026-07-28), and
-    #     the grant went when Thomas retired grant renewal outright; the env var selects, and
-    #     without it the mock's synthesised price is what the check rejects.
+    # 8b. Market data — a live PRECONDITION, not a nicety. Without the opt-in the collector is
+    #     the synthesised mock: the slippage probe's reference price refuses it
+    #     (`REFERENCE_PRICE_SYNTHETIC`), so no probe can fire, and the cycle's feed is marked
+    #     synthetic, which data health will not trade on. (It was first a row for the canary
+    #     door's declared-notional check, which went with the door on 2026-09-15.) Checked as
+    #     the env opt-in alone since 2026-08-10 — this feed kept its per-machine grant longer
+    #     than live trading did (2026-07-28), and the grant went when Thomas retired grant
+    #     renewal outright; the env var selects.
     #     Stated here because #201's lesson was that a precondition only a document knows about
     #     is discovered by an operator standing at a terminal with real keys.
     market_data_ready = (
@@ -484,10 +465,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     checks.append(_check(
         "market_data_visibility",
         market_data_ready,
-        "live market data configured (the declared-notional check has a real price)"
+        "live market data configured (the probe and the cycle read the venue's prices)"
         if market_data_ready
         else (f"{MARKET_DATA_ENV} unset "
-              f"- without it a canary is refused, so no canary evidence can be earned"),
+              f"- the feed is the synthetic mock, so the probe refuses and nothing trades on it"),
     ))
 
     # 8c. The execution stage (crypto PR1a). Informational until PR1b makes the entry doors read it,
@@ -511,7 +492,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "autonomous_routing_wired",
         True,  # informational: neither state is a failure
         "WIRED - a scheduled run can place live orders" if AUTONOMOUS_ROUTING_WIRED
-        else "not wired - the only door is scripts/place_canary_order.py, one canary at a time",
+        else "not wired - the only door is scripts/run_slippage_probe.py --fire, one probe per run",
     ))
 
     # A dry-run of the real guard against a representative order at the configured cap.
@@ -522,7 +503,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # this call omitted `allowed_symbols`, whose default is EMPTY — and an empty allowlist
     # blocks every symbol — so the dry-run reported "no symbol allowlist backs this order" on
     # every machine, forever, however the budget was registered. Both real callers
-    # (`live_route.plan_live_entry`, `scripts/place_canary_order.py`) read the scope off the
+    # (`live_route.plan_live_entry`, `scripts/run_slippage_probe.py`) read the scope off the
     # same budget the caps come from; so does this now. The board under-reported what the
     # machine could do, which is the dangerous direction for a line an operator reads before
     # deciding whether live trading is stopped.
@@ -550,7 +531,6 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         gate_open=opted_in,
         runtime_active=runtime_active,
         daily_loss_breached=breached,
-        clean_canary_orders=promotion["clean_count"],
         submitted_today=submitted_today,
         # LP5.3: the board now reads the account for the loss breaker, so the same snapshot
         # answers the exposure question — and the honest block-at-cap can finally lift on a
@@ -841,7 +821,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             lines.append("        shuts the close path too")
         else:
             lines.append("NOTE  : autonomous routing is NOT wired - the only door is")
-            lines.append("        scripts/place_canary_order.py, one deliberate canary at a time")
+            lines.append("        scripts/run_slippage_probe.py --fire, one deliberate probe")
     else:
         lines.append("NOTE  : no order path exists yet; this board cannot report READY until LP4 lands")
     return "\n".join(lines)

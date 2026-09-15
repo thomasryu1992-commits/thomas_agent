@@ -249,7 +249,6 @@ def plan_live_entry(
     gate_open: bool,
     runtime_active: bool,
     daily_loss_breached: bool,
-    clean_canary_orders: int,
     submitted_today: int,
     equity_usdt: float,
     now: str,
@@ -488,7 +487,6 @@ def plan_live_entry(
         gate_open=gate_open,
         runtime_active=runtime_active,
         daily_loss_breached=daily_loss_breached,
-        clean_canary_orders=clean_canary_orders,
         submitted_today=submitted_today,
         current_open_notional_usdt=compute_open_notional_usdt(
             snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))

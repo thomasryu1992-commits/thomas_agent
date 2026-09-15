@@ -27,7 +27,6 @@ _CAPS = dict(
     max_daily_order_count=2,
     max_open_notional_usdt=120.0,
     daily_loss_limit_usdt=20.0,
-    min_clean_canary_orders=3,
 )
 
 
@@ -208,12 +207,121 @@ def test_status_fails_closed_on_a_tampered_budget(tmp_path):
     assert st["registered"] is True and st["valid"] is False and st["error"] == lb.BUDGET_TAMPERED
 
 
+# --- the retired canary cap (2026-09-15, PR1r) ----------------------------------
+#
+# Thomas removed the clean-canary promotion gate with the canary door, and the budget stopped
+# requiring, writing and reading `caps.min_clean_canary_orders`. Records registered before carry
+# it inside their self-hash (production's reads 4), under a closed `caps` object — so the schema
+# keeps the property and only `required` let go of it. These pin that, so a later "cleanup" that
+# deletes the property is caught here rather than by every entry refusing on a schema error.
+
+def _legacy_record(**caps_extra):
+    """The pre-PR1r builder's shape, hashed raw — nothing today can build it."""
+    from runtime.read_only_kernel import integrity
+
+    body = {
+        "schema_version": "live_trading_budget.v0.1", "budget_id": "budget_0123456789abcdef0123",
+        "venue": "binance_futures", "symbol_allowlist": ["BTCUSDT"],
+        "caps": {**_CAPS, "min_clean_canary_orders": 4, **caps_extra},
+        "valid_from": FROM, "valid_until": UNTIL, "registered_by": "thomas", "registered_at": NOW,
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    return body
+
+
+def _write_raw(root, record):
+    path = lb.budget_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_the_schema_still_declares_the_retired_cap_and_no_longer_requires_it():
+    schema = json.loads(
+        (repo_root() / "schemas" / lb.LIVE_BUDGET_SCHEMA_FILE).read_text(encoding="utf-8")
+    )
+    caps = schema["properties"]["caps"]
+    assert caps["additionalProperties"] is False
+    assert "min_clean_canary_orders" in caps["properties"]
+    assert "min_clean_canary_orders" not in caps["required"]
+    assert set(caps["required"]) == set(_CAPS) == set(lb._CAP_KEYS)
+
+
+def test_a_budget_built_today_omits_the_retired_cap():
+    rec = _build(caps={"min_clean_canary_orders": 3})     # a caller still passing it
+    assert "min_clean_canary_orders" not in rec["caps"]
+    assert rec["caps"] == _CAPS
+
+
+def test_a_legacy_record_carrying_the_retired_cap_still_verifies_and_resolves(tmp_path):
+    _write_raw(tmp_path, _legacy_record())
+    assert lb.read_registered_budget(tmp_path)["caps"]["min_clean_canary_orders"] == 4
+    st = lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")
+    assert st["valid"] is True and st["error"] is None
+    lim = lb.limits_from_budget(lb.read_registered_budget(tmp_path))
+    assert lim.max_order_notional_usdt == 60.0 and lim.max_daily_order_count == 2
+
+
+def test_stripping_the_retired_cap_from_a_legacy_record_breaks_its_hash(tmp_path):
+    """Why nothing migrates the records on disk: the key is inside the self-hash."""
+    record = _legacy_record()
+    del record["caps"]["min_clean_canary_orders"]
+    _write_raw(tmp_path, record)
+    with pytest.raises(ToolError) as exc:
+        lb.read_registered_budget(tmp_path)
+    assert exc.value.reason_code == lb.BUDGET_TAMPERED
+    assert lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")["error"] == lb.BUDGET_TAMPERED
+
+
+def test_no_runtime_or_script_reads_the_retired_cap():
+    """A subscript on it raises on every budget built today; an attribute read means the field
+    came back. Either one on the live leg would raise before settle/protect. Walked as code, not
+    text, so the prose explaining the retirement does not trip it."""
+    import ast
+
+    name = "min_clean_canary_orders"
+    offenders = []
+    for base in ("runtime", "scripts"):
+        for path in sorted((repo_root() / base).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                subscripted = (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+                               and node.slice.value == name)
+                if subscripted or (isinstance(node, ast.Attribute) and node.attr == name):
+                    offenders.append(f"{path.relative_to(repo_root())}:{node.lineno}")
+    assert offenders == []
+
+
+def test_the_register_script_refuses_the_retired_flag_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    import importlib
+
+    reg = importlib.import_module("scripts.register_live_trading_budget")
+    written: list[object] = []
+    monkeypatch.setattr(reg.live_budget, "write_registered_budget", lambda *a, **k: written.append(1))
+    with pytest.raises(SystemExit) as exc:
+        reg.main(["--registered-by", "thomas", "--root", str(tmp_path),
+                  "--min-clean-canary-orders", "4"])
+    assert exc.value.code == 2
+    assert written == []
+    assert "--min-clean-canary-orders" in capsys.readouterr().err
+
+
+def test_the_register_script_writes_a_record_without_the_retired_cap(tmp_path, monkeypatch, capsys):
+    import importlib
+
+    reg = importlib.import_module("scripts.register_live_trading_budget")
+    monkeypatch.setattr(reg, "assert_not_foreign_root_run", lambda root=None, **kw: None)
+    assert reg.main(["--registered-by", "thomas", "--root", str(tmp_path)]) == 0
+    record = lb.read_registered_budget(tmp_path)
+    assert "min_clean_canary_orders" not in record["caps"]
+    assert "canary" not in capsys.readouterr().out
+
+
 # --- loader ------------------------------------------------------------------
 
 def test_limits_from_budget_maps_caps_and_leaves_confirmation_to_the_operator():
     lim = lb.limits_from_budget(_build())
     assert lim.max_order_notional_usdt == 60.0 and lim.max_daily_order_count == 2
-    assert lim.absolute_max_notional_usdt == 200.0 and lim.min_clean_canary_orders == 3
+    assert lim.absolute_max_notional_usdt == 200.0
+    assert not hasattr(lim, "min_clean_canary_orders")
     # confirmation + manual_kill are operator env, never budget-registered.
     assert lim.confirmation == "" and lim.manual_kill_switch is False
 

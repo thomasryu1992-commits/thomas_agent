@@ -655,8 +655,8 @@ def live_risk_snapshot(
 
     ``pnl_source`` names where the figure came from, so a caller can tell "0.0 because nothing
     was lost" from "0.0 because nothing was recorded". ``LIVE_PNL_NO_SOURCE`` marks the second
-    case explicitly — the distinction ``clean_canary_order_count`` already makes by returning
-    its error alongside its count.
+    case explicitly — the distinction the retired canary count made by returning its error
+    alongside its count.
 
     ``venue_required`` is for the callers that are about to OPEN a position — the autonomous
     leg, the canary door, the probe door — and for the board once it has read the account on

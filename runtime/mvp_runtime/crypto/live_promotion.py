@@ -1,25 +1,18 @@
-"""LP6 live-canary promotion evidence (source L5).
+"""LP6 live-canary evidence (source L5) — history, read-only.
 
-The evidence side of the promotion gate: how many real mainnet canary orders have been
-placed and reconciled cleanly. LP3's final guard already refuses an autonomous live entry
-until that count reaches the configured minimum — but it takes the number as an argument and
-until now **nobody supplied it**. This module is the supplier.
+A canary was one small real mainnet order placed by the operator on purpose, to prove the signing,
+submission and reconciliation path against the live venue before anything autonomous used it. The
+registry recorded each one, and its clean count used to be the final guard's promotion gate: no
+autonomous live entry until enough canaries had reconciled cleanly. Thomas removed the canary door
+and that gate together on 2026-09-15 (PR1r), so nothing counts these rows toward anything now.
 
-A canary is one small real order placed by the operator on purpose, to prove the signing,
-submission, and reconciliation path works against the live venue before anything autonomous
-uses it. It is evidence, not a capability: recording one grants nothing, and the record
-cannot be produced except by having actually placed the order.
+They are still a record of what the live path did, so the read stays verified: a registry that is
+unreadable, tampered or duplicated raises rather than rendering, because a board showing a row that
+cannot prove itself would vouch for it. The rows are read as they sit on disk — never normalised —
+by the evidence board below and by ``scripts/record_unreported_live_order.py``.
 
-Fail-closed toward NOT ready, in two independent ways, both carried over from the source:
-
-* An unverifiable registry counts **zero**, never "unknown" and never the last good number.
-  Damaged evidence is no evidence.
-* A minimum of zero or less is refused outright — that would be promotion with no evidence
-  at all, which is the one configuration that must never read as satisfied.
-
-Nothing here writes any more. The registry's only writer was the operator's canary door, and
-both were removed on 2026-09-15 (PR1r). The rows already on disk stay readable — verified, never
-normalised — for the evidence board below and ``scripts/record_unreported_live_order.py``.
+Nothing here writes any more. The registry's only writer was the canary door, and it went with the
+door. ``RECONCILED`` stays here because the live leg's reconcile vocabulary imports it.
 """
 
 from __future__ import annotations
@@ -44,9 +37,6 @@ CANARY_HISTORY_UNREADABLE = "CANARY_HISTORY_UNREADABLE"
 CANARY_HISTORY_TAMPERED = "CANARY_HISTORY_TAMPERED"
 CANARY_HISTORY_DUPLICATE = "CANARY_HISTORY_DUPLICATE"
 
-# The source's default: three clean canary orders before an autonomous live entry.
-DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3
-
 
 def _money(value: Any) -> float | None:
     """A number, or nothing. Never whatever the venue happened to send.
@@ -66,8 +56,9 @@ def read_canary_orders(root: Path | None = None) -> list[dict[str, Any]]:
     """All canary records, oldest first — a VERIFIED read.
 
     Missing store = honestly empty (no canary has been placed). Anything unreadable,
-    tampered, or duplicated raises: this history is the sole evidence gating autonomous live
-    trading, so a record that cannot prove itself must not be allowed to count.
+    tampered, or duplicated raises: this history once gated autonomous live trading and is
+    still what the board vouches for, so a record that cannot prove itself must not be shown
+    as if it could.
     """
     path = state_dir(root) / CANARY_ORDERS_FILENAME
     records: list[dict[str, Any]] = []
@@ -94,89 +85,14 @@ def read_canary_orders(root: Path | None = None) -> list[dict[str, Any]]:
     return records
 
 
-def clean_canary_order_count(root: Path | None = None) -> tuple[int, str | None]:
-    """``(clean_count, history_error_reason_code)``.
-
-    A registry that cannot be verified counts **zero** and names why. Returning the number
-    and the error together is deliberate: the caller gets a usable count without the error
-    being silently swallowed, and "0 because damaged" is never mistaken for "0 because new".
-    """
-    try:
-        records = read_canary_orders(root)
-    except ToolError as exc:
-        return 0, exc.reason_code
-    return sum(1 for r in records if r.get("clean") is True), None
-
-
-def promotion_status(
-    *, min_orders: int | None = None, root: Path | None = None
-) -> dict[str, Any]:
-    """Is there enough canary evidence for an autonomous live entry?
-
-    A ``min_orders`` of zero or less is **refused**, not satisfied: requiring no evidence is
-    the one setting that must never read as ready.
-    """
-    required = DEFAULT_MIN_CLEAN_CANARY_ORDERS if min_orders is None else int(min_orders)
-    clean_count, history_error = clean_canary_order_count(root)
-    reasons: list[str] = []
-    if required <= 0:
-        reasons.append("promotion minimum is not configured (would be promotion with no evidence)")
-    elif clean_count < required:
-        reasons.append(f"need >= {required} clean canary orders, have {clean_count}")
-    if history_error is not None:
-        reasons.append(f"canary registry could not be verified ({history_error}); counted as zero")
-    return {
-        "ready": not reasons,
-        "clean_count": clean_count,
-        "required": required,
-        "history_error": history_error,
-        "reasons": reasons,
-        **_size_evidence(root),
-    }
-
-
-def _size_evidence(root: Path | None) -> dict[str, Any]:
-    """How much of the counted evidence can prove its own size.
-
-    The record gained ``filled_notional_usdt`` and ``notional_declared_vs_filled_usdt`` so that
-    declared-versus-filled would be a subtraction rather than a memory — and then nothing read
-    them, so the subtraction was stored where no operator would see it. This is the read side.
-
-    Reported **beside** ``ready``, never folded into it. Making a size disagreement block
-    promotion would change what the canary count means, and that is a separate decision the
-    field's own author declined to take; this only makes the number visible to the person the
-    promotion gate actually is.
-
-    ``size_unproven`` counts clean records carrying no comparison at all — the four standing as
-    evidence on 2026-07-29 are all of them, because they predate the fields. That is the figure
-    worth seeing first: it is not "the sizes disagreed", it is "nobody can ask".
-    """
-    try:
-        records = [r for r in read_canary_orders(root) if r.get("clean") is True]
-    except ToolError:
-        # The count above already reported the verification failure and counted zero; this is a
-        # decoration on that row and must not raise a second, louder version of the same news.
-        return {"size_unproven": 0, "largest_size_gap_usdt": None}
-    gaps = [
-        abs(float(r["notional_declared_vs_filled_usdt"])) for r in records
-        if isinstance(r.get("notional_declared_vs_filled_usdt"), (int, float))
-        and not isinstance(r.get("notional_declared_vs_filled_usdt"), bool)
-    ]
-    return {
-        "size_unproven": len(records) - len(gaps),
-        "largest_size_gap_usdt": round(max(gaps), 8) if gaps else None,
-    }
-
-
 # --- the operator's read side: can each canary prove what it was? ------------
 #
 #     python -m runtime.mvp_runtime.crypto.live_promotion
 #
-# The readiness board already reports the AGGREGATE ("4 of 4 cannot prove their size"), which
-# answers "is the evidence sound" but not "did the one I just placed record its fill". During a
-# live canary run that second question is the whole question, and answering it meant opening the
-# jsonl by hand. Read-only, no gate, no network: it re-reads the same registry the promotion
-# gate counts, and renders per record what the record itself carries.
+# Written while canaries were still being placed, when "did the one I just placed record its fill"
+# was the whole question and answering it meant opening the jsonl by hand. The readiness board's
+# aggregate row went with the promotion gate (2026-09-15, PR1r); this is where the frozen history
+# is read now. Read-only, no gate, no network: it renders per record what the record itself carries.
 
 
 def canary_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
@@ -223,8 +139,8 @@ def render_canary_evidence_text(rows: list[dict[str, Any]]) -> str:
     proven = sum(1 for r in rows if r["size_proven"])
     lines += ["", f"{proven}/{len(rows)} can prove their size"]
     if proven < len(rows):
-        lines.append("a record written before the fill fields existed cannot be repaired — "
-                     "only a NEW canary can add provable evidence")
+        lines.append("a record written before the fill fields existed cannot be repaired, and no "
+                     "new canary can be placed — the live trades below are the evidence now")
     return "\n".join(lines)
 
 
@@ -277,7 +193,7 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
     ``candidate_id`` / ``strategy_rule_hash`` / ``strategy_generation_id`` since 2026-07-26,
     when the executing leg stopped copying only the display id — and then this board, the one
     surface an operator reads live results on, dropped all three again. That is the same half
-    repair `_size_evidence` above was written to finish: a field stored where nobody can see
+    repair the canary size read was written to finish: a field stored where nobody can see
     it answers no question.
 
     It is not decoration while a live test is running. 25 of the 72 strategies currently
@@ -430,8 +346,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rows = canary_evidence_rows()
     except ToolError as exc:
-        # A registry that cannot be verified counts zero for the gate; say so here too rather
-        # than printing an empty board that reads as "no canaries placed".
+        # A registry that cannot be verified is refused, never rendered as an empty board that
+        # reads as "no canaries placed". It withholds the live-trade half below too; PR1r left
+        # that exit as it was.
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc.reason}\n")
         return 2
     trades = live_trade_evidence_rows()

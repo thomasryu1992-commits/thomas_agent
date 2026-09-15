@@ -11,8 +11,10 @@ with ``scripts/register_live_trading_budget.py``. It is deliberately the *record
 
 - **Registering a budget grants nothing and enables no trading.** It is a self-hashed
   operator record, not a permission and not a grant. The `live_trading` safety-flag grant,
-  the confirmation phrase, the ≥3 clean canary orders, the P5 role, and LP4/LP5 all still
-  stand between here and a live order.
+  the confirmation phrase, the P5 role, and LP4/LP5 all still stand between here and a live
+  order. (A ≥3 clean-canary minimum stood here too until 2026-09-15, when Thomas removed it
+  with the canary door — PR1r. Records registered before still carry
+  ``caps.min_clean_canary_orders``; the schema accepts it and nothing reads it.)
 - **The guard is not rewired here.** Making the registered budget the *authoritative* source
   the guard reads (replacing the env caps) is a separate increment, so the well-tested guard
   logic stays untouched while the record type and registration path land first.
@@ -66,7 +68,6 @@ _CAP_KEYS = (
     "max_daily_order_count",
     "max_open_notional_usdt",
     "daily_loss_limit_usdt",
-    "min_clean_canary_orders",
 )
 
 
@@ -116,9 +117,9 @@ def build_live_trading_budget_record(
             # guard reads as blocked.
             raise ToolError(BUDGET_INVALID, f"cap {key} must be > 0, got {numeric[key]}")
 
-    for count_key in ("max_daily_order_count", "min_clean_canary_orders"):
-        if float(caps[count_key]) != int(caps[count_key]):
-            raise ToolError(BUDGET_INVALID, f"cap {count_key} must be a whole number, got {caps[count_key]!r}")
+    daily_count = caps["max_daily_order_count"]
+    if float(daily_count) != int(daily_count):
+        raise ToolError(BUDGET_INVALID, f"cap max_daily_order_count must be a whole number, got {daily_count!r}")
 
     if numeric["absolute_max_notional_usdt"] > HARD_CEILING_USDT:
         raise ToolError(
@@ -161,7 +162,6 @@ def build_live_trading_budget_record(
             "max_daily_order_count": int(caps["max_daily_order_count"]),
             "max_open_notional_usdt": numeric["max_open_notional_usdt"],
             "daily_loss_limit_usdt": numeric["daily_loss_limit_usdt"],
-            "min_clean_canary_orders": int(caps["min_clean_canary_orders"]),
         },
         "valid_from": valid_from,
         "valid_until": valid_until,
@@ -232,7 +232,8 @@ def budget_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
 def limits_from_budget(record: Mapping[str, Any]) -> Any:
     """A ``LiveOrderLimits`` carrying the registered caps (for a later guard-rewiring increment).
 
-    Maps the six registered caps; ``confirmation`` and ``manual_kill_switch`` are deliberately
+    Maps the five registered caps (a legacy record's ``min_clean_canary_orders`` is not one of
+    them and is never indexed); ``confirmation`` and ``manual_kill_switch`` are deliberately
     left at their defaults — they are operator env state (a phrase and a halt), not
     budget-registered caps, so a budget can never carry the confirmation that proves intent."""
     from .live_order import LiveOrderLimits
@@ -244,7 +245,6 @@ def limits_from_budget(record: Mapping[str, Any]) -> Any:
         max_daily_order_count=int(caps["max_daily_order_count"]),
         max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
         daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
-        min_clean_canary_orders=int(caps["min_clean_canary_orders"]),
     )
 
 

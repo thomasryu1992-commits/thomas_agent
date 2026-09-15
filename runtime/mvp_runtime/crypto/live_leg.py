@@ -18,7 +18,7 @@ autonomous live order reachable — so it is deliberately a single chokepoint ra
 from the cycle itself, and a test pins that no entry point reaches this module by any other
 route. What still stands between the wiring and an order is the gate: ``live_route`` runs
 nothing at all unless the ``live_trading`` grant is active on the machine, and every door below
-it (the guard, the phrase, the registered budget, the canary evidence) is unchanged.
+it (the guard, the phrase, the registered budget) is unchanged.
 
 The three rules this leg owes, each implemented as a branch you can point at:
 
@@ -1056,7 +1056,7 @@ def execute_live_exit(
     """Close one open live position, withdraw its bracket, and record the realized outcome.
 
     The close guard is deliberately narrower than the entry guard: a reduceOnly close is exempt
-    from the loss breaker, the caps, the daily count, the promotion gate and both kill switches,
+    from the loss breaker, the caps, the daily count and both kill switches,
     because a halt that traps a losing position open is worse than the halt prevents. What
     survives is the structural boundary — the grant, the phrase, and ``reduce_only`` itself.
 

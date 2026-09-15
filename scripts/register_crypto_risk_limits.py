@@ -4,8 +4,8 @@ Operator step. Builds a self-hashed limits record and writes it to the per-machi
 (gitignored). **This grants nothing and enables no trading** — it can only move a breaker
 *within* the relaxation bounds `runtime/mvp_runtime/crypto/guards.py` already accepts, and every
 door between here and a live order (the `MVP_LIVE_TRADING=real` opt-in, the confirmation phrase,
-the clean canary orders, the registered budget, both kill switches) stands exactly where it
-stood. That first door was a per-machine `live_trading` grant until 2026-07-28; see
+the registered budget, both kill switches) stands exactly where it stood. That first door was a
+per-machine `live_trading` grant until 2026-07-28; see
 `crypto/risk_limits.py` for what its removal changed and what it did not.
 
 With nothing registered the runtime judges on the guards.py defaults, which is the supported
