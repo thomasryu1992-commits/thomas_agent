@@ -1141,16 +1141,17 @@ def build_execution_stage_permission_decision(
 
     ``content`` is ``execution_stage.plan_transition``'s output, and all of it rides in
     ``normalized_parameters`` and ``content_sha256``: the transition, both stages, the record it
-    was asked against (``stage_ref``), the end date, the policy version and safety fingerprint it
-    binds, who registers it and why, and the evidence. A grant for one of those cannot be spent as
-    another (``invalidated_by_any_material_field_change``); the door re-checks ``stage_ref`` and the
-    policy identity against the running machine before it spends.
+    was asked against (``stage_ref``), the policy version and safety fingerprint it binds, who
+    registers it and why, and the evidence (including a record it replaces that did not bind). A
+    grant for one of those cannot be spent as another (``invalidated_by_any_material_field_change``);
+    the door re-plans the transition against the running machine before it spends, and the written
+    record is only ever read as valid while it carries exactly this content.
 
     RED when the target is a LIVE stage — the rung at which entry doors may open real positions
     once they read it — ORANGE otherwise."""
     from .crypto import execution_stage as es  # local: permission must not import a domain at module level
 
-    required = ("venue", "transition", "from_stage", "to_stage", "stage_ref", "valid_until",
+    required = ("venue", "transition", "from_stage", "to_stage", "stage_ref",
                 "policy_version", "policy_safety_sha256", "registered_by", "reason", "evidence")
     missing = [k for k in required if k not in content]
     if missing:
@@ -1160,10 +1161,14 @@ def build_execution_stage_permission_decision(
     doors = {
         "READ_ONLY": "none", "SHADOW": "none", "PAPER": "none (paper only)",
         "SIGNED_TESTNET": "none on mainnet (signed testnet evidence only)",
-        "LIVE_CANARY": "the canary and probe doors (one deliberate real order at a time)",
-        "LIVE_AUTONOMOUS": "the autonomous live leg, the canary and probe doors, and arming a strategy LIVE",
+        "LIVE_AUTONOMOUS": "the autonomous live leg, the slippage probe, and arming a strategy LIVE",
         "LIVE_SCALED": "as LIVE_AUTONOMOUS",
     }[to_stage]
+    evidence = content["evidence"] if isinstance(content["evidence"], Mapping) else {}
+    replaced = ""
+    if evidence.get("replaced_reason_code"):
+        replaced = (f" It replaces a {evidence.get('replaced_stage') or from_stage} record that does not bind "
+                    f"({evidence['replaced_reason_code']}).")
     enforced = ("" if es.STAGE_ENFORCED else
                 " NOT ENFORCED YET: no entry door reads the stage until PR1b; this records it.")
     action = _ActionSpec(
@@ -1175,9 +1180,9 @@ def build_execution_stage_permission_decision(
         risk_reason=(
             f"Sets this machine's execution stage to {to_stage} ({content['transition']} from {from_stage}). "
             f"The new-exposure doors that stage admits: {doors}. Closing a position is never gated by the "
-            "stage. Bound to policy "
+            "stage, and no stage expires. Bound to policy "
             f"{content['policy_version']} and its safety fingerprint; a policy change, another stage change "
-            "before the spend, or a later demotion refuses or replaces it." + enforced
+            "before the spend, or a later demotion refuses or replaces it." + replaced + enforced
         ),
         authority_reason="Prime may prepare an execution-stage transition for Thomas review.",
         decision_reason=(

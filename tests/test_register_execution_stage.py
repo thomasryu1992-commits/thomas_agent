@@ -1,5 +1,6 @@
 """The execution-stage door, end to end (PR1a): ask -> Thomas approves -> spend once -> record binds;
-demote without approval; no skip; no second spend. Needs the local Core, like every ask."""
+demote without approval; no skip; no second spend; one writer at a time; a failure after the spend
+says so. Needs the local Core, like every ask."""
 
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ def _approve(root, approval_id):
 
 def _bootstrap_paper(root):
     asked = door.run_request(root=root, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
-                             attestation="paper ledger; counterfactual shadow book", valid_days=None)
+                             attestation="paper ledger; counterfactual shadow book")
     _approve(root, asked["approval_id"])
     return asked, door.run_confirm(root=root, now=NOW, approval_id=asked["approval_id"])
 
@@ -36,7 +37,7 @@ def _bootstrap_paper(root):
 @requires_local_core
 def test_an_ask_changes_nothing_and_says_what_it_would_record(tmp_path):
     asked = door.run_request(root=tmp_path, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
-                             attestation="paper ledger", valid_days=None)
+                             attestation="paper ledger")
     assert asked["content"]["transition"] == es.T_BOOTSTRAP
     assert es.read_registered_stage(tmp_path) is None
     snapshot = ApprovalStore.default(tmp_path).get(asked["approval_id"])["approved_action_snapshot"]
@@ -60,7 +61,7 @@ def test_the_approved_transition_is_spent_once_and_the_record_binds(tmp_path):
 @requires_local_core
 def test_an_unapproved_ask_cannot_be_spent(tmp_path):
     asked = door.run_request(root=tmp_path, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
-                             attestation="paper ledger", valid_days=None)
+                             attestation="paper ledger")
     with pytest.raises(MvpRuntimeError) as exc:
         door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
     assert exc.value.reason_code == "NOT_APPROVED"
@@ -73,7 +74,7 @@ def test_a_skip_is_refused_before_anything_is_asked(tmp_path):
     before = len(ApprovalStore.default(tmp_path).read_all())
     with pytest.raises(MvpRuntimeError) as exc:
         door.run_request(root=tmp_path, now=NOW, target="LIVE_AUTONOMOUS", registered_by="t", reason="r",
-                         attestation=None, valid_days=7)
+                         attestation=None)
     assert exc.value.reason_code == es.STAGE_SKIP_REFUSED
     assert len(ApprovalStore.default(tmp_path).read_all()) == before
 
@@ -82,7 +83,7 @@ def test_a_skip_is_refused_before_anything_is_asked(tmp_path):
 def test_a_record_that_moved_after_the_ask_refuses_the_spend_and_keeps_the_grant(tmp_path):
     _bootstrap_paper(tmp_path)
     asked = door.run_request(root=tmp_path, now=NOW, target="SIGNED_TESTNET", registered_by="t", reason="r",
-                             attestation=None, valid_days=None)
+                             attestation=None)
     _approve(tmp_path, asked["approval_id"])
     door.run_demote(root=tmp_path, now=NOW, target="SHADOW", registered_by="t", reason="moved")
     with pytest.raises(MvpRuntimeError) as exc:
@@ -119,3 +120,99 @@ def test_show_reports_the_stage_without_changing_anything(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "execution stage : PAPER" in out
     assert "none yet" in out   # PR1a says plainly that nothing enforces the stage
+    assert "valid until" not in out   # no stage expires
+
+
+def _testnet(root):
+    _bootstrap_paper(root)
+    asked = door.run_request(root=root, now=NOW, target="SIGNED_TESTNET", registered_by="thomas", reason="climb",
+                             attestation=None)
+    _approve(root, asked["approval_id"])
+    return asked, door.run_confirm(root=root, now=NOW, approval_id=asked["approval_id"])
+
+
+@requires_local_core
+def test_the_real_ledger_witnesses_a_climb_and_a_demotion_that_carries_it(tmp_path):
+    asked, confirmed = _testnet(tmp_path)
+    assert (confirmed["status"]["stage"], confirmed["status"]["valid"]) == ("SIGNED_TESTNET", True)
+    out = door.run_demote(root=tmp_path, now=NOW, target="SHADOW", registered_by="thomas", reason="step back")
+    assert (out["status"]["stage"], out["status"]["valid"]) == ("SHADOW", True)
+    assert out["record"]["approval_id"] == asked["approval_id"]
+
+
+@requires_local_core
+def test_after_a_policy_change_a_demotion_reaches_only_read_only(tmp_path, monkeypatch):
+    _testnet(tmp_path)
+    real = es.policy_safety_identity()
+    monkeypatch.setattr(es, "policy_safety_identity", lambda root=None: {**real, "policy_version": "1.5.1"})
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_demote(root=tmp_path, now=NOW, target="PAPER", registered_by="t", reason="r")
+    assert exc.value.reason_code == es.STAGE_DEMOTE_FROM_UNBOUND
+    out = door.run_demote(root=tmp_path, now=NOW, target="READ_ONLY", registered_by="t", reason="stop")
+    assert (out["status"]["stage"], out["status"]["valid"]) == ("READ_ONLY", True)
+
+
+@requires_local_core
+def test_the_spend_rechecks_the_record_under_the_stage_lock(tmp_path, monkeypatch):
+    """Review of #872: a --demote landing between the re-check and the write was overwritten by the
+    climb. Both doors now hold one lock, and the confirm re-reads the record inside it."""
+    from contextlib import contextmanager
+
+    _bootstrap_paper(tmp_path)
+    asked = door.run_request(root=tmp_path, now=NOW, target="SIGNED_TESTNET", registered_by="t", reason="r",
+                             attestation=None)
+    _approve(tmp_path, asked["approval_id"])
+    held = {"now": False, "reads_inside": 0}
+    real_lock, real_resolve = es.stage_lock, es.resolve_execution_stage
+
+    @contextmanager
+    def watched(root=None):
+        with real_lock(root):
+            held["now"] = True
+            try:
+                yield
+            finally:
+                held["now"] = False
+
+    def counting(*a, **kw):
+        held["reads_inside"] += held["now"]
+        return real_resolve(*a, **kw)
+
+    monkeypatch.setattr(es, "stage_lock", watched)
+    monkeypatch.setattr(es, "resolve_execution_stage", counting)
+    door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert held["reads_inside"] == 1
+
+
+@requires_local_core
+def test_a_record_write_that_fails_after_the_spend_says_the_grant_is_gone(tmp_path, monkeypatch):
+    asked = door.run_request(root=tmp_path, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
+                             attestation="paper ledger")
+    _approve(tmp_path, asked["approval_id"])
+
+    def refuse(record, root=None):
+        raise PermissionError("read-only state dir")
+
+    monkeypatch.setattr(es, "write_stage_record", refuse)
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert exc.value.reason_code == es.STAGE_WRITE_FAILED_AFTER_SPEND
+    assert asked["approval_id"] in str(exc.value) and "ask Thomas again" in str(exc.value)
+    assert ApprovalStore.default(tmp_path).get(asked["approval_id"])["status"] == "CONSUMED"
+    assert es.read_registered_stage(tmp_path) is None
+
+
+@requires_local_core
+def test_a_ledger_failure_after_the_write_is_a_warning_not_a_block(tmp_path, monkeypatch, capsys):
+    from runtime.mvp_runtime.errors import PersistenceError
+    from runtime.mvp_runtime.store import LedgerStore
+
+    _bootstrap_paper(tmp_path)
+
+    def refuse(self, event):
+        raise PersistenceError("LEDGER_WRITE_FAILED", "disk full")
+
+    monkeypatch.setattr(LedgerStore, "append_control", refuse)
+    out = door.run_demote(root=tmp_path, now=NOW, target="READ_ONLY", registered_by="t", reason="stop")
+    assert out["status"]["stage"] == "READ_ONLY"
+    assert out["warnings"] and "LEDGER_WRITE_FAILED" in out["warnings"][0]

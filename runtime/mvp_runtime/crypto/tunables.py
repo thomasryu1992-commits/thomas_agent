@@ -46,7 +46,6 @@ from . import (
     dashboard,
     digest,
     distribution_gate,
-    execution_stage,
     factory,
     features,
     feedback,
@@ -54,10 +53,10 @@ from . import (
     forward_confirmation,
     guards,
     live_allowance,
-    live_budget,
     live_entry,
     live_order,
     live_position,
+    live_budget,
     live_promotion,
     live_sizing,
     market_data,
@@ -491,17 +490,6 @@ TUNABLES: tuple[Tunable, ...] = (
     # test's name pattern — as was the number that bounds live order size. A pattern that misses
     # a ceiling and a pace misses the two shapes an operator most often reaches for.
 
-    # --- the execution stage (crypto PR1a, Thomas decisions 1/4/8/9, 2026-09-15) ---------------
-    Tunable("MIN_CLEAN_CANARY_ORDERS_FOR_AUTONOMOUS", execution_stage.MIN_CLEAN_CANARY_ORDERS_FOR_AUTONOMOUS,
-            "crypto/execution_stage.py", OPERATOR,
-            "the canary evidence a LIVE_AUTONOMOUS climb needs, as a floor in code: the '>= 3' the policy "
-            "and role contract state had only ever been a budget-registered number (audit CA-4)",
-            "Thomas changing the promotion evidence rule — a lower floor is a governance decision"),
-    Tunable("MAX_LIVE_VALIDITY_DAYS", execution_stage.MAX_LIVE_VALIDITY_DAYS,
-            "crypto/execution_stage.py", OPERATOR,
-            "no approval to trade real money stands forever; 30 days matches the registered budget's "
-            "customary window, and renewal is a REBIND — approved again",
-            "an unattended run that needs a longer window, weighed against how stale an approval may be"),
     Tunable("HARD_CEILING_USDT", live_budget.HARD_CEILING_USDT, "crypto/live_budget.py", OPERATOR,
             "the largest per-order cap a registered budget may declare; 200 at bring-up, 500 since",
             "Thomas raised it 2026-08-08 after 4 clean canaries and 2 round trips; the same evidence"),

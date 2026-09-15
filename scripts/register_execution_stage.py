@@ -5,9 +5,9 @@
     python -m scripts.register_execution_stage --show
 
     # 1) ASK Thomas for a transition (stores the PENDING approval; changes nothing).
-    #    The first record may only be SHADOW or PAPER and names its evidence; after that, one rung
-    #    up (CLIMB) or the same rung again (REBIND — after a policy change, or to renew a LIVE
-    #    stage's end date). No skip.
+    #    With no binding stage above READ_ONLY the record may only be SHADOW or PAPER and names its
+    #    evidence (BOOTSTRAP); from a binding record, one rung up (CLIMB); after a policy change, the
+    #    same rung again (REBIND). No skip, and no stage expires.
     python -m scripts.register_execution_stage --request --to PAPER --registered-by thomas \
         --reason "initial stage" --attest "paper ledger since 2026-07, counterfactual shadow book"
 
@@ -15,7 +15,8 @@
     # 3) Spend the approval once and write the record:
     python -m scripts.register_execution_stage --confirm --approval-id approval_abc123
 
-    # Demote — any rung down, NO approval, immediate (decision 8):
+    # Demote — any rung down, NO approval, immediate (decision 8). READ_ONLY works from any state,
+    # even a record that cannot be read; another rung needs a record that binds.
     python -m scripts.register_execution_stage --demote --to READ_ONLY --registered-by thomas --reason "..."
 
 Run it in the scheduler container as the service user (it writes governed state):
@@ -44,8 +45,7 @@ from runtime.mvp_runtime.binding import bind_task_to_core  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import execution_stage as es  # noqa: E402
-from runtime.mvp_runtime.crypto import live_promotion  # noqa: E402
-from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError  # noqa: E402
+from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.intake import build_task  # noqa: E402
 from runtime.mvp_runtime.policy_fingerprint import policy_safety_identity  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
@@ -73,7 +73,7 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
         f"execution stage : {status.stage}" + ("" if status.valid else f"  (READ_ONLY because {status.reason_code})"),
         f"recorded stage  : {status.recorded_stage or 'none'}",
         f"stage id        : {status.stage_id or 'none'}",
-        f"valid until     : {status.valid_until or '-'}",
+        f"witness         : {status.approval_id or '-'}",
         f"bound to policy : {status.policy_version or '-'}",
         f"running policy  : {(identity or {}).get('policy_version')} {(identity or {}).get('policy_safety_sha256')}",
         "enforcement     : none yet (PR1b makes the entry doors read this)",
@@ -83,18 +83,12 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
 
 
 def run_request(*, root: Path | None, now: str, target: str, registered_by: str, reason: str,
-                attestation: str | None, valid_days: int | None) -> dict:
+                attestation: str | None) -> dict:
     base, approvals, ledger = _stores(root)
     assert_not_foreign_root_run(root)
     status = es.resolve_execution_stage(base, now=now, approval_store=approvals)
-    clean, canary_error = (None, None)
-    if target == es.ExecutionStage.LIVE_AUTONOMOUS.value:
-        clean, canary_error = live_promotion.clean_canary_order_count(root)
-    content = es.plan_transition(
-        status, target=target, now=now, registered_by=registered_by, reason=reason,
-        valid_days=valid_days, attestation=attestation, clean_canary_orders=clean,
-        canary_registry_error=canary_error,
-    )
+    content = es.plan_transition(status, target=target, registered_by=registered_by, reason=reason,
+                                 attestation=attestation)
     # `root` is the STATE root (stage record, approvals, ledger, control). The Core binding, the
     # policy and the schemas come from the image's own tree, like every other ask (repo_root=None).
     task = build_task(
@@ -131,30 +125,53 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
         raise ApprovalBlocked("EXECUTION_STAGE_NOT_A_STAGE_GRANT",
                               f"{approval_id} is not an execution-stage grant")
     content = dict(snapshot.get("normalized_parameters") or {})
-    status_now = es.resolve_execution_stage(base, now=now, approval_store=approvals)
-    # Built (and refused) BEFORE anything is spent: a grant that cannot write its record stays APPROVED.
-    record = es.record_from_approved(content, status_now=status_now, approval_id=approval_id,
-                                     action_fingerprint=str(approval["action_fingerprint"]), now=now)
-    with approval_mod.spend_lock(approvals, approval_id):
-        fresh = approvals.get(approval_id)
-        consumed = approval_mod.build_consumed_record(
-            fresh, decision, consumed_at=now, consumption_ref=es.consumption_ref(record["stage_id"]),
-        )
-        approvals.append([consumed])
-    es.write_stage_record(record, base)
-    ledger.append_control(es.transition_event(record, previous=status_now, now=now))
+    # One writer at a time: a --demote landing between the re-check and the write would otherwise be
+    # overwritten by this climb, and the stop would be lost.
+    with es.stage_lock(base):
+        status_now = es.resolve_execution_stage(base, now=now, approval_store=approvals)
+        # Built (and refused) BEFORE anything is spent: a grant that cannot write its record stays APPROVED.
+        record = es.record_from_approved(content, status_now=status_now, approval_id=approval_id,
+                                         action_fingerprint=str(approval["action_fingerprint"]), now=now)
+        with approval_mod.spend_lock(approvals, approval_id):
+            fresh = approvals.get(approval_id)
+            consumed = approval_mod.build_consumed_record(
+                fresh, decision, consumed_at=now, consumption_ref=es.consumption_ref(record["stage_id"]),
+            )
+            approvals.append([consumed])
+        try:
+            es.write_stage_record(record, base)
+        except OSError as exc:
+            raise ToolError(
+                es.STAGE_WRITE_FAILED_AFTER_SPEND,
+                f"approval {approval_id} was spent but the stage record could not be written ({exc}); "
+                f"the stage is unchanged and this approval cannot be used again - ask Thomas again",
+            ) from None
+    warnings = _ledger_event(ledger, es.transition_event(record, previous=status_now, now=now))
     after = es.resolve_execution_stage(base, now=now, approval_store=approvals)
-    return {"record": record, "status": after.as_dict()}
+    return {"record": record, "status": after.as_dict(), "warnings": warnings}
+
+
+def _ledger_event(ledger: LedgerStore, event: dict) -> list[str]:
+    """The history row. The record is already written when this runs, so a failure here is a
+    warning beside WRITTEN — never a BLOCKED that would tell the operator nothing changed."""
+    try:
+        ledger.append_control(event)
+    except (MvpRuntimeError, OSError) as exc:
+        return [f"the stage changed but its control-ledger event was not written "
+                f"({getattr(exc, 'reason_code', exc.__class__.__name__)})"]
+    return []
 
 
 def run_demote(*, root: Path | None, now: str, target: str, registered_by: str, reason: str) -> dict:
     base, approvals, ledger = _stores(root)
     assert_not_foreign_root_run(root)
-    status = es.resolve_execution_stage(base, now=now, approval_store=approvals)
-    record = es.demote_record(status, target=target, registered_by=registered_by, reason=reason, now=now)
-    es.write_stage_record(record, base)
-    ledger.append_control(es.transition_event(record, previous=status, now=now))
-    return {"record": record, "status": es.resolve_execution_stage(base, now=now, approval_store=approvals).as_dict()}
+    with es.stage_lock(base):
+        status = es.resolve_execution_stage(base, now=now, approval_store=approvals)
+        record = es.demote_record(status, target=target, registered_by=registered_by, reason=reason, now=now)
+        es.write_stage_record(record, base)
+    warnings = _ledger_event(ledger, es.transition_event(record, previous=status, now=now))
+    return {"record": record, "warnings": warnings,
+            "status": es.resolve_execution_stage(base, now=now, approval_store=approvals).as_dict()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,8 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", choices=es.LADDER)
     parser.add_argument("--registered-by")
     parser.add_argument("--reason")
-    parser.add_argument("--attest", help="the evidence a first record stands on")
-    parser.add_argument("--valid-days", type=int, help=f"a LIVE stage's end date, 1..{es.MAX_LIVE_VALIDITY_DAYS}")
+    parser.add_argument("--attest", help="the evidence a BOOTSTRAP record stands on")
     parser.add_argument("--approval-id")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
@@ -184,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_USAGE
         if args.request:
             out = run_request(root=args.root, now=now, target=args.to, registered_by=args.registered_by,
-                              reason=args.reason, attestation=args.attest, valid_days=args.valid_days)
+                              reason=args.reason, attestation=args.attest)
             sys.stdout.write(
                 f"ASKED: {out['content']['from_stage']} -> {out['content']['to_stage']} "
                 f"({out['content']['transition']}); approval {out['approval_id']} until {out['expires_at']}\n"
@@ -204,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc}\n")
         return EXIT_BLOCKED
     status = out["status"]
+    for warning in out.get("warnings") or ():
+        sys.stderr.write(f"WARNING: {warning}\n")
     sys.stdout.write(
         f"WRITTEN: {out['record']['transition']} {out['record']['previous_stage']} -> {out['record']['stage']} "
         f"({out['record']['stage_id']}); the machine now reads {status['stage']}"

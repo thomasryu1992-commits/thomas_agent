@@ -271,7 +271,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "canary_evidence",
         "account_visibility", "market_data_visibility", "order_path_implemented",
-        "autonomous_routing_wired", "execution_stage",
+        "autonomous_routing_wired",
     }
 
 
@@ -428,6 +428,16 @@ def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_p
     failed = {c["check"] for c in status["checks"] if not c["ok"]}
     assert "live_trading_opt_in" in failed and "registered_budget" in failed
     assert status["guard_dry_run"]["approved"] is False
+
+
+def test_the_execution_stage_is_an_informational_line_never_a_pass(tmp_path, clean_env):
+    """Crypto PR1a, review of #872: a `[PASS]` beside a machine that reads READ_ONLY would repeat the
+    all-PASS-with-nothing-armed board the audit started from. The stage is data and a `[----]` line."""
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "execution_stage" not in {c["check"] for c in status["checks"]}
+    assert status["execution_stage"]["stage"] == "READ_ONLY" and status["execution_stage"]["enforced"] is False
+    line = next(l for l in live_readiness.render_readiness_text(status).splitlines() if "execution_stage" in l)
+    assert line.startswith("[----]") and "EXECUTION_STAGE_RECORD_MISSING" in line and "not enforced yet" in line
 
 
 def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):

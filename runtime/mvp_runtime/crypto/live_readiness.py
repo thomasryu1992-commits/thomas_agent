@@ -491,17 +491,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     ))
 
     # 8c. The execution stage (crypto PR1a). Informational until PR1b makes the entry doors read it,
-    #     so it cannot move `ready` today — a machine with no record yet is not "less ready" than it
-    #     was yesterday. The detail says what the record is and why it does or does not bind.
+    #     so it is NOT a check: a `[PASS]` beside a machine that reads READ_ONLY would repeat the
+    #     all-PASS-with-nothing-armed board the audit started from. Rendered as a `[----]` line.
     stage = resolve_execution_stage(root, now=now)
-    checks.append(_check(
-        "execution_stage",
-        True,
-        f"{stage.stage}"
-        + ("" if stage.valid else f" (reads READ_ONLY: {stage.reason_code}"
-           + (f"; recorded {stage.recorded_stage}" if stage.recorded_stage else "") + ")")
-        + ("" if STAGE_ENFORCED else " - not enforced yet (PR1b)"),
-    ))
     # 9. The order path itself.
     checks.append(_check(
         "order_path_implemented",
@@ -721,6 +713,16 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
+def _execution_stage_line(status: Mapping[str, Any]) -> str:
+    stage = status.get("execution_stage") or {}
+    detail = str(stage.get("stage") or "UNKNOWN")
+    if not stage.get("valid"):
+        detail += f" (reads READ_ONLY: {stage.get('reason_code')}"
+        detail += f"; recorded {stage['recorded_stage']})" if stage.get("recorded_stage") else ")"
+    detail += " - enforced by the entry doors" if stage.get("enforced") else " - not enforced yet (PR1b)"
+    return f"[----] {'execution_stage':24} {detail}"
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -766,6 +768,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
+    lines.append(_execution_stage_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

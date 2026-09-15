@@ -103,20 +103,41 @@ SAFETY_SECTIONS: tuple[tuple[str, ...], ...] = (
 )
 
 
+# sha256(raw bytes) -> identity. The live leg reads the stage in every gated context of every fire,
+# and a pure-Python parse of the 25 KB policy costs ~18 ms each time; reading and hashing the bytes
+# costs a fraction of a millisecond. Keyed by content, not mtime: a coarse filesystem clock can give
+# two different same-size writes the same stamp.
+_SAFETY_IDENTITY_CACHE: dict[str, dict[str, Any] | None] = {}
+
+
 def policy_safety_identity(root: Path | None = None) -> dict[str, Any] | None:
     """``{policy_version, policy_safety_sha256}`` for the policy this process would load, or None.
 
     None means the policy cannot be read or parsed — never "unchanged". The version is the
     parsed top-level ``policy_version``; the fingerprint is ``sha256_record`` over the sections
     in ``SAFETY_SECTIONS`` (a missing section hashes as null, so adding one is a change too)."""
+    path = (root if root is not None else _repo_root()) / POLICY_REL
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    key = hashlib.sha256(raw).hexdigest()
+    if key not in _SAFETY_IDENTITY_CACHE:
+        if len(_SAFETY_IDENTITY_CACHE) >= 8:
+            _SAFETY_IDENTITY_CACHE.clear()
+        _SAFETY_IDENTITY_CACHE[key] = _parse_safety_identity(raw)
+    cached = _SAFETY_IDENTITY_CACHE[key]
+    return dict(cached) if cached is not None else None
+
+
+def _parse_safety_identity(raw: bytes) -> dict[str, Any] | None:
     import yaml
 
     from runtime.read_only_kernel import integrity
 
-    path = (root if root is not None else _repo_root()) / POLICY_REL
     try:
-        policy = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError):
+        policy = yaml.safe_load(raw.decode("utf-8"))
+    except (ValueError, yaml.YAMLError):
         return None
     if not isinstance(policy, dict) or not isinstance(policy.get("policy_version"), str):
         return None

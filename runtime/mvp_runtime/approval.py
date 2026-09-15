@@ -526,6 +526,7 @@ def format_request(approval: Mapping[str, Any]) -> str:
             "승인 후 운영자가 `scripts/register_execution_stage.py --confirm --approval-id <id>`로 1회 소비해야",
             "단계 기록이 쓰입니다. 요청 이후 단계 기록이나 정책(버전·안전 fingerprint)이 바뀌면 이 승인은",
             "EXECUTION_STAGE_CHANGED / EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK로 거부되고 새 요청이 필요합니다.",
+            "단계에는 만료가 없습니다. 강등하거나 정책이 바뀔 때까지 유지됩니다.",
         ]
     elif switch:
         lines += [

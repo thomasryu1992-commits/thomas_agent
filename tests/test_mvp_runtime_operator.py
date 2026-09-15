@@ -1249,7 +1249,7 @@ def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mi
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
     status = _es.resolve_execution_stage(tmp_path, now=_ANN_NOW, approval_store=store)
-    content = _es.plan_transition(status, target="PAPER", now=_ANN_NOW, registered_by="thomas",
+    content = _es.plan_transition(status, target="PAPER", registered_by="thomas",
                                   reason="initial", attestation="paper ledger")
     task = build_task("실행 단계 전이 검토", now=_ANN_NOW, channel="manual", requester_id="Thomas")
     _, bound = bind_task_to_core(task, now=_ANN_NOW)
