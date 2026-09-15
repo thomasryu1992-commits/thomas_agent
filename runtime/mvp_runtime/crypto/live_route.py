@@ -347,9 +347,10 @@ def _run_gated_live_leg(
     # leaves behind, and it is the one state where the two answers differ. Reading the weaker
     # flag here would make the arm decorative on the exact path it exists to gate.
     #
-    # This gates ENTRIES only, and deliberately: `_settle_or_protect` ran above, before any of
-    # this, so a disarmed runtime still closes what it holds. See step 2's comment for why that
-    # ordering is not an accident.
+    # This gates ENTRIES only, and deliberately: the value is consumed by the entry decision in
+    # step 3, after step 2 has settled and protected, so a disarmed runtime that is still ACTIVE
+    # closes what it holds. (A PAUSED or KILLED runtime never gets here — the scheduler drops the
+    # fire — which is why the soft halt, `control.CMD_HALT_TRADING`, exists.)
     runtime_active = control.load().trading_allowed
 
     snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
@@ -803,6 +804,22 @@ def _report(
 NOTIFY_FAILED = "LIVE_NOTIFY_FAILED"
 
 
+def halt_advice() -> str:
+    """The halt to name in a message read in a hurry — the one that will act on THIS policy.
+
+    The soft halt is policy-gated (`control.POLICY_GATED_COMMANDS`): naming it before the policy
+    grants it sends an operator in an incident to a refusal first (review of H2). So the grant is
+    read when the message is built, and the text says what each verb does to open positions."""
+    from ..control import CMD_HALT_TRADING, granted_emergency_controls
+
+    if CMD_HALT_TRADING in granted_emergency_controls():
+        return ("To stop new entries and keep managing positions: console_cli halt_trading --reason ... "
+                "(console_cli kill stops position management too).")
+    return ("To stop new entries: console_cli kill --reason ... - it also stops position management "
+            "(settle, protect, time exit) until resume. The entries-only halt, halt_trading, acts once "
+            "policy 1.5.1 grants it.")
+
+
 def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> None:
     """Tell Thomas that real money moved, or that it is somewhere this runtime cannot account for.
 
@@ -874,7 +891,7 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
         lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
     if status == ROUTE_INCIDENT:
         lines.append("")
-        lines.append("Check the venue. To stop new entries: console_cli kill --reason ...")
+        lines.append("Check the venue. " + halt_advice())
     try:
         # Imported here, not at module scope: `operator` imports back into this package, and
         # the scheduler's crypto_report seam already takes this shape for the same reason.

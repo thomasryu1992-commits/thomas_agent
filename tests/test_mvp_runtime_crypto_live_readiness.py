@@ -449,7 +449,15 @@ def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
         # IS that variable; it needs a restart to take effect and it strands every open position,
         # because the close guard still requires the opt-in. Pinned in both directions because
         # an operator reads this line in a hurry.
-        assert "console_cli kill" in text
+        # Which halt the board names depends on the committed policy's grant (review of H2): the
+        # soft halt only once it acts, otherwise kill with its caveat. Either way the caveat about
+        # position management is on the board.
+        from runtime.mvp_runtime.control import CMD_HALT_TRADING, granted_emergency_controls
+        if CMD_HALT_TRADING in granted_emergency_controls():
+            assert "console_cli halt_trading" in text
+        else:
+            assert "console_cli kill" in text and "halt_trading, acts once" in text
+        assert "position management" in text
         assert "Do NOT clear MVP_LIVE_TRADING" in text
     else:
         assert "LP5" in text and "place_canary_order.py" in text
@@ -1174,3 +1182,22 @@ def test_the_real_board_on_a_fresh_machine_has_the_view(tmp_path, clean_env):
     assert data["live_entry_possible"] is None
     assert {c["check"] for c in data["checks"]} == {c["check"] for c in status["checks"]}
     json.dumps(data)
+
+
+def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
+    """A disarm has two situations with different consequences: a soft halt (ACTIVE — positions
+    managed) and a stop (PAUSED/KILLED — management stopped too). The row names the reason and
+    which one it is, instead of assuming a runtime-only resume."""
+    from runtime.mvp_runtime.control import ACTIVE, KILLED, ControlState, ControlStore
+
+    store = ControlStore(tmp_path)
+    store.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성 soft halt",
+                            trading_armed=False))
+    row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "trading_armed")
+    assert row["ok"] is False and "변동성 soft halt" in row["detail"] and "still managed" in row["detail"]
+
+    store.save(ControlState(mode=KILLED, updated_by="op", updated_at=NOW, reason="kill", trading_armed=False))
+    row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "trading_armed")
+    assert "management is stopped too" in row["detail"]

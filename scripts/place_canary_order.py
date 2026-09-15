@@ -226,7 +226,11 @@ def main(argv: list[str] | None = None) -> int:
 
         # 2. The live facts the guard judges. Each is read, never assumed.
         control_state = ControlStore(root).load() if root is not None else ControlStore.default().load()
-        runtime_active = control_state.execution_allowed
+        # `trading_allowed`, the bar live_route and the probe door use: a canary is an entry, so a
+        # runtime whose live entries are disarmed (the Trading Soft Halt, a runtime-only resume, a
+        # missing control file) refuses it too. It read `execution_allowed` until 2026-09-15, so a
+        # disarmed runtime still admitted a real canary (execution-authority audit FO-6; review of H2).
+        runtime_active = control_state.trading_allowed
         clean_count, canary_error = live_promotion.clean_canary_order_count(root)
         submitted_today = count_today(root)
 

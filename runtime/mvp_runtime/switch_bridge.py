@@ -154,10 +154,15 @@ _DEFAULT_SCOPE = SCOPE_TRADING
 # than the duplicate it would prevent.
 _ENABLE_DOOR = "switch.enable"
 
-# Stopping has two shapes and the caller picks; both are already in the policy's
-# `emergency_controls_allowed`. Built from control's own constants so a rename there cannot
-# silently widen this.
-_DISABLE_MODES: dict[str, str] = {"kill": control.CMD_KILL, "pause": control.CMD_PAUSE}
+# Stopping has three shapes and the caller picks. `kill` and `pause` are in the policy's
+# `emergency_controls_allowed`; `soft` is the Trading Soft Halt (Thomas decision 7, 2026-09-15) —
+# entries off, positions still managed — and refuses by name until the policy grants
+# `halt_trading` (control.POLICY_GATED_COMMANDS). This door never passes
+# `halt_may_release_stop`: `soft` on a PAUSED or KILLED runtime leaves the stop in place. Built
+# from control's own constants so a rename there cannot silently widen this.
+_DISABLE_MODES: dict[str, str] = {
+    "kill": control.CMD_KILL, "pause": control.CMD_PAUSE, "soft": control.CMD_HALT_TRADING,
+}
 _DEFAULT_DISABLE_MODE = "kill"
 
 # Domains this door switches. `crypto` is the only trading domain that exists; `prediction`
@@ -233,6 +238,15 @@ def stop_summary(state: control.ControlState) -> str:
     Lands in the decision's ``risk_reason``, which the control channel renders — so the ask
     Thomas answers says what it would release instead of only that it would release something.
     """
+    if state.mode == control.ACTIVE and not state.trading_armed:
+        # The soft halt (or a runtime-only resume). The runtime is running; what a trading grant
+        # would change is the arm, and saying "resumes nothing" here would misprice a re-arm.
+        placed_at = state.updated_at or "an unrecorded time"
+        return (
+            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down (set by "
+            f"{state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
+            "RE-ARMS live entries and resumes nothing else; a runtime grant changes nothing"
+        )
     if state.mode == control.ACTIVE:
         return (
             "no stop — the runtime is already ACTIVE, so this grant would resume nothing "
@@ -362,6 +376,7 @@ def _open_ask(
     )
     decision = build(
         bound, domain, stop_ref=stop_ref(state), stop_summary=stop_summary(state),
+        holds_scheduler_stop=state.mode != control.ACTIVE,
         now=now, repo_root=repo_root,
     )
     request = approval_mod.build_approval_request(decision, now=now)

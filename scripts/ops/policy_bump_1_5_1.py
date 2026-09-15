@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""The 1.5.0 -> 1.6.0 governance policy bump, mechanically — for Thomas to run himself.
+"""The 1.5.0 -> 1.5.1 governance policy bump, mechanically — for Thomas to run himself.
 
-`docs/runtime-contracts/POLICY_1_6_0_DRAFT.md` is the draft this script applies, by the 1.5.0
-procedure (`scripts/ops/policy_bump_1_5_0.py`, commit 235051b): the YAML header, the additive
-`assistant_schedule` block, the validator's literals and doc tokens, every example binding and
-fixture carrying `policy_version: 1.5.0`, both replay bundles rebuilt with the validator's own
-`rebuild_bundle` and the kernel's own fingerprint payload, the one comment that cites the version
-(`policy_fingerprint.py`), and the pin test.
+`docs/runtime-contracts/POLICY_1_5_1_DRAFT.md` is the draft this script applies, by the procedure the
+1.5.0 and 1.6.0 scripts established: the YAML header, the additive grant (`halt_trading` in
+`control_channel.local_operator_console.emergency_controls_allowed` and `/halt_trading` in
+`kill_switch.commands`), three comment corrections, the validator's literals and one doc token,
+every example binding and fixture carrying `policy_version: 1.5.0`, both replay bundles rebuilt
+with the validator's own `rebuild_bundle` and the kernel's own fingerprint payload, the one comment
+that cites the version (`policy_fingerprint.py`), and the pin test.
 
-    python scripts/ops/policy_bump_1_6_0.py --check --state-root /root/thomas_agent   # what would change; non-zero if anything is off
-    python scripts/ops/policy_bump_1_6_0.py --apply --state-root /root/thomas_agent   # write it (refuses unless --check would pass)
+    python scripts/ops/policy_bump_1_5_1.py --check --state-root /root/thomas_agent   # what would change; non-zero if anything is off
+    python scripts/ops/policy_bump_1_5_1.py --apply --state-root /root/thomas_agent   # write it (refuses unless --check would pass)
 
-It refuses when: the policy is not at 1.5.0 or 1.5.1 (the soft-halt grant, which it applies over); an approval is PENDING and not expired (an ask must
+It refuses when: the policy is not at 1.5.0; an approval is PENDING and not expired (an ask must
 not straddle two policy versions); a literal site outside the known file classes carries the old
-version; or the anchor the additive block is inserted at is not where 1.5.0 left it.
+version; the runtime does not carry the dormant verb this grant switches on; or an anchor is not
+where 1.5.0 left it.
 
-What the clause switches on: `schedule_delegation.load_delegation` returns None while the clause
-is absent and the dispatch door refuses every `schedule.propose_change` as
-SCHEDULE_DELEGATION_DISABLED. After `--apply` the door applies changes inside the named scope and
-records proposals outside it (V0.2 §1.3; tests/test_mvp_runtime_workflow_schedules.py). The
-services read the policy at start, so the door picks the clause up on its next restart.
+What the grant switches on: the Trading Soft Halt (Thomas decision 7, 2026-09-15) — `console_cli
+halt_trading`, Telegram `/halt_trading`, and the switch door's `disable mode=soft`. They refuse as
+CONTROL_VERB_NOT_GRANTED while the committed policy does not list the verb, and act after the
+image that carries this policy is deployed.
+
+Order with 1.6.0: apply THIS one first. It is independent of the schedule-delegation clause, and
+`policy_bump_1_6_0.py` accepts a 1.5.1 baseline. If 1.6.0 has already been applied this script refuses
+("not at 1.5.0") and the grant needs a 1.6.1 script instead. One bump at a time, each at zero PENDING.
 
 Decision Q2 (2026-09-03): policy edits are written together and APPLIED BY THOMAS. This script
 is the "written together" half. Nothing here runs on its own.
@@ -37,109 +42,92 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-NEW = "1.6.0"
-# The baselines this bump applies over. 1.5.1 (the Trading Soft Halt grant, POLICY_1_5_1_DRAFT.md)
-# touches none of the anchors below, so the schedule clause lands the same way on either.
-BASELINES = ("1.5.0", "1.5.1")
-
-
-def _baseline() -> str:
-    try:
-        text = (ROOT / "governance/GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
-    except OSError:
-        return BASELINES[0]
-    for version in BASELINES:
-        if f"policy_version: {version}\n" in text:
-            return version
-    return BASELINES[0]           # neither: check() reports "not at 1.5.0"
-
-
-OLD = _baseline()
+OLD, NEW = "1.5.0", "1.5.1"
 POLICY_REL = "governance/GOVERNANCE_POLICY.yaml"
 VALIDATOR_REL = "scripts/validate_permission_approval_contracts.py"
 COMMENT_SITES = ("runtime/mvp_runtime/policy_fingerprint.py",)      # cites the version in prose only
-# Literals that are NOT pins of the committed policy and must not move with it: the operator CLI
-# test's stubbed policy-check result and its self-contained "1.4.0 -> 1.5.0" announcement
-# fixture, and the Hermes manifest, which records what the HOST was measured with (the host
-# stays at the old version until the runtime that reads the new policy is deployed).
+# Literals that are NOT pins of the committed policy (see policy_bump_1_6_0.py for each one's reason).
 NOT_PINS = ("tests/test_mvp_runtime_operator_cli.py", "integrations/hermes/MANIFEST.yaml")
 BUNDLES = (
     "examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml",
     "examples/read_only_runtime/input/read_only_runtime_input_bundle_tool_request_blocked_v0.1.yaml",
 )
 LITERAL_ROOTS = ("examples", "tests/fixtures")
-PIN_TEST_REL = "tests/test_policy_assistant_schedule_clause.py"
-SELF_REL = "scripts/ops/policy_bump_1_6_0.py"
-PREVIOUS_BUMP_REL = "scripts/ops/policy_bump_1_5_0.py"
-SIBLING_BUMP_REL = "scripts/ops/policy_bump_1_5_1.py"
+PIN_TEST_REL = "tests/test_policy_trading_soft_halt_grant.py"
+SELF_REL = "scripts/ops/policy_bump_1_5_1.py"
+OTHER_BUMPS_REL = ("scripts/ops/policy_bump_1_5_0.py", "scripts/ops/policy_bump_1_6_0.py")
 FINGERPRINT_SCHEMA = "read_only_runtime_input_bundle_fingerprint_payload.v0.1"
 
-MIRROR_TAIL = "    mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals\n"
-# 1.5.0's read clause says schedule mutations "reach no socket"; with this clause that stops being
-# true of the dispatch door, so the comment is corrected in the same bump (review of P09).
-READ_CLAUSE_COMMENT_OLD = "  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and\n  # reach no socket; the approval read is a summary and never the record.\n"
-READ_CLAUSE_COMMENT_NEW = ("  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and,\n"
-                           "  # within assistant_schedule's delegated scope only, the dispatch door's\n"
-                           "  # schedule.propose_change (1.6.0); the approval read is a summary and never the record.\n")
-LIFETIME_HEAD = "approval_lifetime:\n"
+# --- the grant ---------------------------------------------------------------------------------
+GRANT_ANCHOR_OLD = "      - audit\n      - recovery\n      # resume: explicit Thomas decision"
+GRANT_ANCHOR_NEW = (
+    "      - audit\n      - recovery\n"
+    "      # halt_trading: the Trading Soft Halt (Thomas decision 7, 2026-09-15; 1.5.1). Refuses new\n"
+    "      # live entries and leaves the runtime ACTIVE, so open positions keep being settled,\n"
+    "      # protected, time-exited and reconciled — the halt `kill`/`pause` are not (they stop the\n"
+    "      # scheduler too). From PAUSED/KILLED the authenticated operator's /halt_trading moves the\n"
+    "      # runtime straight to that state; the assistant's switch door (`disable mode=soft`) can\n"
+    "      # halt entries but never release a stop. No approval: a stop must be cheap.\n"
+    "      - halt_trading\n"
+    "      # resume: explicit Thomas decision"
+)
+COMMANDS_ANCHOR_OLD = "kill_switch:\n  commands:\n    - /pause\n    - /stop <task_id>\n    - /kill\n    - /resume\n"
+COMMANDS_ANCHOR_NEW = ("kill_switch:\n  commands:\n    - /pause\n    - /stop <task_id>\n    - /kill\n    - /resume\n"
+                       "    - /halt_trading                      # soft halt: entries only (1.5.1); not a kill_blocks stop\n")
 
-SCHEDULE_BLOCK = """  # The assistant's schedule lane (sequence 2, P09; V0.2 §1.3 — the conditional amendment of
-  # invariant 3). Until this clause existed no door carried a schedule-changing verb and every
-  # schedule change was Thomas's, in the container (scheduler_cli). This clause DELEGATES a
-  # closed scope and nothing else: the dispatch door's `schedule.propose_change` applies a change
-  # only when every line below holds, records a PROPOSAL and applies nothing when one does not,
-  # and refuses a financial kind outright — no delegation reaches the money path's schedules,
-  # and no proposal record is written for them either. The code is the same with or without
-  # this clause; the clause is the switch (schedule_delegation.load_delegation).
-  assistant_schedule:
-    actor: assistant_bridge
-    authority:
-      - policy_dispositions.ALLOW.INTERNAL_ANALYSIS
-      - policy_dispositions.ALLOW.DRAFT_CREATION
-    mutation_allowed: true                # inside the scope below, and only there
-    delegated_kinds:                      # closed; every other kind is a proposal, every crypto kind a refusal
-      - analysis_task
-      - workflow_plan
-    min_interval_seconds: 3600            # no delegated cadence tighter than hourly
-    max_active: 3                         # enabled schedules created by the assistant, at once
-    max_validity_days: 30                 # a delegated schedule ends itself (expires_at); Thomas renews by hand
-    max_model_calls_per_run: 6            # a workflow_plan's budget per occurrence
-    financial_kinds_delegable: false      # crypto_* and candle_archive: refused, never proposed
-    out_of_scope: proposal_only           # recorded as a `proposed` scheduler event; nothing applied
-    gate_grants_authority: false          # same invariant as every gate in this file
-"""
+# --- comment corrections (review of the execution-authority audit, 2026-09-15) ------------------
+P5_COMMENT_OLD = (
+    "      # Revocation did not go with it: `console_cli kill` is file-based, instant, checked by the\n"
+    "      # order guard, and deliberately exempted by the close path — so it stops new entries\n"
+    "      # without trapping a position, which is what the grant could not do.\n"
+)
+P5_COMMENT_NEW = (
+    "      # Revocation did not go with it: the file-based halts are instant and checked by the order\n"
+    "      # guard. `console_cli halt_trading` (1.5.1) stops new entries without trapping a position,\n"
+    "      # which is what the grant could not do. `console_cli kill` stops entries too, but its\n"
+    "      # kill_blocks include scheduler_execution: a KILLED runtime never reaches the close path,\n"
+    "      # so it stops settlement and protection as well (1.5.0 said it exempted closes; corrected).\n"
+)
+STOP_COMMENT_OLD = "  #     close path, stranding open positions). The runtime stop is `console_cli kill`.\n"
+STOP_COMMENT_NEW = ("  #     close path, stranding open positions). The runtime stop that keeps positions managed is\n"
+                    "  #     `console_cli halt_trading`; `console_cli kill` stops management too (1.5.1).\n")
+SWITCH_COMMENT_OLD = "      disable: fail_safe_immediate        # kill|pause, reason required, NO approval — the\n"
+SWITCH_COMMENT_NEW = "      disable: fail_safe_immediate        # kill|pause|soft, reason required, NO approval — the\n"
 
-NEW_DOC_TOKENS = ('"assistant_schedule:"', '"financial_kinds_delegable: false"', '"out_of_scope: proposal_only"')
+NEW_DOC_TOKENS = ('"- halt_trading"',)
 
-PIN_TEST = '''"""The policy's assistant_schedule clause and the runtime's delegation scope name the same limits."""
+PIN_TEST = '''"""The policy grants the Trading Soft Halt, and the runtime acts on the grant (policy 1.5.1)."""
 from pathlib import Path
 
 import yaml
 
-from runtime.mvp_runtime import schedule_delegation as sd, scheduler
+from runtime.mvp_runtime import control, switch_bridge
 
 POLICY = Path(__file__).resolve().parents[1] / "governance" / "GOVERNANCE_POLICY.yaml"
 
 
-def _clause():
-    return yaml.safe_load(POLICY.read_text(encoding="utf-8"))["control_channel"]["assistant_schedule"]
+def _policy():
+    return yaml.safe_load(POLICY.read_text(encoding="utf-8"))
 
 
-def test_the_clause_loads_as_the_scope_the_door_enforces():
-    scope = sd.load_delegation()
-    clause = _clause()
-    assert scope is not None and scope.kinds == frozenset(clause["delegated_kinds"])
-    assert scope.min_interval_seconds == clause["min_interval_seconds"] and scope.max_active == clause["max_active"]
-    assert scope.max_validity_days == clause["max_validity_days"]
-    assert scope.max_model_calls_per_run == clause["max_model_calls_per_run"]
+def test_the_grant_names_the_soft_halt_on_both_lists():
+    policy = _policy()
+    assert "halt_trading" in policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"]
+    assert "/halt_trading" in policy["kill_switch"]["commands"]
 
 
-def test_the_scope_reaches_no_financial_kind_and_grants_nothing_else():
-    clause = _clause()
-    assert clause["actor"] == "assistant_bridge" and clause["gate_grants_authority"] is False
-    assert clause["financial_kinds_delegable"] is False and clause["out_of_scope"] == "proposal_only"
-    assert not (set(clause["delegated_kinds"]) & sd.FINANCIAL_KINDS)
-    assert set(clause["delegated_kinds"]) <= scheduler.MAINTENANCE_KINDS
+def test_the_runtime_reads_the_committed_grant():
+    assert control.CMD_HALT_TRADING in control.granted_emergency_controls()
+    assert switch_bridge._DISABLE_MODES["soft"] == control.CMD_HALT_TRADING
+
+
+def test_the_soft_halt_acts_and_keeps_the_runtime_active(tmp_path):
+    store = control.ControlStore(tmp_path)
+    store.save(control.ControlState(mode=control.ACTIVE, updated_by="op", updated_at="2026-09-15T00:00:00Z",
+                                    reason="armed", trading_armed=True))
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now="2026-09-15T00:00:00Z")
+    assert out["changed"] is True
+    assert (store.load().mode, store.load().trading_armed) == (control.ACTIVE, False)
 '''
 
 
@@ -167,7 +155,7 @@ def _stray_sites(known: set[Path]) -> list[Path]:
     """Every tracked text file mentioning the old version outside the known classes."""
     stray: list[Path] = []
     skip_dirs = {".git", ".venv", "node_modules", "__pycache__", ".runtime_governance_state"}
-    skip_rel = {POLICY_REL, VALIDATOR_REL, SELF_REL, PREVIOUS_BUMP_REL, SIBLING_BUMP_REL, *COMMENT_SITES, *NOT_PINS}
+    skip_rel = {POLICY_REL, VALIDATOR_REL, SELF_REL, *OTHER_BUMPS_REL, *COMMENT_SITES, *NOT_PINS}
     for path in ROOT.rglob("*"):
         if any(part in skip_dirs for part in path.parts) or not path.is_file():
             continue
@@ -188,9 +176,7 @@ STATE_ROOT: Path = ROOT       # --state-root: the checkout whose .runtime_govern
 
 
 def _pending_live() -> tuple[list[str], str | None]:
-    """(live PENDING ids, problem). A store that is absent or unreadable is a problem, never
-    "nothing pending": the check exists to read the real store, and a clean checkout has none
-    (review of P09, 2026-09-14 — the 1.5.0 script treated that as READY)."""
+    """(live PENDING ids, problem). An absent or unreadable store is a problem, never "nothing pending"."""
     from runtime.mvp_runtime import approval
     from runtime.mvp_runtime.approval_store import ApprovalStore
     from runtime.mvp_runtime.timeutil import utc_now_iso
@@ -211,20 +197,25 @@ def check() -> tuple[list[str], list[str]]:
     problems: list[str] = []
     policy = (ROOT / POLICY_REL).read_text(encoding="utf-8")
     if f"policy_version: {OLD}\n" not in policy:
-        problems.append(f"{POLICY_REL} is not at {' or '.join(BASELINES)} — already bumped, or a different baseline")
-    if policy.count(MIRROR_TAIL + "\n" + LIFETIME_HEAD) != 1:
-        problems.append("the approval_notification_mirror tail / approval_lifetime head anchor is not where 1.5.0 left it")
-    if "assistant_schedule:" in policy:
-        problems.append("assistant_schedule already present")
-    plan.append(f"{POLICY_REL}: header {OLD}->{NEW}; insert assistant_schedule after approval_notification_mirror")
+        problems.append(f"{POLICY_REL} is not at {OLD} — already bumped, or a different baseline")
+    for label, anchor in (("emergency_controls_allowed audit/recovery/resume", GRANT_ANCHOR_OLD),
+                          ("kill_switch.commands", COMMANDS_ANCHOR_OLD),
+                          ("p5_policy_gate revocation comment", P5_COMMENT_OLD),
+                          ("live-execution runtime-stop comment", STOP_COMMENT_OLD),
+                          ("assistant_switch disable comment", SWITCH_COMMENT_OLD)):
+        if policy.count(anchor) != 1:
+            problems.append(f"the {label} anchor is not where 1.5.0 left it")
+    if "halt_trading" in policy:
+        problems.append("halt_trading already present in the policy")
+    plan.append(f"{POLICY_REL}: header {OLD}->{NEW}; grant halt_trading (+ /halt_trading); 3 comment corrections")
 
     validator = (ROOT / VALIDATOR_REL).read_text(encoding="utf-8")
     n_lit = validator.count(f'"policy_version": "{OLD}"') + validator.count(f'"policy_version: {OLD}"')
     if n_lit != 3:
         problems.append(f"{VALIDATOR_REL}: expected 3 version literals, found {n_lit}")
-    if '"one_time_use_required: true",' not in validator:
+    if '            "one_time_use_required: true",\n' not in validator:   # the exact anchor apply() replaces
         problems.append(f"{VALIDATOR_REL}: require_doc_tokens anchor not found")
-    plan.append(f"{VALIDATOR_REL}: 3 literals; +{len(NEW_DOC_TOKENS)} doc tokens")
+    plan.append(f"{VALIDATOR_REL}: 3 literals; +{len(NEW_DOC_TOKENS)} doc token")
 
     for rel in COMMENT_SITES:
         if f"policy_version: {OLD}" not in (ROOT / rel).read_text(encoding="utf-8"):
@@ -244,11 +235,15 @@ def check() -> tuple[list[str], list[str]]:
     if stray:
         problems.append("old version literal outside the known classes: " + ", ".join(p.relative_to(ROOT).as_posix() for p in stray))
 
+    # The grant must switch on something that exists: the runtime has to carry the dormant verb.
     try:
-        from runtime.mvp_runtime import schedule_delegation
-        schedule_delegation.Delegation.from_clause(__import__("yaml").safe_load(SCHEDULE_BLOCK)["assistant_schedule"])
+        from runtime.mvp_runtime import control, switch_bridge
+        if control.CMD_HALT_TRADING not in control.POLICY_GATED_COMMANDS:
+            problems.append("control.CMD_HALT_TRADING is not a policy-gated verb in this checkout")
+        if switch_bridge._DISABLE_MODES.get("soft") != control.CMD_HALT_TRADING:
+            problems.append("the switch door does not map disable mode=soft to halt_trading in this checkout")
     except Exception as exc:  # noqa: BLE001
-        problems.append(f"the clause does not load as a delegation scope: {exc}")
+        problems.append(f"the runtime does not carry the soft halt this grant switches on: {exc}")
     plan.append(f"write {PIN_TEST_REL}")
 
     pending, pending_problem = _pending_live()
@@ -256,8 +251,6 @@ def check() -> tuple[list[str], list[str]]:
         problems.append(pending_problem)
     if pending:
         problems.append(f"{len(pending)} live PENDING approval(s): {', '.join(pending)} — bump at zero PENDING")
-    if policy.count(READ_CLAUSE_COMMENT_OLD) != 1:
-        problems.append("the assistant_read comment that says schedule changes 'reach no socket' is not where 1.5.0 left it")
     return plan, problems
 
 
@@ -265,8 +258,10 @@ def apply() -> None:
     policy_path = ROOT / POLICY_REL
     policy = policy_path.read_text(encoding="utf-8")
     policy = policy.replace(f"policy_version: {OLD}\n", f"policy_version: {NEW}\n", 1)
-    policy = policy.replace(MIRROR_TAIL + "\n" + LIFETIME_HEAD, MIRROR_TAIL + SCHEDULE_BLOCK + "\n" + LIFETIME_HEAD, 1)
-    policy = policy.replace(READ_CLAUSE_COMMENT_OLD, READ_CLAUSE_COMMENT_NEW, 1)
+    for old, new in ((GRANT_ANCHOR_OLD, GRANT_ANCHOR_NEW), (COMMANDS_ANCHOR_OLD, COMMANDS_ANCHOR_NEW),
+                     (P5_COMMENT_OLD, P5_COMMENT_NEW), (STOP_COMMENT_OLD, STOP_COMMENT_NEW),
+                     (SWITCH_COMMENT_OLD, SWITCH_COMMENT_NEW)):
+        policy = policy.replace(old, new, 1)
     policy_path.write_text(policy, encoding="utf-8", newline="\n")
 
     validator_path = ROOT / VALIDATOR_REL
@@ -337,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! {line}")
         return 1
     if args.check:
-        print("READY — run with --apply, then the validators listed in POLICY_1_6_0_DRAFT.md §3.")
+        print("READY — run with --apply, then the validators listed in POLICY_1_5_1_DRAFT.md §3.")
         return 0
     apply()
     print(f"APPLIED. Now: python {VALIDATOR_REL} && python scripts/validate_i0_5_read_only_runtime.py")

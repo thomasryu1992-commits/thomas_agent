@@ -103,7 +103,7 @@ KIND_MARKERS = {
 # recovery, memory, tasks, history, result, feedback) are deliberately absent: answering one of
 # those to a prose message is harmless, so narrowing them would only add friction.
 _MUTATING_VERBS = frozenset({
-    "kill", "pause", "resume", "stop", "stop_task",   # console
+    "kill", "pause", "resume", "stop", "stop_task", "halt_trading",   # console
     "approve", "reject",                              # approval decisions
     "promote",                                        # memory -> VALIDATED
     "cancel",                                         # queue entry
@@ -134,6 +134,11 @@ CHANNEL_VERB_AUTHORITY: dict[str, str] = {
     "kill": _EMERGENCY_GRANT,
     "resume": _EMERGENCY_GRANT,
     "stop": _EMERGENCY_GRANT,
+    # The soft halt (Thomas decision 7, 2026-09-15). Named against the same grant, which does not
+    # carry it until the 1.5.1 policy is applied; until then `control.apply_command` refuses it by
+    # name (`control.POLICY_GATED_COMMANDS`), so the entry here states the authority it will act
+    # under rather than one it already has.
+    "halt_trading": _EMERGENCY_GRANT,
     "audit": _EMERGENCY_GRANT,
     "recovery": _EMERGENCY_GRANT,
     # approval.py — R9. The policy models the ask/answer lifecycle itself, and requires exactly
@@ -353,6 +358,9 @@ def handle_operator_message(
             try:
                 outcome = control.apply_command(
                     control_store, verb, actor=registration.operator_id, now=now, arg=arg, ledger=store,
+                    # The verified operator is the authenticated one `resume` already relies on,
+                    # so /halt_trading from here may move a stop to the soft halt.
+                    halt_may_release_stop=True,
                 )
             except ControlBlocked as exc:
                 return OperatorReply(text=exc.reason, accepted=False, status="REFUSED", reason_code=exc.reason_code)
@@ -496,7 +504,7 @@ def handle_operator_message(
         # without its store wired) silently becoming a full pipeline run — model call
         # included — is the fail-open direction.
         return OperatorReply(
-            text=("Unknown command. Available: /status /pause /kill /resume /stop <task_id> "
+            text=("Unknown command. Available: /status /pause /kill /resume /halt_trading /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
                   "/feedback <good|bad|한줄평> /memory /promote <id> <사유> "
                   "/tasks /history [n] /result <id> /cancel <id> "
@@ -1578,7 +1586,11 @@ class ProgressNotice:
 # resume would be a halt undone by a message the operator sent *before* the halt, re-read out of
 # order. `approve` is absent because consuming an approval twice is exactly what
 # `one_time_use_required` forbids. `status`/`audit` are absent because they reply, and a reply
-# the next poll sends again is noise the peek has no reason to create.
+# the next poll sends again is noise the peek has no reason to create. `halt_trading` is absent for
+# `resume`'s reason (from a stop it releases one), and for a second one: the peek returns at the
+# first match without claiming, so a /halt_trading queued ahead of a /kill would be re-applied on
+# every peek and hide the kill for the whole analysis (review of H2). During a long analysis the
+# entries-only halt that lands at once is `console_cli halt_trading`; over Telegram, /kill.
 PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 
 

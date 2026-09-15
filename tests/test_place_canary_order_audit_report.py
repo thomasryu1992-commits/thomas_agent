@@ -39,6 +39,7 @@ class _Limits:
 
 class _Control:
     execution_allowed = True
+    trading_allowed = True    # the door reads the entry bar since 2026-09-15 (audit FO-6)
 
     def __init__(self, root=None):
         self.root = root
@@ -160,6 +161,25 @@ def test_a_canary_is_refused_when_the_account_read_carries_no_realized_figure(
     assert pco.main(ARGV + ["--root", str(tmp_path)]) == EXIT_BLOCKED
     assert judged["daily_loss_breached"] is True
     assert LIVE_PNL_VENUE_FIGURE_MISSING in capsys.readouterr().err
+
+
+def test_a_canary_is_refused_while_live_entries_are_disarmed(approved, monkeypatch, tmp_path):
+    """Audit FO-6 / review of H2: the canary door read `execution_allowed`, so a soft-halted (or
+    runtime-only resumed, or fileless) runtime still admitted a real canary. It is an entry."""
+    from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
+
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at="2026-09-15T00:00:00Z",
+                                             reason="soft halt", trading_armed=False))
+    monkeypatch.setattr(pco, "ControlStore", ControlStore)
+    judged: dict = {}
+
+    def _guard(intent, **kw):
+        judged.update(kw)
+        return {"approved": False, "blocks": ["stubbed"], "repairs": []}
+
+    monkeypatch.setattr(pco, "evaluate_live_order_guard", _guard)
+    assert pco.main(ARGV + ["--root", str(tmp_path)]) == EXIT_BLOCKED
+    assert judged["runtime_active"] is False
 
 
 def test_the_audit_event_lands_under_the_ledger_dir_not_the_state_root(approved, appended, tmp_path):

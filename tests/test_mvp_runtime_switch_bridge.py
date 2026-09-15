@@ -174,8 +174,14 @@ def test_resume_is_absent_from_the_verb_set():
 
 
 def test_the_stop_modes_stay_within_the_policy_emergency_controls():
-    """Both stops this door applies are already granted emergency controls."""
-    assert set(switch_bridge._DISABLE_MODES.values()) == {control.CMD_KILL, control.CMD_PAUSE}
+    """The stops this door applies: the two granted emergency controls, plus the soft halt, which
+    is policy-gated and refuses by name until the policy grants it."""
+    assert set(switch_bridge._DISABLE_MODES.values()) == {
+        control.CMD_KILL, control.CMD_PAUSE, control.CMD_HALT_TRADING,
+    }
+    assert set(switch_bridge._DISABLE_MODES.values()) - {control.CMD_KILL, control.CMD_PAUSE} <= (
+        control.POLICY_GATED_COMMANDS
+    )
 
 
 # --- the frame ----------------------------------------------------------------
@@ -495,7 +501,7 @@ def test_the_stops_this_door_applies_stay_within_the_policy_grant():
         (repo_root() / "governance" / "GOVERNANCE_POLICY.yaml").read_text(encoding="utf-8")
     )
     allowed = set(policy["control_channel"]["local_operator_console"]["emergency_controls_allowed"])
-    for verb in switch_bridge._DISABLE_MODES.values():
+    for verb in set(switch_bridge._DISABLE_MODES.values()) - control.POLICY_GATED_COMMANDS:
         assert verb in allowed, (
             f"switch-bridge stop {verb!r} is not granted by the Governance Policy - "
             "either drop the verb or extend emergency_controls_allowed explicitly"
@@ -626,3 +632,60 @@ def test_a_key_outside_the_envelope_is_still_refused(tmp_path):
     with pytest.raises(ControlBlocked) as exc:
         _apply({"command": "status", "protocol": 2}, ControlStore(tmp_path))
     assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+# --- the soft halt through this door (Thomas decision 7, 2026-09-15) ---------------
+
+@pytest.fixture
+def halt_granted(monkeypatch):
+    granted = frozenset({"pause", "stop_task", "kill", "status", "audit", "recovery", "resume",
+                         control.CMD_HALT_TRADING})
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: granted)
+
+
+def _armed_store(tmp_path):
+    store = ControlStore(tmp_path)
+    store.save(control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="armed",
+                                    trading_armed=True))
+    return store
+
+
+def test_the_soft_stop_halts_entries_and_leaves_the_runtime_active(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    out = _apply({"command": "disable", "mode": "soft", "reason": "변동성"}, store)
+    assert out["ok"] is True and out["action"] == control.CMD_HALT_TRADING
+    assert (store.load().mode, store.load().trading_armed) == (ACTIVE, False)
+
+
+def test_the_soft_stop_never_releases_a_stop_from_this_door(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    out = _apply({"command": "disable", "mode": "soft", "reason": "r"}, store)
+    assert out["changed"] is False
+    assert store.load().mode == KILLED
+
+
+def test_the_soft_stop_refuses_by_name_until_the_policy_grants_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: frozenset({"kill"}))
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "disable", "mode": "soft", "reason": "r"}, _armed_store(tmp_path))
+    assert exc.value.reason_code == control.VERB_NOT_GRANTED
+
+
+def test_a_trading_ask_against_a_soft_halt_says_it_re_arms(tmp_path):
+    """"no stop — resumes nothing" would misprice this grant: it re-arms live entries."""
+    state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",
+                                 trading_armed=False)
+    summary = switch_bridge.stop_summary(state)
+    assert "RE-ARMS" in summary and "변동성" in summary and "no scheduler stop" in summary
+
+
+def test_an_ask_against_an_active_runtime_does_not_claim_to_resume_scheduled_work():
+    """Review of H2: the templates said "this resumes every scheduled kind that stop was holding"
+    beside a summary that says there is no stop."""
+    from runtime.mvp_runtime import permission
+
+    for builder in (permission.build_trading_switch_permission_decision,
+                    permission.build_nonfinancial_resume_permission_decision):
+        import inspect
+        assert "holds_scheduler_stop" in inspect.signature(builder).parameters

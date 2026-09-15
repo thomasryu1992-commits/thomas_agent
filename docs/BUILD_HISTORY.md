@@ -24,6 +24,41 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A halt that stops entries and keeps managing positions, and a lost control file that no longer
+  re-arms** (hotfix H2, Thomas decisions 7 and 10, 2026-09-15; `control.CMD_HALT_TRADING`,
+  `control.POLICY_GATED_COMMANDS`, `switch_bridge._DISABLE_MODES["soft"]`, `POLICY_1_5_1_DRAFT.md`).
+  The execution-authority audit verified that `/kill` and `/pause` do not do what four documents, two
+  code comments and the compose file said: `kill_blocks` carries `scheduler_execution` and
+  `tool_write`, so the scheduler drops every `crypto_pipeline` fire and the paper step refuses before
+  the live leg — settlement, the protection re-check, the time exit, reconciliation and both watches
+  stop until resume, and an open position is held only by the brackets resting at the venue. The
+  close guard's exemption from "both kill switches" was real and unreachable. Thomas chose not to
+  bend kill's meaning (decision 7) but to add the halt those documents described: `halt_trading`
+  disarms entries and leaves the runtime ACTIVE. From PAUSED/KILLED the authenticated operator's
+  verb moves the runtime straight to that state — `/resume` then `/halt_trading` would leave a moment
+  with entries armed — while the assistant's `disable mode=soft` can halt entries and never release a
+  stop. **A new emergency verb is a policy edit** (`test_console_verbs_stay_within_the_policy_grant`),
+  and policy edits are Thomas's (Q2), so the verb ships dormant: it refuses as
+  `CONTROL_VERB_NOT_GRANTED` until `emergency_controls_allowed` names it, read at use so the deploy of
+  the 1.5.1 policy is the switch; the bump script, its draft and a rehearsal (1.5.1 then 1.6.0 on a
+  copy, validators PASS) ride in the same PR, and the 1.6.0 script now accepts a 1.5.1 baseline.
+  Decision 10 closed the other verified gap: `ControlStore.load` recovered only the MODE from the
+  ledger when the state file was missing, so ACTIVE + disarmed came back armed with no event; a
+  missing file now reads ACTIVE and **unarmed**, and every control event records the arm. The
+  switch door's re-arm ask against a soft halt says it re-arms instead of "resumes nothing". Not
+  pushed to the assistant yet: the shim tool for the soft stop waits for the grant.
+  An independent review (3 lenses, each finding refuted or reproduced) changed four things before
+  merge. **The canary door read `execution_allowed`**, so the halt whose reply said "canary refused"
+  let a real canary through — it now reads `trading_allowed` like the leg and the probe (audit FO-6).
+  **A lost update could release a stop:** the door's soft halt parsed the policy between reading and
+  writing the state, and a `/kill` landing in those milliseconds was overwritten with ACTIVE; the grant
+  is now read first and the halt re-reads just before its write, writing nothing if the state moved (no
+  lock, by this repo's rule for halts). **The incident notice named a verb that refuses under 1.5.0**;
+  `live_route.halt_advice` now names the soft halt only when the committed policy grants it, and kill
+  with its management caveat otherwise, for the board too. And a malformed policy raised instead of
+  granting nothing. Left out on purpose: `/halt_trading` is not peekable mid-analysis, because the peek
+  returns at its first unclaimed match and a queued soft halt would hide a later `/kill`.
+
 - **An entry path no longer measures the daily loss on a ledger that cannot see the loss**
   (hotfix H1, Thomas decision 6, 2026-09-15; `live_pnl.live_risk_snapshot(venue_required=True)`,
   `LIVE_PNL_VENUE_FIGURE_MISSING`). The execution-authority audit verified a fail-open on the USDT
