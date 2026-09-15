@@ -20,6 +20,12 @@ with ``scripts/register_live_trading_budget.py``. It is deliberately the *record
   logic stays untouched while the record type and registration path land first.
 - **Changing a limit is a new record, never a silent edit** — the id and the self-hash both
   derive from the caps, so an edited cap is a different budget with a different hash.
+- **A budget no longer lapses by itself.** Until 2026-09-15 every record carried a validity
+  window (30 days by default) and fell out of force at its end; Thomas retired the window with
+  the canary door (PR1r). A record registered since carries none and stands until it is
+  re-registered or its file is deleted. A record registered before still carries its window
+  inside its self-hash and is **still held to it** — so restoring an old archive, or a rollback
+  that re-registers with the old script, cannot bring a lapsed budget back into force.
 
 A read is *verified*: a tampered or unparseable budget raises rather than resolving, because
 every reader of a risk limit is a risk decision (the ``live_pnl`` verified-read posture).
@@ -84,8 +90,6 @@ def build_live_trading_budget_record(
     *,
     caps: Mapping[str, Any],
     symbol_allowlist: Sequence[str],
-    valid_from: str,
-    valid_until: str,
     registered_by: str,
     registered_at: str,
     venue: str = SUPPORTED_VENUE,
@@ -95,9 +99,12 @@ def build_live_trading_budget_record(
 
     Raises ``ToolError(BUDGET_INVALID)`` on any violation — an unsupported venue, a missing or
     non-positive cap, a per-order cap above its absolute ceiling, an absolute ceiling above
-    ``HARD_CEILING_USDT``, an empty symbol allowlist, or a validity window that does not open
-    before it closes. Every refusal names what is wrong; a budget that cannot be built is never
-    written."""
+    ``HARD_CEILING_USDT``, an empty symbol allowlist, or no operator identity. Every refusal
+    names what is wrong; a budget that cannot be built is never written.
+
+    The record carries no validity window (retired 2026-09-15, PR1r): it stands until it is
+    re-registered or deleted. ``budget_id`` seeds on ``registered_at`` where it used to seed on
+    the window, so two registrations of the same caps still get two ids."""
     if venue != SUPPORTED_VENUE:
         raise ToolError(BUDGET_INVALID, f"unsupported venue {venue!r}; only {SUPPORTED_VENUE!r} is supported")
 
@@ -139,8 +146,6 @@ def build_live_trading_budget_record(
     if not symbols:
         raise ToolError(BUDGET_INVALID, "symbol_allowlist must name at least one symbol")
 
-    if not (isinstance(valid_from, str) and isinstance(valid_until, str) and valid_from < valid_until):
-        raise ToolError(BUDGET_INVALID, f"validity window must open before it closes: {valid_from} .. {valid_until}")
     if not (isinstance(registered_by, str) and registered_by.strip()):
         raise ToolError(BUDGET_INVALID, "registered_by (operator identity) is required")
 
@@ -152,7 +157,7 @@ def build_live_trading_budget_record(
         "budget_id": integrity.short_id(
             "budget",
             {"venue": venue, "symbols": symbols, "caps": {k: str(numeric[k]) for k in _CAP_KEYS},
-             "valid_from": valid_from, "valid_until": valid_until, "registered_by": registered_by.strip()},
+             "registered_by": registered_by.strip(), "registered_at": registered_at},
         ),
         "venue": venue,
         "symbol_allowlist": symbols,
@@ -163,8 +168,6 @@ def build_live_trading_budget_record(
             "max_open_notional_usdt": numeric["max_open_notional_usdt"],
             "daily_loss_limit_usdt": numeric["daily_loss_limit_usdt"],
         },
-        "valid_from": valid_from,
-        "valid_until": valid_until,
         "registered_by": registered_by.strip(),
         "registered_at": registered_at,
     }
@@ -184,8 +187,9 @@ def read_registered_budget(root: Path | None = None) -> dict[str, Any] | None:
     """The registered budget for this machine, VERIFIED — or None when none is registered.
 
     Missing file = honestly None (no budget registered yet). Anything unparseable, failing its
-    self-hash, or not schema-valid raises, because every caller of a risk limit is a risk
-    decision: a budget that cannot prove itself must not be allowed to authorize a cap."""
+    self-hash, not schema-valid, or carrying an unusable validity window raises, because every
+    caller of a risk limit is a risk decision: a budget that cannot prove itself must not be
+    allowed to authorize a cap."""
     path = budget_path(root)
     if not path.is_file():
         return None
@@ -200,6 +204,19 @@ def read_registered_budget(root: Path | None = None) -> dict[str, Any] | None:
     if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
         raise ToolError(BUDGET_TAMPERED, "registered budget fails its self-hash")
     _validate(data)
+    # The window has two legal shapes: none (every record built since PR1r) or both ends, opening
+    # before it closes (a record registered before). The schema declares each end optional and
+    # cannot pair them or order them, so the rest is refused here, on every read — half a window
+    # must not read as "no window" and stand forever.
+    window = (data.get("valid_from"), data.get("valid_until"))
+    if window != (None, None) and not (
+        isinstance(window[0], str) and isinstance(window[1], str) and window[0] < window[1]
+    ):
+        raise ToolError(
+            BUDGET_INVALID,
+            f"registered budget carries an unusable validity window: {window[0]} .. {window[1]} "
+            "(a budget carries both ends, opening before it closes, or none)",
+        )
     return data
 
 
@@ -207,14 +224,27 @@ def budget_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     """Whether a valid budget is registered right now — for the readiness board and operator.
 
     Fail-closed: an unverifiable budget reports ``registered`` with ``valid=False`` and names
-    the error rather than reporting a comfortable "no budget"."""
+    the error rather than reporting a comfortable "no budget".
+
+    A windowless budget (every one registered since 2026-09-15, PR1r) is valid at any ``now``. A
+    budget registered before is still held to the window it carries: outside it, ``valid`` is
+    ``False`` with ``OUTSIDE_VALIDITY_WINDOW``. ``valid_from`` / ``valid_until`` come back as
+    stored, ``None`` on a windowless record.
+
+    Total: it never raises. The live leg resolves the budget before it settles or protects
+    anything, so an exception escaping here would leave every open position unmanaged — which
+    is why the optional window fields are read with ``.get``, never subscripted."""
     try:
         record = read_registered_budget(root)
     except ToolError as exc:
         return {"registered": True, "valid": False, "error": exc.reason_code, "budget_id": None}
     if record is None:
         return {"registered": False, "valid": False, "error": None, "budget_id": None}
-    within_window = record["valid_from"] <= now <= record["valid_until"]
+    valid_from, valid_until = record.get("valid_from"), record.get("valid_until")
+    # The read above refused half a window; the isinstance checks keep this closed without it.
+    within_window = (valid_from is None and valid_until is None) or (
+        isinstance(valid_from, str) and isinstance(valid_until, str) and valid_from <= now <= valid_until
+    )
     return {
         "registered": True,
         "valid": within_window,
@@ -223,8 +253,8 @@ def budget_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
         "venue": record["venue"],
         "symbol_allowlist": record["symbol_allowlist"],
         "caps": record["caps"],
-        "valid_from": record["valid_from"],
-        "valid_until": record["valid_until"],
+        "valid_from": valid_from,
+        "valid_until": valid_until,
         "record_sha256": record["record_sha256"],
     }
 

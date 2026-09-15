@@ -17,21 +17,27 @@ Every cap above the starting values is typed out by the operator, on purpose.
 
     python -m scripts.register_live_trading_budget --registered-by thomas --symbols BTCUSDT
     python -m scripts.register_live_trading_budget --registered-by thomas --symbols BTCUSDT,ETHUSDT \
-        --max-order-notional 60 --daily-loss-limit 20 --valid-days 30
+        --max-order-notional 60 --daily-loss-limit 20
 
 Changing a limit is a re-run: the id and self-hash derive from the caps, so a new cap is a new
 record, never a silent edit. **A re-run replaces the whole record, not the flags you passed** —
-every cap, the symbol allowlist and the validity window come out of this one invocation, so an
-omitted `--symbols` narrows the allowlist, silently. Read the registered caps back off the
-readiness board afterwards (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than
-assuming the delta landed.
+every cap and the symbol allowlist come out of this one invocation, so an omitted `--symbols`
+narrows the allowlist, silently. Read the registered caps back off the readiness board afterwards
+(`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than assuming the delta landed.
+
+**The record does not expire.** Until 2026-09-15 it carried a validity window (`--valid-days`,
+default 30); Thomas retired the window with the canary door (PR1r), and the flag went with it —
+passing it now exits 2 and writes nothing. A budget registered today stands until the next
+re-run replaces it, or until `live_trading_budget.json` is deleted, which returns this machine to
+no budget: every live entry refuses, and closes keep working. A record registered before still
+carries its window and is still held to it.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.mvp_runtime.crypto import live_budget
@@ -52,7 +58,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--max-daily-order-count", type=int, default=2)
     p.add_argument("--max-open-notional", type=float, default=120.0)
     p.add_argument("--daily-loss-limit", type=float, default=20.0)
-    p.add_argument("--valid-days", type=int, default=30, help="validity window length in days (default 30)")
     p.add_argument("--root", type=Path, default=Path("."),
                    help="repo/state root (default cwd); the budget file lands under it")
     return p.parse_args(argv)
@@ -60,9 +65,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    if args.valid_days < 1:
-        print("ERROR: --valid-days must be >= 1", file=sys.stderr)
-        return 2
 
     # Before the record exists: a host-side root run would leave the budget file root-owned,
     # and re-registering a cap is how every limit change lands — so the service would be stuck
@@ -74,9 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return 3
 
-    now = datetime.now(timezone.utc)
-    valid_from = now.strftime(_ISO)
-    valid_until = (now + timedelta(days=args.valid_days)).strftime(_ISO)
+    registered_at = datetime.now(timezone.utc).strftime(_ISO)
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
     caps = {
@@ -90,8 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         record = live_budget.build_live_trading_budget_record(
             caps=caps, symbol_allowlist=symbols, venue=args.venue,
-            valid_from=valid_from, valid_until=valid_until,
-            registered_by=args.registered_by, registered_at=valid_from,
+            registered_by=args.registered_by, registered_at=registered_at,
         )
         path = live_budget.write_registered_budget(record, root=args.root.resolve())
     except ToolError as exc:
@@ -104,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  caps:     order<={caps['max_order_notional_usdt']} (ceiling {caps['absolute_max_notional_usdt']}), "
           f"{caps['max_daily_order_count']}/day, open<={caps['max_open_notional_usdt']}, "
           f"loss<={caps['daily_loss_limit_usdt']}")
-    print(f"  valid:    {record['valid_from']} .. {record['valid_until']}")
+    print(f"  expiry:   none - stands until re-registered, or until {path.name} is deleted")
     print(f"  sha256:   {record['record_sha256']}")
     print(f"  written:  {path}")
     print("This record grants nothing and enables no trading — MVP_LIVE_TRADING=real, the "

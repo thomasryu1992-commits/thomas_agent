@@ -205,18 +205,30 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     ))
 
     # 3. The registered trading budget (step 6b). The caps now come FROM this record, and a
-    #    valid budget is schema-guaranteed to carry positive caps within the 200 USDT ceiling —
-    #    so this one row subsumes the old env-caps check. A missing / expired / tampered budget
-    #    fails here, and the caps fall back to the blocking defaults so the guard refuses too.
-    budget_detail = (
-        f"registered {budget['budget_id']} "
-        f"(order<={limits.max_order_notional_usdt}, {limits.max_daily_order_count}/day, "
-        f"open<={limits.max_open_notional_usdt}, loss<={limits.daily_loss_limit_usdt})"
-        if budget.get("valid")
-        else (f"registered but invalid: {budget['error']}" if budget.get("registered")
-              else "no live-trading budget registered "
-                   "(register with scripts/register_live_trading_budget.py)")
-    )
+    #    valid budget is schema-guaranteed to carry positive caps within the hard ceiling —
+    #    so this one row subsumes the old env-caps check. A missing / tampered / invalid budget,
+    #    or a legacy one outside the window it was registered with, fails here, and the caps
+    #    fall back to the blocking defaults so the guard refuses too.
+    #    The detail says when the budget ends. One registered since 2026-09-15 carries no window
+    #    (PR1r) and reads "no expiry"; one registered before still names the end of its window,
+    #    because it is still held to it. ASCII only: this text is rendered to a terminal board.
+    if budget.get("valid"):
+        budget_detail = (
+            f"registered {budget['budget_id']} "
+            f"(order<={limits.max_order_notional_usdt}, {limits.max_daily_order_count}/day, "
+            f"open<={limits.max_open_notional_usdt}, loss<={limits.daily_loss_limit_usdt}), "
+            + (f"valid until {budget.get('valid_until')}" if budget.get("valid_until") else "no expiry")
+        )
+    elif budget.get("registered"):
+        budget_detail = f"registered but invalid: {budget['error']}"
+        if budget.get("valid_until"):
+            budget_detail += (
+                f" (registered for {budget.get('valid_from')} .. {budget.get('valid_until')}; "
+                "a budget re-registered today has no expiry)"
+            )
+    else:
+        budget_detail = ("no live-trading budget registered "
+                         "(register with scripts/register_live_trading_budget.py)")
     checks.append(_check("registered_budget", bool(budget.get("valid")), budget_detail))
 
     # 3b. The C4 breaker limits. Unlike every other row this one is GREEN when nothing is

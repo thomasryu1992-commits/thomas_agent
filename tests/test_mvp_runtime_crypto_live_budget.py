@@ -2,8 +2,9 @@
 
 Under test: a budget is self-hashed and schema-valid; every money-safety refusal the caps
 encode is enforced at build time (a cap above the hard ceiling is refused not clamped, a
-zero/negative cap is refused, the window must open before it closes); a read is verified (a
-tampered or unparseable budget raises); and registering one grants nothing.
+zero/negative cap is refused); a read is verified (a tampered or unparseable budget, or one
+carrying half a validity window, raises); a budget built today carries no window and stands,
+while one registered before is still held to its window; and registering one grants nothing.
 """
 
 from __future__ import annotations
@@ -31,8 +32,7 @@ _CAPS = dict(
 
 
 def _build(**overrides):
-    kw = dict(caps=dict(_CAPS), symbol_allowlist=["BTCUSDT"], valid_from=FROM, valid_until=UNTIL,
-              registered_by="thomas", registered_at=NOW)
+    kw = dict(caps=dict(_CAPS), symbol_allowlist=["BTCUSDT"], registered_by="thomas", registered_at=NOW)
     caps_over = overrides.pop("caps", None)
     if caps_over is not None:
         kw["caps"] = {**dict(_CAPS), **caps_over}
@@ -125,11 +125,6 @@ def test_empty_symbol_allowlist_is_refused():
     assert exc.value.reason_code == lb.BUDGET_INVALID
 
 
-def test_window_must_open_before_it_closes():
-    with pytest.raises(ToolError):
-        _build(valid_from=UNTIL, valid_until=FROM)
-
-
 def test_unsupported_venue_is_refused():
     with pytest.raises(ToolError):
         _build(venue="kraken_futures")
@@ -139,8 +134,7 @@ def test_missing_cap_key_is_refused():
     caps = {k: v for k, v in _CAPS.items() if k != "daily_loss_limit_usdt"}
     with pytest.raises(ToolError):
         lb.build_live_trading_budget_record(
-            caps=caps, symbol_allowlist=["BTCUSDT"], valid_from=FROM, valid_until=UNTIL,
-            registered_by="t", registered_at=NOW)
+            caps=caps, symbol_allowlist=["BTCUSDT"], registered_by="t", registered_at=NOW)
 
 
 # --- write + verified read ---------------------------------------------------
@@ -183,18 +177,11 @@ def test_status_not_registered(tmp_path):
     assert st["registered"] is False and st["valid"] is False and st["error"] is None
 
 
-def test_status_valid_within_window(tmp_path):
+def test_status_valid(tmp_path):
     lb.write_registered_budget(_build(), root=tmp_path)
     st = lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")
     assert st["registered"] is True and st["valid"] is True
     assert st["caps"] == _CAPS and st["record_sha256"].startswith("sha256:")
-
-
-def test_status_outside_window_is_invalid(tmp_path):
-    lb.write_registered_budget(_build(), root=tmp_path)
-    st = lb.budget_status(tmp_path, now="2026-09-01T00:00:00Z")
-    assert st["registered"] is True and st["valid"] is False
-    assert st["error"] == "OUTSIDE_VALIDITY_WINDOW"
 
 
 def test_status_fails_closed_on_a_tampered_budget(tmp_path):
@@ -215,16 +202,21 @@ def test_status_fails_closed_on_a_tampered_budget(tmp_path):
 # keeps the property and only `required` let go of it. These pin that, so a later "cleanup" that
 # deletes the property is caught here rather than by every entry refusing on a schema error.
 
-def _legacy_record(**caps_extra):
-    """The pre-PR1r builder's shape, hashed raw — nothing today can build it."""
+def _legacy_record(*, valid_from=FROM, valid_until=UNTIL, drop=(), **caps_extra):
+    """The pre-PR1r builder's shape, hashed raw — nothing today can build it. ``drop`` removes
+    top-level keys BEFORE hashing, so the result verifies: it is a damaged shape, not a tampered
+    file."""
     from runtime.read_only_kernel import integrity
 
     body = {
         "schema_version": "live_trading_budget.v0.1", "budget_id": "budget_0123456789abcdef0123",
         "venue": "binance_futures", "symbol_allowlist": ["BTCUSDT"],
         "caps": {**_CAPS, "min_clean_canary_orders": 4, **caps_extra},
-        "valid_from": FROM, "valid_until": UNTIL, "registered_by": "thomas", "registered_at": NOW,
+        "valid_from": valid_from, "valid_until": valid_until,
+        "registered_by": "thomas", "registered_at": NOW,
     }
+    for key in drop:
+        del body[key]
     body["record_sha256"] = integrity.sha256_record(body)
     return body
 
@@ -272,39 +264,65 @@ def test_stripping_the_retired_cap_from_a_legacy_record_breaks_its_hash(tmp_path
     assert lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")["error"] == lb.BUDGET_TAMPERED
 
 
-def test_no_runtime_or_script_reads_the_retired_cap():
-    """A subscript on it raises on every budget built today; an attribute read means the field
-    came back. Either one on the live leg would raise before settle/protect. Walked as code, not
-    text, so the prose explaining the retirement does not trip it."""
+def _code_reads(name: str, *, attributes: bool, skip: frozenset[str] = frozenset()) -> list[str]:
+    """Every ``x["<name>"]`` (and, with ``attributes``, every ``x.<name>``) under runtime/ and
+    scripts/. Walked as code, not text, so the prose explaining a retirement does not trip it."""
     import ast
 
-    name = "min_clean_canary_orders"
     offenders = []
     for base in ("runtime", "scripts"):
         for path in sorted((repo_root() / base).rglob("*.py")):
+            relative = path.relative_to(repo_root()).as_posix()
+            if relative in skip:
+                continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 subscripted = (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
                                and node.slice.value == name)
-                if subscripted or (isinstance(node, ast.Attribute) and node.attr == name):
-                    offenders.append(f"{path.relative_to(repo_root())}:{node.lineno}")
-    assert offenders == []
+                if subscripted or (attributes and isinstance(node, ast.Attribute) and node.attr == name):
+                    offenders.append(f"{relative}:{node.lineno}")
+    return offenders
 
 
-def test_the_register_script_refuses_the_retired_flag_and_writes_nothing(tmp_path, monkeypatch, capsys):
+def test_no_runtime_or_script_reads_the_retired_cap():
+    """A subscript on it raises on every budget built today; an attribute read means the field
+    came back. Either one on the live leg would raise before settle/protect."""
+    assert _code_reads("min_clean_canary_orders", attributes=True) == []
+
+
+# The crypto risk-limits record carries a validity window of its own, read by its own module and
+# its own CLI; this pin is about the budget's.
+_RISK_LIMITS_WINDOW_READERS = frozenset({
+    "runtime/mvp_runtime/crypto/risk_limits.py",
+    "scripts/register_crypto_risk_limits.py",
+})
+
+
+@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
+def test_no_budget_reader_subscripts_the_optional_window(field):
+    """Both ends are optional now, and absent on every budget built today. A subscript raises
+    KeyError there — not a ToolError, so it escapes `budget_status` and, on the live leg, halts
+    the pass before settle/protect. `.get` only."""
+    assert _code_reads(field, attributes=False, skip=_RISK_LIMITS_WINDOW_READERS) == []
+
+
+@pytest.mark.parametrize("flag", [["--min-clean-canary-orders", "4"], ["--valid-days", "30"]],
+                         ids=["min_clean_canary_orders", "valid_days"])
+def test_the_register_script_refuses_a_retired_flag_and_writes_nothing(tmp_path, monkeypatch, capsys, flag):
+    """An old invocation fails closed: argparse exits 2 before anything is built or written."""
     import importlib
 
     reg = importlib.import_module("scripts.register_live_trading_budget")
     written: list[object] = []
     monkeypatch.setattr(reg.live_budget, "write_registered_budget", lambda *a, **k: written.append(1))
     with pytest.raises(SystemExit) as exc:
-        reg.main(["--registered-by", "thomas", "--root", str(tmp_path),
-                  "--min-clean-canary-orders", "4"])
+        reg.main(["--registered-by", "thomas", "--root", str(tmp_path), *flag])
     assert exc.value.code == 2
     assert written == []
-    assert "--min-clean-canary-orders" in capsys.readouterr().err
+    assert flag[0] in capsys.readouterr().err
+    assert not lb.budget_path(tmp_path).exists()
 
 
-def test_the_register_script_writes_a_record_without_the_retired_cap(tmp_path, monkeypatch, capsys):
+def test_the_register_script_writes_a_windowless_record_without_the_retired_cap(tmp_path, monkeypatch, capsys):
     import importlib
 
     reg = importlib.import_module("scripts.register_live_trading_budget")
@@ -312,7 +330,115 @@ def test_the_register_script_writes_a_record_without_the_retired_cap(tmp_path, m
     assert reg.main(["--registered-by", "thomas", "--root", str(tmp_path)]) == 0
     record = lb.read_registered_budget(tmp_path)
     assert "min_clean_canary_orders" not in record["caps"]
-    assert "canary" not in capsys.readouterr().out
+    assert "valid_from" not in record and "valid_until" not in record
+    out = capsys.readouterr().out
+    assert "canary" not in out
+    assert "expiry:   none" in out and "valid:" not in out
+    assert lb.budget_status(tmp_path, now="2099-01-01T00:00:00Z")["valid"] is True
+
+
+# --- the validity window (retired 2026-09-15, PR1r — a stored one is still honoured) ----------
+#
+# A budget used to fall out of force at the end of a window (30 days by default). Thomas retired
+# the window with the canary door: a budget built today carries none and stands until it is
+# re-registered or deleted. A budget registered before carries both ends inside its self-hash and
+# is STILL held to them. Ignoring a stored window would bring a lapsed budget back into force on
+# an archive restore, or after a rollback re-registered one with the old script.
+
+def test_a_budget_built_today_carries_no_window():
+    rec = _build()
+    assert "valid_from" not in rec and "valid_until" not in rec
+    lb._validate(rec)
+
+
+def test_the_builder_no_longer_takes_a_window():
+    """A caller still passing one must not believe it is recorded."""
+    with pytest.raises(TypeError):
+        _build(valid_from=FROM, valid_until=UNTIL)
+
+
+def test_budget_id_seeds_on_registered_at():
+    """Two registrations of the same caps are still two budgets. The window used to tell them
+    apart; `registered_at` does now."""
+    a = _build(registered_at="2026-09-15T00:00:00Z")
+    b = _build(registered_at="2026-09-16T00:00:00Z")
+    assert a["caps"] == b["caps"]
+    assert a["budget_id"] != b["budget_id"] and a["record_sha256"] != b["record_sha256"]
+    assert _build()["budget_id"] == _build()["budget_id"], "the seed is deterministic"
+
+
+@pytest.mark.parametrize("now", ["2000-01-01T00:00:00Z", NOW, "2099-12-31T23:59:59Z"])
+def test_a_windowless_budget_stands_at_any_time(tmp_path, now):
+    lb.write_registered_budget(_build(), root=tmp_path)
+    st = lb.budget_status(tmp_path, now=now)
+    assert st["registered"] is True and st["valid"] is True and st["error"] is None
+    assert st["valid_from"] is None and st["valid_until"] is None
+    assert st["caps"] == _CAPS
+
+
+@pytest.mark.parametrize("now", [FROM, "2026-08-01T00:00:00Z", UNTIL])
+def test_a_legacy_budget_inside_its_window_is_still_valid(tmp_path, now):
+    _write_raw(tmp_path, _legacy_record())
+    st = lb.budget_status(tmp_path, now=now)
+    assert st["valid"] is True and st["error"] is None
+    assert (st["valid_from"], st["valid_until"]) == (FROM, UNTIL)
+
+
+@pytest.mark.parametrize("now", ["2026-07-24T23:59:59Z", "2026-08-25T00:00:01Z", "2027-08-30T00:00:00Z"])
+def test_a_legacy_budget_outside_its_window_is_still_invalid(tmp_path, now):
+    """Before it opens and after it closes. The code stays live: this is the revival the rule
+    exists to refuse."""
+    _write_raw(tmp_path, _legacy_record())
+    st = lb.budget_status(tmp_path, now=now)
+    assert st["registered"] is True and st["valid"] is False
+    assert st["error"] == "OUTSIDE_VALIDITY_WINDOW"
+    assert (st["valid_from"], st["valid_until"]) == (FROM, UNTIL)
+
+
+@pytest.mark.parametrize("shape", [
+    pytest.param({"drop": ("valid_until",)}, id="only_valid_from"),
+    pytest.param({"drop": ("valid_from",)}, id="only_valid_until"),
+    pytest.param({"valid_from": UNTIL, "valid_until": FROM}, id="closes_before_it_opens"),
+    pytest.param({"valid_from": FROM, "valid_until": FROM}, id="never_opens"),
+])
+def test_half_a_window_or_one_that_never_opens_reads_invalid(tmp_path, shape):
+    """Fail closed, on read. The record verifies and is schema-valid (both ends are optional
+    there, and a schema cannot order them), so the read-side check is the only thing between
+    this shape and a cap. Half a window must not read as no window and stand forever."""
+    record = _legacy_record(**shape)
+    lb._validate(record)
+    _write_raw(tmp_path, record)
+    with pytest.raises(ToolError) as exc:
+        lb.read_registered_budget(tmp_path)
+    assert exc.value.reason_code == lb.BUDGET_INVALID
+    for now in (FROM, "2026-08-01T00:00:00Z", "2099-01-01T00:00:00Z"):
+        st = lb.budget_status(tmp_path, now=now)          # total: never raises
+        assert st["registered"] is True and st["valid"] is False
+        assert st["error"] == lb.BUDGET_INVALID
+
+
+def test_the_schema_still_declares_the_legacy_window_and_no_longer_requires_it():
+    schema = json.loads(
+        (repo_root() / "schemas" / lb.LIVE_BUDGET_SCHEMA_FILE).read_text(encoding="utf-8")
+    )
+    assert schema["additionalProperties"] is False
+    for field in ("valid_from", "valid_until"):
+        assert field in schema["properties"], f"{field} dropped: every legacy budget turns schema-invalid"
+        assert field not in schema["required"]
+    lb._validate(_legacy_record())                      # the legacy shape, with its window
+    lb._validate(_build())                              # the shape built today, without one
+
+
+def test_stripping_the_window_from_a_legacy_record_breaks_its_hash(tmp_path):
+    """Why nothing migrates a legacy budget to the windowless shape: the window is inside the
+    self-hash, so the only way to shed it is to register a new record."""
+    record = _legacy_record()
+    del record["valid_from"], record["valid_until"]
+    _write_raw(tmp_path, record)
+    with pytest.raises(ToolError) as exc:
+        lb.read_registered_budget(tmp_path)
+    assert exc.value.reason_code == lb.BUDGET_TAMPERED
+    assert lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")["error"] == lb.BUDGET_TAMPERED
 
 
 # --- loader ------------------------------------------------------------------

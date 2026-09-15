@@ -824,33 +824,44 @@ def test_a_soft_halted_runtime_manages_open_positions_and_refuses_entries(tmp_pa
     assert seen["runtime_active"] is False
 
 
-# --- the retired canary cap cannot reach the settle/protect ordering (2026-09-15, PR1r) ------
+# --- the retired budget fields cannot reach the settle/protect ordering (2026-09-15, PR1r) ---
 
-@pytest.mark.parametrize("legacy", [False, True], ids=["built_today", "legacy_with_the_retired_cap"])
-def test_a_budget_with_or_without_the_retired_cap_still_manages_open_positions(
-    tmp_path, monkeypatch, legacy,
-):
-    """The ordering the retirement had to respect. `resolve_live_order_limits` is the first read
+# shape -> (the legacy window it carries, or None for none; whether the budget is usable at NOW)
+_ROUTE_BUDGET_SHAPES = {
+    "built_today": (None, True),
+    "legacy_inside_its_window": (("2026-07-25T00:00:00Z", "2027-08-30T00:00:00Z"), True),
+    "legacy_past_its_window": (("2026-06-01T00:00:00Z", "2026-06-30T00:00:00Z"), False),
+    "legacy_with_half_a_window": (("2026-07-25T00:00:00Z", None), False),
+}
+
+
+@pytest.mark.parametrize("shape", list(_ROUTE_BUDGET_SHAPES))
+def test_every_budget_shape_on_disk_still_manages_open_positions(tmp_path, monkeypatch, shape):
+    """The ordering the retirements had to respect. `resolve_live_order_limits` is the first read
     of the leg, before settle/protect, and anything it raises there is an INCIDENT halt that
-    leaves every open position unmanaged. A budget built today omits `min_clean_canary_orders`;
-    one registered before carries it inside its self-hash. Both are written to disk and read by
-    the real resolver — a stubbed one would prove nothing about the subscript that used to be
-    there."""
+    leaves every open position unmanaged. A budget built today omits `min_clean_canary_orders`
+    and the validity window; one registered before carries both inside its self-hash, and is
+    still held to its window. Each is written to disk and read by the real resolver — a stubbed
+    one would prove nothing about the subscripts that used to be there. A budget that cannot back
+    an entry (lapsed, or half a window) must still let the leg close what it holds."""
     import json
 
     from runtime.read_only_kernel import integrity
     from runtime.mvp_runtime.crypto import live_budget
 
+    window, usable = _ROUTE_BUDGET_SHAPES[shape]
     record = live_budget.build_live_trading_budget_record(
         caps=dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
                   max_daily_order_count=2, max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0),
-        symbol_allowlist=[SYMBOL], valid_from="2026-07-25T00:00:00Z",
-        valid_until="2026-08-25T00:00:00Z", registered_by="thomas",
-        registered_at="2026-07-25T00:00:00Z",
+        symbol_allowlist=[SYMBOL], registered_by="thomas", registered_at="2026-07-25T00:00:00Z",
     )
-    if legacy:
+    assert "valid_from" not in record and "valid_until" not in record
+    if window is not None:
         record = {k: v for k, v in record.items() if k != "record_sha256"}
         record["caps"] = {**record["caps"], "min_clean_canary_orders": 4}
+        record["valid_from"] = window[0]
+        if window[1] is not None:
+            record["valid_until"] = window[1]
         record["record_sha256"] = integrity.sha256_record(record)
     path = live_budget.budget_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -878,12 +889,17 @@ def test_a_budget_with_or_without_the_retired_cap_still_manages_open_positions(
         root=tmp_path,
     )
 
-    assert [position_id for position_id, _ in managed] == ["p1"]
-    assert managed[0][1].max_order_notional_usdt == 60.0, "settled against the registered caps"
+    assert [position_id for position_id, _ in managed] == ["p1"], "the open position went unmanaged"
     assert out["live_route_status"] != live_route.ROUTE_INCIDENT
     assert not any(code.startswith("UNEXPECTED_") for code in out["live_reason_codes"])
-    assert seen["budget_registered"] is True
     assert "clean_canary_orders" not in seen
+    assert seen["budget_registered"] is usable
+    if usable:
+        assert managed[0][1].max_order_notional_usdt == 60.0, "settled against the registered caps"
+    else:
+        # No budget backs an entry: the caps are the blocking defaults, and the position is
+        # managed against them all the same.
+        assert managed[0][1].max_order_notional_usdt == 0.0 and managed[0][1].max_daily_order_count == 0
 
 
 # --- settle and enter are mutually exclusive within one cycle -------------------------------

@@ -43,19 +43,32 @@ def clean_env(monkeypatch):
 
 # === the readiness board ============================================================
 
-def _register_budget(root, *, valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
-                     symbol_allowlist=("BTCUSDT",), **cap_overrides):
-    """Register a valid live-trading budget under ``root`` (step 6b: the guard's cap source)."""
+def _register_budget(root, *, symbol_allowlist=("BTCUSDT",), **cap_overrides):
+    """Register a valid live-trading budget under ``root`` (step 6b: the guard's cap source).
+    Built today, so it carries no validity window and stands at any ``now``."""
     from runtime.mvp_runtime.crypto import live_budget
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
                 max_daily_order_count=2, max_open_notional_usdt=120.0,
                 daily_loss_limit_usdt=20.0)
     caps.update(cap_overrides)
     rec = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=list(symbol_allowlist), valid_from=valid_from,
-        valid_until=valid_until, registered_by="thomas", registered_at=valid_from)
+        caps=caps, symbol_allowlist=list(symbol_allowlist), registered_by="thomas",
+        registered_at="2026-07-01T00:00:00Z")
     live_budget.write_registered_budget(rec, root=root)
     return rec
+
+
+def _write_legacy_budget(root, *, valid_from, valid_until):
+    """A budget as registered before 2026-09-15 (PR1r): a validity window and the retired canary
+    cap, both inside the self-hash. Hashed raw — nothing today can build this shape."""
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_budget
+    body = {k: v for k, v in _register_budget(root).items() if k != "record_sha256"}
+    body["caps"] = {**body["caps"], "min_clean_canary_orders": 4}
+    body.update(valid_from=valid_from, valid_until=valid_until, registered_at=valid_from)
+    body["record_sha256"] = integrity.sha256_record(body)
+    live_budget.budget_path(root).write_text(json.dumps(body), encoding="utf-8")
+    return body
 
 
 def _allowlist_blocks(status):
@@ -101,15 +114,41 @@ def test_registering_a_budget_clears_the_budget_row(tmp_path, clean_env):
     after = live_readiness.build_readiness(root=tmp_path, now=NOW)
     row = next(c for c in after["checks"] if c["check"] == "registered_budget")
     assert row["ok"] is True and "order<=60.0" in row["detail"]
+    # Built today: no window, and the row says so rather than leaving the end to be guessed.
+    assert row["detail"].endswith("no expiry") and "valid until" not in row["detail"]
 
 
 def test_an_expired_budget_fails_the_budget_row(tmp_path, clean_env):
-    """A registered budget outside its validity window is invalid — the row names why, and the
-    guard dry-run refuses (the caps fall back to blocking)."""
-    _register_budget(tmp_path, valid_from="2026-06-01T00:00:00Z", valid_until="2026-06-30T00:00:00Z")
+    """A budget registered before 2026-09-15 still carries its validity window, and outside it
+    the budget is still invalid (PR1r retired the window for new records, not for these) — the
+    row names why and when, and the guard dry-run refuses (the caps fall back to blocking)."""
+    _write_legacy_budget(tmp_path, valid_from="2026-06-01T00:00:00Z", valid_until="2026-06-30T00:00:00Z")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)  # NOW is 2026-07-23, past valid_until
     row = next(c for c in status["checks"] if c["check"] == "registered_budget")
     assert row["ok"] is False and "invalid" in row["detail"]
+    assert "OUTSIDE_VALIDITY_WINDOW" in row["detail"] and "2026-06-30T00:00:00Z" in row["detail"]
+    assert status["guard_dry_run"]["approved"] is False
+
+
+def test_a_legacy_budget_inside_its_window_still_names_its_end(tmp_path, clean_env):
+    _write_legacy_budget(tmp_path, valid_from="2026-07-01T00:00:00Z", valid_until="2027-08-30T00:00:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "registered_budget")
+    assert row["ok"] is True and "order<=60.0" in row["detail"]
+    assert row["detail"].endswith("valid until 2027-08-30T00:00:00Z")
+
+
+def test_a_tampered_budget_fails_the_budget_row(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto import live_budget
+
+    _register_budget(tmp_path)
+    path = live_budget.budget_path(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["caps"]["max_order_notional_usdt"] = 199.0     # edited after hashing
+    path.write_text(json.dumps(data), encoding="utf-8")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "registered_budget")
+    assert row["ok"] is False and row["detail"] == f"registered but invalid: {live_budget.BUDGET_TAMPERED}"
     assert status["guard_dry_run"]["approved"] is False
 
 

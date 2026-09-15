@@ -311,11 +311,13 @@ def resolve_live_order_limits(
     """The guard's authoritative caps: the **registered budget**, plus the confirmation phrase
     and manual kill from operator env (those are never budget-registered).
 
-    Returns ``(limits, budget_status)``. A missing / expired / tampered budget yields the
-    blocking-default caps and a status whose ``valid`` is ``False``, so the guard's budget check
-    (and its unconfigured-caps checks) block — no live order without a registered budget
-    (``autonomous_spend_without_registered_budget: '0'``). The env cap vars (``MVP_LIVE_MAX_*``)
-    no longer authorize an order; the registered budget supersedes them.
+    Returns ``(limits, budget_status)``. A missing / tampered / invalid budget, or a legacy one
+    outside the validity window it was registered with (a budget registered since 2026-09-15
+    carries none — PR1r), yields the blocking-default caps and a status whose ``valid`` is
+    ``False``, so the guard's budget check (and its unconfigured-caps checks) block — no live
+    order without a registered budget (``autonomous_spend_without_registered_budget: '0'``). The
+    env cap vars (``MVP_LIVE_MAX_*``) no longer authorize an order; the registered budget
+    supersedes them.
 
     **Both** confirmation phrases and the manual kill remain env, and are carried through on
     every branch: ``MVP_LIVE_CONFIRMATION`` (autonomous entries and every close),
@@ -417,8 +419,9 @@ def evaluate_live_order_guard(
 
     # 0. The registered trading budget. ``autonomous_spend_without_registered_budget: '0'`` —
     #    no live order until a self-hashed budget record is registered and valid. The caps below
-    #    come FROM that budget (via resolve_live_order_limits); a missing/expired/tampered budget
-    #    arrives here as budget_registered=False and blocks regardless of the env caps.
+    #    come FROM that budget (via resolve_live_order_limits); a missing/tampered/invalid budget,
+    #    or a legacy one outside its stored window, arrives here as budget_registered=False and
+    #    blocks regardless of the env caps.
     if not budget_registered:
         blocks.append(
             "no valid registered live-trading budget "

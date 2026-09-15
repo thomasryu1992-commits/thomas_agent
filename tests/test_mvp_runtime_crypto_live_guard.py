@@ -421,8 +421,7 @@ def test_resolve_limits_uses_the_registered_budget(tmp_path):
                 max_daily_order_count=2, max_open_notional_usdt=120.0,
                 daily_loss_limit_usdt=20.0)
     rec = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
-        valid_until="2026-08-25T00:00:00Z", registered_by="thomas", registered_at="2026-07-25T00:00:00Z")
+        caps=caps, symbol_allowlist=["BTCUSDT"], registered_by="thomas", registered_at="2026-07-25T00:00:00Z")
     live_budget.write_registered_budget(rec, root=tmp_path)
     limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
     assert status["valid"] is True
@@ -648,8 +647,7 @@ def _register_budget(root, **cap_overrides):
                 daily_loss_limit_usdt=20.0)
     caps.update(cap_overrides)
     record = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
-        valid_until="2026-08-25T00:00:00Z", registered_by="thomas",
+        caps=caps, symbol_allowlist=["BTCUSDT"], registered_by="thomas",
         registered_at="2026-07-25T00:00:00Z")
     live_budget.write_registered_budget(record, root=root)
 
@@ -720,17 +718,26 @@ def test_the_autonomous_phrase_alone_still_cannot_authorize_a_canary(tmp_path, m
     assert any("canary confirmation phrase not present" in b for b in verdict["blocks"])
 
 
-# --- the retired canary cap on budgets already on disk (2026-09-15, PR1r) -------------------
+# --- every budget shape already on disk, through to the close guard (2026-09-15, PR1r) --------
 #
-# `caps.min_clean_canary_orders` left the schema's `required` list but stays declared, because
-# budgets registered before PR1r carry it inside their self-hash (production's reads 4), and a
-# budget built today omits it. The resolver runs at the top of the live leg, BEFORE anything is
-# settled or protected, so a subscript on the retired key would raise there on the new shape and
-# leave every open position unmanaged. Both shapes, and a tampered one, are driven through the
-# resolver to the close guard — the path that has to stay open whatever the budget says.
+# Two retirements changed what a budget on disk can look like. `caps.min_clean_canary_orders` and
+# the validity window (`valid_from` / `valid_until`) both left the schema's `required` list but
+# stay declared, because budgets registered before PR1r carry them inside their self-hash
+# (production's reads 4, window to 2027-08-30), and a budget built today omits all three. A stored
+# window is still honoured: past it the budget is invalid, as before. The resolver runs at the top
+# of the live leg, BEFORE anything is settled or protected, so a subscript on any of the optional
+# fields would raise there on the new shape and leave every open position unmanaged. Each shape —
+# usable, lapsed, damaged — is driven through the resolver to the close guard: the path that has
+# to stay open whatever the budget says.
 
-def _legacy_budget_on_disk(root, *, tamper: bool = False):
-    """A budget as the pre-PR1r builder wrote it, hashed raw: nothing today can build this shape."""
+_SHAPE_NOW = "2026-09-15T00:00:00Z"
+
+
+def _legacy_budget_on_disk(root, *, valid_until: str = "2027-08-30T00:00:00Z", drop=(),
+                           tamper: bool = False):
+    """A budget as the pre-PR1r builder wrote it, hashed raw: nothing today can build this shape.
+    ``drop`` removes top-level keys before hashing (a verifiable damaged shape); ``tamper`` edits a
+    cap after hashing."""
     from runtime.read_only_kernel import integrity
     from runtime.mvp_runtime.crypto import live_budget
 
@@ -740,9 +747,11 @@ def _legacy_budget_on_disk(root, *, tamper: bool = False):
         "caps": {"max_order_notional_usdt": 60.0, "absolute_max_notional_usdt": 200.0,
                  "max_daily_order_count": 2, "max_open_notional_usdt": 120.0,
                  "daily_loss_limit_usdt": 20.0, "min_clean_canary_orders": 4},
-        "valid_from": "2026-07-25T00:00:00Z", "valid_until": "2026-08-25T00:00:00Z",
+        "valid_from": "2026-07-25T00:00:00Z", "valid_until": valid_until,
         "registered_by": "thomas", "registered_at": "2026-07-25T00:00:00Z",
     }
+    for key in drop:
+        del body[key]
     body["record_sha256"] = integrity.sha256_record(body)
     if tamper:
         body["caps"]["daily_loss_limit_usdt"] = 999.0     # edited after hashing
@@ -751,7 +760,17 @@ def _legacy_budget_on_disk(root, *, tamper: bool = False):
     path.write_text(json.dumps(body), encoding="utf-8")
 
 
-@pytest.mark.parametrize("shape", ["legacy_with_the_retired_cap", "built_today", "tampered"])
+# shape -> the budget_status error it must read as (None = a usable budget)
+_BUDGET_SHAPES = {
+    "legacy_inside_its_window": None,
+    "built_today": None,
+    "legacy_past_its_window": "OUTSIDE_VALIDITY_WINDOW",
+    "legacy_with_half_a_window": "LIVE_BUDGET_INVALID",
+    "tampered": "LIVE_BUDGET_TAMPERED",
+}
+
+
+@pytest.mark.parametrize("shape", list(_BUDGET_SHAPES))
 def test_every_budget_shape_resolves_and_the_close_path_stays_open(tmp_path, monkeypatch, shape):
     from runtime.mvp_runtime.crypto import live_budget
     from runtime.mvp_runtime.crypto.live_order import resolve_live_order_limits
@@ -761,24 +780,38 @@ def test_every_budget_shape_resolves_and_the_close_path_stays_open(tmp_path, mon
         _register_budget(tmp_path)
         on_disk = json.loads(live_budget.budget_path(tmp_path).read_text(encoding="utf-8"))
         assert "min_clean_canary_orders" not in on_disk["caps"], "the builder writes the retired cap"
+        assert "valid_from" not in on_disk and "valid_until" not in on_disk, "the builder writes a window"
     else:
-        _legacy_budget_on_disk(tmp_path, tamper=shape == "tampered")
-    now = "2026-08-01T00:00:00Z"
+        _legacy_budget_on_disk(
+            tmp_path,
+            valid_until="2026-08-25T00:00:00Z" if shape == "legacy_past_its_window" else "2027-08-30T00:00:00Z",
+            drop=("valid_until",) if shape == "legacy_with_half_a_window" else (),
+            tamper=shape == "tampered",
+        )
+    # Spelled out as literals in `_BUDGET_SHAPES`, so a renamed code cannot pass silently.
+    expected_error = _BUDGET_SHAPES[shape]
 
-    status = live_budget.budget_status(tmp_path, now=now)          # total: never raises
-    limits, resolved = resolve_live_order_limits(tmp_path, now=now)
+    status = live_budget.budget_status(tmp_path, now=_SHAPE_NOW)          # total: never raises
+    limits, resolved = resolve_live_order_limits(tmp_path, now=_SHAPE_NOW)
+    assert status["registered"] is True and status["error"] == expected_error
+    assert resolved["valid"] is status["valid"]
 
-    if shape == "tampered":
-        assert status["valid"] is False and status["error"] == live_budget.BUDGET_TAMPERED
-        assert resolved["valid"] is False
-        assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
-    else:
-        assert status["valid"] is True and resolved["valid"] is True
+    entry = evaluate_live_order_guard(
+        _intent(), **_ready(limits=limits, budget_registered=resolved["valid"],
+                            allowed_symbols=resolved.get("symbol_allowlist") or ()))
+    if expected_error is None:
+        assert status["valid"] is True
         assert limits.max_order_notional_usdt == 60.0 and limits.max_daily_order_count == 2
-        entry = evaluate_live_order_guard(
-            _intent(), **_ready(limits=limits, allowed_symbols=resolved["symbol_allowlist"]))
         assert entry["approved"] is True, entry["blocks"]
+    else:
+        # Entries refuse on the blocking defaults — a lapsed legacy budget is not revived.
+        assert status["valid"] is False
+        assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
+        assert entry["approved"] is False
+        assert any("no valid registered live-trading budget" in b for b in entry["blocks"])
 
+    # Both phrases survive either branch, and the close is judged on the phrase alone.
+    assert limits.confirmation_present() is True
     close = evaluate_live_close_guard(_intent(reduce_only=True), gate_open=True, limits=limits)
     assert close["status"] == STATUS_READY and close["approved"] is True, close["blocks"]
 
