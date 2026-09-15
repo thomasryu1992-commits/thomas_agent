@@ -1,6 +1,6 @@
 # Deployment plan — sequence 2 (Hermes orchestrator, workflows) — for Thomas's decision
 
-**Status (2026-09-15):** Thomas decided to deploy. §3–§4 executed: `candidate-865` promoted and `up -d` at 02:31 UTC (rollback `rollback-pre-865`), the risk lane firing after it; §5 is the PR that adds `--workflow-manager`; §6–§7 follow it. Policy 1.6.0 and `--v2-intake closed` remain out, as §1 says.
+**Status (2026-09-15):** Thomas decided to deploy. §3–§4 executed: `candidate-865` promoted and `up -d` at 02:31 UTC (rollback `rollback-pre-865`), the risk lane firing after it; §5 merged as #866 and applied with `up -d --no-deps dispatch-bridge` at 02:57 UTC (the door logs `workflow-manager=on`; the store was created as uid 10001; the risk lane fired at 02:59 with the same 13 contexts). §6 not yet executed; the §7 host and repository checks that need no `docker exec` pass. Policy 1.6.0 and `--v2-intake closed` remain out, as §1 says.
 
 **Status at preparation:** PREPARED, NOT EXECUTED (2026-09-14). Nothing below has been run on the host; the running
 image is still the pre-sequence-2 build (checkout `d5de6fa`), the Hermes shims on the host are 2.2,
@@ -101,23 +101,30 @@ cd /root/thomas-deploy-863
 scripts/ops/install_hermes_shims.sh --check     # the five MCP shims only
 scripts/ops/install_hermes_shims.sh --install   # copies with .bak-<stamp> backups; never restarts
 # prompt and skill: NOT handled by the installer (integrations/hermes/README.md) — copy by hand, keep a backup
-cp -p /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/SOUL.md.bak-$(date -u +%Y%m%d-%H%M)
-cp -rp /root/hermes-trial/data/skills/thomas-ops /root/hermes-trial/data/skills/thomas-ops.bak-$(date -u +%Y%m%d-%H%M)
-cp integrations/hermes/config/SOUL.md /root/hermes-trial/data/SOUL.md
-cp -r integrations/hermes/config/skills/thomas-ops/. /root/hermes-trial/data/skills/thomas-ops/
-chown -R 10000:10000 /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/skills/thomas-ops
+# Back up the skill as a FILE inside its directory (the host's convention, `SKILL.md.bak-pre-*`), never as a
+# sibling directory: the gateway walks skills/ recursively for every `SKILL.md` (agent/skill_utils.py
+# iter_skill_index_files) and does not exclude `*.bak-*` directories, so `thomas-ops.bak-<stamp>/SKILL.md`
+# would load the old 1.4.1 skill as a second skill. Only SKILL.md differs; references/ is identical.
+S=$(date -u +%Y%m%d-%H%M)
+docker stop hermes                              # jobs.json is rewritten by the gateway on every fire
+cp -p /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/SOUL.md.bak-pre-seq2-$S
+cp -p /root/hermes-trial/data/skills/thomas-ops/SKILL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md.bak-pre-seq2-$S
+install -m 0644 -o 10000 -g 10000 integrations/hermes/config/SOUL.md /root/hermes-trial/data/SOUL.md
+install -m 0644 -o 10000 -g 10000 integrations/hermes/config/skills/thomas-ops/SKILL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md
 # the fourth cron job: add the 워크플로 서술 entry from integrations/hermes/config/cron-jobs.template.json
-# to /root/hermes-trial/data/cron/jobs.json (uid 10000), deliver target = the existing one
-docker restart hermes                           # the gateway reads shims, prompt and skill at start
+# to /root/hermes-trial/data/cron/jobs.json (uid 10000, mode 0600) while the gateway is stopped, with the
+# run-state fields cron/jobs.py create_job writes (repeat.completed 0, state scheduled, next_run_at, the
+# *_snapshot/last_*/paused_*/fire_claim keys null) and deliver = the existing jobs' target; keep a .bak copy
+docker start hermes                             # the gateway reads shims, prompt, skill and jobs at start
 cp scripts/ops/harness_backup.sh /root/backups/backup-governance-state.sh
 cp scripts/ops/backup_watch.sh   /root/backups/backup-watch.sh
 ```
 
-Done means: `install_hermes_shims.sh --check` reports no drift **and** `diff -r integrations/hermes/config/skills/thomas-ops
+Done means: `install_hermes_shims.sh --check` reports no drift **and** `diff -r -x 'SKILL.md.bak-*' integrations/hermes/config/skills/thomas-ops
 /root/hermes-trial/data/skills/thomas-ops` and `diff integrations/hermes/config/SOUL.md /root/hermes-trial/data/SOUL.md`
 are empty (the installer's check covers neither) **and** hermes restarted healthy. The prompt and skill
 are a governance change the decision record names (V0.2 §1.1), not a deploy detail — they go in with
-Thomas's decision to deploy, not by themselves. Rolling this side back is the `.bak-<stamp>` copies,
+Thomas's decision to deploy, not by themselves. Rolling this side back is the `.bak-*` copies (shims, SOUL.md, SKILL.md),
 the previous `jobs.json` and another `docker restart hermes`.
 
 ## 7. Post-deploy checks, the pilot, and the cutover
