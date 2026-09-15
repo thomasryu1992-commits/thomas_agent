@@ -139,6 +139,29 @@ def appended(monkeypatch):
     return seen
 
 
+def test_a_canary_is_refused_when_the_account_read_carries_no_realized_figure(
+        approved, monkeypatch, tmp_path, capsys):
+    """The canary door opens a position, so it takes the entry rule (2026-09-15): the real
+    breaker, a snapshot with no realized windows, and the guard must be told it is tripped."""
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_PNL_VENUE_FIGURE_MISSING, live_risk_snapshot
+
+    class _NoFigure:
+        realized_windows: dict = {}
+
+    monkeypatch.setattr(pco, "live_risk_snapshot", live_risk_snapshot)
+    monkeypatch.setattr(pco, "read_account", lambda **kw: (_NoFigure(), {}))
+    judged: dict = {}
+
+    def _guard(intent, **kw):
+        judged.update(kw)
+        return {"approved": False, "blocks": ["stubbed"], "repairs": []}
+
+    monkeypatch.setattr(pco, "evaluate_live_order_guard", _guard)
+    assert pco.main(ARGV + ["--root", str(tmp_path)]) == EXIT_BLOCKED
+    assert judged["daily_loss_breached"] is True
+    assert LIVE_PNL_VENUE_FIGURE_MISSING in capsys.readouterr().err
+
+
 def test_the_audit_event_lands_under_the_ledger_dir_not_the_state_root(approved, appended, tmp_path):
     """The silent half of the bug: a bare ``LedgerStore(root)`` roots the chain at ``root``.
 

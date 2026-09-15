@@ -77,6 +77,7 @@ from .live_pnl import (
     LIVE_TRADING_ENV,
     REAL_LIVE_TRADING,
     LIVE_PNL_NO_SOURCE,
+    LIVE_PNL_VENUE_FIGURE_MISSING,
     live_risk_snapshot,
     venue_daily_realized_net,
 )
@@ -358,6 +359,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
         venue_realized_pnl_usdt=venue_realized,
+        # Once the board has read the account for the breaker it answers the question the entry
+        # paths ask, with their rule: a snapshot that carries no figure is a trip. An unconfigured
+        # machine keeps the local branch and its NO DATA SOURCE row — it opened no socket.
+        venue_required=account_configured and snapshot is not None,
     )
     breached = bool(risk["daily_loss_limit_breached"])
     # A breaker with nothing to measure is not a passing check, however comfortable its number
@@ -370,7 +375,13 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     # BREACHED is reported ahead of NO DATA SOURCE, and the order matters: an unconfigured limit
     # already reads as breached ("zero means not configured, never unlimited"), and that is the
     # stronger statement of the two. Letting the newer message win would have downgraded it.
-    if breached:
+    if risk.get("history_error") == LIVE_PNL_VENUE_FIGURE_MISSING:
+        detail = (
+            f"TRIPPED - the account read carried no realized P&L figure for today "
+            f"({account_error or 'no figure'}), so the {risk['daily_loss_limit_usdt']} USDT limit "
+            f"cannot be measured and every entry path refuses ({LIVE_PNL_VENUE_FIGURE_MISSING})"
+        )
+    elif breached:
         detail = (
             f"BREACHED (realized {risk['daily_realized_pnl_usdt']}, "
             f"limit {risk['daily_loss_limit_usdt']}"

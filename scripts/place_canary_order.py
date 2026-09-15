@@ -290,7 +290,15 @@ def main(argv: list[str] | None = None) -> int:
         risk = live_risk_snapshot(
             limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
             venue_realized_pnl_usdt=venue_realized,
+            # A canary opens a position: no venue figure is a tripped breaker (2026-09-15).
+            venue_required=True,
         )
+        if risk.get("history_error"):
+            sys.stderr.write(
+                f"daily loss breaker reads TRIPPED ({risk['history_error']}): the account read "
+                "carried no realized P&L figure for today, so the daily loss cannot be measured "
+                "and no canary is placed. Retry once the venue answers the income call.\n"
+            )
 
         # 4. The gate. Selecting the adapter is what proves the grant: an inert dry-run adapter
         #    means no grant is active, so nothing can be sent — and the guard is told so rather

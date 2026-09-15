@@ -585,6 +585,11 @@ PNL_SOURCE_LOCAL_LEDGER = "local_ledger"
 
 # The breaker read a ledger nothing writes on the only path that can place an order.
 LIVE_PNL_NO_SOURCE = "LIVE_PNL_NO_SOURCE"
+# An entry path asked for the venue's own figure and the account read carried none — the income
+# call failed, or its page came back full and the windows were withheld as possibly truncated,
+# while the balance/positions call succeeded. The breaker reads that as TRIPPED on those paths
+# (`live_risk_snapshot(venue_required=True)`), never as the local ledger's reading: see there.
+LIVE_PNL_VENUE_FIGURE_MISSING = "LIVE_PNL_VENUE_FIGURE_MISSING"
 
 
 
@@ -605,8 +610,8 @@ def venue_daily_realized_net(realized_windows: Mapping[str, Any] | None) -> floa
     ``live_order.count_today`` counts the daily order cap on ``utc_day()``.)
 
     A window that is missing or unparseable is skipped rather than read as zero; if neither
-    is readable the caller gets ``None`` and falls back to the local-ledger path, which has
-    its own no-source rule.
+    is readable the caller gets ``None``. An entry path then refuses (``venue_required``); only
+    a reporting caller falls back to the local-ledger path, which has its own no-source rule.
     """
     if not isinstance(realized_windows, Mapping):
         return None
@@ -628,6 +633,7 @@ def live_risk_snapshot(
     root: Path | None = None,
     now: str | None = None,
     venue_realized_pnl_usdt: float | None = None,
+    venue_required: bool = False,
 ) -> dict[str, Any]:
     """Today's live risk state, for the guard, the dashboard, and the operator.
 
@@ -651,6 +657,17 @@ def live_risk_snapshot(
     was lost" from "0.0 because nothing was recorded". ``LIVE_PNL_NO_SOURCE`` marks the second
     case explicitly — the distinction ``clean_canary_order_count`` already makes by returning
     its error alongside its count.
+
+    ``venue_required`` is for the callers that are about to OPEN a position — the autonomous
+    leg, the canary door, the probe door — and for the board once it has read the account on
+    their behalf. For them a missing venue figure is a trip (``LIVE_PNL_VENUE_FIGURE_MISSING``),
+    not a fall back to the local ledger. Found 2026-09-15 (execution-authority audit, verified):
+    the account read can succeed while its income call fails or comes back as a full page, and
+    the local ledger then answers for a venue it cannot see — venue-side and operator-side
+    closes never reach it — so "no closed row today" read as 0.0 and the entry went ahead with
+    the daily cap bounding nothing. Those three callers always hold a snapshot when they get
+    here (each refuses an unreadable account first), so a missing figure there is never the
+    fresh-machine case the local branch exists for.
     """
     stamp = now or timeutil.utc_now_iso()
     target = day or utc_day(stamp)
@@ -689,6 +706,19 @@ def live_risk_snapshot(
             "closed_trade_count": len(todays),
             "history_error": None,
             "pnl_source": PNL_SOURCE_VENUE,
+        }
+    if venue_required:
+        return {
+            "created_at": stamp,
+            "day_utc": target,
+            # Informational only: what the local ledger holds. It decides nothing here.
+            "daily_realized_pnl_usdt": daily_realized_pnl(todays, day=target),
+            "daily_loss_limit_usdt": float(limit_usdt) if configured else 0.0,
+            "daily_loss_limit_configured": configured,
+            "daily_loss_limit_breached": True,
+            "closed_trade_count": len(todays),
+            "history_error": LIVE_PNL_VENUE_FIGURE_MISSING,
+            "pnl_source": PNL_SOURCE_LOCAL_LEDGER,
         }
 
     return {

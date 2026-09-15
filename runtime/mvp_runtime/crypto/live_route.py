@@ -456,7 +456,14 @@ def _run_gated_live_leg(
         venue_realized_pnl_usdt=(
             venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
         ),
+        # This leg opens positions: a snapshot with no venue figure is a tripped breaker, not the
+        # local ledger. No snapshot at all is already ACCOUNT_UNREADABLE and refuses on its own.
+        venue_required=snapshot is not None,
     )
+    if risk.get("history_error"):
+        # Say WHY the breaker reads tripped. The guard's own refusal only knows a bool and would
+        # call this "limit reached", which is the wrong fix for an operator to go looking for.
+        record["live_reason_codes"].append(risk["history_error"])
 
     # How many entries in a row filled and could not be protected. Read here with every other
     # runtime fact, and read even when it is zero, so the decision below is judged against the
