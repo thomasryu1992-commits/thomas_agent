@@ -1,6 +1,8 @@
 # Deployment plan — sequence 2 (Hermes orchestrator, workflows) — for Thomas's decision
 
-**Status:** PREPARED, NOT EXECUTED (2026-09-14). Nothing below has been run on the host; the running
+**Status (2026-09-15):** Thomas decided to deploy. §3–§4 executed: `candidate-865` promoted and `up -d` at 02:31 UTC (rollback `rollback-pre-865`), the risk lane firing after it; §5 is the PR that adds `--workflow-manager`; §6–§7 follow it. Policy 1.6.0 and `--v2-intake closed` remain out, as §1 says.
+
+**Status at preparation:** PREPARED, NOT EXECUTED (2026-09-14). Nothing below has been run on the host; the running
 image is still the pre-sequence-2 build (checkout `d5de6fa`), the Hermes shims on the host are 2.2,
 `/root/backups/*.sh` are the pre-P10 copies, and the compose command for `dispatch-bridge` carries no
 flag. **Executing this plan is a separate, explicit decision** (plan §8 P11; `CLAUDE.md`: a passing

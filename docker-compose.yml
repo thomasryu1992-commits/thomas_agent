@@ -488,6 +488,11 @@ services:
       - python
       - -m
       - runtime.mvp_runtime.dispatch_bridge_cli
+      # The workflow manager loop (door API v3; docs/workflows/WORKFLOW_V0.1.md), turned on by
+      # Thomas's sequence-2 deploy decision (docs/DEPLOYMENT_PLAN_SEQUENCE2.md §5). Without it the
+      # door serves v2 unchanged and refuses every v3 command by name — removing this line and
+      # `up -d` is the rollback; the workflow store stays readable (RUNBOOK_WORKFLOW_CUTOVER.md §3).
+      - --workflow-manager
     group_add:
       - "${MVP_BRIDGE_CLIENT_GID:-10000}"
     environment:
