@@ -109,8 +109,12 @@ S=$(date -u +%Y%m%d-%H%M)
 docker stop hermes                              # jobs.json is rewritten by the gateway on every fire
 cp -p /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/SOUL.md.bak-pre-seq2-$S
 cp -p /root/hermes-trial/data/skills/thomas-ops/SKILL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md.bak-pre-seq2-$S
-install -m 0644 -o 10000 -g 10000 integrations/hermes/config/SOUL.md /root/hermes-trial/data/SOUL.md
-install -m 0644 -o 10000 -g 10000 integrations/hermes/config/skills/thomas-ops/SKILL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md
+# cp + chown, never `install -o 10000`: the host's uutils `install` rejects a numeric owner with no passwd
+# entry ("invalid user: '10000'"), which is what stopped the first attempt on 2026-09-15 before any file changed
+cp integrations/hermes/config/SOUL.md /root/hermes-trial/data/SOUL.md
+cp integrations/hermes/config/skills/thomas-ops/SKILL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md
+chown 10000:10000 /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md
+chmod 0644 /root/hermes-trial/data/SOUL.md /root/hermes-trial/data/skills/thomas-ops/SKILL.md
 # the fourth cron job: add the 워크플로 서술 entry from integrations/hermes/config/cron-jobs.template.json
 # to /root/hermes-trial/data/cron/jobs.json (uid 10000, mode 0600) while the gateway is stopped, with the
 # run-state fields cron/jobs.py create_job writes (repeat.completed 0, state scheduled, next_run_at, the

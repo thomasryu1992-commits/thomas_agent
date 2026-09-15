@@ -55,6 +55,13 @@ for f in "${FILES[@]}"; do
     cp -p "$DEST/$f" "$DEST/$f.bak-$stamp"
     echo "backup   $DEST/$f.bak-$stamp"
   fi
-  install -m 0644 -o "$OWNER_UID" -g "$OWNER_GID" "$SRC/$f" "$DEST/$f"
+  # cp + chown + chmod, not `install -o`: the host's coreutils is uutils (Ubuntu 26.04), whose
+  # `install` refuses a numeric owner with no passwd entry ("invalid user: '10000'") where GNU
+  # accepts it, and 10000 is the gateway's in-container uid with no host account (2026-09-15).
+  # Copy beside the target and rename, so the gateway never reads a half-written shim.
+  cp "$SRC/$f" "$DEST/$f.tmp-install"
+  chown "$OWNER_UID:$OWNER_GID" "$DEST/$f.tmp-install"
+  chmod 0644 "$DEST/$f.tmp-install"
+  mv -f "$DEST/$f.tmp-install" "$DEST/$f"
 done
 echo "installed ${#FILES[@]} shim(s) to $DEST. Restart the hermes gateway for the change to take effect."
