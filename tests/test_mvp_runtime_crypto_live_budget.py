@@ -264,7 +264,7 @@ def test_stripping_the_retired_cap_from_a_legacy_record_breaks_its_hash(tmp_path
     assert lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")["error"] == lb.BUDGET_TAMPERED
 
 
-def _code_reads(name: str, *, attributes: bool, skip: frozenset[str] = frozenset()) -> list[str]:
+def _code_reads(name: str, *, attributes: bool) -> list[str]:
     """Every ``x["<name>"]`` (and, with ``attributes``, every ``x.<name>``) under runtime/ and
     scripts/. Walked as code, not text, so the prose explaining a retirement does not trip it."""
     import ast
@@ -273,8 +273,6 @@ def _code_reads(name: str, *, attributes: bool, skip: frozenset[str] = frozenset
     for base in ("runtime", "scripts"):
         for path in sorted((repo_root() / base).rglob("*.py")):
             relative = path.relative_to(repo_root()).as_posix()
-            if relative in skip:
-                continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 subscripted = (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
                                and node.slice.value == name)
@@ -289,20 +287,15 @@ def test_no_runtime_or_script_reads_the_retired_cap():
     assert _code_reads("min_clean_canary_orders", attributes=True) == []
 
 
-# The crypto risk-limits record carries a validity window of its own, read by its own module and
-# its own CLI; this pin is about the budget's.
-_RISK_LIMITS_WINDOW_READERS = frozenset({
-    "runtime/mvp_runtime/crypto/risk_limits.py",
-    "scripts/register_crypto_risk_limits.py",
-})
-
-
 @pytest.mark.parametrize("field", ["valid_from", "valid_until"])
-def test_no_budget_reader_subscripts_the_optional_window(field):
-    """Both ends are optional now, and absent on every budget built today. A subscript raises
-    KeyError there — not a ToolError, so it escapes `budget_status` and, on the live leg, halts
-    the pass before settle/protect. `.get` only."""
-    assert _code_reads(field, attributes=False, skip=_RISK_LIMITS_WINDOW_READERS) == []
+def test_no_reader_subscripts_the_optional_window(field):
+    """Both ends are optional now, on the budget and on the crypto risk-limits record alike, and
+    absent on every record built today. A subscript raises KeyError there — not a ToolError, so
+    it escapes `budget_status` and, on the live leg, halts the pass before settle/protect; on the
+    risk limits it escapes the cycle's fail-closed `except`. `.get` only, in every module and
+    script (a status dict carrying the same key is held to the same rule, so one reading cannot
+    be copied onto the record)."""
+    assert _code_reads(field, attributes=False) == []
 
 
 @pytest.mark.parametrize("flag", [["--min-clean-canary-orders", "4"], ["--valid-days", "30"]],

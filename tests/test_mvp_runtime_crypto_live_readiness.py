@@ -138,6 +138,59 @@ def test_a_legacy_budget_inside_its_window_still_names_its_end(tmp_path, clean_e
     assert row["detail"].endswith("valid until 2027-08-30T00:00:00Z")
 
 
+# The C4 risk-limits row (3b) follows the same window rule as the budget row (PR1r): a record
+# registered today reads "no expiry", a legacy one names its window and is still held to it.
+_RISK_LIMITS = dict(risk_per_trade=0.01, daily_max_loss_r=-2.0, weekly_max_loss_r=-5.0,
+                    max_consecutive_losses=4, max_drawdown_pct=-10.0)
+
+
+def _write_legacy_risk_limits(root, *, valid_from, valid_until):
+    """Risk limits as registered before 2026-09-15: a validity window inside the self-hash."""
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import risk_limits
+    body = {
+        "schema_version": risk_limits.RISK_LIMITS_SCHEMA_VERSION,
+        "limits_id": "risklimits_0123456789abcdef0123", "limits": dict(_RISK_LIMITS),
+        "valid_from": valid_from, "valid_until": valid_until,
+        "registered_by": "thomas", "registered_at": valid_from,
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    risk_limits.write_registered_limits(body, root=root)
+
+
+def _risk_row(status):
+    return next(c for c in status["checks"] if c["check"] == "risk_limits_record")
+
+
+def test_a_windowless_risk_limits_record_reads_no_expiry_and_names_its_rebase(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto import risk_limits
+    record = risk_limits.build_risk_limits_record(
+        limits=_RISK_LIMITS, registered_by="thomas", registered_at="2026-07-01T00:00:00Z",
+        drawdown_baseline_rebase={"excluded_strategy_ids": ["S3", "S9"], "reason": "retired"})
+    risk_limits.write_registered_limits(record, root=tmp_path)
+    row = _risk_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert row["ok"] is True and "consecutive 4" in row["detail"]
+    assert f"registered {record['limits_id']}" in row["detail"]
+    assert "registered_at 2026-07-01T00:00:00Z, no expiry" in row["detail"]
+    assert row["detail"].endswith("drawdown baseline rebase excludes 2 strategy id(s)")
+    assert "valid until" not in row["detail"]
+
+
+def test_a_legacy_risk_limits_record_inside_its_window_names_its_end(tmp_path, clean_env):
+    _write_legacy_risk_limits(tmp_path, valid_from="2026-07-01T00:00:00Z", valid_until="2027-08-30T00:00:00Z")
+    row = _risk_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert row["ok"] is True
+    assert row["detail"].endswith("valid until 2027-08-30T00:00:00Z") and "rebase" not in row["detail"]
+
+
+def test_a_lapsed_legacy_risk_limits_record_fails_the_row_and_names_its_window(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto import risk_limits
+    _write_legacy_risk_limits(tmp_path, valid_from="2026-06-01T00:00:00Z", valid_until="2026-06-30T00:00:00Z")
+    row = _risk_row(live_readiness.build_readiness(root=tmp_path, now=NOW))  # NOW is past valid_until
+    assert row["ok"] is False and risk_limits.LIMITS_EXPIRED in row["detail"]
+    assert "registered for 2026-06-01T00:00:00Z .. 2026-06-30T00:00:00Z" in row["detail"]
+
+
 def test_a_tampered_budget_fails_the_budget_row(tmp_path, clean_env):
     from runtime.mvp_runtime.crypto import live_budget
 

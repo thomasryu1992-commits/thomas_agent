@@ -15,15 +15,19 @@ needs. Every flag defaults to the current default, so the record always states a
     # tighten the daily breaker, leave the rest at their defaults
     python -m scripts.register_crypto_risk_limits --registered-by thomas --daily-max-loss-r -1.5
 
-    # a 30-day relaxation of the consecutive-loss breaker
-    python -m scripts.register_crypto_risk_limits --registered-by thomas \
-        --max-consecutive-losses 5 --valid-days 30
+    # relax the consecutive-loss breaker; it stands until you revert it
+    python -m scripts.register_crypto_risk_limits --registered-by thomas --max-consecutive-losses 5
 
 Two properties to know before running it:
 
-- **The window matters.** Past ``valid_until`` the guard refuses new positions rather than
-  reverting to the defaults, because "which limits are authorized" is then unknown. To go back
-  to the defaults, delete the record (``--show`` prints its path); do not let it lapse.
+- **The record does not expire.** Until 2026-09-15 it carried a validity window (``--valid-days``,
+  default 30) and a relaxation lapsed on its own; Thomas retired the window with the canary door
+  (PR1r), and the flag went with it — passing it now exits 2 and writes nothing. A record
+  registered today judges until it is replaced, so a relaxation is reverted by hand: re-register
+  the prior values, or delete the record (``--show`` prints its path) to return to the defaults.
+  A record registered before still carries its window and is still held to it: outside it the
+  guard refuses new positions rather than reverting to the defaults, because "which limits are
+  authorized" is then unknown.
 - **Changing a limit is a re-run, never an edit.** The id and self-hash derive from the numbers,
   so an edited file fails its own hash and fails the guard closed.
 """
@@ -32,7 +36,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.mvp_runtime.crypto import guards, risk_limits
@@ -64,7 +68,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help=f"consecutive-loss breaker (default {d.max_consecutive_losses})")
     p.add_argument("--max-drawdown-pct", type=float, default=d.max_drawdown_pct,
                    help=f"drawdown-from-peak breaker in equity percent, negative (default {d.max_drawdown_pct})")
-    p.add_argument("--valid-days", type=int, default=30, help="validity window length in days (default 30)")
     p.add_argument("--show", action="store_true",
                    help="print the currently registered limits and exit, registering nothing")
     p.add_argument("--root", type=Path, default=Path("."),
@@ -79,9 +82,21 @@ def _show(root: Path) -> int:
     if not status["registered"]:
         print("registered:  none — the guard judges on the guards.py defaults")
     else:
-        print(f"registered:  {status['limits_id']} by {status.get('registered_by')}")
-        print(f"valid:       {status['valid']}"
-              + (f" ({status['valid_from']} .. {status['valid_until']})" if status.get("valid_from") else ""))
+        print(f"registered:  {status['limits_id']} by {status.get('registered_by')}"
+              + (f" at {status.get('registered_at')}" if status.get("registered_at") else ""))
+        # A record registered since PR1r carries no window; one registered before still does and
+        # is still held to it. Both ends are optional on the record: `.get`, never a subscript.
+        if status.get("valid_until"):
+            window = f" (legacy window {status.get('valid_from')} .. {status.get('valid_until')})"
+        elif status.get("registered_at"):
+            window = " (no expiry - stands until re-registered or deleted)"
+        else:
+            window = ""
+        print(f"valid:       {status['valid']}{window}")
+        rebase_count = status.get("drawdown_rebase_excluded_count")
+        if rebase_count:
+            print(f"rebase:      the drawdown baseline excludes {rebase_count} strategy id(s); "
+                  "the exclusion stands as long as these numbers do")
         if status["error"]:
             print(f"error:       {status['error']}  <-- the guard REFUSES new positions in this state")
     effective = status["effective"]
@@ -102,9 +117,6 @@ def main(argv: list[str] | None = None) -> int:
     if not args.registered_by:
         print("ERROR: --registered-by is required to register limits", file=sys.stderr)
         return 2
-    if args.valid_days < 1:
-        print("ERROR: --valid-days must be >= 1", file=sys.stderr)
-        return 2
 
     # Before the record exists: a host-side root run would leave the limits file root-owned, and
     # re-registering is how every limit change lands — so the service would be stuck with the
@@ -116,9 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return 3
 
-    now = datetime.now(timezone.utc)
-    valid_from = now.strftime(_ISO)
-    valid_until = (now + timedelta(days=args.valid_days)).strftime(_ISO)
+    registered_at = datetime.now(timezone.utc).strftime(_ISO)
 
     limits = {
         "risk_per_trade": args.risk_per_trade,
@@ -130,8 +140,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         record = risk_limits.build_risk_limits_record(
-            limits=limits, valid_from=valid_from, valid_until=valid_until,
-            registered_by=args.registered_by, registered_at=valid_from,
+            limits=limits, registered_by=args.registered_by, registered_at=registered_at,
         )
         path = risk_limits.write_registered_limits(record, root=root)
     except ToolError as exc:
@@ -145,13 +154,13 @@ def main(argv: list[str] | None = None) -> int:
           f"weekly {limits['weekly_max_loss_r']}R, consecutive {limits['max_consecutive_losses']}, "
           f"drawdown {limits['max_drawdown_pct']}%")
     print(f"  changed:  {', '.join(changed) if changed else 'nothing (all five at their defaults)'}")
-    print(f"  valid:    {record['valid_from']} .. {record['valid_until']}")
+    print(f"  expiry:   none - stands until re-registered, or until {path.name} is deleted")
     print(f"  sha256:   {record['record_sha256']}")
     print(f"  written:  {path}")
     print("This record grants nothing and enables no trading — it moves a breaker inside the "
           "guards.py bounds and nothing else.")
-    print(f"After {record['valid_until']} the C4 guard REFUSES new positions until this is "
-          "re-registered; delete the file to return to the defaults.")
+    print("It does not lapse: to revert it, re-register the prior values, or delete the file to "
+          "return to the defaults.")
     return 0
 
 

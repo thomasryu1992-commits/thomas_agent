@@ -235,9 +235,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     #     registered: the guards.py defaults are the supported steady state, not a gap, so a
     #     fresh machine must not read as unready over a record it is not expected to have. It
     #     goes red only for a record that exists and cannot be used — tampered, out of bounds,
-    #     or lapsed — which is exactly the state in which the C4 guard refuses every entry, live
-    #     and paper alike. Without this row that refusal would be invisible here and the operator
-    #     would find it in a cycle record instead.
+    #     or a legacy record outside the window it carries — which is exactly the state in which
+    #     the C4 guard refuses every live entry and the probe (paper never reads these limits).
+    #     Without this row that refusal would be invisible here and the operator would find it
+    #     in a cycle record instead.
+    #     The detail says when the record ends. One registered since 2026-09-15 carries no window
+    #     (PR1r) and reads "no expiry"; one registered before still names the end of its window,
+    #     because it is still held to it. A drawdown baseline rebase is named with its count: it
+    #     stands exactly as long as the numbers do.
     risk_status = risk_limits_status(root, now=now)
     effective = risk_status.get("effective") or {}
     # ASCII only, like every other row: this text is rendered to a terminal board.
@@ -251,14 +256,24 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     elif risk_status["valid"]:
         risk_detail = (
             f"registered {risk_status['limits_id']} ({risk_numbers}), "
-            f"valid until {risk_status.get('valid_until')}"
+            f"registered_at {risk_status.get('registered_at')}, "
+            + (f"valid until {risk_status.get('valid_until')}" if risk_status.get("valid_until")
+               else "no expiry")
         )
+        rebase_count = risk_status.get("drawdown_rebase_excluded_count")
+        if rebase_count:
+            risk_detail += f", drawdown baseline rebase excludes {rebase_count} strategy id(s)"
     else:
         risk_detail = (
             f"registered but unusable: {risk_status['error']} - the C4 guard REFUSES new "
             "positions until it is re-registered or deleted "
             "(scripts/register_crypto_risk_limits.py --show)"
         )
+        if risk_status.get("valid_until"):
+            risk_detail += (
+                f" (registered for {risk_status.get('valid_from')} .. {risk_status.get('valid_until')}; "
+                "limits re-registered today have no expiry)"
+            )
     checks.append(_check("risk_limits_record", bool(risk_status["valid"]), risk_detail))
 
     # 4. The manual halt.

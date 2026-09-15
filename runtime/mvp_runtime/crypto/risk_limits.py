@@ -10,8 +10,8 @@ Division of ownership, kept strict so there is one authority per question:
 
 - **``guards.py`` owns the numbers** — the defaults AND the relaxation bounds. This module
   never decides what is safe; it reads a record and asks ``RiskLimits.problems()``.
-- **This module owns the record** — its schema, its self-hash, its validity window, and the
-  resolution rule below.
+- **This module owns the record** — its schema, its self-hash, the validity window a legacy
+  record still carries, and the resolution rule below.
 
 Three properties worth stating, because each is a decision rather than an implementation:
 
@@ -20,12 +20,18 @@ Three properties worth stating, because each is a decision rather than an implem
    the whole thing safe to land: the configurable path is opt-in.
 2. **A record that cannot prove itself is a REFUSAL, not a fallback to the defaults.** Falling
    back would silently *loosen* a breaker the operator had tightened — the fail-open direction,
-   from a path whose whole job is to fail closed. Unparseable, hash-mismatched, out-of-bounds
-   and expired all raise; the cycle turns that into no-new-position.
-3. **Relaxations expire; defaults do not.** The validity window is what makes a loosened
-   breaker a temporary, re-authorized decision instead of a permanent edit nobody revisits.
-   Past ``valid_until`` the runtime does not know which limits are authorized, and uncertain
-   → BLOCK.
+   from a path whose whole job is to fail closed. Unparseable, hash-mismatched, out-of-bounds,
+   and a legacy record outside the window it carries all raise; the cycle turns that into
+   no-new-position.
+3. **A registered set stands until it is replaced.** Until 2026-09-15 every record carried a
+   validity window (30 days by default) and a relaxation lapsed on its own; Thomas retired the
+   window with the canary door (PR1r). A record registered since carries none and judges until
+   it is re-registered, or until its file is deleted to return to the defaults — so reverting a
+   relaxation is an operator step now, never something that happens by itself. A record
+   registered before still carries its window inside its self-hash and is **still held to
+   it**: outside it the runtime does not know which limits are authorized, and uncertain →
+   BLOCK. That is what keeps an old archive restore, or a rollback that re-registers with the
+   old script, from bringing a lapsed relaxation back into force.
 
 Registering one **grants nothing and enables no trading.** It cannot widen a breaker past the
 code bounds, and it is not a permission: the operator's live-trading opt-in, the confirmation
@@ -60,6 +66,8 @@ RISK_LIMITS_FILENAME = "crypto_risk_limits.json"
 LIMITS_INVALID = "CRYPTO_RISK_LIMITS_INVALID"
 LIMITS_UNREADABLE = "CRYPTO_RISK_LIMITS_UNREADABLE"
 LIMITS_TAMPERED = "CRYPTO_RISK_LIMITS_TAMPERED"
+# Still live, for a record registered before 2026-09-15 (PR1r) that is outside the validity
+# window it carries. A record registered since carries no window and never raises it.
 LIMITS_EXPIRED = "CRYPTO_RISK_LIMITS_EXPIRED"
 
 # The record's limit keys, in the order a refusal should read them.
@@ -85,8 +93,6 @@ def limits_path(root: Path | None = None) -> Path:
 def build_risk_limits_record(
     *,
     limits: Mapping[str, Any],
-    valid_from: str,
-    valid_until: str,
     registered_by: str,
     registered_at: str,
     drawdown_baseline_rebase: Mapping[str, Any] | None = None,
@@ -95,10 +101,15 @@ def build_risk_limits_record(
     """Build a self-hashed, schema-valid risk-limits record. Fail-closed.
 
     Raises ``ToolError(LIMITS_INVALID)`` on a missing or non-numeric limit, a limit outside
-    the ``guards`` relaxation bounds, a non-whole consecutive-loss count, a missing operator
-    identity, or a validity window that does not open before it closes. Every refusal names the
-    offending number — the bounds check runs through ``RiskLimits.problems()``, so the message
-    is the same one the guard itself would produce, and there is no second copy of the numbers.
+    the ``guards`` relaxation bounds, a non-whole consecutive-loss count, or a missing operator
+    identity. Every refusal names the offending number — the bounds check runs through
+    ``RiskLimits.problems()``, so the message is the same one the guard itself would produce,
+    and there is no second copy of the numbers.
+
+    The record carries no validity window (retired 2026-09-15, PR1r): it stands until it is
+    re-registered or deleted. ``limits_id`` seeds on ``registered_at`` where it used to seed on
+    the window, so each registration still gets its own id — which is what ``breaker_watch``
+    reports as a limits swap, even when the numbers did not change.
     """
     missing = [k for k in _LIMIT_KEYS if k not in limits]
     if missing:
@@ -129,8 +140,6 @@ def build_risk_limits_record(
             "limits are outside the relaxation bounds (refused, never clamped): " + "; ".join(problems),
         )
 
-    if not (isinstance(valid_from, str) and isinstance(valid_until, str) and valid_from < valid_until):
-        raise ToolError(LIMITS_INVALID, f"validity window must open before it closes: {valid_from} .. {valid_until}")
     if not (isinstance(registered_by, str) and registered_by.strip()):
         raise ToolError(LIMITS_INVALID, "registered_by (operator identity) is required")
 
@@ -141,8 +150,8 @@ def build_risk_limits_record(
         # sha256_record, which does accept floats. Same split as live_budget.
         "limits_id": integrity.short_id(
             "risklimits",
-            {"limits": {k: str(numeric[k]) for k in _LIMIT_KEYS}, "valid_from": valid_from,
-             "valid_until": valid_until, "registered_by": registered_by.strip()},
+            {"limits": {k: str(numeric[k]) for k in _LIMIT_KEYS},
+             "registered_by": registered_by.strip(), "registered_at": registered_at},
         ),
         "limits": {
             "risk_per_trade": candidate.risk_per_trade,
@@ -151,8 +160,6 @@ def build_risk_limits_record(
             "max_consecutive_losses": candidate.max_consecutive_losses,
             "max_drawdown_pct": candidate.max_drawdown_pct,
         },
-        "valid_from": valid_from,
-        "valid_until": valid_until,
         "registered_by": registered_by.strip(),
         "registered_at": registered_at,
     }
@@ -203,8 +210,9 @@ def read_registered_limits(root: Path | None = None) -> dict[str, Any] | None:
     """The registered limits for this machine, VERIFIED — or None when none is registered.
 
     Missing file = honestly None (nothing registered, the guard uses its defaults). Anything
-    unparseable, failing its self-hash, or not schema-valid raises: a record that cannot prove
-    itself must not be allowed to authorize a breaker limit."""
+    unparseable, failing its self-hash, not schema-valid, or carrying an unusable validity
+    window raises: a record that cannot prove itself must not be allowed to authorize a breaker
+    limit."""
     path = limits_path(root)
     if not path.is_file():
         return None
@@ -219,6 +227,19 @@ def read_registered_limits(root: Path | None = None) -> dict[str, Any] | None:
     if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
         raise ToolError(LIMITS_TAMPERED, "registered risk limits fail their self-hash")
     _validate(data)
+    # The window has two legal shapes: none (every record built since PR1r) or both ends, opening
+    # before it closes (a record registered before). The schema declares each end optional and
+    # cannot pair them or order them, so the rest is refused here, on every read — half a window
+    # must not read as "no window" and stand forever. Same rule as `live_budget`.
+    window = (data.get("valid_from"), data.get("valid_until"))
+    if window != (None, None) and not (
+        isinstance(window[0], str) and isinstance(window[1], str) and window[0] < window[1]
+    ):
+        raise ToolError(
+            LIMITS_INVALID,
+            f"registered risk limits carry an unusable validity window: {window[0]} .. {window[1]} "
+            "(a record carries both ends, opening before it closes, or none)",
+        )
     return data
 
 
@@ -255,23 +276,39 @@ def limits_from_record(record: Mapping[str, Any]) -> RiskLimits:
     return resolved
 
 
+def _window_covers(record: Mapping[str, Any], now: str) -> bool:
+    """Whether a verified record is in force at ``now`` as far as its validity window goes.
+
+    A windowless record (every one registered since 2026-09-15, PR1r) is in force at any time. A
+    legacy record is in force only inside the window it carries, both ends inclusive. Both ends
+    are optional, so they are read with ``.get`` and never subscripted: a ``KeyError`` is not a
+    ``ToolError``, and would escape the cycle's fail-closed ``except`` instead of refusing. Half
+    a window reads as not in force — :func:`read_registered_limits` already refused it, and this
+    keeps the answer closed without that check."""
+    valid_from, valid_until = record.get("valid_from"), record.get("valid_until")
+    if valid_from is None and valid_until is None:
+        return True
+    return isinstance(valid_from, str) and isinstance(valid_until, str) and valid_from <= now <= valid_until
+
+
 def resolve_risk_limits(root: Path | None = None, *, now: str) -> RiskLimits:
     """The limits the C4 guard must judge on, right now. Raises rather than guessing.
 
     Returns the ``guards`` defaults when nothing is registered, and the registered set when a
-    verified record covers ``now``. Raises ``ToolError`` when a record exists but cannot be
-    used — unreadable, tampered, out of bounds, or past its window — because every one of those
-    means "the authorized limits are unknown", and the caller's job is then to refuse new
-    positions, not to pick a number.
+    verified record is in force at ``now`` — a windowless one at any time, a legacy one inside
+    the window it carries. Raises ``ToolError`` when a record exists but cannot be used —
+    unreadable, tampered, carrying half a window, out of bounds, or a legacy record outside its
+    window — because every one of those means "the authorized limits are unknown", and the
+    caller's job is then to refuse new positions, not to pick a number.
     """
     record = read_registered_limits(root)
     if record is None:
         return guards.DEFAULT_RISK_LIMITS
-    if not (record["valid_from"] <= now <= record["valid_until"]):
+    if not _window_covers(record, now):
         raise ToolError(
             LIMITS_EXPIRED,
             f"registered risk limits {record['limits_id']} are outside their validity window "
-            f"({record['valid_from']} .. {record['valid_until']}) at {now}; re-register to "
+            f"({record.get('valid_from')} .. {record.get('valid_until')}) at {now}; re-register to "
             "re-authorize, or delete the record to return to the defaults",
         )
     return limits_from_record(record)
@@ -281,7 +318,14 @@ def limits_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     """Whether a usable limits record is registered right now — for the readiness board.
 
     Fail-closed reporting: an unusable record reports ``registered`` with ``valid=False`` and
-    names the error rather than reporting a comfortable "using defaults"."""
+    names the error rather than reporting a comfortable "using defaults".
+
+    The same rule as :func:`resolve_risk_limits`, through the same checks, so the board,
+    ``--show`` and the cycle cannot disagree: ``valid`` is whether that call returns, ``error``
+    the code it raises. ``valid_from`` / ``valid_until`` come back as stored, ``None`` on a
+    windowless record. ``drawdown_rebase_excluded_count`` is how many strategy ids a
+    ``drawdown_baseline_rebase`` block sets aside, ``None`` when the record carries none — it
+    stands exactly as long as the numbers do, so the operator should see it beside them."""
     try:
         record = read_registered_limits(root)
     except ToolError as exc:
@@ -290,21 +334,25 @@ def limits_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     if record is None:
         return {"registered": False, "valid": True, "error": None, "limits_id": None,
                 "effective": guards.DEFAULT_RISK_LIMITS.as_record()}
-    within_window = record["valid_from"] <= now <= record["valid_until"]
+    within_window = _window_covers(record, now)
     try:
         effective = limits_from_record(record).as_record() if within_window else None
         error = None if within_window else LIMITS_EXPIRED
     except ToolError as exc:
         effective, error = None, exc.reason_code
+    # Optional, like the window: read with `.get`, never subscripted.
+    excluded = (record.get("drawdown_baseline_rebase") or {}).get("excluded_strategy_ids")
     return {
         "registered": True,
         "valid": effective is not None,
         "error": error,
         "limits_id": record["limits_id"],
         "effective": effective,
-        "valid_from": record["valid_from"],
-        "valid_until": record["valid_until"],
+        "valid_from": record.get("valid_from"),
+        "valid_until": record.get("valid_until"),
         "registered_by": record["registered_by"],
+        "registered_at": record["registered_at"],
+        "drawdown_rebase_excluded_count": len(excluded) if excluded else None,
         "record_sha256": record["record_sha256"],
     }
 
