@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution_stage.v0.1.schema.json",
+  "title": "Execution Stage v0.1",
+  "description": "The machine's one authoritative crypto execution stage (Thomas decisions 1, 4, 8, 9, 2026-09-15; docs/runtime-contracts/EXECUTION_STAGE_V0.1.md). A self-hashed record bound to the policy version and the policy's safety semantic fingerprint under which it was approved. A missing, unreadable, tampered, expired or unbound record reads as READ_ONLY. Registering a stage opens no door by itself: the entry doors read it (PR1b) beside every gate they already apply.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage_id",
+    "venue",
+    "stage",
+    "previous_stage",
+    "transition",
+    "effective_from",
+    "valid_until",
+    "registered_by",
+    "reason",
+    "approval_id",
+    "action_fingerprint",
+    "policy_version",
+    "policy_safety_sha256",
+    "evidence",
+    "registered_at",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "execution_stage.v0.1"},
+    "stage_id": {"type": "string", "pattern": "^stage_[0-9a-f]{20}$"},
+    "venue": {"enum": ["binance_futures"]},
+    "stage": {"enum": ["READ_ONLY", "SHADOW", "PAPER", "SIGNED_TESTNET", "LIVE_CANARY", "LIVE_AUTONOMOUS", "LIVE_SCALED"]},
+    "previous_stage": {"enum": [null, "READ_ONLY", "SHADOW", "PAPER", "SIGNED_TESTNET", "LIVE_CANARY", "LIVE_AUTONOMOUS", "LIVE_SCALED"]},
+    "transition": {
+      "description": "BOOTSTRAP: the first record (no previous) at SHADOW or PAPER, approved. CLIMB: exactly one rung up, approved. REBIND: the same rung, approved (a policy change or a renewal). DEMOTE: any rung down, no approval.",
+      "enum": ["BOOTSTRAP", "CLIMB", "REBIND", "DEMOTE"]
+    },
+    "effective_from": {"type": "string", "minLength": 20},
+    "valid_until": {"type": ["string", "null"], "minLength": 20},
+    "registered_by": {"type": "string", "minLength": 1, "maxLength": 120},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 600},
+    "approval_id": {"type": ["string", "null"], "pattern": "^approval_"},
+    "action_fingerprint": {"type": ["string", "null"], "minLength": 1},
+    "policy_version": {"type": "string", "minLength": 1},
+    "policy_safety_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attestation": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "clean_canary_orders": {"type": "integer", "minimum": 0},
+        "canary_registry_error": {"type": ["string", "null"]}
+      }
+    },
+    "registered_at": {"type": "string", "minLength": 20},
+    "record_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

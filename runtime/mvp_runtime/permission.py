@@ -173,6 +173,9 @@ LIVE_ORDER_REQUIRED_PERMISSION_LEVEL = "P5"  # EXTERNAL_ACTION — reaches a cou
 # path it re-arms is gated on its own conditions, each of which still applies afterwards.
 TRADING_SWITCH_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
 TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates runtime control state
+# The execution-stage transition rides the same scope and level: it mutates governed runtime state
+# (which stage the entry doors will read), reaches no venue, and is single-use like the switch.
+EXECUTION_STAGE_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
 
 # The two shapes of resume ask, and the ONE thing that tells them apart at spend time.
 #
@@ -190,6 +193,10 @@ NONFINANCIAL_RESUME_TARGET_PREFIX = "runtime_resume:"
 # A gated workflow step's ask (sequence 2, P07): `workflow_step:<workflow_id>:<step_key>`. Read
 # by the operator's announcement (announced, never mirrored) and by the manager's spend.
 WORKFLOW_STEP_TARGET_PREFIX = "workflow_step:"
+# The machine's execution stage transition (crypto PR1a, Thomas decisions 1/4/8/9, 2026-09-15):
+# `execution_stage:<venue>:<to_stage>`. Announced on the control channel, never mirrored. Spent once
+# by `scripts/register_execution_stage.py --confirm`.
+EXECUTION_STAGE_TARGET_PREFIX = "execution_stage:"
 
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
@@ -1111,6 +1118,85 @@ def build_nonfinancial_resume_permission_decision(
         permission_scope=TRADING_SWITCH_PERMISSION_SCOPE,
         required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=role_permission_ceiling,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+def build_execution_stage_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    content: Mapping[str, Any],
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for one execution-stage transition (crypto PR1a).
+
+    ``content`` is ``execution_stage.plan_transition``'s output, and all of it rides in
+    ``normalized_parameters`` and ``content_sha256``: the transition, both stages, the record it
+    was asked against (``stage_ref``), the end date, the policy version and safety fingerprint it
+    binds, who registers it and why, and the evidence. A grant for one of those cannot be spent as
+    another (``invalidated_by_any_material_field_change``); the door re-checks ``stage_ref`` and the
+    policy identity against the running machine before it spends.
+
+    RED when the target is a LIVE stage — the rung at which entry doors may open real positions
+    once they read it — ORANGE otherwise."""
+    from .crypto import execution_stage as es  # local: permission must not import a domain at module level
+
+    required = ("venue", "transition", "from_stage", "to_stage", "stage_ref", "valid_until",
+                "policy_version", "policy_safety_sha256", "registered_by", "reason", "evidence")
+    missing = [k for k in required if k not in content]
+    if missing:
+        raise PlannerBlocked("INVALID_STAGE_TRANSITION", f"a stage ask carries {missing}")
+    to_stage, from_stage = str(content["to_stage"]), str(content["from_stage"])
+    live = to_stage in es.LIVE_STAGES
+    doors = {
+        "READ_ONLY": "none", "SHADOW": "none", "PAPER": "none (paper only)",
+        "SIGNED_TESTNET": "none on mainnet (signed testnet evidence only)",
+        "LIVE_CANARY": "the canary and probe doors (one deliberate real order at a time)",
+        "LIVE_AUTONOMOUS": "the autonomous live leg, the canary and probe doors, and arming a strategy LIVE",
+        "LIVE_SCALED": "as LIVE_AUTONOMOUS",
+    }[to_stage]
+    enforced = ("" if es.STAGE_ENFORCED else
+                " NOT ENFORCED YET: no entry door reads the stage until PR1b; this records it.")
+    action = _ActionSpec(
+        action_type="crypto.execution_stage.transition",
+        target_suffix="execution_stage",
+        tool_id=None,
+        data_scope=("crypto.execution_stage", "runtime.governance_policy"),
+        normalized_parameters=dict(content),
+        risk_reason=(
+            f"Sets this machine's execution stage to {to_stage} ({content['transition']} from {from_stage}). "
+            f"The new-exposure doors that stage admits: {doors}. Closing a position is never gated by the "
+            "stage. Bound to policy "
+            f"{content['policy_version']} and its safety fingerprint; a policy change, another stage change "
+            "before the spend, or a later demotion refuses or replaces it." + enforced
+        ),
+        authority_reason="Prime may prepare an execution-stage transition for Thomas review.",
+        decision_reason=(
+            "Raising or rebinding the execution stage requires exact Thomas approval on the verified "
+            "control channel; lowering it needs none."
+        ),
+        constraint=(
+            "Single-use; writes one stage record and nothing else. Grants no venue access, raises no "
+            "cap, arms no strategy, and skips no rung."
+        ),
+        target_ref=f"{EXECUTION_STAGE_TARGET_PREFIX}{content['venue']}:{to_stage}",
+        content_sha256=integrity.sha256_record(dict(content)),
+        risk_level="RED" if live else "ORANGE",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=EXECUTION_STAGE_PERMISSION_SCOPE,
+        required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         now=now,
         actor_id=actor_id,
         ttl_minutes=ttl_minutes,

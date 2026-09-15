@@ -1239,6 +1239,34 @@ def test_a_workflow_step_ask_is_announced_on_the_control_channel_and_never_mirro
     assert len(primary.sent) == 1 and mirror.sent == []
 
 
+@requires_local_core
+def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mirrored(tmp_path):
+    """Crypto PR1a: a stage transition is Thomas's to approve on the control channel, like a switch
+    ask; it is not a switch-door ask, so the assistant's window never gets the copy."""
+    from runtime.mvp_runtime.crypto import execution_stage as _es
+
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    status = _es.resolve_execution_stage(tmp_path, now=_ANN_NOW, approval_store=store)
+    content = _es.plan_transition(status, target="PAPER", now=_ANN_NOW, registered_by="thomas",
+                                  reason="initial", attestation="paper ledger")
+    task = build_task("실행 단계 전이 검토", now=_ANN_NOW, channel="manual", requester_id="Thomas")
+    _, bound = bind_task_to_core(task, now=_ANN_NOW)
+    permdec = _permission.build_execution_stage_permission_decision(bound, content=content, now=_ANN_NOW)
+    ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
+    store.append([ask])
+    store.append_permission_decision(permdec)
+    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == [
+        ask["approval_id"]]
+    assert len(primary.sent) == 1 and mirror.sent == []
+    _chat, text = primary.sent[0]
+    assert "execution_stage:binance_futures:PAPER" in text
+    assert "--confirm --approval-id" in text and "승인 없이 즉시" in text
+
+
 class _RefusingMirror(MockOperatorChannel):
     def send(self, chat_id: str, text: str) -> str | None:
         raise OperatorBlocked("NO_BOT_TOKEN", "environment variable HERMES_BOT_TOKEN is not set")

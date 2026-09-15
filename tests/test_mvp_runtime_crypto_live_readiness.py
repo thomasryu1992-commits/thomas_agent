@@ -271,7 +271,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "canary_evidence",
         "account_visibility", "market_data_visibility", "order_path_implemented",
-        "autonomous_routing_wired",
+        "autonomous_routing_wired", "execution_stage",
     }
 
 

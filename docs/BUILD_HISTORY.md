@@ -24,6 +24,25 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The machine got one record that says what execution stage it is at** (crypto PR1a, Thomas decisions
+  1, 4, 8, 9, 2026-09-15; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1.schema.json`,
+  `scripts/register_execution_stage.py`, `docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`). The
+  execution-authority audit found no owner for the question: `MVP_LIVE_TRADING=real` authorized the
+  adapter, eight durable records could refuse an entry, and the readiness board re-derived an answer
+  from all of them (all-PASS with nothing armed, 2026-09-07). The record is a ladder position — READ_ONLY
+  through LIVE_SCALED — written only through an approved, single-use transition: a first record at SHADOW
+  or PAPER with an attestation, one rung up at a time, the same rung again after a policy change or to
+  renew a LIVE end date; any rung down with no approval. It is bound to the policy version and to a
+  **safety semantic fingerprint** (the parsed sections that bound the money path, so a comment does not
+  demote the machine and a new kill verb does), and a non-demotion must be backed by its CONSUMED
+  approval, because a self-hash is recomputable by anyone who can write the state directory. Everything
+  that fails reads READ_ONLY with its reason. LIVE_CANARY cannot be climbed to until the signed-testnet
+  evidence path exists (decision 2, PR1d); LIVE_AUTONOMOUS needs three clean canaries as a floor in code.
+  **Nothing enforces it yet** — `STAGE_ENFORCED = False`, the ask, the board row and `--show` say so, and a
+  test pins that no entry-decision module imports the stage while the flag is False. The leg stamps the
+  stage it read on every gated cycle record, so the ledger shows what the trading process saw before PR1b
+  makes it load-bearing.
+
 - **A halt that stops entries and keeps managing positions, and a lost control file that no longer
   re-arms** (hotfix H2, Thomas decisions 7 and 10, 2026-09-15; `control.CMD_HALT_TRADING`,
   `control.POLICY_GATED_COMMANDS`, `switch_bridge._DISABLE_MODES["soft"]`, `POLICY_1_5_1_DRAFT.md`).

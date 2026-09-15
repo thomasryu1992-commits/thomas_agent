@@ -1121,6 +1121,8 @@ def run_crypto_cycle(
         "live_settled": live["live_settled"],
         "live_reason_codes": live["live_reason_codes"],
         "live_halt": live["halt"],
+        # What the leg saw of the execution stage (PR1a) — None when the gate was closed.
+        "live_execution_stage": live.get("execution_stage"),
         # Only decisions that DECIDED something are stored whole. A cycle evaluates every
         # active strategy and most conclude "nothing to do"; persisting all of those made
         # lifecycle_decisions 90% of a 24KB record and 99.7% of a 56MB ledger, for one bit
