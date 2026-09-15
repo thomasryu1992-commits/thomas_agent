@@ -486,19 +486,21 @@ def test_a_corrupt_outcome_line_keeps_this_stores_error_class_and_line_number(tm
 
 
 def test_every_money_path_append_still_fsyncs():
-    """The durability guarantee the read fold must not have removed, pinned across all three
-    stores so a later 'tidy-up' to ``jsonl.append_lines`` fails here rather than on a power loss.
-    `paper.py`: 'leaving it in an OS buffer means a power loss can drop a trade that the position
-    file already says is closed.' `jsonl.append_lines` does not fsync and the audit ledger that
-    uses it has never needed to — which is exactly why the swap looks harmless."""
+    """The durability guarantee the read fold must not have removed, pinned across every
+    money-path store that still appends so a later 'tidy-up' to ``jsonl.append_lines`` fails here
+    rather than on a power loss. `paper.py`: 'leaving it in an OS buffer means a power loss can
+    drop a trade that the position file already says is closed.' `jsonl.append_lines` does not
+    fsync and the audit ledger that uses it has never needed to — which is exactly why the swap
+    looks harmless."""
     import inspect
 
-    from runtime.mvp_runtime.crypto import live_pnl, live_promotion
+    from runtime.mvp_runtime.crypto import live_pnl
 
+    # The canary registry's append was the third until 2026-09-15 (PR1r), when the writer went
+    # with the canary door; nothing appends to that file any more.
     for owner, method in (
         (paper.RealPaperStore, "append_outcome"),
         (live_pnl.RealLiveLedger, "append_outcome"),
-        (live_promotion.RealCanaryRegistry, "append_canary_order"),
     ):
         source = inspect.getsource(getattr(owner, method))
         assert "os.fsync" in source and "flush" in source, f"{owner.__name__}.{method} lost its fsync"

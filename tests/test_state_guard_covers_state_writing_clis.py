@@ -29,7 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Every script that writes under .runtime_governance_state/, and where its guard sits.
 GUARDED = {
-    "place_canary_order": "the canary registry row and the order's audit event",
     "register_live_trading_budget": "the self-hashed live-trading budget record",
     "promote_memory_candidate": "the working-memory promotion and its audit event",
     "promote_strategy_candidates": "the approval store and the active strategy pool",
@@ -88,27 +87,38 @@ def test_a_read_only_mode_is_not_blocked_by_the_guard(name):
     )
 
 
-def test_the_canary_guard_fires_before_the_venue(monkeypatch, capsys):
+def test_the_probe_guard_fires_before_the_venue(monkeypatch, capsys, tmp_path):
     """The one placement that cannot be got wrong: for a real order, "before" is the property.
 
     A guard that refuses after `submit_and_reconcile` would be a refusal printed next to a
     filled position — worse than no guard, because the operator would trust the refusal.
+
+    Written for the canary door and moved to `run_slippage_probe --fire` when that door was
+    removed (2026-09-15, PR1r): the probe is the operator's one remaining real-order CLI, and
+    without this only the structural "the call exists" check above covered it, which says
+    nothing about order. The probe guards twice — at the top of `main` for every writing verb
+    and again as step 0 of `run_fire` — so both are driven here: the second is what still
+    stands if the first is ever moved into the verbs.
     """
-    pco = importlib.import_module("scripts.place_canary_order")
+    probe_cli = importlib.import_module("scripts.run_slippage_probe")
     sent: list[object] = []
 
     def boom(root=None, **kwargs):
         raise PersistenceError("STATE_FOREIGN_ROOT_RUN", "state belongs to uid 10001")
 
-    monkeypatch.setattr(pco, "assert_not_foreign_root_run", boom)
-    monkeypatch.setattr(pco.live_execution, "submit_and_reconcile",
+    monkeypatch.setattr(probe_cli, "assert_not_foreign_root_run", boom)
+    monkeypatch.setattr(probe_cli.live_execution, "submit_and_reconcile",
                         lambda *a, **k: sent.append(1) or {})
 
-    exit_code = pco.main(["--symbol", "BTCUSDT", "--quantity", "0.001", "--notional", "65"])
+    exit_code = probe_cli.main(["--fire", "--symbol", "BTCUSDT", "--root", str(tmp_path)])
 
     assert exit_code != 0
     assert sent == [], "the guard must refuse before the order reaches the venue"
     assert "STATE_FOREIGN_ROOT_RUN" in capsys.readouterr().err
+
+    with pytest.raises(PersistenceError):
+        probe_cli.run_fire(root=tmp_path, symbol="BTCUSDT")
+    assert sent == [], "run_fire's own guard must refuse before the order reaches the venue"
 
 
 def test_the_budget_guard_fires_before_the_record_is_written(monkeypatch, capsys, tmp_path):

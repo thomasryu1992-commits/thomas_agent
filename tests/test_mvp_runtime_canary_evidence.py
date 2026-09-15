@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import live_promotion as lp
 from runtime.mvp_runtime.errors import ToolError
 
@@ -113,6 +114,74 @@ def test_the_reader_opens_no_socket_and_writes_nothing():
     for forbidden in ("urlopen(", "requests.", "select_gated", "select_env_gated",
                       "write_text(", "open(", "record_submission", "submit"):
         assert forbidden not in src, forbidden
+
+
+# --- the verified read the board stands on ------------------------------------
+#
+# Moved here from the readiness tests when the canary door and the registry's writer were removed
+# (2026-09-15, PR1r). The rows on disk outlive both, so the reader keeps the promise it always
+# made: a missing file is honestly empty, and a row that cannot prove itself raises rather than
+# rendering. The fixtures are raw bodies hashed the way the reader verifies them — nothing can
+# build one any more, and history was never built by today's code anyway.
+
+def _hashed(**over):
+    body = _record(client_order_id="c1", mismatches=[], stage="live_canary",
+                   provenance=lp.CANARY_PROVENANCE, canary_order_id="canary_abc")
+    body.update(over)
+    body["record_sha256"] = integrity.sha256_record(body)
+    return body
+
+
+def _store(tmp_path, rows):
+    path = lp.state_dir(tmp_path) / lp.CANARY_ORDERS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path
+
+
+def test_a_missing_registry_is_honestly_empty(tmp_path):
+    """No file means no canary was ever placed on this machine — not an error."""
+    assert lp.read_canary_orders(tmp_path) == []
+    assert lp.canary_evidence_rows(tmp_path) == []
+
+
+def test_a_row_edited_after_hashing_raises_rather_than_rendering(tmp_path):
+    """Damaged evidence is no evidence: the board must not show a row that fails its hash."""
+    row = _hashed()
+    row["reconcile_status"] = "UNRECONCILED"
+    _store(tmp_path, [row])
+    with pytest.raises(ToolError) as exc:
+        lp.read_canary_orders(tmp_path)
+    assert exc.value.reason_code == lp.CANARY_HISTORY_TAMPERED
+
+
+def test_a_duplicated_row_raises(tmp_path):
+    row = _hashed()
+    _store(tmp_path, [row, row])
+    with pytest.raises(ToolError) as exc:
+        lp.read_canary_orders(tmp_path)
+    assert exc.value.reason_code == lp.CANARY_HISTORY_DUPLICATE
+
+
+def test_records_written_before_the_fill_fields_existed_still_verify(tmp_path):
+    """The claim that matters, made against a record no code in this repository can produce.
+
+    The eleven keys the four standing canaries carried are hashed the way they were hashed on
+    disk. A read path that started normalising the body before verifying it would fail here —
+    which is the only construction that answers "does the history still read"."""
+    body = {
+        "reconcile_status": "RECONCILED", "clean": True, "symbol": "BTCUSDT",
+        "exchange_order_id": 1083969664118, "client_order_id": "canary-1", "mismatches": [],
+        "notional_usdt": 65.0, "recorded_at_utc": "2026-07-26T14:05:23Z",
+        "stage": "live_canary", "provenance": lp.CANARY_PROVENANCE,
+        "canary_order_id": "canary_abc",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    _store(tmp_path, [body])
+
+    assert len(lp.read_canary_orders(tmp_path)) == 1
+    rows = lp.canary_evidence_rows(tmp_path)
+    assert rows[0]["clean"] is True and rows[0]["size_proven"] is False
 
 
 # --- the evidence that matters from here on: real live trades ----------------

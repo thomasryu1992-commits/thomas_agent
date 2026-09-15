@@ -738,7 +738,7 @@ def apply_command(
             verb_reply = (
                 "Live entries HALTED (soft halt). The runtime stays ACTIVE: open positions keep "
                 "being settled, protected, time-exited and reconciled, and paper keeps running. "
-                "New live entries — autonomous, canary and probe — are refused until /resume."
+                "New live entries — autonomous and probe — are refused until /resume."
                 + reason_note
             )
         elif not halt_may_release_stop:

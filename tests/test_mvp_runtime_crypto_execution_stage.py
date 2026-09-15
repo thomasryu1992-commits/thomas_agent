@@ -534,7 +534,7 @@ def test_nothing_on_the_entry_path_reads_the_stage_while_it_is_not_enforced():
     repo = crypto.parents[2]
     modules = [crypto / n for n in ("live_entry.py", "live_order.py", "live_leg.py", "live_execution.py",
                                     "live_promotion.py", "probe.py", "live_sizing.py", "live_budget.py")]
-    modules += [repo / "scripts" / n for n in ("place_canary_order.py", "run_slippage_probe.py")]
+    modules += [repo / "scripts" / "run_slippage_probe.py"]
     for path in modules:
         if not path.is_file():
             continue

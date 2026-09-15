@@ -17,34 +17,24 @@ Fail-closed toward NOT ready, in two independent ways, both carried over from th
 * A minimum of zero or less is refused outright — that would be promotion with no evidence
   at all, which is the one configuration that must never read as satisfied.
 
-Writes ride the same single live-trading switch as the P&L ledger and the order counter
-(``MVP_LIVE_TRADING=real``): one switch for the whole live capability, revoked together.
+Nothing here writes any more. The registry's only writer was the operator's canary door, and
+both were removed on 2026-09-15 (PR1r). The rows already on disk stay readable — verified, never
+normalised — for the evidence board below and ``scripts/record_unreported_live_order.py``.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any
 
 from runtime.read_only_kernel import integrity
 
-from .. import jsonl, safety_gate, timeutil
+from .. import jsonl
 from ..errors import ToolError
-from ..filelock import locked
-from ..safety_gate import Authorization
-from .live_pnl import (
-    LIVE_TRADING_ENV,
-    LIVE_TRADING_FLAGS,
-    LIVE_TRADING_PROVIDER_ID,
-    REAL_LIVE_TRADING,
-    state_dir,
-)
+from .live_pnl import state_dir
 
-CANARY_TOOL_ID = "crypto.live.canary_registry"
-CANARY_TOOL_VERSION = "0.1.0"
-
+# The shape of the rows already on disk: their file and the provenance they carry. Kept after the
+# writer went so the history stays nameable, and so neither string is reused for something else.
 CANARY_ORDERS_FILENAME = "live_canary_orders.jsonl"
 CANARY_PROVENANCE = "mvp_live_canary"
 
@@ -61,109 +51,15 @@ DEFAULT_MIN_CLEAN_CANARY_ORDERS = 3
 def _money(value: Any) -> float | None:
     """A number, or nothing. Never whatever the venue happened to send.
 
-    In practice `live_execution.fill_facts` already coerces these to ``float | None``, so this
-    is unreachable through the canary door. It exists because the builder produces a
-    **self-hashed, durable governance record**: a money field on it should not be able to hold
-    an arbitrary string just because some future caller passed one through, and the record is
-    the evidence gating autonomous live trading for as long as it exists.
-
-    Module level rather than nested in the builder, because the evidence READERS need the same
-    rule — a board that renders `"66.83"` as a number where the record refuses to store one
-    would report agreement the record never claimed.
+    Born in the canary record's builder, which refused to store an arbitrary string in a money
+    field on a self-hashed governance record. The builder went with the canary door on
+    2026-09-15 (PR1r); the rule stays because the evidence READERS below need it — a board that
+    renders `"66.83"` as a number where the record refused to store one would report agreement
+    the record never claimed.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
-
-
-def build_canary_order_record(
-    *,
-    reconcile_status: str,
-    symbol: str,
-    exchange_order_id: Any = None,
-    client_order_id: str | None = None,
-    mismatches: list[str] | None = None,
-    notional_usdt: float | None = None,
-    quantity: float | None = None,
-    fill: Mapping[str, Any] | None = None,
-    intended_price: float | None = None,
-    side: str | None = None,
-    now: str,
-) -> dict[str, Any]:
-    """One placed-and-reconciled canary order, self-hashed.
-
-    ``clean`` is derived here rather than accepted from the caller: an order counts only if
-    the venue reconciled it AND nothing mismatched. A caller cannot assert cleanliness.
-
-    **The record has to prove its own size.** ``notional_usdt`` is what the operator declared,
-    and until #268 nothing checked it — so the four canaries standing as evidence on
-    2026-07-28 carried a declared figure, no quantity and no fill, and there is now no way to
-    ask whether 65.0 described the order. That is the wrong shape for the sole evidence gating
-    autonomous live trading: a promotion gate whose records cannot be re-derived is an
-    assertion with a hash on it.
-
-    So the venue's own numbers ride along — ``quantity`` as sent, and ``fill`` carrying
-    ``avg_price`` / ``executed_qty`` / ``cum_quote``, which `live_execution.fill_facts`
-    already produced and the record simply discarded. ``cum_quote`` is the venue's filled
-    notional: with it, ``declared`` versus ``filled`` is a subtraction rather than a memory.
-
-    ``notional_declared_vs_filled_usdt`` is stated rather than judged. Making a disagreement
-    a ``mismatch`` would change what ``clean`` means and therefore what the promotion gate
-    counts — a separate decision, deliberately not taken here.
-
-    **``intended_price`` and ``side`` make a canary a slippage measurement.** A canary is an
-    entry-only MARKET order placed to validate the path, which makes it the one instrument that
-    can measure `cost.DEFAULT_SLIPPAGE_BPS` without routing a strategy signal — and §F8 measures
-    why that matters: the store's median candidate stops paying at 4.3 bps against an assumed
-    3.0 that has never been measured here. The price is the same ``reference_price`` step 3 of
-    `place_canary_order` already reads to check the declared notional, so nothing new is fetched
-    and nothing is inferred: it is what the runtime believed the price was, immediately before it
-    sent the order.
-
-    ``side`` rides along because the record could not otherwise be *signed* — adverse means
-    paying more on a BUY and receiving less on a SELL, and without it a reader can compute a
-    magnitude and not a direction. Both are recorded and neither is judged here;
-    `scripts/measure_live_slippage.py` owns the sign convention and its tests, and a second
-    spelling of that arithmetic is what this package warns about everywhere else.
-    """
-    problems = list(mismatches or [])
-    facts = dict(fill or {})
-
-    filled_notional = _money(facts.get("cum_quote"))
-    body: dict[str, Any] = {
-        "reconcile_status": reconcile_status,
-        "clean": reconcile_status == RECONCILED and not problems,
-        "symbol": symbol,
-        "exchange_order_id": exchange_order_id,
-        "client_order_id": client_order_id,
-        "mismatches": problems,
-        "notional_usdt": notional_usdt,
-        # What the venue said, beside what the operator declared.
-        "quantity": quantity,
-        "fill_avg_price": _money(facts.get("avg_price")),
-        # What the runtime believed the price was when it decided, beside what it actually paid.
-        # None rather than the fill when unknown: substituting it would make every such row read
-        # as zero slippage, which is the flattering direction.
-        "intended_price": _money(intended_price),
-        "side": str(side).upper() if side else None,
-        "fill_executed_qty": _money(facts.get("executed_qty")),
-        "filled_notional_usdt": filled_notional,
-        # None when either side is unknown — never 0.0, which would read as "they agreed".
-        "notional_declared_vs_filled_usdt": (
-            round(_money(notional_usdt) - filled_notional, 8)
-            if _money(notional_usdt) is not None and filled_notional is not None
-            else None
-        ),
-        "recorded_at_utc": now,
-        "stage": "live_canary",
-        "provenance": CANARY_PROVENANCE,
-    }
-    body["canary_order_id"] = integrity.short_id(
-        "canary", {"client_order_id": client_order_id, "exchange_order_id": exchange_order_id,
-                   "recorded_at": now}
-    )
-    body["record_sha256"] = integrity.sha256_record(body)
-    return body
 
 
 def read_canary_orders(root: Path | None = None) -> list[dict[str, Any]]:
@@ -176,7 +72,7 @@ def read_canary_orders(root: Path | None = None) -> list[dict[str, Any]]:
     path = state_dir(root) / CANARY_ORDERS_FILENAME
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    # Reads only. The append below keeps its own fsync, which append_lines does not do.
+    # Reads only: nothing appends to this registry since the canary door was removed.
     for lineno, record in jsonl.iter_numbered(
         path,
         read_code=CANARY_HISTORY_UNREADABLE,
@@ -270,80 +166,6 @@ def _size_evidence(root: Path | None) -> dict[str, Any]:
         "size_unproven": len(records) - len(gaps),
         "largest_size_gap_usdt": round(max(gaps), 8) if gaps else None,
     }
-
-
-class CanaryRegistry(Protocol):
-    """Append-only canary evidence. Reads are ungated module functions."""
-
-    tool_id: str
-    tool_version: str
-
-    def append_canary_order(self, record: Mapping[str, Any]) -> None: ...
-
-
-class DryRunCanaryRegistry:
-    """Inert registry: accepts and discards.
-
-    A canary record should be impossible to produce with the switch off, since producing one
-    means an order was actually placed. If one arrives here anyway it is dropped rather than
-    persisted — unbacked evidence in this registry would unlock autonomous trading.
-    """
-
-    tool_id = CANARY_TOOL_ID
-    tool_version = f"{CANARY_TOOL_VERSION}-dryrun"
-    filesystem_write = False
-
-    def append_canary_order(self, record: Mapping[str, Any]) -> None:
-        return None
-
-
-class RealCanaryRegistry:
-    """Durable canary evidence, behind the one live-trading switch."""
-
-    tool_id = CANARY_TOOL_ID
-    tool_version = CANARY_TOOL_VERSION
-    provider_id = LIVE_TRADING_PROVIDER_ID
-    filesystem_write = True
-
-    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
-        self._root = root
-        self._authorization = authorization
-
-    def _assert(self) -> None:
-        safety_gate.assert_authorization(
-            self._authorization,
-            required_flags=LIVE_TRADING_FLAGS,
-            provider_id=self.provider_id,
-            now=timeutil.utc_now_iso(),
-        )
-
-    def append_canary_order(self, record: Mapping[str, Any]) -> None:
-        self._assert()
-        target = state_dir(self._root)
-        target.mkdir(parents=True, exist_ok=True)
-        path = target / CANARY_ORDERS_FILENAME
-        with locked(path.with_suffix(".lock"), code="LIVE_STATE_LOCKED", label="canary registry"):
-            with open(path, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-
-def select_canary_registry(*, now: str | None = None, root: Path | None = None) -> CanaryRegistry:
-    """Return the durable canary registry if live trading is opted in, else the inert one.
-
-    Follows the order adapter onto ``select_env_gated`` (Thomas, 2026-07-28) and must: this
-    registry writes the evidence the promotion gate counts, and evidence must be exactly as hard
-    to produce as the order it evidences. Left on the grant while the adapter moved off it, a
-    machine could place real canaries and record none of them."""
-    return safety_gate.select_env_gated(
-        env_var=LIVE_TRADING_ENV,
-        opt_in_value=REAL_LIVE_TRADING,
-        flags=LIVE_TRADING_FLAGS,
-        provider_id=LIVE_TRADING_PROVIDER_ID,
-        default_factory=DryRunCanaryRegistry,
-        gated_factory=lambda authorization: RealCanaryRegistry(root=root, authorization=authorization),
-    )
 
 
 # --- the operator's read side: can each canary prove what it was? ------------

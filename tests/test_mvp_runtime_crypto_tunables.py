@@ -67,7 +67,6 @@ MECHANICS: dict[str, str] = {
     # definition of a proper subset — a single condition has nothing to ablate — and there is
     # no other value it could take.
     "ABLATION_MIN_CONDITIONS": "structural: a proper subset needs k >= 2; not a chosen level",
-    "NOTIONAL_TOLERANCE_FRACTION": "float comparison tolerance against the venue's own rounding",
     "DERIVATIVE_HISTORY_DAYS": "how much history to fetch; bounded by the venue, not chosen",
     "MAX_CANDLES": "fetch ceiling — a page budget, and the depth premise is FACTORY_DEPTH_DAYS",
     "DERIVATIVE_MAX_PAGES": "page budget bounding one collection's egress",

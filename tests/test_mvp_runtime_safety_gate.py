@@ -218,7 +218,6 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         "runtime/mvp_runtime/crypto/live_pnl.py",         # the realized-P&L ledger
         "runtime/mvp_runtime/crypto/live_position.py",    # the position book
         "runtime/mvp_runtime/crypto/live_order.py",       # the daily submission counter
-        "runtime/mvp_runtime/crypto/live_promotion.py",   # the canary evidence registry
         "runtime/mvp_runtime/crypto/market_data.py",      # candle archive + market data + liquidation feed
         "runtime/mvp_runtime/naver_research.py",          # the blog content lane's research tools
         # Everything below moved on 2026-08-10 in one decision — Thomas retired grant

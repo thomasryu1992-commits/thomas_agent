@@ -19,8 +19,9 @@ implementation:
 
 * **no autonomous entry point may import this module** — ``live_leg`` and this adapter are both
   covered by ``test_no_autonomous_entry_point_reaches_the_live_order_path``, which fails loudly
-  if one does. Today the only caller is the deliberate ``scripts/place_canary_order.py``, one
-  canary at a time;
+  if one does. Today its callers are the live leg, reached only through ``live_route``, and the
+  operator's ``scripts/run_slippage_probe.py --fire``, one probe at a time (the canary door that
+  was once the only caller was removed on 2026-09-15, PR1r);
 * ``financial_executor_enabled`` is ``false``, and cycle routing (LP5.3's last piece) is
   deliberately unbuilt — building it *is* the decision to relax that tripwire;
 * reaching the venue at all still requires the operator's ``MVP_LIVE_TRADING=real`` opt-in,
@@ -30,8 +31,9 @@ implementation:
 Design: ``docs/runtime-contracts/LP4_ORDER_ADAPTER_DESIGN_V0.1.md``. LP4 is the narrow, and only,
 code that can send an order — it takes one **guard-approved** MARKET intent (LP3), submits it,
 reconciles the result against the venue, and returns the ``exchange_order_id`` +
-``reconcile_status`` + mismatches that feed the LP6 canary record (clean iff ``RECONCILED``) and
-the LP2 P&L ledger. It does not size, decide, or manage positions.
+``reconcile_status`` + mismatches that the live leg and the probe confirm an entry on (only
+``RECONCILED`` opens a position) and the LP2 P&L ledger. It does not size, decide, or manage
+positions.
 
 The gate is the established chokepoint: the real adapter is constructed only behind the one
 live-trading switch via ``safety_gate.select_env_gated``, and it re-asserts that switch at every
@@ -208,8 +210,9 @@ TIMES_IN_FORCE = frozenset({TIME_IN_FORCE_GTC, "IOC", "FOK", "GTX"})
 # means a hand-built intent cannot get rejected at the venue for a character.
 CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
 
-# reconcile_status vocabulary. RECONCILED is reused from live_promotion so the canary record's
-# clean-derivation (clean iff RECONCILED and no mismatch) matches this by construction.
+# reconcile_status vocabulary. RECONCILED is reused from live_promotion, where the historical canary
+# rows derived `clean` from it (clean iff RECONCILED and no mismatch), so those rows and this
+# vocabulary agree by construction. The live leg and the probe import it from there too.
 MISMATCH = "MISMATCH"
 NOT_FOUND = "NOT_FOUND"
 UNRECONCILABLE = "UNRECONCILABLE"
