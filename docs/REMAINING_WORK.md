@@ -4967,7 +4967,9 @@ delegation goes live only with its own policy bump.
       own snapshot by its container path; `drain` counts QUEUED rows; the closed intake takes no fresh claim. Workflow-step
       asks say that approving runs the step. The per-finding skeptic stage was dropped mid-run (one agent at a time on
       this 2-CPU host); reproduction was the verification.
-- [ ] **P11 — limited production cutover** (separate deploy decision — **prepared 2026-09-14, not executed**).
+- [ ] **P11 — limited production cutover** (prepared 2026-09-14; **deployed 2026-09-15** on Thomas's decision —
+      runtime `candidate-865`, `--workflow-manager` #866, Hermes shims 2.10 / skill 1.5.5 / the fourth cron job and the
+      backup scripts, record in `docs/DEPLOYMENT_PLAN_SEQUENCE2.md`'s status line; the pilot and the cutover remain).
       Prepared: the in-process load acceptance (A27, `tests/test_mvp_runtime_workflow_load.py`: 100 accepts, 0 lost,
       0 duplicated, overload refused as `CAPACITY_EXHAUSTED`); the CI compose step (A26/A28, `.github/ci-compose.workflow.yml`
       + `docker-image.yml`: the door serves door API v3 with the manager from its compose definition, the risk lane
@@ -4976,8 +4978,7 @@ delegation goes live only with its own policy bump.
       policy 1.5.0), the promote, the one-line compose PR that turns the manager on, and only then the Hermes side
       (shims with the installer, prompt and skill by hand, the fourth cron job, a hermes restart) and the backup
       scripts, the post-deploy checks, the pilot's scope and measures, and the rollback evidence. **Still
-      Thomas's to decide and run:** the deploy itself, the `--workflow-manager` line, the later `--v2-intake closed`
-      cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
+      Thomas's to decide and run:** the later `--v2-intake closed` cutover after the pilot, and policy 1.6.0. Legacy writer retirement per entry point follows the cutover runbook.
 
 ## Per-machine setup that does NOT travel via git
 
