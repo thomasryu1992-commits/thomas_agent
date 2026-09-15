@@ -25,15 +25,15 @@ port, then the source repo was frozen. This document covers bringing it across.
 | LP1 live account read | `live_canary_preparation.LiveReadOnlyProbe` | yes | **no method exists** |
 | LP2 P&L ledger + loss breaker | `execution/live_pnl_ledger.py` (L1) | yes | no |
 | LP3 order intent + final guard | `execution/live_order_final_guard.py` (L2) | yes | no — it only refuses |
-| LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes | no |
+| LP6 canary promotion evidence | `execution/live_promotion.py` (L5 gate) | yes — the gate and the registry writer were removed 2026-09-15 (PR1r); the verified reader and the history board remain | no |
 | LP4 order adapter | `execution/live_canary_adapter.py` | **yes** (2026-07-25) | **YES** — `live_execution.py`, behind `MVP_LIVE_TRADING=real` + the order key + a guard PASS |
 | LP5 position kernel + routing | `execution/live_position_kernel.py` (L5/L3/L6) | **almost** — 5.1 state/reconciliation, 5.2 sizing, 5.3 the entry decision **and the executing leg**, 5.4 the outcome bridge | the executing leg can, with an **injected** adapter — but nothing autonomous may import it (tripwire test), so **cycle routing is the only piece left** |
 
 The honest summary changed on 2026-07-25 and is worth stating without softening: **an order path
 now exists.** Every other module either **reads** or **refuses**, and the one that can send
 requires, simultaneously, `MVP_LIVE_TRADING=real`, the order-capable API key, a registered
-budget, the autonomous confirmation phrase (or the separate canary phrase), both kill switches
-clear, and a guard PASS.
+budget, the autonomous confirmation phrase (or, for a slippage-probe entry only, the separate
+canary phrase), both kill switches clear, and a guard PASS.
 
 **The second half of that summary expired on 2026-07-28** and is corrected rather than deleted:
 it used to end "and even then it is only reached from the deliberate
@@ -56,8 +56,8 @@ caller, and therefore the moment the safety posture changes. It is its own decis
 | Account balance / positions / realized P&L | External read | `INTERNAL_READ` · ALLOW behind its own `binance_futures_account` grant; failure **degrades** (`ACCOUNT_DATA_DEGRADED`), never blocks — the R3/`MARKET_DATA_DEGRADED` precedent |
 | Realized live P&L ledger + daily-loss breaker | Internal state + validation | Records behind the live-trading switch; the breaker is a pure read every caller can make ungated |
 | Order intent construction, idempotency, final guard | Internal compute | Pure functions. No gate, because computing a refusal is not a capability |
-| Canary promotion evidence | Internal record creation | Append behind the live-trading switch; reads ungated and verified |
-| **Live order submission** | **External + financial** | **Implemented** (LP4, 2026-07-25) under the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: `FINANCIAL_APPROVED_TRADING_USE` at P5, the `execution.live_trader` role (**candidate, non-routable** — activating it is a separate `ROLE_GOVERNANCE` approval), a registered `live_trading_budget.v0.1`, and the `p5_policy_gate`. Reached only from `scripts/place_canary_order.py`; `financial_executor_enabled` stays `false` |
+| Canary promotion evidence (history) | Internal read | Nothing appends since 2026-09-15 (PR1r removed the canary door and its registry writer); the frozen registry's reads stay ungated and verified |
+| **Live order submission** | **External + financial** | **Implemented** (LP4, 2026-07-25) under the decisions in `LIVE_EXECUTION_GOVERNANCE_V0.1.md`: `FINANCIAL_APPROVED_TRADING_USE` at P5, the `execution.live_trader` role (**candidate, non-routable** — activating it is a separate `ROLE_GOVERNANCE` approval), a registered `live_trading_budget.v0.1`, and the `p5_policy_gate`. Reached from `crypto/live_route.py` (the autonomous leg) and `scripts/run_slippage_probe.py --fire`; it was reached only from `scripts/place_canary_order.py` when this row was written, and that door was removed 2026-09-15. `financial_executor_enabled` stays `false` |
 | **Live entry decision** (LP5.3) | Internal compute | Pure functions — `live_entry.plan_live_entry` decides and refuses; it holds no adapter, so deciding is not a capability |
 | **Live executing leg** (LP5.3) | **External + financial**, when given an adapter | `live_leg.execute_live_entry` / `execute_live_exit`. The adapter is **injected**, never selected, so the module cannot reach a venue on its own; it also refuses without a governance record. No autonomous entry point may import it (`test_no_autonomous_entry_point_reaches_the_live_order_path`), and the readiness board reports that as the `autonomous_routing_wired` row |
 | **Venue trading rules** (`exchangeInfo`) | External read | `INTERNAL_READ` · ALLOW on the existing `binance_futures` market-data grant; failure **degrades** (`LIVE_FILTERS_DEGRADED`) and sizing then refuses |
@@ -92,9 +92,10 @@ the venue and `filesystem_write` to record what happened, never one without the 
 The consequences are deliberate:
 
 * It cannot be half-enabled. Orders reaching the venue while the P&L ledger silently fails to
-  record them is the exact failure mode a split switch would allow. All five selectors —
-  order adapter, P&L ledger, position book, daily counter, canary registry — read the same
-  variable, and a test asserts that list is exactly those five.
+  record them is the exact failure mode a split switch would allow. The live selectors — order
+  adapter, P&L ledger, position book, daily counter — read the same variable, and a test pins
+  the exact set of modules that select on it. *(The canary registry was a fifth until its writer
+  went with the canary door on 2026-09-15.)*
 * **It does not expire, and nothing revokes it but the operator.** This is the reversal, stated
   plainly rather than buried: live capability now persists by forgetfulness, which is what the
   30-day TTL existed to prevent. The mitigation is the `kill` verb, not the gate.
@@ -125,10 +126,13 @@ dangerous state a trading system can be in, so it must read as halted.
 **One source for the caps: the registered budget.** Since step 6b the caps come from the
 self-hashed `live_trading_budget.v0.1` record (`scripts/register_live_trading_budget.py`), read
 by `resolve_live_order_limits`. The `MVP_LIVE_MAX_*` env vars no longer authorize anything — a
-missing, expired or tampered budget yields the blocking defaults above, so there is no cap an
-operator can set outside the registered record. Only three things stay env, because a phrase
-proving intent and a halt are operator state rather than registered caps:
-`MVP_LIVE_CONFIRMATION`, `MVP_LIVE_CANARY_CONFIRMATION`, `MVP_LIVE_MANUAL_KILL_SWITCH`.
+missing, tampered or invalid budget — or one registered before 2026-09-15 that is outside the
+validity window it carries — yields the blocking defaults above, so there is no cap an operator
+can set outside the registered record. A budget registered since carries no window and stands
+until it is re-registered (PR1r). Only three things stay env, because a phrase proving intent and
+a halt are operator state rather than registered caps: `MVP_LIVE_CONFIRMATION` (autonomous
+entries and every close), `MVP_LIVE_CANARY_CONFIRMATION` (slippage-probe entries only),
+`MVP_LIVE_MANUAL_KILL_SWITCH`.
 Both guards **require** their `limits` argument (no `from_env()` fallback), so the question
 "which numbers was this order judged against?" has exactly one answer.
 
@@ -148,15 +152,16 @@ it widens nothing until an operator registers a budget carrying the larger numbe
 
 **Damaged evidence is no evidence.** Both the P&L history and the canary registry are verified
 reads — self-hash plus duplicate-id detection. A tampered or unparseable row raises rather than
-resolving, and for promotion it counts as **zero** clean orders, never as the last good number.
+resolving. *(For the promotion gate it also counted as **zero** clean orders, never as the last
+good number, until that gate was removed on 2026-09-15; the registry is frozen history now.)*
 A non-numeric P&L amount raises too: reading it as zero would understate a loss and could clear
 a breaker that should be tripped.
 
 ## Two decisions worth stating plainly
 
-**The reduceOnly close path is exempt** from the loss breaker, the caps, the daily count, the
-promotion gate, and both kill switches (Thomas, 2026-07-23). A halt that traps you in a losing
-position is more dangerous than the halt was meant to prevent. What survives is the structural
+**The reduceOnly close path is exempt** from the loss breaker, the caps, the daily count, and
+both kill switches (Thomas, 2026-07-23). A halt that traps you in a losing position is more
+dangerous than the halt was meant to prevent. What survives is the structural
 boundary — the grant, the confirmation phrase, and `reduce_only` itself — so that path can only
 ever shrink a position, never open one.
 
@@ -253,27 +258,30 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 > **Ordering corrected 2026-07-26.** This gate used to be numbered *after* the canary gate, which
 > could not be followed: a canary is exempt from the **promotion gate and nothing else**, so every
 > item below has to be in place before the first canary can be placed at all. Configure, then
-> canary.
+> canary. *(2026-09-15: the canary gate and the promotion gate are both gone — see Gate 3. The
+> items below are what the autonomous leg and the slippage probe need.)*
 
 - [ ] `git pull`. Before 2026-07-26 `resolve_live_order_limits` dropped `canary_confirmation`, so
-      an older checkout refuses **every** canary with "canary confirmation phrase not present".
+      an older checkout refuses **every** canary-mode order (today: every slippage-probe entry)
+      with "canary confirmation phrase not present".
 - [ ] **Activate the Core on this machine** (`CLAUDE.md` → "Core activation"). Since the live order
       path builds a P5 PermissionDecision bound to an active Core, a machine without one refuses
       with `CORE_NOT_ACTIVATED` *before* the order — governance is prepared before money moves.
 - [ ] Configure the **read-only account feed**: `MVP_ACCOUNT_FEED=binance_futures_account` plus
-      `BINANCE_ACCOUNT_API_KEY` / `BINANCE_ACCOUNT_API_SECRET`. The canary script refuses outright
-      without it — open exposure would be unknown, and the exposure cap cannot be honored on a
-      guess.
+      `BINANCE_ACCOUNT_API_KEY` / `BINANCE_ACCOUNT_API_SECRET`. The autonomous leg and the probe
+      refuse an entry without it (the canary script did too, until its removal on 2026-09-15) —
+      open exposure would be unknown, and the exposure cap cannot be honored on a guess.
 - [ ] Configure the **read-only market-data feed**: `MVP_MARKET_DATA=binance_futures` plus a
       `network_access` grant for the `binance_futures` provider
       (`scripts/activate_safety_flag.py`). Public endpoints, no API key — the grant is for
-      crossing the network, not for a secret. **A canary precondition since 2026-07-26**: the
-      script checks the `--notional` you declare against what `--quantity` actually implies at
-      the venue's latest price, and without this feed the mock collector is selected. Its price
-      is a hash of the symbol rather than a market, so the check refuses
-      (`ORDER_NOTIONAL_PRICE_UNKNOWN`) instead of clearing a real order against a fabricated
-      number. The readiness board reports this as `market_data_visibility`; without it **no
-      canary evidence can be earned at all.**
+      crossing the network, not for a secret. Without this feed the mock collector is selected,
+      and its price is a hash of the symbol rather than a market: the cycle has nothing real to
+      judge, and the slippage probe's price read (`market_data.read_reference_price`) refuses
+      (`PROBE_PRICE_UNREADABLE`) instead of pricing a real order off a fabricated number. The
+      readiness board reports this as `market_data_visibility`. *(Until 2026-09-15 this item was
+      a canary precondition: the canary script checked the `--notional` you declared against the
+      same price read and refused with `ORDER_NOTIONAL_PRICE_UNKNOWN`. The check went with the
+      script.)*
 - [ ] Create a **separate** order-capable live API key: enable Futures, **disable withdrawals
       and internal transfer**, IP-whitelist it. Keep it distinct from the read-only account key.
       `MVP_LIVE_ORDER_API_KEY` / `MVP_LIVE_ORDER_API_SECRET`.
@@ -290,48 +298,46 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       ```
 
       A re-run replaces the whole record rather than the flags you pass, so name every cap
-      **and** `--symbols` / `--min-clean-canary-orders` on each re-registration: the script's
-      defaults (BTCUSDT only, 3 canaries) are lower than what a machine past bring-up has
-      registered, and an omitted flag narrows the allowlist or lowers the promotion bar with no
-      warning. Read the result back off the readiness board rather than assuming it landed.
-- [ ] Set the confirmation phrase **for the capability you are about to use**. They are
-      deliberately distinct, so pasting the wrong one authorizes nothing:
-      `MVP_LIVE_CANARY_CONFIRMATION` for canaries, `MVP_LIVE_CONFIRMATION` for autonomous trading.
-      A canary needs only the first.
+      **and** `--symbols` on each re-registration: the script's defaults (the caps above,
+      BTCUSDT only) are lower than what a machine past bring-up has registered, and an omitted
+      flag lowers a cap or narrows the allowlist with no warning. Read the result back off the
+      readiness board rather than assuming it landed.
+
+      The record does not expire: a budget registered since 2026-09-15 carries no validity
+      window and stands until it is re-registered, or until `live_trading_budget.json` is
+      deleted. `--valid-days` and `--min-clean-canary-orders` were removed that day (PR1r);
+      passing either exits 2 and writes nothing. A budget registered before still carries its
+      window and is still held to it, and it still carries `caps.min_clean_canary_orders`, which
+      nothing reads. **Re-register only once the image that reads it is deployed:** an older
+      image reads a windowless record as schema-invalid and refuses every entry (closes keep
+      working).
+- [ ] Set the confirmation phrases. They are deliberately distinct, so pasting the wrong one
+      authorizes nothing — and they are **not** symmetric. `MVP_LIVE_CONFIRMATION` authorizes
+      autonomous entries **and every close**, the slippage probe's exits included
+      (`evaluate_live_close_guard` compares it). `MVP_LIVE_CANARY_CONFIRMATION` authorizes
+      slippage-probe entries only. So the close phrase is also the autonomous-entry phrase, and
+      since 2026-09-15 no canary floor stands behind it until PR1b enforces the execution stage:
+      a probe-only session keeps every pool entry OBSERVATION-tier (`live_armed_strategies` = 0).
+      *(Until 2026-09-15 this item read "`MVP_LIVE_CANARY_CONFIRMATION` for canaries,
+      `MVP_LIVE_CONFIRMATION` for autonomous trading. A canary needs only the first." — true for a
+      canary, which only opened, and never true for the probe, whose exits need the second.)*
 - [ ] Set `MVP_LIVE_TRADING=real`. **This is now the entire gate** — there is no grant to mint
       since 2026-07-28, so this one line selects every real live component at once. Confirm it
       on the board (`live_trading_opt_in` PASS) before continuing rather than assuming.
 
-**Gate 3 — promotion evidence: 3 clean canary orders**
-- [ ] Confirm the board first: `python -m runtime.mvp_runtime.crypto.live_readiness`. Everything
-      except `canary_evidence` must be PASS. That one row staying FAIL at `0/3` is **expected** —
-      it is the single check a canary is exempt from, and the canary is what earns it.
-- [ ] Place canary orders until three are clean. **One exists**, from 2026-07-16 in the source
-      system; it did not migrate, so the count here is currently 0. Each canary is one small
-      real order placed deliberately to prove signing, submission, and reconciliation.
+**Gate 3 — promotion evidence (removed 2026-09-15)**
 
-      ```
-      python -m scripts.place_canary_order --symbol BTCUSDT --quantity <qty> --notional <qty x price>
-      ```
-
-      `--notional` is **never** back-filled from the cap — state it truthfully, at or under the
-      60 USDT per-order cap and above the venue's own minimum. Since 2026-07-26 that is
-      **checked, not trusted**: the script reads the venue's latest closed 1m price and refuses
-      with `ORDER_NOTIONAL_UNDERSTATED` when your declaration falls more than 1%
-      (`live_order.NOTIONAL_TOLERANCE_FRACTION`) below `quantity x price`. Over-declaring passes
-      — it only makes every cap stricter. An unreadable, synthetic or stale price refuses with
-      `ORDER_NOTIONAL_PRICE_UNKNOWN` rather than waving the order through.
-
-      Work the quantity out from the price at the moment you place it. There is deliberately no
-      example number here: the one that used to stand in this file and in the script's own
-      docstring (`--quantity 0.001 --notional 60`) was written against an older BTC price and
-      understated the real order by ~7% once BTC passed 64,512 — following the documentation
-      produced the wrong declaration. Check `clean: True` in the output; anything else does not
-      count toward the three.
-- [ ] Close each canary position on the venue afterwards — canaries only **open**.
-- [ ] Budget the calendar: the daily order cap is **2**, so three clean canaries take **at least
-      two UTC days**. Raising the cap to finish sooner would defeat what the canary proves —
-      that the plumbing works at the conservative boundary.
+Retired, not skipped. This gate asked for 3 clean canary orders, placed one at a time with
+`scripts/place_canary_order.py`, before any autonomous run; the final guard refused an autonomous
+entry until the canary registry held them. Canaries ended on 2026-07-29 (Thomas: no further
+canaries, the evidence moves to real trades), and on 2026-09-15 Thomas removed the door, its
+registry writer and the guard's clean-canary promotion gate together (PR1r). With the door went
+its declared-notional check (`ORDER_NOTIONAL_UNDERSTATED`, `ORDER_NOTIONAL_PRICE_UNKNOWN`) and the
+budget's `--min-clean-canary-orders` bar. The frozen registry is still verified and shown by
+`python -m runtime.mvp_runtime.crypto.live_promotion`, and nothing counts it. **Nothing replaces
+this floor on a fresh machine until PR1b enforces the execution stage**
+(`EXECUTION_STAGE_V0.1.md`). The steps this gate held are in git history and in
+`docs/BUILD_HISTORY.md`.
 
 **Gate 4 — verify the gate before any autonomous run**
 - [ ] `python -m runtime.mvp_runtime.crypto.live_readiness` reports READY. A refusal names
@@ -346,7 +352,7 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
 - **Stop new entries and keep managing open positions:** the Trading Soft Halt —
   `console_cli halt_trading` or `/halt_trading` (Thomas decision 7, 2026-09-15). The runtime stays
   ACTIVE, so settlement, the protection re-check, the time exit and reconciliation keep running;
-  only new entries (autonomous, canary, probe) are refused, until `/resume`. From a PAUSED or
+  only new entries (autonomous and probe) are refused, until `/resume`. From a PAUSED or
   KILLED runtime the operator's `/halt_trading` moves it straight to that state. **It acts once
   the 1.5.1 policy grants the verb; until then it refuses by name.**
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands

@@ -22,10 +22,10 @@ process trade", because the CLI exit code is documented as a script precondition
 It opens **one** socket, and only when the operator has already configured an account feed:
 the daily-loss breaker measures against what the venue realized, because the local outcome
 ledger cannot supply that figure (its only writer is the autonomous leg nothing may import,
-and the canary path is entry-only). Without a configured feed the board makes no outbound
-call at all and the breaker row fails for want of a source — which is the honest answer, not
-a degraded one. The read is the same gated, read-only `account` module the dashboard uses;
-it cannot place, amend, or cancel anything.
+and the canary door, removed 2026-09-15, was entry-only). Without a configured feed the board
+makes no outbound call at all and the breaker row fails for want of a source — which is the
+honest answer, not a degraded one. The read is the same gated, read-only `account` module the
+dashboard uses; it cannot place, amend, or cancel anything.
 
 The final line is deliberately blunt. Since LP4 landed (2026-07-25) an order path **does** exist,
 so READY here no longer means "configured" — it means a real order could actually be placed on
@@ -397,10 +397,11 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     breached = bool(risk["daily_loss_limit_breached"])
     # A breaker with nothing to measure is not a passing check, however comfortable its number
     # looks. The local outcome ledger is written only by `live_leg.execute_live_exit` — the
-    # autonomous leg nothing may import — and the canary path is entry-only, so on this board
-    # the figure below has no source at all. It read `realized today 0.0 USDT` and PASSED while
-    # the venue reported a real realized loss for the same day. Reporting that as ready is the
-    # failure `cycle.py` names: a breaker that cannot trip is not a breaker.
+    # autonomous leg nothing may import — and the canary door (removed 2026-09-15) was
+    # entry-only, so on this board the figure below has no source at all. It read `realized
+    # today 0.0 USDT` and PASSED while the venue reported a real realized loss for the same day.
+    # Reporting that as ready is the failure `cycle.py` names: a breaker that cannot trip is not
+    # a breaker.
     no_source = risk.get("history_error") == LIVE_PNL_NO_SOURCE
     # BREACHED is reported ahead of NO DATA SOURCE, and the order matters: an unconfigured limit
     # already reads as breached ("zero means not configured, never unlimited"), and that is the

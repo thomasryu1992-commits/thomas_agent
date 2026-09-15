@@ -9,8 +9,10 @@ current behaviour. For what the code does now read `CRYPTO_LIVE_EXECUTION_V0.1.m
 exists** (`financial_transaction_execution_implemented: true`, `ORDER_PATH_IMPLEMENTED = True`,
 both flipped 2026-07-25 in lockstep with increment 2b). That says the *code* exists, not that
 this machine may act: `financial_executor_enabled` stays false, and acting still needs the
-`MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, a registered budget, both kill
-switches, and — for the autonomous path — the canary evidence.
+`MVP_LIVE_TRADING=real` opt-in, the confirmation phrase, a registered budget, and both kill
+switches. *(This list also named "— for the autonomous path — the canary evidence" until
+2026-09-15, when Thomas removed the canary door, `scripts/place_canary_order.py`, and its promotion
+gate. The body below still describes both, as the decision trail.)*
 Sequenced after: verification (`CRYPTO_LIVE_EXECUTION_VERIFICATION_V0.1.md`), the budget
 (steps 6/6b), and the P5 role (step 7). Depends decisions: `LIVE_EXECUTION_GOVERNANCE_V0.1.md`.
 

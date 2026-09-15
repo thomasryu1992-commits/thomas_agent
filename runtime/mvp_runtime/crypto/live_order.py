@@ -666,9 +666,9 @@ class DryRunLiveOrderCounter:
 def select_live_order_counter(*, now: str | None = None, root: Path | None = None) -> Any:
     """Return the durable counter if live trading is opted in, else the inert one.
 
-    On ``select_env_gated`` with the adapter and the canary registry (Thomas, 2026-07-28), and
-    for the same reason as the registry: this counter is what the daily-order cap reads. A
-    durable adapter with an inert counter is an uncapped account."""
+    On ``select_env_gated`` with the adapter and, until 2026-09-15, the canary registry (Thomas,
+    2026-07-28), and for the same reason the registry was: this counter is what the daily-order
+    cap reads. A durable adapter with an inert counter is an uncapped account."""
     return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,

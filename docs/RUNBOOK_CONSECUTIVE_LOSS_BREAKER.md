@@ -5,6 +5,7 @@
 압박 없이 내리기 위한 준비다.
 **검증:** 이 문서의 모든 명령은 2026-08-08에 `thomas-scheduler` 컨테이너에서 실제로 실행해
 확인했다. 상태를 바꾸는 명령(§5)은 실행하지 않고 `--help`와 `--show`로만 확인했다.
+2026-09-15에 고친 §5(되돌리기)·§7 명령은 코드 기준으로만 확인했다 — 컨테이너에서 실행하지 않았다.
 **작성 계기:** 2026-08-08 기준 `consecutive_losses` 2 / 한도 3. 라이브 청산 2건이 모두 손절이며
 한 번 더 지면 발동한다.
 
@@ -18,6 +19,13 @@
 > 정정 하나: §5의 "유효기간이 지나면 기본값(3)으로 돌아간다"는 **틀렸다**. `register` 스크립트
 > 출력이 권위다 — 만료 후 C4 가드는 **재등록 전까지 신규 진입을 거부**하고(fail-closed),
 > 기본값 복귀는 레코드 파일 삭제로만 이루어진다.
+
+> **갱신 (2026-09-15, PR1r): 한도 레코드는 더 이상 만료되지 않는다 — §5의 되돌리기는 필수다.**
+> Thomas가 카나리 문과 함께 유효기간을 걷어냈다. `register_crypto_risk_limits`의 `--valid-days`는
+> 삭제됐고(넘기면 exit 2, 아무것도 기록하지 않는다), 이제 등록한 레코드는 **재등록하거나 파일을
+> 지울 때까지 그대로 선다.** 완화는 스스로 풀리지 않는다 — 되돌리는 것은 기다리는 일이 아니라
+> 하는 일이다. 2026-09-15 이전에 등록된 레코드는 자기가 가진 유효기간을 여전히 지키며, 기간 밖이면
+> 위 정정대로 신규 진입을 거부한다(기본값 복귀가 아니다).
 
 ---
 
@@ -127,19 +135,45 @@ for l in open('/app/.runtime_governance_state/crypto/live_outcomes.jsonl'):
 **in-system 경로는 `max_consecutive_losses`를 올리는 것 하나뿐이다.** 그리고 그것은 정확히 방금
 발동한 그 한도를 푸는 일이다. 그래서 이 절차의 무게는 명령이 아니라 §4에 있다.
 
-**+1과 짧은 유효기간은 "1회 탐침"이다.** 한도를 3→4로 올리면 streak 3은 통과하지만, 다음 라이브
-결과가 또 손실이면 4에서 즉시 다시 걸린다. 즉 **라이브 거래 딱 한 번을 허용하는 것**이고, 그
-결과가 승리면 streak는 0으로 리셋된다. 유효기간이 지나면 기록은 만료되어 기본값(3)으로
-돌아간다 — **되돌리는 것을 잊어도 안전한 방향으로 만료된다.**
+**+1은 "1회 탐침"이다.** 한도를 3→4로 올리면 streak 3은 통과하지만, 다음 라이브 결과가 또
+손실이면 4에서 즉시 다시 걸린다. 즉 **라이브 거래 딱 한 번을 허용하는 것**이고, 그 결과가 승리면
+streak는 0으로 리셋된다. **그러나 레코드는 만료되지 않는다**(2026-09-15부터) — 되돌리지 않으면
+4가 라이브 진입과 프로브의 한도로 무기한 남는다. 그래서 아래 세 단계 중 마지막(되돌리기)은 선택이 아니다.
+
+*(이 문단은 2026-09-15까지 "+1과 짧은 유효기간 … 유효기간이 지나면 만료되어 기본값(3)으로
+돌아간다 — 되돌리는 것을 잊어도 안전한 방향으로 만료된다"고 적었다. 2026-08-17 정정대로 그때도
+틀렸고, 지금은 만료 자체가 없다.)*
+
+**1단계 — 되돌릴 값을 먼저 적어 둔다.**
 
 ```bash
-# Thomas가 실행. 값과 유효기간은 §4의 판단에 따라 정한다.
+docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits --show
+```
+
+`registered:` 줄이 `none`이면 되돌리기는 파일 삭제다. 레코드가 있으면 `effective:` 줄의 다섯 값이
+되돌릴 값이다. `rebase:` 줄이 보이면 여기서 멈춘다 — 그 드로다운 기준 제외는 이 스크립트로 다시
+등록할 수 없어서, 2단계의 재등록이 제외를 조용히 지우고 3단계로도 복원되지 않는다. Thomas 판단 사안이다.
+
+**2단계 — 완화한다.**
+
+```bash
+# Thomas가 실행. 값은 §4의 판단에 따라 정한다. 만료 기간은 없다 — 3단계가 되돌린다.
 docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits \
   --registered-by thomas \
   --risk-per-trade 0.01 --daily-max-loss-r -2.0 --weekly-max-loss-r -5.0 \
-  --max-consecutive-losses 4 --max-drawdown-pct -10.0 \
-  --valid-days 3
+  --max-consecutive-losses 4 --max-drawdown-pct -10.0
 ```
+
+**3단계 — 되돌린다 (필수).** 그 한 번의 라이브 결과가 나오면(승리든 손실이든), 또는 탐침을
+그만두기로 하면 바로 되돌린다. 아무것도 대신 되돌려 주지 않는다.
+
+- 1단계에서 레코드가 **없었다면**: 파일을 지워 기본값으로 돌아간다.
+  ```bash
+  docker exec thomas-scheduler rm /app/.runtime_governance_state/crypto/crypto_risk_limits.json
+  docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits --show   # registered: none
+  ```
+- 1단계에서 레코드가 **있었다면**: 적어 둔 다섯 값을 전부 명시해 재등록한다(아래 "다섯 개를
+  전부 명시한 이유"). 재등록한 뒤 `--show`의 `effective:`가 1단계와 같은지 확인한다.
 
 **다섯 개 한도를 전부 명시한 이유 — 이것이 이 절차서에서 가장 사고 나기 쉬운 지점이다.**
 미지정 항목은 **`guards.py`의 기본값으로 기록된다**(생략이 아니라 기본값 기입). 2026-08-08 현재는
@@ -152,7 +186,10 @@ docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits \
 - 코드 상한은 `MAX_MAX_CONSECUTIVE_LOSSES = 10`. 그 이상은 코드 변경 + 배포 사안이다.
 - 범위를 벗어난 값은 무시되거나 clamp되지 않는다 — **레코드 전체가 거부되어 fail-closed**가 된다.
 - 반영은 다음 사이클(15분 주기)에 이루어진다. 재시작은 필요 없다.
-- 레코드는 자기 해시로 검증된다. 판독 불가·해시 불일치·만료는 전부 기본값 복귀가 아니라 **BLOCK**이다.
+- 레코드는 자기 해시로 검증된다. 판독 불가·해시 불일치·범위 초과, 그리고 2026-09-15 이전 레코드가
+  자기 유효기간 밖인 경우는 전부 기본값 복귀가 아니라 **BLOCK**이다.
+- `--valid-days`는 없다(2026-09-15 삭제). 옛 명령을 그대로 붙이면 exit 2로 끝나고 아무것도 기록되지
+  않는다 — 완화도 되지 않았다는 뜻이니 `--show`로 확인할 것.
 
 ---
 
@@ -171,13 +208,20 @@ docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits \
 
 - **`live_outcomes.jsonl`을 편집해 streak를 끊는 것.** 레코드는 자기 해시로 검증되며 변조로
   읽힌다. 그리고 판독 불가는 기본값 복귀가 아니라 fail-closed다 — 더 나빠진다.
-- **카나리로 streak를 끊으려는 시도.** 카나리는 `live_canary_orders.jsonl`에 기록되며
-  `live_outcomes.jsonl`과 다른 저장소다. streak에 아무 영향이 없다.
+- ~~**카나리로 streak를 끊으려는 시도.** 카나리는 `live_canary_orders.jsonl`에 기록되며
+  `live_outcomes.jsonl`과 다른 저장소다. streak에 아무 영향이 없다.~~ 카나리 문
+  (`place_canary_order`)은 2026-09-15에 제거됐다(PR1r). 슬리피지 프로브 행도 streak에서 건너뛴다
+  (위 2026-08-17 갱신).
 - **`MVP_LIVE_TRADING`을 해제해서 멈추는 것.** 재시작이 필요하고 **청산 경로까지 닫는다.**
-  즉시 멈춰야 하면 킬 스위치를 쓴다(청산은 열어 둔다):
+  진입만 멈추고 포지션 관리(정산·보호 재확인·시간 청산)는 계속하려면 `halt_trading`을 쓴다 — 정책
+  1.5.1이 부여한 뒤부터 동작하고, 그 전에는 이름으로 거부된다. 그 전까지 즉시 멈추는 수단은 `kill`인데,
+  **포지션 관리까지 함께 멈춘다**(`/resume`까지 거래소에 걸린 브래킷만 포지션을 지킨다):
   ```bash
+  docker exec thomas-scheduler python -m runtime.mvp_runtime.console_cli halt_trading --reason "..."   # 1.5.1 이후
   docker exec thomas-scheduler python -m runtime.mvp_runtime.console_cli kill --reason "..."
   ```
+  *(이 항목은 2026-09-15까지 "킬 스위치를 쓴다(청산은 열어 둔다)"고 적었다 — 실행 권한 감사에서
+  kill이 포지션 관리까지 멈추는 것으로 확인돼 정정.)*
 - **호스트에서 root로 상태 기록 CLI를 실행하는 것.** 서비스는 uid 10001로 돌며, root가 만든
   파일은 이후 서비스가 쓰지 못한다. 반드시 `docker exec ... python -m scripts.<name>`
   **모듈 형식**을 쓴다(`python scripts/<name>.py`는 `sys.path` 문제로 실패한다).
@@ -189,8 +233,9 @@ docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits \
 
 재개하든 하지 않든 근거를 남긴다.
 
-- 재개: 한도 레코드의 `registered_by`와 유효기간이 그 자체로 감사 흔적이다. 무엇을 근거로
-  풀었는지는 별도로 남길 것.
+- 재개: 한도 레코드의 `registered_by`와 `registered_at`이 그 자체로 감사 흔적이다. 무엇을 근거로
+  풀었는지, 그리고 **언제 되돌렸는지**(재등록 레코드의 `registered_at`, 또는 파일을 지운 시각)는
+  별도로 남길 것 — 레코드에 만료가 없으니 되돌린 기록이 없으면 완화가 아직 서 있다고 읽어야 한다.
 - 미재개: `console_cli --reason`에 사유를 담아 상태를 기록하거나, 결정을 문서로 남길 것.
 
 ---

@@ -24,6 +24,81 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The canary door and both validity windows are gone, and a window already stored is still
+  honoured** (crypto PR1r, Thomas decision 2026-09-15 — "걷어내자" for the canary pieces, and the
+  budget and risk-limits windows with them; `scripts/place_canary_order.py` deleted,
+  `crypto/live_order.py`, `crypto/live_promotion.py`, `crypto/live_budget.py`,
+  `crypto/risk_limits.py`, both schemas, both register scripts, `crypto/live_readiness.py`). The
+  door placed a real MARKET entry with no pool arming, no `plan_live_entry`, no risk guard and no
+  protective bracket; it went with its registry writer and its declared-notional check. Guard 6,
+  the clean-canary promotion gate, went with the budget cap that fed it. Canaries ended on
+  2026-07-29, so the gate had been counting a frozen file: 4/4 against a bar of 4 on the machine
+  that ran them, 0 and refusing on every other. PR1a (above) left the canary rung out for the same
+  reason. The slippage probe authorizes exactly as before, on the canary phrase.
+
+  **Why the windows went, against the 2026-07-30 entry below.** That entry argued "relaxations
+  expire, defaults do not": a window turns a widened breaker into a re-authorized decision instead
+  of a permanent edit nobody revisits. Three later decisions priced expiry the other way. The live
+  grant lost its TTL on 2026-07-28 because an expiry lands on whatever is open; 2026-08-10 retired
+  every grant because renewal meant something died every week on a system meant to run
+  unattended; and PR1a gave its stage no end date because "a 30-day LIVE end date would have
+  brought the renewal back under another name". The budget window was already that renewal in
+  disguise: a budget cannot be open-ended under the old schema, so a long window was registered to
+  postpone a cliff on which every entry refuses. The re-authorization the window promised was a
+  calendar event, not a review. What stands in its place is explicit: `RUNBOOK_CONSECUTIVE_LOSS_BREAKER.md`
+  §5 now makes the revert a mandatory step, and `--show` and the readiness rows print
+  `registered_at`, "no expiry" or the legacy window, and any drawdown-rebase exclusion count,
+  because an exclusion now stands as long as its numbers do.
+
+  **Why a stored window is still honoured (legacy-honour, not ignore-all).** The first draft
+  ignored every stored window and relied on one pre-deploy read showing nothing stored was outside
+  its window. The safety review showed the machine's own procedures undo that read.
+  `RUNBOOK_HARNESS_BACKUP_RESTORE.md` restores archives the Mac keeps for 90 days, budget and
+  risk-limit records included, and goes straight to `up -d`. A rollback followed by a registration
+  with the old script writes a 30- or 3-day window. Either way a lapsed record, a looser breaker
+  included, would come back into force with its readiness row reading PASS. So the rule lives in
+  code. Builders and register scripts write no window. A record that carries one is judged by it
+  exactly as before (`OUTSIDE_VALIDITY_WINDOW` and `CRYPTO_RISK_LIMITS_EXPIRED` stay live codes).
+  Half a window, or one that does not open before it closes, reads `LIVE_BUDGET_INVALID` /
+  `CRYPTO_RISK_LIMITS_INVALID` on read. Every reader takes the window with `.get`, because a
+  `KeyError` on the live leg before settle/protect is an INCIDENT halt, and an AST test over
+  `runtime/` and `scripts/` refuses the subscript. A windowless record's id seeds on
+  `registered_at`.
+
+  **Kept, because something else still uses it.** `MVP_LIVE_CANARY_CONFIRMATION`, the guard's
+  `canary` kwarg and `PURPOSE_CANARY` authorize and audit the probe. `live_promotion.RECONCILED` is
+  the live leg's reconcile vocabulary. The verified registry reader, the `CANARY_HISTORY_*` codes
+  and the history board serve `record_unreported_live_order.py` and `measure_live_slippage.py`, and
+  the board still exits 2 on an unverifiable registry. Both schemas keep `valid_from` /
+  `valid_until`, and the budget keeps `caps.min_clean_canary_orders`, declared under
+  `additionalProperties: false` and out of `required`: records on disk carry them inside their
+  self-hash, so deleting a property would make them schema-invalid and stripping a field breaks the
+  hash. The canary comments in `GOVERNANCE_POLICY.yaml` and the canary tokens in
+  `EXECUTION_LIVE_TRADER_ROLE.md` are hash-pinned and wait for the 1.5.1/1.6.0 bump.
+
+  **Retired names, none to be reused:** `--valid-days` (both register scripts) and
+  `--min-clean-canary-orders` (each now exits 2 and writes nothing), `LIVE_ROUTING_CANARY_HISTORY`,
+  `ORDER_NOTIONAL_UNDERSTATED`, `ORDER_NOTIONAL_PRICE_UNKNOWN`, `NOTIONAL_TOLERANCE_FRACTION`,
+  `DEFAULT_MIN_CLEAN_CANARY_ORDERS`, and the readiness row `canary_evidence`. Cycle and ledger rows
+  that carry them stay valid history.
+
+  **What was given up.** A registered budget or breaker relaxation no longer lapses by itself;
+  reverting one is a step someone takes (re-register the prior values, or delete the file). A fresh
+  or restored host has no canary floor under autonomous entries until PR1b enforces the execution
+  stage, and `MVP_LIVE_CONFIRMATION`, which every close needs, is also the autonomous-entry phrase,
+  so a probe-only session keeps every pool entry OBSERVATION-tier. A damaged
+  `live_canary_orders.jsonl` no longer halts autonomous entries. Two operator paragraphs in
+  `DEPLOYMENT.md` were wrong in the direction that strands positions, and were corrected here: the
+  env block exported only the canary phrase, which leaves every close refused, and "when you are
+  done trading" cleared `MVP_LIVE_TRADING` with no check for an open position.
+
+  **Deploy and rollback.** Do not deploy ahead of PR1b unless the host's canary registry still
+  verifies with clean orders at or above its registered bar (recorded 4/4); otherwise ship it with
+  PR1b. Re-register nothing until the new candidate is confirmed: an older image reads a windowless
+  or key-less record as schema-invalid, so entries refuse (blocking caps, unusable limits) while
+  closes keep working. A record the old script writes during a rollback carries a window, and the
+  new code keeps honouring it.
+
 - **The machine got one record that says what execution stage it is at** (crypto PR1a, Thomas decisions
   1, 4, 8, 9, 2026-09-15; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1.schema.json`,
   `scripts/register_execution_stage.py`, `docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`). The

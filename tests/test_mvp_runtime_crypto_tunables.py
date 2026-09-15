@@ -72,10 +72,12 @@ MECHANICS: dict[str, str] = {
     "DERIVATIVE_MAX_PAGES": "page budget bounding one collection's egress",
     "FUNDING_MAX_PAGES": "page budget bounding one collection's egress",
     "POSITIONING_MAX_PAGES": "page budget bounding one collection's egress",
-    # Borderline, and recorded as such: it bounds how stale a price may be when verifying a
-    # HAND-DECLARED notional, so it constrains an operator input rather than an order. If it
-    # ever gates an order path it belongs in the index instead.
-    "REFERENCE_PRICE_MAX_AGE_SECONDS": "staleness tolerance on a notional verification read",
+    # Borderline, and recorded as such. It was classed here while it bounded how stale a price
+    # may be when verifying the canary door's HAND-DECLARED notional — an operator input, not an
+    # order. That check went with the door (2026-09-15, PR1r); its one consumer now is the
+    # slippage probe's price read (`run_slippage_probe._read_price`), which prices a real probe
+    # order. The classification is left for its own decision, not changed as a side effect.
+    "REFERENCE_PRICE_MAX_AGE_SECONDS": "staleness tolerance on the probe's reference price read",
 
     # --- second slice, 2026-08-08 -------------------------------------------------------------
     # Estimator warm-up floors: how many observations before a series will answer at all. Below

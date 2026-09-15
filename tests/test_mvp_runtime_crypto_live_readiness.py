@@ -470,8 +470,9 @@ def test_an_unreadable_window_is_skipped_not_read_as_zero():
 
 
 def test_the_venue_figure_is_the_authority_when_given():
-    """The local ledger is empty by construction on the canary path, so a venue figure must
-    win outright rather than being averaged or cross-checked against a structural zero."""
+    """The local ledger never sees a venue-side or operator-side close (and was empty by
+    construction while the entry-only canary door was the one door), so a venue figure must win
+    outright rather than being averaged or cross-checked against a structural zero."""
     from runtime.mvp_runtime.crypto.live_pnl import PNL_SOURCE_VENUE, live_risk_snapshot
 
     snap = live_risk_snapshot(limit_usdt=20.0, root=Path("/nonexistent"), now=NOW,

@@ -897,7 +897,7 @@ def submit_and_reconcile(
     position if it did, because ``newClientOrderId`` is the idempotency key the venue dedupes on.
 
     Returns a result dict carrying ``reconcile_status`` + ``mismatches`` + ``exchange_order_id``,
-    from which the caller builds the canary record (clean iff ``RECONCILED`` and no mismatch)."""
+    from which the caller judges the order clean (``RECONCILED`` and no mismatch)."""
     if not (isinstance(guard_verdict, Mapping) and guard_verdict.get("approved") is True):
         raise ToolError(GUARD_NOT_APPROVED, "LP4 refuses to submit an order the final guard did not approve")
 

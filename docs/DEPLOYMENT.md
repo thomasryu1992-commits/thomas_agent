@@ -275,19 +275,21 @@ loop reads no market or account data, so a key that can trade buys it nothing.
 
 What still stands between the scheduler and an autonomous order: only one module may reach the
 order path (`test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`), the
-registered budget, the canary evidence, the confirmation phrase for the capability being
-exercised, both kill switches, and the loss breaker.
+registered budget, the confirmation phrase for the capability being exercised, both kill
+switches, and the loss breaker. *(The canary evidence stood in this list until 2026-09-15, when
+Thomas removed the canary door and the clean-canary promotion gate with it — PR1r. Nothing
+replaces that floor until PR1b enforces the execution stage.)*
 
 So the variables below belong in the compose `.env` (the scheduler reads them from there), and
 you can still export them in a shell for a one-off run against the host checkout.
 
 **Both halves are enforced** (2026-07-27): `tests/test_deployment_env_passthrough.py` fails if
-the **scheduler** stops receiving any of the eight, if the **operator** starts receiving any of
+the **scheduler** stops receiving any of the nine, if the **operator** starts receiving any of
 them, or if either service declares `env_file:` — which would forward the whole file and slip
 past a per-variable check.
 
 ```bash
-# --- live trading (canary session) ------------------------------------------
+# --- live trading (autonomous leg and slippage probe) ------------------------
 # ONE Binance API key: Futures trading ON, withdrawals and internal transfer OFF,
 # IP-whitelisted. Withdrawal permission is the one that matters: every risk control
 # in this runtime caps ORDER size (60/order, 120 open, 20 daily loss, 200 ceiling),
@@ -303,18 +305,30 @@ export MVP_LIVE_ORDER_API_KEY="$BINANCE_ACCOUNT_API_KEY"
 export MVP_LIVE_ORDER_API_SECRET="$BINANCE_ACCOUNT_API_SECRET"
 
 # THE switch, and since 2026-07-28 the only one. This line alone selects the real
-# order adapter, the real P&L ledger, the real position book, the real daily counter
-# and the real canary registry. There is no second factor behind it any more.
+# order adapter, the real P&L ledger, the real position book and the real daily
+# counter (and, until 2026-09-15, the real canary registry). There is no second factor
+# behind it any more.
 export MVP_LIVE_TRADING=real
 
-# One phrase per capability. Export ONLY the one you are exercising — the canary phrase
-# cannot authorize autonomous trading and the autonomous phrase cannot authorize a canary.
-export MVP_LIVE_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER
-# export MVP_LIVE_CONFIRMATION=I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY
+# Two phrases, and they are NOT symmetric (corrected 2026-09-15, PR1r):
+# - MVP_LIVE_CONFIRMATION is required by EVERY close - the autonomous leg's exits and
+#   the slippage probe's own - because evaluate_live_close_guard compares it. The same
+#   phrase authorizes autonomous entries.
+# - MVP_LIVE_CANARY_CONFIRMATION authorizes slippage-probe entries only
+#   (scripts/run_slippage_probe.py --fire). It authorizes no autonomous entry and no close.
+# This block exported only the canary phrase until then, which left every close refused.
+export MVP_LIVE_CONFIRMATION=I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY
+# export MVP_LIVE_CANARY_CONFIRMATION=I_UNDERSTAND_THIS_PLACES_A_REAL_LIVE_MAINNET_ORDER
 
 # Operator halt. Set it to refuse every live ENTRY; closes stay permitted.
 # export MVP_LIVE_MANUAL_KILL_SWITCH=true
 ```
+
+**`MVP_LIVE_CONFIRMATION`, which every close requires, also authorizes autonomous entries; after
+PR1r there is no canary floor behind it until PR1b enforces the execution stage. A probe-only
+session keeps every pool entry OBSERVATION-tier (`live_armed_strategies` = 0 on the readiness
+board).** Exporting it for the probe's exits is exporting the autonomous-entry phrase too, and
+until PR1b what stops an autonomous entry on such a session is that nothing is armed LIVE.
 
 **The caps are not here.** `MVP_LIVE_MAX_*` no longer authorizes anything — the per-order,
 daily-count, exposure and loss limits come from the registered `live_trading_budget.v0.1` record
@@ -322,14 +336,19 @@ daily-count, exposure and loss limits come from the registered `live_trading_bud
 outside that record.
 
 **The C4 breaker limits are a second, separate record.** Daily/weekly R loss, consecutive losses,
-drawdown and risk-per-trade are *not* budget caps — they gate paper and live alike — so they live
-in `crypto_risk_limits.v0.1` (`scripts/register_crypto_risk_limits.py`). **Registering one is
+drawdown and risk-per-trade are *not* budget caps — they gate live entries and the slippage probe
+(paper never reads them: its verdict is data health alone, `guards.paper_trade_verdict`;
+corrected 2026-09-15, this said "paper and live alike") — so they live in
+`crypto_risk_limits.v0.1` (`scripts/register_crypto_risk_limits.py`). **Registering one is
 optional and usually unnecessary:** with nothing registered the guard judges on the `guards.py`
 defaults, which is the supported steady state. Two things to know before registering one:
 
-- It carries a validity window, and **a lapsed record refuses new positions rather than reverting
-  to the defaults** — reverting would silently loosen a breaker an operator had tightened. To go
-  back to the defaults, delete the file; do not let it lapse.
+- **It does not expire** (since 2026-09-15, PR1r). A record stands until it is re-registered, or
+  until you delete the file to go back to the defaults, so a relaxation is reverted by a step you
+  take — nothing lapses on its own any more. A record registered before that date still carries
+  its validity window and is still held to it: outside it, **it refuses new positions rather than
+  reverting to the defaults** — reverting would silently loosen a breaker an operator had
+  tightened. *(This bullet said "it carries a validity window ... do not let it lapse" until then.)*
 - A limit outside the bounds in `guards.py` is refused, never clamped, and tightening is
   unbounded. Widening a breaker past those bounds is a code change and a Thomas decision.
 
@@ -350,13 +369,26 @@ python -m runtime.mvp_runtime.crypto.account          # the balance the caps are
 python -m runtime.mvp_runtime.crypto.live_readiness   # every gate, computed
 ```
 
-`canary_evidence 0/3` staying FAIL on that board is **expected**: it is the one check a canary is
-exempt from, and the canary is what earns it. Everything else must be PASS. The full operator
-sequence is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gates 2 and 3.
+Every check on that board must be PASS. *(Until 2026-09-15 a `canary_evidence 0/3` row stayed FAIL
+here by design; it went with the canary door and the promotion gate.)* The full operator sequence
+is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gate 2.
 
-**When you are done trading:** remove `MVP_LIVE_TRADING` from the compose `.env` and restart the
-scheduler. There is no grant file to delete any more, and that is the cost of the 2026-07-28
-change: the gate no longer expires on its own, so nothing turns this off but you.
+**When you are done trading,** stop the entries first and clear the switch last:
+
+1. Stop new entries and keep managing positions: `console_cli halt_trading`, once the 1.5.1 policy
+   grants it. Until then the entries-only halt is `MVP_LIVE_MANUAL_KILL_SWITCH=true` and a
+   scheduler restart; `console_cli kill` (or `/pause`) also stops entries, but it stops settlement,
+   the protection re-check and the time exit with them until `/resume`, so a position would not be
+   managed to its close.
+2. Wait until no live position is open (`live_position.list_open_live_positions()` is empty; the
+   venue agrees in `python -m runtime.mvp_runtime.crypto.account`) and no probe cell is in flight
+   (`python -m scripts.run_slippage_probe --status`).
+3. Only then remove `MVP_LIVE_TRADING` from the compose `.env` and restart the scheduler. The close
+   guard requires the opt-in, so clearing it with a position open strands that position.
+
+There is no grant file to delete any more, and that is the cost of the 2026-07-28 change: the gate
+no longer expires on its own, so nothing turns this off but you. *(Until 2026-09-15 this paragraph
+said only "remove `MVP_LIVE_TRADING` and restart", with no step before it.)*
 
 **To halt a scheduler that is trading right now, do not clear `MVP_LIVE_TRADING`.** It takes
 effect only on the next start, and because the close guard also requires the opt-in it would
