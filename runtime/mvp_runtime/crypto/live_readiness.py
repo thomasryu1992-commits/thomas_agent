@@ -73,6 +73,7 @@ from .live_order import (
     evaluate_live_order_guard,
     resolve_live_order_limits,
 )
+from .execution_stage import STAGE_ENFORCED, resolve_execution_stage
 from .live_pnl import (
     LIVE_TRADING_ENV,
     REAL_LIVE_TRADING,
@@ -489,6 +490,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
               f"- without it a canary is refused, so no canary evidence can be earned"),
     ))
 
+    # 8c. The execution stage (crypto PR1a). Informational until PR1b makes the entry doors read it,
+    #     so it is NOT a check: a `[PASS]` beside a machine that reads READ_ONLY would repeat the
+    #     all-PASS-with-nothing-armed board the audit started from. Rendered as a `[----]` line.
+    stage = resolve_execution_stage(root, now=now)
     # 9. The order path itself.
     checks.append(_check(
         "order_path_implemented",
@@ -581,6 +586,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "counter_error": counter_error,
         "order_path_implemented": ORDER_PATH_IMPLEMENTED,
         "autonomous_routing_wired": AUTONOMOUS_ROUTING_WIRED,
+        # The machine's execution stage as data (PR1a), with whether any door enforces it yet.
+        "execution_stage": {**stage.as_dict(), "enforced": STAGE_ENFORCED},
     }
 
 
@@ -635,6 +642,9 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
             "stale": bool(gate.get("stale")),
         },
         "live_entry_possible": entry_possible,
+        # The stage record's own answer (crypto PR1a): which rung, whether it binds, and whether any
+        # entry door reads it yet. Kept apart from `live_entry_possible` until PR1b folds it in.
+        "execution_stage": status.get("execution_stage"),
         "guard_dry_run_status": guard.get("status"),
         "submitted_today": status.get("submitted_today"),
     }
@@ -703,6 +713,16 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
+def _execution_stage_line(status: Mapping[str, Any]) -> str:
+    stage = status.get("execution_stage") or {}
+    detail = str(stage.get("stage") or "UNKNOWN")
+    if not stage.get("valid"):
+        detail += f" (reads READ_ONLY: {stage.get('reason_code')}"
+        detail += f"; recorded {stage['recorded_stage']})" if stage.get("recorded_stage") else ")"
+    detail += " - enforced by the entry doors" if stage.get("enforced") else " - not enforced yet (PR1b)"
+    return f"[----] {'execution_stage':24} {detail}"
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -748,6 +768,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
+    lines.append(_execution_stage_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

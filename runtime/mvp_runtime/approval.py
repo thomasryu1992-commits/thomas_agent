@@ -50,6 +50,7 @@ from .errors import ApprovalBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
 from .permission import (
+    EXECUTION_STAGE_TARGET_PREFIX,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_TARGET_PREFIX,
     TRIAL_PERMISSION_SCOPE,
@@ -470,6 +471,10 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # its next pass — no operator step follows the approval — so the closing paragraph every other
     # branch carries ("approval alone runs nothing") was false for them (review of P07, 2026-09-14).
     workflow_step = target_ref.startswith(WORKFLOW_STEP_TARGET_PREFIX)
+    # An execution-stage transition (crypto PR1a). Spent by the operator's --confirm, never by the
+    # runtime; a demotion is the reversible direction and needs no ask at all.
+    execution_stage = target_ref.startswith(EXECUTION_STAGE_TARGET_PREFIX)
+    live_stage = execution_stage and target_ref.split(":")[-1].startswith("LIVE_")
     lines = [
         "Approval Request",
         "",
@@ -484,7 +489,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
         f"요청 이유: {'; '.join(permdec_reasons) if permdec_reasons else '—'}",
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
         ("예상 비용: 실주문이 다시 나갈 수 있게 되므로 그 이후의 손익이 곧 비용입니다"
-         if arms_live else "예상 비용: 없음"),
+         if arms_live else
+         "예상 비용: 이 단계에서 진입 문이 실주문을 낼 수 있게 되므로(PR1b부터 강제) 그 이후의 손익이 곧 비용입니다"
+         if live_stage else "예상 비용: 없음"),
         ("되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
          if trial else
          # Stopping needs no approval and applies at once, which is this door's whole
@@ -494,6 +501,8 @@ def format_request(approval: Mapping[str, Any]) -> str:
          if switch else
          "되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"
          if workflow_step else
+         "되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), 청산은 어느 단계에서도 막히지 않습니다"
+         if execution_stage else
          "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",
@@ -511,6 +520,13 @@ def format_request(approval: Mapping[str, Any]) -> str:
         lines += [
             "이 승인은 이 계획 버전의 이 요청(해시)에만 묶입니다. 계획이 바뀌거나 단계가 바뀌면 이 승인은",
             "APPROVAL_STALE로 거부되고 새 요청이 올라옵니다. 거절하면 단계는 멈추고 워크플로는 결정을 기다립니다.",
+        ]
+    elif execution_stage:
+        lines += [
+            "승인 후 운영자가 `scripts/register_execution_stage.py --confirm --approval-id <id>`로 1회 소비해야",
+            "단계 기록이 쓰입니다. 요청 이후 단계 기록이나 정책(버전·안전 fingerprint)이 바뀌면 이 승인은",
+            "EXECUTION_STAGE_CHANGED / EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK로 거부되고 새 요청이 필요합니다.",
+            "단계에는 만료가 없습니다. 강등하거나 정책이 바뀔 때까지 유지됩니다.",
         ]
     elif switch:
         lines += [

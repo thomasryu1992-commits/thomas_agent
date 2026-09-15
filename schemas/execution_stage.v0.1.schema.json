@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution_stage.v0.1.schema.json",
+  "title": "Execution Stage v0.1",
+  "description": "The machine's one authoritative crypto execution stage (Thomas decisions 1, 4, 8, 9, 2026-09-15; docs/runtime-contracts/EXECUTION_STAGE_V0.1.md). A self-hashed record bound to the policy version and the policy's safety semantic fingerprint under which it was approved, witnessed by the Thomas-verified CONSUMED approval whose content it carries. No stage expires. A missing, unreadable, tampered, unwitnessed or unbound record reads as READ_ONLY. Registering a stage opens no door by itself: the entry doors read it (PR1b) beside every gate they already apply.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage_id",
+    "venue",
+    "stage",
+    "previous_stage",
+    "transition",
+    "effective_from",
+    "registered_by",
+    "reason",
+    "approval_id",
+    "action_fingerprint",
+    "witness_stage_id",
+    "policy_version",
+    "policy_safety_sha256",
+    "evidence",
+    "registered_at",
+    "record_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "execution_stage.v0.1"
+    },
+    "stage_id": {
+      "type": "string",
+      "pattern": "^stage_[0-9a-f]{20}$"
+    },
+    "venue": {
+      "enum": [
+        "binance_futures"
+      ]
+    },
+    "stage": {
+      "enum": [
+        "READ_ONLY",
+        "SHADOW",
+        "PAPER",
+        "SIGNED_TESTNET",
+        "LIVE_AUTONOMOUS",
+        "LIVE_SCALED"
+      ]
+    },
+    "previous_stage": {
+      "enum": [
+        null,
+        "READ_ONLY",
+        "SHADOW",
+        "PAPER",
+        "SIGNED_TESTNET",
+        "LIVE_AUTONOMOUS",
+        "LIVE_SCALED"
+      ]
+    },
+    "transition": {
+      "description": "BOOTSTRAP: a record at SHADOW or PAPER when no stage above READ_ONLY binds, approved and attested. CLIMB: exactly one rung up from a binding record, approved. REBIND: the same rung, approved, only after a policy change. DEMOTE: any rung down, no approval; it carries the approval it descends from (none when it lands on READ_ONLY).",
+      "enum": [
+        "BOOTSTRAP",
+        "CLIMB",
+        "REBIND",
+        "DEMOTE"
+      ]
+    },
+    "effective_from": {
+      "type": "string",
+      "minLength": 20
+    },
+    "registered_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "approval_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^approval_"
+    },
+    "action_fingerprint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "witness_stage_id": {
+      "description": "The stage_id the witnessing approval's CONSUMED record points at: this record's own for BOOTSTRAP/CLIMB/REBIND, the approved record it descends from for a DEMOTE, null for a DEMOTE to READ_ONLY.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^stage_[0-9a-f]{20}$"
+    },
+    "policy_version": {
+      "description": "Null only on a DEMOTE to READ_ONLY written while the policy could not be read.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "policy_safety_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attestation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "replaced_stage": {
+          "enum": [
+            "READ_ONLY",
+            "SHADOW",
+            "PAPER",
+            "SIGNED_TESTNET",
+            "LIVE_AUTONOMOUS",
+            "LIVE_SCALED"
+          ]
+        },
+        "replaced_reason_code": {
+          "type": "string",
+          "pattern": "^EXECUTION_STAGE_[A-Z_]+$"
+        }
+      }
+    },
+    "registered_at": {
+      "type": "string",
+      "minLength": 20
+    },
+    "record_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

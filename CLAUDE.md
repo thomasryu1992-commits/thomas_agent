@@ -225,6 +225,7 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 | **Why** an increment is shaped that way — read before "fixing" something odd | `docs/BUILD_HISTORY.md` |
 | What is left to build | `docs/REMAINING_WORK.md` |
 | What is actually live **on this machine** | `python -m runtime.mvp_runtime.crypto.live_readiness` |
+| What execution stage this machine is at (crypto) | `python -m scripts.register_execution_stage --show`, run in `thomas-scheduler` (`docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`) |
 
 ## Locked decisions
 

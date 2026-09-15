@@ -1069,7 +1069,7 @@ def announce_pending_approvals(
     switch_asks = [
         a for a in pending
         if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
-            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX,)
+            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX)
         )
         and not approval.is_expired(a, now=now)
     ]

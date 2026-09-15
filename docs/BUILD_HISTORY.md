@@ -24,6 +24,45 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The machine got one record that says what execution stage it is at** (crypto PR1a, Thomas decisions
+  1, 4, 8, 9, 2026-09-15; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1.schema.json`,
+  `scripts/register_execution_stage.py`, `docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`). The
+  execution-authority audit found no owner for the question: `MVP_LIVE_TRADING=real` authorized the
+  adapter, eight durable records could refuse an entry, and the readiness board re-derived an answer
+  from all of them (all-PASS with nothing armed, 2026-09-07). The record is a ladder position — READ_ONLY
+  through LIVE_SCALED — written only through an approved, single-use transition: SHADOW or PAPER with an
+  attestation when nothing above READ_ONLY binds, one rung up at a time, the same rung again only after a
+  policy change; any rung down with no approval. It is bound to the policy version and to a **safety
+  semantic fingerprint** (the parsed sections that bound the money path, so a comment does not demote the
+  machine and a new kill verb does). Everything that fails reads READ_ONLY with its reason, and the read
+  never raises. **Nothing enforces it yet** — `STAGE_ENFORCED = False`, the ask, the board line and
+  `--show` say so, and a test pins that no entry-decision module imports the stage in any form while the
+  flag is False. The leg stamps the stage it read on every gated cycle record.
+
+  Two things the first draft had are gone by Thomas's word the same day, because the draft had
+  re-derived them from the audit instead of from this file. **No canary rung**: canaries ended
+  2026-07-29, so a `LIVE_CANARY` stage and a ">= 3 clean canaries" floor would have been a door nobody
+  walks through. SIGNED_TESTNET climbs straight to LIVE_AUTONOMOUS on a reconciled signed testnet order
+  (decision 2, refused until PR1d). **No expiry**: live grants lost their TTL 2026-07-28 because an expiry
+  can land on an open position, and 2026-08-10 retired the rest; a 30-day LIVE end date would have
+  brought the renewal back under another name. A stage stands until it is demoted or the policy moves.
+
+  **Why the record carries a witness, and why a demotion carries one too.** An independent review of the
+  draft (three lenses, every high finding reproduced) showed the self-hash plus "a CONSUMED approval with
+  this id" forged three ways: a hand-written DEMOTE needed no approval and read valid at LIVE_AUTONOMOUS;
+  one spent PAPER grant witnessed any record that copied its id; and `--demote` or REBIND over a record
+  that did not bind re-issued it as valid. So the witness now checks the whole approval — Thomas-verified,
+  fingerprint recomputes, content equals the record — and a DEMOTE keeps the approval it descends from and
+  that approval's policy identity, sitting strictly below it. REBIND is offered only for a witnessed record
+  whose policy moved; anything else starts over at BOOTSTRAP, and the ask names the record it replaces. A
+  demotion to READ_ONLY needs nothing and works on a file that cannot be read, because a stop must stay
+  cheap. The limit is written down rather than hidden: the approval ledger sits in the same state
+  directory with no secret, so a writer who forges a whole coherent approval lifecycle can still forge a
+  stage — and that writer is the service uid, which could already place an order. The same review found
+  that a NaN or a secret-shaped key in the file raised out of the read and halted the live leg before
+  settle/protect; the read is now total. The door holds one lock for both `--confirm` and `--demote`, so a
+  stop cannot be overwritten by a climb that was already on its way.
+
 - **A halt that stops entries and keeps managing positions, and a lost control file that no longer
   re-arms** (hotfix H2, Thomas decisions 7 and 10, 2026-09-15; `control.CMD_HALT_TRADING`,
   `control.POLICY_GATED_COMMANDS`, `switch_bridge._DISABLE_MODES["soft"]`, `POLICY_1_5_1_DRAFT.md`).
