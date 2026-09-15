@@ -630,8 +630,8 @@ all on a **bare image with no secrets and no provisioned state**:
 - (sequence 2, P11 preparation) with the CI-only override `.github/ci-compose.workflow.yml` the
   dispatch door serves door API v3 with the manager loop from its compose definition, the risk
   lane keeps ticking while the door (loop included) is stopped, and a restarted door answers
-  again within 120 s — proven before the deployment file ever carries `--workflow-manager`
-  (`docs/DEPLOYMENT_PLAN_SEQUENCE2.md`).
+  again within 120 s — proven before the deployment file carried `--workflow-manager`, which it
+  does since the sequence-2 deploy (`docs/DEPLOYMENT_PLAN_SEQUENCE2.md` §5).
 
 So the fail-closed claims above are checked on every PR rather than trusted.
 
