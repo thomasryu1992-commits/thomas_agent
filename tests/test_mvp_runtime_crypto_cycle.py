@@ -1021,7 +1021,6 @@ def test_a_registered_limit_reaches_the_cycle_verdict(tmp_path):
     built = risk_limits.build_risk_limits_record(
         limits={"risk_per_trade": 0.01, "daily_max_loss_r": -1.0, "weekly_max_loss_r": -5.0,
                 "max_consecutive_losses": 5, "max_drawdown_pct": -10.0},
-        valid_from="2026-07-01T00:00:00Z", valid_until="2026-12-31T00:00:00Z",
         registered_by="thomas", registered_at="2026-07-01T00:00:00Z")
     risk_limits.write_registered_limits(built, root=tmp_path)
 
@@ -1055,17 +1054,44 @@ def test_a_tampered_limits_record_fails_the_cycle_guard_closed(tmp_path):
     assert record["paper_verdict_status"] == "ALLOW"
 
 
+@pytest.mark.parametrize("poison", ['{"limits": {"daily_max_loss_r": NaN}, "record_sha256": "sha256:0"}',
+                                    '{"api_secret": "x", "record_sha256": "sha256:0"}'])
+def test_an_unhashable_limits_record_fails_the_cycle_guard_closed_rather_than_aborting(tmp_path, poison):
+    """Review of #873: a NaN or a secret-shaped key raised a bare ValueError / IntegrityError past
+    the typed catch below, aborting the cycle before the live leg could manage open positions."""
+    from runtime.mvp_runtime.crypto import risk_limits
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+
+    _install_pool(tmp_path, _always_spec())
+    target = state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "crypto_risk_limits.json").write_text(poison, encoding="utf-8")
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert "risk_limits_unusable" in record["verdict_problems"]
+    assert risk_limits.LIMITS_TAMPERED in record["reason_codes"]
+
+
 def test_a_lapsed_limits_record_fails_the_cycle_guard_closed(tmp_path):
-    """Relaxations expire; a lapsed one refuses rather than reverting to the defaults."""
+    """A lapsed record refuses rather than reverting to the defaults.
+
+    Only a record registered before 2026-09-15 carries a window now (PR1r retired it for new
+    records), and it is still held to it — so this record is written the way the old builder
+    wrote it, hashed raw, rather than built."""
+    from runtime.read_only_kernel import integrity
     from runtime.mvp_runtime.crypto import risk_limits
 
     _install_pool(tmp_path, _always_spec())
-    built = risk_limits.build_risk_limits_record(
-        limits={"risk_per_trade": 0.01, "daily_max_loss_r": -1.0, "weekly_max_loss_r": -5.0,
-                "max_consecutive_losses": 3, "max_drawdown_pct": -10.0},
-        valid_from="2026-01-01T00:00:00Z", valid_until="2026-02-01T00:00:00Z",
-        registered_by="thomas", registered_at="2026-01-01T00:00:00Z")
-    risk_limits.write_registered_limits(built, root=tmp_path)
+    legacy = {
+        "schema_version": risk_limits.RISK_LIMITS_SCHEMA_VERSION,
+        "limits_id": "risklimits_0123456789abcdef0123",
+        "limits": {"risk_per_trade": 0.01, "daily_max_loss_r": -1.0, "weekly_max_loss_r": -5.0,
+                   "max_consecutive_losses": 3, "max_drawdown_pct": -10.0},
+        "valid_from": "2026-01-01T00:00:00Z", "valid_until": "2026-02-01T00:00:00Z",
+        "registered_by": "thomas", "registered_at": "2026-01-01T00:00:00Z",
+    }
+    legacy["record_sha256"] = integrity.sha256_record(legacy)
+    risk_limits.write_registered_limits(legacy, root=tmp_path)
 
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert record["verdict_status"] == "NO_NEW_POSITION"

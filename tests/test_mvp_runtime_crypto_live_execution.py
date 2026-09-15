@@ -29,7 +29,7 @@ from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
 )
-from runtime.mvp_runtime.crypto.live_promotion import RECONCILED, build_canary_order_record
+from runtime.mvp_runtime.crypto.live_promotion import RECONCILED
 from runtime.mvp_runtime.errors import SafetyGateBlocked, ToolError
 from runtime.mvp_runtime.safety_gate import Authorization
 
@@ -176,17 +176,6 @@ def test_a_mismatched_fill_is_surfaced():
     assert res["reconcile_status"] == lx.MISMATCH
 
 
-def test_a_reconciled_result_makes_a_clean_canary_record():
-    """The whole point: a RECONCILED result with no mismatch is a clean canary; anything else is not."""
-    intent = _intent()
-    res = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(), guard_verdict=APPROVED, now=NOW)
-    record = build_canary_order_record(
-        reconcile_status=res["reconcile_status"], symbol=res["symbol"],
-        exchange_order_id=res["exchange_order_id"], client_order_id=res["client_order_id"],
-        mismatches=res["mismatches"], notional_usdt=55.0, now=NOW)
-    assert record["clean"] is True
-
-
 # --- the gate: inert by default, real path not implemented -------------------
 
 def test_selection_is_inert_by_default(tmp_path, monkeypatch):
@@ -309,8 +298,8 @@ def test_the_cycle_reaches_the_live_order_path_through_exactly_one_module():
 def test_the_chokepoint_is_the_only_runtime_module_that_imports_the_executing_leg():
     """The other half: ``live_route`` is a chokepoint only while nothing else runs the leg.
 
-    Scoped to ``runtime/`` — ``scripts/place_canary_order.py`` is the deliberate operator door
-    and reaches ``live_execution`` on purpose, one canary at a time."""
+    Scoped to ``runtime/`` — ``scripts/run_slippage_probe.py`` is the deliberate operator door
+    and reaches ``live_leg`` on purpose, one probe at a time."""
     from pathlib import Path
 
     from runtime.mvp_runtime.paths import repo_root
@@ -326,6 +315,51 @@ def test_the_chokepoint_is_the_only_runtime_module_that_imports_the_executing_le
         f"{importers} import the executing leg directly, bypassing the chokepoint that makes "
         "'which code can start a live order' answerable"
     )
+
+
+def test_every_caller_of_the_venue_also_counts_the_order():
+    """Structural gate on the shape of the bug, not just this instance of it.
+
+    The defect was not a typo — it was a *door* that could reach the venue without touching
+    the daily counter, and nothing said that was wrong. A new caller of ``submit_and_reconcile``
+    that forgets to count would silently widen the daily cap exactly as the canary door once
+    did, and would pass every behavioural test of the doors that already exist.
+
+    Moved here from the canary door's own test file when that door was removed (2026-09-15,
+    PR1r). Deleting the file with the door would have dropped the gate for the two doors that
+    remain.
+    """
+    from pathlib import Path
+
+    from runtime.mvp_runtime.paths import repo_root
+
+    root = Path(repo_root())
+    doors = [
+        # The probe fire door (proposal §5, 2026-08-11): counts in a `finally` around the
+        # submit, the posture the canary door had.
+        root / "scripts" / "run_slippage_probe.py",
+        root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
+    ]
+    # Excluded by path PARTS, not by substring: `"/tests/" in str(path)` is false on Windows,
+    # where the separator is a backslash, so the first version of this gate reported the suite's
+    # own fixtures as new callers on one runner and passed on the other.
+    skipped_dirs = {".venv", ".git", "tests", "historical", "deferred", "generated"}
+    found = []
+    for path in root.rglob("*.py"):
+        if skipped_dirs & set(path.parts):
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        if "submit_and_reconcile(" in source and "def submit_and_reconcile" not in source:
+            found.append(path)
+    assert sorted(found) == sorted(doors), (
+        f"a new caller of submit_and_reconcile appeared: {sorted(set(found) - set(doors))}. "
+        "Add it here AND make it record a submission on the daily counter, or the registered "
+        "max_daily_order_count silently stops bounding anything."
+    )
+    for path in doors:
+        assert "record_submission()" in path.read_text(encoding="utf-8"), (
+            f"{path.name} can place a live order but never records it on the daily counter"
+        )
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):
@@ -766,32 +800,3 @@ def test_recording_it_changes_nothing_else_about_the_order():
     for key in ("reconcile_status", "mismatches", "symbol", "order_type", "reduce_only"):
         assert without[key] == with_price[key]
 
-
-# --- the canary as a slippage instrument ------------------------------------------------------
-
-def test_a_canary_records_what_it_meant_to_pay_beside_what_it_paid():
-    """A canary is entry-only MARKET, so it is the one entry that can be placed without routing
-    a strategy signal — the instrument for `DEFAULT_SLIPPAGE_BPS` while live entries are held."""
-    record = build_canary_order_record(
-        reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
-        notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0, "cum_quote": 64.01},
-        intended_price=64_000.0, side="buy", now=NOW,
-    )
-    assert record["intended_price"] == 64_000.0
-    assert record["side"] == "BUY"            # normalised, so the sign convention can read it
-
-
-def test_a_canary_with_no_reference_price_records_none_rather_than_the_fill():
-    record = build_canary_order_record(
-        reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
-        notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0}, now=NOW,
-    )
-    assert record["intended_price"] is None and record["side"] is None
-
-
-def test_the_new_fields_do_not_change_what_clean_means():
-    """`clean` gates autonomous live entry. A recording change must not move it."""
-    common = dict(reconcile_status=RECONCILED, symbol="BTCUSDT", client_order_id="c1",
-                  notional_usdt=65.0, quantity=0.001, fill={"avg_price": 64_010.0}, now=NOW)
-    assert build_canary_order_record(**common)["clean"] is True
-    assert build_canary_order_record(**common, intended_price=64_000.0, side="BUY")["clean"] is True

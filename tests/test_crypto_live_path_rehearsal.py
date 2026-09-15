@@ -132,7 +132,6 @@ LIMITS = LiveOrderLimits(
     max_daily_order_count=2,
     max_open_notional_usdt=120.0,
     daily_loss_limit_usdt=20.0,
-    min_clean_canary_orders=3,
     confirmation=LIVE_CONFIRMATION_PHRASE,
     canary_confirmation=CANARY_CONFIRMATION_PHRASE,
 )
@@ -240,7 +239,6 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
         runtime_active=True,
         daily_loss_breached=False,
         bracket_failures_consecutive=0,
-        clean_canary_orders=3,
         submitted_today=0,
         # A healthy book: the rehearsal walks the READY path, and since the unreadable-book
         # fail-open closed (2026-08-30) an absent reading is a refusal with its own tests.

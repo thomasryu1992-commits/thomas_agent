@@ -101,7 +101,8 @@ _GATE_ENV_VARS = (
     # While the grant existed this var was safe to inherit: a suite run on a machine with
     # MVP_LIVE_TRADING=real still got inert objects, because no test directory holds a grant.
     # With the env as the whole gate, inheriting it means the suite constructs the REAL order
-    # adapter, ledger, position book, counter and canary registry — writing live-shaped state
+    # adapter, ledger, position book and counter (and, until 2026-09-15, the canary registry) —
+    # writing live-shaped state
     # and, for anything that reaches egress, holding a genuine authorization. The operator's
     # own machine is exactly where both this variable and this suite get run.
     "MVP_LIVE_TRADING",

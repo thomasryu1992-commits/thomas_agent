@@ -4,9 +4,9 @@
 operator being told. It had no test at all — the module written to prevent a silent missing
 notice had nothing asserting a notice appears — and it was in fact incomplete: it took one
 named parameter per role, so the property held for the four roles already thought of.
-`scripts/place_canary_order.py`, the only path in this repository that can move real money,
-printed nothing; `operator_cli` hand-wrote two more notices beside the call, one of which
-never said SAFETY_GATE at all.
+`scripts/place_canary_order.py` (removed 2026-09-15), then the only path in this repository that
+could move real money, printed nothing; `operator_cli` hand-wrote two more notices beside the
+call, one of which never said SAFETY_GATE at all.
 
 What is pinned here is the *general* property rather than four specific strings: a capable
 implementation passed under **any** kwarg name announces itself, and an inert one stays

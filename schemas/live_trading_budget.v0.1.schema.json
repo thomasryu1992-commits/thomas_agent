@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "live_trading_budget.v0.1.schema.json",
   "title": "Live Trading Budget v0.1",
-  "description": "An operator-registered, self-hashed record of the live-trading risk caps, venue, symbol allowlist, and validity window. Replaces the LP3 environment-variable caps with an auditable record: changing a limit produces a new record rather than a silent env edit, and every future order's audit can reference this record's hash. Registering it grants nothing and enables no trading (see LIVE_EXECUTION_GOVERNANCE_V0.1.md item 6).",
+  "description": "An operator-registered, self-hashed record of the live-trading risk caps, venue and symbol allowlist. A record registered since 2026-09-15 (PR1r) carries no validity window and stands until it is re-registered or deleted; one registered before still carries its window and is still held to it. Replaces the LP3 environment-variable caps with an auditable record: changing a limit produces a new record rather than a silent env edit, and every future order's audit can reference this record's hash. Registering it grants nothing and enables no trading (see LIVE_EXECUTION_GOVERNANCE_V0.1.md item 6).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,8 +11,6 @@
     "venue",
     "symbol_allowlist",
     "caps",
-    "valid_from",
-    "valid_until",
     "registered_by",
     "registered_at",
     "record_sha256"
@@ -48,8 +46,7 @@
         "absolute_max_notional_usdt",
         "max_daily_order_count",
         "max_open_notional_usdt",
-        "daily_loss_limit_usdt",
-        "min_clean_canary_orders"
+        "daily_loss_limit_usdt"
       ],
       "properties": {
         "max_order_notional_usdt": {
@@ -77,16 +74,19 @@
           "exclusiveMinimum": 0
         },
         "min_clean_canary_orders": {
+          "description": "Retired 2026-09-15 (PR1r): accepted on records registered before, never written, never read. Kept declared because this object is closed and those records are self-hashed: dropping the property would make them schema-invalid, and stripping it from a record would break its hash.",
           "type": "integer",
           "minimum": 1
         }
       }
     },
     "valid_from": {
+      "description": "Legacy (before 2026-09-15, PR1r): honoured when present; never written. A record carries both valid_from and valid_until, opening before it closes, or neither; half a window reads invalid (enforced on read by live_budget, since this schema cannot pair or order them). Kept declared because this object is closed and those records are self-hashed.",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },
     "valid_until": {
+      "description": "Legacy (before 2026-09-15, PR1r): honoured when present; never written. Outside [valid_from, valid_until] the budget reads invalid (OUTSIDE_VALIDITY_WINDOW). See valid_from for the pairing rule.",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },

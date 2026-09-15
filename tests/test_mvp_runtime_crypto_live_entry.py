@@ -45,7 +45,6 @@ LIMITS = LiveOrderLimits(
     max_daily_order_count=2,
     max_open_notional_usdt=120.0,
     daily_loss_limit_usdt=20.0,
-    min_clean_canary_orders=3,
     confirmation=LIVE_CONFIRMATION_PHRASE,
     canary_confirmation=CANARY_CONFIRMATION_PHRASE,
 )
@@ -96,7 +95,6 @@ def _plan(**kw):
         runtime_active=kw.pop("runtime_active", True),
         daily_loss_breached=kw.pop("daily_loss_breached", False),
         bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
-        clean_canary_orders=kw.pop("clean_canary_orders", 3),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         # A healthy book by default, per this helper's own rule (every door open; each test
@@ -377,7 +375,7 @@ def test_the_size_is_computed_from_the_ROUNDED_stop_distance():
                      limits=LiveOrderLimits(
                          max_order_notional_usdt=200.0, absolute_max_notional_usdt=200.0,
                          max_daily_order_count=2, max_open_notional_usdt=400.0,
-                         daily_loss_limit_usdt=20.0, min_clean_canary_orders=3,
+                         daily_loss_limit_usdt=20.0,
                          confirmation=LIVE_CONFIRMATION_PHRASE))
     # A LONG stop rounds UP (toward the entry): 59050 -> 59100 on a 100 tick, so the real
     # distance is 900, not the plan's 950. The size must follow the 900.
@@ -407,7 +405,6 @@ def test_an_unsizable_plan_refuses():
     ({"runtime_active": False}, "runtime"),
     ({"daily_loss_breached": True}, "loss"),
     ({"budget_registered": False}, "budget"),
-    ({"clean_canary_orders": 0}, "canary"),
     ({"submitted_today": 2}, "daily order cap"),
 ])
 def test_each_guard_door_refuses(closed, expected):
@@ -437,7 +434,7 @@ def test_the_canary_phrase_cannot_authorize_an_autonomous_entry():
     limits = LiveOrderLimits(
         max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
         max_daily_order_count=2, max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0,
-        min_clean_canary_orders=3, confirmation="", canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+        confirmation="", canary_confirmation=CANARY_CONFIRMATION_PHRASE,
     )
     decision = _plan(limits=limits)
     assert decision["status"] == le.STATUS_REFUSED

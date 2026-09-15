@@ -3,15 +3,13 @@
   "$id": "crypto_risk_limits.v0.1.schema.json",
   "$comment": "Bounds here mirror runtime/mvp_runtime/crypto/guards.py — the module that owns the numbers. Both must agree; the builder checks the code bounds first so a refusal names the offending limit instead of emitting a raw schema error.",
   "title": "Crypto Risk Limits v0.1",
-  "description": "An operator-registered, self-hashed override of the C4 risk-breaker limits (daily/weekly R loss, consecutive losses, drawdown, risk-per-trade). Without one, the runtime judges on the guards.py defaults. Registering one grants nothing and enables no trading: it can only move a breaker inside the code-enforced relaxation bounds, and the live-trading grant, confirmation phrase, canary evidence and registered budget all still stand between here and a live order. The record carries a validity window on purpose — a relaxation expires and reverts to a REFUSAL, never silently back to the defaults.",
+  "description": "An operator-registered, self-hashed override of the C4 risk-breaker limits (daily/weekly R loss, consecutive losses, drawdown, risk-per-trade). Without one, the runtime judges on the guards.py defaults. Registering one grants nothing and enables no trading: it can only move a breaker inside the code-enforced relaxation bounds, and the live-trading opt-in, confirmation phrase and registered budget all still stand between here and a live order. A record registered since 2026-09-15 (PR1r) carries no validity window and stands until it is re-registered or deleted; one registered before still carries its window and is still held to it — outside it the record is a REFUSAL, never a silent return to the defaults.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "limits_id",
     "limits",
-    "valid_from",
-    "valid_until",
     "registered_by",
     "registered_at",
     "record_sha256"
@@ -69,10 +67,12 @@
       }
     },
     "valid_from": {
+      "description": "Legacy (before 2026-09-15, PR1r): honoured when present; never written. A record carries both valid_from and valid_until, opening before it closes, or neither; half a window reads invalid (CRYPTO_RISK_LIMITS_INVALID, enforced on read by risk_limits, since this schema cannot pair or order them). Kept declared because this object is closed and those records are self-hashed.",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },
     "valid_until": {
+      "description": "Legacy (before 2026-09-15, PR1r): honoured when present; never written. Outside [valid_from, valid_until] the record refuses (CRYPTO_RISK_LIMITS_EXPIRED) rather than reverting to the defaults. See valid_from for the pairing rule.",
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },

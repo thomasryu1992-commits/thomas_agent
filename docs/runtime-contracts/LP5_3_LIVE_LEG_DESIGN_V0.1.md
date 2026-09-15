@@ -3,8 +3,9 @@
 **Status:** IMPLEMENTED — the executing leg (`crypto/live_leg.py`, Thomas 2026-07-25) and the
 **cycle routing** (`crypto/live_route.py`, 2026-07-28) are both built. An autonomous live order
 is now structurally reachable, and what stands between the wiring and an order is the gate
-rather than the absence of a caller: no grant, no phrase, no registered budget, no canary
-evidence → no order, each on its own readiness row.
+rather than the absence of a caller: no phrase, no registered budget → no order, each on its
+own readiness row. *(This list also named a grant, removed 2026-07-28, and canary evidence, removed
+with the canary door on 2026-09-15.)*
 **Owner:** Thomas
 **Authority:** None. `governance/GOVERNANCE_POLICY.yaml` owns every rule.
 

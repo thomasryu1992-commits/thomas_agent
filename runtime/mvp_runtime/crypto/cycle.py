@@ -667,11 +667,11 @@ def run_crypto_cycle(
         reason_codes.append(exc.reason_code)
 
     # The breaker limits themselves: the registered per-machine record when one is registered
-    # and current, the `guards` defaults otherwise. A record that cannot be used — tampered,
-    # unparseable, outside the code bounds, or past its validity window — fails the guard closed
-    # rather than falling back to the defaults. The fallback is the tempting branch and the wrong
-    # one: an operator who *tightened* a breaker would have it silently loosened back to the
-    # default by the very failure that was supposed to be conservative.
+    # and usable, the `guards` defaults otherwise. A record that cannot be used — tampered,
+    # unparseable, outside the code bounds, or a legacy record past the window it carries — fails
+    # the guard closed rather than falling back to the defaults. The fallback is the tempting
+    # branch and the wrong one: an operator who *tightened* a breaker would have it silently
+    # loosened back to the default by the very failure that was supposed to be conservative.
     try:
         risk_limits = resolve_risk_limits(root, now=now)
     except ToolError as exc:

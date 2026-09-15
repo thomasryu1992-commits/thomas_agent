@@ -74,7 +74,7 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
-from . import live_execution, live_governance, live_leg, live_promotion
+from . import live_execution, live_governance, live_leg
 from .account import read_account, select_account_feed
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
@@ -121,7 +121,9 @@ ROUTING_PRECONDITION = "LIVE_ROUTING_PRECONDITION_FAILED"
 ACCOUNT_UNREADABLE = "LIVE_ROUTING_ACCOUNT_UNREADABLE"
 BOOK_DRIFT = "LIVE_ROUTING_BOOK_DRIFT"
 AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
-CANARY_HISTORY = "LIVE_ROUTING_CANARY_HISTORY"
+# `LIVE_ROUTING_CANARY_HISTORY` is retired (2026-09-15, PR1r): it said the canary registry behind
+# the promotion gate could not be verified, and the gate is gone. Old cycle rows still carry it;
+# the string is never reused.
 # The breaker's own state could not be updated after a leg that had something to tell it. By
 # then the order is at the venue, so this is reported and never raised — but it is the one
 # reason code meaning the count that bounds the naked-entry loop may now be short.
@@ -336,8 +338,8 @@ def _run_gated_live_leg(
     """The leg proper, once the gate is open. Split out so every exit path above is one
     ``except`` rather than a ``try`` wrapped around two hundred lines."""
     # 0. A host-side root run would leave this cycle's book, ledger and audit rows owned by a
-    #    uid the services cannot write again. Before the venue, for the canary path's reason:
-    #    afterwards the only options are a broken registry or a real position with no record.
+    #    uid the services cannot write again. Before the venue, because afterwards the only
+    #    options are a book the services cannot rewrite or a real position with no record.
     assert_not_foreign_root_run(root)
 
     # 1. The facts, each read once and shared by every door below — so the guard, the sizing
@@ -440,11 +442,6 @@ def _run_gated_live_leg(
 
     plan = build_entry_plan(route, feature_row, now=now) if isinstance(route, Mapping) else None
 
-    clean_canaries, canary_error = live_promotion.clean_canary_order_count(root)
-    if canary_error:
-        record["live_reason_codes"].append(CANARY_HISTORY)
-        record["live_reason_codes"].append(canary_error)
-
     filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
 
     spread_bps: float | None = None
@@ -506,7 +503,6 @@ def _run_gated_live_leg(
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
         bracket_failures_consecutive=breaker["consecutive"],
-        clean_canary_orders=clean_canaries,
         submitted_today=count_today(root),
         # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
         # unreadable account cannot produce a position.
@@ -1043,7 +1039,6 @@ __all__ = [
     "ACCOUNT_UNREADABLE",
     "AUDIT_NOT_RECORDED",
     "BOOK_DRIFT",
-    "CANARY_HISTORY",
     "DEFAULT_TIMING_CONTEXT",
     "LIVE_HOLD_NOT_TIMED_HERE",
     "LIVE_ROUTE_VERSION",

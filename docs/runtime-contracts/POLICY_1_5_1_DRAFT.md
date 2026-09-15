@@ -28,8 +28,9 @@ Nothing else moves: no `kill_blocks` / `kill_allows` change, no scope, dispositi
 ## 2. What the grant switches on (the code, already merged)
 
 - **Soft halt on an ACTIVE runtime:** `trading_armed=False`, mode stays ACTIVE. New live entries
-  (autonomous, canary, probe) are refused; settlement, the protection re-check, the time exit,
-  reconciliation, paper and the watches keep running. No approval (a stop must be cheap).
+  (autonomous and probe; the canary door was removed 2026-09-15) are refused; settlement, the
+  protection re-check, the time exit, reconciliation, paper and the watches keep running. No
+  approval (a stop must be cheap).
 - **From PAUSED/KILLED:** the authenticated operator (host console, verified Telegram) moves the
   runtime straight to the soft halt, with no moment in which entries are armed. The assistant's
   switch door (`disable mode=soft`) cannot release a stop this way.

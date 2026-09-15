@@ -199,6 +199,13 @@ Every claim below was re-checked against `main` and against the code it describe
 > are still structural, but there is one fewer of them and the remaining ones are all operator
 > state rather than code.
 >
+> ⚠️ **And one more left on 2026-09-15.** Thomas removed the canary door, its registry writer and
+> the guard's clean-canary promotion gate (PR1r), so "the clean-canary evidence threshold" above,
+> the per-machine count below and "the canary evidence" in the routing paragraph no longer gate
+> anything, and the readiness board has no `canary_evidence` row. The 4/4 on the machine that ran
+> them is frozen history, still shown by `python -m runtime.mvp_runtime.crypto.live_promotion`.
+> Nothing replaces that floor on a fresh machine until PR1b enforces the execution stage.
+>
 > **The canary count is per-machine.** On the machine that placed them the board now reads
 > **4/4** (2026-07-28); on a fresh checkout it reads `0/3`. Ask the machine
 > (`python -m runtime.mvp_runtime.crypto.live_readiness`) rather than trusting a number here —
@@ -498,7 +505,9 @@ That inverts the old caveat rather than removing it. The canary row used to enab
 because the step it fed — cycle routing — was deliberately unbuilt; now that step exists, so the
 canary evidence does gate something real. **Wired is still not permitted**: the routing row is
 deliberately not folded into `ready`, and without `MVP_LIVE_TRADING=real` the leg returns
-DISABLED having read no account and opened no socket.
+DISABLED having read no account and opened no socket. *(2026-09-15: the canary evidence gates
+nothing any more — Thomas removed the canary door and its promotion gate, PR1r. The routing row and
+`ready` are unchanged.)*
 
 *(That sentence said "with no `live_trading` grant" until 2026-07-29 — written on the 28th and
 outlived by its own subject within a day, when Thomas removed the grant. Left visible rather
@@ -866,9 +875,13 @@ scopes at different levels, so nothing was owed to it.
           and still on the cycle record, and nothing refuses on it. What gates live routing is
           the per-strategy ladder, which judges each strategy on its own record. Measurement:
           `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md`.
-- [ ] **≥ 3 clean canary orders** before any autonomous run. **On the machine that ran them the
-      board reads 4/4 (2026-07-28)**; this file still cannot tell *you* the count, because the
-      evidence store is
+- [x] ~~**≥ 3 clean canary orders** before any autonomous run.~~ **Retired by Thomas on
+      2026-09-15 (PR1r), not met-and-closed:** the canary door (`scripts/place_canary_order.py`),
+      its registry writer and the guard's promotion gate were removed together, and canaries had
+      ended on 2026-07-29. The rest of this entry is kept as the record of what the box asked and
+      why its count was hard to trust; the board it cites no longer has the row.
+      **On the machine that ran them the board reads 4/4 (2026-07-28)**; this file still cannot
+      tell *you* the count, because the evidence store is
       `.runtime_governance_state/live_canary_orders.jsonl` — per-machine and gitignored, like the
       Core pointer and the safety-flag grants — so a number written here is a claim about whichever
       machine last edited it. It said "0" until 2026-07-27; the fix was not a new number, it was to
@@ -1327,7 +1340,8 @@ absence is compliance.
         **This is not a defect and nothing here needs building.** §10.5's pattern (specialists →
         independent risk review → Thomas approval → restricted execution) *is* implemented for
         that path — as the P5 live-execution gate plus an operator checklist (confirmation
-        phrase, registered budget, ≥3 clean canary orders, both kill switches, the loss breaker),
+        phrase, registered budget, both kill switches, the loss breaker — and ≥3 clean canary
+        orders until Thomas removed that gate on 2026-09-15),
         each a computed row on the readiness board. What differs from §8.4's row is the
         **mechanism**: a standing operator checklist rather than a per-action approval record.
         Worth stating because the two are not interchangeable — a checklist is set once and
@@ -5041,10 +5055,11 @@ travel either — a fresh machine ticks nothing until they are re-added. Read th
 (`scheduler_cli list`) rather than from this paragraph; it was written with fifteen factory rows
 and was wrong within the hour, because another session added one.
 
-The ledger does not travel, which has one consequence worth stating: **the canary-evidence count
-and the paper P&L that gate the live door are per-machine**, so a new machine reads `0/3` and an
-empty paper record however far along this one is. Ask the board
-(`python -m runtime.mvp_runtime.crypto.live_readiness`), never this file.
+The ledger does not travel, which has one consequence worth stating: **the paper P&L that gates
+the live door is per-machine**, so a new machine reads an empty paper record however far along this
+one is. Ask the board (`python -m runtime.mvp_runtime.crypto.live_readiness`), never this file.
+*(This sentence also named the canary-evidence count, reading `0/3` on a new machine, until
+2026-09-15, when Thomas removed the canary promotion gate.)*
 
 ---
 

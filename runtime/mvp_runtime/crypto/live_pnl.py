@@ -655,19 +655,20 @@ def live_risk_snapshot(
 
     ``pnl_source`` names where the figure came from, so a caller can tell "0.0 because nothing
     was lost" from "0.0 because nothing was recorded". ``LIVE_PNL_NO_SOURCE`` marks the second
-    case explicitly — the distinction ``clean_canary_order_count`` already makes by returning
-    its error alongside its count.
+    case explicitly — the distinction the retired canary count made by returning its error
+    alongside its count.
 
     ``venue_required`` is for the callers that are about to OPEN a position — the autonomous
-    leg, the canary door, the probe door — and for the board once it has read the account on
-    their behalf. For them a missing venue figure is a trip (``LIVE_PNL_VENUE_FIGURE_MISSING``),
-    not a fall back to the local ledger. Found 2026-09-15 (execution-authority audit, verified):
-    the account read can succeed while its income call fails or comes back as a full page, and
-    the local ledger then answers for a venue it cannot see — venue-side and operator-side
-    closes never reach it — so "no closed row today" read as 0.0 and the entry went ahead with
-    the daily cap bounding nothing. Those three callers always hold a snapshot when they get
-    here (each refuses an unreadable account first), so a missing figure there is never the
-    fresh-machine case the local branch exists for.
+    leg and the probe door (and the canary door, until it was removed 2026-09-15) — and for the
+    board once it has read the account on their behalf. For them a missing venue figure is a
+    trip (``LIVE_PNL_VENUE_FIGURE_MISSING``), not a fall back to the local ledger. Found
+    2026-09-15 (execution-authority audit, verified): the account read can succeed while its
+    income call fails or comes back as a full page, and the local ledger then answers for a
+    venue it cannot see — venue-side and operator-side closes never reach it — so "no closed
+    row today" read as 0.0 and the entry went ahead with the daily cap bounding nothing. Those
+    callers always hold a snapshot when they get here (each refuses an unreadable account
+    first), so a missing figure there is never the fresh-machine case the local branch exists
+    for.
     """
     stamp = now or timeutil.utc_now_iso()
     target = day or utc_day(stamp)

@@ -47,6 +47,13 @@ until LP4/LP5 are deliberately written; this is not a disabled flag, it is an ab
 | Every real writer defaults to **inert/DryRun** | each `select_*` | ✅ |
 | ~~the env var alone fails closed (`ACTIVATION_MISSING`)~~ | — | ❌ **no longer true, 2026-07-28** — Thomas removed the `live_trading` grant, so `MVP_LIVE_TRADING=real` alone now builds every real writer. Split onto its own row rather than edited into the one above, because the inert default still holds and the second half no longer does |
 
+> **2026-09-15 (PR1r):** two rows above record what was verified then and are kept as written. The
+> declared-notional check (`check_declared_notional`, `ORDER_NOTIONAL_*`) existed only for
+> `scripts/place_canary_order.py`, and the canary-promotion row's `promotion_status` /
+> `clean_canary_order_count` fed the guard's clean-canary gate. Thomas removed the door, the check
+> and the gate together; the live-trading switch row's `live_promotion.py` no longer selects
+> anything either, because its registry writer went with the door.
+
 ## Credential handling (`account.py` — the only module holding real keys)
 
 Read-only account feed; **no order method exists** on it (single-method protocol). Verified:
@@ -82,7 +89,7 @@ would reach it.
 ## Forward-looking checkpoints (NOT current defects — for the LP4/LP5 author)
 
 1. **reduceOnly close guard** (`live_order.py:365` `evaluate_live_close_guard`) is deliberately
-   exempt from the loss breaker, daily count, exposure cap, promotion gate, and **both** kill
+   exempt from the loss breaker, daily count, exposure cap, and **both** kill
    switches — a halt must not trap a losing position open. Its "can only shrink, never open"
    guarantee rests on the venue honoring `reduceOnly`. **When LP4 is built, verify the adapter
    faithfully translates `intent.reduce_only` into the venue's reduceOnly order flag** — that
@@ -91,9 +98,9 @@ would reach it.
    another does not is the dangerous state; keep `ORDER_PATH_IMPLEMENTED` and the two governance
    flags in lockstep (and the readiness board's constant must match the yaml).
 3. **Test-name hygiene:** `tests/test_mvp_runtime_crypto_promotion.py` tests the *paper* strategy
-   promotion, **not** `live_promotion.py`; live canary promotion is covered inside
-   `test_mvp_runtime_crypto_live_readiness.py`. A dedicated `live_promotion` test file would
-   remove the ambiguity (optional).
+   promotion, **not** `live_promotion.py`. The canary registry's verified reader and history
+   board are covered in `test_mvp_runtime_canary_evidence.py`; the canary promotion gate that
+   `test_mvp_runtime_crypto_live_readiness.py` used to cover was removed on 2026-09-15.
 
 ## Test evidence
 
@@ -110,5 +117,7 @@ This paragraph listed LP4, LP5, the `live_trading_budget.v0.1` schema and ≥3 c
 (LP4 2026-07-25; LP5 and its executing leg, then cycle routing, by 2026-07-28; the budget schema
 at step 6). What remains is operator state, not code: the `execution.live_trader` P5 role
 activated (step 7, a separate `ROLE_GOVERNANCE` approval), the live-trading opt-in, the
-confirmation phrase, a registered budget, and the canary evidence — the count being per-machine,
-so ask `python -m runtime.mvp_runtime.crypto.live_readiness` rather than this file.
+confirmation phrase and a registered budget — per-machine state, so ask
+`python -m runtime.mvp_runtime.crypto.live_readiness` rather than this file. *(This list ended
+"and the canary evidence — the count being per-machine" until 2026-09-15, when Thomas removed the
+canary door and its promotion gate.)*

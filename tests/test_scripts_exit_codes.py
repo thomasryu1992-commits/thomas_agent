@@ -8,8 +8,8 @@ script got "usage error" where the same number from `python -m runtime.mvp_runti
 "fail-closed block".
 
 `cli_common` is the fixed point rather than the thing that moved: `.github/workflows/docker-image.yml`
-asserts `-eq 2` for a fail-closed runtime CLI, and `tests/test_place_canary_order_audit_report.py`
-imports `EXIT_BLOCKED` by name.
+asserts `-eq 2` for a fail-closed runtime CLI, and operator-script tests such as
+`tests/test_record_unreported_live_order.py` import `EXIT_BLOCKED` by name.
 
 These tests are structural on purpose. Asserting the *values* would restate `cli_common`; what can
 rot is a script quietly minting its own constant again, which is exactly how the divergence began.

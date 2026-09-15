@@ -342,8 +342,11 @@ Approving this packet does not enable live trading. It makes LP4 *buildable*. St
    whole switch") and the 2026-07-28 entry in `docs/BUILD_HISTORY.md`.
 2. The confirmation phrase must be set, distinct from the canary and testnet phrases.
 3. All four caps must be configured; every one defaults to the blocking value.
-4. **>= 3 clean canary orders** must exist. There is 1, from 2026-07-16. The guard refuses until
-   there are 3, whatever else is enabled.
+4. ~~**>= 3 clean canary orders** must exist. There is 1, from 2026-07-16. The guard refuses until
+   there are 3, whatever else is enabled.~~
+   **Removed by Thomas on 2026-09-15** (PR1r), with the canary door that earned them: canaries had
+   ended on 2026-07-29, and the guard no longer counts them. The floor meant to replace it is the
+   execution stage (`EXECUTION_STAGE_V0.1.md`), once PR1b makes the entry doors enforce it.
 5. The runtime kill switch must be ACTIVE.
 6. LP4 and LP5 must still be written, reviewed, and merged.
 

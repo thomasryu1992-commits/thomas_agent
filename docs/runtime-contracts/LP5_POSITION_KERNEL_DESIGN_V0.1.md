@@ -155,7 +155,7 @@ exposure is **treated as at-cap**, never as zero. The argument should also stop 
 ## The close path keeps its exemptions
 
 Per the standing decision, a reduceOnly close is exempt from the loss breaker, the caps, the daily
-count, the promotion gate, and both kill switches — a halt that traps a losing position open is
+count, and both kill switches — a halt that traps a losing position open is
 worse than the halt prevents. LP5 preserves that: **closes run even when entries are fully halted**,
 and the structural boundary (grant + confirmation phrase + `reduce_only`) is what keeps that path
 unable to open anything.
@@ -234,11 +234,13 @@ understated maker rate reports an edge better than reality.
 ## What still stands between LP5 and an autonomous live order
 
 Merging LP5 authorizes nothing. Still required: `MVP_LIVE_TRADING=real` + the order key, the
-confirmation phrase, a valid registered budget, the kill switch ACTIVE, a guard PASS, **≥ 3 clean
-canary orders**, and the `execution.live_trader` role **activated** (a separate
-`ROLE_GOVERNANCE` approval).
+confirmation phrase, a valid registered budget, the kill switch ACTIVE, a guard PASS, and the
+`execution.live_trader` role **activated** (a separate `ROLE_GOVERNANCE` approval).
 
 This list carried "(currently 0)" against the canary count and "and LP4 increment 2 (the real
 signed send)" until 2026-07-29. Both are gone rather than updated: LP4's signed send shipped
 2026-07-25, and the canary count is **per-machine state** that no committed file can report.
 Ask `python -m runtime.mvp_runtime.crypto.live_readiness`.
+
+**≥ 3 clean canary orders** left the list on 2026-09-15: Thomas removed the canary door and the
+guard's promotion gate (PR1r), so no count is asked for any more.

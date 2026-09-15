@@ -57,7 +57,6 @@ from . import (
     live_order,
     live_position,
     live_budget,
-    live_promotion,
     live_sizing,
     market_data,
     null_control,
@@ -212,10 +211,6 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/distribution_gate.py", OPERATOR,
             "fewer than 30 scored bars means the reference distribution is too thin to trust",
             "a backtest window short enough that 30 is a binding constraint"),
-    Tunable("DEFAULT_MIN_CLEAN_CANARY_ORDERS", live_promotion.DEFAULT_MIN_CLEAN_CANARY_ORDERS,
-            "crypto/live_promotion.py", INHERITED,
-            "the source's default: three clean canaries before an autonomous live entry",
-            "a canary failure this runtime has not seen"),
 
     # --- the promotion door and the ladder ---------------------------------------------------
     Tunable("MAX_ROUTABLE_STRATEGIES", pool.MAX_ROUTABLE_STRATEGIES, "crypto/pool.py", OPERATOR,
