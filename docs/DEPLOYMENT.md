@@ -376,14 +376,18 @@ is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gate 2.
 **When you are done trading,** stop the entries first and clear the switch last:
 
 1. Stop new entries and keep managing positions: `console_cli halt_trading`, once the 1.5.1 policy
-   grants it. Until then the entries-only halt is `MVP_LIVE_MANUAL_KILL_SWITCH=true` and a
-   scheduler restart; `console_cli kill` (or `/pause`) also stops entries, but it stops settlement,
-   the protection re-check and the time exit with them until `/resume`, so a position would not be
-   managed to its close.
+   grants it. Until then the entries-only halt is `MVP_LIVE_MANUAL_KILL_SWITCH=true` in the compose
+   `.env`, applied by **recreating** the scheduler (`docker compose ... up -d`, as in the deploy
+   steps above; `docker restart` keeps the environment the container was created with and does not
+   pick up the change). Confirm the `manual_kill_switch` row reads engaged on
+   `docker exec thomas-scheduler python -m runtime.mvp_runtime.crypto.live_readiness` before step 2.
+   `console_cli kill` (or `/pause`) also stops entries, but it stops settlement, the protection
+   re-check and the time exit with them until `/resume`, so a position would not be managed to its
+   close.
 2. Wait until no live position is open (`live_position.list_open_live_positions()` is empty; the
    venue agrees in `python -m runtime.mvp_runtime.crypto.account`) and no probe cell is in flight
    (`python -m scripts.run_slippage_probe --status`).
-3. Only then remove `MVP_LIVE_TRADING` from the compose `.env` and restart the scheduler. The close
+3. Only then remove `MVP_LIVE_TRADING` from the compose `.env` and recreate the scheduler. The close
    guard requires the opt-in, so clearing it with a position open strands that position.
 
 There is no grant file to delete any more, and that is the cost of the 2026-07-28 change: the gate

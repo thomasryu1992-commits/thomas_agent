@@ -76,8 +76,8 @@ Why it was removed, recorded so a future reader restoring the grant knows what t
 the grant was TTL-capped at 30 days on a system meant to run unattended for months, and — the
 sharper reason — a grant that expired while a position was **open** shut the CLOSE path too.
 `evaluate_live_close_guard` exempts a reduceOnly close from the loss breaker, the daily count,
-the exposure cap, the promotion gate and both kill switches precisely so a halt cannot trap a
-position; expiry walked around all of it.
+the exposure cap, the promotion gate *(removed 2026-09-15, PR1r)* and both kill switches precisely
+so a halt cannot trap a position; expiry walked around all of it.
 
 What was given up: a second factor, an expiry, and an audited per-machine record of scope and
 authority level. What was **not** given up: revocation. The operator console `kill` is

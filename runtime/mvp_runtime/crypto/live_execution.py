@@ -14,16 +14,14 @@ board now means a real order can be placed on that machine. Read the flags, not 
 ``python -m runtime.mvp_runtime.crypto.live_readiness`` computes the answer for the machine
 you are on.
 
-What still stands between this code and an **autonomous** order is structural, not missing
-implementation:
+What stands between this code and an order:
 
-* **no autonomous entry point may import this module** — ``live_leg`` and this adapter are both
-  covered by ``test_no_autonomous_entry_point_reaches_the_live_order_path``, which fails loudly
-  if one does. Today its callers are the live leg, reached only through ``live_route``, and the
-  operator's ``scripts/run_slippage_probe.py --fire``, one probe at a time (the canary door that
-  was once the only caller was removed on 2026-09-15, PR1r);
-* ``financial_executor_enabled`` is ``false``, and cycle routing (LP5.3's last piece) is
-  deliberately unbuilt — building it *is* the decision to relax that tripwire;
+* its callers — the live leg, reached only through ``live_route`` on a gated cycle (autonomous
+  routing has been wired since 2026-07-28; ``live_readiness.AUTONOMOUS_ROUTING_WIRED``), and the
+  operator's ``scripts/run_slippage_probe.py --fire``, one probe at a time. The canary door that
+  was once the only caller was removed on 2026-09-15 (PR1r). *(This bullet used to say no
+  autonomous entry point may import the module and that cycle routing was deliberately unbuilt;
+  both stopped being true when routing was wired.)*;
 * reaching the venue at all still requires the operator's ``MVP_LIVE_TRADING=real`` opt-in,
   the order key, the confirmation phrase and a registered budget — none of which this code can
   create.

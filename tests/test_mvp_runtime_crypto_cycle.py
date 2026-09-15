@@ -1054,6 +1054,24 @@ def test_a_tampered_limits_record_fails_the_cycle_guard_closed(tmp_path):
     assert record["paper_verdict_status"] == "ALLOW"
 
 
+@pytest.mark.parametrize("poison", ['{"limits": {"daily_max_loss_r": NaN}, "record_sha256": "sha256:0"}',
+                                    '{"api_secret": "x", "record_sha256": "sha256:0"}'])
+def test_an_unhashable_limits_record_fails_the_cycle_guard_closed_rather_than_aborting(tmp_path, poison):
+    """Review of #873: a NaN or a secret-shaped key raised a bare ValueError / IntegrityError past
+    the typed catch below, aborting the cycle before the live leg could manage open positions."""
+    from runtime.mvp_runtime.crypto import risk_limits
+    from runtime.mvp_runtime.crypto.live_pnl import state_dir
+
+    _install_pool(tmp_path, _always_spec())
+    target = state_dir(tmp_path)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "crypto_risk_limits.json").write_text(poison, encoding="utf-8")
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["verdict_status"] == "NO_NEW_POSITION"
+    assert "risk_limits_unusable" in record["verdict_problems"]
+    assert risk_limits.LIMITS_TAMPERED in record["reason_codes"]
+
+
 def test_a_lapsed_limits_record_fails_the_cycle_guard_closed(tmp_path):
     """A lapsed record refuses rather than reverting to the defaults.
 

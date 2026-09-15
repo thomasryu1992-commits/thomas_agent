@@ -451,8 +451,12 @@ def evaluate_live_order_guard(
     if not gate_open:
         blocks.append(f"live trading is not enabled ({LIVE_TRADING_ENV} is not '{REAL_LIVE_TRADING}')")
     # 2. The phrase. The opt-in enables the capability; the phrase proves intent to use it. One
-    #    phrase per capability: a canary is authorized by the canary phrase, never the autonomous
-    #    one, so a machine armed for canaries cannot start trading autonomously.
+    #    phrase per capability: a canary-mode order (today the slippage probe) is authorized by the
+    #    canary phrase, never the autonomous one, and the canary phrase alone cannot authorize an
+    #    autonomous entry. It does not keep a probe session from trading autonomously: every close
+    #    (the probe's exits included) needs the autonomous phrase, and that phrase authorizes
+    #    autonomous entries too — what holds them back in a probe session is that no pool entry is
+    #    LIVE-tier (docs/DEPLOYMENT.md).
     if canary:
         if not cfg.canary_confirmation_present():
             blocks.append(f"canary confirmation phrase not present ({CANARY_CONFIRMATION_ENV})")

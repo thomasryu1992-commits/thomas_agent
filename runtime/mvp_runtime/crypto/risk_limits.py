@@ -218,13 +218,20 @@ def read_registered_limits(root: Path | None = None) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ToolError(LIMITS_UNREADABLE, f"registered risk limits are unreadable: {exc}") from None
     if not isinstance(data, dict):
         raise ToolError(LIMITS_UNREADABLE, "registered risk limits are not a JSON object")
     stored = data.get("record_sha256")
     body = {k: v for k, v in data.items() if k != "record_sha256"}
-    if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+    try:
+        recomputed = integrity.sha256_record(body)
+    except (ValueError, TypeError, RecursionError) as exc:
+        # A NaN, a secret-shaped key or a pathological nesting cannot be canonicalised. It must
+        # still surface as this module's typed refusal: the live leg reads this before it settles
+        # and protects open positions, and anything but a ToolError there is an INCIDENT halt.
+        raise ToolError(LIMITS_TAMPERED, f"registered risk limits cannot be hashed: {exc}") from None
+    if not isinstance(stored, str) or recomputed != stored:
         raise ToolError(LIMITS_TAMPERED, "registered risk limits fail their self-hash")
     _validate(data)
     # The window has two legal shapes: none (every record built since PR1r) or both ends, opening

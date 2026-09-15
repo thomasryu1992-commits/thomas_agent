@@ -462,3 +462,26 @@ def test_registering_a_budget_does_not_enable_trading(tmp_path, monkeypatch):
     adapter = select_order_adapter(now=NOW, root=tmp_path)
     assert isinstance(adapter, DryRunOrderAdapter)          # switch off => inert
     assert adapter.network_egress is False                  # cannot reach a venue
+
+# The poisons a hand edit can put in a record that no hash can be computed over: a NaN (the JSON
+# token is accepted by the parser, refused by the canonical hash), a secret-shaped key (refused by
+# the secret scan), and pathological nesting.
+_UNHASHABLE = {
+    "nan": '{"caps": {"max_order_notional_usdt": NaN}, "record_sha256": "sha256:0"}',
+    "secret_key": '{"api_secret": "x", "record_sha256": "sha256:0"}',
+    "deep_nesting": "[" * 5000 + "]" * 5000,
+}
+
+
+@pytest.mark.parametrize("poison", list(_UNHASHABLE))
+def test_an_unhashable_budget_is_a_typed_refusal_and_budget_status_stays_total(tmp_path, poison):
+    """Review of #873: the read raised a bare ValueError / IntegrityError past `budget_status`, and
+    the live leg reads the budget before it settles and protects."""
+    path = lb.budget_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_UNHASHABLE[poison], encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        lb.read_registered_budget(tmp_path)
+    assert exc.value.reason_code in (lb.BUDGET_UNREADABLE, lb.BUDGET_TAMPERED)
+    st = lb.budget_status(tmp_path, now=NOW)
+    assert (st["registered"], st["valid"]) == (True, False)

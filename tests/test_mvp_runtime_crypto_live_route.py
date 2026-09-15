@@ -902,6 +902,38 @@ def test_every_budget_shape_on_disk_still_manages_open_positions(tmp_path, monke
         assert managed[0][1].max_order_notional_usdt == 0.0 and managed[0][1].max_daily_order_count == 0
 
 
+@pytest.mark.parametrize("poison", ['{"caps": {"max_order_notional_usdt": NaN}, "record_sha256": "sha256:0"}',
+                                    '{"api_secret": "x", "record_sha256": "sha256:0"}'])
+def test_an_unhashable_budget_on_disk_still_manages_open_positions(tmp_path, monkeypatch, poison):
+    """Review of #873: a NaN or a secret-shaped key in the budget raised a bare ValueError /
+    IntegrityError out of the leg's first read, before settle/protect — an INCIDENT halt with every
+    open position unmanaged. It is now the budget's typed refusal: blocking caps, positions managed."""
+    from runtime.mvp_runtime.crypto import live_budget
+
+    path = live_budget.budget_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(poison, encoding="utf-8")
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[str] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append(position["position_id"]))
+    monkeypatch.setattr(live_route, "plan_live_entry",
+                        lambda plan, **kw: {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]})
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    assert managed == ["p1"], "the open position went unmanaged"
+    assert out["live_route_status"] != live_route.ROUTE_INCIDENT
+    assert not any(code.startswith("UNEXPECTED_") for code in out["live_reason_codes"])
+
+
 # --- settle and enter are mutually exclusive within one cycle -------------------------------
 
 def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):

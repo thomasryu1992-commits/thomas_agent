@@ -653,3 +653,27 @@ def test_the_rebase_block_does_not_rename_the_record():
 # `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md` has the measurement. They lived in this
 # file because they shared the "self-hashed, expiring, per-machine record" idiom with
 # `risk_limits`; that idiom stays, and the tests above it are untouched.
+
+# The poisons a hand edit can put in a record that no hash can be computed over: a NaN (the JSON
+# token is accepted by the parser, refused by the canonical hash), a secret-shaped key (refused by
+# the secret scan), and pathological nesting.
+_UNHASHABLE = {
+    "nan": '{"limits": {"daily_max_loss_r": NaN}, "record_sha256": "sha256:0"}',
+    "secret_key": '{"api_secret": "x", "record_sha256": "sha256:0"}',
+    "deep_nesting": "[" * 5000 + "]" * 5000,
+}
+
+
+@pytest.mark.parametrize("poison", list(_UNHASHABLE))
+def test_an_unhashable_record_is_a_typed_refusal_in_every_reader(tmp_path, poison):
+    """Review of #873: a bare ValueError / IntegrityError escaped `resolve_risk_limits`, and the
+    cycle only catches the typed refusal — so the cycle aborted before the live leg could manage
+    open positions."""
+    path = rl.limits_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_UNHASHABLE[poison], encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        rl.resolve_risk_limits(tmp_path, now=NOW)
+    assert exc.value.reason_code in (rl.LIMITS_UNREADABLE, rl.LIMITS_TAMPERED)
+    status = rl.limits_status(tmp_path, now=NOW)
+    assert status["valid"] is False and status["error"] in (rl.LIMITS_UNREADABLE, rl.LIMITS_TAMPERED)

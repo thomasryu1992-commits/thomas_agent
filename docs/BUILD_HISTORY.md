@@ -33,7 +33,7 @@ Append a new entry when a milestone ships, in the same PR.
   protective bracket; it went with its registry writer and its declared-notional check. Guard 6,
   the clean-canary promotion gate, went with the budget cap that fed it. Canaries ended on
   2026-07-29, so the gate had been counting a frozen file: 4/4 against a bar of 4 on the machine
-  that ran them, 0 and refusing on every other. PR1a (above) left the canary rung out for the same
+  that ran them, 0 and refusing on every other. PR1a (below) left the canary rung out for the same
   reason. The slippage probe authorizes exactly as before, on the canary phrase.
 
   **Why the windows went, against the 2026-07-30 entry below.** That entry argued "relaxations
@@ -46,9 +46,10 @@ Append a new entry when a milestone ships, in the same PR.
   disguise: a budget cannot be open-ended under the old schema, so a long window was registered to
   postpone a cliff on which every entry refuses. The re-authorization the window promised was a
   calendar event, not a review. What stands in its place is explicit: `RUNBOOK_CONSECUTIVE_LOSS_BREAKER.md`
-  §5 now makes the revert a mandatory step, and `--show` and the readiness rows print
+  §5 now makes the revert a mandatory step; the risk-limits `--show` and readiness row print
   `registered_at`, "no expiry" or the legacy window, and any drawdown-rebase exclusion count,
-  because an exclusion now stands as long as its numbers do.
+  because an exclusion now stands as long as its numbers do; the budget row prints "no expiry" or
+  its legacy window.
 
   **Why a stored window is still honoured (legacy-honour, not ignore-all).** The first draft
   ignored every stored window and relied on one pre-deploy read showing nothing stored was outside
@@ -68,8 +69,9 @@ Append a new entry when a milestone ships, in the same PR.
   **Kept, because something else still uses it.** `MVP_LIVE_CANARY_CONFIRMATION`, the guard's
   `canary` kwarg and `PURPOSE_CANARY` authorize and audit the probe. `live_promotion.RECONCILED` is
   the live leg's reconcile vocabulary. The verified registry reader, the `CANARY_HISTORY_*` codes
-  and the history board serve `record_unreported_live_order.py` and `measure_live_slippage.py`, and
-  the board still exits 2 on an unverifiable registry. Both schemas keep `valid_from` /
+  serve `record_unreported_live_order.py` and the history board, which still exits 2 on an
+  unverifiable registry; `measure_live_slippage.py` reads the same frozen file directly, which is
+  why its row shape stays on disk. Both schemas keep `valid_from` /
   `valid_until`, and the budget keeps `caps.min_clean_canary_orders`, declared under
   `additionalProperties: false` and out of `required`: records on disk carry them inside their
   self-hash, so deleting a property would make them schema-invalid and stripping a field breaks the
