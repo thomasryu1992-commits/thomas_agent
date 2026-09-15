@@ -548,9 +548,12 @@ def granted_emergency_controls(root: Path | None = None) -> frozenset[str]:
     path = (root if root is not None else _repo_root()) / POLICY_REL
     try:
         policy = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, ValueError, yaml.YAMLError):   # ValueError covers undecodable bytes
         return frozenset()
-    console = ((policy or {}).get("control_channel") or {}).get("local_operator_console") or {}
+    # Every level is checked: a policy that parses to a list, or a clause that is a string, is
+    # malformed, and malformed grants nothing (review of H2 — `.get` on a non-mapping raised).
+    channel = policy.get("control_channel") if isinstance(policy, dict) else None
+    console = channel.get("local_operator_console") if isinstance(channel, dict) else None
     allowed = console.get("emergency_controls_allowed") if isinstance(console, dict) else None
     if not isinstance(allowed, list):
         return frozenset()
@@ -632,6 +635,17 @@ def apply_command(
     switch door can halt entries but can never release a stop through this verb."""
     if command not in COMMANDS:
         raise ControlBlocked("UNKNOWN_COMMAND", f"unknown control command: {command!r}")
+    # The grant is read BEFORE the state, never between reading and writing it (review of H2): the
+    # policy parse takes milliseconds, and a kill landing inside that window would otherwise be
+    # overwritten by this verb's save.
+    if command in POLICY_GATED_COMMANDS and command not in granted_emergency_controls():
+        raise ControlBlocked(
+            VERB_NOT_GRANTED,
+            f"{command} is not granted by the committed Governance Policy yet "
+            "(control_channel.local_operator_console.emergency_controls_allowed); nothing "
+            "changed. /pause and /kill still stop entries, and they also stop position "
+            "management until /resume.",
+        )
     stamp = now or timeutil.utc_now_iso()
     current = store.load()
 
@@ -707,14 +721,6 @@ def apply_command(
     not_recorded = "\n(상태가 그대로이므로 적어주신 이유는 기록되지 않았습니다.)" if stated else ""
 
     if command == CMD_HALT_TRADING:
-        if command not in granted_emergency_controls():
-            raise ControlBlocked(
-                VERB_NOT_GRANTED,
-                "halt_trading is not granted by the committed Governance Policy yet "
-                "(control_channel.local_operator_console.emergency_controls_allowed); nothing "
-                "changed. /pause and /kill still stop entries, and they also stop position "
-                "management until /resume.",
-            )
         if current.mode == ACTIVE:
             if not current.trading_armed:
                 return {
@@ -756,6 +762,18 @@ def apply_command(
                 "managed (settle, protect, time exit, reconcile) and queued work resumes; new "
                 "live entries stay refused until /resume." + reason_note
             )
+        # Compare before writing (review of H2). This verb can write ACTIVE, and a stop that landed
+        # after `current` was read must not be overwritten by it: the assistant's door would have
+        # released an operator kill. No lock — an emergency control must never wait on one — so a
+        # re-read immediately before the write narrows the window to the replace itself.
+        latest = store.load()
+        if latest != current:
+            return {
+                "reply": (f"The control state changed while this halt was being applied (now "
+                          f"{latest.mode}, live entries {'armed' if latest.trading_armed else 'DISARMED'}). "
+                          "Nothing was written; send /status and repeat the halt if it is still needed."),
+                "mode": latest.mode, "changed": False, "action": CMD_HALT_TRADING,
+            }
         store.save(new_state)
         if ledger is not None:
             ledger.append_control(_control_event(command, new_state, now=stamp))

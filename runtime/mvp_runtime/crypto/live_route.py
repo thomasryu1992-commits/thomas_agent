@@ -804,6 +804,22 @@ def _report(
 NOTIFY_FAILED = "LIVE_NOTIFY_FAILED"
 
 
+def halt_advice() -> str:
+    """The halt to name in a message read in a hurry — the one that will act on THIS policy.
+
+    The soft halt is policy-gated (`control.POLICY_GATED_COMMANDS`): naming it before the policy
+    grants it sends an operator in an incident to a refusal first (review of H2). So the grant is
+    read when the message is built, and the text says what each verb does to open positions."""
+    from ..control import CMD_HALT_TRADING, granted_emergency_controls
+
+    if CMD_HALT_TRADING in granted_emergency_controls():
+        return ("To stop new entries and keep managing positions: console_cli halt_trading --reason ... "
+                "(console_cli kill stops position management too).")
+    return ("To stop new entries: console_cli kill --reason ... - it also stops position management "
+            "(settle, protect, time exit) until resume. The entries-only halt, halt_trading, acts once "
+            "policy 1.5.1 grants it.")
+
+
 def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> None:
     """Tell Thomas that real money moved, or that it is somewhere this runtime cannot account for.
 
@@ -875,8 +891,7 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
         lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
     if status == ROUTE_INCIDENT:
         lines.append("")
-        lines.append("Check the venue. To stop new entries and keep managing positions: "
-                     "console_cli halt_trading --reason ... (console_cli kill stops management too).")
+        lines.append("Check the venue. " + halt_advice())
     try:
         # Imported here, not at module scope: `operator` imports back into this package, and
         # the scheduler's crypto_report seam already takes this shape for the same reason.

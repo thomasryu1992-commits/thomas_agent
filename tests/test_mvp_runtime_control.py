@@ -689,3 +689,49 @@ def test_the_telegram_channel_reaches_the_soft_halt_as_the_authenticated_operato
                                     control_store=store, store=ledger, now=NOW)
     assert reply.status == "CONTROL" and reply.reason_code == control.CMD_HALT_TRADING
     assert (store.load().mode, store.load().trading_armed) == (ACTIVE, False)
+
+
+def test_a_stop_that_lands_while_the_halt_is_applied_is_never_overwritten(tmp_path, halt_granted):
+    """Review of H2: the door's soft halt read ACTIVE, a /kill landed, and the halt's save wrote
+    ACTIVE over it — the assistant's door releasing an operator kill. The halt re-reads before it
+    writes and writes nothing when the state moved."""
+    store = _armed(tmp_path)
+    real_load = store.load
+    calls = {"n": 0}
+
+    def load_with_a_kill_in_between():
+        calls["n"] += 1
+        if calls["n"] == 2:      # the re-read just before the write
+            control.apply_command(ControlStore(tmp_path), control.CMD_KILL, actor="thomas", now=NOW)
+        return real_load()
+
+    store.load = load_with_a_kill_in_between   # type: ignore[method-assign]
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW)
+    assert out["changed"] is False and out["mode"] == KILLED
+    assert ControlStore(tmp_path).load().mode == KILLED
+
+
+def test_the_grant_is_read_before_the_state_is(tmp_path, monkeypatch):
+    """The policy parse must not sit between reading and writing the state."""
+    order: list[str] = []
+    monkeypatch.setattr(control, "granted_emergency_controls",
+                        lambda root=None: (order.append("grant"), frozenset({control.CMD_HALT_TRADING}))[1])
+    store = _armed(tmp_path)
+    real_load = store.load
+    store.load = lambda: (order.append("load"), real_load())[1]   # type: ignore[method-assign]
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW)
+    assert order[0] == "grant"
+
+
+@pytest.mark.parametrize("text", ["- a list, not a mapping\n", "control_channel: nope\n",
+                                  "control_channel:\n  local_operator_console: [1]\n"])
+def test_a_malformed_policy_grants_nothing_and_raises_nothing(tmp_path, text):
+    (tmp_path / "governance").mkdir()
+    (tmp_path / control.POLICY_REL).write_text(text, encoding="utf-8")
+    assert control.granted_emergency_controls(tmp_path) == frozenset()
+
+
+def test_an_undecodable_policy_grants_nothing_and_raises_nothing(tmp_path):
+    (tmp_path / "governance").mkdir()
+    (tmp_path / control.POLICY_REL).write_bytes(b"\xff\xfe not utf-8 \x80")
+    assert control.granted_emergency_controls(tmp_path) == frozenset()

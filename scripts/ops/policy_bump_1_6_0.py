@@ -211,7 +211,7 @@ def check() -> tuple[list[str], list[str]]:
     problems: list[str] = []
     policy = (ROOT / POLICY_REL).read_text(encoding="utf-8")
     if f"policy_version: {OLD}\n" not in policy:
-        problems.append(f"{POLICY_REL} is not at {OLD} — already bumped, or a different baseline")
+        problems.append(f"{POLICY_REL} is not at {' or '.join(BASELINES)} — already bumped, or a different baseline")
     if policy.count(MIRROR_TAIL + "\n" + LIFETIME_HEAD) != 1:
         problems.append("the approval_notification_mirror tail / approval_lifetime head anchor is not where 1.5.0 left it")
     if "assistant_schedule:" in policy:

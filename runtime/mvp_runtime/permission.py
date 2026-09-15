@@ -928,6 +928,7 @@ def build_trading_switch_permission_decision(
     *,
     stop_ref: str,
     stop_summary: str,
+    holds_scheduler_stop: bool = True,
     role_permission_ceiling: str = TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
     now: str,
     approval_id: str | None = None,
@@ -986,8 +987,9 @@ def build_trading_switch_permission_decision(
         normalized_parameters=dict(content),
         risk_reason=(
             "Re-arming the trading switch restores an autonomous path that can place real "
-            f"orders. It clears {stop_summary}, and the runtime has ONE stop: this resumes "
-            "every scheduled kind that stop was holding, not only this domain's."
+            f"orders. It clears {stop_summary}"
+            + (", and the runtime has ONE stop: this resumes every scheduled kind that stop was "
+               "holding, not only this domain's." if holds_scheduler_stop else ".")
         ),
         authority_reason="Prime may prepare a trading-switch re-arm for Thomas review.",
         decision_reason=(
@@ -1022,6 +1024,7 @@ def build_nonfinancial_resume_permission_decision(
     *,
     stop_ref: str,
     stop_summary: str,
+    holds_scheduler_stop: bool = True,
     role_permission_ceiling: str = TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
     now: str,
     approval_id: str | None = None,
@@ -1081,11 +1084,13 @@ def build_nonfinancial_resume_permission_decision(
         data_scope=("runtime.control_state", "task.evidence"),
         normalized_parameters=dict(content),
         risk_reason=(
-            "Resuming the runtime restores autonomous model, file and memory work, and the "
-            f"assistant's own dispatch door. It clears {stop_summary}, and the runtime has ONE "
-            "stop: this resumes every scheduled kind that stop was holding. It does NOT re-arm "
-            "live entries — the trading arm is left where the halt put it, and open positions "
-            "close either way."
+            ("Resuming the runtime restores autonomous model, file and memory work, and the "
+             f"assistant's own dispatch door. It clears {stop_summary}, and the runtime has ONE "
+             "stop: this resumes every scheduled kind that stop was holding. It does NOT re-arm "
+             "live entries — the trading arm is left where the halt put it, and open positions "
+             "close either way." if holds_scheduler_stop else
+             f"The runtime is already running: {stop_summary}. This grant resumes nothing and "
+             "does NOT re-arm live entries.")
         ),
         authority_reason="Prime may prepare a non-financial runtime resume for Thomas review.",
         decision_reason=(

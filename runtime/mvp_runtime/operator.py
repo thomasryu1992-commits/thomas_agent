@@ -1586,7 +1586,11 @@ class ProgressNotice:
 # resume would be a halt undone by a message the operator sent *before* the halt, re-read out of
 # order. `approve` is absent because consuming an approval twice is exactly what
 # `one_time_use_required` forbids. `status`/`audit` are absent because they reply, and a reply
-# the next poll sends again is noise the peek has no reason to create.
+# the next poll sends again is noise the peek has no reason to create. `halt_trading` is absent for
+# `resume`'s reason (from a stop it releases one), and for a second one: the peek returns at the
+# first match without claiming, so a /halt_trading queued ahead of a /kill would be re-applied on
+# every peek and hide the kill for the whole analysis (review of H2). During a long analysis the
+# entries-only halt that lands at once is `console_cli halt_trading`; over Telegram, /kill.
 PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 
 

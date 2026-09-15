@@ -36,6 +36,12 @@ Nothing else moves: no `kill_blocks` / `kill_allows` change, no scope, dispositi
 - **Re-arm:** unchanged — `/resume` (authenticated operator), or an approved `enable scope=trading` on
   the switch door, whose ask now says it re-arms live entries.
 - `/pause` and `/kill` keep their meaning.
+- **Not yet on the assistant's side:** the switch door accepts `mode=soft`, but the Hermes shim
+  (`switch_bridge_mcp.py`) exposes only `stop_trading` (kill) and `pause_trading` (pause). A soft-stop
+  tool, its render and the SOUL/skill wording are a follow-up after this grant is applied.
+- **Telegram during a long analysis:** `/halt_trading` is not handled by the operator loop's mid-run
+  peek (it could hide a later `/kill`, and from a stop it releases one), so it lands when the analysis
+  ends. For an immediate entries-only halt then, use `console_cli halt_trading`; over Telegram, `/kill`.
 
 Tests: `tests/test_mvp_runtime_control.py` (soft halt section), `tests/test_mvp_runtime_switch_bridge.py`
 (soft stop), `tests/test_mvp_runtime_crypto_live_route.py::test_a_soft_halted_runtime_manages_open_positions_and_refuses_entries`,

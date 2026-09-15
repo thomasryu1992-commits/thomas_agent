@@ -47,6 +47,17 @@ Append a new entry when a milestone ships, in the same PR.
   missing file now reads ACTIVE and **unarmed**, and every control event records the arm. The
   switch door's re-arm ask against a soft halt says it re-arms instead of "resumes nothing". Not
   pushed to the assistant yet: the shim tool for the soft stop waits for the grant.
+  An independent review (3 lenses, each finding refuted or reproduced) changed four things before
+  merge. **The canary door read `execution_allowed`**, so the halt whose reply said "canary refused"
+  let a real canary through — it now reads `trading_allowed` like the leg and the probe (audit FO-6).
+  **A lost update could release a stop:** the door's soft halt parsed the policy between reading and
+  writing the state, and a `/kill` landing in those milliseconds was overwritten with ACTIVE; the grant
+  is now read first and the halt re-reads just before its write, writing nothing if the state moved (no
+  lock, by this repo's rule for halts). **The incident notice named a verb that refuses under 1.5.0**;
+  `live_route.halt_advice` now names the soft halt only when the committed policy grants it, and kill
+  with its management caveat otherwise, for the board too. And a malformed policy raised instead of
+  granting nothing. Left out on purpose: `/halt_trading` is not peekable mid-analysis, because the peek
+  returns at its first unclaimed match and a queued soft halt would hide a later `/kill`.
 
 - **An entry path no longer measures the daily loss on a ledger that cannot see the loss**
   (hotfix H1, Thomas decision 6, 2026-09-15; `live_pnl.live_risk_snapshot(venue_required=True)`,

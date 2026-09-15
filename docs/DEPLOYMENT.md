@@ -384,7 +384,9 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
 **A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
 protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
 are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management
-running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. A missing control
+running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. Over Telegram it
+lands when a running analysis finishes (the mid-run peek acts only on /kill and /pause); for an
+immediate entries-only halt during one, use the console command. A missing control
 file reads ACTIVE with live entries **unarmed** (Thomas decision 10) — `/resume` arms them.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 

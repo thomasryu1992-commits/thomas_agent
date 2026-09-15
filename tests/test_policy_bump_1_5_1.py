@@ -72,7 +72,17 @@ def test_the_pin_test_the_bump_writes_is_valid_python():
 
 
 def test_the_schedule_bump_applies_over_either_baseline():
-    """1.5.1 first, then 1.6.0: the schedule bump must accept the soft-halt baseline."""
-    bump = _script("policy_bump_1_6_0")
-    assert bump.BASELINES == ("1.5.0", "1.5.1")
-    assert bump.OLD in bump.BASELINES
+    """1.5.1 first, then 1.6.0: the schedule bump must accept the soft-halt baseline, AND every
+    anchor it edits must survive the text 1.5.1 writes (review of H2: this used to assert only the
+    constant, so a later edit could break 1.6.0 --check after 1.5.1 with this test still green)."""
+    schedule = _script("policy_bump_1_6_0")
+    assert schedule.BASELINES == ("1.5.0", "1.5.1")
+    assert schedule.OLD in schedule.BASELINES
+    soft = _script("policy_bump_1_5_1")
+    if f"policy_version: {soft.OLD}\n" not in (ROOT / soft.POLICY_REL).read_text(encoding="utf-8"):
+        return
+    written = _applied_policy_text(soft)
+    assert "policy_version: 1.5.1\n" in written
+    assert written.count(schedule.MIRROR_TAIL + "\n" + schedule.LIFETIME_HEAD) == 1
+    assert written.count(schedule.READ_CLAUSE_COMMENT_OLD) == 1
+    assert "assistant_schedule:" not in written

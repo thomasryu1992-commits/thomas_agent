@@ -243,9 +243,9 @@ def stop_summary(state: control.ControlState) -> str:
         # would change is the arm, and saying "resumes nothing" here would misprice a re-arm.
         placed_at = state.updated_at or "an unrecorded time"
         return (
-            f"live entries halted while the runtime is ACTIVE — set by {state.updated_by} at "
-            f"{placed_at}, stated reason: {state.reason}. A trading grant RE-ARMS live entries; "
-            "a runtime grant changes nothing"
+            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down (set by "
+            f"{state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
+            "RE-ARMS live entries and resumes nothing else; a runtime grant changes nothing"
         )
     if state.mode == control.ACTIVE:
         return (
@@ -376,6 +376,7 @@ def _open_ask(
     )
     decision = build(
         bound, domain, stop_ref=stop_ref(state), stop_summary=stop_summary(state),
+        holds_scheduler_stop=state.mode != control.ACTIVE,
         now=now, repo_root=repo_root,
     )
     request = approval_mod.build_approval_request(decision, now=now)

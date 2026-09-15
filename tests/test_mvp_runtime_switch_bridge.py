@@ -677,4 +677,15 @@ def test_a_trading_ask_against_a_soft_halt_says_it_re_arms(tmp_path):
     state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",
                                  trading_armed=False)
     summary = switch_bridge.stop_summary(state)
-    assert "RE-ARMS" in summary and "변동성" in summary
+    assert "RE-ARMS" in summary and "변동성" in summary and "no scheduler stop" in summary
+
+
+def test_an_ask_against_an_active_runtime_does_not_claim_to_resume_scheduled_work():
+    """Review of H2: the templates said "this resumes every scheduled kind that stop was holding"
+    beside a summary that says there is no stop."""
+    from runtime.mvp_runtime import permission
+
+    for builder in (permission.build_trading_switch_permission_decision,
+                    permission.build_nonfinancial_resume_permission_decision):
+        import inspect
+        assert "holds_scheduler_stop" in inspect.signature(builder).parameters

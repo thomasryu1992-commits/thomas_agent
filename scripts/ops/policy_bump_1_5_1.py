@@ -213,7 +213,7 @@ def check() -> tuple[list[str], list[str]]:
     n_lit = validator.count(f'"policy_version": "{OLD}"') + validator.count(f'"policy_version: {OLD}"')
     if n_lit != 3:
         problems.append(f"{VALIDATOR_REL}: expected 3 version literals, found {n_lit}")
-    if '"one_time_use_required: true",' not in validator:
+    if '            "one_time_use_required: true",\n' not in validator:   # the exact anchor apply() replaces
         problems.append(f"{VALIDATOR_REL}: require_doc_tokens anchor not found")
     plan.append(f"{VALIDATOR_REL}: 3 literals; +{len(NEW_DOC_TOKENS)} doc token")
 

@@ -616,10 +616,23 @@ def test_an_incident_says_so_and_names_the_halt(monkeypatch):
     sent = _notified(record, monkeypatch)
     assert "[LIVE INCIDENT]" in sent[0]
     assert "ENTRY_NAKED_OPEN" in sent[0]
-    # The verb that stops entries while positions stay managed comes first; kill carries its
-    # caveat, because during an incident a kill would also stop the settle/protect step.
-    assert "console_cli halt_trading" in sent[0]
-    assert "console_cli kill stops management too" in sent[0]
+    # The notice names the halt that acts on THIS policy (review of H2), and kill never goes out
+    # without its caveat — during an incident a kill also stops the settle/protect step.
+    assert "console_cli" in sent[0] and "position management" in sent[0]
+
+
+@pytest.mark.parametrize("granted", [True, False])
+def test_the_halt_advice_names_only_a_verb_that_will_act(monkeypatch, granted):
+    from runtime.mvp_runtime import control
+
+    verbs = {"kill", "pause"} | ({control.CMD_HALT_TRADING} if granted else set())
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: frozenset(verbs))
+    advice = live_route.halt_advice()
+    if granted:
+        assert advice.startswith("To stop new entries and keep managing positions: console_cli halt_trading")
+    else:
+        assert "console_cli kill" in advice and "stops position management" in advice
+        assert "acts once policy 1.5.1 grants it" in advice
 
 
 @pytest.mark.parametrize("status", ["HELD", "SETTLED", "BLOCKED", "DISABLED", None])
