@@ -29,8 +29,10 @@ from ..errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_strategy_promotion_permission_decision
+from . import execution_stage as execution_stage_mod
 from . import forward_book, forward_confirmation
 from . import paper as paper_store
+from .execution_stage import StageStatus, resolve_execution_stage
 from . import pool as pool_store
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
@@ -118,6 +120,10 @@ class _GateInput:
     # Occupying pool members, read once per door: the entry bar, the family cap and the
     # LIVE confirmation all key on the same set.
     occupying: list[dict[str, Any]]
+    # The machine's execution stage, resolved by the door from its own state root (PR1c). The
+    # gate below refuses a LIVE arming under a stage that admits no live entry, so an approval
+    # can never install an armed strategy on a machine whose ladder says PAPER.
+    execution_stage: StageStatus
 
     @property
     def occupying_ids(self) -> frozenset[str]:
@@ -171,6 +177,26 @@ def _gate_family_cap(g: _GateInput) -> None:
         e for e in g.occupying if str(e.get("candidate_id")) in selected
     ]
     pool_store.assert_family_cap(g.candidates, occupying_entries=base)
+
+
+def _gate_execution_stage(g: _GateInput) -> None:
+    """Arming LIVE needs the machine to be at the rung a live entry needs (PR1c, Thomas
+    decisions 1/9). It has NO escape flag: the ladder is the one authority for "may this machine
+    open a real position", and an operator flag that waved it through here would be the escape
+    PR1c exists to retire, one door over. Disarming stays free (`scripts/disarm_live_strategies.py`),
+    and a demotion after an arming disarms nothing — it stops the entry at the guard instead."""
+    if g.live_tier != pool_store.LIVE_TIER_LIVE:
+        return
+    if g.execution_stage.allows(execution_stage_mod.PURPOSE_LIVE_ARM):
+        return
+    needs = execution_stage_mod.required_stage(execution_stage_mod.PURPOSE_LIVE_ARM)
+    why = (f"reads {g.execution_stage.stage}" if g.execution_stage.valid
+           else f"reads READ_ONLY ({g.execution_stage.reason_code})")
+    raise ApprovalBlocked(
+        "EXECUTION_STAGE_TOO_LOW_TO_ARM",
+        f"the execution stage {why}; arming a strategy LIVE needs {needs}. Register a transition "
+        "with scripts/register_execution_stage.py (Thomas approves it), or promote at OBSERVATION",
+    )
 
 
 def _gate_live_confirmation(g: _GateInput) -> None:
@@ -241,6 +267,9 @@ PROMOTION_GATES: tuple[PromotionGate, ...] = (
     PromotionGate("allow_cluster_siblings", _gate_cluster_siblings),
     PromotionGate("allow_below_entry_bar", _gate_entry_bar),
     PromotionGate("allow_family_overflow", _gate_family_cap),
+    # No escape flag: the roster loop skips the `escapes` lookup entirely for a gate that names
+    # none, so this one always runs. The stage is not an operator's to wave through.
+    PromotionGate("", _gate_execution_stage),
     PromotionGate("allow_unconfirmed_holdout", _gate_live_confirmation),
     PromotionGate("allow_quarantined_derivation", _gate_derivation),
     PromotionGate("allow_oversized_pool", _gate_pool_size_cap),
@@ -256,6 +285,9 @@ def run_promotion_gates(
     entries: list[Mapping[str, Any]],
     store_root: Path | None,
     escapes: Mapping[str, bool],
+    # No default, like every other fail-closed fact on this path: a door that does not state the
+    # stage must not be able to arm a strategy by omission.
+    execution_stage: StageStatus,
 ) -> None:
     """Run every non-escaped gate on the roster, or raise ``ApprovalBlocked`` on the first
     refusal.
@@ -273,9 +305,22 @@ def run_promotion_gates(
     gate_input = _GateInput(
         candidates=candidates, keep_active=keep_active, live_tier=live_tier,
         entries=entries, store_root=store_root, occupying=occupying,
+        execution_stage=execution_stage,
     )
+    if live_tier == pool_store.LIVE_TIER_LIVE and escapes.get("allow_unconfirmed_holdout", False):
+        # Retired for LIVE (PR1c, audit FO-5): arming real money on evidence that was never
+        # confirmed on unseen data was one operator flag away, with no approval able to see it —
+        # the flag is not in the approval's content hash. It stays available for OBSERVATION,
+        # where nothing it admits can spend money.
+        raise ApprovalBlocked(
+            "LIVE_ARM_ESCAPE_RETIRED",
+            "--allow-unconfirmed-holdout cannot arm a strategy LIVE (retired 2026-09-16, PR1c); "
+            "promote at OBSERVATION, or earn the confirmation on unseen data",
+        )
     for gate in PROMOTION_GATES:
-        if escapes.get(gate.escape_flag, False):
+        # `gate.escape_flag` first: a gate that names no flag cannot be escaped by a caller that
+        # happens to pass `{"": True}`. Structural rather than conventional (PR1c review).
+        if gate.escape_flag and escapes.get(gate.escape_flag, False):
             continue
         try:
             gate.check(gate_input)
@@ -364,6 +409,9 @@ def request_promotion(
             candidates, keep_active=keep_active, live_tier=live_tier, root=store_root,
         ),
         store_root=store_root,
+        # The stage as the machine reads it now. The install door resolves its own, so an ask
+        # approved at a rung the machine has since left refuses there rather than installing.
+        execution_stage=resolve_execution_stage(root, now=now),
         escapes={
             "allow_stale_cost_basis": allow_stale_cost_basis,
             "allow_unrecorded_evidence_depth": allow_unrecorded_evidence_depth,
@@ -399,7 +447,7 @@ def request_promotion(
     permission_decision = build_strategy_promotion_permission_decision(
         bound, candidate_ids=candidate_ids,
         strategy_ids=[str(c.get("strategy_id")) for c in candidates], rule_hashes=rule_hashes,
-        keep_active=keep_active, content_sha256=content, now=now, repo_root=root,
+        keep_active=keep_active, live_tier=live_tier, content_sha256=content, now=now, repo_root=root,
     )
     approval_request = approval_mod.build_approval_request(
         permission_decision, now=now, ttl_minutes=ttl_minutes, repo_root=root,

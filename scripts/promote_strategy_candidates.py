@@ -28,8 +28,14 @@ C8b wiring (approved by Thomas 2026-07-22): promotion goes through the R9 ask fi
 ``--keep-active`` keeps the current pool members and adds the selected candidates;
 without it the selected candidates REPLACE the pool (the mode is part of the approval's
 content hash — an approval for one mode cannot execute the other). ``--without-approval``
-is the explicit legacy escape (pre-C8b posture); which door was used is recorded on the
-control ledger either way.
+is the explicit legacy escape (pre-C8b posture) and works for OBSERVATION only; which door
+was used is recorded on the control ledger either way.
+
+**Arming LIVE (PR1c, 2026-09-16).** ``--live-tier LIVE`` installs strategies that may open real
+positions, so it takes Thomas's approval every time: ``--without-approval`` and
+``--allow-unconfirmed-holdout`` are refused for it, the ask says plainly that it arms real money,
+and the machine's execution stage must already admit a live entry (LIVE_AUTONOMOUS). Disarming is
+the reverse and needs nothing: ``scripts/disarm_live_strategies.py``.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
+from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
@@ -156,6 +163,17 @@ def run_promotion(
             "BLOCKED: promotion needs --approval-id (ask first with --request) or the "
             "explicit --without-approval escape"
         )
+    # Retired for the LIVE tier (PR1c, audit FO-5, 2026-09-16): the escape existed for the
+    # pre-C8b posture, when a pool change was a paper change. Arming a strategy for real money
+    # through it meant no Thomas record existed for the one decision that spends money — and the
+    # ledger's `reviews_skipped` said so only afterwards. OBSERVATION keeps it: nothing it
+    # installs can open a position.
+    if without_approval and approval_id is None and live_tier == pool_store.LIVE_TIER_LIVE:
+        raise SystemExit(
+            "BLOCKED LIVE_ARM_ESCAPE_RETIRED: --without-approval cannot arm a strategy LIVE "
+            "(retired 2026-09-16, PR1c); ask with --request --live-tier LIVE and confirm with "
+            "--approval-id, or promote at OBSERVATION"
+        )
     verified_approval = None
     if approval_id is not None:
         approval_store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
@@ -256,6 +274,10 @@ def run_promotion(
         promotion_mod.run_promotion_gates(
             candidates, keep_active=keep_active, live_tier=live_tier,
             entries=entries, store_root=root,
+            # Resolved here, from this machine's state root, rather than trusted from the ask: an
+            # approval won at LIVE_AUTONOMOUS must not install on a machine that has since been
+            # demoted (a demotion needs no approval and is meant to apply at once).
+            execution_stage=resolve_execution_stage(root, now=now),
             escapes={
                 "allow_stale_cost_basis": allow_stale_cost_basis,
                 "allow_unrecorded_evidence_depth": allow_unrecorded_evidence_depth,
@@ -358,7 +380,10 @@ def run_promotion(
                 ("cluster_siblings", allow_cluster_siblings),
                 ("observation_entry_bar", allow_below_entry_bar),
                 ("family_cap", allow_family_overflow),
-                ("live_confirmation", allow_unconfirmed_holdout and live_tier == "LIVE"),
+                # `live_confirmation` is gone from this list: the gate it named runs for LIVE
+                # alone, and since 2026-09-16 (PR1c) the escape cannot reach a LIVE install, so
+                # the entry could only ever be False. A review that cannot be skipped is not a
+                # skipped review.
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
@@ -391,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reason", help="operator reason (the report)")
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
     parser.add_argument("--without-approval", action="store_true",
-                        help="explicit legacy escape: promote without an approval record (audited as such)")
+                        help="explicit legacy escape, OBSERVATION only: promote without an approval "
+                             "record (audited as such). Refused with --live-tier LIVE")
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
@@ -406,9 +432,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: let a strategy_family hold more than its two "
                              "occupied slots")
     parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
-                        help="explicit escape: arm LIVE although no confirmation was earned on "
-                             "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
-                             "forward-book record) — the condition #648 disarmed the pool for")
+                        help="explicit escape, OBSERVATION only since 2026-09-16: promote a "
+                             "candidate with no confirmation earned on unseen data (neither a "
+                             "CONFIRMED holdout nor a FORWARD_CONFIRMED forward-book record). It "
+                             "can no longer arm LIVE — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")

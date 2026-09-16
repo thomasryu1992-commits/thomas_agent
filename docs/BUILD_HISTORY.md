@@ -101,6 +101,36 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **Arming a strategy for real money is Thomas's, every time** (crypto PR1c, Thomas decisions 5 and
+  10, 2026-09-16; `permission.py`, `crypto/promotion.py`, `scripts/promote_strategy_candidates.py`,
+  `scripts/disarm_live_strategies.py`). The execution-authority audit found three ways the LIVE tier
+  was reached without Thomas seeing what he was answering, and all three are closed here.
+
+  `--without-approval` promoted with no approval record at all — the pre-C8b escape, written when a
+  pool change was a paper change. It is refused for `--live-tier LIVE` and kept for OBSERVATION,
+  which cannot open a position. `--allow-unconfirmed-holdout` armed on evidence never confirmed on
+  unseen data, and no approval could see it because the escapes are deliberately outside the
+  approval's content hash; it is refused for LIVE at the shared gate roster, so both the ask and the
+  install say so. And the ask Thomas did answer described every LIVE promotion as a paper-stage
+  change with "no order capability, no live/testnet effect" — the builder was never told the tier.
+  It is now a required argument: a LIVE ask is RED, targets `active_strategy_pool:live`, carries the
+  tier in the signed content, says plainly that it arms real money and what still has to hold for an
+  order to go out, and is priced as arming in `format_request`.
+
+  **The ladder gates arming too.** A LIVE promotion needs the machine's execution stage to admit a
+  live entry (`LIVE_AUTONOMOUS`), checked at the ask and re-resolved at the install from the
+  machine's own state root — an approval won at a rung the machine has since left installs nothing,
+  because a demotion needs no approval and is meant to apply at once. That gate is the one entry on
+  the roster with **no escape flag**: every other gate is an operator call, and this one is the
+  ladder.
+
+  **Disarming needs nothing.** `scripts/disarm_live_strategies.py` moves named strategies (or every
+  armed one) back to OBSERVATION at once, with no approval, and records who and why. It cannot arm
+  anything: `pool.disarm_live_tier` takes no target tier, so the property is in the signature rather
+  than in this door's care. A disarmed strategy keeps its slot and keeps papering; positions it
+  already holds are settled, protected and closed exactly as before, which is the same asymmetry the
+  stage ladder runs on — a stop that needs an approval is not a stop.
+
 - **The entry doors read the execution stage** (crypto PR1b, Thomas decisions 1/8/9, 2026-09-16;
   `crypto/live_order.py`, `crypto/live_entry.py`, `crypto/live_route.py`, `crypto/live_readiness.py`,
   `scripts/run_slippage_probe.py`). PR1a registered the rung and reported it; nothing refused on it.
