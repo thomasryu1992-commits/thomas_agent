@@ -104,6 +104,9 @@ EXIT_UNSETTLEABLE = "EXIT_UNSETTLEABLE"        # the venue closed it and cannot 
 # Reason codes.
 NOT_READY = "LIVE_ENTRY_NOT_READY"
 NO_GOVERNANCE = "LIVE_ORDER_NO_GOVERNANCE_RECORD"
+# PR2a: the two durable facts an entry now spends BEFORE it is sent. No store, no order.
+NO_ENTRY_MARKS = "LIVE_ENTRY_NO_MARK_STORE"
+NO_ORDER_COUNTER = "LIVE_ENTRY_NO_ORDER_COUNTER"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
 BRACKET_FAILED = "LIVE_BRACKET_FAILED"
 NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
@@ -289,6 +292,51 @@ def _persist_failure_reason(exc: Exception) -> str:
 
 
 # --- the bracket ---------------------------------------------------------------
+
+def bracket_error_detail(entry: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    """What the venue said — or did not say — about each protective leg that failed.
+
+    `error` alone is the same string for every rejection there is, and reading only it was what
+    made the first two naked entries uninvestigable once the container holding the logs was
+    recreated. `error_detail` (PR #426) is the venue's numeric code and text, carried onto the
+    breaker record here because that record outlives the cycle, the logs and the container.
+
+    **A leg fails in two ways and only one of them talks.** A rejection carries a code and a
+    message. A leg that never came to rest carries nothing at all — no error, no exchange id,
+    just a status that is not `NEW`. The first version of this function looked only for an
+    error, so the third live failure (2026-08-03T04:28:58Z, the first one after #447 moved
+    conditional orders to the Algo API) recorded `last_error_detail: null`: the breaker counted
+    it and could not say one word about it, which is the same gap #426 closed for the other
+    half. The cycle record still held `placed: False, status: NOT_FOUND`. The durable record
+    that exists to outlive the cycle did not.
+
+    Membership is decided by `BRACKET_RESTING_STATUSES` rather than by looking for an
+    error, because that frozenset is what this module itself uses to decide the bracket is in
+    place. One predicate, one answer — a second definition of "this leg is fine" is how two
+    files drift into disagreeing about whether a position is protected. Moved here from
+    `live_route` in PR2a, when the probe door started counting its stop failures on the same
+    breaker.
+    """
+    legs = entry.get("bracket")
+    if not isinstance(legs, list):
+        return None
+    failed = []
+    for leg in legs:
+        if not isinstance(leg, Mapping):
+            continue
+        spoke = bool(leg.get("error") or leg.get("error_detail"))
+        if leg.get("status") in BRACKET_RESTING_STATUSES and not spoke:
+            continue
+        failed.append({
+            "leg": leg.get("leg"),
+            "order_type": leg.get("order_type"),
+            "placed": leg.get("placed"),
+            "status": leg.get("status"),
+            "error": leg.get("error"),
+            "error_detail": leg.get("error_detail"),
+        })
+    return failed or None
+
 
 def build_bracket_intent(
     *,
@@ -535,6 +583,7 @@ def execute_live_entry(
     adapter: Any,
     position_store: Any,
     counter: Any = None,
+    entry_marks: Any = None,
     governance: Mapping[str, Any] | None = None,
     gate_open: bool,
     limits: Any,
@@ -558,6 +607,11 @@ def execute_live_entry(
     order with no governance record cannot satisfy it. Passing ``None`` therefore refuses rather
     than sending an unaudited order. (It is a keyword with a default only so the refusal is a
     reported ``ENTRY_REFUSED`` rather than a TypeError at the call site.)
+
+    ``entry_marks`` (``live_order.select_live_entry_marks``) and ``counter`` are required to send
+    for the same reason (PR2a): the bar is claimed and the day's order slot reserved before the
+    order leaves, each under its own lock, so neither a second entry on one bar nor a second
+    process under the daily cap can get an order out. A refusal from either sends nothing.
 
     Returns a result record. ``position`` is non-None only on ``ENTRY_OPENED``.
     """
@@ -593,20 +647,36 @@ def execute_live_entry(
     intent = decision["intent"]
     bracket = decision["bracket"]
 
-    # 1. The entry. The counter is incremented for an ambiguous submit too — an order that may
-    #    have reached the venue must consume daily budget, or a flapping connection could spend
-    #    the cap many times over (LiveOrderCounter's own rule).
+    # 0. Spend the bar, then the day's slot — both before the send (PR2a). Nothing has left yet,
+    #    so any failure here, typed or not, is a refusal: the breadth is `_persist_failure_reason`'s,
+    #    pointed the safe way. The bar goes first: a claim that is then refused a slot costs a bar
+    #    on a day that has no orders left, and the reverse would spend a slot on a bar that
+    #    already had its order.
+    if entry_marks is None:
+        result["reason_codes"] = [NO_ENTRY_MARKS]
+        return result
+    if counter is None:
+        result["reason_codes"] = [NO_ORDER_COUNTER]
+        return result
+    entry_bar = decision.get("entry_bar") if isinstance(decision.get("entry_bar"), Mapping) else {}
+    try:
+        entry_marks.claim_bar(
+            symbol=entry_bar.get("symbol"), timeframe=entry_bar.get("timeframe"),
+            bar_time=entry_bar.get("bar_time"),
+        )
+        # The slot is reserved even if the send below fails: an order that may have reached the
+        # venue must consume daily budget, or a flapping connection could spend the cap many
+        # times over (LiveOrderCounter's own rule, now applied before the send).
+        counter.reserve_submission(limit=int(getattr(limits, "max_daily_order_count", 0) or 0))
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        result["reason_codes"] = [_persist_failure_reason(exc)]
+        return result
+
+    # 1. The entry.
     entry = submit_and_reconcile(
         intent, adapter=adapter, guard_verdict=guard, now=now, timeout_seconds=timeout_seconds
     )
     result["entry"] = entry
-    if counter is not None:
-        try:
-            counter.record_submission()
-        except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
-            # The order is already at the venue; an escape here would abort BEFORE the bracket
-            # is placed or a naked fill is closed, which is the worst point in the whole leg.
-            result["reason_codes"].append(_persist_failure_reason(exc))
 
     filled_qty = _f(entry["fill"].get("executed_qty")) or 0.0
     fill_price = _f(entry["fill"].get("avg_price")) or 0.0
@@ -1592,6 +1662,7 @@ __all__ = [
     "PROTECTION_UNKNOWN",
     "UNPROTECTED",
     "VENUE_CLOSE_UNSETTLEABLE",
+    "bracket_error_detail",
     "build_bracket_intent",
     "cancel_bracket_legs",
     "execute_live_entry",

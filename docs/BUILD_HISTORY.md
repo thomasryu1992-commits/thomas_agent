@@ -101,6 +101,39 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **A live entry spends its bar and its day's slot before it is sent** (crypto PR2a, Thomas
+  decisions 15 and 16, 2026-09-16; `crypto/live_order.py`, `crypto/live_entry.py`,
+  `crypto/live_leg.py`, `crypto/live_route.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`).
+  Four hazards on the real-money entry paths, found by the PR2 investigation, none of which had
+  fired yet.
+
+  **One entry per context per bar, and paper's stop-loss cooldown.** Both rules live inside
+  `paper.run_paper_update` below the line where the route is published, so the live leg received
+  the same ENTRY_CANDIDATE on every tick of the 15-minute fan-out. The per-symbol cap hid that
+  while a position was open; once the venue's stop closed it inside the bar, the next tick settled
+  and the one after entered again — under a new client order id, because the id was keyed on the
+  wall clock. The id is now keyed on the bar (decision 16), and a durable per-venue mark store
+  (`live_entry_marks.json`, behind the live switch) holds the last bar each context sent on and a
+  cooldown bound that a settled `stop_loss` writes for the position's own context. Paper marks
+  every evaluation; live marks only when an order is about to leave, so a transient refusal can
+  retry later in the bar — no order has carried the bar's id yet. After a send the bar is spent:
+  the retry would reuse the id, and the venue answering with the old filled order would book a
+  position that no longer exists. A corrupt file refuses entries, the opposite of paper's marks on
+  purpose; it is read after settle/protect, so it can never hold a position open.
+
+  **The daily cap is reserved, not counted afterwards.** The guard judged a count read earlier in
+  the leg and the counter was written after the send, so the scheduler's leg and an operator's
+  probe could both pass the cap. `reserve_submission` is the locked check-and-increment, taken
+  before the send; a failure there is a refusal, where the old post-send write had to be a
+  reason code at the worst escape point in the leg.
+
+  **The probe asks whether the symbol is free.** The live book is one record per symbol and the
+  venue nets per symbol, so a probe on a symbol holding an autonomous position would have
+  overwritten that position's record and merged into its exposure. It now refuses on the facts the
+  autonomous entry is judged on — reconciliation and LP5's caps — and a probe stop that will not
+  rest counts on the bracket breaker. A stop that does rest never clears the streak: it proves the
+  stop leg only, not the target leg the autonomous bracket also needs.
+
 - **The testnet cycle became the entry condition for the live rung** (crypto PR1d-2, Thomas
   decisions 2 and 11, 2026-09-16; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1`,
   `scripts/register_execution_stage.py`, `permission.py`, `crypto/live_readiness.py`). The climb to

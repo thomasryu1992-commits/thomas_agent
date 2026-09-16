@@ -73,6 +73,11 @@ def _position(symbol="BTCUSDT", side="LONG", quantity=0.001, notional=60.0):
 
 ALLOWING_VERDICT = {"allow_new_position": True, "problems": []}
 
+# The bar a decision is evaluated on — the feature row's `timestamp`, a bar OPEN time — and the
+# live entry marks as a machine with no entry history reads them (PR2a).
+BAR = "2026-07-25T00:00:00Z"
+NO_MARKS = {"version": "live_entry_marks.v1", "entered": {}, "cooldown": {}}
+
 
 def _stage(stage="LIVE_AUTONOMOUS", valid=True, reason=None):
     """The execution stage the caller resolved, as the doors receive it (PR1b). The helpers default
@@ -118,6 +123,8 @@ def _plan(**kw):
             {str((plan or {}).get("strategy_id") or "")},
         ),
         execution_stage=kw.pop("execution_stage", _stage()),
+        entry_bar_time=kw.pop("entry_bar_time", BAR),
+        entry_marks=kw.pop("entry_marks", NO_MARKS),
         **kw,
     )
     return le.plan_live_entry(**args)
@@ -252,6 +259,103 @@ def test_the_bracket_failure_count_has_no_default():
 
     parameter = inspect.signature(le.plan_live_entry).parameters["bracket_failures_consecutive"]
     assert parameter.default is inspect.Parameter.empty
+
+
+# --- one entry per context per bar, and the stop-loss cooldown (PR2a) --------------------------
+
+def _marks(*, entered=None, cooldown=None):
+    return {**NO_MARKS, "entered": dict(entered or {}), "cooldown": dict(cooldown or {})}
+
+
+def test_a_bar_this_context_already_sent_on_refuses_the_entry():
+    """The hazard: a stop closed the position inside the bar, and the next tick of the 15-minute
+    fan-out was handed the same ENTRY_CANDIDATE for the same bar."""
+    decision = _plan(entry_marks=_marks(entered={"BTCUSDT__1d": BAR}))
+    assert decision["status"] == le.STATUS_REFUSED
+    assert decision["reasons"] == [le.BAR_ALREADY_ENTERED]
+    assert decision["entry_holds"] == [le.BAR_ALREADY_ENTERED]
+
+
+def test_an_older_bar_than_the_last_one_sent_on_is_refused_too():
+    """Out-of-order data must not reopen a spent bar — `routing_marks.is_fresh`'s rule."""
+    decision = _plan(entry_marks=_marks(entered={"BTCUSDT__1d": "2026-07-26T00:00:00Z"}))
+    assert le.BAR_ALREADY_ENTERED in decision["reasons"]
+
+
+def test_the_next_bar_enters_again():
+    decision = _plan(entry_marks=_marks(entered={"BTCUSDT__1d": "2026-07-24T00:00:00Z"}))
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_a_bar_mark_belongs_to_its_own_context():
+    """Paper's rule is per (symbol, timeframe), and so is this one: another timeframe's bar, or
+    another symbol's, holds nothing here."""
+    decision = _plan(entry_marks=_marks(entered={"BTCUSDT__4h": BAR, "ETHUSDT__1d": BAR}))
+    assert decision["status"] == le.STATUS_READY
+
+
+def test_a_stop_loss_cooldown_holds_every_bar_before_its_bound_and_not_the_bound():
+    held = _plan(entry_marks=_marks(cooldown={"BTCUSDT__1d": "2026-07-26T00:00:00Z"}))
+    assert held["reasons"] == [le.STOP_LOSS_COOLDOWN]
+    free = _plan(entry_marks=_marks(cooldown={"BTCUSDT__1d": BAR}))
+    assert free["status"] == le.STATUS_READY
+
+
+def test_both_holds_are_reported_at_once():
+    """The accumulating doors' rule: an operator sees every reason at once."""
+    decision = _plan(entry_marks=_marks(entered={"BTCUSDT__1d": BAR},
+                                        cooldown={"BTCUSDT__1d": "2026-07-27T00:00:00Z"}))
+    assert decision["reasons"] == [le.BAR_ALREADY_ENTERED, le.STOP_LOSS_COOLDOWN]
+
+
+@pytest.mark.parametrize("marks", [None, "not-a-mapping"])
+def test_marks_the_leg_could_not_read_refuse_the_entry(marks):
+    decision = _plan(entry_marks=marks)
+    assert decision["reasons"] == [le.MARKS_UNKNOWN]
+
+
+@pytest.mark.parametrize("bar", [None, "", "2026-07-25", "2026-07-25T00:00:00+00:00", 1753401600])
+def test_a_bar_that_cannot_be_named_refuses_the_entry(bar):
+    """An unidentifiable bar cannot be claimed, so it cannot be entered on: the mark compares
+    fixed-form strings, and anything else compares in whatever direction it happens to."""
+    decision = _plan(entry_bar_time=bar)
+    assert decision["reasons"] == [le.BAR_UNKNOWN]
+
+
+def test_a_plan_with_no_timeframe_names_no_context_and_refuses():
+    decision = _plan(plan={**PLAN, "timeframe": None})
+    assert le.BAR_UNKNOWN in decision["reasons"]
+
+
+def test_no_route_stays_no_route_whatever_the_bar_facts():
+    """No route is still NO_ROUTE, never a bar refusal — the ordinary case must not be buried."""
+    decision = _plan(plan=None, entry_marks=None, entry_bar_time=None)
+    assert decision["status"] == le.STATUS_NO_ROUTE
+    assert decision["reasons"] == [le.NO_PLAN]
+
+
+@pytest.mark.parametrize("name", ["entry_bar_time", "entry_marks"])
+def test_the_bar_facts_have_no_default(name):
+    parameter = inspect.signature(le.plan_live_entry).parameters[name]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_the_order_identity_is_the_bar_not_the_wall_clock():
+    """Decision 16: two attempts on one bar are one order to the venue. The id used to be keyed
+    on `created_at`, so every tick minted a new one."""
+    first = _plan(now="2026-07-25T12:00:00Z")
+    later = _plan(now="2026-07-25T12:15:00Z")
+    next_bar = _plan(now="2026-07-26T00:15:00Z", entry_bar_time="2026-07-26T00:00:00Z")
+    assert first["intent"]["candle_time"] == BAR
+    assert first["intent"]["client_order_id"] == later["intent"]["client_order_id"]
+    assert next_bar["intent"]["client_order_id"] != first["intent"]["client_order_id"]
+
+
+def test_a_ready_decision_names_the_bar_the_leg_must_claim():
+    decision = _plan()
+    assert decision["entry_bar"] == {
+        "context_key": "BTCUSDT__1d", "symbol": "BTCUSDT", "timeframe": "1d", "bar_time": BAR,
+    }
 
 
 def test_a_drifted_book_refuses_the_entry():

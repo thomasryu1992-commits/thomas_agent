@@ -165,6 +165,13 @@ PROBE_NOTIONAL_ABOVE_PLAN = "PROBE_NOTIONAL_ABOVE_PLAN"
 PROBE_ENTRY_NOT_CONFIRMED = "PROBE_ENTRY_NOT_CONFIRMED"
 PROBE_STOP_NOT_PLACED = "PROBE_STOP_NOT_PLACED"
 PROBE_UNSETTLED = "PROBE_UNSETTLED"
+# PR2a. The live book is one record per symbol and the venue nets per symbol, so a probe on a
+# symbol that already holds a live position would overwrite that position's record and merge
+# into its exposure — refused, with the book/venue disagreements and LP5's caps as well.
+PROBE_POSITION_CONFLICT = "PROBE_POSITION_CONFLICT"
+# The day's order slot could not be reserved before the send (the cap is full, or the counter
+# could not be written); nothing was sent.
+PROBE_ORDER_SLOT_REFUSED = "PROBE_ORDER_SLOT_REFUSED"
 
 # The closed key sets `validate_plan` holds records to. Additive fields are a plan
 # version bump, never a silent widening — an unknown key is indistinguishable from

@@ -81,6 +81,7 @@ from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
     evaluate_live_order_guard,
     render_guard_text,
     resolve_live_order_limits,
+    select_live_bracket_breaker,
     select_live_order_counter,
 )
 from runtime.mvp_runtime.crypto.live_pnl import (  # noqa: E402
@@ -94,7 +95,11 @@ from runtime.mvp_runtime.crypto.live_pnl import (  # noqa: E402
 from runtime.mvp_runtime.crypto.live_position import (  # noqa: E402
     build_live_position,
     compute_open_notional_usdt,
+    entry_allowed,
+    list_open_live_positions,
+    live_capacity,
     load_open_live_position,
+    reconcile_positions,
     select_live_position_store,
 )
 from runtime.mvp_runtime.crypto.market_data import (  # noqa: E402
@@ -183,6 +188,21 @@ def _audit_order(governance, submit_result, *, guard, now, root) -> str | None:
             governance, submit_result, guard_verdict=guard, now=now, repo_root=root,
         )
         LedgerStore.default(root).append_audit_events([event])
+        return None
+    except Exception as exc:  # noqa: BLE001 — past the point of no return; report, never raise
+        return getattr(exc, "reason_code", type(exc).__name__)
+
+
+def _record_stop_failure(placement, *, symbol: str, status: str, now: str, root) -> str | None:
+    """Count a probe stop that would not rest on the bracket breaker (PR2a). Best-effort past
+    the venue, like the audit above: the entry is already closed, so a failure here is reported
+    and never allowed to read as if the order had not happened."""
+    try:
+        select_live_bracket_breaker(now=now, root=root).record_failure(
+            symbol=symbol, status=status, at=now,
+            reason_codes=[probe.PROBE_STOP_NOT_PLACED],
+            error_detail=live_leg.bracket_error_detail({"bracket": [placement]}),
+        )
         return None
     except Exception as exc:  # noqa: BLE001 — past the point of no return; report, never raise
         return getattr(exc, "reason_code", type(exc).__name__)
@@ -440,6 +460,22 @@ def run_fire(
         )
     open_notional = compute_open_notional_usdt(snapshot, at_cap=limits.max_open_notional_usdt)
 
+    # PR2a: the symbol must be free, on the facts the autonomous entry is judged on (`live_entry`
+    # doors 3 and 4). The book is one record per symbol and the venue nets per symbol, so a probe
+    # on a symbol holding a live position would overwrite that position's record and merge into
+    # its exposure — and a book the venue disagrees with is a position nobody is accounting for.
+    local_positions = list_open_live_positions(root)
+    reconciliation = reconcile_positions(local_positions, snapshot, now=now)
+    capacity = live_capacity(local_positions, symbol=symbol)
+    if not entry_allowed(reconciliation, symbol) or not capacity["allowed"]:
+        drift = sorted(set(reconciliation.get("reasons") or ()))
+        raise _Refusal(
+            probe.PROBE_POSITION_CONFLICT,
+            f"{symbol} cannot take a probe now: book {reconciliation.get('status')}"
+            + (f" ({', '.join(drift)})" if drift else "")
+            + (f"; caps {', '.join(capacity['blocks'])}" if capacity["blocks"] else ""),
+        )
+
     # §4-4: the breakers apply to probes unchanged. The daily-loss figure is the venue's
     # own (stricter of calendar day / rolling 24h), the bracket breaker is the counter the
     # naked-entry loop latches, and the R-based guard reads the same live rows the cycle
@@ -525,7 +561,21 @@ def run_fire(
         intent, purpose=live_governance.PURPOSE_CANARY, now=now, repo_root=root,
     )
 
-    # 1. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
+    # 1. Reserve the day's order slot BEFORE anything is claimed or sent (PR2a). The guard above
+    #    judged a count read earlier, and the scheduler's live leg spends the same cap from
+    #    another process; the reservation is the locked check-and-increment. It stays spent if
+    #    the send fails — an ambiguous submit may have reached the venue.
+    counter = select_live_order_counter(now=now, root=root)
+    try:
+        counter.reserve_submission(limit=limits.max_daily_order_count)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal(
+            probe.PROBE_ORDER_SLOT_REFUSED,
+            f"no order slot reserved ({getattr(exc, 'reason_code', type(exc).__name__)}); "
+            "nothing was sent",
+        ) from exc
+
+    # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
     #    which is the honest state (an order may be at the venue) and what keeps
     #    one-probe-at-a-time enforceable across processes.
     plan = probe.mark_cell(
@@ -536,20 +586,10 @@ def run_fire(
 
     position_store = select_live_position_store(now=now, root=root)
     ledger = select_live_ledger(now=now, root=root)
-    counter = select_live_order_counter(now=now, root=root)
-    counter_error = None
-    try:
-        entry = live_execution.submit_and_reconcile(
-            intent, adapter=adapter, guard_verdict=verdict, now=now,
-            timeout_seconds=timeout_seconds,
-        )
-    finally:
-        # In `finally`: an ambiguous submit may have reached the venue and must consume
-        # daily budget (carried over verbatim from the removed canary door).
-        try:
-            counter.record_submission()
-        except Exception as exc:  # noqa: BLE001 — past the venue; report, never raise
-            counter_error = getattr(exc, "reason_code", type(exc).__name__)
+    entry = live_execution.submit_and_reconcile(
+        intent, adapter=adapter, guard_verdict=verdict, now=now,
+        timeout_seconds=timeout_seconds,
+    )
     audit_error = _audit_order(governance, entry, guard=verdict, now=now, root=root)
 
     fill = entry.get("fill") or {}
@@ -596,7 +636,7 @@ def run_fire(
         )
         return EXIT_BLOCKED
 
-    # 2. The resting stop, through the same leg placement the autonomous bracket uses.
+    # 3. The resting stop, through the same leg placement the autonomous bracket uses.
     # Width from the plan, as above — hung on the ACTUAL fill.
     trigger = probe.probe_stop_price(
         fill_price, filters.tick_size, stop_bps=float(plan["params"]["stop_bps"]))
@@ -622,6 +662,20 @@ def run_fire(
             gate_open=True, limits=limits, close_reason=live_leg.CLOSE_REASON_NAKED,
             now=timeutil.utc_now_iso(), timeout_seconds=timeout_seconds,
         )
+        # A stop that would not rest is the failure the bracket breaker counts, whichever door
+        # placed it (PR2a) — the probe hangs its stop through the same placement, so a broken
+        # stop path is as broken here as for an autonomous entry. Failures only: a probe's stop
+        # that DOES rest proves the stop leg alone, not the target leg the autonomous bracket
+        # also needs, so it never clears a streak.
+        breaker_error = _record_stop_failure(
+            placement, symbol=symbol,
+            status=(live_leg.ENTRY_NAKED_CLOSED if closed["status"] == live_leg.EXIT_CLOSED
+                    else live_leg.ENTRY_NAKED_OPEN),
+            now=now, root=root,
+        )
+        if breaker_error:
+            sys.stderr.write(f"BREAKER   : NOT recorded ({breaker_error}) — the stop failure is "
+                             "missing from the bracket-failure streak\n")
         _fail_cell(f"{probe.PROBE_STOP_NOT_PLACED}: {placement.get('error_detail') or placement.get('error')}")
         if closed["status"] != live_leg.EXIT_CLOSED:
             sys.stderr.write(
@@ -634,7 +688,7 @@ def run_fire(
         )
         return EXIT_BLOCKED
 
-    # 3. Book the position from the ACTUAL fill, stop id attached, so the ordinary live
+    # 4. Book the position from the ACTUAL fill, stop id attached, so the ordinary live
     #    machinery (reconcile / settle / protect) owns it if this process dies.
     position = build_live_position(
         symbol=symbol, direction=probe.PROBE_DIRECTION, quantity=filled_qty,
@@ -657,12 +711,10 @@ def run_fire(
 
     print(f"probe     : {symbol} LONG {filled_qty} @ {fill_price} (notional {notional} USDT), "
           f"stop resting at {trigger} ({placement['client_order_id']})")
-    if counter_error:
-        print(f"DAILY CAP : NOT counted ({counter_error}) — the order IS placed")
     if audit_error:
         print(f"AUDIT     : NOT recorded ({audit_error}) — the order IS placed")
 
-    # 4. Wait for the venue: stop fill -> settle through #683; timeout -> market close.
+    # 5. Wait for the venue: stop fill -> settle through #683; timeout -> market close.
     deadline = clock() + float(plan["params"]["timeout_minutes"]) * 60.0
     account_feed = select_account_feed(now=now, root=root)
     while clock() < deadline:

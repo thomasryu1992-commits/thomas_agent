@@ -78,6 +78,7 @@ def test_the_default_is_mainnet_everywhere_so_an_existing_caller_moves_nothing()
     reading and writing exactly what they did."""
     defaults = {
         "count_today": inspect.signature(live_order.count_today).parameters["venue"],
+        "read_live_entry_marks": inspect.signature(live_order.read_live_entry_marks).parameters["venue"],
         "read_bracket_failures": inspect.signature(live_order.read_bracket_failures).parameters["venue"],
         "live_positions_dir": inspect.signature(live_position.live_positions_dir).parameters["venue"],
         "live_position_path": inspect.signature(live_position.live_position_path).parameters["venue"],
@@ -90,6 +91,7 @@ def test_the_default_is_mainnet_everywhere_so_an_existing_caller_moves_nothing()
         assert param.default == VENUE_MAINNET, name
         assert param.kind is inspect.Parameter.KEYWORD_ONLY, name
     for store in (live_order.LiveOrderCounter, live_order.LiveBracketFailureBreaker,
+                  live_order.LiveEntryMarks,
                   live_position.RealLivePositionStore, live_pnl.RealLiveLedger):
         assert inspect.signature(store.__init__).parameters["venue"].default == VENUE_MAINNET, store.__name__
 

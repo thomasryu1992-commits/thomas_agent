@@ -334,11 +334,15 @@ def test_every_caller_of_the_venue_also_counts_the_order():
     from runtime.mvp_runtime.paths import repo_root
 
     root = Path(repo_root())
-    doors = [
-        # The probe fire door (proposal §5, 2026-08-11): counts in a `finally` around the
-        # submit, the posture the canary door had.
+    # The two mainnet doors reserve their slot BEFORE the send (PR2a) — the probe fire door
+    # (proposal §5, 2026-08-11) and the autonomous leg — so a count read earlier cannot let two
+    # processes past the cap together.
+    reserving = [
         root / "scripts" / "run_slippage_probe.py",
         root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
+    ]
+    doors = [
+        *reserving,
         # The signed testnet cycle (PR1d-1, 2026-09-16): same posture, and it counts on the
         # TESTNET venue's own counter (PR1d-0), which is the point — a rehearsal must not spend
         # the live daily cap, and the cap must still bound the rehearsal.
@@ -361,9 +365,27 @@ def test_every_caller_of_the_venue_also_counts_the_order():
         "max_daily_order_count silently stops bounding anything."
     )
     for path in doors:
-        assert "record_submission()" in path.read_text(encoding="utf-8"), (
+        source = path.read_text(encoding="utf-8")
+        assert "record_submission()" in source or "reserve_submission(" in source, (
             f"{path.name} can place a live order but never records it on the daily counter"
         )
+    # A reservation only bounds anything if it happens first: in the function that sends the
+    # entry, the slot is taken on an earlier line than the submit.
+    import ast
+
+    def _calls(node, name):
+        return [c.lineno for c in ast.walk(node) if isinstance(c, ast.Call)
+                and getattr(c.func, "attr", getattr(c.func, "id", None)) == name]
+
+    for path in reserving:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        senders = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                   and _calls(f, "reserve_submission") and _calls(f, "submit_and_reconcile")]
+        assert senders, f"{path.name} no longer reserves its slot in the function that sends"
+        for function in senders:
+            assert min(_calls(function, "reserve_submission")) < min(_calls(function, "submit_and_reconcile")), (
+                f"{path.name}:{function.name} sends before it reserves the day's order slot"
+            )
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):
