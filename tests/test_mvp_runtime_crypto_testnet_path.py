@@ -440,3 +440,34 @@ def test_an_earlier_bad_row_does_not_stop_the_door_recording_this_one(tmp_path):
     assert "cyc_new" in path.read_text(encoding="utf-8")
     with pytest.raises(ToolError):
         testnet_evidence.read_cycles(tmp_path)
+
+
+
+def test_the_entry_and_the_exit_are_two_orders_to_the_venue(tmp_path, monkeypatch):
+    """Found by the PR2 investigation (2026-09-16): the entry and the exit hashed the same identity
+    inputs into ONE client order id. The venue refuses a reused id (-4116), so the reconcile would
+    read the ENTRY back as the exit and no cycle could ever complete — the LIVE climb's evidence
+    path, broken at the source, and hidden because the inert adapter overwrote the entry."""
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    sent: list[dict] = []
+
+    class _Recording(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, order_request, *, timeout_seconds=10):
+            sent.append(dict(order_request))
+            return super().submit(order_request, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Recording())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    out = door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="t", reason="r",
+                         root=tmp_path, now=NOW)
+    ids = [r.get("newClientOrderId") or r.get("clientAlgoId") for r in sent]
+    assert len(ids) == len(set(ids)) == 4, ids          # entry, SL, TP, exit — four distinct orders
+    market = [r for r in sent if r.get("type") == "MARKET"]
+    assert [bool(r.get("reduceOnly")) for r in market] == [False, True]
+    assert out["complete"] is True, out["findings"]

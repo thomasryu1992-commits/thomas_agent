@@ -246,8 +246,15 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
 
         # 4. The exit: reduceOnly, reconciled like the entry.
         exit_intent = build_live_order_intent(
+            # Its own `position_id`, so its identity key — and therefore its client order id —
+            # differs from the entry's. Without it the two intents hashed the same inputs (symbol,
+            # direction, strategy, `now`) into ONE client order id: the venue would refuse the
+            # exit as a duplicate (-4116), the reconcile would read the ENTRY back under that id,
+            # and the cycle could never complete — the LIVE climb's evidence path, broken at the
+            # source. Found by the PR2 investigation, 2026-09-16; the live path derives its close
+            # ids from the position and the reason for the same reason (live_leg.execute_live_exit).
             {"direction": "LONG", "entry_price": price, "stop_loss": stop_level,
-             "strategy_id": "signed_testnet_cycle"},
+             "strategy_id": "signed_testnet_cycle", "position_id": f"{cycle_id}:exit"},
             symbol=symbol, quantity=filled_qty, notional_usdt=round(price * filled_qty, 8), now=now,
             reduce_only=True, close_reason="signed_testnet_cycle",
         )
