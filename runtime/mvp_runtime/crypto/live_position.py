@@ -260,7 +260,7 @@ def live_positions_dir(root: Path | None = None, *, venue: str = VENUE_MAINNET) 
     """One book per venue (PR1d-0). A testnet fill must never land in the live book: the leg
     reconciles the book it reads against the account of the venue it read it for, and a mixed
     book would report DRIFT on one venue for a position held on the other."""
-    return venue_state_dir(venue, root) / LIVE_POSITIONS_DIRNAME
+    return venue_state_dir(root, venue=venue) / LIVE_POSITIONS_DIRNAME
 
 
 def live_position_path(symbol: str, root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
@@ -329,11 +329,11 @@ def list_open_live_positions(root: Path | None = None, *,
     return found
 
 
-def local_open_notional_usdt(root: Path | None = None) -> float:
+def local_open_notional_usdt(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> float:
     """Exposure as the LOCAL book believes it. Diagnostic only — the exposure the guard is
     told comes from the venue (`compute_open_notional_usdt`), because only the venue knows
     what is actually open."""
-    return round(sum(_f(p.get("notional_usdt")) for p in list_open_live_positions(root)), 8)
+    return round(sum(_f(p.get("notional_usdt")) for p in list_open_live_positions(root, venue=venue)), 8)
 
 
 # --- the gated store ----------------------------------------------------------
@@ -363,7 +363,7 @@ class DryRunLivePositionStore:
 
 
 class RealLivePositionStore:
-    """Durable live book under ``.runtime_governance_state/crypto/live_positions/``.
+    """Durable book under this venue's ``live_positions/`` (``venue_state_dir``).
 
     Constructed only behind the Safety-Flag Gate for the one ``live_trading`` provider, and
     it re-asserts that authorization on **every** mutation — so clearing ``MVP_LIVE_TRADING``

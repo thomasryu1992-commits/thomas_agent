@@ -84,9 +84,13 @@ def _schema_path(repo_root: Path | None = None) -> Path:
 
 def budget_path(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
     """The per-machine registered-budget file for ``venue`` (gitignored, beside that venue's
-    outcomes). One budget per venue (PR1d-0): caps that bound real money must not bound, or be
-    spent by, a venue that trades none."""
-    return venue_state_dir(venue, root) / LIVE_BUDGET_FILENAME
+    outcomes). One budget file per venue (PR1d-0): caps that bound real money must not bound, or
+    be spent by, a venue that trades none.
+
+    The record's own ``venue`` field is still the single-valued schema enum, so only a mainnet
+    budget can be BUILT today; whether another venue registers one at all is PR1d-1's decision.
+    The path axis lands here so that when it does, its file cannot be the live one."""
+    return venue_state_dir(root, venue=venue) / LIVE_BUDGET_FILENAME
 
 
 def build_live_trading_budget_record(
@@ -186,14 +190,14 @@ def _validate(record: Mapping[str, Any], *, repo_root: Path | None = None) -> No
         raise ToolError(BUDGET_INVALID, f"budget record is not schema-valid: {exc}") from exc
 
 
-def read_registered_budget(root: Path | None = None) -> dict[str, Any] | None:
+def read_registered_budget(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any] | None:
     """The registered budget for this machine, VERIFIED — or None when none is registered.
 
     Missing file = honestly None (no budget registered yet). Anything unparseable, failing its
     self-hash, not schema-valid, or carrying an unusable validity window raises, because every
     caller of a risk limit is a risk decision: a budget that cannot prove itself must not be
     allowed to authorize a cap."""
-    path = budget_path(root)
+    path = budget_path(root, venue=venue)
     if not path.is_file():
         return None
     try:
@@ -230,7 +234,7 @@ def read_registered_budget(root: Path | None = None) -> dict[str, Any] | None:
     return data
 
 
-def budget_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
+def budget_status(root: Path | None = None, *, now: str, venue: str = VENUE_MAINNET) -> dict[str, Any]:
     """Whether a valid budget is registered right now — for the readiness board and operator.
 
     Fail-closed: an unverifiable budget reports ``registered`` with ``valid=False`` and names
@@ -245,7 +249,7 @@ def budget_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     anything, so an exception escaping here would leave every open position unmanaged — which
     is why the optional window fields are read with ``.get``, never subscripted."""
     try:
-        record = read_registered_budget(root)
+        record = read_registered_budget(root, venue=venue)
     except ToolError as exc:
         return {"registered": True, "valid": False, "error": exc.reason_code, "budget_id": None}
     if record is None:
@@ -288,7 +292,8 @@ def limits_from_budget(record: Mapping[str, Any]) -> Any:
     )
 
 
-def write_registered_budget(record: Mapping[str, Any], *, root: Path | None = None) -> Path:
+def write_registered_budget(record: Mapping[str, Any], *, root: Path | None = None,
+                            venue: str = VENUE_MAINNET) -> Path:
     """Persist a built budget record to the per-machine state dir (operator registration path).
 
     Re-validates before writing (a caller cannot register an unverified record), then writes it
@@ -300,7 +305,7 @@ def write_registered_budget(record: Mapping[str, Any], *, root: Path | None = No
     body = {k: v for k, v in record.items() if k != "record_sha256"}
     if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
         raise ToolError(BUDGET_TAMPERED, "refusing to register a budget that fails its self-hash")
-    target = state_dir(root)
+    target = venue_state_dir(root, venue=venue)
     target.mkdir(parents=True, exist_ok=True)
     path = target / LIVE_BUDGET_FILENAME
     path.write_text(json.dumps(dict(record), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

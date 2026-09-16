@@ -46,7 +46,7 @@ def state_dir(root: Path | None = None) -> Path:
     return (root if root is not None else _repo_root()) / STATE_REL
 
 
-def venue_state_dir(venue: str = VENUE_MAINNET, root: Path | None = None) -> Path:
+def venue_state_dir(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
     """Where one venue's execution state lives.
 
     ``VENUE_MAINNET`` is the historical root unchanged — no migration, and a record written

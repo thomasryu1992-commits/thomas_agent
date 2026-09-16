@@ -118,7 +118,13 @@ Append a new entry when a milestone ships, in the same PR.
   write testnet state into the live book, which is the one outcome the axis exists to prevent.
   Every venue argument is keyword-only and defaults to mainnet, so every caller written before this
   keeps reading and writing exactly what it did; a test pins that, and others pin that two venues
-  count their own orders, keep their own books and breakers, and cannot read each other's budget.
+  count their own orders, keep their own books, breakers and outcome ledgers, and cannot read each
+  other's budget. The review of #876 found the half of that which the first draft got wrong: the
+  breaker and the ledger wrote to their own venue while READING the live one — a breaker that
+  inherits the live streak (and, when the live one is clean, resets its own on every failure, so it
+  can never trip) and a dedupe that misses its own duplicates, which is the one thing that makes
+  every verified read of a money ledger raise. Both reads are now the venue's own, and the tests
+  that missed it stand the live state up first.
 
   Separation by construction rather than by a field every reader must remember to filter on. The
   alternative — one directory plus a `venue` column — was rejected for the reason the pool's

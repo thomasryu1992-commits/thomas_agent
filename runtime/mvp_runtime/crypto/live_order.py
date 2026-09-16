@@ -632,7 +632,7 @@ def count_today(root: Path | None = None, *, day: str | None = None,
 
     Each venue counts its own orders (PR1d-0): a testnet order must not spend the live daily cap,
     and a live order must not be hidden by one."""
-    path = venue_state_dir(venue, root) / COUNTER_FILENAME
+    path = venue_state_dir(root, venue=venue) / COUNTER_FILENAME
     if not path.is_file():
         return 0
     try:
@@ -675,7 +675,7 @@ class LiveOrderCounter:
 
     def record_submission(self, *, day: str | None = None) -> int:
         self._assert()
-        target = venue_state_dir(self._venue, self._root)
+        target = venue_state_dir(self._root, venue=self._venue)
         target.mkdir(parents=True, exist_ok=True)
         path = target / COUNTER_FILENAME
         key = day or utc_day()
@@ -765,7 +765,7 @@ def read_bracket_failures(root: Path | None = None, *, venue: str = VENUE_MAINNE
     shut. The readiness board and the entry decision both read through here, so there is one
     answer to "how many brackets have failed in a row" rather than two that can disagree.
     """
-    path = venue_state_dir(venue, root) / BRACKET_BREAKER_FILENAME
+    path = venue_state_dir(root, venue=venue) / BRACKET_BREAKER_FILENAME
     if not path.is_file():
         return _empty_bracket_record()
     try:
@@ -789,10 +789,11 @@ def read_bracket_failures(root: Path | None = None, *, venue: str = VENUE_MAINNE
 
 
 def bracket_breaker_status(
-    root: Path | None = None, *, limit: int = MAX_CONSECUTIVE_BRACKET_FAILURES
+    root: Path | None = None, *, limit: int = MAX_CONSECUTIVE_BRACKET_FAILURES,
+    venue: str = VENUE_MAINNET,
 ) -> dict[str, Any]:
     """``read_bracket_failures`` plus the verdict, so no caller re-derives the comparison."""
-    record = read_bracket_failures(root)
+    record = read_bracket_failures(root, venue=venue)
     return {
         **record,
         "limit": limit,
@@ -828,7 +829,7 @@ class LiveBracketFailureBreaker:
 
     def _update(self, mutate: Any) -> dict[str, Any]:
         self._assert()
-        target = venue_state_dir(self._venue, self._root)
+        target = venue_state_dir(self._root, venue=self._venue)
         target.mkdir(parents=True, exist_ok=True)
         path = target / BRACKET_BREAKER_FILENAME
         with locked(
@@ -836,7 +837,10 @@ class LiveBracketFailureBreaker:
             code="LIVE_BRACKET_BREAKER_LOCKED",
             label="live bracket failure record",
         ):
-            record = read_bracket_failures(self._root)
+            # This venue's record, not the live one: a breaker that reads another venue's
+            # baseline inherits its streak — and when that one is clean, resets its own on
+            # every failure, which is a breaker that can never trip. Review of #876.
+            record = read_bracket_failures(self._root, venue=self._venue)
             mutate(record)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
