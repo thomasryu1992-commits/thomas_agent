@@ -398,7 +398,11 @@ def test_an_approved_promotion_can_still_use_the_stale_basis_escape(tmp_path):
                             keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
                             approval_id=approval_id, allow_stale_cost_basis=True)
     assert summary["approval_verified"] is True and summary["stale_cost_basis_escape"] is True
-    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+    entries = pool.load_active_pool(tmp_path)["active_strategies"]
+    assert len(entries) == 1
+    # What an approved LIVE promotion is FOR: the entry is armed. Unpinned until the PR1c review —
+    # the door could have installed every promotion at OBSERVATION and the suite stayed green.
+    assert pool.entry_live_tier(entries[0]) == "LIVE"
 
 
 def test_an_approved_promotion_can_still_use_the_unrecorded_depth_escape(tmp_path):
@@ -1424,3 +1428,27 @@ def test_the_ask_for_a_live_promotion_says_it_arms_real_money(monkeypatch):
     paper = {**ask, "approved_action_snapshot": {**ask["approved_action_snapshot"],
                                                  "target_ref": permission.STRATEGY_POOL_PAPER_TARGET_REF}}
     assert "예상 비용: 없음" in approval_mod.format_request(paper)
+
+
+def test_the_tier_and_the_stage_are_arguments_a_caller_cannot_omit():
+    """Both are fail-closed facts: a default would let a future caller arm by omission — the ask
+    would print the paper text (FO-5b again) while the content hash still bound LIVE, or a door
+    would install without the ladder ever being read."""
+    from runtime.mvp_runtime import permission
+
+    tier = inspect.signature(permission.build_strategy_promotion_permission_decision).parameters["live_tier"]
+    stage = inspect.signature(promotion_mod.run_promotion_gates).parameters["execution_stage"]
+    for name, param in (("live_tier", tier), ("execution_stage", stage)):
+        assert param.default is inspect.Parameter.empty, f"{name} must not have a default"
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY, name
+
+
+def test_a_gate_that_names_no_escape_cannot_be_escaped_by_one(tmp_path, monkeypatch):
+    """Structural, not conventional: passing the empty flag must not wave the stage gate through."""
+    with pytest.raises(ApprovalBlocked) as blocked:
+        promotion_mod.run_promotion_gates(
+            [], keep_active=False, live_tier="LIVE", entries=[], store_root=tmp_path,
+            escapes={"": True},
+            execution_stage=_stage(monkeypatch, stage="PAPER", valid=True, reason=None),
+        )
+    assert blocked.value.reason_code == "EXECUTION_STAGE_TOO_LOW_TO_ARM"

@@ -97,12 +97,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.all and args.strategy_ids:
             sys.stderr.write("USAGE: --all and --strategy-ids are exclusive\n")
             return EXIT_USAGE
+        if not (args.disarmed_by and args.reason) or not (args.all or args.strategy_ids):
+            sys.stderr.write("USAGE: --strategy-ids <ids> (or --all) with --disarmed-by and --reason\n")
+            return EXIT_USAGE
         ids = armed_strategy_ids(root) if args.all else [
             s.strip() for s in (args.strategy_ids or "").split(",") if s.strip()
         ]
-        if not ids or not (args.disarmed_by and args.reason):
-            sys.stderr.write("USAGE: --strategy-ids <ids> (or --all) with --disarmed-by and --reason\n")
-            return EXIT_USAGE
+        if not ids:
+            # `--all` on a machine with nothing armed is the state this door exists to reach, not
+            # an operator mistake: it exits 0 so a wrapper or a cron line reads it as done.
+            sys.stdout.write("armed (LIVE tier): none; nothing to disarm\n")
+            return EXIT_OK
         # After the read-only branch and the usage checks, before the write: a host-side root run
         # would leave the pool and the ledger owned by a uid the services cannot write again.
         assert_not_foreign_root_run(root)

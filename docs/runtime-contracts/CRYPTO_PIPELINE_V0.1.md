@@ -98,12 +98,19 @@ carries `live_tier`:
   narrower than `routable_strategy_ids` — the wider one still answers "could this trade again
   at all", which the drawdown baseline needs and which an observation-tier lineage answers YES
   to. Conflating them would release a drawdown exclusion.
-- **Only the operator promotion door writes the tier.** It is a field rather than a status
-  precisely because the lifecycle ladder recovers `WARNING → PAPER_ACTIVE`: a tier carried in
-  `status` would be re-granted by a demotion path. `update_statuses` writes only `status`, so
-  the ladder structurally cannot arm a strategy, and a test asserts it never names the field.
-- The tier is part of `promotion_content_sha256` (`strategy_promotion.v3`). An approval granted
-  for an observation-tier install is not spendable on a live one.
+- **Only the operator promotion door arms.** It is a field rather than a status precisely
+  because the lifecycle ladder recovers `WARNING → PAPER_ACTIVE`: a tier carried in `status`
+  would be re-granted by a demotion path. `update_statuses` writes only `status`, so the ladder
+  structurally cannot arm a strategy, and a test asserts it never names the field. Two other
+  writers exist and neither can arm: `pool.disarm_live_tier` (the automatic demotion and the
+  operator's `scripts/disarm_live_strategies.py`) takes no target tier, and the history import's
+  `--activate-pool` installs every entry at OBSERVATION whatever its file says (2026-09-16, PR1c
+  review — it used to install the file's own tier, which armed with no approval and no stage).
+- The tier is part of `promotion_content_sha256` (`PROMOTION_HASH_VERSION`, `strategy_promotion.v4`).
+  An approval granted for an observation-tier install is not spendable on a live one, or the
+  reverse. Since 2026-09-16 (PR1c) arming also needs Thomas's approval every time (no
+  `--without-approval`, no `--allow-unconfirmed-holdout`) and an execution stage that admits a
+  live entry.
 - Absence means OBSERVATION, so every entry promoted before this shipped stopped being
   live-routable the moment it did. That is the intended migration and the fail-closed direction.
 - Closes are unaffected: the tier door sits in the entry block, after settle and protect, so a
@@ -127,7 +134,7 @@ records (self-hashed, versioned, id-chained):
 |---|---|---|
 | `storage/registries/outcome_feedback_registry.jsonl` | 103 closed paper outcomes, per-record sha256 | `.runtime_governance_state/crypto/outcome_registry.jsonl` (append-only, ledger-lock pattern) |
 | `storage/registries/counterfactual_outcome_registry.jsonl` | 52 | same store, kind-tagged |
-| `storage/latest/active_strategy_pool.json` (+ specs, `GEN-*` lineage) | active pool | imported as **candidates** with provenance; the initial active pool is re-established through the approval door, not silently carried over |
+| `storage/latest/active_strategy_pool.json` (+ specs, `GEN-*` lineage) | active pool | imported as **candidates** with provenance; the initial active pool is re-established through the approval door, not silently carried over. `--activate-pool` installs at OBSERVATION only: arming is a separate approved decision |
 | `storage/logs/event_log.jsonl` | history | **not imported** — stays with the frozen source repo as historical evidence |
 
 Import rules:

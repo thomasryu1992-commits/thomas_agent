@@ -187,6 +187,17 @@ def run_import(
         # The explicit operator decision that re-establishes the active pool
         # (pre-R10 promotion posture). Marked so the pool says where it came from.
         installed = dict(raw_pool)
+        # Imported at OBSERVATION, whatever the file says (PR1c review, 2026-09-16). Arming a
+        # strategy for real money is Thomas's approved decision at the promotion door, which also
+        # checks the execution stage; a pool file carrying `live_tier: LIVE` would have armed
+        # strategies here with no approval, no stage and none of that door's gates — the fourth
+        # way into the LIVE tier, and the only one left after PR1c closed the other three. The
+        # entries are re-armed the same way any strategy is: one approved promotion.
+        installed["active_strategies"] = [
+            {**entry, pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_OBSERVATION}
+            if isinstance(entry, dict) else entry
+            for entry in (installed.get("active_strategies") or [])
+        ]
         installed["provenance"] = PROVENANCE
         installed["import_batch_id"] = batch_id
         installed["activated_by"] = "operator_import"

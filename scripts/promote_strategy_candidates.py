@@ -380,7 +380,10 @@ def run_promotion(
                 ("cluster_siblings", allow_cluster_siblings),
                 ("observation_entry_bar", allow_below_entry_bar),
                 ("family_cap", allow_family_overflow),
-                ("live_confirmation", allow_unconfirmed_holdout and live_tier == "LIVE"),
+                # `live_confirmation` is gone from this list: the gate it named runs for LIVE
+                # alone, and since 2026-09-16 (PR1c) the escape cannot reach a LIVE install, so
+                # the entry could only ever be False. A review that cannot be skipped is not a
+                # skipped review.
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
@@ -413,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reason", help="operator reason (the report)")
     parser.add_argument("--approval-id", help="APPROVED approval id from the /approve answer (verified, never consumed)")
     parser.add_argument("--without-approval", action="store_true",
-                        help="explicit legacy escape: promote without an approval record (audited as such)")
+                        help="explicit legacy escape, OBSERVATION only: promote without an approval "
+                             "record (audited as such). Refused with --live-tier LIVE")
     parser.add_argument("--allow-duplicates", action="store_true",
                         help="explicit escape: promote a candidate that is the same strategy as "
                              "another selected candidate or an incumbent under a different rule hash")
@@ -428,9 +432,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: let a strategy_family hold more than its two "
                              "occupied slots")
     parser.add_argument("--allow-unconfirmed-holdout", action="store_true",
-                        help="explicit escape: arm LIVE although no confirmation was earned on "
-                             "unseen data (neither a CONFIRMED holdout nor a FORWARD_CONFIRMED "
-                             "forward-book record) — the condition #648 disarmed the pool for")
+                        help="explicit escape, OBSERVATION only since 2026-09-16: promote a "
+                             "candidate with no confirmation earned on unseen data (neither a "
+                             "CONFIRMED holdout nor a FORWARD_CONFIRMED forward-book record). It "
+                             "can no longer arm LIVE — the condition #648 disarmed the pool for")
     parser.add_argument("--allow-oversized-pool", action="store_true",
                         help="explicit escape: install a pool above the routable-strategy or "
                              "per-context cap (a pool nothing in it can be auto-demoted from)")

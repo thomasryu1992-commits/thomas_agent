@@ -267,8 +267,8 @@ PROMOTION_GATES: tuple[PromotionGate, ...] = (
     PromotionGate("allow_cluster_siblings", _gate_cluster_siblings),
     PromotionGate("allow_below_entry_bar", _gate_entry_bar),
     PromotionGate("allow_family_overflow", _gate_family_cap),
-    # No escape flag: "" matches no key in `escapes`, and `escapes.get("", False)` is False, so
-    # this gate always runs. The stage is not an operator's to wave through.
+    # No escape flag: the roster loop skips the `escapes` lookup entirely for a gate that names
+    # none, so this one always runs. The stage is not an operator's to wave through.
     PromotionGate("", _gate_execution_stage),
     PromotionGate("allow_unconfirmed_holdout", _gate_live_confirmation),
     PromotionGate("allow_quarantined_derivation", _gate_derivation),
@@ -318,7 +318,9 @@ def run_promotion_gates(
             "promote at OBSERVATION, or earn the confirmation on unseen data",
         )
     for gate in PROMOTION_GATES:
-        if escapes.get(gate.escape_flag, False):
+        # `gate.escape_flag` first: a gate that names no flag cannot be escaped by a caller that
+        # happens to pass `{"": True}`. Structural rather than conventional (PR1c review).
+        if gate.escape_flag and escapes.get(gate.escape_flag, False):
             continue
         try:
             gate.check(gate_input)
