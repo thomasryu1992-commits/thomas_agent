@@ -101,6 +101,48 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **The machine can place a signed order on the testnet** (crypto PR1d-1, Thomas decisions 2 and
+  11, 2026-09-16; `crypto/testnet_execution.py`, `crypto/testnet_evidence.py`,
+  `scripts/run_signed_testnet_cycle.py`). The ladder's climb out of SIGNED_TESTNET needs evidence
+  that this machine can sign, place, protect, withdraw and reconcile a real order — evidence the
+  exchange's own dry-run endpoint structurally cannot give, because it refuses conditional orders,
+  which is exactly the API the protective legs moved to and exactly what broke on 2026-08-02.
+
+  **A module of its own, and the import graph is the proof.** What is shared with the live path is
+  only its pure functions — building the request, judging a reconcile, translating the algo field
+  names, and the submit/reconcile orchestration, which takes the adapter as an argument — so the
+  two can never disagree about what RECONCILED means. What is not shared is everything that decides
+  where a request goes or what it touches: its own host allowlist (the live one was not widened, so
+  the live adapter still refuses a testnet URL as it has since 2026-07-25), its own key pair read
+  at call time from its own env names, its own provider id (which is what `assert_authorization`
+  compares, so a testnet grant opens no live store), its own opt-in, and PR1d-0's venue state. The
+  key point is sharper than it looks: the live adapter reads its credentials from module constants,
+  so inheriting its signing method would have signed testnet requests with the **mainnet key**.
+
+  **Its own guard, not a purpose-shaped hole in the live one.** Half of `evaluate_live_order_guard`
+  is about caps a registered budget declares in real USDT, which a testnet venue has none of and
+  should not. Teaching that guard to skip them for one purpose would put a bypass in the function
+  whose whole value is that it has none. `evaluate_testnet_order_guard` keeps what is about the
+  machine's posture — the stage, both halts, the intent's shape, a connectivity refusal — and adds
+  the bound this path carries in code. It needs the **SIGNED_TESTNET** rung, through a new purpose:
+  every purpose previously required LIVE_AUTONOMOUS, including the order that exists to earn it, so
+  the ladder was circular at exactly the rung PR1d had to climb from. A kill or a pause still stops
+  it; the live ARM does not gate it, because requiring the arm would mean arming real trading in
+  order to earn the evidence for arming real trading.
+
+  **What counts as evidence is the whole cycle** (decision 11): entry FILLED and reconciled,
+  protective legs confirmed RESTING at the algo endpoint, withdrawn afterwards, exit reduceOnly and
+  reconciled, position view clean. One cycle, no expiry, no re-earning after a policy change. The
+  three live incidents this exists to catch — 2026-08-02 (both legs refused, -4120), 08-03 (a stop
+  accepted but unfindable, so never withdrawn) and 08-05 (an algo fill whose renamed fields the
+  settle path could not read) — all happened after the entry, so "N reconciled entries" would have
+  reproduced none of them, and a second cycle adds nothing a first does not already prove.
+
+  The registry is the retired canary registry's shape (PR1r's lesson): the venue's own answers
+  stored, the verdict **derived on every read** rather than a stored `clean` flag, a verified read
+  that raises on a tampered row or a duplicate id, and a missing file that is honestly empty. What
+  binds it to the ladder — the climb naming one cycle id, signed into Thomas's approval — is PR1d-2.
+
 - **The live execution state grew a venue axis** (crypto PR1d-0, 2026-09-16; `crypto/state.py`,
   `crypto/live_order.py`, `crypto/live_position.py`, `crypto/live_pnl.py`, `crypto/live_budget.py`).
   A signed testnet order (PR1d-1, Thomas decision 2) has to be placed, reconciled and settled

@@ -47,7 +47,13 @@ from runtime.mvp_runtime import (
     tools,
     workspace,
 )
-from runtime.mvp_runtime.crypto import account, live_execution, live_order, live_pnl
+from runtime.mvp_runtime.crypto import (
+    account,
+    live_execution,
+    live_order,
+    live_pnl,
+    testnet_execution,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
@@ -151,6 +157,14 @@ LIVE_TRADING_SURFACE = {
     # the scheduler that trades. Forwarding is the one direction on this surface that
     # REMOVES capability rather than granting it; the inert default still means not engaged.
     live_order.MANUAL_KILL_SWITCH_ENV: "the manual halt — refuses entries, closes still permitted",
+    # Added 2026-09-16 (PR1d-1). The signed testnet path: its own switch and its own key pair, no
+    # real money. It belongs on THIS surface even so — the rule that matters here is not "can it
+    # spend" but "a value set in .env that never reaches the container does nothing, silently",
+    # which is the failure this file exists to catch. Same container rule as the rest: the
+    # scheduler receives them, every other service must not.
+    testnet_execution.TESTNET_TRADING_ENV: "the signed-testnet switch",
+    testnet_execution.TESTNET_API_KEY_ENV: "the testnet order-signing key",
+    testnet_execution.TESTNET_API_SECRET_ENV: "the testnet order-signing secret",
 }
 
 
@@ -438,10 +452,11 @@ def test_the_list_covers_the_whole_live_surface():
     and every one must be named above. A rename that emptied the list would otherwise leave
     every test in this section vacuously green — in BOTH directions now, since the same list
     drives the scheduler's forwarding requirement and the operator's prohibition."""
-    # 8 -> 9 on 2026-09-07: the manual kill switch joined the forwarded surface. Bumping this
-    # number is the deliberate act the guard is for — it is the one line that cannot be edited
-    # by accident, which is why the addition is recorded at the list itself rather than here.
-    assert len(LIVE_TRADING_SURFACE) == 9
+    # 8 -> 9 on 2026-09-07: the manual kill switch joined the forwarded surface. 9 -> 12 on
+    # 2026-09-16: the signed testnet switch and its key pair (PR1d-1). Bumping this number is the
+    # deliberate act the guard is for — it is the one line that cannot be edited by accident,
+    # which is why each addition is recorded at the list itself rather than here.
+    assert len(LIVE_TRADING_SURFACE) == 12
     for env_var in LIVE_TRADING_SURFACE:
         assert env_var.startswith(("MVP_", "BINANCE_")), env_var
 
@@ -591,6 +606,10 @@ SECRET_OWNERSHIP: dict[str, frozenset[str]] = {
     "HERMES_BOT_TOKEN": frozenset({"hermes", "operator", "scheduler", "scheduler-maint"}),
     "MVP_LIVE_ORDER_API_KEY": frozenset({"scheduler"}),
     "MVP_LIVE_ORDER_API_SECRET": frozenset({"scheduler"}),
+    # The signed testnet key pair (2026-09-16, PR1d-1). Separate credentials on a separate venue,
+    # in the one container that trades.
+    "MVP_TESTNET_ORDER_API_KEY": frozenset({"scheduler"}),
+    "MVP_TESTNET_ORDER_API_SECRET": frozenset({"scheduler"}),
     "NAVER_APIHUB_KEY": frozenset({"pipeline-worker"}),
     "NAVER_APIHUB_KEY_ID": frozenset({"pipeline-worker"}),
     "NAVER_SEARCHAD_API_KEY": frozenset({"pipeline-worker"}),

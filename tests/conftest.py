@@ -106,6 +106,10 @@ _GATE_ENV_VARS = (
     # and, for anything that reaches egress, holding a genuine authorization. The operator's
     # own machine is exactly where both this variable and this suite get run.
     "MVP_LIVE_TRADING",
+    # Added 2026-09-16 (PR1d-1) for exactly the MVP_LIVE_TRADING reason: with the env as the whole
+    # gate, inheriting this one means the suite constructs the REAL testnet adapter, and the
+    # operator's own machine is where both this variable and this suite get run.
+    "MVP_TESTNET_TRADING",
     # Added 2026-08-09 for the same reason as MVP_LIVE_TRADING above: the Naver research lane
     # is the second capability gated by the environment alone, so inheriting this var means
     # the suite constructs the REAL adapters. Milder than the trading case — they are

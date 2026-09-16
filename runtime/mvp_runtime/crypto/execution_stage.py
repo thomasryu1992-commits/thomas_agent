@@ -107,10 +107,17 @@ T_DEMOTE = "DEMOTE"
 PURPOSE_PROBE = "probe"
 PURPOSE_AUTONOMOUS = "autonomous"
 PURPOSE_LIVE_ARM = "live_arm"
+# The one purpose a rung below LIVE admits (PR1d-1, Thomas 2026-09-16): a signed order on the
+# venue's TESTNET, which is how the evidence for the LIVE_AUTONOMOUS climb is earned. Without it
+# the ladder is circular — every purpose needed LIVE_AUTONOMOUS, including the one that exists to
+# prove the machine may have it. It spends no money, and it is judged by the testnet path's own
+# guard (`testnet_execution.evaluate_testnet_order_guard`); the live guard never sees it.
+PURPOSE_TESTNET = "signed_testnet"
 _REQUIRED_STAGE = {
     PURPOSE_PROBE: ExecutionStage.LIVE_AUTONOMOUS.value,
     PURPOSE_AUTONOMOUS: ExecutionStage.LIVE_AUTONOMOUS.value,
     PURPOSE_LIVE_ARM: ExecutionStage.LIVE_AUTONOMOUS.value,
+    PURPOSE_TESTNET: ExecutionStage.SIGNED_TESTNET.value,
 }
 
 # Why a record reads as READ_ONLY.

@@ -18,7 +18,7 @@ no expiry (renewals on the money path were retired 2026-07-28 / 2026-08-10).
 | Stage | New exposure a door may create |
 |---|---|
 | READ_ONLY, SHADOW, PAPER | none on the venue |
-| SIGNED_TESTNET | none on mainnet (signed testnet evidence only; path in PR1d) |
+| SIGNED_TESTNET | a signed order on the venue's TESTNET, through `scripts/run_signed_testnet_cycle.py` (PR1d-1) — no real money, its own venue state |
 | LIVE_AUTONOMOUS | the autonomous leg, the slippage probe, and arming a strategy LIVE |
 | LIVE_SCALED | as LIVE_AUTONOMOUS; its entry rule is a separate decision |
 

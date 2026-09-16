@@ -339,6 +339,10 @@ def test_every_caller_of_the_venue_also_counts_the_order():
         # submit, the posture the canary door had.
         root / "scripts" / "run_slippage_probe.py",
         root / "runtime" / "mvp_runtime" / "crypto" / "live_leg.py",
+        # The signed testnet cycle (PR1d-1, 2026-09-16): same posture, and it counts on the
+        # TESTNET venue's own counter (PR1d-0), which is the point — a rehearsal must not spend
+        # the live daily cap, and the cap must still bound the rehearsal.
+        root / "scripts" / "run_signed_testnet_cycle.py",
     ]
     # Excluded by path PARTS, not by substring: `"/tests/" in str(path)` is false on Windows,
     # where the separator is a backslash, so the first version of this gate reported the suite's

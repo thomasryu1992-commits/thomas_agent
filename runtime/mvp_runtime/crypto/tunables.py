@@ -66,6 +66,7 @@ from . import (
     proposer,
     robustness,
     strategy,
+    testnet_execution,
 )
 
 # --- provenance: how this number came to be what it is ----------------------------------------
@@ -485,6 +486,19 @@ TUNABLES: tuple[Tunable, ...] = (
     # test's name pattern — as was the number that bounds live order size. A pattern that misses
     # a ceiling and a pace misses the two shapes an operator most often reaches for.
 
+    # --- the signed testnet path (crypto PR1d-1, 2026-09-16) -----------------------------------
+    Tunable("TESTNET_MAX_ORDER_NOTIONAL_USDT", testnet_execution.TESTNET_MAX_ORDER_NOTIONAL_USDT,
+            "crypto/testnet_execution.py", OPERATOR,
+            "the bound the testnet path carries in code, because no registered budget declares one "
+            "for a venue that trades no money; 200 mirrors the live hard ceiling's bring-up value",
+            "a cycle that needs a larger order to be realistic — the number bounds a rehearsal, "
+            "not an exposure"),
+    Tunable("TESTNET_MAX_DAILY_ORDERS", testnet_execution.TESTNET_MAX_DAILY_ORDERS,
+            "crypto/testnet_execution.py", OPERATOR,
+            "how many testnet orders a day this path counts; one evidence cycle counts two (the "
+            "entry and the exit — protective legs reach the venue but are not counted, the live "
+            "path's own convention), so 20 is room to retry a failing cycle without an unbounded loop",
+            "a debugging session that genuinely needs more attempts in one day"),
     Tunable("HARD_CEILING_USDT", live_budget.HARD_CEILING_USDT, "crypto/live_budget.py", OPERATOR,
             "the largest per-order cap a registered budget may declare; 200 at bring-up, 500 since",
             "Thomas raised it 2026-08-08 after 4 clean canaries and 2 round trips; the same evidence"),

@@ -233,6 +233,12 @@ def test_the_env_only_gate_has_exactly_the_capabilities_thomas_named():
         "runtime/mvp_runtime/trial.py",                   # the candidate-trial spend
         "runtime/mvp_runtime/crypto/account.py",          # the venue account feed
         "runtime/mvp_runtime/crypto/paper.py",            # the durable paper store
+        # Added 2026-09-16 (PR1d-1, Thomas decision 2): the signed TESTNET order adapter. Its own
+        # opt-in, its own key pair, its own provider id and its own venue state, so a testnet
+        # authorization opens nothing live — and the live switch neither enables nor disables it.
+        # It is on this roster for the same reason as the rest: a capability nobody had to name is
+        # a capability nobody reviewed.
+        "runtime/mvp_runtime/crypto/testnet_execution.py",  # the signed testnet order adapter
     }, callers
 
 

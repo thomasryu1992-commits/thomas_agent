@@ -306,6 +306,11 @@ services:
       # scheduler at its next guard; this one needs a restart to take effect.
       MVP_LIVE_MANUAL_KILL_SWITCH: ${MVP_LIVE_MANUAL_KILL_SWITCH:-}
 
+      # The signed testnet path (2026-09-16, PR1d-1): its own switch and its own key pair, so a
+      # testnet order can be placed and reconciled without the live switch or the live key.
+      MVP_TESTNET_TRADING: ${MVP_TESTNET_TRADING:-}
+      MVP_TESTNET_ORDER_API_KEY: ${MVP_TESTNET_ORDER_API_KEY:-}
+      MVP_TESTNET_ORDER_API_SECRET: ${MVP_TESTNET_ORDER_API_SECRET:-}
   # The MAINTENANCE-lane tick loop (`docs/proposals/SCHEDULER_LANE_SPLIT_V0.1.md`): factory,
   # null_control, candle archive, analysis, prune, rotate, report, propose, data review —
   # every kind whose lateness costs freshness rather than money. Its fires are the long ones
