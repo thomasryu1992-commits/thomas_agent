@@ -44,6 +44,7 @@ from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
 from .live_pnl import state_dir
+from .state import VENUE_MAINNET, venue_state_dir
 
 LIVE_BUDGET_SCHEMA_VERSION = "live_trading_budget.v0.1"
 LIVE_BUDGET_SCHEMA_FILE = "live_trading_budget.v0.1.schema.json"
@@ -81,9 +82,11 @@ def _schema_path(repo_root: Path | None = None) -> Path:
     return (repo_root if repo_root is not None else _repo_root()) / "schemas" / LIVE_BUDGET_SCHEMA_FILE
 
 
-def budget_path(root: Path | None = None) -> Path:
-    """The per-machine registered-budget file (gitignored, beside the live outcomes)."""
-    return state_dir(root) / LIVE_BUDGET_FILENAME
+def budget_path(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
+    """The per-machine registered-budget file for ``venue`` (gitignored, beside that venue's
+    outcomes). One budget per venue (PR1d-0): caps that bound real money must not bound, or be
+    spent by, a venue that trades none."""
+    return venue_state_dir(venue, root) / LIVE_BUDGET_FILENAME
 
 
 def build_live_trading_budget_record(

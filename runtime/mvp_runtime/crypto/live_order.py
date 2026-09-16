@@ -42,6 +42,7 @@ from .execution_stage import (
     StageStatus,
     required_stage,
 )
+from .state import VENUE_MAINNET, venue_state_dir
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -624,10 +625,14 @@ def evaluate_live_close_guard(
 
 # --- the daily submission counter --------------------------------------------------
 
-def count_today(root: Path | None = None, *, day: str | None = None) -> int:
-    """Live orders submitted today. Ungated read; an unreadable counter fails closed by
-    raising, because a counter that reads as zero would hand back the whole daily budget."""
-    path = state_dir(root) / COUNTER_FILENAME
+def count_today(root: Path | None = None, *, day: str | None = None,
+                venue: str = VENUE_MAINNET) -> int:
+    """Orders submitted today at ``venue``. Ungated read; an unreadable counter fails closed by
+    raising, because a counter that reads as zero would hand back the whole daily budget.
+
+    Each venue counts its own orders (PR1d-0): a testnet order must not spend the live daily cap,
+    and a live order must not be hidden by one."""
+    path = venue_state_dir(venue, root) / COUNTER_FILENAME
     if not path.is_file():
         return 0
     try:
@@ -652,9 +657,13 @@ class LiveOrderCounter:
     provider_id = LIVE_TRADING_PROVIDER_ID
     filesystem_write = True
 
-    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None,
+                 venue: str = VENUE_MAINNET):
         self._root = root
         self._authorization = authorization
+        # Which venue's counter this is. Default mainnet: a caller that says nothing is the live
+        # path, exactly as it was before the venue axis existed (PR1d-0).
+        self._venue = venue
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -666,7 +675,7 @@ class LiveOrderCounter:
 
     def record_submission(self, *, day: str | None = None) -> int:
         self._assert()
-        target = state_dir(self._root)
+        target = venue_state_dir(self._venue, self._root)
         target.mkdir(parents=True, exist_ok=True)
         path = target / COUNTER_FILENAME
         key = day or utc_day()
@@ -748,7 +757,7 @@ def _empty_bracket_record() -> dict[str, Any]:
     }
 
 
-def read_bracket_failures(root: Path | None = None) -> dict[str, Any]:
+def read_bracket_failures(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
     """The consecutive bracket-failure record. Ungated read; an unreadable file raises.
 
     Fails closed for ``count_today``'s reason pointed the other way: a breaker whose state reads
@@ -756,7 +765,7 @@ def read_bracket_failures(root: Path | None = None) -> dict[str, Any]:
     shut. The readiness board and the entry decision both read through here, so there is one
     answer to "how many brackets have failed in a row" rather than two that can disagree.
     """
-    path = state_dir(root) / BRACKET_BREAKER_FILENAME
+    path = venue_state_dir(venue, root) / BRACKET_BREAKER_FILENAME
     if not path.is_file():
         return _empty_bracket_record()
     try:
@@ -803,9 +812,11 @@ class LiveBracketFailureBreaker:
     provider_id = LIVE_TRADING_PROVIDER_ID
     filesystem_write = True
 
-    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None,
+                 venue: str = VENUE_MAINNET):
         self._root = root
         self._authorization = authorization
+        self._venue = venue
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -817,7 +828,7 @@ class LiveBracketFailureBreaker:
 
     def _update(self, mutate: Any) -> dict[str, Any]:
         self._assert()
-        target = state_dir(self._root)
+        target = venue_state_dir(self._venue, self._root)
         target.mkdir(parents=True, exist_ok=True)
         path = target / BRACKET_BREAKER_FILENAME
         with locked(
