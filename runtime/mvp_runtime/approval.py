@@ -52,6 +52,7 @@ from .paths import repo_root as _repo_root
 from .permission import (
     EXECUTION_STAGE_TARGET_PREFIX,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
+    STRATEGY_POOL_LIVE_TARGET_REF,
     TRADING_SWITCH_TARGET_PREFIX,
     TRIAL_PERMISSION_SCOPE,
     WORKFLOW_STEP_TARGET_PREFIX,
@@ -465,8 +466,12 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # target that says what is being started. Prefixes imported from `permission`, which mints
     # them, so the two sides cannot drift.
     target_ref = str(snapshot.get("target_ref") or "")
-    arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
-    switch = arms_live or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX)
+    # Arming real money: the assistant's trading switch, or a promotion that installs strategies
+    # at the pool's LIVE tier (both make a real order possible that was not before).
+    arms_pool_live = target_ref == STRATEGY_POOL_LIVE_TARGET_REF
+    arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX) or arms_pool_live
+    switch = (target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
+              or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX))
     # The workflow manager's gated-step asks (sequence 2, P07) are spent by the manager itself on
     # its next pass — no operator step follows the approval — so the closing paragraph every other
     # branch carries ("approval alone runs nothing") was false for them (review of P07, 2026-09-14).
@@ -503,6 +508,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
          if workflow_step else
          "되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), 청산은 어느 단계에서도 막히지 않습니다"
          if execution_stage else
+         "되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 적용되고, "
+         "이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다"
+         if arms_pool_live else
          "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",

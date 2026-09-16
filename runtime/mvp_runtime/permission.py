@@ -127,6 +127,13 @@ TRIAL_REQUIRED_PERMISSION_LEVEL = "P3"  # CREATE — a one-shot isolated trial r
 TRIAL_WORK_PERMISSION_SCOPE = "INTERNAL_ANALYSIS"
 TRIAL_WORK_REQUIRED_PERMISSION_LEVEL = "P2"  # ANALYZE — read-only trial execution
 
+# The two pool tiers, and the target a promotion ask names. `:live` is what makes an arming ask
+# legible as one — to Thomas in `approval.format_request`, and to anyone reading the ledger.
+STRATEGY_POOL_TIER_OBSERVATION = "OBSERVATION"
+STRATEGY_POOL_TIER_LIVE = "LIVE"
+STRATEGY_POOL_PAPER_TARGET_REF = "active_strategy_pool:paper"
+STRATEGY_POOL_LIVE_TARGET_REF = "active_strategy_pool:live"
+
 # Governance scope + level for strategy-pool promotion (Crypto Pipeline C8b) — the third
 # APPROVAL_REQUIRED action. Installing candidates into the active pool changes what the
 # runtime trades, which the Governance Policy prices at APPROVAL_REQUIRED under
@@ -1550,6 +1557,11 @@ def build_strategy_promotion_permission_decision(
     strategy_ids: list[str],
     rule_hashes: list[str],
     keep_active: bool,
+    # Which tier this promotion installs into. No default: an ask that does not say whether it
+    # arms real money is the defect this argument closes (execution-authority audit FO-5b,
+    # 2026-09-15) — every LIVE promotion was announced as a paper-stage change with "no order
+    # capability", which is the one sentence Thomas reads before answering.
+    live_tier: str,
     content_sha256: str,
     now: str,
     actor_id: str = "thomas.prime",
@@ -1575,6 +1587,9 @@ def build_strategy_promotion_permission_decision(
         raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its display strategy id")
     if len(rule_hashes) != len(candidate_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
         raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its rule hash")
+    if live_tier not in (STRATEGY_POOL_TIER_OBSERVATION, STRATEGY_POOL_TIER_LIVE):
+        raise PlannerBlocked("INVALID_PROMOTION", f"unknown live tier {live_tier!r}")
+    arms_live = live_tier == STRATEGY_POOL_TIER_LIVE
 
     action = _ActionSpec(
         action_type="crypto.strategy_pool.promotion",
@@ -1587,17 +1602,34 @@ def build_strategy_promotion_permission_decision(
             "strategy_ids": sorted(strategy_ids),
             "rule_hashes": sorted(rule_hashes),
             "keep_active": bool(keep_active),
+            # In the signed content, not only in the hash the door recomputes: the tier is the
+            # difference between a paper change and arming real money.
+            "live_tier": live_tier,
         },
-        risk_reason="Changes what the runtime paper-trades; requires explicit Thomas approval per policy.",
+        risk_reason=(
+            "ARMS THESE STRATEGIES FOR REAL MONEY: at the LIVE tier they may open real positions "
+            "on the venue, sized by the registered budget. What still has to hold for an order to "
+            "go out is unchanged (the execution stage at LIVE_AUTONOMOUS, the live-trading opt-in "
+            "and its phrase, a valid registered budget and its symbol allowlist, both kill "
+            "switches, the loss and bracket breakers) — this approval removes the last one that is "
+            "Thomas's alone. Disarming needs no approval and applies at once."
+            if arms_live else
+            "Changes what the runtime paper-trades; requires explicit Thomas approval per policy. "
+            "OBSERVATION occupies a routing slot and papers: it cannot open a real position."
+        ),
         authority_reason="Prime may prepare a strategy-pool promotion for Thomas review; the decision is Thomas's.",
         decision_reason="RUNTIME_GOVERNANCE is APPROVAL_REQUIRED; only Thomas may authorize a pool change.",
         constraint=(
+            "Installs these candidates at the LIVE tier and nothing else: no cap is raised, no "
+            "phrase or opt-in is set, no execution stage is climbed, no other governance state "
+            "changes; full audit required."
+            if arms_live else
             "Paper-stage pool change only: no order capability, no live/testnet effect, no "
             "governance-state change beyond the active strategy pool; full audit required."
         ),
-        target_ref="active_strategy_pool:paper",
+        target_ref=STRATEGY_POOL_LIVE_TARGET_REF if arms_live else STRATEGY_POOL_PAPER_TARGET_REF,
         content_sha256=content_sha256,
-        risk_level="ORANGE",
+        risk_level="RED" if arms_live else "ORANGE",
     )
     return build_permission_decision(
         bound_task,

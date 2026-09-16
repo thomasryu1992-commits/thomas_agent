@@ -107,4 +107,4 @@ After a policy bump (e.g. 1.5.1) the record reads READ_ONLY until a REBIND is ap
   (with `admits_entry`), and the guard dry-run, which is fed the same stage.
 - `scripts/register_execution_stage.py --show`.
 
-Arming a strategy LIVE does not read the stage yet; that is PR1c, with the LIVE-arm approval.
+- **The promotion door** (`scripts/promote_strategy_candidates.py --live-tier LIVE`, PR1c): arming a strategy for real money needs the stage to admit a live entry, checked at the ask and re-resolved at the install. It is the one gate on that door's roster with no escape flag. Disarming (`scripts/disarm_live_strategies.py`) reads nothing and needs no approval.

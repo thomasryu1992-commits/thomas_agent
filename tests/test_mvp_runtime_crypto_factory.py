@@ -1621,7 +1621,7 @@ def test_promotion_installs_selected_candidates(tmp_path):
     # selected.
     ids = _seed_candidates(tmp_path)
     summary = run_promotion(selectors=ids[:2], promoted_by="Thomas", reason="reviewed",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                             allow_oversized_pool=True, allow_below_entry_bar=True,
                             allow_unconfirmed_holdout=True, allow_cluster_siblings=True)
     assert summary["pool_size"] == 2
@@ -1636,10 +1636,10 @@ def test_promotion_installs_selected_candidates(tmp_path):
 def test_promotion_keep_active_adds(tmp_path):
     ids = _seed_candidates(tmp_path)
     run_promotion(selectors=ids[:1], promoted_by="Thomas", reason="r",
-                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                   allow_below_entry_bar=True, allow_unconfirmed_holdout=True)
     run_promotion(selectors=ids[1:2], promoted_by="Thomas", reason="r",
-                  keep_active=True, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  keep_active=True, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                   allow_oversized_pool=True,   # same context as the incumbent; see above
                   allow_cluster_siblings=True,  # and indistinguishable from it; see above
                   allow_below_entry_bar=True, allow_unconfirmed_holdout=True)

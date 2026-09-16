@@ -369,6 +369,15 @@ def test_seeding_refuses_a_sid_only_identity(tmp_path):
 
 # --- the arming door reads THIS store (the 5-1 source revision) ------------------------
 
+def _staged():
+    """The stage the machine stands at, as the gate roster receives it (PR1c). These tests are
+    about the forward-evidence gate, so it admits arming; the stage gate has its own tests."""
+    from runtime.mvp_runtime.crypto import execution_stage as es
+
+    return es.StageStatus(stage="LIVE_AUTONOMOUS", valid=True, reason_code=None,
+                          recorded_stage="LIVE_AUTONOMOUS")
+
+
 def _confirming_rows(candidate_id, n=10):
     rows = []
     for i in range(n):
@@ -392,7 +401,8 @@ def test_forward_store_rows_confirm_a_live_promotion_through_the_gate(tmp_path):
               "strategy_spec": {"timeframe": "1d"}}
     fb._append_outcomes(_confirming_rows("cand_gate0001"), root=tmp_path)
     g = promotion._GateInput(candidates=[record], keep_active=True, live_tier="LIVE",
-                             entries=[], store_root=tmp_path, occupying=[])
+                             entries=[], store_root=tmp_path, occupying=[],
+                             execution_stage=_staged())
     promotion._gate_live_confirmation(g)  # no raise: the virtual stream armed it
 
 
@@ -413,7 +423,8 @@ def test_paper_store_rows_no_longer_count_as_forward_evidence(tmp_path):
     record = {"candidate_id": "cand_gate0002", "strategy_id": "S9",
               "strategy_spec": {"timeframe": "1d"}}
     g = promotion._GateInput(candidates=[record], keep_active=True, live_tier="LIVE",
-                             entries=[], store_root=tmp_path, occupying=[])
+                             entries=[], store_root=tmp_path, occupying=[],
+                             execution_stage=_staged())
     with pytest.raises(ToolError) as exc:
         promotion._gate_live_confirmation(g)
     assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"

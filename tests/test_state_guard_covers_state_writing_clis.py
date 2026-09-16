@@ -35,12 +35,14 @@ GUARDED = {
     "register_program_candidate": "the approval store and the program registry entry",
     "import_crypto_history": "imported outcomes, counterfactuals and the candidate pool",
     "run_slippage_probe": "the probe plan store, the approval store, and the probe order's audit event",
+    "disarm_live_strategies": "the active strategy pool's live tier and the control ledger",
 }
 
 # Writers whose guard is deliberately NOT at the top of main, because they have a read-only
 # mode that must stay runnable from anywhere. Present so the placement reads as a decision.
 GUARDED_AT_THE_WRITE_POINT = {
     "promote_strategy_candidates": "--list only reads",
+    "disarm_live_strategies": "--list only reads",
     "register_program_candidate": "--list only reads",
     "import_crypto_history": "the default run is a dry-run report",
 }

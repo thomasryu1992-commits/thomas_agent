@@ -263,7 +263,7 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
+        selectors=["cand_x"], promoted_by="thomas", reason="test", keep_active=False, live_tier="OBSERVATION",
         root=tmp_path, now=NOW, without_approval=True,
         # The fixture is deliberately minimal (24 closes, shallow window); the 5-3 bar is
         # not the subject here — regime evidence propagation is.
@@ -298,7 +298,7 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
 
     prom.run_promotion(
-        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False, live_tier="LIVE",
+        selectors=["cand_old"], promoted_by="thomas", reason="test", keep_active=False, live_tier="OBSERVATION",
         root=tmp_path, now=NOW, without_approval=True,
         allow_below_entry_bar=True,
     )

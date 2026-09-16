@@ -260,7 +260,7 @@ def _promote(monkeypatch, tmp_path, candidate):
     monkeypatch.setattr(prom, "_audit_promotion", lambda *a, **k: None, raising=False)
     prom.run_promotion(
         selectors=[candidate["candidate_id"]], promoted_by="thomas", reason="test",
-        keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+        keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
         allow_below_entry_bar=True,
     )
     return installed["active_strategies"][0]

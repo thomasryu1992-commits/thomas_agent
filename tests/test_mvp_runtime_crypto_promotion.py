@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import runtime.mvp_runtime.crypto.promotion as promotion_mod
 import scripts.promote_strategy_candidates as promote_door
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL
 from runtime.mvp_runtime.approval_store import ApprovalStore
@@ -39,6 +40,19 @@ from scripts.promote_strategy_candidates import run_promotion
 from tests._helpers import requires_local_core
 
 NOW = timeutil.utc_now_iso()
+
+
+@pytest.fixture(autouse=True)
+def _machine_is_staged_for_arming(monkeypatch):
+    """PR1c: arming LIVE reads the execution stage. These tests predate the ladder and are about
+    other gates, so the machine stands at the rung that admits it; the stage gate's own refusals
+    are tested in `test_arming_live_needs_the_execution_stage_that_admits_it`."""
+    from runtime.mvp_runtime.crypto import execution_stage as es
+
+    staged = es.StageStatus(stage="LIVE_AUTONOMOUS", valid=True, reason_code=None,
+                            recorded_stage="LIVE_AUTONOMOUS")
+    for module in (promotion_mod, promote_door):
+        monkeypatch.setattr(module, "resolve_execution_stage", lambda root=None, **kw: staged)
 
 # Sentinel: `cost_summary=None` / `bars_replayed=None` mean "seed a candidate that records no
 # cost model / no replay window", which are cases under test, so neither can double as "caller
@@ -270,7 +284,7 @@ def test_promotion_requires_approval_or_explicit_escape(tmp_path):
 def test_promotion_with_escape_is_audited_as_such(tmp_path):
     seeded = _seed_candidates(tmp_path, _spec_dict())
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert summary["without_approval_escape"] is True and summary["approval_verified"] is False
     assert summary["promoted_candidate_ids"] == [pool.candidate_id(seeded[0])]
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
@@ -296,7 +310,7 @@ def test_promotion_refuses_evidence_scored_more_cheaply_than_the_venue_charges(t
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
 
@@ -306,7 +320,7 @@ def test_promotion_refuses_evidence_with_no_recorded_cost_model(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(), cost_summary=None)
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_COST_BASIS_STALE" in str(exc.value)
 
 
@@ -317,7 +331,7 @@ def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
     _seed_candidates(tmp_path, _spec_dict(),
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                             allow_stale_cost_basis=True)
     assert summary["stale_cost_basis_escape"] is True
     # The recorded basis names every axis the evidence is stale on, not just the one this test
@@ -331,7 +345,7 @@ def test_the_stale_basis_escape_promotes_and_is_recorded(tmp_path):
 def test_a_promotion_on_current_evidence_records_the_escape_as_unused(tmp_path):
     _seed_candidates(tmp_path, _spec_dict())
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert summary["stale_cost_basis_escape"] is False
     assert summary["cost_bases"] == [pool.current_cost_basis()]
 
@@ -478,7 +492,7 @@ def test_promotion_derives_unique_display_id_on_collision(tmp_path):
     )
     cid_a, cid_b = pool.candidate_id(a[0]), pool.candidate_id(b[0])
     summary = run_promotion(selectors=[cid_a, cid_b], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     entries = pool.load_active_pool(tmp_path)["active_strategies"]  # re-load validates the invariant
     sids = [e["strategy_id"] for e in entries]
     assert len(set(sids)) == 2 and "S1" in sids                    # one bare, one derived
@@ -502,7 +516,7 @@ def test_promotion_residual_collision_fails_closed(tmp_path):
         # Three same-family lineages in one batch now trip the 5-3 family cap first; escape
         # it explicitly, because the residual collision below is the failure under test.
         run_promotion(selectors=cids, promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW,
                       without_approval=True, allow_family_overflow=True)
     assert "cannot assign a unique strategy_id" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
@@ -526,13 +540,13 @@ def test_promotion_ambiguous_strategy_id_refused(tmp_path):
 
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_AMBIGUOUS" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
 
     old_cid = pool.candidate_id(old[0])
     summary = run_promotion(selectors=[old_cid], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert summary["promoted_candidate_ids"] == [old_cid]
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
     assert entry["strategy_rule_hash"] == old[0]["strategy_rule_hash"]  # not the newest
@@ -1008,12 +1022,12 @@ def test_replace_mode_refuses_to_reactivate_a_terminal_member(tmp_path):
     these". The signature is honest about a smaller effect than the one it authorizes.
     """
     _seed_candidates(tmp_path, _spec_dict())
-    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                   root=tmp_path, now=NOW, without_approval=True)
     _suspend(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
-        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                       root=tmp_path, now=NOW, without_approval=True)
     assert "POOL_SILENT_REACTIVATION" in str(exc.value)
     assert "SUSPENDED" in str(exc.value), "the refusal must name what it is coming back from"
@@ -1026,12 +1040,12 @@ def test_the_reactivation_escape_promotes_and_records_who_came_back(tmp_path):
     """The escape exists because reactivation IS a legitimate operator act — `lifecycle`
     calls it the manual re-validation path. What it may not be is a side effect."""
     _seed_candidates(tmp_path, _spec_dict())
-    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                   root=tmp_path, now=NOW, without_approval=True)
     _suspend(tmp_path)
 
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                             allow_reactivation=True)
     assert summary["reactivation_escape"] is True
     assert summary["reactivated"] == [
@@ -1047,7 +1061,7 @@ def test_an_ordinary_promotion_records_no_reactivation(tmp_path):
     list is a statement rather than an absent key — and the escape reads as unused."""
     _seed_candidates(tmp_path, _spec_dict())
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert summary["reactivated"] == [] and summary["reactivation_escape"] is False
     # Not empty: this promotion really did skip Thomas. That is the point of the field —
     # every escape was already recorded separately, and no record answered "what survived".
@@ -1063,7 +1077,7 @@ def test_reviews_skipped_names_every_review_stepped_around(tmp_path):
                      cost_summary=_stale_summary(taker_fee_bps=2.5, slippage_bps=3.0),
                      bars_replayed=None)
     summary = run_promotion(
-        selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+        selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
         root=tmp_path, now=NOW, without_approval=True,
         allow_stale_cost_basis=True, allow_unrecorded_evidence_depth=True,
         allow_duplicates=True, allow_cluster_siblings=True,
@@ -1106,7 +1120,7 @@ def test_add_mode_reactivates_nothing_by_construction(tmp_path):
     """Add mode keeps the incumbents' own status and the door refuses a candidate already in
     the pool, so nothing can come back — answered without reading the pool at all."""
     _seed_candidates(tmp_path, _spec_dict())
-    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                   root=tmp_path, now=NOW, without_approval=True)
     _suspend(tmp_path)
     cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
@@ -1119,7 +1133,7 @@ def test_the_hash_input_and_the_door_guard_cannot_drift(tmp_path):
     off assembled entries at the install. They must name the same lineages or the approval
     binds one thing and the guard refuses another."""
     _seed_candidates(tmp_path, _spec_dict())
-    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                   root=tmp_path, now=NOW, without_approval=True)
     _suspend(tmp_path)
     entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
@@ -1141,7 +1155,7 @@ def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval
     trading really did change, which is exactly what the approval is supposed to bind.
     """
     _seed_candidates(tmp_path, _spec_dict())
-    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="LIVE",
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False, live_tier="OBSERVATION",
                   root=tmp_path, now=NOW, without_approval=True)
     cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
 
@@ -1170,12 +1184,24 @@ def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval
 def test_the_ask_and_install_doors_consume_one_gate_roster():
     roster = [g.escape_flag for g in PROMOTION_GATES]
     assert len(roster) == len(set(roster)), "an escape flag names exactly one gate"
+    escapable = {flag for flag in roster if flag}
     ask = {name for name in inspect.signature(request_promotion).parameters
            if name.startswith("allow_")}
     install = {name for name in inspect.signature(run_promotion).parameters
                if name.startswith("allow_")}
-    assert ask == set(roster), "the ask door must expose exactly the roster's escapes"
-    assert install == set(roster), "the install door must expose exactly the roster's escapes"
+    assert ask == escapable, "the ask door must expose exactly the roster's escapes"
+    assert install == escapable, "the install door must expose exactly the roster's escapes"
+
+
+def test_the_execution_stage_gate_has_no_escape_and_cannot_grow_one():
+    """PR1c: every other gate on the roster is an operator call with a flag. This one is the
+    ladder, and the ladder is Thomas's — a flag here would be the escape PR1c retired, one door
+    over. The empty escape name matches no key in `escapes`, so the gate always runs."""
+    stage_gates = [g for g in PROMOTION_GATES if not g.escape_flag]
+    assert len(stage_gates) == 1
+    assert stage_gates[0].check.__name__ == "_gate_execution_stage"
+    source = Path(promote_door.__file__).read_text(encoding="utf-8")
+    assert "--allow-unstaged" not in source and "allow_execution_stage" not in source
 
 
 def test_every_roster_escape_is_reachable_from_the_operator_argv():
@@ -1184,7 +1210,8 @@ def test_every_roster_escape_is_reachable_from_the_operator_argv():
     script's own source because argparse builds the parser inside `main`."""
     source = Path(promote_door.__file__).read_text(encoding="utf-8")
     argv_flags = {m.replace("-", "_") for m in re.findall(r'"--(allow-[a-z-]+)"', source)}
-    assert argv_flags == {g.escape_flag for g in PROMOTION_GATES}
+    # The stage gate is deliberately un-escapable (its flag name is empty), so it is not here.
+    assert argv_flags == {g.escape_flag for g in PROMOTION_GATES if g.escape_flag}
 
 
 def _seed_second_lineage(tmp_path, spec_dict, *, window_sha, expectancy=0.6):
@@ -1277,3 +1304,123 @@ def test_the_ask_honours_the_oversized_pool_escape(tmp_path):
     prepared = request_promotion(["S2"], keep_active=True, live_tier="OBSERVATION", now=NOW,
                                  candidates_root=tmp_path, allow_oversized_pool=True)
     assert prepared["approval_request"]["status"] == "PENDING"
+
+
+# --- arming LIVE is Thomas's, every time (PR1c, 2026-09-16) ---------------------
+#
+# The execution-authority audit (2026-09-15) found three ways a strategy reached the LIVE tier
+# without Thomas seeing what he was answering: `--without-approval` skipped the record entirely,
+# `--allow-unconfirmed-holdout` armed on evidence never confirmed on unseen data, and the ask he
+# did see described a LIVE promotion as a paper-stage change with "no order capability".
+
+def _stage(monkeypatch, *, stage="READ_ONLY", valid=False, reason="EXECUTION_STAGE_RECORD_MISSING"):
+    from runtime.mvp_runtime.crypto import execution_stage as es
+
+    status = es.StageStatus(stage=stage, valid=valid, reason_code=reason,
+                            recorded_stage=stage if valid else None)
+    for module in (promotion_mod, promote_door):
+        monkeypatch.setattr(module, "resolve_execution_stage", lambda root=None, **kw: status)
+    return status
+
+
+def test_arming_live_needs_the_execution_stage_that_admits_it(tmp_path, monkeypatch):
+    """The ladder is the machine's one answer to "may this open a real position", so an arming
+    promotion cannot outrun it — and a demotion (which needs no approval) takes the permission
+    back at the next install."""
+    _seed_candidates(tmp_path, _spec_dict())
+    _stage(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                      live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+    assert "LIVE_ARM_ESCAPE_RETIRED" in str(exc.value)
+
+    _stage(monkeypatch, stage="PAPER", valid=True, reason=None)
+    with pytest.raises(ApprovalBlocked) as blocked:
+        promotion_mod.run_promotion_gates(
+            [], keep_active=False, live_tier="LIVE", entries=[], store_root=tmp_path,
+            escapes={}, execution_stage=_stage(monkeypatch, stage="PAPER", valid=True, reason=None),
+        )
+    assert blocked.value.reason_code == "EXECUTION_STAGE_TOO_LOW_TO_ARM"
+    assert "LIVE_AUTONOMOUS" in blocked.value.reason and "OBSERVATION" in blocked.value.reason
+    assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
+
+
+def test_an_observation_promotion_never_reads_the_stage(tmp_path, monkeypatch):
+    """The tier that cannot spend money is not gated by the ladder: a machine at READ_ONLY still
+    papers, and that is the path a demoted machine keeps using."""
+    _seed_candidates(tmp_path, _spec_dict())
+    _stage(monkeypatch)
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                            live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
+    assert summary["promoted_candidate_ids"]
+    entry = pool.load_active_pool(tmp_path)["active_strategies"][0]
+    assert pool.entry_live_tier(entry) == "OBSERVATION"
+
+
+def test_the_live_escapes_are_retired_and_observation_keeps_them(tmp_path, monkeypatch):
+    _seed_candidates(tmp_path, _spec_dict())
+    _stage(monkeypatch, stage="LIVE_AUTONOMOUS", valid=True, reason=None)
+    with pytest.raises(ApprovalBlocked) as blocked:
+        promotion_mod.run_promotion_gates(
+            [], keep_active=False, live_tier="LIVE", entries=[], store_root=tmp_path,
+            escapes={"allow_unconfirmed_holdout": True},
+            execution_stage=_stage(monkeypatch, stage="LIVE_AUTONOMOUS", valid=True, reason=None),
+        )
+    assert blocked.value.reason_code == "LIVE_ARM_ESCAPE_RETIRED"
+    # OBSERVATION keeps the flag: nothing it installs can open a position.
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                            live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
+                            allow_unconfirmed_holdout=True)
+    assert summary["promoted_candidate_ids"]
+
+
+def test_the_install_door_resolves_the_stage_itself_rather_than_trusting_the_ask(tmp_path):
+    """A demotion needs no approval and applies at once, so an approval won at LIVE_AUTONOMOUS
+    must not install on a machine that has since stepped down."""
+    source = Path(promote_door.__file__).read_text(encoding="utf-8")
+    assert "execution_stage=resolve_execution_stage(root, now=now)" in source
+
+
+def test_the_ask_for_a_live_promotion_says_it_arms_real_money(monkeypatch):
+    """Audit FO-5b: every LIVE promotion was announced as a paper-stage change with "no order
+    capability, no live/testnet effect" — in the one text Thomas reads before answering."""
+    import unittest.mock as mock
+
+    from runtime.mvp_runtime import approval as approval_mod
+    from runtime.mvp_runtime import permission
+
+    captured = {}
+
+    def fake_build(bound, **kw):
+        captured.update(kw)
+        return {"ok": True}
+
+    common = dict(candidate_ids=["cand_a"], strategy_ids=["S1"], rule_hashes=["sha256:r"],
+                  keep_active=False, content_sha256="sha256:c", now=NOW)
+    with mock.patch.object(permission, "build_permission_decision", fake_build):
+        permission.build_strategy_promotion_permission_decision({}, live_tier="OBSERVATION", **common)
+        assert captured["action"].risk_level == "ORANGE"
+        assert captured["action"].target_ref == permission.STRATEGY_POOL_PAPER_TARGET_REF
+        assert "cannot open a real position" in captured["action"].risk_reason
+
+        permission.build_strategy_promotion_permission_decision({}, live_tier="LIVE", **common)
+        assert captured["action"].risk_level == "RED"
+        assert captured["action"].target_ref == permission.STRATEGY_POOL_LIVE_TARGET_REF
+        assert "ARMS THESE STRATEGIES FOR REAL MONEY" in captured["action"].risk_reason
+        assert "LIVE_AUTONOMOUS" in captured["action"].risk_reason        # what still has to hold
+        assert "no order capability" not in captured["action"].constraint
+        assert captured["action"].normalized_parameters["live_tier"] == "LIVE"
+
+    ask = {
+        "approval_id": "approval_x", "task_id": "task_x",
+        "validity": {"expires_at": "2026-09-17T00:00:00Z"}, "action_fingerprint": "sha256:x",
+        "approved_action_snapshot": {"action_type": "crypto.strategy_pool.promotion",
+                                     "permission_scope": "RUNTIME_GOVERNANCE",
+                                     "target_ref": permission.STRATEGY_POOL_LIVE_TARGET_REF},
+    }
+    text = approval_mod.format_request(ask)
+    assert "실주문이 다시 나갈 수 있게 되므로" in text          # priced as arming, not "없음"
+    assert "무장 해제" in text and "승인 없이 즉시" in text     # and the reversal named
+    paper = {**ask, "approved_action_snapshot": {**ask["approved_action_snapshot"],
+                                                 "target_ref": permission.STRATEGY_POOL_PAPER_TARGET_REF}}
+    assert "예상 비용: 없음" in approval_mod.format_request(paper)

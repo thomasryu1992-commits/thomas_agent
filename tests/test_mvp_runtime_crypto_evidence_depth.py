@@ -352,7 +352,7 @@ def test_shallow_evidence_is_not_refused_at_the_promotion_door(tmp_path):
     this test keeps pinning that no depth refusal fires."""
     _seed(tmp_path, bars=_TODAY_1D // 4)
     run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                  keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                  keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                   allow_below_entry_bar=True)
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
 
@@ -363,7 +363,7 @@ def test_the_window_behind_a_promotion_rides_onto_the_ledger(tmp_path):
     ledger is the ONLY record, because no gate refused it on the way through."""
     _seed(tmp_path, bars=_TODAY_1D // 4)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW,
                             without_approval=True, allow_below_entry_bar=True)
     assert summary["evidence_depths"] == [f"replayed:{_TODAY_1D // 4}bars_1d_{_TODAY_1D // 4}d"]
     assert summary["evidence_depths"] != [current_evidence_depth("1d")], "the split is legible"
@@ -374,7 +374,7 @@ def test_a_promotion_on_todays_window_records_that_too(tmp_path):
     wrong makes its absence ambiguous between "fine" and "not checked"."""
     _seed(tmp_path, bars=_TODAY_1D)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW,
                             without_approval=True, allow_below_entry_bar=True)
     assert summary["evidence_depths"] == [current_evidence_depth("1d")]
     assert summary["unrecorded_evidence_depth_escape"] is False
@@ -398,7 +398,7 @@ def test_the_door_refuses_evidence_that_records_no_window(tmp_path):
     _seed(tmp_path, bars=None)
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True)
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True)
     assert "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED" in str(exc.value)
     assert pool.load_active_pool(tmp_path) == {"active_strategies": []}, "nothing installed"
 
@@ -417,7 +417,7 @@ def test_the_unrecorded_depth_escape_promotes_and_is_recorded(tmp_path):
     rides along, so the ledger says the window was unreadable rather than merely unremarked."""
     _seed(tmp_path, bars=None)
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                            keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                             allow_unrecorded_evidence_depth=True, allow_below_entry_bar=True)
     assert summary["unrecorded_evidence_depth_escape"] is True
     assert summary["evidence_depths"] == [EVIDENCE_DEPTH_UNRECORDED]
@@ -430,7 +430,7 @@ def test_the_two_escapes_are_separate_keys(tmp_path):
     _seed(tmp_path, bars=None)
     with pytest.raises(SystemExit) as exc:
         run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
-                      keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW, without_approval=True,
+                      keep_active=False, live_tier="OBSERVATION", root=tmp_path, now=NOW, without_approval=True,
                       allow_stale_cost_basis=True)
     assert "CANDIDATE_EVIDENCE_DEPTH_UNRECORDED" in str(exc.value)
 
