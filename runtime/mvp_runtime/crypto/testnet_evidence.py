@@ -51,6 +51,11 @@ EVIDENCE_INCOMPLETE = "TESTNET_EVIDENCE_INCOMPLETE"
 # made, and each maps to a live failure an entry-only rehearsal would have missed.
 RECONCILED = "RECONCILED"
 RESTING_STATUSES = frozenset({"NEW", "PARTIALLY_FILLED"})
+# Both halves of a protected position: the conditional stop (the leg the Algo migration moved and
+# -4120 refused on 2026-08-02) and the target LIMIT, each at its own endpoint.
+REQUIRED_LEGS = ("SL", "TP")
+ALGO_LEGS = frozenset({"SL"})
+TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
 
 
 def evidence_path(root: Path | None = None) -> Path:
@@ -69,6 +74,9 @@ def build_cycle_record(
     base_url_host: str,
     started_at: str,
     completed_at: str,
+    operator: str | None = None,
+    reason: str | None = None,
+    failure: str | None = None,
 ) -> dict[str, Any]:
     """One cycle's row, self-hashed. Stores the venue's answers; judges nothing here."""
     body = {
@@ -87,6 +95,11 @@ def build_cycle_record(
         "protective_legs": [dict(leg) for leg in protective_legs],
         "exit": dict(exit_result),
         "position_reconciliation": dict(position_reconciliation),
+        # Who ran it and why, because a row outlives the argv that made it; and where it stopped
+        # when it stopped, because an interrupted cycle is evidence of what happened.
+        "operator": operator,
+        "reason": reason,
+        "failure": failure,
         "started_at": started_at,
         "completed_at": completed_at,
     }
@@ -104,20 +117,33 @@ def cycle_findings(record: Mapping[str, Any]) -> list[str]:
         findings.append(f"entry did not reconcile ({entry.get('reconcile_status')})")
     if entry.get("mismatches"):
         findings.append(f"entry reconciled with mismatches ({entry.get('mismatches')})")
+    if record.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+        findings.append(f"row is not {EVIDENCE_SCHEMA_VERSION}")
+    if record.get("venue") != VENUE_TESTNET or record.get("venue_host") not in TESTNET_HOSTS:
+        findings.append(f"row is not from the testnet venue ({record.get('venue')} / {record.get('venue_host')})")
+    if record.get("failure"):
+        findings.append(f"the cycle stopped at {record.get('failure')}")
     legs = record.get("protective_legs")
     legs = [leg for leg in legs if isinstance(leg, Mapping)] if isinstance(legs, list) else []
-    if not legs:
-        findings.append("no protective leg was placed (the 2026-08-02 failure is exactly here)")
-    for leg in legs:
+    by_name = {str(leg.get("leg")): leg for leg in legs}
+    # Both legs by name, not "at least one": a cycle that placed a stop and no target proves half
+    # of what a protected position needs, and `len(legs) >= 1` read that as the whole thing
+    # (review of #877).
+    for required in REQUIRED_LEGS:
+        if required not in by_name:
+            findings.append(f"no {required} leg was placed (the 2026-08-02 failure is exactly here)")
+    for name, leg in sorted(by_name.items()):
         if leg.get("observed_status") not in RESTING_STATUSES:
+            findings.append(f"protective leg {name} was not confirmed resting ({leg.get('observed_status')})")
+        # The conditional leg is the one the Algo migration moved and the one -4120 refused; the
+        # target is a plain LIMIT and must NOT claim the algo endpoint.
+        if bool(leg.get("algo")) is not (name in ALGO_LEGS):
             findings.append(
-                f"protective leg {leg.get('leg')} was not confirmed resting "
-                f"({leg.get('observed_status')})"
+                f"protective leg {name} reports algo={leg.get('algo')}, which is not where a "
+                f"{leg.get('order_type')} belongs"
             )
-        if not leg.get("algo"):
-            findings.append(f"protective leg {leg.get('leg')} was not placed at the algo endpoint")
         if leg.get("withdrawn") is not True:
-            findings.append(f"protective leg {leg.get('leg')} was not withdrawn afterwards")
+            findings.append(f"protective leg {name} was not withdrawn afterwards")
     exit_result = record.get("exit") if isinstance(record.get("exit"), Mapping) else {}
     if exit_result.get("reconcile_status") != RECONCILED:
         findings.append(f"exit did not reconcile ({exit_result.get('reconcile_status')})")
@@ -128,6 +154,26 @@ def cycle_findings(record: Mapping[str, Any]) -> list[str]:
     if reconciliation.get("status") != RECONCILED:
         findings.append(f"the position view did not reconcile ({reconciliation.get('status')})")
     return findings
+
+
+def _recorded_ids(path: Path) -> set[str]:
+    """Every cycle id already on disk, read raw. Never raises: this answers "have I written this
+    one already", not "is this history trustworthy"."""
+    ids: set[str] = set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("cycle_id"), str):
+                ids.add(row["cycle_id"])
+    except OSError:
+        return ids
+    return ids
 
 
 def read_cycles(root: Path | None = None) -> list[dict[str, Any]]:
@@ -191,7 +237,10 @@ def append_cycle(record: Mapping[str, Any], root: Path | None = None) -> Path:
     """Append one cycle row. The door's write; idempotent on ``cycle_id``."""
     path = evidence_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if find_cycle(str(record.get("cycle_id")), root) is not None:
+    # Deliberately a raw scan, not `find_cycle`: the verified read raises on an earlier bad row,
+    # and a door that has already reached the venue must still be able to write down what it did
+    # (review of #877). The strictness stays where it belongs — on every READ of the history.
+    if str(record.get("cycle_id")) in _recorded_ids(path):
         return path
     with open(path, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(dict(record), ensure_ascii=False) + "\n")

@@ -23,6 +23,15 @@ from runtime.mvp_runtime.errors import ToolError
 NOW = "2026-09-16T00:00:00Z"
 
 
+def _testnet_auth():
+    return safety_gate.env_only_authorization(
+        flags=testnet_execution.TESTNET_TRADING_FLAGS,
+        provider_id=testnet_execution.TESTNET_PROVIDER_ID,
+        env_var=testnet_execution.TESTNET_TRADING_ENV,
+        opt_in_value=testnet_execution.REAL_TESTNET_TRADING,
+    )
+
+
 def _stage(stage="SIGNED_TESTNET", valid=True, reason=None):
     return es.StageStatus(stage=stage, valid=valid, reason_code=reason,
                           recorded_stage=stage if valid else None)
@@ -153,15 +162,22 @@ def test_the_testnet_guard_bounds_the_order_and_refuses_a_connectivity_test():
 
 # --- the evidence registry -------------------------------------------------------------
 
-def _leg(**overrides):
-    return {"leg": "SL", "algo": True, "observed_status": "NEW", "withdrawn": True, **overrides}
+def _leg(name="SL", **overrides):
+    """One protective leg as the venue answered it. The stop is the conditional (algo) one; the
+    target is a plain LIMIT and must not claim the algo endpoint."""
+    return {"leg": name, "algo": name == "SL", "order_type": "STOP_MARKET" if name == "SL" else "LIMIT",
+            "observed_status": "NEW", "withdrawn": True, **overrides}
+
+
+def _legs(**overrides):
+    return [_leg("SL", **overrides), _leg("TP", **overrides)]
 
 
 def _cycle(**overrides):
     fields = {
         "cycle_id": "cyc_1", "symbol": "BTCUSDT",
         "entry": {"reconcile_status": "RECONCILED", "mismatches": []},
-        "protective_legs": [_leg()],
+        "protective_legs": _legs(),
         "exit_result": {"reconcile_status": "RECONCILED", "reduce_only": True},
         "position_reconciliation": {"status": "RECONCILED"},
         "adapter_tool_id": testnet_execution.TESTNET_ADAPTER_TOOL_ID,
@@ -181,10 +197,14 @@ def test_a_complete_cycle_is_the_whole_cycle(tmp_path):
 @pytest.mark.parametrize("broken,expected", [
     ({"entry": {"reconcile_status": "NOT_FOUND", "mismatches": []}}, "entry did not reconcile"),
     ({"entry": {"reconcile_status": "RECONCILED", "mismatches": ["quantity"]}}, "mismatches"),
-    ({"protective_legs": []}, "no protective leg"),
-    ({"protective_legs": [_leg(observed_status="REJECTED")]}, "not confirmed resting"),
-    ({"protective_legs": [_leg(algo=False)]}, "not placed at the algo endpoint"),
-    ({"protective_legs": [_leg(withdrawn=False)]}, "not withdrawn"),
+    ({"protective_legs": []}, "no SL leg was placed"),
+    ({"protective_legs": [_leg("SL")]}, "no TP leg was placed"),
+    ({"protective_legs": _legs(observed_status="REJECTED")}, "not confirmed resting"),
+    ({"protective_legs": [_leg("SL", algo=False), _leg("TP")]}, "which is not where a"),
+    ({"protective_legs": [_leg("SL"), _leg("TP", algo=True)]}, "which is not where a"),
+    ({"protective_legs": _legs(withdrawn=False)}, "not withdrawn"),
+    ({"venue": "binance_futures"}, "not from the testnet venue"),
+    ({"failure": "ORDER_TRANSPORT"}, "stopped at ORDER_TRANSPORT"),
     ({"exit_result": {"reconcile_status": "UNRECONCILABLE", "reduce_only": True}}, "exit did not reconcile"),
     ({"exit_result": {"reconcile_status": "RECONCILED", "reduce_only": False}}, "not reduceOnly"),
     ({"position_reconciliation": {"status": "DRIFT"}}, "position view did not reconcile"),
@@ -193,7 +213,17 @@ def test_each_half_of_the_cycle_that_history_says_must_be_proven(tmp_path, broke
     """2026-08-02 (both protective legs refused, conditional orders had moved to the Algo API),
     08-03 (a stop accepted but unfindable, never withdrawn) and 08-05 (an algo fill the settle
     path could not read) all happened after the entry. An entry-only rehearsal reproduces none."""
-    record = _cycle(cycle_id="cyc_broken", **broken)
+    # A field the builder does not take is edited into the row and re-hashed, which is what a
+    # writer of the state directory can do — the verdict must not depend on the builder.
+    edits = {k: v for k, v in broken.items() if k in {"venue", "venue_host", "schema_version"}}
+    record = _cycle(cycle_id="cyc_broken", **{k: v for k, v in broken.items() if k not in edits})
+    if edits:
+        from runtime.read_only_kernel import integrity
+
+        body = {k: v for k, v in record.items() if k != "record_sha256"}
+        body.update(edits)
+        body["record_sha256"] = integrity.sha256_record(body)
+        record = body
     findings = testnet_evidence.cycle_findings(record)
     assert any(expected in f for f in findings), findings
     testnet_evidence.append_cycle(record, tmp_path)
@@ -206,7 +236,7 @@ def test_each_half_of_the_cycle_that_history_says_must_be_proven(tmp_path, broke
 def test_the_verdict_is_derived_not_stored(tmp_path):
     """The retired canary gate counted a stored flag on a frozen file (PR1r). A row that CLAIMS
     it is complete proves nothing: the finding comes from the venue's own answers."""
-    record = _cycle(cycle_id="cyc_claim", protective_legs=[_leg(observed_status="REJECTED")])
+    record = _cycle(cycle_id="cyc_claim", protective_legs=_legs(observed_status="REJECTED"))
     body = {k: v for k, v in record.items() if k != "record_sha256"}
     body["complete"] = True            # a claim nobody reads
     from runtime.read_only_kernel import integrity
@@ -299,21 +329,114 @@ def test_the_door_records_one_cycle_and_counts_it_on_the_testnet_venue(tmp_path,
 
     class _Adapter(testnet_execution.DryRunTestnetOrderAdapter):
         network_egress = True
-        _authorization = safety_gate.env_only_authorization(
-            flags=testnet_execution.TESTNET_TRADING_FLAGS,
-            provider_id=testnet_execution.TESTNET_PROVIDER_ID,
-            env_var=testnet_execution.TESTNET_TRADING_ENV,
-            opt_in_value=testnet_execution.REAL_TESTNET_TRADING,
-        )
+        _authorization = _testnet_auth()
 
     monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Adapter())
     monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
     monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
     out = door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas",
                          reason="evidence", root=tmp_path, now=NOW)
-    assert out["cycle_id"]
     rows = testnet_evidence.read_cycles(tmp_path)
     assert len(rows) == 1 and rows[0]["venue"] == VENUE_TESTNET
+    # The row a happy cycle leaves must actually BE evidence — the first draft recorded the exit's
+    # own status as the position reconciliation and called every leg an algo order, so a row could
+    # read complete having proven neither (review of #877).
+    assert out["complete"] is True, out["findings"]
+    assert testnet_evidence.cycle_findings(rows[0]) == []
+    assert [leg["algo"] for leg in rows[0]["protective_legs"]] == [True, False]
+    assert rows[0]["position_reconciliation"]["status"] == testnet_evidence.RECONCILED
+    assert "venue_positions" in rows[0]["position_reconciliation"], "the venue was never asked"
+    assert rows[0]["operator"] == "thomas" and rows[0]["failure"] is None
     # The orders counted against the TESTNET venue's counter, never the live one.
     assert live_order.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
     assert live_order.count_today(tmp_path) == 0
+
+
+def test_a_venue_that_answers_badly_cannot_produce_evidence(tmp_path, monkeypatch):
+    """Each of the three live incidents, as the venue would answer them, must land in the row as a
+    finding rather than being smoothed into a complete cycle."""
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+
+    class _RefusesTheStop(testnet_execution.DryRunTestnetOrderAdapter):
+        """2026-08-02: the conditional leg is refused (-4120 lived here)."""
+
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, order_request, *, timeout_seconds=10):
+            if order_request.get("algoType"):
+                raise ToolError("ORDER_REJECTED", "venue rejected the order (code -4120)")
+            return super().submit(order_request, timeout_seconds=timeout_seconds)
+
+    class _LeavesThePositionOpen(testnet_execution.DryRunTestnetOrderAdapter):
+        """2026-08-05's shape: the exit reconciles but the venue still shows the position."""
+
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def open_positions(self, symbol=None, *, timeout_seconds=10):
+            return [{"symbol": symbol or "BTCUSDT", "positionAmt": "0.001"}]
+
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _RefusesTheStop())
+    refused = door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="t", reason="r",
+                             root=tmp_path, now=NOW)
+    assert refused["complete"] is False
+    assert any("SL" in f for f in refused["findings"]), refused["findings"]
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter",
+                        lambda **kw: _LeavesThePositionOpen())
+    still_open = door.run_cycle(symbol="BTCUSDT", quantity=0.002, operator="t", reason="r",
+                                root=tmp_path, now="2026-09-16T00:01:00Z")
+    assert still_open["complete"] is False
+    assert any("position view did not reconcile" in f for f in still_open["findings"])
+    assert testnet_evidence.complete_cycles(tmp_path) == []
+
+
+def test_a_cycle_interrupted_after_the_entry_is_still_recorded(tmp_path, monkeypatch):
+    """The venue has been reached: what happened has to be written down, and the row is what says
+    a position may still be open (review of #877)."""
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+
+    class _DiesAfterTheEntry(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, order_request, *, timeout_seconds=10):
+            if order_request.get("algoType"):
+                raise safety_gate.SafetyGateBlocked("ENV_OPT_IN_WITHDRAWN", "the opt-in went away")
+            return super().submit(order_request, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _DiesAfterTheEntry())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    monkeypatch.setattr(door, "place_bracket_leg",
+                        lambda intent, **kw: (_ for _ in ()).throw(
+                            safety_gate.SafetyGateBlocked("ENV_OPT_IN_WITHDRAWN", "gone")))
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="t", reason="r",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_CYCLE_INCOMPLETE"
+    rows = testnet_evidence.read_cycles(tmp_path)
+    assert len(rows) == 1 and rows[0]["failure"] == "ENV_OPT_IN_WITHDRAWN"
+    assert rows[0]["entry"]["reconcile_status"] == testnet_evidence.RECONCILED
+    assert testnet_evidence.complete_cycles(tmp_path) == []
+
+
+def test_an_earlier_bad_row_does_not_stop_the_door_recording_this_one(tmp_path):
+    """The verified read is strict on purpose; the WRITE must not inherit it, or a door that has
+    already reached the venue loses the record of what it did (review of #877)."""
+    path = testnet_evidence.evidence_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tampered = {**_cycle(cycle_id="cyc_old"), "symbol": "ETHUSDT"}   # hash left alone
+    path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+    testnet_evidence.append_cycle(_cycle(cycle_id="cyc_new"), tmp_path)
+    assert "cyc_new" in path.read_text(encoding="utf-8")
+    with pytest.raises(ToolError):
+        testnet_evidence.read_cycles(tmp_path)

@@ -495,8 +495,9 @@ TUNABLES: tuple[Tunable, ...] = (
             "not an exposure"),
     Tunable("TESTNET_MAX_DAILY_ORDERS", testnet_execution.TESTNET_MAX_DAILY_ORDERS,
             "crypto/testnet_execution.py", OPERATOR,
-            "how many testnet orders a day this path will place; one evidence cycle is four, so 20 "
-            "is room to retry a failing cycle several times without an unbounded loop",
+            "how many testnet orders a day this path counts; one evidence cycle counts two (the "
+            "entry and the exit — protective legs reach the venue but are not counted, the live "
+            "path's own convention), so 20 is room to retry a failing cycle without an unbounded loop",
             "a debugging session that genuinely needs more attempts in one day"),
     Tunable("HARD_CEILING_USDT", live_budget.HARD_CEILING_USDT, "crypto/live_budget.py", OPERATOR,
             "the largest per-order cap a registered budget may declare; 200 at bring-up, 500 since",

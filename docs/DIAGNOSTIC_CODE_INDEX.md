@@ -7,7 +7,7 @@ Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **
 - **562** distinct codes across **1078** raise sites
 - **22** exception classes carry them
 - **68** codes are raised from more than one module (see below)
-- **133** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **134** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -1040,13 +1040,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TARGET_NOT_CANDIDATE_ROLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 219 | `_parse_target` | `not role_id or not version` |
 | `TARGET_NOT_SWITCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 474 | `_spend` | `prefix is None` |
 | `TASK_NOT_FINISHED` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 298 | `apply_registry_command` | `not entry.is_terminal` |
-| `TESTNET_EVIDENCE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 158 | `read_cycles` | `cycle_id in seen` |
-| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 182 | `assert_complete_cycle` | `row is None` |
-| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 185 | `assert_complete_cycle` | `findings` |
-| `TESTNET_EVIDENCE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 154 | `read_cycles` | `not isinstance(stored, str) or recomputed != stored` |
-| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 142 | `read_cycles` | `—` |
-| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 152 | `read_cycles` | `—` |
-| `TESTNET_ORDER_HOST_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_execution.py` | 142 | `__init__` | `host not in ALLOWED_TESTNET_HOSTS` |
+| `TESTNET_EVIDENCE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 204 | `read_cycles` | `cycle_id in seen` |
+| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 228 | `assert_complete_cycle` | `row is None` |
+| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 231 | `assert_complete_cycle` | `findings` |
+| `TESTNET_EVIDENCE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 200 | `read_cycles` | `not isinstance(stored, str) or recomputed != stored` |
+| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 188 | `read_cycles` | `—` |
+| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 198 | `read_cycles` | `—` |
+| `TESTNET_ORDER_HOST_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_execution.py` | 161 | `__init__` | `host not in ALLOWED_TESTNET_HOSTS` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 241 | `run_validation_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 686 | `run_analysis_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 828 | `collect_market_data` | `—` |

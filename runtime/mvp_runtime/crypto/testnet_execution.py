@@ -68,6 +68,8 @@ TESTNET_ADAPTER_TOOL_VERSION = "0.1.0"
 # The venue's own testnet host. A separate constant and a separate allowlist: widening the live
 # one would let the live adapter sign for testnet, which is the reverse of the property wanted.
 TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+# The account's own position view, read after the cycle closes. GET only.
+POSITION_RISK_PATH = "/fapi/v2/positionRisk"
 ALLOWED_TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
 
 # The opt-in and the credentials, all distinct from the live ones. `MVP_LIVE_TRADING` neither
@@ -95,23 +97,33 @@ class DryRunTestnetOrderAdapter:
 
     def __init__(self) -> None:
         self._submitted: dict[str, dict[str, Any]] = {}
+        self.positions: list[dict[str, Any]] = []
 
     def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
         req = dict(order_request)
         client_id = str(req.get("clientAlgoId") or req["newClientOrderId"])
-        self._submitted[client_id] = req
+        # Recorded under the endpoint it would really go to, so a caller that asks the wrong one
+        # later gets the venue's real answer (nothing there) rather than a convenient hit. The
+        # first draft ignored `algo` here, which hid a door that cancelled a plain LIMIT on the
+        # algo endpoint — the 2026-08-03 ghost-order shape (review of #877).
+        self._submitted[client_id] = {**req, "_algo": is_algo_request(req)}
         return {"dry_run": True, "accepted": True, "clientOrderId": client_id}
 
     def fetch_order(self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
                     algo: bool = False) -> dict[str, Any] | None:
         req = self._submitted.get(client_order_id)
-        if req is None:
+        if req is None or bool(req.get("_algo")) != bool(algo):
             return None
         quantity = str(req.get("quantity") or "0")
+        # A MARKET order fills; anything else rests. The first draft answered FILLED for every
+        # non-algo request, which made a plain LIMIT target read as executed — an inert adapter
+        # that cannot represent a resting leg cannot rehearse the half of the cycle that matters
+        # (review of #877).
+        rests = str(req.get("type") or "").upper() != "MARKET"
         return {
             "dry_run": True, "symbol": req.get("symbol"), "side": req.get("side"),
-            "status": "NEW" if algo else "FILLED",
-            "executedQty": "0" if algo else quantity,
+            "status": "NEW" if rests else "FILLED",
+            "executedQty": "0" if rests else quantity,
             "origQty": quantity,
             "reduceOnly": bool(req.get("reduceOnly")),
             "clientOrderId": client_order_id,
@@ -119,7 +131,14 @@ class DryRunTestnetOrderAdapter:
 
     def cancel_order(self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
                      algo: bool = False) -> dict[str, Any] | None:
-        return {"dry_run": True, "status": "CANCELED"} if self._submitted.pop(client_order_id, None) else None
+        req = self._submitted.get(client_order_id)
+        if req is None or bool(req.get("_algo")) != bool(algo):
+            return None        # the venue's own "unknown order" for a query on the wrong endpoint
+        self._submitted.pop(client_order_id, None)
+        return {"dry_run": True, "status": "CANCELED"}
+
+    def open_positions(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        return [p for p in self.positions if symbol is None or p.get("symbol") == symbol]
 
 
 class BinanceTestnetOrderAdapter:
@@ -232,6 +251,23 @@ class BinanceTestnetOrderAdapter:
         if not isinstance(body, dict):
             return None
         return normalize_algo_order(body) if algo else body
+
+    def open_positions(self, symbol: str | None = None, *, timeout_seconds: int = 10) -> list[dict[str, Any]]:
+        """What the venue says this account holds. Read-only.
+
+        The cycle's last question — "is the position actually gone?" — has to be answered by the
+        venue, not by the exit's own reconcile status. Recording the exit twice under two names
+        was the first draft's mistake (review of #877): it made the one check that would have
+        caught 2026-08-05 (a leg that filled while the book still said OPEN) unable to fire."""
+        body, code = self._signed_request(
+            "GET", POSITION_RISK_PATH,
+            {} if symbol is None else {"symbol": symbol},
+            timeout_seconds=timeout_seconds,
+        )
+        if code is not None:
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(ORDER_REJECTED, f"testnet refused the position query (code {code}): {msg}")
+        return [p for p in body if isinstance(p, dict)] if isinstance(body, list) else []
 
     def cancel_order(self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,
                      algo: bool = False) -> dict[str, Any] | None:
