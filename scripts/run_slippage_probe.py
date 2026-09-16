@@ -25,12 +25,12 @@
 ``--fire`` is real money and every run of it is Thomas's. It hard-refuses unless
 ``MVP_LIVE_TRADING=real`` selects the capable adapter — the inert dry-run selector is
 surfaced as ``PROBE_LIVE_TRADING_OFF``, never as a silent dry run — and the order passes
-the SAME final guard the canary door uses (canary mode: the deliberate one-at-a-time
-phrase, ``MVP_LIVE_CANARY_CONFIRMATION``, authorizes it; the promotion gate is the one
-check that does not apply, exactly as it does not apply to a canary). The daily-loss
-breaker, the bracket breaker, the R-based risk guard, the registered budget's caps and
-allowlist, and the daily order counter all apply — a probe is a smaller real order, not a
-different kind of one.
+the SAME final guard the autonomous leg uses, in canary mode: the deliberate one-at-a-time
+phrase, ``MVP_LIVE_CANARY_CONFIRMATION``, authorizes it instead of the autonomous one, and
+that is the only difference (the canary door and its promotion gate were removed on
+2026-09-15, PR1r). The daily-loss breaker, the bracket breaker, the R-based risk guard, the
+registered budget's caps and allowlist, and the daily order counter all apply — a probe is a
+smaller real order, not a different kind of one.
 
 The probe position is booked in the ordinary live book with the stop leg's client id, so
 the scheduler's live leg sees a tracked, protected position rather than venue drift — if
@@ -174,9 +174,9 @@ def _read_price(symbol: str, *, now: str, root: Path | None, timeout_seconds: in
 
 
 def _audit_order(governance, submit_result, *, guard, now, root) -> str | None:
-    """The post-order half of EXECUTE_AND_REPORT, best-effort past the venue (the canary
-    door's posture: the money already moved, so a failure here is reported, never allowed
-    to imply the order did not happen)."""
+    """The post-order half of EXECUTE_AND_REPORT, best-effort past the venue (the posture
+    the removed canary door set: the money already moved, so a failure here is reported,
+    never allowed to imply the order did not happen)."""
     try:
         event, _sha = live_governance.report_live_order(
             governance, submit_result, guard_verdict=guard, now=now, repo_root=root,
@@ -380,7 +380,7 @@ def run_fire(
     """Place ONE probe synchronously: entry, resting stop, settle (or timeout-close).
 
     Every refusal below is typed and happens before any order; past the entry submit the
-    posture flips to the canary door's — report everything, imply nothing."""
+    posture flips — report everything, imply nothing."""
     symbol = str(symbol).strip().upper()
     now = timeutil.utc_now_iso()
 
@@ -501,21 +501,20 @@ def run_fire(
         gate_open=True,  # the capable adapter above IS the opt-in
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
-        clean_canary_orders=live_promotion.clean_canary_order_count(root)[0],
         submitted_today=count_today(root),
         current_open_notional_usdt=open_notional,
         limits=limits,
         budget_registered=bool(budget.get("valid")),
         allowed_symbols=budget.get("symbol_allowlist") or (),
         # Canary mode: a probe is the guard's own definition of a deliberate operator
-        # order — authorized by the canary phrase, exempt only from the promotion gate.
+        # order — authorized by the canary phrase, never the autonomous one.
         canary=True,
     )
     print(render_guard_text(verdict))
     if not verdict["approved"]:
         raise _Refusal(probe.PROBE_GUARD_REFUSED, "the final order guard refused; fix what it names")
 
-    # Governance BEFORE the order: a refusal here costs nothing (the canary door's rule).
+    # Governance BEFORE the order: a refusal here costs nothing.
     governance = live_governance.prepare_live_order_governance(
         intent, purpose=live_governance.PURPOSE_CANARY, now=now, repo_root=root,
     )
@@ -540,7 +539,7 @@ def run_fire(
         )
     finally:
         # In `finally`: an ambiguous submit may have reached the venue and must consume
-        # daily budget (the canary door's rule, verbatim).
+        # daily budget (carried over verbatim from the removed canary door).
         try:
             counter.record_submission()
         except Exception as exc:  # noqa: BLE001 — past the venue; report, never raise

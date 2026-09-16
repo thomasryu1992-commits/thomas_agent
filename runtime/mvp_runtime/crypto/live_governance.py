@@ -51,8 +51,8 @@ LIVE_GOVERNANCE_VERSION = "live_governance.v0.1"
 LIVE_TRADER_ROLE_CEILING = "P5"
 
 # Why a canary and an autonomous order are recorded distinctly: they are authorized by different
-# confirmation phrases and the canary is exempt from the promotion gate, so a reader of the audit
-# trail must be able to tell which capability was exercised.
+# confirmation phrases (canary mode is the slippage probe's since the door went, 2026-09-15), so a
+# reader of the audit trail must be able to tell which capability was exercised.
 PURPOSE_CANARY = "canary"
 PURPOSE_AUTONOMOUS = "autonomous"
 

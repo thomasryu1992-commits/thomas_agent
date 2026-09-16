@@ -17,10 +17,7 @@ from tests._helpers import make_gate_authorization
 from runtime.mvp_runtime.crypto import live_pnl
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
-    ORDER_NOTIONAL_PRICE_UNKNOWN,
-    ORDER_NOTIONAL_UNDERSTATED,
     DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT,
-    DEFAULT_MIN_CLEAN_CANARY_ORDERS,
     LIVE_CONFIRMATION_PHRASE,
     STATUS_BLOCKED,
     STATUS_READY,
@@ -28,7 +25,6 @@ from runtime.mvp_runtime.crypto.live_order import (
     LiveOrderCounter,
     LiveOrderLimits,
     build_live_order_intent,
-    check_declared_notional,
     count_today,
     enrich_order_identity,
     evaluate_live_close_guard,
@@ -85,7 +81,6 @@ def _ready_limits(**overrides) -> LiveOrderLimits:
         max_daily_order_count=2,
         max_open_notional_usdt=120.0,
         daily_loss_limit_usdt=20.0,
-        min_clean_canary_orders=3,
         confirmation=LIVE_CONFIRMATION_PHRASE,
         manual_kill_switch=False,
     )
@@ -110,7 +105,7 @@ def _intent(**overrides):
 def _ready(**kw):
     facts = dict(
         gate_open=True, runtime_active=True, daily_loss_breached=False,
-        clean_canary_orders=3, submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=True, allowed_symbols=["BTCUSDT"], limits=_ready_limits(),
     )
     facts.update(kw)
@@ -334,11 +329,6 @@ def test_tripped_breaker_blocks():
     assert any("halted for today" in b for b in verdict["blocks"])
 
 
-def test_insufficient_canary_evidence_blocks():
-    verdict = evaluate_live_order_guard(_intent(), **_ready(clean_canary_orders=1))
-    assert any("promotion not ready" in b for b in verdict["blocks"])
-
-
 def test_connectivity_probe_cannot_use_the_live_path():
     verdict = evaluate_live_order_guard(_intent(connectivity_test=True), **_ready())
     assert any("connectivity_test" in b for b in verdict["blocks"])
@@ -395,7 +385,7 @@ def test_checks_accumulate_rather_than_short_circuiting():
     verdict = evaluate_live_order_guard(
         _intent(),
         **_ready(gate_open=False, runtime_active=False, daily_loss_breached=True,
-                 clean_canary_orders=0, limits=_ready_limits(confirmation="", manual_kill_switch=True)),
+                 submitted_today=2, limits=_ready_limits(confirmation="", manual_kill_switch=True)),
     )
     assert len(verdict["blocks"]) >= 6
 
@@ -429,10 +419,9 @@ def test_resolve_limits_uses_the_registered_budget(tmp_path):
 
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
                 max_daily_order_count=2, max_open_notional_usdt=120.0,
-                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+                daily_loss_limit_usdt=20.0)
     rec = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
-        valid_until="2026-08-25T00:00:00Z", registered_by="thomas", registered_at="2026-07-25T00:00:00Z")
+        caps=caps, symbol_allowlist=["BTCUSDT"], registered_by="thomas", registered_at="2026-07-25T00:00:00Z")
     live_budget.write_registered_budget(rec, root=tmp_path)
     limits, status = resolve_live_order_limits(tmp_path, now="2026-08-01T00:00:00Z")
     assert status["valid"] is True
@@ -448,7 +437,7 @@ def test_resolve_limits_without_a_budget_is_blocking(tmp_path):
     assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
     guard = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        clean_canary_orders=3, submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=status["valid"], limits=limits)
     assert guard["approved"] is False
     assert any("registered live-trading budget" in b for b in guard["blocks"])
@@ -567,23 +556,29 @@ def test_counter_selection_is_inert_by_default(tmp_path, monkeypatch):
 
 # === increment 2b: the canary guard mode ===========================================
 
-def test_canary_is_exempt_from_the_promotion_gate():
-    """The chicken-and-egg: requiring >= 3 clean canaries before the FIRST canary can be placed
-    is unsatisfiable. A canary is what earns that evidence, so the gate does not apply to it."""
+def test_neither_mode_is_asked_for_canary_evidence():
+    """Retired 2026-09-15 (PR1r, Thomas): the clean-canary promotion gate went with the canary
+    door. Canary mode used to be the one exemption from it; now there is no count to exempt
+    from, so the guard does not take one and no verdict mentions one."""
+    import inspect
+
     from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
-    facts = _ready(clean_canary_orders=0,
-                   limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE))
-    verdict = evaluate_live_order_guard(_intent(), canary=True, **facts)
-    assert verdict["approved"] is True and verdict["canary"] is True
-    # ...while the autonomous path with the same zero evidence is still blocked.
-    assert evaluate_live_order_guard(_intent(), **_ready(clean_canary_orders=0))["approved"] is False
+    assert "clean_canary_orders" not in inspect.signature(evaluate_live_order_guard).parameters
+    autonomous = evaluate_live_order_guard(_intent(), **_ready())
+    assert autonomous["approved"] is True and autonomous["canary"] is False
+    assert not any("promotion" in b or "canary" in b for b in autonomous["blocks"])
+    assert "clean_canary_orders" not in autonomous
+    canary = evaluate_live_order_guard(
+        _intent(), canary=True,
+        **_ready(limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE)))
+    assert canary["approved"] is True and canary["canary"] is True
 
 
 def test_the_autonomous_phrase_cannot_authorize_a_canary():
     """One phrase per capability, in both directions."""
     from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_ENV
     # Only the autonomous phrase is set (that is what _ready_limits does) => a canary is refused.
-    verdict = evaluate_live_order_guard(_intent(), canary=True, **_ready(clean_canary_orders=0))
+    verdict = evaluate_live_order_guard(_intent(), canary=True, **_ready())
     assert verdict["approved"] is False
     assert any(CANARY_CONFIRMATION_ENV in b for b in verdict["blocks"])
 
@@ -605,28 +600,31 @@ def test_the_canary_phrase_cannot_authorize_autonomous_trading():
     (dict(current_open_notional_usdt=90.0), "open exposure"),
 ])
 def test_a_canary_still_obeys_every_other_check(fact, needle):
-    """Only the promotion gate and the phrase differ; a canary is not a bypass."""
+    """Only the phrase differs; a canary is not a bypass."""
     from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
-    facts = _ready(clean_canary_orders=0,
-                   limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE))
+    facts = _ready(limits=_ready_limits(canary_confirmation=CANARY_CONFIRMATION_PHRASE))
     facts.update(fact)
     verdict = evaluate_live_order_guard(_intent(), canary=True, **facts)
     assert verdict["approved"] is False
     assert any(needle in b for b in verdict["blocks"])
 
 
-def test_canary_mode_defaults_off_so_the_promotion_gate_is_fail_closed():
-    facts = _ready(clean_canary_orders=0)
-    assert evaluate_live_order_guard(_intent(), **facts)["canary"] is False
-    assert any("promotion not ready" in b for b in evaluate_live_order_guard(_intent(), **facts)["blocks"])
+def test_canary_mode_defaults_off_so_the_autonomous_phrase_is_what_is_asked():
+    """A caller that does not say canary is judged on the autonomous phrase, so a machine holding
+    only the canary phrase refuses it."""
+    from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
+    facts = _ready(limits=_ready_limits(confirmation="", canary_confirmation=CANARY_CONFIRMATION_PHRASE))
+    verdict = evaluate_live_order_guard(_intent(), **facts)
+    assert verdict["canary"] is False and verdict["approved"] is False
+    assert any(CONFIRMATION_ENV in b for b in verdict["blocks"])
 
 
 def test_a_canary_still_refuses_a_manual_kill_and_a_connectivity_probe():
     from runtime.mvp_runtime.crypto.live_order import CANARY_CONFIRMATION_PHRASE
-    killed = _ready(clean_canary_orders=0, limits=_ready_limits(
+    killed = _ready(limits=_ready_limits(
         canary_confirmation=CANARY_CONFIRMATION_PHRASE, manual_kill_switch=True))
     assert evaluate_live_order_guard(_intent(), canary=True, **killed)["approved"] is False
-    probe = _ready(clean_canary_orders=0, limits=_ready_limits(
+    probe = _ready(limits=_ready_limits(
         canary_confirmation=CANARY_CONFIRMATION_PHRASE))
     verdict = evaluate_live_order_guard(_intent(connectivity_test=True), canary=True, **probe)
     assert verdict["approved"] is False
@@ -635,22 +633,21 @@ def test_a_canary_still_refuses_a_manual_kill_and_a_connectivity_probe():
 # --- the seam: resolved limits, not hand-built ones -----------------------------
 #
 # Every canary test above builds its limits with `_ready_limits(canary_confirmation=...)`.
-# The canary SCRIPT does not — it calls `resolve_live_order_limits`, which until 2026-07-26
+# A real caller does not — it calls `resolve_live_order_limits`, which until 2026-07-26
 # dropped the canary phrase on both branches. Both sides were tested; the join was not, so
-# `place_canary_order.py` was permanently refused with "canary confirmation phrase not
-# present" — the only live door there is, and the one that has to work before any autonomous
-# path can. These test the join.
+# the canary door of the day (`place_canary_order.py`, removed 2026-09-15) was permanently
+# refused with "canary confirmation phrase not present". The slippage probe composes the same
+# join today (`scripts/run_slippage_probe.py --fire`). These test the join.
 
 def _register_budget(root, **cap_overrides):
     from runtime.mvp_runtime.crypto import live_budget
 
     caps = dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
                 max_daily_order_count=2, max_open_notional_usdt=120.0,
-                daily_loss_limit_usdt=20.0, min_clean_canary_orders=3)
+                daily_loss_limit_usdt=20.0)
     caps.update(cap_overrides)
     record = live_budget.build_live_trading_budget_record(
-        caps=caps, symbol_allowlist=["BTCUSDT"], valid_from="2026-07-25T00:00:00Z",
-        valid_until="2026-08-25T00:00:00Z", registered_by="thomas",
+        caps=caps, symbol_allowlist=["BTCUSDT"], registered_by="thomas",
         registered_at="2026-07-25T00:00:00Z")
     live_budget.write_registered_budget(record, root=root)
 
@@ -677,7 +674,7 @@ def test_resolve_carries_both_operator_phrases_on_every_branch(tmp_path, monkeyp
 
 def test_the_canary_the_script_would_place_is_actually_approvable(tmp_path, monkeypatch):
     """The regression this section exists for: resolve + the canary guard, exactly as
-    `scripts/place_canary_order.py` composes them, must be able to reach approved."""
+    `scripts/run_slippage_probe.py` composes them, must be able to reach approved."""
     from runtime.mvp_runtime.crypto.live_order import (
         CANARY_CONFIRMATION_PHRASE, resolve_live_order_limits,
     )
@@ -688,9 +685,7 @@ def test_the_canary_the_script_would_place_is_actually_approvable(tmp_path, monk
 
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        # 0 clean canaries is the real state before the first one; canary mode is what
-        # exempts the promotion gate, and the whole point of this path.
-        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=status["valid"],
         # Composed from the same resolved budget the script uses — the parity this test is
         # for. Reading the allowlist off `status` rather than restating it here is what keeps
@@ -716,11 +711,109 @@ def test_the_autonomous_phrase_alone_still_cannot_authorize_a_canary(tmp_path, m
 
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=status["valid"], limits=limits, canary=True,
     )
     assert verdict["approved"] is False
     assert any("canary confirmation phrase not present" in b for b in verdict["blocks"])
+
+
+# --- every budget shape already on disk, through to the close guard (2026-09-15, PR1r) --------
+#
+# Two retirements changed what a budget on disk can look like. `caps.min_clean_canary_orders` and
+# the validity window (`valid_from` / `valid_until`) both left the schema's `required` list but
+# stay declared, because budgets registered before PR1r carry them inside their self-hash
+# (production's reads 4, window to 2027-08-30), and a budget built today omits all three. A stored
+# window is still honoured: past it the budget is invalid, as before. The resolver runs at the top
+# of the live leg, BEFORE anything is settled or protected, so a subscript on any of the optional
+# fields would raise there on the new shape and leave every open position unmanaged. Each shape —
+# usable, lapsed, damaged — is driven through the resolver to the close guard: the path that has
+# to stay open whatever the budget says.
+
+_SHAPE_NOW = "2026-09-15T00:00:00Z"
+
+
+def _legacy_budget_on_disk(root, *, valid_until: str = "2027-08-30T00:00:00Z", drop=(),
+                           tamper: bool = False):
+    """A budget as the pre-PR1r builder wrote it, hashed raw: nothing today can build this shape.
+    ``drop`` removes top-level keys before hashing (a verifiable damaged shape); ``tamper`` edits a
+    cap after hashing."""
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_budget
+
+    body = {
+        "schema_version": "live_trading_budget.v0.1", "budget_id": "budget_0123456789abcdef0123",
+        "venue": "binance_futures", "symbol_allowlist": ["BTCUSDT"],
+        "caps": {"max_order_notional_usdt": 60.0, "absolute_max_notional_usdt": 200.0,
+                 "max_daily_order_count": 2, "max_open_notional_usdt": 120.0,
+                 "daily_loss_limit_usdt": 20.0, "min_clean_canary_orders": 4},
+        "valid_from": "2026-07-25T00:00:00Z", "valid_until": valid_until,
+        "registered_by": "thomas", "registered_at": "2026-07-25T00:00:00Z",
+    }
+    for key in drop:
+        del body[key]
+    body["record_sha256"] = integrity.sha256_record(body)
+    if tamper:
+        body["caps"]["daily_loss_limit_usdt"] = 999.0     # edited after hashing
+    path = live_budget.budget_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body), encoding="utf-8")
+
+
+# shape -> the budget_status error it must read as (None = a usable budget)
+_BUDGET_SHAPES = {
+    "legacy_inside_its_window": None,
+    "built_today": None,
+    "legacy_past_its_window": "OUTSIDE_VALIDITY_WINDOW",
+    "legacy_with_half_a_window": "LIVE_BUDGET_INVALID",
+    "tampered": "LIVE_BUDGET_TAMPERED",
+}
+
+
+@pytest.mark.parametrize("shape", list(_BUDGET_SHAPES))
+def test_every_budget_shape_resolves_and_the_close_path_stays_open(tmp_path, monkeypatch, shape):
+    from runtime.mvp_runtime.crypto import live_budget
+    from runtime.mvp_runtime.crypto.live_order import resolve_live_order_limits
+
+    monkeypatch.setenv(CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE)
+    if shape == "built_today":
+        _register_budget(tmp_path)
+        on_disk = json.loads(live_budget.budget_path(tmp_path).read_text(encoding="utf-8"))
+        assert "min_clean_canary_orders" not in on_disk["caps"], "the builder writes the retired cap"
+        assert "valid_from" not in on_disk and "valid_until" not in on_disk, "the builder writes a window"
+    else:
+        _legacy_budget_on_disk(
+            tmp_path,
+            valid_until="2026-08-25T00:00:00Z" if shape == "legacy_past_its_window" else "2027-08-30T00:00:00Z",
+            drop=("valid_until",) if shape == "legacy_with_half_a_window" else (),
+            tamper=shape == "tampered",
+        )
+    # Spelled out as literals in `_BUDGET_SHAPES`, so a renamed code cannot pass silently.
+    expected_error = _BUDGET_SHAPES[shape]
+
+    status = live_budget.budget_status(tmp_path, now=_SHAPE_NOW)          # total: never raises
+    limits, resolved = resolve_live_order_limits(tmp_path, now=_SHAPE_NOW)
+    assert status["registered"] is True and status["error"] == expected_error
+    assert resolved["valid"] is status["valid"]
+
+    entry = evaluate_live_order_guard(
+        _intent(), **_ready(limits=limits, budget_registered=resolved["valid"],
+                            allowed_symbols=resolved.get("symbol_allowlist") or ()))
+    if expected_error is None:
+        assert status["valid"] is True
+        assert limits.max_order_notional_usdt == 60.0 and limits.max_daily_order_count == 2
+        assert entry["approved"] is True, entry["blocks"]
+    else:
+        # Entries refuse on the blocking defaults — a lapsed legacy budget is not revived.
+        assert status["valid"] is False
+        assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
+        assert entry["approved"] is False
+        assert any("no valid registered live-trading budget" in b for b in entry["blocks"])
+
+    # Both phrases survive either branch, and the close is judged on the phrase alone.
+    assert limits.confirmation_present() is True
+    close = evaluate_live_close_guard(_intent(reduce_only=True), gate_open=True, limits=limits)
+    assert close["status"] == STATUS_READY and close["approved"] is True, close["blocks"]
 
 
 def test_neither_guard_has_an_env_cap_fallback():
@@ -750,7 +843,6 @@ def test_from_env_cannot_produce_a_cap(monkeypatch):
         ("MVP_LIVE_MAX_DAILY_ORDER_COUNT", "99"),
         ("MVP_LIVE_MAX_OPEN_NOTIONAL_USDT", "9999"),
         ("MVP_LIVE_DAILY_LOSS_LIMIT_USDT", "500"),
-        ("MVP_LIVE_MIN_CLEAN_CANARY_ORDERS", "1"),
     ):
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("MVP_LIVE_CONFIRMATION", LIVE_CONFIRMATION_PHRASE)
@@ -761,10 +853,10 @@ def test_from_env_cannot_produce_a_cap(monkeypatch):
     assert limits.max_daily_order_count == 0
     assert limits.max_open_notional_usdt == 0.0
     assert limits.daily_loss_limit_usdt == 0.0
-    # Not zero, but the *source* default — the env's 9999 / 1 must not reach either. A raised
-    # ceiling and a lowered promotion minimum are the two that widen authority quietly.
+    # Not zero, but the *source* default — the env's 9999 must not reach it. A raised ceiling
+    # widens authority quietly. (A lowered promotion minimum was the other one, until the
+    # minimum itself was retired on 2026-09-15.)
     assert limits.absolute_max_notional_usdt == DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT
-    assert limits.min_clean_canary_orders == DEFAULT_MIN_CLEAN_CANARY_ORDERS
     # What it IS for still works.
     assert limits.confirmation_present() is True
 
@@ -780,73 +872,14 @@ def test_an_unconfigured_cap_names_the_registered_budget_not_an_env_var():
     """
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=True,
-        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=False, limits=LiveOrderLimits(),
     )
     unconfigured = [b for b in verdict["blocks"] if "not configured" in b]
-    assert len(unconfigured) == 4, unconfigured    # loss, per-order, daily count, exposure
+    # loss, per-order, daily count, exposure. A fifth, the promotion minimum, retired with the
+    # promotion gate on 2026-09-15.
+    assert len(unconfigured) == 4, unconfigured
     for block in unconfigured:
         assert "scripts/register_live_trading_budget.py" in block, block
         assert "MVP_LIVE_" not in block, block
 
-    # The fifth one needs its own setup: `min_clean_canary_orders` defaults to 3, so the
-    # blocking-defaults instance above takes the "not ready yet" branch, not "not configured".
-    promotion = evaluate_live_order_guard(
-        _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        clean_canary_orders=0, submitted_today=0, current_open_notional_usdt=0.0,
-        budget_registered=False, limits=LiveOrderLimits(min_clean_canary_orders=0),
-    )
-    minimum = [b for b in promotion["blocks"] if "promotion minimum is not configured" in b]
-    assert len(minimum) == 1, promotion["blocks"]
-    assert "scripts/register_live_trading_budget.py" in minimum[0]
-
-
-# === the declared notional, and the price it is checked against =====================
-
-class TestDeclaredNotional:
-    """`check_declared_notional` — pure, so every branch is cheap to state exactly.
-
-    It exists because `--quantity` (what reaches the venue) and `--notional` (what the caps
-    measure) were independent operator inputs with nothing comparing them.
-    """
-
-    def test_a_matching_declaration_passes(self):
-        result = check_declared_notional(
-            quantity=0.001, declared_notional_usdt=64.51, reference_price=64_512.0)
-        assert result["ok"] is True
-        assert result["implied_notional_usdt"] == pytest.approx(64.512)
-
-    def test_an_under_declaration_is_refused_and_names_the_right_number(self):
-        result = check_declared_notional(
-            quantity=0.001, declared_notional_usdt=60.0, reference_price=64_512.0)
-        assert result["ok"] is False
-        assert result["reason_code"] == ORDER_NOTIONAL_UNDERSTATED
-        # An operator who is told "wrong" and not "use this" guesses again.
-        assert "64.51" in result["message"]
-
-    def test_over_declaring_passes(self):
-        """It only makes every cap stricter; refusing it would block a careful operator."""
-        result = check_declared_notional(
-            quantity=0.001, declared_notional_usdt=500.0, reference_price=64_512.0)
-        assert result["ok"] is True
-
-    def test_a_tick_of_drift_is_tolerated(self):
-        """The operator reads a price a moment before sending; exact equality is not realistic."""
-        implied = 0.001 * 64_512.0
-        assert check_declared_notional(
-            quantity=0.001, declared_notional_usdt=implied * 0.995,
-            reference_price=64_512.0)["ok"] is True
-
-    def test_drift_beyond_the_tolerance_is_not(self):
-        implied = 0.001 * 64_512.0
-        assert check_declared_notional(
-            quantity=0.001, declared_notional_usdt=implied * 0.98,
-            reference_price=64_512.0)["ok"] is False
-
-    @pytest.mark.parametrize("price", [None, 0.0, -1.0])
-    def test_no_usable_price_is_a_refusal(self, price):
-        """"Nothing to check" must never read as "approved"."""
-        result = check_declared_notional(
-            quantity=0.001, declared_notional_usdt=60.0, reference_price=price)
-        assert result["ok"] is False
-        assert result["reason_code"] == ORDER_NOTIONAL_PRICE_UNKNOWN

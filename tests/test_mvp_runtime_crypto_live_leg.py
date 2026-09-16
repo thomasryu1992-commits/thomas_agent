@@ -31,7 +31,7 @@ NOW = "2026-07-25T12:00:00Z"
 
 LIMITS = LiveOrderLimits(
     max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
-    max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0, min_clean_canary_orders=3,
+    max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0,
     confirmation=LIVE_CONFIRMATION_PHRASE,
 )
 

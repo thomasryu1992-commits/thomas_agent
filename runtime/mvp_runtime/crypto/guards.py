@@ -83,8 +83,9 @@ RISK_GUARD_PROBLEMS: frozenset[str] = frozenset({
     "risk_history_unreadable",
 })
 
-# ``RiskLimits.source`` values. "default" is the module constants; "registered" is a verified,
-# in-window record. There is no third value: anything else failed closed before reaching here.
+# ``RiskLimits.source`` values. "default" is the module constants; "registered" is a verified
+# record in force (a legacy one only inside the window it carries). There is no third value:
+# anything else failed closed before reaching here.
 SOURCE_DEFAULT = "default"
 SOURCE_REGISTERED = "registered"
 

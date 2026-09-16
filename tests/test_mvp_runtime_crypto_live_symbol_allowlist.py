@@ -11,8 +11,8 @@ active pool held strategies on ETHUSDT, DOGEUSDT, BNBUSDT and SOLUSDT, `MVP_LIVE
 and `live_readiness` reported READY with autonomous routing WIRED. The two never disagreed out
 loud because only one of them was ever consulted.
 
-Under test: the allowlist is a door on both write paths (autonomous entry and the operator
-canary), an unstated scope authorizes nothing, and the comparison survives the one way an
+Under test: the allowlist is a door on both write paths (autonomous entry and the operator's
+canary-mode probe), an unstated scope authorizes nothing, and the comparison survives the one way an
 allowlist can arrive un-normalized — a hand-edited record.
 """
 
@@ -91,12 +91,11 @@ def test_an_empty_or_unusable_allowlist_blocks_rather_than_admitting_everything(
 
 
 def test_the_canary_door_is_not_exempt():
-    """A canary is a smaller real order, not a different kind of one. Exempting it would let
-    the operator aim the one manual live door at a symbol the budget does not name — and the
-    canary evidence it produces is counted globally, so that scope leaks into the autonomous
-    gate as well."""
+    """A canary-mode order — the slippage probe, since the canary door went (2026-09-15) — is a
+    smaller real order, not a different kind of one. Exempting it would let the operator aim the
+    one manual live door at a symbol the budget does not name."""
     verdict = _guard(intent=_intent(symbol="DOGEUSDT"), allowed_symbols=["BTCUSDT"],
-                     canary=True, clean_canary_orders=0)
+                     canary=True)
     assert verdict["approved"] is False
     assert _symbol_blocks(verdict)
 

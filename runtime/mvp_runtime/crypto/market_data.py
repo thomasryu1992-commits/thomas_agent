@@ -2161,7 +2161,7 @@ def select_liquidation_feed(*, now: str | None = None, root: Path | None = None)
     )
 
 
-# --- reference price: one candle, for verifying a hand-declared notional ----------------
+# --- reference price: one candle, for pricing a live probe order off the venue ----------
 
 REFERENCE_PRICE_MAX_AGE_SECONDS = 300
 

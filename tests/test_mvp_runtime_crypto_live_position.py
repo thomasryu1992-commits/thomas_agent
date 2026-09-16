@@ -269,7 +269,7 @@ def test_guard_requires_the_exposure_argument():
     with pytest.raises(TypeError):
         evaluate_live_order_guard(
             {"symbol": "BTCUSDT"}, gate_open=True, runtime_active=True,
-            daily_loss_breached=False, clean_canary_orders=3, submitted_today=0,
+            daily_loss_breached=False, submitted_today=0,
         )
 
 

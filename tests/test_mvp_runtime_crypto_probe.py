@@ -604,7 +604,7 @@ def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT")):
     limits = LiveOrderLimits(
         max_order_notional_usdt=150.0, max_daily_order_count=10,
         max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
-        min_clean_canary_orders=3, canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+        canary_confirmation=CANARY_CONFIRMATION_PHRASE,
     )
     monkeypatch.setattr(cli, "resolve_live_order_limits",
                         lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": list(symbols)}))
@@ -867,7 +867,7 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         LiveOrderLimits(
             max_order_notional_usdt=150.0, max_daily_order_count=10,
             max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
-            min_clean_canary_orders=3, canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+            canary_confirmation=CANARY_CONFIRMATION_PHRASE,
             confirmation=LIVE_CONFIRMATION_PHRASE,
         ),
         {"valid": True, "symbol_allowlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},

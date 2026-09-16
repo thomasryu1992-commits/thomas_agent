@@ -399,7 +399,7 @@ def _protected_adapter() -> _Adapter:
 # the exit rather than the phrase check.
 _LIMITS = LiveOrderLimits(
     max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
-    max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0, min_clean_canary_orders=3,
+    max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0,
     confirmation=LIVE_CONFIRMATION_PHRASE,
 )
 
@@ -746,7 +746,7 @@ def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows):
     monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: [])
     limits = LiveOrderLimits(
         max_order_notional_usdt=60.0, max_daily_order_count=2, max_open_notional_usdt=120.0,
-        daily_loss_limit_usdt=20.0, min_clean_canary_orders=3, confirmation=LIVE_CONFIRMATION_PHRASE,
+        daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
     )
     monkeypatch.setattr(live_route, "resolve_live_order_limits",
                         lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": [SYMBOL]}))
@@ -822,6 +822,116 @@ def test_a_soft_halted_runtime_manages_open_positions_and_refuses_entries(tmp_pa
     )
     assert managed == ["p1"], "a soft halt must not stop position management"
     assert seen["runtime_active"] is False
+
+
+# --- the retired budget fields cannot reach the settle/protect ordering (2026-09-15, PR1r) ---
+
+# shape -> (the legacy window it carries, or None for none; whether the budget is usable at NOW)
+_ROUTE_BUDGET_SHAPES = {
+    "built_today": (None, True),
+    "legacy_inside_its_window": (("2026-07-25T00:00:00Z", "2027-08-30T00:00:00Z"), True),
+    "legacy_past_its_window": (("2026-06-01T00:00:00Z", "2026-06-30T00:00:00Z"), False),
+    "legacy_with_half_a_window": (("2026-07-25T00:00:00Z", None), False),
+}
+
+
+@pytest.mark.parametrize("shape", list(_ROUTE_BUDGET_SHAPES))
+def test_every_budget_shape_on_disk_still_manages_open_positions(tmp_path, monkeypatch, shape):
+    """The ordering the retirements had to respect. `resolve_live_order_limits` is the first read
+    of the leg, before settle/protect, and anything it raises there is an INCIDENT halt that
+    leaves every open position unmanaged. A budget built today omits `min_clean_canary_orders`
+    and the validity window; one registered before carries both inside its self-hash, and is
+    still held to its window. Each is written to disk and read by the real resolver — a stubbed
+    one would prove nothing about the subscripts that used to be there. A budget that cannot back
+    an entry (lapsed, or half a window) must still let the leg close what it holds."""
+    import json
+
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_budget
+
+    window, usable = _ROUTE_BUDGET_SHAPES[shape]
+    record = live_budget.build_live_trading_budget_record(
+        caps=dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0,
+                  max_daily_order_count=2, max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0),
+        symbol_allowlist=[SYMBOL], registered_by="thomas", registered_at="2026-07-25T00:00:00Z",
+    )
+    assert "valid_from" not in record and "valid_until" not in record
+    if window is not None:
+        record = {k: v for k, v in record.items() if k != "record_sha256"}
+        record["caps"] = {**record["caps"], "min_clean_canary_orders": 4}
+        record["valid_from"] = window[0]
+        if window[1] is not None:
+            record["valid_until"] = window[1]
+        record["record_sha256"] = integrity.sha256_record(record)
+    path = live_budget.budget_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[tuple[str, LiveOrderLimits]] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append((position["position_id"], kw["limits"])))
+    seen: dict[str, Any] = {}
+
+    def _plan(plan, **kw):
+        seen.update(kw)
+        return {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]}
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _plan)
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+
+    assert [position_id for position_id, _ in managed] == ["p1"], "the open position went unmanaged"
+    assert out["live_route_status"] != live_route.ROUTE_INCIDENT
+    assert not any(code.startswith("UNEXPECTED_") for code in out["live_reason_codes"])
+    assert "clean_canary_orders" not in seen
+    assert seen["budget_registered"] is usable
+    if usable:
+        assert managed[0][1].max_order_notional_usdt == 60.0, "settled against the registered caps"
+    else:
+        # No budget backs an entry: the caps are the blocking defaults, and the position is
+        # managed against them all the same.
+        assert managed[0][1].max_order_notional_usdt == 0.0 and managed[0][1].max_daily_order_count == 0
+
+
+@pytest.mark.parametrize("poison", ['{"caps": {"max_order_notional_usdt": NaN}, "record_sha256": "sha256:0"}',
+                                    '{"api_secret": "x", "record_sha256": "sha256:0"}'])
+def test_an_unhashable_budget_on_disk_still_manages_open_positions(tmp_path, monkeypatch, poison):
+    """Review of #873: a NaN or a secret-shaped key in the budget raised a bare ValueError /
+    IntegrityError out of the leg's first read, before settle/protect — an INCIDENT halt with every
+    open position unmanaged. It is now the budget's typed refusal: blocking caps, positions managed."""
+    from runtime.mvp_runtime.crypto import live_budget
+
+    path = live_budget.budget_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(poison, encoding="utf-8")
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[str] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append(position["position_id"]))
+    monkeypatch.setattr(live_route, "plan_live_entry",
+                        lambda plan, **kw: {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]})
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    assert managed == ["p1"], "the open position went unmanaged"
+    assert out["live_route_status"] != live_route.ROUTE_INCIDENT
+    assert not any(code.startswith("UNEXPECTED_") for code in out["live_reason_codes"])
 
 
 # --- settle and enter are mutually exclusive within one cycle -------------------------------
