@@ -140,6 +140,16 @@
         "replaced_reason_code": {
           "type": "string",
           "pattern": "^EXECUTION_STAGE_[A-Z_]+$"
+        },
+        "testnet_cycle_id": {
+          "description": "The signed testnet cycle this LIVE_AUTONOMOUS record stands on (PR1d-2). Required at that rung; refused at every other.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "testnet_cycle_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },

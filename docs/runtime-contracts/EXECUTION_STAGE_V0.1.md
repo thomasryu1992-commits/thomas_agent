@@ -71,9 +71,22 @@ That writer is the service uid, which could already place orders directly.
 | REBIND | the same rung again, only when the record was witnessed and the policy version or safety fingerprint changed | once |
 | DEMOTE | any rung down, immediate. To READ_ONLY from any state, even an unreadable file; to another rung only from a record that binds | **none** (decision 8) |
 
-Evidence a climb requires before it can be asked: **LIVE_AUTONOMOUS** — a reconciled signed testnet order
-(decision 2; refused as `EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED` until PR1d). **LIVE_SCALED** —
-refused (no rule yet).
+Evidence a climb requires, checked **by target rung** so a REBIND cannot walk around it:
+**LIVE_AUTONOMOUS** — one COMPLETE signed testnet cycle, named on the ask with `--testnet-cycle`
+(decision 2; `EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED` when unnamed,
+`TESTNET_EVIDENCE_INCOMPLETE` when the named cycle does not prove itself, and the registry's own
+`TESTNET_EVIDENCE_TAMPERED` / `_DUPLICATE` / `_UNREADABLE` when it cannot be read at all). A cycle is entry reconciled →
+protective legs confirmed RESTING at the endpoint each belongs to → withdrawn → exit reduceOnly and
+reconciled → the venue's own position view clean (decision 11). The cycle id and the hash of its row
+ride in the record's evidence and in the approval's content, so the approval signs one specific
+cycle. It does not expire and is not re-earned after a policy change: a REBIND names a complete cycle
+again, which may be the same one — nothing requires a fresh cycle, and nothing stops one. **LIVE_SCALED** — refused (no rule yet).
+
+The registry is read at the ask and again at the spend, never by `resolve_execution_stage`: that
+function is what the live leg calls before it settles and protects, and its contract is that it
+never raises. What the read path checks instead is structural — a record that ARRIVED at
+LIVE_AUTONOMOUS naming no cycle is not one the door wrote (a DEMOTE landing there is exempt: it is a
+move down, witnessed by the approval of the higher record it descends from).
 
 The ask is `RUNTIME_GOVERNANCE` with target `execution_stage:<venue>:<stage>` (RED for a LIVE target),
 announced on the control channel and never mirrored. It binds the whole transition, the record it was

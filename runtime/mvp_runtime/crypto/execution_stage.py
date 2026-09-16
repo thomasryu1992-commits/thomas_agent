@@ -18,8 +18,9 @@ policy it was approved under changes.
   SHADOW or PAPER, approved once, carrying an attestation of the evidence behind it (decision 1:
   this host starts at PAPER). A record it replaces is named in the ask.
 - **CLIMB** — exactly one rung up from a binding record, approved once. No skip, ever.
-  SIGNED_TESTNET -> LIVE_AUTONOMOUS needs a reconciled signed testnet order (decision 2) and is
-  refused until that path exists (PR1d); LIVE_SCALED has no entry rule yet.
+  SIGNED_TESTNET -> LIVE_AUTONOMOUS names one COMPLETE signed testnet cycle (decision 2; the cycle
+  and its row hash ride in the record and in the approval's content); LIVE_SCALED has no entry rule
+  yet.
 - **REBIND** — the same rung again, approved once, and only for a record whose sole defect is that
   the policy version or its safety semantic fingerprint changed (decision 4).
 - **DEMOTE** — any rung down, no approval, immediate (decision 8). A demotion keeps the approval
@@ -148,6 +149,7 @@ STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER = "EXECUTION_STAGE_BOOTSTRAP_ONLY_SHADOW_OR
 STAGE_REBIND_FIRST = "EXECUTION_STAGE_REBIND_FIRST"
 STAGE_ATTESTATION_REQUIRED = "EXECUTION_STAGE_ATTESTATION_REQUIRED"
 STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED = "EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED"
+STAGE_EVIDENCE_NOT_APPLICABLE = "EXECUTION_STAGE_EVIDENCE_NOT_APPLICABLE"
 STAGE_NOT_DEFINED = "EXECUTION_STAGE_NOT_DEFINED"
 STAGE_CHANGED = "EXECUTION_STAGE_CHANGED"
 STAGE_POLICY_CHANGED_SINCE_ASK = "EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK"
@@ -260,6 +262,13 @@ def _transition_consistent(record: Mapping[str, Any]) -> bool:
     if transition == T_BOOTSTRAP:
         return (previous is None and stage in BOOTSTRAP_STAGES and own_witness and policy_bound
                 and bool((record.get("evidence") or {}).get("attestation")))
+    if (stage == ExecutionStage.LIVE_AUTONOMOUS.value and transition != T_DEMOTE
+            and not (record.get("evidence") or {}).get("testnet_cycle_id")):
+        # Structural, so it costs no I/O on the live leg's read path: a record that ARRIVED at this
+        # rung without naming a cycle cannot be one the door wrote (PR1d-2). A DEMOTE landing here
+        # is exempt and does not re-earn anything: it is a move DOWN, and its witness is the
+        # approval of the higher record it descends from — which needed the evidence itself.
+        return False
     if transition == T_CLIMB:
         return (previous is not None and previous != read_only and rank(stage) == rank(previous) + 1
                 and own_witness and policy_bound)
@@ -442,6 +451,11 @@ def plan_transition(
     registered_by: str,
     reason: str,
     attestation: str | None = None,
+    # The signed testnet cycle this climb stands on (PR1d-2, Thomas decisions 2 and 11). Required
+    # for a LIVE_AUTONOMOUS target, refused for anything else, and verified against the registry
+    # here — at the ask AND again when the approval is spent, because the door re-plans.
+    testnet_cycle_id: str | None = None,
+    evidence_root: Path | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """What an approved transition to ``target`` would write — the content an ask binds.
@@ -464,10 +478,6 @@ def plan_transition(
             raise ToolError(STAGE_USE_DEMOTE, f"{target} is below {recorded}; demotion needs no approval (--demote)")
         if rank(target) != rank(recorded) + 1:
             raise ToolError(STAGE_SKIP_REFUSED, f"{recorded} -> {target} skips a stage; climb one rung at a time")
-        if target == ExecutionStage.LIVE_AUTONOMOUS.value:
-            raise ToolError(STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED,
-                            "LIVE_AUTONOMOUS needs a reconciled signed testnet order (Thomas decision 2); "
-                            "the testnet execution and evidence path is not built yet (PR1d)")
         if target == ExecutionStage.LIVE_SCALED.value:
             raise ToolError(STAGE_NOT_DEFINED, "LIVE_SCALED has no entry rule yet; it is a separate decision")
         transition = T_CLIMB
@@ -493,6 +503,17 @@ def plan_transition(
         why = status.reason_code or "READ_ONLY"
         raise ToolError(STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER,
                         f"no stage above READ_ONLY binds ({why}); the next record may only be SHADOW or PAPER, not {target}")
+    # By TARGET RUNG, not by transition kind — but after the ladder's own shape refusals, so a
+    # skip still reads as a skip. The first draft put this inside the CLIMB branch, which left a
+    # REBIND at LIVE_AUTONOMOUS — the transition a policy bump forces — untouched by it (found
+    # 2026-09-16, before any LIVE record existed to exploit it). A rung's entry condition is a
+    # property of the rung, not of the path taken to it.
+    if target == ExecutionStage.LIVE_AUTONOMOUS.value:
+        evidence.update(_live_entry_evidence(testnet_cycle_id, root=evidence_root))
+    elif testnet_cycle_id is not None:
+        raise ToolError(STAGE_EVIDENCE_NOT_APPLICABLE,
+                        f"a signed testnet cycle is the entry condition for "
+                        f"{ExecutionStage.LIVE_AUTONOMOUS.value}, not for {target}")
     if isinstance(attestation, str) and attestation.strip():
         evidence["attestation"] = attestation.strip()[:2000]
 
@@ -510,6 +531,33 @@ def plan_transition(
         "registered_by": registered_by.strip(),
         "reason": reason.strip()[:600],
         "evidence": evidence,
+    }
+
+
+def _live_entry_evidence(cycle_id: str | None, *, root: Path | None) -> dict[str, Any]:
+    """The evidence a LIVE_AUTONOMOUS record must carry: one COMPLETE signed testnet cycle, named.
+
+    Verified here rather than at read time on purpose. ``resolve_execution_stage`` is what the live
+    leg calls before it settles and protects, and its contract is that it never raises; a registry
+    read on that path would turn a damaged evidence file into a machine that silently reads
+    READ_ONLY on every cycle. So the registry is read where a refusal is the whole point — the ask,
+    and the spend, which re-plans — and what the RECORD keeps is the cycle's id and the hash of the
+    row it stood on. A record naming a different cycle is a different content hash, so the approval
+    that signed one cannot write the other."""
+    from .testnet_evidence import assert_complete_cycle
+
+    if not (isinstance(cycle_id, str) and cycle_id.strip()):
+        raise ToolError(
+            STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED,
+            f"{ExecutionStage.LIVE_AUTONOMOUS.value} needs a completed signed testnet cycle "
+            "(Thomas decision 2): entry reconciled, protective legs confirmed resting and "
+            "withdrawn, exit reconciled, position view clean. Run "
+            "scripts/run_signed_testnet_cycle.py --run, then name it with --testnet-cycle",
+        )
+    row = assert_complete_cycle(cycle_id.strip(), root)
+    return {
+        "testnet_cycle_id": str(row["cycle_id"]),
+        "testnet_cycle_sha256": str(row["record_sha256"]),
     }
 
 
@@ -535,6 +583,7 @@ def record_from_approved(
     approval_id: str,
     action_fingerprint: str,
     now: str,
+    evidence_root: Path | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """The record an approved transition writes, after re-planning it against the machine as it is.
@@ -552,7 +601,10 @@ def record_from_approved(
     replanned = plan_transition(
         status_now, target=str(content.get("to_stage")), registered_by=str(content.get("registered_by")),
         reason=str(content.get("reason")), attestation=(content.get("evidence") or {}).get("attestation"),
-        repo_root=repo_root,
+        # The cycle the ask named, verified AGAIN here against the registry as it stands now: an
+        # approval won on a cycle whose row has since been tampered with installs nothing.
+        testnet_cycle_id=(content.get("evidence") or {}).get("testnet_cycle_id"),
+        evidence_root=evidence_root, repo_root=repo_root,
     )
     if replanned != dict(content):
         raise ToolError(STAGE_CHANGED, "this transition is no longer the one the ladder allows from the current record; ask again")

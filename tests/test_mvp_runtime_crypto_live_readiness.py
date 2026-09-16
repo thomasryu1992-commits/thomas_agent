@@ -356,6 +356,57 @@ def test_the_board_row_passes_at_the_rung_the_doors_admit(tmp_path, clean_env, m
     assert row["ok"] is True and row["detail"] == "LIVE_AUTONOMOUS"
 
 
+def test_the_testnet_evidence_line_names_an_unreadable_registry(tmp_path, clean_env):
+    """Crypto PR1d-2: what the LIVE_AUTONOMOUS climb would find. A corrupt registry must read as
+    UNREADABLE — rendering it as "none recorded" would tell the operator a machine that HAS earned
+    its evidence never ran a cycle (review of #878)."""
+    import json
+
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    def line(status):
+        return next(l for l in live_readiness.render_readiness_text(status).splitlines()
+                    if "testnet_evidence" in l)
+
+    empty = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "none recorded" in line(empty) and empty["testnet_evidence"]["error"] is None
+
+    def leg(name):
+        return {"leg": name, "algo": name == "SL",
+                "order_type": "STOP_MARKET" if name == "SL" else "LIMIT",
+                "observed_status": "NEW", "withdrawn": True}
+
+    complete = testnet_evidence.build_cycle_record(
+        cycle_id="cyc_board", symbol="BTCUSDT",
+        entry={"reconcile_status": "RECONCILED", "mismatches": []},
+        protective_legs=[leg("SL"), leg("TP")],
+        exit_result={"reconcile_status": "RECONCILED", "reduce_only": True},
+        position_reconciliation={"status": "RECONCILED", "venue_positions": []},
+        adapter_tool_id="t", base_url_host="testnet.binancefuture.com",
+        started_at=NOW, completed_at=NOW,
+    )
+    testnet_evidence.append_cycle(complete, tmp_path)
+    earned = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "cyc_board" in line(earned) and earned["testnet_evidence"]["complete"] == ["cyc_board"]
+
+    half = {**complete}
+    half["protective_legs"] = [{**leg("SL"), "withdrawn": False}, leg("TP")]
+    from runtime.read_only_kernel import integrity
+
+    body = {k: v for k, v in half.items() if k != "record_sha256"}
+    body["record_sha256"] = integrity.sha256_record(body)
+    testnet_evidence.evidence_path(tmp_path).write_text(json.dumps(body) + "\n", encoding="utf-8")
+    incomplete = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "none complete" in line(incomplete)
+
+    testnet_evidence.evidence_path(tmp_path).write_text('{"cycle_id": "x"}\n', encoding="utf-8")
+    broken = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert "UNREADABLE" in line(broken)
+    assert broken["testnet_evidence"]["error"] == testnet_evidence.EVIDENCE_TAMPERED
+    # And the board still renders: a corrupt evidence file is not a broken board.
+    assert live_readiness.render_readiness_text(broken)
+
+
 def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
     text = live_readiness.render_readiness_text(
         live_readiness.build_readiness(root=tmp_path, now=NOW)
