@@ -102,6 +102,13 @@ class DryRunTestnetOrderAdapter:
     def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
         req = dict(order_request)
         client_id = str(req.get("clientAlgoId") or req["newClientOrderId"])
+        if client_id in self._submitted:
+            # The venue's own answer to a reused client order id (-4116). The first draft simply
+            # overwrote the earlier order here, which is how a door that sent its entry and its
+            # exit under ONE id passed every test (PR2 investigation, 2026-09-16).
+            raise ToolError(ORDER_REJECTED,
+                            f"duplicate client order id ({VENUE_DUPLICATE_CLIENT_ORDER_ID}) — the original "
+                            "order already landed; reconcile decides the outcome")
         # Recorded under the endpoint it would really go to, so a caller that asks the wrong one
         # later gets the venue's real answer (nothing there) rather than a convenient hit. The
         # first draft ignored `algo` here, which hid a door that cancelled a plain LIMIT on the
