@@ -28,6 +28,9 @@ Order of checks, and why:
    Design and measurement: ``docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md``. The
    measurement is not deleted — ``feedback.live_candidate_eligible`` is still computed and
    still reported; what is deleted is its authority over this door;
+2d. **bar marks** (PR2a) — one entry per context per bar, and paper's post-stop-loss
+   cooldown; both used to reach this leg only through paper, which applies them after the
+   route it hands over is already built;
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
@@ -65,9 +68,15 @@ from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
 from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .execution_stage import StageStatus
 from .live_order import (
+    LIVE_ENTRY_BAR_ALREADY_ENTERED as BAR_ALREADY_ENTERED,
+    LIVE_ENTRY_BAR_UNKNOWN as BAR_UNKNOWN,
+    LIVE_ENTRY_MARKS_UNKNOWN as MARKS_UNKNOWN,
+    LIVE_ENTRY_STOP_LOSS_COOLDOWN as STOP_LOSS_COOLDOWN,
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
+    entry_context_key,
     evaluate_live_order_guard,
+    live_entry_holds,
 )
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
@@ -272,6 +281,12 @@ def plan_live_entry(
     # No default: a caller that does not state the stage must not be able to enter. The leg reads
     # it beside the budget, so the record it stamps and the rung the guard judged are one answer.
     execution_stage: StageStatus,
+    # The bar this decision was evaluated on (the feature row's `timestamp`, the bar's open time)
+    # and the live entry marks as the leg read them (PR2a). No defaults, for `verdict`'s reason:
+    # the doors they feed are the ones that stop a second entry on one bar and an entry inside a
+    # stop-loss cooldown, and a caller that forgot them must not be the caller that skips both.
+    entry_bar_time: str | None,
+    entry_marks: Mapping[str, Any] | None,
     # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
     # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
     # the same fail-closed default the guard gives `budget_registered`.
@@ -357,6 +372,23 @@ def plan_live_entry(
         reasons.append(BRACKET_BREAKER_REFUSED)
         detail["bracket_failures_consecutive"] = bracket_failures_consecutive
         detail["bracket_failure_limit"] = MAX_CONSECUTIVE_BRACKET_FAILURES
+
+    # 2d. One entry per context per bar, and the post-stop-loss cooldown (PR2a) — paper's two
+    # rules, which sit below the line where paper publishes the route this leg is handed. The
+    # context is the plan's own timeframe: the route was evaluated there. Each hold is its own
+    # reason code (`live_order.live_entry_holds`), so the ledger says which rule held the bar.
+    holds = live_entry_holds(
+        entry_marks, symbol=symbol, timeframe=plan.get("timeframe"), bar_time=entry_bar_time,
+    )
+    if holds:
+        reasons.extend(holds)
+        detail["entry_holds"] = holds
+    detail["entry_bar"] = {
+        "context_key": entry_context_key(symbol, plan.get("timeframe")),
+        "symbol": symbol,
+        "timeframe": plan.get("timeframe"),
+        "bar_time": entry_bar_time,
+    }
 
     if not entry_allowed(reconciliation, symbol):
         reasons.append(RECONCILE_REFUSED)
@@ -474,7 +506,10 @@ def plan_live_entry(
     #    would be sent are the same numbers.
     try:
         intent = build_live_order_intent(
-            {**dict(plan), "stop_loss": bracket["stop_loss"], "take_profit": bracket["take_profit"]},
+            # `candle_time` keys the client order id (decision 16, PR2a): two attempts on one
+            # bar are one order to the venue, never two. It was the wall clock.
+            {**dict(plan), "stop_loss": bracket["stop_loss"], "take_profit": bracket["take_profit"],
+             "candle_time": entry_bar_time},
             symbol=symbol,
             quantity=sizing["quantity"],
             notional_usdt=sizing["notional_usdt"],
@@ -538,6 +573,8 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "BAR_ALREADY_ENTERED",
+    "BAR_UNKNOWN",
     "BRACKET_BREAKER_REFUSED",
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",
@@ -546,6 +583,7 @@ __all__ = [
     "GUARD_REFUSED",
     "INTENT_REFUSED",
     "LIVE_ENTRY_VERSION",
+    "MARKS_UNKNOWN",
     "NO_FILTERS",
     "NO_PLAN",
     "RECONCILE_REFUSED",
@@ -553,6 +591,7 @@ __all__ = [
     "STATUS_NO_ROUTE",
     "STATUS_READY",
     "STATUS_REFUSED",
+    "STOP_LOSS_COOLDOWN",
     "VERDICT_REFUSED",
     "entry_status_line",
     "plan_live_entry",

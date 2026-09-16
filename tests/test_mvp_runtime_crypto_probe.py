@@ -749,12 +749,43 @@ class _FakeLedger:
 
 
 class _FakeCounter:
-    def __init__(self):
-        self.count = 0
+    """The daily counter as the probe spends it since PR2a: reserve-or-refuse before the send."""
 
-    def record_submission(self, *, day=None):
+    def __init__(self, count=0, adapter=None):
+        self.count = count
+        self.limits = []
+        # The adapter's submits as seen at reservation time — "before the send" made checkable.
+        self.submitted_at_reserve = None
+        self._adapter = adapter
+
+    def reserve_submission(self, *, limit, day=None):
+        self.limits.append(limit)
+        if self._adapter is not None:
+            self.submitted_at_reserve = len(self._adapter.submitted)
+        if self.count >= limit:
+            raise ToolError("LIVE_DAILY_ORDER_CAP_REACHED", "scripted cap")
         self.count += 1
         return self.count
+
+
+class _FakeBreaker:
+    def __init__(self, error=None, raises=ToolError):
+        self.failures = []
+        self.successes = 0
+        self._error = error
+        self._raises = raises
+
+    def record_failure(self, **kw):
+        if self._error:
+            if self._raises is OSError:
+                raise OSError(28, "No space left on device")
+            raise self._raises(self._error, "scripted breaker failure")
+        self.failures.append(kw)
+        return {}
+
+    def record_success(self):
+        self.successes += 1
+        return {}
 
 
 class _HappyPathAdapter:
@@ -793,7 +824,9 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     _active_plan(tmp_path)
     _arm_runtime(tmp_path)
     adapter = _HappyPathAdapter()
-    store, ledger, counter = _FakeStore(), _FakeLedger(), _FakeCounter()
+    store, ledger, counter = _FakeStore(), _FakeLedger(), _FakeCounter(adapter=adapter)
+    breaker = _FakeBreaker()
+    monkeypatch.setattr(cli, "select_live_bracket_breaker", lambda now=None, root=None: breaker)
 
     monkeypatch.setattr(cli.live_execution, "select_order_adapter",
                         lambda now=None, root=None: adapter)
@@ -825,6 +858,11 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     # The measurement rode the existing #683 path: one outcome, stop close, slippage
     # measured against the trigger the position record carried.
     assert counter.count == 1  # the probe consumed daily order budget
+    # ...reserved against the registered cap, before anything was sent (PR2a).
+    assert counter.limits == [10] and counter.submitted_at_reserve == 0
+    # A stop that rests proves the stop leg only — never the target leg the autonomous bracket
+    # also needs — so a probe neither counts on nor clears the bracket-failure streak.
+    assert breaker.failures == [] and breaker.successes == 0
     assert len(ledger.outcomes) == 1
     outcome = ledger.outcomes[0]
     assert outcome["close_reason"] == "stop_loss"
@@ -868,6 +906,8 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
 
     adapter = _StopRefusingAdapter()
     store, ledger, counter = _FakeStore(), _FakeLedger(), _FakeCounter()
+    breaker = _FakeBreaker()
+    monkeypatch.setattr(cli, "select_live_bracket_breaker", lambda now=None, root=None: breaker)
     monkeypatch.setattr(cli.live_execution, "select_order_adapter",
                         lambda now=None, root=None: adapter)
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
@@ -913,6 +953,150 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     # The naked close still recorded its outcome (money moved; the breaker must see it).
     assert len(ledger.outcomes) == 1
     assert ledger.outcomes[0]["close_reason"] == "naked_position_close"
+    # And the stop that would not rest counts on the bracket-failure streak (PR2a): the probe
+    # hangs its stop through the autonomous placement, so a broken stop path is broken for both.
+    [failure] = breaker.failures
+    assert failure["symbol"] == "BTCUSDT"
+    assert failure["status"] == cli.live_leg.ENTRY_NAKED_CLOSED
+    assert failure["reason_codes"] == [probe.PROBE_STOP_NOT_PLACED]
+    assert failure["error_detail"] and failure["error_detail"][0]["placed"] is False
+    assert breaker.successes == 0
+
+
+# --- PR2a: the symbol must be free, and the day's slot is reserved before the send -----
+
+def _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter, *, book=(), venue=()):
+    """Every door up to the guard open, with the book and the venue account as given."""
+    from runtime.mvp_runtime.crypto.account import AccountPosition
+
+    _active_plan(tmp_path)
+    _arm_runtime(tmp_path)
+    monkeypatch.setattr(cli.live_execution, "select_order_adapter", lambda now=None, root=None: adapter)
+    monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
+    _arm_limits(monkeypatch)
+    positions = [AccountPosition(symbol=symbol, side="LONG", quantity=0.001, entry_price=100000.0,
+                                 mark_price=100000.0, unrealized_pnl=0.0, leverage=5.0, notional=100.0)
+                 for symbol in venue]
+    snapshot = types.SimpleNamespace(positions=positions, realized_windows={}, available_balance=1000.0)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (snapshot, {}))
+    monkeypatch.setattr(cli, "list_open_live_positions", lambda root=None: [
+        {"symbol": symbol, "direction": "LONG", "quantity": 0.001, "status": "OPEN",
+         "position_id": f"pos_{symbol}"} for symbol in book])
+    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+        "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
+        "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
+    monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
+        "tripped": False, "consecutive": 0, "limit": 5})
+    monkeypatch.setattr(cli, "resolve_risk_limits", lambda root, now=None: None)
+    monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
+        step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
+    monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli.live_governance, "prepare_live_order_governance",
+                        lambda intent, *, purpose, now, repo_root=None: {
+                            "purpose": purpose, "bound_task": {},
+                            "permission_decision": {"permission_decision_id": "pd_test"}})
+    monkeypatch.setattr(cli, "_audit_order", lambda *a, **k: None)
+
+
+@pytest.mark.parametrize("book,venue", [
+    (("BTCUSDT",), ("BTCUSDT",)),            # an autonomous position is open on the symbol
+    ((), ("BTCUSDT",)),                      # the venue holds one the book does not know
+    (("ETHUSDT",), ()),                      # the book and the venue disagree elsewhere
+    (("ETHUSDT", "SOLUSDT"), ("ETHUSDT", "SOLUSDT")),   # LP5's two slots are both taken
+], ids=["same-symbol", "untracked-at-venue", "drift-elsewhere", "caps-full"])
+def test_fire_refuses_a_symbol_that_is_not_free(tmp_path, monkeypatch, book, venue):
+    """The book is one record per symbol and the venue nets per symbol, so a probe on a symbol
+    holding a live position would overwrite that position's record and merge into its
+    exposure. Refused before the breakers, the guard and the venue."""
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched(), book=book, venue=venue)
+    monkeypatch.setattr(cli, "live_risk_snapshot",
+                        lambda **k: pytest.fail("the conflict must refuse before the breakers"))
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_POSITION_CONFLICT
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_sends_nothing_when_no_order_slot_can_be_reserved(tmp_path, monkeypatch):
+    """The guard judged a count read earlier; the scheduler's live leg may have spent the last
+    slot since. The reservation is the answer, and a refused one leaves the cell untouched."""
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    counter = _FakeCounter(count=10, adapter=adapter)   # the cap is 10, all spent
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_ORDER_SLOT_REFUSED
+    assert "LIVE_DAILY_ORDER_CAP_REACHED" in str(exc.value)
+    assert adapter.submitted == []
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_on_the_real_counter_refuses_the_slot_the_live_leg_already_spent(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter, count_today
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    counter = LiveOrderCounter(root=tmp_path, authorization=auth)
+    for _ in range(10):
+        counter.record_submission()
+    # The guard is told a stale count, as it would be if the other process spent the slot after
+    # the read: the reservation is what refuses.
+    monkeypatch.setattr(cli, "count_today", lambda root=None: 9)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_ORDER_SLOT_REFUSED
+    assert adapter.submitted == []
+    assert count_today(tmp_path) == 10
+
+
+@pytest.mark.parametrize("raises,code", [
+    (ToolError, "LIVE_BRACKET_BREAKER_LOCKED"),
+    (OSError, "OSError"),   # what the real breaker's write raises; must not skip the cell's return
+])
+def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, monkeypatch, capsys,
+                                                                   raises, code):
+    class _StopNeverRests(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                return None
+            if "_CLOSE_" in client_order_id:
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.001", "avgPrice": "99990.0", "cumQuote": "99.99",
+                        "reduceOnly": True}
+            return super().fetch_order(symbol, client_order_id,
+                                       timeout_seconds=timeout_seconds, algo=algo)
+
+    adapter = _StopNeverRests()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+        LiveOrderLimits(
+            max_order_notional_usdt=150.0, max_daily_order_count=10,
+            max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
+            canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+            confirmation=LIVE_CONFIRMATION_PHRASE,
+        ),
+        {"valid": True, "symbol_allowlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+    ))
+    store, ledger = _FakeStore(), _FakeLedger()
+    monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter())
+    monkeypatch.setattr(cli, "load_open_live_position",
+                        lambda symbol, root=None: store.positions.get(symbol))
+    monkeypatch.setattr(cli, "select_live_bracket_breaker",
+                        lambda now=None, root=None: _FakeBreaker(error="LIVE_BRACKET_BREAKER_LOCKED",
+                                                                 raises=raises))
+
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert f"BREAKER   : NOT recorded ({code})" in err
+    assert probe.read_plan(tmp_path)["cells"][0]["status"] == probe.CELL_EMPTY
+    assert store.positions == {}
 
 
 # --- abandoning a batch early (Thomas 2026-08-11) --------------------------------------

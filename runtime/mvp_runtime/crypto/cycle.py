@@ -1123,6 +1123,9 @@ def run_crypto_cycle(
         "live_halt": live["halt"],
         # What the leg saw of the execution stage (PR1a) — None when the gate was closed.
         "live_execution_stage": live.get("execution_stage"),
+        # The cooldown a live stop-out wrote this cycle (PR2a) — None on every other cycle. Paper's
+        # refusal record carries its bound; this is where the live one becomes auditable.
+        "live_stop_cooldown": live.get("live_stop_cooldown"),
         # Only decisions that DECIDED something are stored whole. A cycle evaluates every
         # active strategy and most conclude "nothing to do"; persisting all of those made
         # lifecycle_decisions 90% of a 24KB record and 99.7% of a 56MB ledger, for one bit

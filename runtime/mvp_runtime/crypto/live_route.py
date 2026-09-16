@@ -68,6 +68,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import timeutil
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
 from ..control import ControlStore
@@ -78,17 +79,20 @@ from . import live_execution, live_governance, live_leg
 from .account import read_account, select_account_feed
 from .live_entry import STATUS_NO_ROUTE, plan_live_entry
 from .live_filters import read_symbol_filters
-from .market_data import ORDER_BOOK_LEVELS
+from .market_data import ORDER_BOOK_LEVELS, TIMEFRAMES
 from .orderbook_store import summarize_book
 from .execution_stage import resolve_execution_stage
 from .live_order import (
     bracket_breaker_status,
     count_today,
+    read_live_entry_marks,
     resolve_live_order_limits,
     select_live_bracket_breaker,
+    select_live_entry_marks,
     select_live_order_counter,
+    stop_cooldown_until,
 )
-from .live_pnl import live_risk_snapshot, select_live_ledger, venue_daily_realized_net
+from .live_pnl import STOP_EXIT_REASONS, live_risk_snapshot, select_live_ledger, venue_daily_realized_net
 from .live_position import (
     DRIFT,
     DRIFT_MISSING_AT_VENUE,
@@ -128,6 +132,9 @@ AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
 # then the order is at the venue, so this is reported and never raised — but it is the one
 # reason code meaning the count that bounds the naked-entry loop may now be short.
 BRACKET_BREAKER_UNRECORDED = "LIVE_BRACKET_BREAKER_UNRECORDED"
+# A live stop-out whose cooldown could not be written (PR2a). The settlement itself stands; what
+# is missing is the hold that keeps the context out for the next bars, so the operator hears it.
+STOP_COOLDOWN_UNRECORDED = "LIVE_STOP_COOLDOWN_UNRECORDED"
 # This position is judged by the timeframe table rather than by the `max_holding_bars` its own
 # backtest was built on, because it predates the record shape that carries one. Reported so a
 # live/backtest R gap stays attributable instead of being rediscovered from a curve.
@@ -380,9 +387,10 @@ def _run_gated_live_leg(
     # 2. Settle and protect BEFORE anything else. Closing is risk-reducing and is never gated
     #    on reconciliation, the verdict, or the kill switch — a halt that traps an open
     #    position is worse than what the halt prevents.
-    # The bar this cycle is acting on. `timestamp` IS the candle's close_time (features.py sets
-    # it from exactly that field), which is what makes the live counter dedup on the same key
-    # paper's does — the parity the time exit depends on.
+    # The bar this cycle is acting on: the feature row's `timestamp`, which is the bar's OPEN
+    # time (`features.build_feature_rows`). Paper keys the same bars on `close_time`; the live
+    # counter dedups on its own key, and one key per bar is all the time exit needs. It is also
+    # the bar an entry below is claimed on (PR2a).
     candle_ts = feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None
     open_here = [p for p in local_positions if position_symbol(p) == symbol]
     for position in open_here:
@@ -483,6 +491,15 @@ def _run_gated_live_leg(
         "tripped": breaker["tripped"],
     }
 
+    # Which bars this venue has already sent an entry on, and which contexts a stop-out still
+    # holds (PR2a). Read here, after settle/protect, so a corrupt file can only hold entries: the
+    # decision refuses on the None, and the record says why.
+    try:
+        entry_marks = read_live_entry_marks(root)
+    except MvpRuntimeError as exc:
+        entry_marks = None
+        record["live_reason_codes"].append(exc.reason_code)
+
     decision = plan_live_entry(
         plan,
         symbol=symbol,
@@ -498,6 +515,8 @@ def _run_gated_live_leg(
         filters_reason=filters_reason,
         limits=limits,
         execution_stage=stage,
+        entry_bar_time=candle_ts,
+        entry_marks=entry_marks,
         budget_registered=bool(budget.get("valid")),
         # The scope half of the same budget the caps come from. Read here rather than inside
         # the guard for the reason every other runtime fact is: one read, one set of numbers,
@@ -540,6 +559,7 @@ def _run_gated_live_leg(
         adapter=adapter,
         position_store=position_store,
         counter=select_live_order_counter(now=now, root=root),
+        entry_marks=select_live_entry_marks(now=now, root=root),
         governance=governance,
         gate_open=True,
         limits=limits,
@@ -605,6 +625,7 @@ def _settle_or_protect(
         )
         record["live_settled"] = settled
         record["live_reason_codes"].extend(settled["reason_codes"])
+        _record_stop_cooldown(record, position, settled, now=now, root=root)
         if _is_incident(settled):
             record["halt"] = True
         return
@@ -917,49 +938,6 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
 _BRACKET_FAILURE_STATUSES = frozenset({live_leg.ENTRY_NAKED_CLOSED, live_leg.ENTRY_NAKED_OPEN})
 
 
-def _bracket_error_detail(entry: Mapping[str, Any]) -> list[dict[str, Any]] | None:
-    """What the venue said — or did not say — about each protective leg that failed.
-
-    `error` alone is the same string for every rejection there is, and reading only it was what
-    made the first two naked entries uninvestigable once the container holding the logs was
-    recreated. `error_detail` (PR #426) is the venue's numeric code and text, carried onto the
-    breaker record here because that record outlives the cycle, the logs and the container.
-
-    **A leg fails in two ways and only one of them talks.** A rejection carries a code and a
-    message. A leg that never came to rest carries nothing at all — no error, no exchange id,
-    just a status that is not `NEW`. The first version of this function looked only for an
-    error, so the third live failure (2026-08-03T04:28:58Z, the first one after #447 moved
-    conditional orders to the Algo API) recorded `last_error_detail: null`: the breaker counted
-    it and could not say one word about it, which is the same gap #426 closed for the other
-    half. The cycle record still held `placed: False, status: NOT_FOUND`. The durable record
-    that exists to outlive the cycle did not.
-
-    Membership is decided by `live_leg.BRACKET_RESTING_STATUSES` rather than by looking for an
-    error, because that frozenset is what `live_leg` itself uses to decide the bracket is in
-    place. One predicate, one answer — a second definition of "this leg is fine" is how two
-    files drift into disagreeing about whether a position is protected.
-    """
-    legs = entry.get("bracket")
-    if not isinstance(legs, list):
-        return None
-    failed = []
-    for leg in legs:
-        if not isinstance(leg, Mapping):
-            continue
-        spoke = bool(leg.get("error") or leg.get("error_detail"))
-        if leg.get("status") in live_leg.BRACKET_RESTING_STATUSES and not spoke:
-            continue
-        failed.append({
-            "leg": leg.get("leg"),
-            "order_type": leg.get("order_type"),
-            "placed": leg.get("placed"),
-            "status": leg.get("status"),
-            "error": leg.get("error"),
-            "error_detail": leg.get("error_detail"),
-        })
-    return failed or None
-
-
 def _record_entry_outcome(record: dict[str, Any], entry: Mapping[str, Any], *, ledger: Any) -> None:
     """Persist the outcome a naked close produced. Only that branch makes one.
 
@@ -1005,13 +983,71 @@ def _record_bracket_outcome(
                 status=str(status),
                 at=now,
                 reason_codes=entry.get("reason_codes") or [],
-                error_detail=_bracket_error_detail(entry),
+                error_detail=live_leg.bracket_error_detail(entry),
             )
     except Exception as exc:  # noqa: BLE001 — the order is at the venue; report, never raise
         record["live_reason_codes"].append(BRACKET_BREAKER_UNRECORDED)
         record["live_reason_codes"].append(
             getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
         )
+
+
+# The exits that start a live cooldown. `stop_loss` is paper's rule. `venue_external_close` is the
+# label a settlement falls back to when no leg answered and the fill history priced the exit —
+# which a stop whose leg query failed also lands on (review of #880: reproduced, the next bar
+# entered again). Its cause is unknown by definition, so it is held like a stop: a liquidation or a
+# hand-close is no better a moment to re-enter. This can only refuse more than paper would.
+_COOLDOWN_CLOSE_REASONS = STOP_EXIT_REASONS | {live_leg.CLOSE_REASON_VENUE_EXTERNAL}
+
+
+def _settle_clock() -> str:
+    """The wall clock when a settlement is recorded. Its own function so tests can set it."""
+    return timeutil.utc_now_iso()
+
+
+def _record_stop_cooldown(
+    record: dict[str, Any], position: Mapping[str, Any], settled: Mapping[str, Any], *,
+    now: str, root: Path | None,
+) -> None:
+    """Hold the position's own context for paper's cooldown after a live stop-out (PR2a).
+
+    The context is the position's timeframe, the one its entry was routed on; a position that names
+    none (a probe, a legacy record) belongs to no context and cools nothing.
+
+    **The anchor is the later of ``now`` and the wall clock at this call.** ``now`` alone is not
+    enough: it is the fan-out's start, one value for every context, and a stop can fill after it
+    and still be settled in this pass (review of #880). The wall clock here is after the venue read
+    that saw the fill, so the anchor is never before the fill and the window is never shorter than
+    paper's. It is one bar longer when the settlement lands in a later bar than the fill — on 15m,
+    the usual case — which errs toward holding. Reported, never raised: the settlement it follows is
+    already written."""
+    outcome = settled.get("outcome")
+    if settled.get("status") != live_leg.EXIT_CLOSED or not isinstance(outcome, Mapping):
+        return
+    if outcome.get("close_reason") not in _COOLDOWN_CLOSE_REASONS:
+        return
+    timeframe = position.get("timeframe")
+    minutes = TIMEFRAMES.get(timeframe) if isinstance(timeframe, str) else None
+    if not minutes:
+        return
+    try:
+        anchor = max(str(now), _settle_clock())
+        until = stop_cooldown_until(
+            anchor, timeframe_minutes=minutes, bars=paper.COOLDOWN_BARS_AFTER_STOPLOSS,
+        )
+        select_live_entry_marks(now=now, root=root).record_stop_cooldown(
+            symbol=position_symbol(position), timeframe=timeframe, until=until,
+        )
+    except Exception as exc:  # noqa: BLE001 — the settlement stands; report, never raise
+        record["live_reason_codes"].append(STOP_COOLDOWN_UNRECORDED)
+        record["live_reason_codes"].append(
+            getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
+        )
+        return
+    record["live_stop_cooldown"] = {
+        "symbol": position_symbol(position), "timeframe": timeframe, "until_bar": until,
+        "close_reason": outcome.get("close_reason"), "anchored_at": anchor,
+    }
 
 
 def _is_incident(result: Mapping[str, Any]) -> bool:

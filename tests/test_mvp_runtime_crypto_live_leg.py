@@ -48,11 +48,16 @@ BRACKET = {
     "tick_size": 0.1,
 }
 
+BAR = "2026-07-25T00:00:00Z"
+
 DECISION = {
     "status": "READY", "ready": True, "symbol": "BTCUSDT",
     "guard": {"approved": True, "status": "READY"},
     "intent": INTENT, "bracket": BRACKET,
     "sizing": {"sizable": True, "quantity": 0.001, "notional_usdt": 60.0},
+    # The bar the leg claims before it sends (PR2a), as `plan_live_entry` names it.
+    "entry_bar": {"context_key": "BTCUSDT__1d", "symbol": "BTCUSDT", "timeframe": "1d",
+                  "bar_time": BAR},
 }
 
 POSITION = {
@@ -62,6 +67,17 @@ POSITION = {
     "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
     "entry_exchange_order_id": 111,
 }
+
+
+# The order the leg touched its doubles in, across all of them — what "before the send" means.
+EVENTS: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _fresh_events():
+    EVENTS.clear()
+    yield
+    EVENTS.clear()
 
 
 class FakeAdapter:
@@ -89,6 +105,7 @@ class FakeAdapter:
         return "ENTRY"
 
     def submit(self, order_request, *, timeout_seconds=10):
+        EVENTS.append("submit")
         self.submitted.append(dict(order_request))
         self._requests[str((order_request.get("clientAlgoId") or order_request["newClientOrderId"]))] = dict(order_request)
         kind = self._kind(str((order_request.get("clientAlgoId") or order_request["newClientOrderId"])))
@@ -169,16 +186,37 @@ class FakeLedger:
 
 
 class FakeCounter:
-    def __init__(self, error=None, raises=ToolError):
-        self.count = 0
+    """The daily counter as the leg now spends it: a locked reserve-or-refuse before the send."""
+
+    def __init__(self, error=None, raises=ToolError, count=0):
+        self.count = count
+        self.limits: list[int] = []
         self._error = error
         self._raises = raises
 
-    def record_submission(self, *, day=None):
+    def reserve_submission(self, *, limit, day=None):
+        EVENTS.append("reserve")
+        self.limits.append(limit)
         if self._error:
             raise self._raises(self._error, "scripted counter failure")
+        if self.count >= limit:
+            raise ToolError("LIVE_DAILY_ORDER_CAP_REACHED", "scripted cap")
         self.count += 1
         return self.count
+
+
+class FakeMarks:
+    def __init__(self, error=None, raises=ToolError):
+        self.claims: list[dict] = []
+        self._error = error
+        self._raises = raises
+
+    def claim_bar(self, **kw):
+        EVENTS.append("claim")
+        if self._error:
+            raise self._raises(self._error, "scripted claim failure")
+        self.claims.append(dict(kw))
+        return {}
 
 
 GOVERNANCE = {
@@ -195,7 +233,8 @@ def _entry(**kw):
         sleep=kw.pop("sleep", _no_sleep),
         adapter=kw.pop("adapter", FakeAdapter()),
         position_store=kw.pop("position_store", FakeStore()),
-        counter=kw.pop("counter", None),
+        counter=kw.pop("counter", FakeCounter()),
+        entry_marks=kw.pop("entry_marks", FakeMarks()),
         governance=kw.pop("governance", GOVERNANCE),
         gate_open=kw.pop("gate_open", True),
         limits=kw.pop("limits", LIMITS),
@@ -286,10 +325,11 @@ def test_the_bracket_ids_ride_on_the_stored_position():
     assert saved["stop_client_order_id"] != saved["take_profit_client_order_id"]
 
 
-def test_the_daily_counter_is_incremented():
+def test_the_daily_slot_is_reserved_against_the_registered_cap():
     counter = FakeCounter()
     _entry(counter=counter)
     assert counter.count == 1
+    assert counter.limits == [LIMITS.max_daily_order_count]
 
 
 def test_an_ambiguous_submit_still_consumes_daily_budget():
@@ -844,28 +884,119 @@ def test_a_real_book_write_failure_fires_the_incident_vocabulary_the_route_halts
     assert live_route._is_incident(result)
 
 
-def test_a_counter_persist_failure_does_not_abort_before_the_bracket():
-    """The counter is written between the entry submit and the bracket placement — the worst
-    possible escape point in the whole leg. A PersistenceError there must cost a reason code,
-    never the protective bracket or the booking."""
-    counter = FakeCounter(error="LIVE_ORDER_COUNT_LOCKED", raises=PersistenceError)
-    adapter, store = FakeAdapter(), FakeStore()
-    result = _entry(adapter=adapter, position_store=store, counter=counter)
+# --- the bar and the day's slot are spent BEFORE the send (PR2a) -----------------------------
+#
+# The counter used to be written between the entry submit and the bracket — the worst escape
+# point in the leg, which is why its failure was only a reason code there. It is now reserved
+# before anything leaves, so its failure is simply a refusal.
+
+def test_the_bar_is_claimed_and_the_slot_reserved_before_the_entry_is_sent():
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks)
     assert result["status"] == ll.ENTRY_OPENED
-    assert [r["type"] for r in adapter.submitted] == ["MARKET", "STOP_MARKET", "LIMIT"]
-    assert len(store.saved) == 1
-    assert "LIVE_ORDER_COUNT_LOCKED" in result["reason_codes"]
+    assert EVENTS[:3] == ["claim", "reserve", "submit"]
+    assert marks.claims == [{"symbol": "BTCUSDT", "timeframe": "1d", "bar_time": BAR}]
 
 
-def test_a_counter_persist_failure_does_not_abort_before_the_naked_close():
-    """Rule 2 must still run behind a failing counter store: a filled entry whose bracket was
-    refused is closed, not stranded by an exception between the two."""
-    counter = FakeCounter(error="LIVE_ORDER_COUNT_LOCKED", raises=PersistenceError)
-    adapter = FakeAdapter(missing={"TP"})
-    result = _entry(adapter=adapter, counter=counter)
-    assert result["status"] == ll.ENTRY_NAKED_CLOSED
-    close = [r for r in adapter.submitted if r.get("reduceOnly") and r["type"] == "MARKET"]
-    assert len(close) == 1
+def test_a_bar_already_entered_sends_nothing_and_spends_no_slot():
+    counter, adapter = FakeCounter(), FakeAdapter()
+    result = _entry(entry_marks=FakeMarks(error="LIVE_ENTRY_BAR_ALREADY_ENTERED"),
+                    counter=counter, adapter=adapter)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == ["LIVE_ENTRY_BAR_ALREADY_ENTERED"]
+    assert adapter.submitted == [] and counter.count == 0 and result["entry"] is None
+
+
+def test_the_reservation_uses_the_registered_cap_as_it_is():
+    """No floor under it: a cap of zero reserves nothing, even behind a decision that says ready
+    (the guard would have refused first; the reservation must not depend on that)."""
+    from dataclasses import replace
+
+    adapter, counter = FakeAdapter(), FakeCounter()
+    result = _entry(limits=replace(LIMITS, max_daily_order_count=0), counter=counter, adapter=adapter)
+    assert result["reason_codes"] == ["LIVE_DAILY_ORDER_CAP_REACHED"]
+    assert counter.limits == [0] and adapter.submitted == []
+
+
+def test_a_full_day_sends_nothing():
+    """Two processes read a count under the cap; only the reservation can say which one sends."""
+    adapter = FakeAdapter()
+    result = _entry(counter=FakeCounter(count=LIMITS.max_daily_order_count), adapter=adapter)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == ["LIVE_DAILY_ORDER_CAP_REACHED"]
+    assert adapter.submitted == []
+
+
+@pytest.mark.parametrize("raises", [ToolError, PersistenceError, SafetyGateBlocked, OSError])
+def test_a_counter_that_cannot_reserve_refuses_before_the_send(raises):
+    """Whatever the real counter raises — a lock, the gate re-check, the write — nothing has
+    left yet, so it is a refusal, never an escape to `run_live_leg` (which would call a leg that
+    sent nothing an INCIDENT)."""
+    adapter = FakeAdapter()
+    result = _entry(counter=FakeCounter(error="LIVE_COUNTER_LOCKED", raises=raises), adapter=adapter)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert adapter.submitted == []
+    expected = "UNEXPECTED_OSError" if raises is OSError else "LIVE_COUNTER_LOCKED"
+    assert result["reason_codes"] == [expected]
+
+
+@pytest.mark.parametrize("raises", [PersistenceError, SafetyGateBlocked, OSError])
+def test_a_mark_store_that_cannot_claim_refuses_before_the_send(raises):
+    adapter, counter = FakeAdapter(), FakeCounter()
+    result = _entry(entry_marks=FakeMarks(error="LIVE_ENTRY_MARKS_LOCKED", raises=raises),
+                    adapter=adapter, counter=counter)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert adapter.submitted == [] and counter.count == 0
+
+
+@pytest.mark.parametrize("missing,reason", [
+    ({"entry_marks": None}, ll.NO_ENTRY_MARKS),
+    ({"counter": None}, ll.NO_ORDER_COUNTER),
+])
+def test_no_mark_store_or_no_counter_no_order(missing, reason):
+    adapter = FakeAdapter()
+    result = _entry(adapter=adapter, **missing)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [reason]
+    assert adapter.submitted == []
+
+
+def test_the_real_stores_let_one_bar_send_once(tmp_path, monkeypatch):
+    """End to end on the durable stores: the same decision executed twice is one order."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        count_today,
+        read_live_entry_marks,
+        select_live_entry_marks,
+        select_live_order_counter,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    adapter = FakeAdapter()
+
+    def _once():
+        return _entry(adapter=adapter, counter=select_live_order_counter(root=tmp_path),
+                      entry_marks=select_live_entry_marks(root=tmp_path))
+
+    first, second = _once(), _once()
+    assert first["status"] == ll.ENTRY_OPENED
+    assert second["status"] == ll.ENTRY_REFUSED
+    assert second["reason_codes"] == ["LIVE_ENTRY_BAR_ALREADY_ENTERED"]
+    assert [r["type"] for r in adapter.submitted].count("MARKET") == 1
+    assert count_today(tmp_path) == 1
+    assert read_live_entry_marks(tmp_path)["entered"] == {"BTCUSDT__1d": BAR}
+
+
+def test_a_decision_that_names_no_bar_cannot_be_claimed(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import select_live_entry_marks, select_live_order_counter
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    adapter = FakeAdapter()
+    decision = {k: v for k, v in DECISION.items() if k != "entry_bar"}
+    result = _entry(decision=decision, adapter=adapter,
+                    counter=select_live_order_counter(root=tmp_path),
+                    entry_marks=select_live_entry_marks(root=tmp_path))
+    assert result["reason_codes"] == ["LIVE_ENTRY_BAR_UNKNOWN"]
+    assert adapter.submitted == []
 
 
 @pytest.mark.parametrize("raises", [PersistenceError, SafetyGateBlocked, OSError])

@@ -90,10 +90,53 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
-        "daily_loss_breaker", "bracket_breaker",
+        "daily_loss_breaker", "bracket_breaker", "entry_marks",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired", "execution_stage",
     }
+
+
+def test_unreadable_entry_marks_turn_the_board_red_and_say_not_to_delete(tmp_path, clean_env):
+    """PR2a: a corrupt marks file refuses every live entry, so the board must say so — and must
+    not send the operator to the one repair that re-opens bars already sent on."""
+    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    path = venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{torn", encoding="utf-8")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "entry_marks")
+    assert row["ok"] is False and status["ready"] is False
+    assert "LIVE_ENTRY_MARKS_UNREADABLE" in row["detail"] and "Do not just delete it" in row["detail"]
+
+
+def test_the_entry_marks_row_names_the_cooldowns_still_holding(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto.live_order import LiveEntryMarks
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    marks = LiveEntryMarks(root=tmp_path, authorization=auth)
+    marks.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time="2026-07-25T00:00:00Z")
+    # NOW's last closed 4h bar opens before this bound, so it still holds; the 1d one has passed.
+    marks.record_stop_cooldown(symbol="BTCUSDT", timeframe="4h", until="2026-07-26T00:00:00Z")
+    marks.record_stop_cooldown(symbol="ETHUSDT", timeframe="1d", until="2026-07-01T00:00:00Z")
+    row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "entry_marks")
+    assert row["ok"] is True
+    assert "1 context(s) have sent an entry" in row["detail"]
+    assert "BTCUSDT__4h until the 2026-07-26T00:00:00Z bar" in row["detail"]
+    assert "ETHUSDT" not in row["detail"]
+
+
+@pytest.mark.parametrize("now,holds", [
+    ("2026-07-28T08:05:00Z", True),    # evaluates the 04:00 bar
+    ("2026-07-28T12:05:00Z", True),    # evaluates the 08:00 bar — still before the bound
+    ("2026-07-28T16:05:00Z", False),   # evaluates the 12:00 bar: the bound itself enters
+])
+def test_a_cooldown_is_judged_against_the_bar_the_context_evaluates(now, holds):
+    assert live_readiness._cooldown_holds_now("BTCUSDT__4h", "2026-07-28T12:00:00Z", now) is holds
 
 
 def test_unconfigured_loss_limit_shows_as_breached(tmp_path, clean_env):

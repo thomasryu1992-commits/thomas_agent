@@ -590,6 +590,7 @@ def test_the_cycle_carries_a_live_leg_that_is_inert_without_a_grant(tmp_path, mo
     assert record["live_route_status"] == "DISABLED"
     assert record["live_opened"] is None and record["live_settled"] is None
     assert record["live_halt"] is False
+    assert record["live_stop_cooldown"] is None
     # The status line stays exactly as it was: a DISABLED leg is every developer machine, and
     # printing it on every line would train the reader to skip the field that matters.
     assert "live=" not in cycle_status_line(record)
@@ -1171,6 +1172,21 @@ def test_the_live_leg_is_handed_gate_0(tmp_path, monkeypatch):
     assert "live_candidate" not in seen, "the live leg was handed a gate that no longer exists"
     assert record["report_status"] is not None
     assert "live_candidate_eligible" in record
+
+
+def test_a_live_stop_cooldown_reaches_the_cycle_record(tmp_path, monkeypatch):
+    """PR2a review: the bound a live stop-out wrote is auditable on the ledger row, as paper's
+    refusal record carries its own."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    cooldown = {"symbol": "BTCUSDT", "timeframe": "4h", "until_bar": "2026-07-28T12:00:00Z",
+                "close_reason": "stop_loss", "anchored_at": "2026-07-28T04:20:00Z"}
+    monkeypatch.setattr(cycle_mod, "run_live_leg", lambda **kw: {
+        "live_route_status": "SETTLED", "live_opened": None, "live_settled": None,
+        "live_reason_codes": [], "halt": False, "live_stop_cooldown": cooldown})
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["live_stop_cooldown"] == cooldown
 
 
 # --- the LIVE PERMISSION phase runs before the entry (#615 §5) ------------------------------

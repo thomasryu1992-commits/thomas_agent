@@ -108,6 +108,7 @@ DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT = 200.0
 
 COUNTER_FILENAME = "live_order_counter.json"
 LIVE_COUNTER_UNREADABLE = "LIVE_COUNTER_UNREADABLE"
+LIVE_DAILY_ORDER_CAP_REACHED = "LIVE_DAILY_ORDER_CAP_REACHED"
 
 BRACKET_BREAKER_FILENAME = "live_bracket_failures.json"
 LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
@@ -199,15 +200,20 @@ def make_client_order_id(symbol: str, direction: str, idempotency_key: str) -> s
 
 def enrich_order_identity(intent: dict[str, Any]) -> dict[str, Any]:
     """Attach the idempotency key and client order id derived from the intent itself."""
-    key = make_idempotency_key(
-        {
-            "symbol": intent.get("symbol"),
-            "direction": intent.get("direction"),
-            "strategy_id": intent.get("strategy_id"),
-            "candle_time": intent.get("candle_time") or intent.get("created_at"),
-            "position_id": intent.get("position_id"),
-        }
-    )
+    payload = {
+        "symbol": intent.get("symbol"),
+        "direction": intent.get("direction"),
+        "strategy_id": intent.get("strategy_id"),
+        "candle_time": intent.get("candle_time") or intent.get("created_at"),
+        "position_id": intent.get("position_id"),
+    }
+    # A bar time names a bar only together with its timeframe (PR2a review): a 4h bar and a 1d bar
+    # open at the same instant every day, and a display strategy id can be reused across
+    # generations, so without it two contexts mint the same client order id a day apart. Added
+    # only when present, so the probe's and the testnet cycle's ids — no timeframe — are unchanged.
+    if intent.get("timeframe"):
+        payload["timeframe"] = intent.get("timeframe")
+    key = make_idempotency_key(payload)
     intent["idempotency_key"] = key
     intent["client_order_id"] = make_client_order_id(
         str(intent.get("symbol") or "UNKNOWN"), str(intent.get("direction") or "NONE"), key
@@ -280,6 +286,8 @@ def build_live_order_intent(
         "strategy_generation_id": plan.get("strategy_generation_id"),
         "position_id": plan.get("position_id"),
         "candle_time": plan.get("candle_time"),
+        # The context the bar belongs to (PR2a review); part of the identity when present.
+        "timeframe": plan.get("timeframe"),
         "connectivity_test": False,
     }
     return enrich_order_identity(intent)
@@ -625,6 +633,19 @@ def evaluate_live_close_guard(
 
 # --- the daily submission counter --------------------------------------------------
 
+def _stored_count(value: Any) -> int:
+    """One day's stored count, or refuse (PR2a review).
+
+    Only the counter writes this file, and only non-negative ints. Anything else is damage, and a
+    damaged count must not read as room under the cap: a negative one passed the reservation's
+    `current >= limit` for as many orders as it was below zero."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter holds a malformed count")
+    return value
+
+
 def count_today(root: Path | None = None, *, day: str | None = None,
                 venue: str = VENUE_MAINNET) -> int:
     """Orders submitted today at ``venue``. Ungated read; an unreadable counter fails closed by
@@ -641,10 +662,7 @@ def count_today(root: Path | None = None, *, day: str | None = None,
         raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is unreadable") from exc
     if not isinstance(data, dict):
         raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is malformed")
-    try:
-        return int(data.get(day or utc_day(), 0))
-    except (TypeError, ValueError) as exc:
-        raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter holds a non-integer") from exc
+    return _stored_count(data.get(day or utc_day()))
 
 
 class LiveOrderCounter:
@@ -674,6 +692,23 @@ class LiveOrderCounter:
         )
 
     def record_submission(self, *, day: str | None = None) -> int:
+        """Count an order already sent. The testnet cycle's rule; the mainnet entry paths reserve
+        their slot BEFORE the send instead (:meth:`reserve_submission`)."""
+        return self._increment(day=day, limit=None)
+
+    def reserve_submission(self, *, limit: int, day: str | None = None) -> int:
+        """Take one of today's order slots before the order is sent, or refuse (PR2a).
+
+        The guard judges ``submitted_today`` from a read taken earlier in the leg, so two
+        processes — the scheduler's live leg and an operator's probe — could both read a count
+        under the cap and both send. The comparison and the increment happen here, under the
+        counter's own lock, so at most ``limit`` reservations succeed in a day whichever process
+        makes them. A reserved slot stays spent even if the send then fails: the rule
+        ``record_submission`` already applied to an ambiguous submit, moved ahead of the send.
+        """
+        return self._increment(day=day, limit=limit)
+
+    def _increment(self, *, day: str | None, limit: int | None) -> int:
         self._assert()
         target = venue_state_dir(self._root, venue=self._venue)
         target.mkdir(parents=True, exist_ok=True)
@@ -684,17 +719,29 @@ class LiveOrderCounter:
             if path.is_file():
                 try:
                     loaded = json.loads(path.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        data = loaded
                 except (OSError, ValueError) as exc:
                     raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is unreadable") from exc
-            try:
-                current = int(data.get(key, 0))
-            except (TypeError, ValueError):
-                current = 0
+                if not isinstance(loaded, dict):
+                    # Refused, not replaced: rewriting it would erase the evidence and hand back
+                    # the day's whole budget (PR2a review).
+                    raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is malformed")
+                data = loaded
+            current = _stored_count(data.get(key))
+            if limit is not None and current >= limit:
+                # Also the answer for a cap of zero: an unconfigured cap reserves nothing.
+                raise ToolError(
+                    LIVE_DAILY_ORDER_CAP_REACHED,
+                    f"daily order cap reached ({current}/{limit}); no order slot was reserved",
+                )
             data[key] = current + 1
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(data, ensure_ascii=False, indent=1))
+                handle.flush()
+                # The count is the pre-send authority for the cap now (PR2a): a reserved slot that
+                # a crash forgets is an order the day's budget no longer knows about. The file is
+                # synced, as the live book's is; the directory entry is not, as for the book.
+                os.fsync(handle.fileno())
             tmp.replace(path)
             return data[key]
 
@@ -705,6 +752,9 @@ class DryRunLiveOrderCounter:
     filesystem_write = False
 
     def record_submission(self, *, day: str | None = None) -> int:
+        return 0
+
+    def reserve_submission(self, *, limit: int, day: str | None = None) -> int:
         return 0
 
 
@@ -922,6 +972,224 @@ def select_live_bracket_breaker(*, now: str | None = None, root: Path | None = N
         gated_factory=lambda authorization: LiveBracketFailureBreaker(
             root=root, authorization=authorization
         ),
+    )
+
+
+# --- the live entry marks (PR2a) ---------------------------------------------------
+#
+# Two rules paper has always kept and the live leg did not, because both live inside
+# `paper.run_paper_update` BELOW the line where the route is published to the live leg:
+#
+# - **one entry per context per bar.** The 15-minute fan-out re-evaluates a 4h or 1d bar up to
+#   96 times, and the route it hands the live leg is the same ENTRY_CANDIDATE every time. The
+#   one-position-per-symbol cap hides that while a position is open; once a stop closes it
+#   inside the bar, the next tick entered again on the same signal. The client order id did not
+#   stop it either — it was keyed on the wall clock.
+# - **the post-stop-loss cooldown** (`paper.COOLDOWN_BARS_AFTER_STOPLOSS`), the rule the paper
+#   evidence behind every live promotion was produced under.
+#
+# Paper marks every EVALUATION of a bar; the live mark is taken only when an order is about to be
+# sent. A live refusal is usually transient (an order book read, the account), and retrying it
+# later in the same bar sends nothing twice: no order has carried the bar's client id yet. After
+# a send the bar is spent — the retry would reuse that id, and the venue answering with the old
+# filled order would book a position that no longer exists.
+#
+# Bars are named by the feature row's ``timestamp``, which is the bar's OPEN time
+# (`features.build_feature_rows`); the cooldown bound is on that same basis.
+#
+# Fail direction is the opposite of paper's marks, on purpose: those read a corrupt file as "no
+# mark" (one redundant paper evaluation at worst); a corrupt live file refuses entries, because
+# here "no mark" is a real order on a bar that may already have had one.
+
+ENTRY_MARKS_FILENAME = "live_entry_marks.json"
+ENTRY_MARKS_VERSION = "live_entry_marks.v1"
+LIVE_ENTRY_MARKS_UNREADABLE = "LIVE_ENTRY_MARKS_UNREADABLE"
+LIVE_ENTRY_MARKS_UNKNOWN = "LIVE_ENTRY_MARKS_UNKNOWN"
+LIVE_ENTRY_BAR_UNKNOWN = "LIVE_ENTRY_BAR_UNKNOWN"
+LIVE_ENTRY_BAR_ALREADY_ENTERED = "LIVE_ENTRY_BAR_ALREADY_ENTERED"
+LIVE_ENTRY_STOP_LOSS_COOLDOWN = "LIVE_ENTRY_STOP_LOSS_COOLDOWN"
+LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE = "LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE"
+
+_MARK_MAPS = ("entered", "cooldown")
+_CONTEXT_SEP = "__"
+# Bars align to the epoch on every timeframe this runtime trades (15m through 1d, UTC).
+_EPOCH = "1970-01-01T00:00:00Z"
+
+
+def entry_context_key(symbol: Any, timeframe: Any) -> str | None:
+    """The live context a mark belongs to, or None when either half is missing."""
+    symbol, timeframe = str(symbol or "").strip(), str(timeframe or "").strip()
+    if not symbol or not timeframe:
+        return None
+    return f"{symbol}{_CONTEXT_SEP}{timeframe}"
+
+
+def _is_bar_time(value: Any) -> bool:
+    return isinstance(value, str) and bool(timeutil.FIXED_UTC_PATTERN.match(value))
+
+
+def _empty_entry_marks() -> dict[str, Any]:
+    return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}}
+
+
+def read_live_entry_marks(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
+    """This venue's live entry marks. Ungated read; anything unreadable raises.
+
+    Every value is checked for the fixed UTC form, because the rules compare them as strings and
+    a malformed one compares in whatever direction its first character happens to point."""
+    path = venue_state_dir(root, venue=venue) / ENTRY_MARKS_FILENAME
+    if not path.is_file():
+        return _empty_entry_marks()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, "live entry marks are unreadable") from exc
+    if not isinstance(data, dict) or data.get("version") != ENTRY_MARKS_VERSION:
+        raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, "live entry marks are malformed")
+    marks = _empty_entry_marks()
+    for name in _MARK_MAPS:
+        table = data.get(name)
+        if not isinstance(table, dict) or not all(
+            isinstance(key, str) and _is_bar_time(value) for key, value in table.items()
+        ):
+            raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, f"live entry marks hold a malformed {name!r} map")
+        marks[name] = dict(table)
+    return marks
+
+
+def live_entry_holds(
+    marks: Mapping[str, Any] | None, *, symbol: Any, timeframe: Any, bar_time: Any,
+) -> list[str]:
+    """Why this context may not send an entry on this bar — empty when it may. Pure.
+
+    A bar at or before the last one this context sent on is refused, not only the same one: out
+    of order data must not reopen a spent bar (the `routing_marks.is_fresh` rule). The cooldown
+    holds every bar that opens before its bound."""
+    if not isinstance(marks, Mapping):
+        return [LIVE_ENTRY_MARKS_UNKNOWN]
+    key = entry_context_key(symbol, timeframe)
+    if key is None or not _is_bar_time(bar_time):
+        return [LIVE_ENTRY_BAR_UNKNOWN]
+    holds: list[str] = []
+    last = (marks.get("entered") or {}).get(key)
+    if last is not None and bar_time <= last:
+        holds.append(LIVE_ENTRY_BAR_ALREADY_ENTERED)
+    until = (marks.get("cooldown") or {}).get(key)
+    if until is not None and bar_time < until:
+        holds.append(LIVE_ENTRY_STOP_LOSS_COOLDOWN)
+    return holds
+
+
+def stop_cooldown_until(closed_at: str, *, timeframe_minutes: int, bars: int) -> str:
+    """The first bar (by open time) a context may enter again after a stop-out. Pure.
+
+    The anchor is the bar containing ``closed_at``; the bound is ``bars`` bars after it. With
+    ``closed_at`` at the fill this is paper's window on the open-time basis: paper refuses candles
+    closing before ``stop bar close + bars`` — the stop bar and the ``bars - 1`` after it. The
+    caller passes an instant no earlier than the fill (see ``live_route._record_stop_cooldown``),
+    so the window is never shorter than paper's, and one bar longer when that instant falls in a
+    later bar than the fill did."""
+    if isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) \
+            or timeframe_minutes <= 0 or isinstance(bars, bool) or not isinstance(bars, int) or bars < 0:
+        raise ToolError(LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE, "a cooldown needs a positive bar length")
+    if not _is_bar_time(closed_at):
+        raise ToolError(LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE, f"cannot anchor a cooldown on {closed_at!r}")
+    minute = int(timeutil.parse_iso(closed_at).timestamp()) // 60
+    bar_open = minute - minute % timeframe_minutes
+    return timeutil.plus_minutes(_EPOCH, bar_open + bars * timeframe_minutes)
+
+
+class LiveEntryMarks:
+    """Durable per-venue entry marks, behind the live-trading switch like the counter and the
+    breaker — and for their reason: an inert mark store beside a durable adapter is a leg that
+    can enter the same bar twice."""
+
+    provider_id = LIVE_TRADING_PROVIDER_ID
+    filesystem_write = True
+
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None,
+                 venue: str = VENUE_MAINNET):
+        self._root = root
+        self._authorization = authorization
+        self._venue = venue
+
+    def _assert(self) -> None:
+        safety_gate.assert_authorization(
+            self._authorization,
+            required_flags=LIVE_TRADING_FLAGS,
+            provider_id=self.provider_id,
+            now=timeutil.utc_now_iso(),
+        )
+
+    def _update(self, mutate: Any) -> dict[str, Any]:
+        self._assert()
+        target = venue_state_dir(self._root, venue=self._venue)
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / ENTRY_MARKS_FILENAME
+        with locked(path.with_suffix(".lock"), code="LIVE_ENTRY_MARKS_LOCKED", label="live entry marks"):
+            marks = read_live_entry_marks(self._root, venue=self._venue)
+            if mutate(marks) is False:
+                return marks
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(marks, ensure_ascii=False, indent=1))
+                handle.flush()
+                # A claim that reached the page cache but not the disk is a bar this runtime
+                # forgets across a crash — the live position store's reason for its fsync. The
+                # file is synced; the directory entry is not, as for the book.
+                os.fsync(handle.fileno())
+            tmp.replace(path)
+            return marks
+
+    def claim_bar(self, *, symbol: Any, timeframe: Any, bar_time: Any) -> dict[str, Any]:
+        """Spend this bar for this context before its order is sent, or refuse.
+
+        Both rules are re-checked under the lock, so of two claims on one bar exactly one wins."""
+        def mutate(marks: dict[str, Any]) -> None:
+            holds = live_entry_holds(marks, symbol=symbol, timeframe=timeframe, bar_time=bar_time)
+            if holds:
+                raise ToolError(holds[0], f"bar {bar_time!r} cannot be claimed for {symbol} {timeframe}")
+            marks["entered"][entry_context_key(symbol, timeframe)] = bar_time
+
+        return self._update(mutate)
+
+    def record_stop_cooldown(self, *, symbol: Any, timeframe: Any, until: str) -> dict[str, Any]:
+        """Hold this context until the bar ``until`` opens. Never shortens a longer hold."""
+        key = entry_context_key(symbol, timeframe)
+        if key is None or not _is_bar_time(until):
+            raise ToolError(LIVE_ENTRY_BAR_UNKNOWN, "a cooldown needs a context and a bar time")
+
+        def mutate(marks: dict[str, Any]) -> bool:
+            current = marks["cooldown"].get(key)
+            if current is not None and until <= current:
+                return False
+            marks["cooldown"][key] = until
+            return True
+
+        return self._update(mutate)
+
+
+class DryRunLiveEntryMarks:
+    """Inert marks: with the switch off nothing is sent, so there is no bar to spend."""
+
+    filesystem_write = False
+
+    def claim_bar(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_entry_marks()
+
+    def record_stop_cooldown(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_entry_marks()
+
+
+def select_live_entry_marks(*, now: str | None = None, root: Path | None = None) -> Any:
+    """Return the durable marks if live trading is opted in, else the inert ones."""
+    return safety_gate.select_env_gated(
+        env_var=LIVE_TRADING_ENV,
+        opt_in_value=REAL_LIVE_TRADING,
+        flags=LIVE_TRADING_FLAGS,
+        provider_id=LIVE_TRADING_PROVIDER_ID,
+        default_factory=DryRunLiveEntryMarks,
+        gated_factory=lambda authorization: LiveEntryMarks(root=root, authorization=authorization),
     )
 
 

@@ -38,8 +38,13 @@ from runtime.mvp_runtime.crypto.account import AccountSnapshot
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_PHRASE,
+    ENTRY_MARKS_VERSION,
     LIVE_CONFIRMATION_PHRASE,
+    LiveEntryMarks,
+    LiveOrderCounter,
     LiveOrderLimits,
+    count_today,
+    read_live_entry_marks,
 )
 from runtime.mvp_runtime.crypto.live_pnl import (
     LIVE_TRADING_FLAGS,
@@ -218,13 +223,21 @@ def _routed_plan(row=None):
     return plan
 
 
-def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
+# A machine with no live entry history (PR2a): no bar spent, no context cooling down.
+NO_MARKS = {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}}
+
+
+def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks=NO_MARKS):
     filters, reason = live_filters.parse_symbol_filters(EXCHANGE_INFO, SYMBOL)
     assert reason is None
     local = list(local_positions or [])
     return live_entry.plan_live_entry(
         plan,
         symbol=SYMBOL,
+        # The bar the route was evaluated on, as `live_route` hands it over: the feature row's own
+        # `timestamp`. The marks are the durable ones when a test has a root to read them from.
+        entry_bar_time=ROW["timestamp"],
+        entry_marks=marks,
         # The rehearsal walks the path a machine registered at the live rung takes (PR1b); the
         # stage door's refusals have their own tests.
         execution_stage=execution_stage.StageStatus(
@@ -260,6 +273,8 @@ def _open(decision, *, root, venue=None):
         decision,
         adapter=venue,
         position_store=RealLivePositionStore(root=root, authorization=_LIVE_AUTH),
+        counter=LiveOrderCounter(root=root, authorization=_LIVE_AUTH),
+        entry_marks=LiveEntryMarks(root=root, authorization=_LIVE_AUTH),
         governance=GOVERNANCE,
         gate_open=True,
         limits=LIMITS,
@@ -392,12 +407,16 @@ def test_the_booked_position_closes_the_next_entry_door(tmp_path):
     assert [p["symbol"] for p in stored] == [SYMBOL]
     assert live_capacity(stored, symbol=SYMBOL)["allowed"] is False
 
-    second = _decision(plan, local_positions=stored)
+    second = _decision(plan, local_positions=stored, marks=read_live_entry_marks(tmp_path))
     assert second["status"] == live_entry.STATUS_REFUSED
-    # Both doors close: LP5's own per-symbol cap, and reconciliation (the venue snapshot still
-    # says flat, so the book and the venue disagree).
+    # Three doors close: LP5's own per-symbol cap, reconciliation (the venue snapshot still says
+    # flat, so the book and the venue disagree), and the bar the first entry spent (PR2a) — the
+    # one that still holds once a stop has cleared the book inside the same bar.
     assert live_entry.CAPACITY_REFUSED in second["reasons"]
     assert live_entry.RECONCILE_REFUSED in second["reasons"]
+    assert live_entry.BAR_ALREADY_ENTERED in second["reasons"]
+    # And the day's slot the first entry reserved is on the durable counter.
+    assert count_today(tmp_path) == 1
 
 
 def test_a_settled_live_trade_reaches_the_risk_guard_with_no_live_branch(tmp_path):
@@ -415,8 +434,11 @@ def test_a_settled_live_trade_reaches_the_risk_guard_with_no_live_branch(tmp_pat
     assert closed["outcome"]["result_R"] == pytest.approx(-1.0, abs=1e-6)
     # The surviving bracket leg is withdrawn — the venue auto-cancels nothing.
     assert venue.cancelled
-    # And the book is clear, so the symbol is tradable again.
+    # And the book is clear, so the symbol is tradable again — from the next bar: the bar the
+    # entry spent stays spent (PR2a).
     assert list_open_live_positions(tmp_path) == []
+    again = _decision(plan, marks=read_live_entry_marks(tmp_path))
+    assert again["reasons"] == [live_entry.BAR_ALREADY_ENTERED]
 
     readable, excluded = live_outcomes_for_analysis(read_live_outcomes(tmp_path))
     assert excluded == [] and len(readable) == 1
