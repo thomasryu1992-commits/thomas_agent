@@ -125,6 +125,22 @@ def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
     return {"check": check_id, "ok": bool(ok), "detail": detail}
 
 
+def _testnet_evidence(root: Path | None) -> dict[str, Any]:
+    """What the evidence registry says, fail-soft for the board: an unreadable registry is named,
+    never rendered as "none recorded"."""
+    from .testnet_evidence import cycle_findings, read_cycles
+
+    try:
+        rows = read_cycles(root)
+    except MvpRuntimeError as exc:
+        return {"error": exc.reason_code, "recorded": None, "complete": []}
+    return {
+        "error": None,
+        "recorded": len(rows),
+        "complete": [str(r.get("cycle_id")) for r in rows if not cycle_findings(r)],
+    }
+
+
 def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
     """What the process that CAN trade last recorded about its own live gate.
 
@@ -616,6 +632,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The machine's execution stage as data (PR1a), with whether any door enforces it yet.
         "execution_stage": {**stage.as_dict(), "enforced": STAGE_ENFORCED,
                             "admits_entry": stage_admits},
+        # The signed testnet cycles this machine has earned (PR1d-2). Read here rather than at
+        # `resolve_execution_stage`, whose contract with the live leg is that it never raises.
+        "testnet_evidence": _testnet_evidence(root),
     }
 
 
@@ -746,6 +765,22 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
+def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
+    """What the SIGNED_TESTNET -> LIVE_AUTONOMOUS climb would find. Informational: it gates no
+    check here, because the ladder's own door is where it decides anything (PR1d-2)."""
+    evidence = status.get("testnet_evidence") or {}
+    if evidence.get("error"):
+        return f"[----] {'testnet_evidence':24} UNREADABLE - {evidence['error']}"
+    complete = evidence.get("complete") or []
+    if not complete:
+        recorded = evidence.get("recorded") or 0
+        detail = (f"{recorded} recorded, none complete" if recorded else "none recorded")
+        return (f"[----] {'testnet_evidence':24} {detail} - a LIVE_AUTONOMOUS climb needs one "
+                "(scripts/run_signed_testnet_cycle.py --run)")
+    return (f"[----] {'testnet_evidence':24} {len(complete)} complete cycle(s), latest "
+            f"{complete[-1]} - name it with --testnet-cycle on the stage ask")
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -791,6 +826,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
+    lines.append(_testnet_evidence_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

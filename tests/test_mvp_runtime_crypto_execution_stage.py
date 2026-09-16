@@ -59,11 +59,13 @@ def _resolve(tmp_path, approvals, now=NOW):
     return es.resolve_execution_stage(tmp_path, now=now, approval_store=approvals)
 
 
-def _register(tmp_path, approvals, status, target, *, approval_id, now=NOW, **kw):
-    content = es.plan_transition(status, target=target, registered_by="thomas", reason="test", **kw)
+def _register(tmp_path, approvals, status, target, *, approval_id, now=NOW, evidence_root=None, **kw):
+    content = es.plan_transition(status, target=target, registered_by="thomas", reason="test",
+                                 evidence_root=evidence_root, **kw)
     granted = approvals.grant(approval_id, content)
     record = es.record_from_approved(content, status_now=status, approval_id=approval_id,
-                                     action_fingerprint=granted["action_fingerprint"], now=now)
+                                     action_fingerprint=granted["action_fingerprint"], now=now,
+                                     evidence_root=evidence_root)
     approvals.consume(approval_id, record)
     es.write_stage_record(record, tmp_path)
     return _resolve(tmp_path, approvals, now)
@@ -667,3 +669,135 @@ def test_the_request_text_for_a_stage_ask_says_how_it_is_spent_and_reversed():
     paper = {**ask, "approved_action_snapshot": {**ask["approved_action_snapshot"],
                                                  "target_ref": "execution_stage:binance_futures:PAPER"}}
     assert "예상 비용: 없음" in approval.format_request(paper)
+
+
+# --- the climb out of SIGNED_TESTNET (PR1d-2, Thomas decisions 2 and 11) --------------------
+
+def _complete_cycle(root, cycle_id="cyc_ok"):
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    def leg(name):
+        return {"leg": name, "algo": name == "SL", "order_type": "STOP_MARKET" if name == "SL" else "LIMIT",
+                "observed_status": "NEW", "withdrawn": True}
+
+    record = testnet_evidence.build_cycle_record(
+        cycle_id=cycle_id, symbol="BTCUSDT",
+        entry={"reconcile_status": "RECONCILED", "mismatches": []},
+        protective_legs=[leg("SL"), leg("TP")],
+        exit_result={"reconcile_status": "RECONCILED", "reduce_only": True},
+        position_reconciliation={"status": "RECONCILED", "venue_positions": []},
+        adapter_tool_id="crypto.testnet.order_adapter", base_url_host="testnet.binancefuture.com",
+        started_at=NOW, completed_at=NOW,
+    )
+    testnet_evidence.append_cycle(record, root)
+    return record
+
+
+def test_the_live_climb_needs_a_completed_signed_testnet_cycle(tmp_path):
+    """Thomas decision 2: the rung that can open real positions is entered on evidence the machine
+    earned at the venue, not on an attestation."""
+    approvals = _Approvals()
+    testnet = _testnet(tmp_path, approvals)
+    with pytest.raises(ToolError) as unnamed:
+        es.plan_transition(testnet, target="LIVE_AUTONOMOUS", registered_by="t", reason="r",
+                           evidence_root=tmp_path)
+    assert unnamed.value.reason_code == es.STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED
+    with pytest.raises(ToolError) as missing:
+        es.plan_transition(testnet, target="LIVE_AUTONOMOUS", registered_by="t", reason="r",
+                           testnet_cycle_id="cyc_nope", evidence_root=tmp_path)
+    assert missing.value.reason_code == "TESTNET_EVIDENCE_INCOMPLETE"
+
+    record = _complete_cycle(tmp_path)
+    content = es.plan_transition(testnet, target="LIVE_AUTONOMOUS", registered_by="t",
+                                 reason="the cycle is clean", testnet_cycle_id="cyc_ok",
+                                 evidence_root=tmp_path)
+    assert content["transition"] == es.T_CLIMB
+    # The cycle rides in the content, so the approval signs THIS cycle.
+    assert content["evidence"]["testnet_cycle_id"] == "cyc_ok"
+    assert content["evidence"]["testnet_cycle_sha256"] == record["record_sha256"]
+
+
+def test_an_incomplete_cycle_cannot_carry_the_climb(tmp_path):
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    approvals = _Approvals()
+    testnet = _testnet(tmp_path, approvals)
+    record = _complete_cycle(tmp_path, cycle_id="cyc_half")
+    body = {k: v for k, v in record.items() if k != "record_sha256"}
+    body["protective_legs"] = [{**body["protective_legs"][0], "withdrawn": False},
+                               body["protective_legs"][1]]
+    body["record_sha256"] = integrity.sha256_record(body)
+    testnet_evidence.evidence_path(tmp_path).write_text(json.dumps(body) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        es.plan_transition(testnet, target="LIVE_AUTONOMOUS", registered_by="t", reason="r",
+                           testnet_cycle_id="cyc_half", evidence_root=tmp_path)
+    assert exc.value.reason_code == "TESTNET_EVIDENCE_INCOMPLETE"
+    assert "withdrawn" in exc.value.reason
+
+
+def test_the_rung_is_what_carries_the_condition_not_the_transition_kind(tmp_path, monkeypatch):
+    """The hole this PR closed: the refusal used to live inside the CLIMB branch, so the REBIND a
+    policy bump forces would have walked around it."""
+    approvals = _Approvals()
+    _complete_cycle(tmp_path)
+    testnet = _testnet(tmp_path, approvals)
+    live = _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
+                     testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
+    assert (live.stage, live.valid) == ("LIVE_AUTONOMOUS", True)
+    _policy_moved(monkeypatch, policy_version="1.5.1")
+    moved = _resolve(tmp_path, approvals)
+    assert moved.reason_code == es.STAGE_POLICY_VERSION_CHANGED
+    with pytest.raises(ToolError) as exc:
+        es.plan_transition(moved, target="LIVE_AUTONOMOUS", registered_by="t", reason="policy 1.5.1",
+                           evidence_root=tmp_path)
+    assert exc.value.reason_code == es.STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED
+    # Named again, the rebind is allowed — the evidence did not expire, it has to be pointed at.
+    rebind = es.plan_transition(moved, target="LIVE_AUTONOMOUS", registered_by="t",
+                                reason="policy 1.5.1", testnet_cycle_id="cyc_ok",
+                                evidence_root=tmp_path)
+    assert rebind["transition"] == es.T_REBIND
+
+
+def test_a_cycle_is_not_evidence_for_any_other_rung(tmp_path):
+    approvals = _Approvals()
+    _complete_cycle(tmp_path)
+    paper = _paper(tmp_path, approvals)
+    with pytest.raises(ToolError) as exc:
+        es.plan_transition(paper, target="SIGNED_TESTNET", registered_by="t", reason="r",
+                           testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
+    assert exc.value.reason_code == es.STAGE_EVIDENCE_NOT_APPLICABLE
+
+
+def test_a_live_record_that_names_no_cycle_reads_read_only(tmp_path):
+    """Structural, so the live leg's read path pays no I/O for it: a record that ARRIVED at the
+    rung without naming a cycle cannot be one the door wrote."""
+    approvals = _Approvals()
+    _complete_cycle(tmp_path)
+    testnet = _testnet(tmp_path, approvals)
+    _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
+              testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
+    _rewrite(tmp_path, evidence={})
+    assert _resolve(tmp_path, approvals).reason_code == es.STAGE_TRANSITION_INVALID
+
+
+def test_the_read_path_never_touches_the_registry(tmp_path, monkeypatch):
+    """`resolve_execution_stage` is what the live leg calls before it settles and protects, and its
+    contract is that it never raises. A registry read there would turn a damaged evidence file into
+    a machine that silently reads READ_ONLY every cycle."""
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    approvals = _Approvals()
+    _complete_cycle(tmp_path)
+    testnet = _testnet(tmp_path, approvals)
+    _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
+              testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
+    reads: list[int] = []
+    real = testnet_evidence.read_cycles
+    monkeypatch.setattr(testnet_evidence, "read_cycles",
+                        lambda root=None: (reads.append(1), real(root))[1])
+    status = _resolve(tmp_path, approvals)
+    assert (status.stage, status.valid) == ("LIVE_AUTONOMOUS", True)
+    assert reads == [], "the read path consulted the evidence registry"
+    # And a damaged registry does not move the stage.
+    testnet_evidence.evidence_path(tmp_path).write_text("{not json\n", encoding="utf-8")
+    assert _resolve(tmp_path, approvals).stage == "LIVE_AUTONOMOUS"

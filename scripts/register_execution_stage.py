@@ -87,12 +87,13 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
 
 
 def run_request(*, root: Path | None, now: str, target: str, registered_by: str, reason: str,
-                attestation: str | None) -> dict:
+                attestation: str | None, testnet_cycle: str | None = None) -> dict:
     base, approvals, ledger = _stores(root)
     assert_not_foreign_root_run(root)
     status = es.resolve_execution_stage(base, now=now, approval_store=approvals)
     content = es.plan_transition(status, target=target, registered_by=registered_by, reason=reason,
-                                 attestation=attestation)
+                                 attestation=attestation, testnet_cycle_id=testnet_cycle,
+                                 evidence_root=base)
     # `root` is the STATE root (stage record, approvals, ledger, control). The Core binding, the
     # policy and the schemas come from the image's own tree, like every other ask (repo_root=None).
     task = build_task(
@@ -135,7 +136,8 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
         status_now = es.resolve_execution_stage(base, now=now, approval_store=approvals)
         # Built (and refused) BEFORE anything is spent: a grant that cannot write its record stays APPROVED.
         record = es.record_from_approved(content, status_now=status_now, approval_id=approval_id,
-                                         action_fingerprint=str(approval["action_fingerprint"]), now=now)
+                                         action_fingerprint=str(approval["action_fingerprint"]),
+                                         now=now, evidence_root=base)
         with approval_mod.spend_lock(approvals, approval_id):
             fresh = approvals.get(approval_id)
             consumed = approval_mod.build_consumed_record(
@@ -190,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registered-by")
     parser.add_argument("--reason")
     parser.add_argument("--attest", help="the evidence a BOOTSTRAP record stands on")
+    parser.add_argument("--testnet-cycle",
+                        help="the completed signed testnet cycle a LIVE_AUTONOMOUS climb stands on "
+                             "(scripts/run_signed_testnet_cycle.py --list)")
     parser.add_argument("--approval-id")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--root", type=Path, default=None, help="state root (defaults to the repo)")
@@ -204,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_USAGE
         if args.request:
             out = run_request(root=args.root, now=now, target=args.to, registered_by=args.registered_by,
-                              reason=args.reason, attestation=args.attest)
+                              reason=args.reason, attestation=args.attest,
+                              testnet_cycle=args.testnet_cycle)
             sys.stdout.write(
                 f"ASKED: {out['content']['from_stage']} -> {out['content']['to_stage']} "
                 f"({out['content']['transition']}); approval {out['approval_id']} until {out['expires_at']}\n"

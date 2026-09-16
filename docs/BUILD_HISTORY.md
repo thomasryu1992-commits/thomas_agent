@@ -101,6 +101,27 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **The testnet cycle became the entry condition for the live rung** (crypto PR1d-2, Thomas
+  decisions 2 and 11, 2026-09-16; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1`,
+  `scripts/register_execution_stage.py`, `permission.py`, `crypto/live_readiness.py`). The climb to
+  LIVE_AUTONOMOUS now names one COMPLETE signed testnet cycle, verified against the registry at the
+  ask and again when the approval is spent (the door re-plans). The cycle id and its row hash ride
+  in the record's evidence and therefore in the approval's content hash, so Thomas's answer signs
+  one specific cycle and a record naming another cannot be written under it.
+
+  **By target rung, not by transition kind.** The refusal it replaced lived inside the CLIMB
+  branch, which left the REBIND a policy bump forces untouched by it — latent only because no LIVE
+  record could exist yet, and it would have opened the moment PR1d-1 made one possible. A rung's
+  entry condition is a property of the rung. It still runs after the ladder's own shape refusals,
+  so a skip still reads as a skip.
+
+  **The read path does not touch the registry.** `resolve_execution_stage` is what the live leg
+  calls before it settles and protects, and its contract is that it never raises; a registry read
+  there would turn a damaged evidence file into a machine that silently reads READ_ONLY on every
+  cycle. What the read checks is structural and costs no I/O: a record that ARRIVED at the rung
+  naming no cycle is not one the door wrote. A DEMOTE landing there is exempt — a move down is
+  witnessed by the approval of the higher record it descends from, which needed the evidence itself.
+
 - **The machine can place a signed order on the testnet** (crypto PR1d-1, Thomas decisions 2 and
   11, 2026-09-16; `crypto/testnet_execution.py`, `crypto/testnet_evidence.py`,
   `scripts/run_signed_testnet_cycle.py`). The ladder's climb out of SIGNED_TESTNET needs evidence

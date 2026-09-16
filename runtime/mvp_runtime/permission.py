@@ -1175,6 +1175,13 @@ def build_execution_stage_permission_decision(
         "LIVE_SCALED": "as LIVE_AUTONOMOUS",
     }[to_stage]
     evidence = content["evidence"] if isinstance(content["evidence"], Mapping) else {}
+    cycle = ""
+    if evidence.get("testnet_cycle_id"):
+        # The one cycle this climb stands on, in the text Thomas answers — and in the content hash,
+        # so an approval for this cycle cannot write a record naming another (PR1d-2).
+        cycle = (f" It stands on signed testnet cycle {evidence['testnet_cycle_id']} "
+                 f"({str(evidence.get('testnet_cycle_sha256') or '')[:19]}...): entry reconciled, "
+                 "protective legs confirmed resting and withdrawn, exit reconciled, position view clean.")
     replaced = ""
     if evidence.get("replaced_reason_code"):
         replaced = (f" It replaces a {evidence.get('replaced_stage') or from_stage} record that does not bind "
@@ -1191,7 +1198,7 @@ def build_execution_stage_permission_decision(
         risk_reason=(
             f"Sets this machine's execution stage to {to_stage} ({content['transition']} from {from_stage}). "
             f"The new-exposure doors that stage admits: {doors}. Closing a position is never gated by the "
-            "stage, and no stage expires. Bound to policy "
+            "stage, and no stage expires." + cycle + " Bound to policy "
             f"{content['policy_version']} and its safety fingerprint; a policy change, another stage change "
             "before the spend, or a later demotion refuses or replaces it." + replaced + enforced
         ),
