@@ -342,6 +342,10 @@ def test_a_machine_below_the_stage_a_live_entry_needs_fails_the_board(tmp_path, 
     assert status["execution_stage"]["enforced"] is True
     assert status["execution_stage"]["admits_entry"] is False
     assert live_readiness.readiness_data(status)["live_entry_possible"] is not True
+    # The dry-run is the board's authoritative answer, so it must be judged against the stage the
+    # row reports — a board that fails the row while its dry-run passes would be worse than silent.
+    assert status["guard_dry_run"]["execution_stage"] == "READ_ONLY"
+    assert any("execution stage" in block for block in status["guard_dry_run"]["blocks"])
 
 
 def test_the_board_row_passes_at_the_rung_the_doors_admit(tmp_path, clean_env, monkeypatch):

@@ -204,7 +204,8 @@ Every claim below was re-checked against `main` and against the code it describe
 > the per-machine count below and "the canary evidence" in the routing paragraph no longer gate
 > anything, and the readiness board has no `canary_evidence` row. The 4/4 on the machine that ran
 > them is frozen history, still shown by `python -m runtime.mvp_runtime.crypto.live_promotion`.
-> Nothing replaces that floor on a fresh machine until PR1b enforces the execution stage.
+> The execution stage replaced that floor on 2026-09-16 (PR1b): a fresh machine reads
+> `READ_ONLY` and the entry guard refuses every new entry until Thomas registers a rung.
 >
 > **The canary count is per-machine.** On the machine that placed them the board now reads
 > **4/4** (2026-07-28); on a fresh checkout it reads `0/3`. Ask the machine

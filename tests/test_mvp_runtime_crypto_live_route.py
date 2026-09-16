@@ -944,7 +944,13 @@ def test_a_stage_that_admits_no_entry_still_settles_and_protects(tmp_path, monke
     status = es.StageStatus(stage=stage if valid else "READ_ONLY", valid=valid,
                             reason_code=None if valid else es.STAGE_RECORD_MISSING,
                             recorded_stage=stage if valid else None)
-    monkeypatch.setattr(live_route, "resolve_execution_stage", lambda root=None, **kw: status)
+    reads: list[str] = []
+
+    def _resolve(root=None, **kw):
+        reads.append(str(root))
+        return status
+
+    monkeypatch.setattr(live_route, "resolve_execution_stage", _resolve)
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
     monkeypatch.setattr(live_route, "list_open_live_positions",
@@ -969,6 +975,7 @@ def test_a_stage_that_admits_no_entry_still_settles_and_protects(tmp_path, monke
     assert managed == ["p1"], "a stage that admits no entry must not stop position management"
     assert out["live_route_status"] != live_route.ROUTE_INCIDENT
     assert seen["execution_stage"] is status, "the entry was judged against a second, unstamped read"
+    assert len(reads) == 1, "the leg reads the stage once: the stamp and the judgement are one answer"
     assert out["execution_stage"]["stage"] == status.stage
 
 

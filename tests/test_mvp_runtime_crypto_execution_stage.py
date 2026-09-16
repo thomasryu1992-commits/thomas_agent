@@ -543,14 +543,25 @@ def test_every_entry_door_is_judged_against_the_stage():
 
     crypto = Path(es.__file__).resolve().parent
     repo = crypto.parents[2]
-    callers = [crypto / "live_entry.py", crypto / "live_readiness.py", repo / "scripts" / "run_slippage_probe.py"]
+    # Each door, and the name of the local it must pass: the board's dry-run and the leg have to
+    # judge against the very stage they report, or the board says one thing and the door does
+    # another. The probe resolves its own, named `stage` there too.
+    callers = {
+        crypto / "live_entry.py": "execution_stage",
+        crypto / "live_readiness.py": "stage",
+        repo / "scripts" / "run_slippage_probe.py": "stage",
+    }
     seen = 0
-    for path in callers:
+    for path, local in callers.items():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "evaluate_live_order_guard"):
                 seen += 1
-                assert any(kw.arg == "execution_stage" for kw in node.keywords), path.name
+                passed = [kw for kw in node.keywords if kw.arg == "execution_stage"]
+                assert passed, path.name
+                assert getattr(passed[0].value, "id", None) == local, (
+                    f"{path.name} must pass the stage it read ({local}), not a second or a made-up one"
+                )
     assert seen == len(callers), f"expected one guard call per entry door, found {seen}"
 
     # And the leg that feeds `plan_live_entry` passes the stage it stamped, not a second read.
