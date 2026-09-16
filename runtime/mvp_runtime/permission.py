@@ -1161,7 +1161,10 @@ def build_execution_stage_permission_decision(
     doors = {
         "READ_ONLY": "none", "SHADOW": "none", "PAPER": "none (paper only)",
         "SIGNED_TESTNET": "none on mainnet (signed testnet evidence only)",
-        "LIVE_AUTONOMOUS": "the autonomous live leg, the slippage probe, and arming a strategy LIVE",
+        # Arming a strategy LIVE is NOT gated by the stage yet (PR1c); saying it were would be a
+        # claim of enforcement that does not exist, in the one text Thomas signs.
+        "LIVE_AUTONOMOUS": "the autonomous live leg and the slippage probe (arming a strategy LIVE is "
+                           "not gated by the stage yet)",
         "LIVE_SCALED": "as LIVE_AUTONOMOUS",
     }[to_stage]
     evidence = content["evidence"] if isinstance(content["evidence"], Mapping) else {}
@@ -1169,7 +1172,8 @@ def build_execution_stage_permission_decision(
     if evidence.get("replaced_reason_code"):
         replaced = (f" It replaces a {evidence.get('replaced_stage') or from_stage} record that does not bind "
                     f"({evidence['replaced_reason_code']}).")
-    enforced = ("" if es.STAGE_ENFORCED else
+    enforced = (" The entry doors read this: below the rung a door needs, every new live entry is"
+                " refused (closing is never gated)." if es.STAGE_ENFORCED else
                 " NOT ENFORCED YET: no entry door reads the stage until PR1b; this records it.")
     action = _ActionSpec(
         action_type="crypto.execution_stage.transition",

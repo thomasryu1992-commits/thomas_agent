@@ -498,7 +498,7 @@ def test_the_ask_is_red_only_for_a_live_target_and_says_what_it_is():
         permission.build_execution_stage_permission_decision({}, content=_content(), now=NOW)
         assert captured["action"].risk_level == "ORANGE"
         assert captured["permission_scope"] == permission.EXECUTION_STAGE_PERMISSION_SCOPE
-        assert "NOT ENFORCED YET" in captured["action"].risk_reason
+        assert "The entry doors read this" in captured["action"].risk_reason
         assert "Closing a position is never gated" in captured["action"].risk_reason
         assert "no stage expires" in captured["action"].risk_reason
         live = {**_content(), "to_stage": "LIVE_AUTONOMOUS", "transition": es.T_CLIMB, "from_stage": "SIGNED_TESTNET"}
@@ -522,31 +522,93 @@ def test_an_ask_with_missing_content_is_refused():
         permission.build_execution_stage_permission_decision({}, content=content, now=NOW)
 
 
-def test_nothing_on_the_entry_path_reads_the_stage_while_it_is_not_enforced():
-    """PR1a records and reports. The flag the texts read (`STAGE_ENFORCED`) and the code must agree:
-    while it is False no entry-decision module may import the stage in any form, and PR1b flips both
-    together. The live leg itself is pinned by behaviour below (it imports the stage to stamp it)."""
+def test_every_entry_door_is_judged_against_the_stage():
+    """PR1b flipped `STAGE_ENFORCED`, so this is the positive sweep that replaced PR1a's negative
+    pin ("no entry-decision module imports the stage"). What it holds: the one chokepoint asks for
+    the stage and cannot be called without it, every caller of that chokepoint passes it, and the
+    close path is not one of them."""
     import ast
+    import inspect
     from pathlib import Path
 
-    assert es.STAGE_ENFORCED is False
+    from runtime.mvp_runtime.crypto import live_order
+
+    assert es.STAGE_ENFORCED is True
+    entry = inspect.signature(live_order.evaluate_live_order_guard).parameters["execution_stage"]
+    assert entry.default is inspect.Parameter.empty, "a forgotten stage must not authorize an entry"
+    assert entry.kind is inspect.Parameter.KEYWORD_ONLY
+    assert "execution_stage" not in inspect.signature(live_order.evaluate_live_close_guard).parameters, (
+        "the close guard must never read the stage: a demotion cannot be allowed to trap a position"
+    )
+
     crypto = Path(es.__file__).resolve().parent
     repo = crypto.parents[2]
-    modules = [crypto / n for n in ("live_entry.py", "live_order.py", "live_leg.py", "live_execution.py",
-                                    "live_promotion.py", "probe.py", "live_sizing.py", "live_budget.py")]
-    modules += [repo / "scripts" / "run_slippage_probe.py"]
-    for path in modules:
-        if not path.is_file():
-            continue
+    # Each door, and the name of the local it must pass: the board's dry-run and the leg have to
+    # judge against the very stage they report, or the board says one thing and the door does
+    # another. The probe resolves its own, named `stage` there too.
+    callers = {
+        crypto / "live_entry.py": "execution_stage",
+        crypto / "live_readiness.py": "stage",
+        repo / "scripts" / "run_slippage_probe.py": "stage",
+    }
+    seen = 0
+    for path, local in callers.items():
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        names = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                names.add(node.module or "")
-                names.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.Import):
-                names.update(alias.name for alias in node.names)
-        assert not any(n.split(".")[-1] == "execution_stage" for n in names), path.name
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "evaluate_live_order_guard"):
+                seen += 1
+                passed = [kw for kw in node.keywords if kw.arg == "execution_stage"]
+                assert passed, path.name
+                assert getattr(passed[0].value, "id", None) == local, (
+                    f"{path.name} must pass the stage it read ({local}), not a second or a made-up one"
+                )
+    assert seen == len(callers), f"expected one guard call per entry door, found {seen}"
+
+    # And the leg that feeds `plan_live_entry` passes the stage it stamped, not a second read.
+    route = ast.parse((crypto / "live_route.py").read_text(encoding="utf-8"))
+    plan_calls = [n for n in ast.walk(route)
+                  if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "plan_live_entry"]
+    assert plan_calls and all(
+        any(kw.arg == "execution_stage" and getattr(kw.value, "id", None) == "stage" for kw in call.keywords)
+        for call in plan_calls
+    )
+
+
+def test_a_stage_below_the_rung_refuses_a_live_entry_and_never_a_close():
+    """The property the ladder exists for, at the guard itself."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        LIVE_CONFIRMATION_PHRASE, LiveOrderLimits, evaluate_live_close_guard, evaluate_live_order_guard,
+    )
+
+    limits = LiveOrderLimits(
+        max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
+        max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
+    )
+    intent = {"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "direction": "LONG",
+              "quantity": 0.001, "order_notional_usdt": 55.0, "reduce_only": False,
+              "connectivity_test": False}
+    facts = dict(gate_open=True, runtime_active=True, daily_loss_breached=False, submitted_today=0,
+                 current_open_notional_usdt=0.0, budget_registered=True, allowed_symbols=["BTCUSDT"],
+                 limits=limits)
+    for stage in ("READ_ONLY", "SHADOW", "PAPER", "SIGNED_TESTNET"):
+        status = es.StageStatus(stage=stage, valid=True, reason_code=None, recorded_stage=stage)
+        verdict = evaluate_live_order_guard(intent, execution_stage=status, **facts)
+        assert verdict["approved"] is False
+        assert any("execution stage" in block for block in verdict["blocks"]), stage
+        assert verdict["execution_stage"] == stage
+        # The same stage, and the same limits, still close a position.
+        close = evaluate_live_close_guard({**intent, "reduce_only": True}, gate_open=True, limits=limits)
+        assert close["approved"] is True
+    for stage in ("LIVE_AUTONOMOUS", "LIVE_SCALED"):
+        status = es.StageStatus(stage=stage, valid=True, reason_code=None, recorded_stage=stage)
+        verdict = evaluate_live_order_guard(intent, execution_stage=status, **facts)
+        assert verdict["approved"] is True, verdict["blocks"]
+    # A record that does not bind reads READ_ONLY and admits nothing, whatever rung it claims.
+    unbound = es.StageStatus(stage="READ_ONLY", valid=False, reason_code=es.STAGE_APPROVAL_NOT_CONSUMED,
+                             recorded_stage="LIVE_AUTONOMOUS")
+    refused = evaluate_live_order_guard(intent, execution_stage=unbound, **facts)
+    assert refused["approved"] is False
+    assert any(es.STAGE_APPROVAL_NOT_CONSUMED in block for block in refused["blocks"])
 
 
 def _gated_leg(tmp_path, monkeypatch):

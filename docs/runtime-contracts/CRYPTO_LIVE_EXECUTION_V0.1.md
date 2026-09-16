@@ -316,8 +316,9 @@ satisfied or are blocked on work that does not exist yet, so this is a map, not 
       autonomous entries **and every close**, the slippage probe's exits included
       (`evaluate_live_close_guard` compares it). `MVP_LIVE_CANARY_CONFIRMATION` authorizes
       slippage-probe entries only. So the close phrase is also the autonomous-entry phrase, and
-      since 2026-09-15 no canary floor stands behind it until PR1b enforces the execution stage:
-      a probe-only session keeps every pool entry OBSERVATION-tier (`live_armed_strategies` = 0).
+      since 2026-09-15 no canary floor stands behind it — what does is the execution stage
+      (PR1b: the guard refuses below `LIVE_AUTONOMOUS`, the probe included) and, behind it, a
+      probe-only session keeping every pool entry OBSERVATION-tier (`live_armed_strategies` = 0).
       *(Until 2026-09-15 this item read "`MVP_LIVE_CANARY_CONFIRMATION` for canaries,
       `MVP_LIVE_CONFIRMATION` for autonomous trading. A canary needs only the first." — true for a
       canary, which only opened, and never true for the probe, whose exits need the second.)*
@@ -334,9 +335,9 @@ canaries, the evidence moves to real trades), and on 2026-09-15 Thomas removed t
 registry writer and the guard's clean-canary promotion gate together (PR1r). With the door went
 its declared-notional check (`ORDER_NOTIONAL_UNDERSTATED`, `ORDER_NOTIONAL_PRICE_UNKNOWN`) and the
 budget's `--min-clean-canary-orders` bar. The frozen registry is still verified and shown by
-`python -m runtime.mvp_runtime.crypto.live_promotion`, and nothing counts it. **Nothing replaces
-this floor on a fresh machine until PR1b enforces the execution stage**
-(`EXECUTION_STAGE_V0.1.md`). The steps this gate held are in git history and in
+`python -m runtime.mvp_runtime.crypto.live_promotion`, and nothing counts it. **The execution
+stage replaced this floor on 2026-09-16 (PR1b): a fresh machine reads `READ_ONLY` and every new
+entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). The steps this gate held are in git history and in
 `docs/BUILD_HISTORY.md`.
 
 **Gate 4 — verify the gate before any autonomous run**

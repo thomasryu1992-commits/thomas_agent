@@ -22,8 +22,10 @@
 Run it in the scheduler container as the service user (it writes governed state):
 ``docker exec -u 10001 thomas-scheduler python -m scripts.register_execution_stage ...``.
 
-**PR1a records and reports; nothing enforces the stage yet** (PR1b). A stage gates new exposure
-only and never a close. There is no ``--without-approval``: a climb is Thomas's, every time.
+**The entry doors read this record** (PR1b): below the rung a door needs, the live leg and the
+slippage probe refuse every new entry. A stage gates new exposure only and never a close, so a
+demotion can stop entries without trapping an open position. There is no ``--without-approval``:
+a climb is Thomas's, every time.
 """
 
 from __future__ import annotations
@@ -76,7 +78,9 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
         f"witness         : {status.approval_id or '-'}",
         f"bound to policy : {status.policy_version or '-'}",
         f"running policy  : {(identity or {}).get('policy_version')} {(identity or {}).get('policy_safety_sha256')}",
-        "enforcement     : none yet (PR1b makes the entry doors read this)",
+        "enforcement     : the entry guard refuses a new live entry below "
+        f"{es.required_stage(es.PURPOSE_AUTONOMOUS)} (closing is never gated)"
+        if es.STAGE_ENFORCED else "enforcement     : none yet",
     ]
     sys.stdout.write("\n".join(lines) + "\n")
     return EXIT_OK

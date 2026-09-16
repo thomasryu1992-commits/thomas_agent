@@ -934,6 +934,51 @@ def test_an_unhashable_budget_on_disk_still_manages_open_positions(tmp_path, mon
     assert not any(code.startswith("UNEXPECTED_") for code in out["live_reason_codes"])
 
 
+@pytest.mark.parametrize("stage,valid", [("PAPER", True), ("READ_ONLY", False)])
+def test_a_stage_that_admits_no_entry_still_settles_and_protects(tmp_path, monkeypatch, stage, valid):
+    """PR1b at the leg: below LIVE_AUTONOMOUS the entry door refuses, and everything that manages
+    what is already open runs exactly as before. The stage the leg stamps is the one the entry was
+    judged against — one read, not two."""
+    from runtime.mvp_runtime.crypto import execution_stage as es
+
+    status = es.StageStatus(stage=stage if valid else "READ_ONLY", valid=valid,
+                            reason_code=None if valid else es.STAGE_RECORD_MISSING,
+                            recorded_stage=stage if valid else None)
+    reads: list[str] = []
+
+    def _resolve(root=None, **kw):
+        reads.append(str(root))
+        return status
+
+    monkeypatch.setattr(live_route, "resolve_execution_stage", _resolve)
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[str] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append(position["position_id"]))
+    seen: dict[str, Any] = {}
+
+    def _plan(plan, **kw):
+        seen.update(kw)
+        return {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]}
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _plan)
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    assert managed == ["p1"], "a stage that admits no entry must not stop position management"
+    assert out["live_route_status"] != live_route.ROUTE_INCIDENT
+    assert seen["execution_stage"] is status, "the entry was judged against a second, unstamped read"
+    assert len(reads) == 1, "the leg reads the stage once: the stamp and the judgement are one answer"
+    assert out["execution_stage"]["stage"] == status.stage
+
+
 # --- settle and enter are mutually exclusive within one cycle -------------------------------
 
 def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):

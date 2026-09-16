@@ -1,7 +1,8 @@
 # Execution Stage v0.1 — the machine's one authoritative crypto execution stage
 
-**Status:** PR1a — the record, the door and the reporting are implemented; **no entry door reads the
-stage yet** (`execution_stage.STAGE_ENFORCED = False`). PR1b makes the doors read it.
+**Status:** enforced since PR1b (`execution_stage.STAGE_ENFORCED = True`). The record, the
+registration door and the reporting landed in PR1a; the entry guard, the autonomous leg, the
+slippage probe and the readiness board read the stage now.
 **Owner:** Thomas. **Authority:** this contract describes; `runtime/mvp_runtime/crypto/execution_stage.py`,
 `schemas/execution_stage.v0.1.schema.json` and their tests decide.
 **Decided:** 2026-09-15, Thomas decisions 1, 2, 4, 5, 8, 9 (record: `/root/thomas_crypto_refactor_2026-09-15/decisions-2026-09-15.md`),
@@ -14,7 +15,7 @@ no expiry (renewals on the money path were retired 2026-07-28 / 2026-08-10).
 
 `READ_ONLY → SHADOW → PAPER → SIGNED_TESTNET → LIVE_AUTONOMOUS → LIVE_SCALED`
 
-| Stage | New exposure a door may create once enforced (PR1b) |
+| Stage | New exposure a door may create |
 |---|---|
 | READ_ONLY, SHADOW, PAPER | none on the venue |
 | SIGNED_TESTNET | none on mainnet (signed testnet evidence only; path in PR1d) |
@@ -22,7 +23,11 @@ no expiry (renewals on the money path were retired 2026-07-28 / 2026-08-10).
 | LIVE_SCALED | as LIVE_AUTONOMOUS; its entry rule is a separate decision |
 
 **Closing is never gated by the stage, and no stage expires.** A demotion changes only which *new*
-exposure a door may create; a reduceOnly close, a protection re-check and reconciliation do not read it.
+exposure a door may create; a reduceOnly close, a protection re-check, the time exit and
+reconciliation do not read it. That is why the stage is an argument of
+`live_order.evaluate_live_order_guard` (the entry chokepoint, which cannot be called without it) and
+of nothing on the close path — `evaluate_live_close_guard` takes no stage, and a test pins that it
+never will.
 
 ## 2. The record
 
@@ -93,6 +98,13 @@ After a policy bump (e.g. 1.5.1) the record reads READ_ONLY until a REBIND is ap
 
 ## 5. Where it is read
 
-PR1a: the readiness board (a `[----] execution_stage` line, never a check; `readiness_data.execution_stage`),
-the live leg's cycle record (`live_execution_stage`), `--show`. PR1b: the entry guard, the probe door and
-the LIVE-tier promotion door.
+- **The entry guard** (`live_order.evaluate_live_order_guard`, required argument): the autonomous
+  leg through `plan_live_entry`, and the slippage probe. Below the rung the purpose needs, every
+  new entry is refused and the refusal names the rung and the registration command.
+- **The live leg** resolves it once beside the budget, stamps it on the cycle record
+  (`live_execution_stage`) and passes that same answer to the entry door.
+- **The readiness board**: the `execution_stage` check (it moves `ready`), `readiness_data.execution_stage`
+  (with `admits_entry`), and the guard dry-run, which is fed the same stage.
+- `scripts/register_execution_stage.py --show`.
+
+Arming a strategy LIVE does not read the stage yet; that is PR1c, with the LIVE-arm approval.

@@ -24,6 +24,7 @@ import pytest
 
 import scripts.run_slippage_probe as cli
 from runtime.mvp_runtime import timeutil
+from runtime.mvp_runtime.crypto import execution_stage as es
 from runtime.mvp_runtime.crypto import forward_confirmation, lifecycle, probe
 from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
 from runtime.mvp_runtime.crypto.live_order import (
@@ -600,7 +601,8 @@ def _arm_runtime(tmp_path):
                                              reason="armed", trading_armed=True))
 
 
-def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT")):
+def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+                stage="LIVE_AUTONOMOUS", stage_valid=True, stage_reason=None):
     limits = LiveOrderLimits(
         max_order_notional_usdt=150.0, max_daily_order_count=10,
         max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
@@ -608,6 +610,12 @@ def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT")):
     )
     monkeypatch.setattr(cli, "resolve_live_order_limits",
                         lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": list(symbols)}))
+    # The execution stage the probe resolves (PR1b). A real record needs a spent Thomas approval,
+    # so the resolver is stubbed here; the stage door's own refusal has its test below.
+    monkeypatch.setattr(cli, "resolve_execution_stage",
+                        lambda root=None, **kw: es.StageStatus(
+                            stage=stage if stage_valid else "READ_ONLY", valid=stage_valid,
+                            reason_code=stage_reason, recorded_stage=stage if stage_valid else None))
     return limits
 
 
@@ -759,8 +767,10 @@ class _HappyPathAdapter:
     def __init__(self):
         self.stop_reads = 0
         self.cancelled = []
+        self.submitted = []
 
     def submit(self, order_request, *, timeout_seconds=10):
+        self.submitted.append(order_request)
         return {"orderId": 11, "algoId": 77}
 
     def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
@@ -872,6 +882,8 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         ),
         {"valid": True, "symbol_allowlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
     ))
+    monkeypatch.setattr(cli, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
+        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"))
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
     monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
@@ -995,3 +1007,30 @@ def test_abandon_still_refuses_while_the_position_is_genuinely_on_the_book(tmp_p
         cli.run_abandon(reason="r", root=tmp_path, now=NOW)
     assert exc.value.reason_code == probe.PROBE_CELL_OPEN
     assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ACTIVE
+
+
+def test_fire_refuses_below_the_execution_stage_a_real_order_needs(tmp_path, monkeypatch):
+    """PR1b: a probe is a real mainnet order, so it is judged against the same rung an autonomous
+    entry needs. A machine whose stage record is missing reads READ_ONLY and never reaches the
+    venue."""
+    _active_plan(tmp_path)
+    _arm_runtime(tmp_path)
+    adapter = _HappyPathAdapter()
+    monkeypatch.setattr(cli.live_execution, "select_order_adapter", lambda now=None, root=None: adapter)
+    monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_HIGH)
+    _arm_limits(monkeypatch, stage_valid=False, stage_reason=es.STAGE_RECORD_MISSING)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
+    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+        "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
+        "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
+    monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
+        "tripped": False, "consecutive": 0, "limit": 2})
+    monkeypatch.setattr(cli, "resolve_risk_limits", lambda root, now=None: None)
+    monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
+        step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
+    monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_GUARD_REFUSED
+    assert adapter.submitted == [], "the probe reached the venue below its stage"

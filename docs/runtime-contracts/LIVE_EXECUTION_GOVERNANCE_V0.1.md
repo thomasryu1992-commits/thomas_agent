@@ -345,8 +345,9 @@ Approving this packet does not enable live trading. It makes LP4 *buildable*. St
 4. ~~**>= 3 clean canary orders** must exist. There is 1, from 2026-07-16. The guard refuses until
    there are 3, whatever else is enabled.~~
    **Removed by Thomas on 2026-09-15** (PR1r), with the canary door that earned them: canaries had
-   ended on 2026-07-29, and the guard no longer counts them. The floor meant to replace it is the
-   execution stage (`EXECUTION_STAGE_V0.1.md`), once PR1b makes the entry doors enforce it.
+   ended on 2026-07-29, and the guard no longer counts them. The floor that replaced it is the
+   execution stage (`EXECUTION_STAGE_V0.1.md`), enforced by the entry doors since 2026-09-16 (PR1b):
+   below `LIVE_AUTONOMOUS` every new entry is refused, and closing is never gated.
 5. The runtime kill switch must be ACTIVE.
 6. LP4 and LP5 must still be written, reviewed, and merged.
 

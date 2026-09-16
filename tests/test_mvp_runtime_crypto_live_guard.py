@@ -15,6 +15,7 @@ import pytest
 from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_pnl
+from runtime.mvp_runtime.crypto import execution_stage as es
 from runtime.mvp_runtime.crypto.live_order import (
     CONFIRMATION_ENV,
     DEFAULT_ABSOLUTE_MAX_NOTIONAL_USDT,
@@ -102,11 +103,20 @@ def _intent(**overrides):
     return intent
 
 
+def _stage(stage="LIVE_AUTONOMOUS", valid=True, reason=None):
+    """The execution stage the caller resolved, as the doors receive it (PR1b). The helpers default
+    to a rung that admits an entry so each test still closes exactly one door; the stage door has
+    its own tests."""
+    return es.StageStatus(stage=stage, valid=valid, reason_code=reason,
+                          recorded_stage=stage if valid else None)
+
+
 def _ready(**kw):
     facts = dict(
         gate_open=True, runtime_active=True, daily_loss_breached=False,
         submitted_today=0, current_open_notional_usdt=0.0,
         budget_registered=True, allowed_symbols=["BTCUSDT"], limits=_ready_limits(),
+        execution_stage=_stage(),
     )
     facts.update(kw)
     return facts
@@ -437,7 +447,7 @@ def test_resolve_limits_without_a_budget_is_blocking(tmp_path):
     assert limits.max_order_notional_usdt == 0.0 and limits.max_daily_order_count == 0
     guard = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0, execution_stage=_stage(),
         budget_registered=status["valid"], limits=limits)
     assert guard["approved"] is False
     assert any("registered live-trading budget" in b for b in guard["blocks"])
@@ -685,7 +695,7 @@ def test_the_canary_the_script_would_place_is_actually_approvable(tmp_path, monk
 
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0, execution_stage=_stage(),
         budget_registered=status["valid"],
         # Composed from the same resolved budget the script uses — the parity this test is
         # for. Reading the allowlist off `status` rather than restating it here is what keeps
@@ -711,7 +721,7 @@ def test_the_autonomous_phrase_alone_still_cannot_authorize_a_canary(tmp_path, m
 
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=False,
-        submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0, execution_stage=_stage(),
         budget_registered=status["valid"], limits=limits, canary=True,
     )
     assert verdict["approved"] is False
@@ -872,7 +882,7 @@ def test_an_unconfigured_cap_names_the_registered_budget_not_an_env_var():
     """
     verdict = evaluate_live_order_guard(
         _intent(), gate_open=True, runtime_active=True, daily_loss_breached=True,
-        submitted_today=0, current_open_notional_usdt=0.0,
+        submitted_today=0, current_open_notional_usdt=0.0, execution_stage=_stage(),
         budget_registered=False, limits=LiveOrderLimits(),
     )
     unconfigured = [b for b in verdict["blocks"] if "not configured" in b]

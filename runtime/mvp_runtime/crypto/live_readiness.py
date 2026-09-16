@@ -73,7 +73,12 @@ from .live_order import (
     evaluate_live_order_guard,
     resolve_live_order_limits,
 )
-from .execution_stage import STAGE_ENFORCED, resolve_execution_stage
+from .execution_stage import (
+    PURPOSE_AUTONOMOUS,
+    STAGE_ENFORCED,
+    required_stage,
+    resolve_execution_stage,
+)
 from .live_pnl import (
     LIVE_TRADING_ENV,
     REAL_LIVE_TRADING,
@@ -499,10 +504,21 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
               f"- the feed is the synthetic mock, so the probe refuses and nothing trades on it"),
     ))
 
-    # 8c. The execution stage (crypto PR1a). Informational until PR1b makes the entry doors read it,
-    #     so it is NOT a check: a `[PASS]` beside a machine that reads READ_ONLY would repeat the
-    #     all-PASS-with-nothing-armed board the audit started from. Rendered as a `[----]` line.
+    # 8c. The execution stage (crypto PR1a, enforced by the entry doors since PR1b). A real check:
+    #     below LIVE_AUTONOMOUS the guard refuses every new entry, so a board that read PASS here
+    #     would be the all-PASS-with-nothing-armed board the audit started from.
     stage = resolve_execution_stage(root, now=now)
+    stage_admits = stage.allows(PURPOSE_AUTONOMOUS)
+    checks.append(_check(
+        "execution_stage",
+        stage_admits,
+        f"{stage.stage}"
+        + ("" if stage.valid else f" (reads READ_ONLY: {stage.reason_code}"
+           + (f"; recorded {stage.recorded_stage}" if stage.recorded_stage else "") + ")")
+        + ("" if stage_admits else
+           f" - a live entry needs {required_stage(PURPOSE_AUTONOMOUS)}; register a transition with "
+           "scripts/register_execution_stage.py (Thomas approves it). Closing is never gated by the stage"),
+    ))
     # 9. The order path itself.
     checks.append(_check(
         "order_path_implemented",
@@ -572,6 +588,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         ),
         budget_registered=bool(budget.get("valid")),
         limits=limits,
+        # The same stage row 8c reports, so the board's dry-run refuses exactly where the real
+        # door would (PR1b).
+        execution_stage=stage,
     )
 
     return {
@@ -595,7 +614,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         "order_path_implemented": ORDER_PATH_IMPLEMENTED,
         "autonomous_routing_wired": AUTONOMOUS_ROUTING_WIRED,
         # The machine's execution stage as data (PR1a), with whether any door enforces it yet.
-        "execution_stage": {**stage.as_dict(), "enforced": STAGE_ENFORCED},
+        "execution_stage": {**stage.as_dict(), "enforced": STAGE_ENFORCED,
+                            "admits_entry": stage_admits},
     }
 
 
@@ -621,10 +641,15 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
     gate = status.get("recorded_gate") or {}
     armed_count = armed.get("armed") if armed.get("known") else None
     entry_possible: bool | None
+    stage = status.get("execution_stage") or {}
+    stage_admits = bool(stage.get("admits_entry"))
     if not isinstance(armed_count, int) or not gate.get("known"):
         entry_possible = None
     else:
-        entry_possible = bool(armed_count > 0 and gate.get("open") and not gate.get("stale"))
+        # The stage joined this answer when the doors began reading it (PR1b): a machine below
+        # LIVE_AUTONOMOUS cannot open a position however armed it is.
+        entry_possible = bool(armed_count > 0 and gate.get("open") and not gate.get("stale")
+                              and stage_admits)
     guard = status.get("guard_dry_run") or {}
     return {
         "as_of": status.get("created_at"),
@@ -650,8 +675,8 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
             "stale": bool(gate.get("stale")),
         },
         "live_entry_possible": entry_possible,
-        # The stage record's own answer (crypto PR1a): which rung, whether it binds, and whether any
-        # entry door reads it yet. Kept apart from `live_entry_possible` until PR1b folds it in.
+        # The stage record's own answer: which rung, whether it binds, whether it admits a new
+        # entry, and that the doors read it (crypto PR1a/PR1b).
         "execution_stage": status.get("execution_stage"),
         "guard_dry_run_status": guard.get("status"),
         "submitted_today": status.get("submitted_today"),
@@ -721,16 +746,6 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
-def _execution_stage_line(status: Mapping[str, Any]) -> str:
-    stage = status.get("execution_stage") or {}
-    detail = str(stage.get("stage") or "UNKNOWN")
-    if not stage.get("valid"):
-        detail += f" (reads READ_ONLY: {stage.get('reason_code')}"
-        detail += f"; recorded {stage['recorded_stage']})" if stage.get("recorded_stage") else ")"
-    detail += " - enforced by the entry doors" if stage.get("enforced") else " - not enforced yet (PR1b)"
-    return f"[----] {'execution_stage':24} {detail}"
-
-
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -776,7 +791,6 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
-    lines.append(_execution_stage_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

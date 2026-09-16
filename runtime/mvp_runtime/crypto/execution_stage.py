@@ -42,9 +42,12 @@ stage — and one who kept a copy of an earlier witnessed record can put it back
 What the witness removes is the one-hash forgery. The state directory is writable only by the
 service uid, which could already place orders directly.
 
-**What this module does NOT do (PR1a):** it enforces nothing. No entry door reads it yet; that is
-PR1b, which also decides nothing about closing — a stage gates new exposure only, never the close
-path.
+**What the stage gates (PR1b):** new exposure only. The entry guard
+(``live_order.evaluate_live_order_guard``, one chokepoint for the autonomous leg and the slippage
+probe) refuses below the rung a purpose needs, and the readiness board reports the same answer. The
+close guard, settlement, the protection re-check, the time exit and reconciliation never read it —
+a demotion must never trap an open position, which is why the stage is passed to the entry guard
+rather than to the adapter that selects a venue.
 """
 
 from __future__ import annotations
@@ -73,10 +76,13 @@ EXECUTION_STAGE_FILENAME = "execution_stage.json"
 EXECUTION_STAGE_LOCK_FILENAME = "execution_stage.lock"
 TRANSITION_EVENT_TYPE = "execution_stage_transition.v0"
 SUPPORTED_VENUE = "binance_futures"
-# Whether any entry door reads the stage yet. False in PR1a: the record is kept and reported, and
-# the ask, the board and the door say so. PR1b flips it in the same change that makes the doors read
-# it, so no text can claim enforcement that does not exist (or deny enforcement that does).
-STAGE_ENFORCED = False
+# Whether the entry doors read the stage. False in PR1a, when the record was kept and reported
+# only; PR1b flipped it in the same change that made `evaluate_live_order_guard` require a
+# `StageStatus`, so no text can claim enforcement that does not exist (or deny enforcement that
+# does). What reads it: the entry guard (autonomous leg and slippage probe) and the readiness
+# board's row and dry-run. What does not, and must not: the close guard, settlement, protection,
+# the time exit and reconciliation.
+STAGE_ENFORCED = True
 
 
 class ExecutionStage(str, Enum):

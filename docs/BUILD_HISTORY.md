@@ -101,6 +101,35 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **The entry doors read the execution stage** (crypto PR1b, Thomas decisions 1/8/9, 2026-09-16;
+  `crypto/live_order.py`, `crypto/live_entry.py`, `crypto/live_route.py`, `crypto/live_readiness.py`,
+  `scripts/run_slippage_probe.py`). PR1a registered the rung and reported it; nothing refused on it.
+  `evaluate_live_order_guard` now takes a `StageStatus` as a **required** argument — the same
+  fail-closed shape as `current_open_notional_usdt` and `limits`, so a caller that forgets it cannot
+  authorize an entry — and refuses below the rung the purpose needs (`PURPOSE_AUTONOMOUS` for the
+  leg, `PURPOSE_PROBE` for the slippage probe; both LIVE_AUTONOMOUS today). One chokepoint, not a
+  check per door: a gate added to only one of the two paths is how the canary door came to bypass
+  pool arming.
+
+  **What it costs on this machine, plainly.** No stage record exists yet, so from the deploy of this
+  change every new live entry and every probe refuses until Thomas registers a stage — and decision 1
+  says the first record is PAPER, which admits neither. That is the point of the ladder: real
+  entries resume by climbing it (PR1d's signed testnet evidence, then a LIVE_AUTONOMOUS approval),
+  not by a variable.
+
+  **What it must never touch, pinned by tests.** `evaluate_live_close_guard` takes no stage and a
+  test refuses to let it grow one; the leg settles, protects, time-exits and reconciles before the
+  entry door and never reads the stage on those paths (a leg-level test runs both a PAPER and a
+  missing record and asserts the open position is still managed). The stage the leg stamps on the
+  cycle record is the same object the entry was judged against — one read, so the ledger cannot
+  disagree with the decision. PR1a's negative pin ("no entry-decision module imports the stage")
+  became the positive sweep it was written to be replaced by: the guard's signature is required and
+  keyword-only, every call site passes it, and the leg passes the stage it stamped.
+
+  The readiness board's stage row stopped being informational and became a check, so `ready` and
+  `readiness_data.live_entry_possible` both go false below the rung — the board that used to read
+  all-PASS with nothing armed now names the one thing that refuses.
+
 - **The machine got one record that says what execution stage it is at** (crypto PR1a, Thomas decisions
   1, 4, 8, 9, 2026-09-15; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1.schema.json`,
   `scripts/register_execution_stage.py`, `docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`). The

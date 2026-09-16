@@ -274,11 +274,14 @@ loop reads no market or account data, so a key that can trade buys it nothing.
 > trades paper and one that trades real money.** Treat it accordingly.
 
 What still stands between the scheduler and an autonomous order: only one module may reach the
-order path (`test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`), the
-registered budget, the confirmation phrase for the capability being exercised, both kill
-switches, and the loss breaker. *(The canary evidence stood in this list until 2026-09-15, when
-Thomas removed the canary door and the clean-canary promotion gate with it — PR1r. Nothing
-replaces that floor until PR1b enforces the execution stage.)*
+order path (`test_the_cycle_reaches_the_live_order_path_through_exactly_one_module`), **the
+registered execution stage** — below `LIVE_AUTONOMOUS` the entry guard refuses every new entry,
+and a machine with no stage record reads `READ_ONLY`
+(`docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`) — the registered budget, the confirmation
+phrase for the capability being exercised, both kill switches, and the loss breaker. *(The canary
+evidence stood in this list until 2026-09-15, when Thomas removed the canary door and the
+clean-canary promotion gate with it — PR1r; the execution stage took its place as the floor when
+PR1b made the doors read it, 2026-09-16.)*
 
 So the variables below belong in the compose `.env` (the scheduler reads them from there), and
 you can still export them in a shell for a one-off run against the host checkout.
@@ -324,11 +327,11 @@ export MVP_LIVE_CONFIRMATION=I_UNDERSTAND_THIS_TRADES_LIVE_FUNDS_AUTONOMOUSLY
 # export MVP_LIVE_MANUAL_KILL_SWITCH=true
 ```
 
-**`MVP_LIVE_CONFIRMATION`, which every close requires, also authorizes autonomous entries; after
-PR1r there is no canary floor behind it until PR1b enforces the execution stage. A probe-only
-session keeps every pool entry OBSERVATION-tier (`live_armed_strategies` = 0 on the readiness
-board).** Exporting it for the probe's exits is exporting the autonomous-entry phrase too, and
-until PR1b what stops an autonomous entry on such a session is that nothing is armed LIVE.
+**`MVP_LIVE_CONFIRMATION`, which every close requires, also authorizes autonomous entries.**
+Exporting it for the probe's exits is exporting the autonomous-entry phrase too. What stops an
+autonomous entry on such a session is the execution stage (since PR1b the entry guard refuses
+below `LIVE_AUTONOMOUS`, and the probe needs that rung as well) and, behind it, that nothing is
+armed LIVE (`live_armed_strategies` = 0 on the readiness board).
 
 **The caps are not here.** `MVP_LIVE_MAX_*` no longer authorizes anything — the per-order,
 daily-count, exposure and loss limits come from the registered `live_trading_budget.v0.1` record

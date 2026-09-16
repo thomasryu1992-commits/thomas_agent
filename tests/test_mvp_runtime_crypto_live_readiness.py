@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from runtime.mvp_runtime.crypto import execution_stage as es
 from runtime.mvp_runtime.crypto import live_promotion, live_readiness
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
@@ -91,7 +92,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker",
         "account_visibility", "market_data_visibility", "order_path_implemented",
-        "autonomous_routing_wired",
+        "autonomous_routing_wired", "execution_stage",
     }
 
 
@@ -329,14 +330,30 @@ def test_board_still_refuses_without_the_grant_even_though_the_path_exists(tmp_p
     assert status["guard_dry_run"]["approved"] is False
 
 
-def test_the_execution_stage_is_an_informational_line_never_a_pass(tmp_path, clean_env):
-    """Crypto PR1a, review of #872: a `[PASS]` beside a machine that reads READ_ONLY would repeat the
-    all-PASS-with-nothing-armed board the audit started from. The stage is data and a `[----]` line."""
+def test_a_machine_below_the_stage_a_live_entry_needs_fails_the_board(tmp_path, clean_env):
+    """PR1b: the entry guard refuses below LIVE_AUTONOMOUS, so the board says so in the row that
+    decides `ready`. A PASS beside a machine that reads READ_ONLY would be the all-PASS-with-
+    nothing-armed board the audit started from."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    assert "execution_stage" not in {c["check"] for c in status["checks"]}
-    assert status["execution_stage"]["stage"] == "READ_ONLY" and status["execution_stage"]["enforced"] is False
-    line = next(l for l in live_readiness.render_readiness_text(status).splitlines() if "execution_stage" in l)
-    assert line.startswith("[----]") and "EXECUTION_STAGE_RECORD_MISSING" in line and "not enforced yet" in line
+    row = next(c for c in status["checks"] if c["check"] == "execution_stage")
+    assert row["ok"] is False and status["ready"] is False
+    assert "EXECUTION_STAGE_RECORD_MISSING" in row["detail"] and "LIVE_AUTONOMOUS" in row["detail"]
+    assert "Closing is never gated" in row["detail"]
+    assert status["execution_stage"]["enforced"] is True
+    assert status["execution_stage"]["admits_entry"] is False
+    assert live_readiness.readiness_data(status)["live_entry_possible"] is not True
+    # The dry-run is the board's authoritative answer, so it must be judged against the stage the
+    # row reports — a board that fails the row while its dry-run passes would be worse than silent.
+    assert status["guard_dry_run"]["execution_stage"] == "READ_ONLY"
+    assert any("execution stage" in block for block in status["guard_dry_run"]["blocks"])
+
+
+def test_the_board_row_passes_at_the_rung_the_doors_admit(tmp_path, clean_env, monkeypatch):
+    monkeypatch.setattr(live_readiness, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
+        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "execution_stage")
+    assert row["ok"] is True and row["detail"] == "LIVE_AUTONOMOUS"
 
 
 def test_render_is_ascii_and_says_what_ready_now_means(tmp_path, clean_env):
@@ -874,7 +891,7 @@ def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_en
 # the four facts apart as fields, so a consumer never derives one from the prose of another.
 
 def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, gate_open=True,
-                     gate_stale=False):
+                     gate_stale=False, stage_admits=True):
     return {
         "created_at": NOW,
         "ready": ready,
@@ -893,6 +910,9 @@ def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, 
         "guard_dry_run_symbol": "BTCUSDT",
         "submitted_today": 0, "counter_error": None,
         "order_path_implemented": True, "autonomous_routing_wired": True,
+        "execution_stage": {"stage": "LIVE_AUTONOMOUS" if stage_admits else "READ_ONLY",
+                            "valid": stage_admits, "reason_code": None if stage_admits else "X",
+                            "enforced": True, "admits_entry": stage_admits},
     }
 
 
@@ -907,6 +927,13 @@ def test_an_armed_strategy_behind_an_open_fresh_gate_is_live_entry_possible():
     data = live_readiness.readiness_data(_status_for_view(armed=1))
     assert data["live_entry_possible"] is True
     assert data["recorded_gate"]["open"] is True and data["recorded_gate"]["stale"] is False
+
+
+def test_a_stage_below_the_rung_the_doors_admit_means_no_entry(tmp_path):
+    """PR1b: however armed and open the machine is, a stage that admits nothing cannot enter."""
+    data = live_readiness.readiness_data(_status_for_view(armed=1, stage_admits=False))
+    assert data["live_entry_possible"] is False
+    assert data["execution_stage"]["admits_entry"] is False
 
 
 def test_a_stale_or_closed_recorded_gate_means_no_entry_and_says_which():
