@@ -275,8 +275,8 @@ def run_live_leg(
         "halt": False,
         "symbol": symbol,
         "created_at": now,
-        # The machine's execution stage as this leg read it (PR1a: recorded, not enforced). None when
-        # the gate never opened — this leg then read nothing, the stage included.
+        # The machine's execution stage as this leg read it, and judged its entry against (PR1b).
+        # None when the gate never opened — this leg then read nothing, the stage included.
         "execution_stage": None,
     }
 
@@ -345,9 +345,12 @@ def _run_gated_live_leg(
     # 1. The facts, each read once and shared by every door below — so the guard, the sizing
     #    and the record cannot disagree about what was true this cycle.
     limits, budget = resolve_live_order_limits(root, now=now)
-    # The execution stage, read once beside the budget (PR1a). Stamped on the record so the ledger
-    # shows what the trading process itself saw; nothing below reads it until PR1b.
-    record["execution_stage"] = resolve_execution_stage(root, now=now).as_dict()
+    # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
+    # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
+    # saw, and passed to `plan_live_entry` below so the stamp and the judgement are one read.
+    # Settlement, protection and the close path below never consult it.
+    stage = resolve_execution_stage(root, now=now)
+    record["execution_stage"] = stage.as_dict()
     # `.default(root)` rather than `ControlStore(root)`: the constructor takes a Path, so the
     # bare form crashes on the `root=None` every ordinary run passes.
     control = control_store if control_store is not None else ControlStore.default(root)
@@ -494,6 +497,7 @@ def _run_gated_live_leg(
         filters=filters,
         filters_reason=filters_reason,
         limits=limits,
+        execution_stage=stage,
         budget_registered=bool(budget.get("valid")),
         # The scope half of the same budget the caps come from. Read here rather than inside
         # the guard for the reason every other runtime fact is: one read, one set of numbers,

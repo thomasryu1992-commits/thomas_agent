@@ -63,6 +63,7 @@ from typing import Any, Mapping, Sequence
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
 from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
+from .execution_stage import StageStatus
 from .live_order import (
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -267,6 +268,10 @@ def plan_live_entry(
     # A gate with a permissive default is a gate the caller that forgot it never meets, and the
     # caller that would forget this one is the autonomous leg.
     bracket_failures_consecutive: int,
+    # The machine's execution stage, resolved once by the leg and threaded to the guard (PR1b).
+    # No default: a caller that does not state the stage must not be able to enter. The leg reads
+    # it beside the budget, so the record it stamps and the rung the guard judged are one answer.
+    execution_stage: StageStatus,
     # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
     # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
     # the same fail-closed default the guard gives `budget_registered`.
@@ -494,6 +499,7 @@ def plan_live_entry(
         budget_registered=budget_registered,
         allowed_symbols=allowed_symbols,
         limits=limits,
+        execution_stage=execution_stage,
     )
     detail["guard"] = guard
     if not guard["approved"]:

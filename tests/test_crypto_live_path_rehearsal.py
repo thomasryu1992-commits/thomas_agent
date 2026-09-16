@@ -32,6 +32,7 @@ from __future__ import annotations
 import pytest
 from tests._helpers import make_gate_authorization
 
+from runtime.mvp_runtime.crypto import execution_stage
 from runtime.mvp_runtime.crypto import live_entry, live_execution, live_filters, live_leg
 from runtime.mvp_runtime.crypto.account import AccountSnapshot
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
@@ -224,6 +225,10 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT):
     return live_entry.plan_live_entry(
         plan,
         symbol=SYMBOL,
+        # The rehearsal walks the path a machine registered at the live rung takes (PR1b); the
+        # stage door's refusals have their own tests.
+        execution_stage=execution_stage.StageStatus(
+            stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"),
         # #610 Part 1 — the rehearsal walks the ARMED path end to end, so the strategy this plan
         # names is in the live tier. The refusal side has its own tests.
         live_routable_strategy_ids={str((plan or {}).get("strategy_id") or "")},

@@ -1169,7 +1169,8 @@ def build_execution_stage_permission_decision(
     if evidence.get("replaced_reason_code"):
         replaced = (f" It replaces a {evidence.get('replaced_stage') or from_stage} record that does not bind "
                     f"({evidence['replaced_reason_code']}).")
-    enforced = ("" if es.STAGE_ENFORCED else
+    enforced = (" The entry doors read this: below the rung a door needs, every new live entry is"
+                " refused (closing is never gated)." if es.STAGE_ENFORCED else
                 " NOT ENFORCED YET: no entry door reads the stage until PR1b; this records it.")
     action = _ActionSpec(
         action_type="crypto.execution_stage.transition",

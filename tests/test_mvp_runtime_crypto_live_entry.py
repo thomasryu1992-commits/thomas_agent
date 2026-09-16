@@ -19,6 +19,7 @@ import inspect
 
 import pytest
 
+from runtime.mvp_runtime.crypto import execution_stage as es
 from runtime.mvp_runtime.crypto import live_entry as le
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import (
@@ -73,6 +74,14 @@ def _position(symbol="BTCUSDT", side="LONG", quantity=0.001, notional=60.0):
 ALLOWING_VERDICT = {"allow_new_position": True, "problems": []}
 
 
+def _stage(stage="LIVE_AUTONOMOUS", valid=True, reason=None):
+    """The execution stage the caller resolved, as the doors receive it (PR1b). The helpers default
+    to a rung that admits an entry so each test still closes exactly one door; the stage door has
+    its own tests."""
+    return es.StageStatus(stage=stage, valid=valid, reason_code=reason,
+                          recorded_stage=stage if valid else None)
+
+
 def _plan(**kw):
     """Every door open by default; each test closes exactly one.
 
@@ -108,6 +117,7 @@ def _plan(**kw):
             "live_routable_strategy_ids",
             {str((plan or {}).get("strategy_id") or "")},
         ),
+        execution_stage=kw.pop("execution_stage", _stage()),
         **kw,
     )
     return le.plan_live_entry(**args)

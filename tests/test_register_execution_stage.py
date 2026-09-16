@@ -119,7 +119,9 @@ def test_show_reports_the_stage_without_changing_anything(tmp_path, capsys):
     assert door.main(["--show", "--root", str(tmp_path)]) == door.EXIT_OK
     out = capsys.readouterr().out
     assert "execution stage : PAPER" in out
-    assert "none yet" in out   # PR1a says plainly that nothing enforces the stage
+    # PR1b: the board says what the doors do with this rung, and that closing is never gated.
+    assert "refuses a new live entry below LIVE_AUTONOMOUS" in out
+    assert "closing is never gated" in out
     assert "valid until" not in out   # no stage expires
 
 

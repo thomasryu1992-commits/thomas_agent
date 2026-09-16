@@ -36,6 +36,12 @@ from ..errors import ToolError
 from ..filelock import locked
 from ..paths import repo_root as _repo_root
 from ..safety_gate import Authorization
+from .execution_stage import (
+    PURPOSE_AUTONOMOUS,
+    PURPOSE_PROBE,
+    StageStatus,
+    required_stage,
+)
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -386,6 +392,12 @@ def evaluate_live_order_guard(
     # it, so a budget naming BTCUSDT sat next to an active pool trading four other symbols
     # and the two never disagreed out loud.
     allowed_symbols: Sequence[str] = (),
+    # The machine's execution stage, resolved by the caller (`execution_stage.resolve_execution_stage`)
+    # and passed in like every other runtime fact — this function still reads no file. No default,
+    # for the reason `current_open_notional_usdt` and `limits` have none: a caller that forgets it
+    # must not be able to authorize an entry the stage does not admit. A record that is missing or
+    # does not bind resolves to READ_ONLY, which admits nothing (Thomas decision 9).
+    execution_stage: StageStatus,
     canary: bool = False,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
@@ -399,10 +411,12 @@ def evaluate_live_order_guard(
     authorize an order on caps that no budget backs.
 
     ``canary`` marks a deliberate one-at-a-time operator order — today only the slippage probe
-    (``scripts/run_slippage_probe.py --fire``). It changes exactly one thing: the confirmation
-    phrase compared is the **canary** phrase, not the autonomous one, so the autonomous phrase
-    cannot authorize a canary-mode order and the canary phrase cannot authorize autonomous
-    trading.
+    (``scripts/run_slippage_probe.py --fire``). It changes two things: the confirmation phrase
+    compared is the **canary** phrase, not the autonomous one, so the autonomous phrase cannot
+    authorize a canary-mode order and the canary phrase cannot authorize autonomous trading; and
+    the execution stage is judged against the probe's purpose rather than the autonomous one.
+    Today both purposes need the same rung, so the two modes are gated alike — the split exists so
+    a later decision can separate them in the ladder's own module, never here.
 
     It used to change a second thing — the clean-canary promotion gate did not apply to it — and
     that gate is gone for both modes (Thomas, 2026-09-15, PR1r, with the canary door). Every
@@ -477,9 +491,22 @@ def evaluate_live_order_guard(
             blocks.append(
                 f"daily realized-loss limit {cfg.daily_loss_limit_usdt} USDT reached - halted for today"
             )
-    # 6. Retired 2026-09-15 (PR1r): the clean-canary promotion gate, removed with the canary door
-    #    on Thomas's decision. Nothing replaces it in this guard; the execution stage (PR1b) is the
-    #    planned gate for autonomous entries. The numbers below keep their places.
+    # 6. The execution stage: what rung this machine is registered at, and whether that record
+    #    binds (PR1b, Thomas decisions 1/8/9). It took the place of the clean-canary promotion gate
+    #    retired here on 2026-09-15 (PR1r) — that gate counted a frozen file; this one is a
+    #    registered, approved, single-answer record. A missing or unbound record reads READ_ONLY
+    #    and admits nothing, which is the fail-closed direction: no stage, no new exposure. It
+    #    gates NEW exposure only — `evaluate_live_close_guard` never reads it, so a demotion can
+    #    never trap an open position.
+    purpose = PURPOSE_PROBE if canary else PURPOSE_AUTONOMOUS
+    if not execution_stage.allows(purpose):
+        needs = required_stage(purpose)
+        why = (f"reads {execution_stage.stage}" if execution_stage.valid
+               else f"reads READ_ONLY ({execution_stage.reason_code})")
+        blocks.append(
+            f"execution stage {why}; a {'probe' if canary else 'live'} entry needs {needs}"
+            f" - register a transition with scripts/register_execution_stage.py (Thomas approves it)"
+        )
     # 7. A connectivity probe must never ride the autonomous path.
     if intent.get("connectivity_test"):
         blocks.append("connectivity_test intent cannot use the live order path")
@@ -543,6 +570,11 @@ def evaluate_live_order_guard(
         "symbol_allowlisted": bool(allowlist) and order_symbol in allowlist,
         "close_guard": False,
         "canary": bool(canary),
+        # What the stage answered for this order, so the record shows the rung the machine was at
+        # rather than only that something refused.
+        "execution_stage": execution_stage.stage,
+        "execution_stage_valid": bool(execution_stage.valid),
+        "execution_stage_required": required_stage(PURPOSE_PROBE if canary else PURPOSE_AUTONOMOUS),
     }
 
 

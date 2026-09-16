@@ -73,6 +73,7 @@ from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import run_risk_guard  # noqa: E402
 from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE  # noqa: E402
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
+from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
     bracket_breaker_status,
     build_live_order_intent,
@@ -496,9 +497,14 @@ def run_fire(
          "strategy_id": sid},
         symbol=symbol, quantity=quantity, notional_usdt=notional, now=now,
     )
+    # The execution stage (PR1b). A probe is a real mainnet order, so it is judged against the
+    # same rung an autonomous entry needs; a machine with no binding record reads READ_ONLY and
+    # the guard refuses below.
+    stage = resolve_execution_stage(root, now=now)
     verdict = evaluate_live_order_guard(
         intent,
         gate_open=True,  # the capable adapter above IS the opt-in
+        execution_stage=stage,
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
         submitted_today=count_today(root),
