@@ -46,6 +46,7 @@ from ..filelock import locked
 from ..safety_gate import Authorization
 from .account import AccountSnapshot
 from ..coerce import as_float as _f
+from .state import VENUE_MAINNET, venue_state_dir
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -255,11 +256,14 @@ def position_symbol(position: Mapping[str, Any]) -> str:
 
 # --- paths + reads (ungated: reading local state is not a capability) ----------
 
-def live_positions_dir(root: Path | None = None) -> Path:
-    return state_dir(root) / LIVE_POSITIONS_DIRNAME
+def live_positions_dir(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
+    """One book per venue (PR1d-0). A testnet fill must never land in the live book: the leg
+    reconciles the book it reads against the account of the venue it read it for, and a mixed
+    book would report DRIFT on one venue for a position held on the other."""
+    return venue_state_dir(root, venue=venue) / LIVE_POSITIONS_DIRNAME
 
 
-def live_position_path(symbol: str, root: Path | None = None) -> Path:
+def live_position_path(symbol: str, root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Path:
     """Where this symbol's live book lives — containment-checked.
 
     The symbol reaches here from a schedule request and an exchange payload, so it is a
@@ -267,7 +271,7 @@ def live_position_path(symbol: str, root: Path | None = None) -> Path:
     directory. A symbol may name a book, never a location (the workspace-writer rule)."""
     if not symbol or not symbol.replace("_", "").replace("-", "").isalnum():
         raise ToolError("LIVE_POSITION_SYMBOL_INVALID", "live position symbol is not a valid book name")
-    base = live_positions_dir(root)
+    base = live_positions_dir(root, venue=venue)
     base.mkdir(parents=True, exist_ok=True)
     resolved_base = base.resolve()
     path = (resolved_base / f"{symbol}.json").resolve()
@@ -302,15 +306,17 @@ def _read_position_file(path: Path) -> dict[str, Any] | None:
     return data
 
 
-def load_open_live_position(symbol: str, root: Path | None = None) -> dict[str, Any] | None:
-    """This symbol's OPEN live position, or None. Reading local state needs no gate."""
-    return _read_position_file(live_position_path(symbol, root))
+def load_open_live_position(symbol: str, root: Path | None = None, *,
+                            venue: str = VENUE_MAINNET) -> dict[str, Any] | None:
+    """This symbol's OPEN live position at ``venue``, or None. Reading local state needs no gate."""
+    return _read_position_file(live_position_path(symbol, root, venue=venue))
 
 
-def list_open_live_positions(root: Path | None = None) -> list[dict[str, Any]]:
-    """Every OPEN live position. Fails closed on an unreadable or unattributable record —
+def list_open_live_positions(root: Path | None = None, *,
+                             venue: str = VENUE_MAINNET) -> list[dict[str, Any]]:
+    """Every OPEN position at ``venue``. Fails closed on an unreadable or unattributable record —
     counting exposure without one would understate what is really at stake."""
-    directory = live_positions_dir(root)
+    directory = live_positions_dir(root, venue=venue)
     if not directory.is_dir():
         return []
     found: list[dict[str, Any]] = []
@@ -323,11 +329,11 @@ def list_open_live_positions(root: Path | None = None) -> list[dict[str, Any]]:
     return found
 
 
-def local_open_notional_usdt(root: Path | None = None) -> float:
+def local_open_notional_usdt(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> float:
     """Exposure as the LOCAL book believes it. Diagnostic only — the exposure the guard is
     told comes from the venue (`compute_open_notional_usdt`), because only the venue knows
     what is actually open."""
-    return round(sum(_f(p.get("notional_usdt")) for p in list_open_live_positions(root)), 8)
+    return round(sum(_f(p.get("notional_usdt")) for p in list_open_live_positions(root, venue=venue)), 8)
 
 
 # --- the gated store ----------------------------------------------------------
@@ -357,7 +363,7 @@ class DryRunLivePositionStore:
 
 
 class RealLivePositionStore:
-    """Durable live book under ``.runtime_governance_state/crypto/live_positions/``.
+    """Durable book under this venue's ``live_positions/`` (``venue_state_dir``).
 
     Constructed only behind the Safety-Flag Gate for the one ``live_trading`` provider, and
     it re-asserts that authorization on **every** mutation — so clearing ``MVP_LIVE_TRADING``
@@ -370,9 +376,13 @@ class RealLivePositionStore:
     provider_id = LIVE_TRADING_PROVIDER_ID
     filesystem_write = True
 
-    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None,
+                 venue: str = VENUE_MAINNET):
         self._root = root
         self._authorization = authorization
+        # Which venue's book this store writes (PR1d-0). Default mainnet: an existing caller
+        # keeps the book it always had.
+        self._venue = venue
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -396,11 +406,11 @@ class RealLivePositionStore:
 
     def save_position(self, position: Mapping[str, Any]) -> None:
         self._assert()
-        self._write(live_position_path(position_symbol(position), self._root), position)
+        self._write(live_position_path(position_symbol(position), self._root, venue=self._venue), position)
 
     def clear_position(self, symbol: str) -> None:
         self._assert()
-        self._write(live_position_path(symbol, self._root), None)
+        self._write(live_position_path(symbol, self._root, venue=self._venue), None)
 
 
 def select_live_position_store(

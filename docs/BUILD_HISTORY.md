@@ -101,6 +101,35 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **The live execution state grew a venue axis** (crypto PR1d-0, 2026-09-16; `crypto/state.py`,
+  `crypto/live_order.py`, `crypto/live_position.py`, `crypto/live_pnl.py`, `crypto/live_budget.py`).
+  A signed testnet order (PR1d-1, Thomas decision 2) has to be placed, reconciled and settled
+  without any of it being read back as live — and until now "live" meant one venue, so the daily
+  order counter, the position book, the outcome ledger, the bracket breaker and the registered
+  budget each sat in one unqualified file. A testnet fill counted against the live daily cap, a
+  testnet bracket refusal tripping the live breaker, or a testnet position reconciled against the
+  mainnet account, were all one naive implementation away. Worse, the structural test that makes
+  every caller of the venue count its order would have *pushed* an implementation there.
+
+  `venue_state_dir` is the whole axis. Mainnet resolves to the historical root byte for byte, so
+  nothing on the machine moves and a rollback finds every record where it left it; any other venue
+  resolves under `venues/<venue>/` and therefore has its own counter, book, ledger, breaker and
+  budget. An unknown venue raises instead of falling back — a typo that resolved to mainnet would
+  write testnet state into the live book, which is the one outcome the axis exists to prevent.
+  Every venue argument is keyword-only and defaults to mainnet, so every caller written before this
+  keeps reading and writing exactly what it did; a test pins that, and others pin that two venues
+  count their own orders, keep their own books, breakers and outcome ledgers, and cannot read each
+  other's budget. The review of #876 found the half of that which the first draft got wrong: the
+  breaker and the ledger wrote to their own venue while READING the live one — a breaker that
+  inherits the live streak (and, when the live one is clean, resets its own on every failure, so it
+  can never trip) and a dedupe that misses its own duplicates, which is the one thing that makes
+  every verified read of a money ledger raise. Both reads are now the venue's own, and the tests
+  that missed it stand the live state up first.
+
+  Separation by construction rather than by a field every reader must remember to filter on. The
+  alternative — one directory plus a `venue` column — was rejected for the reason the pool's
+  `live_tier` is a field and not a status: the filter you forget is the one that matters.
+
 - **Arming a strategy for real money is Thomas's, every time** (crypto PR1c, Thomas decisions 5 and
   10, 2026-09-16; `permission.py`, `crypto/promotion.py`, `scripts/promote_strategy_candidates.py`,
   `scripts/disarm_live_strategies.py`). The execution-authority audit found three ways the LIVE tier

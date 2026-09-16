@@ -56,7 +56,7 @@ REAL_LIVE_TRADING = "real"
 LIVE_TRADING_PROVIDER_ID = "live_trading"
 LIVE_TRADING_FLAGS = (NETWORK_ACCESS, FILESYSTEM_WRITE)
 
-from .state import STATE_REL, state_dir  # noqa: E402  (one root for both trading planes; re-exported for the live-plane importers)
+from .state import STATE_REL, VENUE_MAINNET, state_dir, venue_state_dir  # noqa: E402  (one root for both trading planes; re-exported for the live-plane importers)
 LIVE_OUTCOMES_FILENAME = "live_outcomes.jsonl"
 LIVE_PROVENANCE = "mvp_live_kernel"
 
@@ -307,7 +307,7 @@ def build_live_outcome_record(
     return body
 
 
-def read_live_outcomes_raw(root: Path | None = None) -> list[dict[str, Any]]:
+def read_live_outcomes_raw(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> list[dict[str, Any]]:
     """The live outcome FILE, oldest first — a VERIFIED read, corrections not applied.
 
     Missing store = honestly empty (nothing has traded yet). Anything unreadable, tampered,
@@ -321,7 +321,7 @@ def read_live_outcomes_raw(root: Path | None = None) -> list[dict[str, Any]]:
     read the view would then not see the settlement already on disk and would append it twice —
     and one duplicate fails EVERY verified read of this history.
     """
-    path = state_dir(root) / LIVE_OUTCOMES_FILENAME
+    path = venue_state_dir(root, venue=venue) / LIVE_OUTCOMES_FILENAME
     outcomes: list[dict[str, Any]] = []
     seen_outcome_ids: set[str] = set()
     seen_settlement_ids: set[str] = set()
@@ -781,7 +781,7 @@ class DryRunLiveLedger:
 
 
 class RealLiveLedger:
-    """Durable live outcomes under ``.runtime_governance_state/crypto/``.
+    """Durable outcomes under this venue's state directory (``venue_state_dir``).
 
     Constructed only behind the Safety-Flag Gate for the ``live_trading`` provider, and it
     re-asserts that authorization on every append, so revoking the opt-in stops the ledger
@@ -793,9 +793,13 @@ class RealLiveLedger:
     provider_id = LIVE_TRADING_PROVIDER_ID
     filesystem_write = True
 
-    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None):
+    def __init__(self, *, root: Path | None = None, authorization: Authorization | None = None,
+                 venue: str = VENUE_MAINNET):
         self._root = root
         self._authorization = authorization
+        # Which venue's outcome ledger this is (PR1d-0). Default mainnet, so every existing
+        # caller writes exactly where it always did.
+        self._venue = venue
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -807,7 +811,7 @@ class RealLiveLedger:
 
     def append_outcome(self, record: Mapping[str, Any]) -> bool:
         self._assert()
-        target = state_dir(self._root)
+        target = venue_state_dir(self._root, venue=self._venue)
         target.mkdir(parents=True, exist_ok=True)
         path = target / LIVE_OUTCOMES_FILENAME
         with locked(path.with_suffix(".lock"), code="LIVE_STATE_LOCKED", label="live outcomes"):
@@ -823,7 +827,8 @@ class RealLiveLedger:
             # than being treated as not-yet-recorded.
             settlement_id = record.get("settlement_id")
             if isinstance(settlement_id, str) and settlement_id and any(
-                o.get("settlement_id") == settlement_id for o in read_live_outcomes_raw(self._root)
+                o.get("settlement_id") == settlement_id
+                for o in read_live_outcomes_raw(self._root, venue=self._venue)
             ):
                 return False
             with open(path, "a", encoding="utf-8", newline="\n") as handle:
