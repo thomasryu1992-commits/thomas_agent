@@ -93,9 +93,10 @@ The consequences are deliberate:
 
 * It cannot be half-enabled. Orders reaching the venue while the P&L ledger silently fails to
   record them is the exact failure mode a split switch would allow. The live selectors — order
-  adapter, P&L ledger, position book, daily counter — read the same variable, and a test pins
-  the exact set of modules that select on it. *(The canary registry was a fifth until its writer
-  went with the canary door on 2026-09-15.)*
+  adapter, P&L ledger, position book, daily counter, bracket-failure breaker, and the entry marks
+  (PR2a: the last bar each context sent on and the stop-loss cooldowns) — read the same variable,
+  and a test pins the exact set of modules that select on it. *(The canary registry was one more
+  until its writer went with the canary door on 2026-09-15.)*
 * **It does not expire, and nothing revokes it but the operator.** This is the reversal, stated
   plainly rather than buried: live capability now persists by forgetfulness, which is what the
   30-day TTL existed to prevent. The mitigation is the `kill` verb, not the gate.

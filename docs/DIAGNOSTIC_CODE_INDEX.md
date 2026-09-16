@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **566** distinct codes across **1085** raise sites
+- **567** distinct codes across **1087** raise sites
 - **22** exception classes carry them
 - **68** codes are raised from more than one module (see below)
 - **136** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -524,9 +524,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 122 | `limit_entry_fill` | `isinstance(timeout_bars, bool) or not isinstance(timeout_bars, int) or timeout_bars < 1` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 136 | `limit_entry_fill` | `not isinstance(bar, Mapping)` |
 | `LIVE_ARM_ESCAPE_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 315 | `run_promotion_gates` | `live_tier == pool_store.LIVE_TIER_LIVE and escapes.get('allow_unconfirmed_holdout', False)` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 801 | `read_bracket_failures` | `—` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 803 | `read_bracket_failures` | `not isinstance(data, dict)` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 810 | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 824 | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 826 | `read_bracket_failures` | `not isinstance(data, dict)` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 833 | `read_bracket_failures` | `—` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 116 | `build_live_trading_budget_record` | `venue != SUPPORTED_VENUE` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 120 | `build_live_trading_budget_record` | `missing` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 127 | `build_live_trading_budget_record` | `—` |
@@ -559,16 +559,18 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 183 | `read_corrections` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 185 | `read_corrections` | `record['previous_record_sha256'] != previous` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 193 | `read_corrections` | `correction_id in seen_ids` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 642 | `count_today` | `—` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 644 | `count_today` | `not isinstance(data, dict)` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 648 | `count_today` | `—` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 708 | `_increment` | `path.is_file()` |
-| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 715 | `_increment` | `limit is not None and current >= limit` |
-| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1068 | `stop_cooldown_until` | `timeframe_minutes <= 0 or bars < 0` |
-| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1131 | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1022 | `read_live_entry_marks` | `—` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1024 | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1031 | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 645 | `_stored_count` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 662 | `count_today` | `—` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 664 | `count_today` | `not isinstance(data, dict)` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 723 | `_increment` | `path.is_file()` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 727 | `_increment` | `not isinstance(loaded, dict)` |
+| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 732 | `_increment` | `limit is not None and current >= limit` |
+| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1160 | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1094 | `stop_cooldown_until` | `isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) or timeframe_minu…` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1096 | `stop_cooldown_until` | `not _is_bar_time(closed_at)` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1046 | `read_live_entry_marks` | `—` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1048 | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1055 | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 344 | `read_live_outcomes_raw` | `outcome_id in seen_outcome_ids` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 349 | `read_live_outcomes_raw` | `settlement_id in seen_settlement_ids` |
 | `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 340 | `read_live_outcomes_raw` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
@@ -585,7 +587,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 515 | `_require_analysis` | `not isinstance(summary, str) or not summary.strip()` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 518 | `_require_analysis` | `not isinstance(facts, list)` |
 | `MALFORMED_BRACKET_LEG` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 369 | `build_bracket_intent` | `leg not in ('SL', 'TP')` |
-| `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 240 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
+| `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 245 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 177 | `build_live_position` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_LIVE_ORDER_INTENT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 263 | `build_order_request` | `not (isinstance(symbol, str) and symbol)` |
 | `MALFORMED_LIVE_ORDER_INTENT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 265 | `build_order_request` | `side not in ('BUY', 'SELL')` |
@@ -695,8 +697,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_OPERATOR` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 597 | `promote_candidate` | `not (isinstance(promoted_by, str) and promoted_by.strip())` |
 | `MISSING_OPERATOR` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 139 | `create_program_request` | `not (isinstance(requested_by, str) and requested_by.strip())` |
 | `MISSING_OPERATOR` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 384 | `_require_operator` | `not (isinstance(actor, str) and actor.strip())` |
-| `MISSING_ORDER_NOTIONAL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 246 | `build_live_order_intent` | `notional_usdt <= 0` |
-| `MISSING_ORDER_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 244 | `build_live_order_intent` | `quantity <= 0` |
+| `MISSING_ORDER_NOTIONAL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 251 | `build_live_order_intent` | `notional_usdt <= 0` |
+| `MISSING_ORDER_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 249 | `build_live_order_intent` | `quantity <= 0` |
 | `MISSING_POSITION_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 183 | `build_live_position` | `quantity <= 0` |
 | `MISSING_PRINCIPAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 308 | `submit` | `not (isinstance(principal, str) and principal.strip())` |
 | `MISSING_RATIONALE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 420 | `build_core_candidate` | `not (isinstance(rationale, str) and rationale.strip())` |
@@ -710,7 +712,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 274 | `build_entry` | `not (isinstance(requester_id, str) and requester_id.strip())` |
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 301 | `build_entry` | `origin == WORKFLOW_ORIGIN and attempt is None` |
 | `MISSING_REQUEST_ID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 310 | `submit` | `not (isinstance(request_id, str) and request_id.strip())` |
-| `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 242 | `build_live_order_intent` | `not symbol` |
+| `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 247 | `build_live_order_intent` | `not symbol` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 179 | `build_live_position` | `not symbol` |
 | `MISSING_TASK_ID` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 678 | `apply_command` | `not (isinstance(arg, str) and arg.strip())` |
 | `MODE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 649 | `apply_switch` | `mode not in _DISABLE_MODES` |
@@ -784,10 +786,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ORDER_REJECTED` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 850 | `cancel_order` | `code is not None` |
 | `ORDER_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 640 | `_signed_request` | `code is None` |
 | `ORDER_TRANSPORT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 646 | `_signed_request` | `—` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1470 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
-| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1475 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
-| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1464 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1452 | `read_outcomes` | `—` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1471 | `read_outcomes` | `outcome_id in seen_outcome_ids` |
+| `OUTCOME_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1476 | `read_outcomes` | `settlement_id in seen_settlement_ids` |
+| `OUTCOME_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1465 | `read_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `OUTCOME_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1453 | `read_outcomes` | `—` |
 | `OUTPUT_SCHEMA_INVALID` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 745 | `run_analysis_worker` | `—` |
 | `OUT_OF_MVP_SCOPE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 204 | `classify_task` | `_READ_ONLY_CONSTRAINT not in constraints` |
 | `PATH_ESCAPE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 175 | `resolve_target` | `'..' in candidate.parts` |
@@ -849,12 +851,12 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POOL_SIZE_CAP_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1029 | `assert_pool_within_size_cap` | `len(occupying) > MAX_ROUTABLE_STRATEGIES` |
 | `POSITIONING_SERIES_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 270 | `append_rows` | `series not in POSITIONING_SERIES` |
 | `POSITIONING_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/positioning_store.py` | 268 | `append_rows` | `not name` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1294 | `__post_init__` | `not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value))` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1299 | `__post_init__` | `value.split('.', 1)[0].upper() in RESERVED_BASENAMES` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1345 | `position_path` | `path.parent != resolved_base` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1380 | `load_open_position` | `PositionContext.from_position(stored) != context` |
-| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1415 | `list_open_positions` | `blocker is not None` |
-| `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1359 | `_read_position_file` | `—` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1295 | `__post_init__` | `not (isinstance(value, str) and _CONTEXT_PART_PATTERN.match(value))` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1300 | `__post_init__` | `value.split('.', 1)[0].upper() in RESERVED_BASENAMES` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1346 | `position_path` | `path.parent != resolved_base` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1381 | `load_open_position` | `PositionContext.from_position(stored) != context` |
+| `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1416 | `list_open_positions` | `blocker is not None` |
+| `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1360 | `_read_position_file` | `—` |
 | `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 489 | `select_cell` | `not empty` |
 | `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 289 | `assert_batch_budget` | `worst > cap` |
 | `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 482 | `select_cell` | `opened is not None` |
@@ -1024,7 +1026,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `SECRET_IN_REQUEST` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 339 | `create_program_request` | `—` |
 | `SECRET_IN_VALIDATED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 633 | `promote_candidate` | `—` |
 | `SEED_TOO_LONG` | `ToolBlocked` | `runtime/mvp_runtime/naver_research.py` | 252 | `_require_seed` | `len(seed) > MAX_SEED_CHARS` |
-| `SETTLEMENT_RACE_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1650 | `settle_position` | `current is None or current.get('position_id') != expected_id` |
+| `SETTLEMENT_RACE_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1651 | `settle_position` | `current is None or current.get('position_id') != expected_id` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 624 | `record_shadow_result` | `not (isinstance(comparison_ref, str) and comparison_ref.strip())` |
 | `SHADOW_EVIDENCE_MISSING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 626 | `record_shadow_result` | `not (isinstance(result, str) and result.strip())` |
 | `SHADOW_NOT_RUNNING` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 630 | `record_shadow_result` | `latest.get('status') != 'VALIDATING' or latest.get('shadow_validation', {}).get('status') != 'R…` |

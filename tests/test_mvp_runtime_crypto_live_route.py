@@ -731,7 +731,7 @@ def test_a_held_cycle_with_no_entry_still_says_nothing(monkeypatch):
 
 # --- the daily loss breaker needs the venue's own figure on the entry path (2026-09-15) ------
 
-def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows):
+def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows, bar=NOW):
     """Drive the gated leg up to the entry decision and hand back what it was judged on.
 
     Everything before the planner is real except the venue reads: a configured 20 USDT daily
@@ -758,7 +758,7 @@ def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows):
 
     monkeypatch.setattr(live_route, "plan_live_entry", _plan)
     record = live_route.run_live_leg(
-        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": bar},
         verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
         root=tmp_path,
     )
@@ -1208,8 +1208,12 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
     control = ControlStore(tmp_path)
     control.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="test",
                               trading_armed=True))
+    clock = {"now": NOW}
+    monkeypatch.setattr(live_route, "_settle_clock", lambda: clock["now"])
 
-    def _pass(now, bar):
+    def _pass(now, bar, *, wall=None):
+        # The wall clock at a settlement: the pass's own `now` unless a test says otherwise.
+        clock["now"] = wall or now
         return live_route.run_live_leg(
             live_routable_strategy_ids={"S001"}, route={"status": "ENTRY_CANDIDATE"},
             feature_row={"timestamp": bar}, verdict={"allow_new_position": True, "problems": []},
@@ -1258,7 +1262,8 @@ def test_a_stop_inside_the_bar_does_not_buy_a_second_entry_on_that_bar(tmp_path,
     # The stop fell in the bar that opened at 04:00, so the two bars paper would hold are 04:00
     # and 08:00, and 12:00 is the first that may enter again.
     assert settled["live_stop_cooldown"] == {
-        "symbol": SYMBOL, "timeframe": "4h", "until_bar": "2026-07-28T12:00:00Z"}
+        "symbol": SYMBOL, "timeframe": "4h", "until_bar": "2026-07-28T12:00:00Z",
+        "close_reason": "stop_loss", "anchored_at": "2026-07-28T04:20:00Z"}
     assert read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-07-28T12:00:00Z"}
 
     # 04:35 — the book is flat and the venue agrees, the route is the same candidate: held, and
@@ -1310,8 +1315,9 @@ def test_the_leg_hands_the_decision_the_bar_it_evaluated_and_the_marks_it_read(t
     auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
     LiveEntryMarks(root=tmp_path, authorization=auth).record_stop_cooldown(
         symbol=SYMBOL, timeframe="4h", until="2026-07-28T12:00:00Z")
-    seen, record = _entry_decision_inputs(tmp_path, monkeypatch, realized_windows={})
-    assert seen["entry_bar_time"] == NOW
+    bar = "2026-07-27T20:00:00Z"   # the last closed 4h bar at NOW — not NOW itself
+    seen, record = _entry_decision_inputs(tmp_path, monkeypatch, realized_windows={}, bar=bar)
+    assert seen["entry_bar_time"] == bar
     assert seen["entry_marks"] == read_live_entry_marks(tmp_path)
     assert seen["entry_marks"]["cooldown"] == {"BTCUSDT__4h": "2026-07-28T12:00:00Z"}
 
@@ -1352,26 +1358,57 @@ def test_unreadable_marks_hold_entries_and_still_manage_positions(tmp_path, monk
     assert record["live_route_status"] != live_route.ROUTE_INCIDENT
 
 
-def _settle_venue_stop(tmp_path, monkeypatch, *, position, filled_leg="sl-1", price=59000.0):
+def _settle_venue_stop(tmp_path, monkeypatch, *, position, filled_leg="sl-1", price=59000.0,
+                       now="2026-07-28T05:10:00Z", wall=None):
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "select_account_feed", lambda **kw: None)
+    monkeypatch.setattr(live_route, "_settle_clock", lambda: wall or now)
     adapter = _Adapter(orders={filled_leg: _venue_order("FILLED", price=price)})
     record: dict[str, Any] = {"live_reason_codes": [], "live_settled": None, "halt": False}
     live_route._settle_or_protect(
         record, position, adapter=adapter, position_store=_Store(), ledger=_Ledger(),
         reconciliation={"status": "DRIFT", "books": {SYMBOL: {"reasons": ["POSITION_MISSING_AT_VENUE"]}}},
-        limits=LiveOrderLimits(), candle_ts=None, now="2026-07-28T05:10:00Z", root=tmp_path,
+        limits=LiveOrderLimits(), candle_ts=None, now=now, root=tmp_path,
         timeout_seconds=1,
     )
     return record
 
 
-def test_a_venue_stop_cools_the_positions_own_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize("timeframe,until", [
+    ("15m", "2026-07-28T05:30:00Z"),
+    ("1h", "2026-07-28T07:00:00Z"),
+    ("4h", "2026-07-28T12:00:00Z"),
+    ("1d", "2026-07-30T00:00:00Z"),
+])
+def test_a_venue_stop_cools_the_positions_own_context(tmp_path, monkeypatch, timeframe, until):
+    """Settled at 05:10: the bound is two bars after the bar containing it, on every timeframe
+    the runtime trades — the route passes paper's own bar count, not a number of its own."""
     from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
 
-    record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"))
+    record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe=timeframe))
     assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
-    assert read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-07-28T12:00:00Z"}
+    assert read_live_entry_marks(tmp_path)["cooldown"] == {f"BTCUSDT__{timeframe}": until}
+
+
+def test_the_cooldown_is_anchored_no_earlier_than_the_read_that_saw_the_fill(tmp_path, monkeypatch):
+    """Review of #880: `now` is the fan-out's start, and a stop can fill after it and still be
+    settled in the same pass. Here the pass started at 07:59:50 and the settlement was recorded at
+    08:00:40 — the fill was in the 08:00 bar, so paper holds 08:00 and 12:00 and 16:00 is the
+    first free bar. Anchoring on `now` would have freed 12:00."""
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+
+    record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"),
+                                now="2026-07-28T07:59:50Z", wall="2026-07-28T08:00:40Z")
+    assert read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-07-28T16:00:00Z"}
+    assert record["live_stop_cooldown"]["anchored_at"] == "2026-07-28T08:00:40Z"
+
+
+def test_a_wall_clock_behind_the_pass_never_shortens_the_cooldown(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+
+    _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"),
+                       now="2026-07-28T08:00:10Z", wall="2026-07-28T07:59:00Z")
+    assert read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-07-28T16:00:00Z"}
 
 
 @pytest.mark.parametrize("position,leg", [
@@ -1388,16 +1425,77 @@ def test_only_a_stop_on_a_routed_context_starts_a_cooldown(tmp_path, monkeypatch
     assert "live_stop_cooldown" not in record
 
 
-def test_a_cooldown_that_cannot_be_written_is_reported_and_the_settlement_stands(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.errors import PersistenceError
+@pytest.mark.parametrize("error,code", [
+    ("persistence", "LIVE_ENTRY_MARKS_LOCKED"),
+    ("os", "UNEXPECTED_OSError"),          # what the real store's mkdir/open/fsync/replace raise
+    ("gate", "SAFETY_GATE_BLOCKED"),
+])
+def test_a_cooldown_that_cannot_be_written_is_reported_and_the_settlement_stands(
+        tmp_path, monkeypatch, error, code):
+    from runtime.mvp_runtime.errors import PersistenceError, SafetyGateBlocked
 
     class _Broken:
         def record_stop_cooldown(self, **kw):
-            raise PersistenceError("LIVE_ENTRY_MARKS_LOCKED", "scripted")
+            if error == "persistence":
+                raise PersistenceError("LIVE_ENTRY_MARKS_LOCKED", "scripted")
+            if error == "gate":
+                raise SafetyGateBlocked("SAFETY_GATE_BLOCKED", "scripted")
+            raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(live_route, "select_live_entry_marks", lambda **kw: _Broken())
     record = _settle_venue_stop(tmp_path, monkeypatch, position=_position(timeframe="4h"))
     assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
-    assert record["live_reason_codes"][-2:] == [
-        live_route.STOP_COOLDOWN_UNRECORDED, "LIVE_ENTRY_MARKS_LOCKED"]
+    assert record["live_reason_codes"][-2:] == [live_route.STOP_COOLDOWN_UNRECORDED, code]
     assert record["halt"] is False
+
+
+class _History:
+    """The account's fill list, as `AccountFeed.fill_history` returns it."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fill_history(self, symbol, *, start_ms, timeout_seconds):
+        return list(self.rows)
+
+
+def test_a_stop_settled_from_the_fill_history_still_starts_the_cooldown(tmp_path, monkeypatch):
+    """Review of #880, the medium finding. The venue's stop filled, but the query for the stop leg
+    failed on the settling tick, so the settlement priced the exit from the fill history and
+    labelled it `venue_external_close`. The cooldown started only on `stop_loss`, and the next bar
+    entered again. The external label now holds the context like a stop."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        LIVE_ENTRY_STOP_LOSS_COOLDOWN,
+        read_live_entry_marks,
+    )
+    from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+
+    [position] = list_open_live_positions(tmp_path)
+    qty = float(position["quantity"])
+    fill_ms = 1_785_211_800_000        # 2026-07-28T04:10:00Z
+    monkeypatch.setattr(live_route, "select_account_feed", lambda **kw: _History([
+        {"side": "SELL", "time": fill_ms, "qty": str(qty), "quoteQty": str(round(qty * SL_FILL, 8)),
+         "orderId": 991},
+    ]))
+    real_fetch = venue.fetch_order
+
+    def _stop_leg_unreadable(symbol, client_order_id, **kw):
+        if client_order_id == position["stop_client_order_id"]:
+            raise ToolError("ORDER_TRANSPORT", "scripted: the leg query failed")
+        return real_fetch(symbol, client_order_id, **kw)
+
+    monkeypatch.setattr(venue, "fetch_order", _stop_leg_unreadable)
+    settled = run("2026-07-28T04:20:00Z", BAR_00)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED
+    assert settled["live_settled"]["outcome"]["close_reason"] == live_leg.CLOSE_REASON_VENUE_EXTERNAL
+    assert read_live_entry_marks(tmp_path)["cooldown"] == {"BTCUSDT__4h": "2026-07-28T12:00:00Z"}
+
+    held = run("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")
+    assert held["live_decision"]["reasons"] == [LIVE_ENTRY_STOP_LOSS_COOLDOWN]
+    assert len(venue.entries()) == 1, "the next bar entered again after a stop-out"
+

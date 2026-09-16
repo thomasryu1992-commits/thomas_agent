@@ -769,14 +769,17 @@ class _FakeCounter:
 
 
 class _FakeBreaker:
-    def __init__(self, error=None):
+    def __init__(self, error=None, raises=ToolError):
         self.failures = []
         self.successes = 0
         self._error = error
+        self._raises = raises
 
     def record_failure(self, **kw):
         if self._error:
-            raise ToolError(self._error, "scripted breaker failure")
+            if self._raises is OSError:
+                raise OSError(28, "No space left on device")
+            raise self._raises(self._error, "scripted breaker failure")
         self.failures.append(kw)
         return {}
 
@@ -1051,7 +1054,12 @@ def test_fire_on_the_real_counter_refuses_the_slot_the_live_leg_already_spent(tm
     assert count_today(tmp_path) == 10
 
 
-def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("raises,code", [
+    (ToolError, "LIVE_BRACKET_BREAKER_LOCKED"),
+    (OSError, "OSError"),   # what the real breaker's write raises; must not skip the cell's return
+])
+def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, monkeypatch, capsys,
+                                                                   raises, code):
     class _StopNeverRests(_HappyPathAdapter):
         def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
             if "_SL_" in client_order_id:
@@ -1081,11 +1089,12 @@ def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, mon
     monkeypatch.setattr(cli, "load_open_live_position",
                         lambda symbol, root=None: store.positions.get(symbol))
     monkeypatch.setattr(cli, "select_live_bracket_breaker",
-                        lambda now=None, root=None: _FakeBreaker(error="LIVE_BRACKET_BREAKER_LOCKED"))
+                        lambda now=None, root=None: _FakeBreaker(error="LIVE_BRACKET_BREAKER_LOCKED",
+                                                                 raises=raises))
 
     assert _fire(tmp_path) == cli.EXIT_BLOCKED
     err = capsys.readouterr().err
-    assert "BREAKER   : NOT recorded (LIVE_BRACKET_BREAKER_LOCKED)" in err
+    assert f"BREAKER   : NOT recorded ({code})" in err
     assert probe.read_plan(tmp_path)["cells"][0]["status"] == probe.CELL_EMPTY
     assert store.positions == {}
 

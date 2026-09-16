@@ -112,20 +112,31 @@ Append a new entry when a milestone ships, in the same PR.
   the same ENTRY_CANDIDATE on every tick of the 15-minute fan-out. The per-symbol cap hid that
   while a position was open; once the venue's stop closed it inside the bar, the next tick settled
   and the one after entered again — under a new client order id, because the id was keyed on the
-  wall clock. The id is now keyed on the bar (decision 16), and a durable per-venue mark store
-  (`live_entry_marks.json`, behind the live switch) holds the last bar each context sent on and a
-  cooldown bound that a settled `stop_loss` writes for the position's own context. Paper marks
-  every evaluation; live marks only when an order is about to leave, so a transient refusal can
-  retry later in the bar — no order has carried the bar's id yet. After a send the bar is spent:
-  the retry would reuse the id, and the venue answering with the old filled order would book a
-  position that no longer exists. A corrupt file refuses entries, the opposite of paper's marks on
-  purpose; it is read after settle/protect, so it can never hold a position open.
+  wall clock. The id is now keyed on the bar and its timeframe (decision 16; a 4h and a 1d bar
+  open at the same instant every day, and display strategy ids are reused across generations),
+  and a durable per-venue mark store (`live_entry_marks.json`, behind the live switch) holds the
+  last bar each context sent on and a cooldown bound written for the position's own context when
+  a `stop_loss` — or a `venue_external_close`, which a stop whose leg query failed settles as —
+  is recorded. Paper marks every evaluation; live marks only when an order is about to leave, so
+  a transient refusal can retry later in the bar — no order has carried the bar's id yet. After a
+  send the bar is spent: the retry would reuse the id, and the venue answering with the old filled
+  order would book a position that no longer exists. A corrupt file refuses entries, the opposite
+  of paper's marks on purpose; it is read after settle/protect, so it can never hold a position
+  open, and the readiness board has a row for it.
+
+  **The cooldown is never shorter than paper's, and sometimes one bar longer.** Paper anchors on
+  the bar the stop filled in. The live leg cannot see the fill time on every settle path, and the
+  fan-out's `now` is not enough — it is the pass's start, and a stop can fill after it and still
+  be settled in that pass. So the anchor is the later of `now` and the wall clock at recording,
+  which follows the read that saw the fill. When the settlement lands in a later bar than the
+  fill — on 15m, the usual case — the context is held one bar longer than paper would hold it.
 
   **The daily cap is reserved, not counted afterwards.** The guard judged a count read earlier in
   the leg and the counter was written after the send, so the scheduler's leg and an operator's
   probe could both pass the cap. `reserve_submission` is the locked check-and-increment, taken
   before the send; a failure there is a refusal, where the old post-send write had to be a
-  reason code at the worst escape point in the leg.
+  reason code at the worst escape point in the leg. A damaged count (negative, non-integer, a
+  non-object file) now refuses instead of reading as room, and the file is fsynced like the book.
 
   **The probe asks whether the symbol is free.** The live book is one record per symbol and the
   venue nets per symbol, so a probe on a symbol holding an autonomous position would have
@@ -133,6 +144,12 @@ Append a new entry when a milestone ships, in the same PR.
   autonomous entry is judged on — reconciliation and LP5's caps — and a probe stop that will not
   rest counts on the bracket breaker. A stop that does rest never clears the streak: it proves the
   stop leg only, not the target leg the autonomous bracket also needs.
+
+  **Left for PR2b, on the record:** the probe's symbol check and the autonomous leg's are both
+  check-then-act with no lock between them, so the two processes could still admit one symbol in
+  the same few seconds. The daily cap closed that race with a reservation; the per-symbol slot
+  needs the same treatment at the pre-send gate. Both doors are shut below LIVE_AUTONOMOUS today,
+  and the next cycle's book-drift halt is the backstop until then.
 
 - **The testnet cycle became the entry condition for the live rung** (crypto PR1d-2, Thomas
   decisions 2 and 11, 2026-09-16; `crypto/execution_stage.py`, `schemas/execution_stage.v0.1`,

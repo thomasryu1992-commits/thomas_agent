@@ -351,6 +351,28 @@ def test_the_order_identity_is_the_bar_not_the_wall_clock():
     assert next_bar["intent"]["client_order_id"] != first["intent"]["client_order_id"]
 
 
+def test_two_contexts_on_one_bar_instant_are_two_orders():
+    """Review of #880: a 4h bar and a 1d bar open at the same instant every day, and a display
+    strategy id can be reused across generations — so the bar time alone gave a 4h entry and a
+    1d entry, a day apart, the same client order id. The timeframe is in the identity now."""
+    four_hour = _plan(plan={**PLAN, "timeframe": "4h"}, entry_marks=NO_MARKS)
+    one_day = _plan(plan={**PLAN, "timeframe": "1d"}, entry_marks=NO_MARKS)
+    assert four_hour["entry_bar"]["context_key"] != one_day["entry_bar"]["context_key"]
+    assert four_hour["intent"]["client_order_id"] != one_day["intent"]["client_order_id"]
+
+
+def test_an_intent_without_a_timeframe_keeps_its_identity():
+    """The probe's and the testnet cycle's plans carry no timeframe; their ids must not move."""
+    from runtime.mvp_runtime.crypto.live_order import build_live_order_intent, make_idempotency_key
+
+    plan = {"direction": "LONG", "entry_price": 100.0, "stop_loss": 99.0, "strategy_id": "PROBE-x"}
+    intent = build_live_order_intent(plan, symbol="BTCUSDT", quantity=0.001, notional_usdt=100.0, now=NOW)
+    assert intent["idempotency_key"] == make_idempotency_key({
+        "symbol": "BTCUSDT", "direction": "LONG", "strategy_id": "PROBE-x",
+        "candle_time": NOW, "position_id": None,
+    })
+
+
 def test_a_ready_decision_names_the_bar_the_leg_must_claim():
     decision = _plan()
     assert decision["entry_bar"] == {

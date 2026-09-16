@@ -67,10 +67,12 @@ from .live_position import compute_open_notional_usdt
 from .live_route import ROUTE_DISABLED
 from .live_order import (
     CONFIRMATION_ENV,
+    ENTRY_MARKS_FILENAME,
     MANUAL_KILL_SWITCH_ENV,
     bracket_breaker_status,
     count_today,
     evaluate_live_order_guard,
+    read_live_entry_marks,
     resolve_live_order_limits,
 )
 from .execution_stage import (
@@ -87,7 +89,7 @@ from .live_pnl import (
     live_risk_snapshot,
     venue_daily_realized_net,
 )
-from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV
+from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV, TIMEFRAMES
 from .risk_limits import limits_status as risk_limits_status
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
@@ -119,6 +121,24 @@ DEFAULT_PROBE_SYMBOL = "BTCUSDT"
 # statement about now. Cycles land every few minutes, so two hours is far outside normal and
 # means the scheduler stopped rather than that the gate changed.
 RECORDED_GATE_STALE_AFTER_SECONDS = 2 * 60 * 60
+
+
+def _cooldown_holds_now(context: str, until: str, now: str) -> bool:
+    """Whether a live stop-loss cooldown still holds the bar its context evaluates at ``now``.
+
+    A context evaluates its last CLOSED bar, which opened one bar before the bar containing
+    ``now``; the cooldown holds every bar opening before ``until``. A context whose bar length is
+    unknown is reported as holding rather than hidden."""
+    minutes = TIMEFRAMES.get(context.rsplit("__", 1)[-1])
+    if not minutes:
+        return True
+    try:
+        minute = int(timeutil.parse_iso(now).timestamp()) // 60
+    except (TypeError, ValueError):
+        return True
+    last_closed_open = timeutil.plus_minutes(
+        "1970-01-01T00:00:00Z", minute - minute % minutes - minutes)
+    return last_closed_open < until
 
 
 def _check(check_id: str, ok: bool, detail: str) -> dict[str, Any]:
@@ -483,6 +503,30 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     checks.append(
         _check("bracket_breaker", bracket is not None and not bracket["tripped"], bracket_detail)
     )
+
+    # 6c. The live entry marks (PR2a): the last bar each context sent an entry on, and the
+    # contexts a live stop-out still holds. On the board for the bracket breaker's reason — an
+    # unreadable file refuses every live entry while every other row can read green.
+    try:
+        marks = read_live_entry_marks(root)
+    except MvpRuntimeError as exc:
+        marks = None
+        marks_detail = (
+            f"UNREADABLE ({getattr(exc, 'reason_code', 'UNKNOWN')}) - every live entry is refused "
+            f"until {ENTRY_MARKS_FILENAME} is repaired. Do not just delete it: an empty file "
+            "re-opens bars an order may already have been sent on. Rewrite 'entered' with each "
+            "routed context's current bar (open time), keep 'cooldown', then check this row again"
+        )
+    else:
+        holding = sorted(
+            f"{context} until the {until} bar" for context, until in marks["cooldown"].items()
+            if _cooldown_holds_now(context, until, now)
+        )
+        marks_detail = (
+            f"{len(marks['entered'])} context(s) have sent an entry; "
+            + (f"stop-loss cooldown: {', '.join(holding)}" if holding else "no stop-loss cooldown active")
+        )
+    checks.append(_check("entry_marks", marks is not None, marks_detail))
 
     # 7. Retired 2026-09-15 (PR1r): the `canary_evidence` row, with the promotion gate it reported.
     #    The frozen canary history is still readable on its own board:

@@ -200,15 +200,20 @@ def make_client_order_id(symbol: str, direction: str, idempotency_key: str) -> s
 
 def enrich_order_identity(intent: dict[str, Any]) -> dict[str, Any]:
     """Attach the idempotency key and client order id derived from the intent itself."""
-    key = make_idempotency_key(
-        {
-            "symbol": intent.get("symbol"),
-            "direction": intent.get("direction"),
-            "strategy_id": intent.get("strategy_id"),
-            "candle_time": intent.get("candle_time") or intent.get("created_at"),
-            "position_id": intent.get("position_id"),
-        }
-    )
+    payload = {
+        "symbol": intent.get("symbol"),
+        "direction": intent.get("direction"),
+        "strategy_id": intent.get("strategy_id"),
+        "candle_time": intent.get("candle_time") or intent.get("created_at"),
+        "position_id": intent.get("position_id"),
+    }
+    # A bar time names a bar only together with its timeframe (PR2a review): a 4h bar and a 1d bar
+    # open at the same instant every day, and a display strategy id can be reused across
+    # generations, so without it two contexts mint the same client order id a day apart. Added
+    # only when present, so the probe's and the testnet cycle's ids — no timeframe — are unchanged.
+    if intent.get("timeframe"):
+        payload["timeframe"] = intent.get("timeframe")
+    key = make_idempotency_key(payload)
     intent["idempotency_key"] = key
     intent["client_order_id"] = make_client_order_id(
         str(intent.get("symbol") or "UNKNOWN"), str(intent.get("direction") or "NONE"), key
@@ -281,6 +286,8 @@ def build_live_order_intent(
         "strategy_generation_id": plan.get("strategy_generation_id"),
         "position_id": plan.get("position_id"),
         "candle_time": plan.get("candle_time"),
+        # The context the bar belongs to (PR2a review); part of the identity when present.
+        "timeframe": plan.get("timeframe"),
         "connectivity_test": False,
     }
     return enrich_order_identity(intent)
@@ -626,6 +633,19 @@ def evaluate_live_close_guard(
 
 # --- the daily submission counter --------------------------------------------------
 
+def _stored_count(value: Any) -> int:
+    """One day's stored count, or refuse (PR2a review).
+
+    Only the counter writes this file, and only non-negative ints. Anything else is damage, and a
+    damaged count must not read as room under the cap: a negative one passed the reservation's
+    `current >= limit` for as many orders as it was below zero."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter holds a malformed count")
+    return value
+
+
 def count_today(root: Path | None = None, *, day: str | None = None,
                 venue: str = VENUE_MAINNET) -> int:
     """Orders submitted today at ``venue``. Ungated read; an unreadable counter fails closed by
@@ -642,10 +662,7 @@ def count_today(root: Path | None = None, *, day: str | None = None,
         raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is unreadable") from exc
     if not isinstance(data, dict):
         raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is malformed")
-    try:
-        return int(data.get(day or utc_day(), 0))
-    except (TypeError, ValueError) as exc:
-        raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter holds a non-integer") from exc
+    return _stored_count(data.get(day or utc_day()))
 
 
 class LiveOrderCounter:
@@ -702,14 +719,14 @@ class LiveOrderCounter:
             if path.is_file():
                 try:
                     loaded = json.loads(path.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        data = loaded
                 except (OSError, ValueError) as exc:
                     raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is unreadable") from exc
-            try:
-                current = int(data.get(key, 0))
-            except (TypeError, ValueError):
-                current = 0
+                if not isinstance(loaded, dict):
+                    # Refused, not replaced: rewriting it would erase the evidence and hand back
+                    # the day's whole budget (PR2a review).
+                    raise ToolError(LIVE_COUNTER_UNREADABLE, "live order counter is malformed")
+                data = loaded
+            current = _stored_count(data.get(key))
             if limit is not None and current >= limit:
                 # Also the answer for a cap of zero: an unconfigured cap reserves nothing.
                 raise ToolError(
@@ -718,7 +735,13 @@ class LiveOrderCounter:
                 )
             data[key] = current + 1
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(data, ensure_ascii=False, indent=1))
+                handle.flush()
+                # The count is the pre-send authority for the cap now (PR2a): a reserved slot that
+                # a crash forgets is an order the day's budget no longer knows about. The file is
+                # synced, as the live book's is; the directory entry is not, as for the book.
+                os.fsync(handle.fileno())
             tmp.replace(path)
             return data[key]
 
@@ -985,6 +1008,7 @@ LIVE_ENTRY_MARKS_UNKNOWN = "LIVE_ENTRY_MARKS_UNKNOWN"
 LIVE_ENTRY_BAR_UNKNOWN = "LIVE_ENTRY_BAR_UNKNOWN"
 LIVE_ENTRY_BAR_ALREADY_ENTERED = "LIVE_ENTRY_BAR_ALREADY_ENTERED"
 LIVE_ENTRY_STOP_LOSS_COOLDOWN = "LIVE_ENTRY_STOP_LOSS_COOLDOWN"
+LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE = "LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE"
 
 _MARK_MAPS = ("entered", "cooldown")
 _CONTEXT_SEP = "__"
@@ -1059,13 +1083,17 @@ def live_entry_holds(
 def stop_cooldown_until(closed_at: str, *, timeframe_minutes: int, bars: int) -> str:
     """The first bar (by open time) a context may enter again after a stop-out. Pure.
 
-    The anchor is the bar containing ``closed_at``; the bound is ``bars`` bars after it, which
-    is paper's window on the open-time basis: paper refuses candles closing before
-    ``stop bar close + bars`` — the stop bar and the ``bars - 1`` after it — and so does this.
-    ``closed_at`` is when the runtime settled the stop, never earlier than the fill, so a late
-    settle can only lengthen the window."""
-    if timeframe_minutes <= 0 or bars < 0:
-        raise ToolError(LIVE_ENTRY_BAR_UNKNOWN, "a cooldown needs a positive bar length")
+    The anchor is the bar containing ``closed_at``; the bound is ``bars`` bars after it. With
+    ``closed_at`` at the fill this is paper's window on the open-time basis: paper refuses candles
+    closing before ``stop bar close + bars`` — the stop bar and the ``bars - 1`` after it. The
+    caller passes an instant no earlier than the fill (see ``live_route._record_stop_cooldown``),
+    so the window is never shorter than paper's, and one bar longer when that instant falls in a
+    later bar than the fill did."""
+    if isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) \
+            or timeframe_minutes <= 0 or isinstance(bars, bool) or not isinstance(bars, int) or bars < 0:
+        raise ToolError(LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE, "a cooldown needs a positive bar length")
+    if not _is_bar_time(closed_at):
+        raise ToolError(LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE, f"cannot anchor a cooldown on {closed_at!r}")
     minute = int(timeutil.parse_iso(closed_at).timestamp()) // 60
     bar_open = minute - minute % timeframe_minutes
     return timeutil.plus_minutes(_EPOCH, bar_open + bars * timeframe_minutes)
@@ -1107,7 +1135,8 @@ class LiveEntryMarks:
                 handle.write(json.dumps(marks, ensure_ascii=False, indent=1))
                 handle.flush()
                 # A claim that reached the page cache but not the disk is a bar this runtime
-                # forgets across a crash — the live position store's reason for its fsync.
+                # forgets across a crash — the live position store's reason for its fsync. The
+                # file is synced; the directory entry is not, as for the book.
                 os.fsync(handle.fileno())
             tmp.replace(path)
             return marks

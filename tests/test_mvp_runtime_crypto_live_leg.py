@@ -907,6 +907,17 @@ def test_a_bar_already_entered_sends_nothing_and_spends_no_slot():
     assert adapter.submitted == [] and counter.count == 0 and result["entry"] is None
 
 
+def test_the_reservation_uses_the_registered_cap_as_it_is():
+    """No floor under it: a cap of zero reserves nothing, even behind a decision that says ready
+    (the guard would have refused first; the reservation must not depend on that)."""
+    from dataclasses import replace
+
+    adapter, counter = FakeAdapter(), FakeCounter()
+    result = _entry(limits=replace(LIMITS, max_daily_order_count=0), counter=counter, adapter=adapter)
+    assert result["reason_codes"] == ["LIVE_DAILY_ORDER_CAP_REACHED"]
+    assert counter.limits == [0] and adapter.submitted == []
+
+
 def test_a_full_day_sends_nothing():
     """Two processes read a count under the cap; only the reservation can say which one sends."""
     adapter = FakeAdapter()

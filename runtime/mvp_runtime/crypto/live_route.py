@@ -68,6 +68,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import timeutil
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
 from ..control import ControlStore
@@ -991,29 +992,48 @@ def _record_bracket_outcome(
         )
 
 
+# The exits that start a live cooldown. `stop_loss` is paper's rule. `venue_external_close` is the
+# label a settlement falls back to when no leg answered and the fill history priced the exit —
+# which a stop whose leg query failed also lands on (review of #880: reproduced, the next bar
+# entered again). Its cause is unknown by definition, so it is held like a stop: a liquidation or a
+# hand-close is no better a moment to re-enter. This can only refuse more than paper would.
+_COOLDOWN_CLOSE_REASONS = STOP_EXIT_REASONS | {live_leg.CLOSE_REASON_VENUE_EXTERNAL}
+
+
+def _settle_clock() -> str:
+    """The wall clock when a settlement is recorded. Its own function so tests can set it."""
+    return timeutil.utc_now_iso()
+
+
 def _record_stop_cooldown(
     record: dict[str, Any], position: Mapping[str, Any], settled: Mapping[str, Any], *,
     now: str, root: Path | None,
 ) -> None:
     """Hold the position's own context for paper's cooldown after a live stop-out (PR2a).
 
-    Only a settled ``stop_loss`` counts — the one exit the venue's own stop leg produces. The
-    context is the position's timeframe, the one its entry was routed on; a position that names
-    none (a probe, a legacy record) belongs to no context and cools nothing. The bound is anchored
-    on ``now``, the settle time, which is never before the fill: a late settle only lengthens it.
-    Reported, never raised — the settlement it follows is already written."""
+    The context is the position's timeframe, the one its entry was routed on; a position that names
+    none (a probe, a legacy record) belongs to no context and cools nothing.
+
+    **The anchor is the later of ``now`` and the wall clock at this call.** ``now`` alone is not
+    enough: it is the fan-out's start, one value for every context, and a stop can fill after it
+    and still be settled in this pass (review of #880). The wall clock here is after the venue read
+    that saw the fill, so the anchor is never before the fill and the window is never shorter than
+    paper's. It is one bar longer when the settlement lands in a later bar than the fill — on 15m,
+    the usual case — which errs toward holding. Reported, never raised: the settlement it follows is
+    already written."""
     outcome = settled.get("outcome")
     if settled.get("status") != live_leg.EXIT_CLOSED or not isinstance(outcome, Mapping):
         return
-    if outcome.get("close_reason") not in STOP_EXIT_REASONS:
+    if outcome.get("close_reason") not in _COOLDOWN_CLOSE_REASONS:
         return
     timeframe = position.get("timeframe")
     minutes = TIMEFRAMES.get(timeframe) if isinstance(timeframe, str) else None
     if not minutes:
         return
     try:
+        anchor = max(str(now), _settle_clock())
         until = stop_cooldown_until(
-            now, timeframe_minutes=minutes, bars=paper.COOLDOWN_BARS_AFTER_STOPLOSS,
+            anchor, timeframe_minutes=minutes, bars=paper.COOLDOWN_BARS_AFTER_STOPLOSS,
         )
         select_live_entry_marks(now=now, root=root).record_stop_cooldown(
             symbol=position_symbol(position), timeframe=timeframe, until=until,
@@ -1026,6 +1046,7 @@ def _record_stop_cooldown(
         return
     record["live_stop_cooldown"] = {
         "symbol": position_symbol(position), "timeframe": timeframe, "until_bar": until,
+        "close_reason": outcome.get("close_reason"), "anchored_at": anchor,
     }
 
 

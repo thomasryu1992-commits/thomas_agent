@@ -103,6 +103,38 @@ def test_concurrent_reservations_never_exceed_the_cap(tmp_path):
     assert live_order.count_today(tmp_path, day=DAY) == 3
 
 
+@pytest.mark.parametrize("stored", [
+    {DAY: -5},          # a negative count passed `current >= limit` for as many orders
+    {DAY: "1"},         # never written by the counter
+    {DAY: 1.5},
+    {DAY: True},
+    [],                 # not an object: used to be replaced by a fresh one
+    "x",
+    None,
+])
+def test_a_damaged_counter_refuses_and_is_left_as_evidence(tmp_path, stored):
+    path = venue_state_dir(tmp_path) / live_order.COUNTER_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(stored)
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ToolError) as refused:
+        _counter(tmp_path).reserve_submission(limit=2, day=DAY)
+    assert _code(refused) == live_order.LIVE_COUNTER_UNREADABLE
+    with pytest.raises(ToolError):
+        _counter(tmp_path).record_submission(day=DAY)
+    with pytest.raises(ToolError):
+        live_order.count_today(tmp_path, day=DAY)
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_another_days_damage_does_not_close_today(tmp_path):
+    """Only the day being counted is judged: an old malformed entry is not today's budget."""
+    path = venue_state_dir(tmp_path) / live_order.COUNTER_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"2026-01-01": "junk", DAY: 1}), encoding="utf-8")
+    assert _counter(tmp_path).reserve_submission(limit=2, day=DAY) == 2
+
+
 def test_an_unreadable_counter_reserves_nothing(tmp_path):
     path = venue_state_dir(tmp_path) / live_order.COUNTER_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -288,10 +320,19 @@ def test_the_cooldown_bound_is_two_bars_after_the_stop_bar(closed_at, minutes, e
     assert live_order.stop_cooldown_until(closed_at, timeframe_minutes=minutes, bars=2) == expected
 
 
-@pytest.mark.parametrize("minutes,bars", [(0, 2), (-15, 2), (15, -1)])
+@pytest.mark.parametrize("minutes,bars", [(0, 2), (-15, 2), (15, -1), (True, 2), (15.0, 2)])
 def test_a_cooldown_bound_needs_a_bar_length(minutes, bars):
-    with pytest.raises(ToolError):
+    with pytest.raises(ToolError) as refused:
         live_order.stop_cooldown_until(BAR, timeframe_minutes=minutes, bars=bars)
+    assert _code(refused) == live_order.LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE
+
+
+@pytest.mark.parametrize("closed_at", [None, "", "2026-09-16", "2026-09-16T04:00:00+00:00", "soon"])
+def test_a_cooldown_bound_needs_an_instant_it_can_read(closed_at):
+    """Typed, not a bare ValueError from the parser."""
+    with pytest.raises(ToolError) as refused:
+        live_order.stop_cooldown_until(closed_at, timeframe_minutes=240, bars=2)
+    assert _code(refused) == live_order.LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE
 
 
 # --- the switch and the venue axis -----------------------------------------------------------
@@ -325,3 +366,38 @@ def test_each_venue_keeps_its_own_marks(tmp_path):
     assert live_order.read_live_entry_marks(tmp_path)["entered"] == {}
     assert live_order.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["entered"] == {"BTCUSDT__4h": BAR}
     _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
+
+
+def test_a_venue_store_judges_its_claims_on_its_own_marks(tmp_path):
+    """The #876 bug class: a store that read another venue's baseline would refuse (or admit) on
+    marks it does not own. A mainnet claim must not spend the testnet bar, a mainnet cooldown must
+    not hold the testnet context — and each store still refuses its own second claim."""
+    _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
+    _marks(tmp_path).record_stop_cooldown(symbol="ETHUSDT", timeframe="4h", until="2026-09-17T00:00:00Z")
+    testnet = _marks(tmp_path, venue=VENUE_TESTNET)
+    testnet.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
+    testnet.claim_bar(symbol="ETHUSDT", timeframe="4h", bar_time=BAR)
+    with pytest.raises(ToolError) as refused:
+        testnet.claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
+    assert _code(refused) == live_order.LIVE_ENTRY_BAR_ALREADY_ENTERED
+    testnet.record_stop_cooldown(symbol="SOLUSDT", timeframe="4h", until="2026-09-16T08:00:00Z")
+    assert live_order.read_live_entry_marks(tmp_path)["cooldown"] == {"ETHUSDT__4h": "2026-09-17T00:00:00Z"}
+    assert live_order.read_live_entry_marks(tmp_path, venue=VENUE_TESTNET)["cooldown"] == {
+        "SOLUSDT__4h": "2026-09-16T08:00:00Z"}
+
+
+def test_both_pre_send_stores_sync_their_file_before_returning(tmp_path, monkeypatch):
+    """A reserved slot or a claimed bar that a crash forgets is an order the store no longer
+    knows about. Not observable without a crash, so the call itself is pinned (review of #880)."""
+    synced: list[int] = []
+    real_fsync = live_order.os.fsync
+
+    def _recording_fsync(fd):
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(live_order.os, "fsync", _recording_fsync)
+    _counter(tmp_path).reserve_submission(limit=2, day=DAY)
+    assert len(synced) == 1, "the counter returned a reservation it had not synced"
+    _marks(tmp_path).claim_bar(symbol="BTCUSDT", timeframe="4h", bar_time=BAR)
+    assert len(synced) == 2, "the marks store returned a claim it had not synced"
