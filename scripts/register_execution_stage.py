@@ -11,6 +11,11 @@
     python -m scripts.register_execution_stage --request --to PAPER --registered-by thomas \
         --reason "initial stage" --attest "paper ledger since 2026-07, counterfactual shadow book"
 
+    # Climbing to LIVE_AUTONOMOUS names the signed testnet cycle it stands on (PR1d-2):
+    #     python -m scripts.run_signed_testnet_cycle --list      # pick a COMPLETE one
+    #     python -m scripts.register_execution_stage --request --to LIVE_AUTONOMOUS \
+    #         --registered-by thomas --reason "..." --testnet-cycle <cycle id>
+
     # 2) Thomas answers /approve <id> on the verified control channel.
     # 3) Spend the approval once and write the record:
     python -m scripts.register_execution_stage --confirm --approval-id approval_abc123
@@ -76,6 +81,7 @@ def run_show(*, root: Path | None, now: str, as_json: bool) -> int:
         f"recorded stage  : {status.recorded_stage or 'none'}",
         f"stage id        : {status.stage_id or 'none'}",
         f"witness         : {status.approval_id or '-'}",
+        f"testnet cycle   : {((record or {}).get('evidence') or {}).get('testnet_cycle_id') or '-'}",
         f"bound to policy : {status.policy_version or '-'}",
         f"running policy  : {(identity or {}).get('policy_version')} {(identity or {}).get('policy_safety_sha256')}",
         "enforcement     : the entry guard refuses a new live entry below "

@@ -5,7 +5,7 @@ What is pinned here: the ladder without a canary rung and without expiry (Thomas
 after a policy change, any rung down without approval; every way a record fails to bind and reads
 READ_ONLY; the witness — a Thomas-verified CONSUMED approval whose content the record carries, and
 the approval a demotion descends from; and the refusal a climb to LIVE carries before the signed
-testnet evidence path exists (PR1d)."""
+testnet evidence path exists (PR1d-1/PR1d-2, and pinned below)."""
 
 from __future__ import annotations
 
@@ -146,8 +146,9 @@ def test_climbing_is_one_rung_at_a_time(tmp_path):
 
 
 def test_live_waits_for_signed_testnet_evidence(tmp_path):
-    """Decision 2: a reconciled signed testnet order. The path does not exist yet (PR1d), so the
-    climb refuses by name rather than proceeding on anything else — and no canary count stands in."""
+    """Decision 2: the climb names a completed signed testnet cycle or it does not happen. Here it
+    names none, so it refuses by name rather than proceeding on an attestation — and no canary
+    count stands in. The evidence path itself is exercised further down."""
     approvals = _Approvals()
     testnet = _testnet(tmp_path, approvals)
     with pytest.raises(ToolError) as exc:
@@ -671,6 +672,33 @@ def test_the_request_text_for_a_stage_ask_says_how_it_is_spent_and_reversed():
     assert "예상 비용: 없음" in approval.format_request(paper)
 
 
+def test_the_live_ask_names_the_cycle_thomas_is_signing():
+    """The sentence that makes the approval meaningful: which cycle, and what it proved. Without it
+    Thomas would be answering "climb to LIVE_AUTONOMOUS" with the evidence invisible (review of
+    #878)."""
+    import unittest.mock as mock
+
+    from runtime.mvp_runtime import permission
+
+    captured = {}
+
+    def fake_build(bound, **kw):
+        captured.update(kw)
+        return {"ok": True}
+
+    live = {**_content(), "to_stage": "LIVE_AUTONOMOUS", "transition": es.T_CLIMB,
+            "from_stage": "SIGNED_TESTNET",
+            "evidence": {"testnet_cycle_id": "cyc_ok", "testnet_cycle_sha256": "sha256:" + "a" * 64}}
+    with mock.patch.object(permission, "build_permission_decision", fake_build):
+        permission.build_execution_stage_permission_decision({}, content=live, now=NOW)
+        reason = captured["action"].risk_reason
+        assert "signed testnet cycle cyc_ok" in reason
+        assert "sha256:" + "a" * 12 in reason          # the row it stood on, truncated
+        assert "protective legs confirmed resting and withdrawn" in reason
+        permission.build_execution_stage_permission_decision({}, content=_content(), now=NOW)
+        assert "signed testnet cycle" not in captured["action"].risk_reason
+
+
 # --- the climb out of SIGNED_TESTNET (PR1d-2, Thomas decisions 2 and 11) --------------------
 
 def _complete_cycle(root, cycle_id="cyc_ok"):
@@ -768,7 +796,13 @@ def test_a_cycle_is_not_evidence_for_any_other_rung(tmp_path):
     assert exc.value.reason_code == es.STAGE_EVIDENCE_NOT_APPLICABLE
 
 
-def test_a_live_record_that_names_no_cycle_reads_read_only(tmp_path):
+@pytest.mark.parametrize("transition,previous", [
+    (es.T_CLIMB, "SIGNED_TESTNET"),
+    # REBIND is the transition a policy bump forces, and the one the CLIMB-shaped refusal used to
+    # walk around — so the structural half has to cover it too (review of #878).
+    (es.T_REBIND, "LIVE_AUTONOMOUS"),
+])
+def test_a_live_record_that_names_no_cycle_reads_read_only(tmp_path, transition, previous):
     """Structural, so the live leg's read path pays no I/O for it: a record that ARRIVED at the
     rung without naming a cycle cannot be one the door wrote."""
     approvals = _Approvals()
@@ -776,7 +810,7 @@ def test_a_live_record_that_names_no_cycle_reads_read_only(tmp_path):
     testnet = _testnet(tmp_path, approvals)
     _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
               testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
-    _rewrite(tmp_path, evidence={})
+    _rewrite(tmp_path, evidence={}, transition=transition, previous_stage=previous)
     assert _resolve(tmp_path, approvals).reason_code == es.STAGE_TRANSITION_INVALID
 
 

@@ -18,8 +18,9 @@ policy it was approved under changes.
   SHADOW or PAPER, approved once, carrying an attestation of the evidence behind it (decision 1:
   this host starts at PAPER). A record it replaces is named in the ask.
 - **CLIMB** — exactly one rung up from a binding record, approved once. No skip, ever.
-  SIGNED_TESTNET -> LIVE_AUTONOMOUS needs a reconciled signed testnet order (decision 2) and is
-  refused until that path exists (PR1d); LIVE_SCALED has no entry rule yet.
+  SIGNED_TESTNET -> LIVE_AUTONOMOUS names one COMPLETE signed testnet cycle (decision 2; the cycle
+  and its row hash ride in the record and in the approval's content); LIVE_SCALED has no entry rule
+  yet.
 - **REBIND** — the same rung again, approved once, and only for a record whose sole defect is that
   the policy version or its safety semantic fingerprint changed (decision 4).
 - **DEMOTE** — any rung down, no approval, immediate (decision 8). A demotion keeps the approval

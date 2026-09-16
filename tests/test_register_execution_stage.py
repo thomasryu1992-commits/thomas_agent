@@ -218,3 +218,80 @@ def test_a_ledger_failure_after_the_write_is_a_warning_not_a_block(tmp_path, mon
     out = door.run_demote(root=tmp_path, now=NOW, target="READ_ONLY", registered_by="t", reason="stop")
     assert out["status"]["stage"] == "READ_ONLY"
     assert out["warnings"] and "LEDGER_WRITE_FAILED" in out["warnings"][0]
+
+
+def _complete_cycle(root, cycle_id="cyc_door"):
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    def leg(name):
+        return {"leg": name, "algo": name == "SL",
+                "order_type": "STOP_MARKET" if name == "SL" else "LIMIT",
+                "observed_status": "NEW", "withdrawn": True}
+
+    record = testnet_evidence.build_cycle_record(
+        cycle_id=cycle_id, symbol="BTCUSDT",
+        entry={"reconcile_status": "RECONCILED", "mismatches": []},
+        protective_legs=[leg("SL"), leg("TP")],
+        exit_result={"reconcile_status": "RECONCILED", "reduce_only": True},
+        position_reconciliation={"status": "RECONCILED", "venue_positions": []},
+        adapter_tool_id="crypto.testnet.order_adapter", base_url_host="testnet.binancefuture.com",
+        started_at=NOW, completed_at=NOW,
+    )
+    testnet_evidence.append_cycle(record, root)
+    return record
+
+
+@requires_local_core
+def test_the_live_climb_is_asked_and_spent_against_the_cycle_under_this_state_root(tmp_path):
+    """The whole PR1d chain through the real door: a cycle recorded under THIS state root, named on
+    the ask, signed into the approval, and re-verified when it is spent.
+
+    The state root matters and is why this test exists: the evidence lives beside the machine's
+    other governed state, so a door that looked it up under the image tree would refuse a cycle
+    that is right there — and blame the evidence for it (review of #878)."""
+    _testnet(tmp_path)
+    record = _complete_cycle(tmp_path)
+    asked = door.run_request(root=tmp_path, now=NOW, target="LIVE_AUTONOMOUS", registered_by="thomas",
+                             reason="the cycle is clean", attestation=None, testnet_cycle="cyc_door")
+    assert asked["content"]["evidence"]["testnet_cycle_id"] == "cyc_door"
+    assert asked["content"]["evidence"]["testnet_cycle_sha256"] == record["record_sha256"]
+    _approve(tmp_path, asked["approval_id"])
+    confirmed = door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert (confirmed["status"]["stage"], confirmed["status"]["valid"]) == ("LIVE_AUTONOMOUS", True)
+    assert confirmed["record"]["evidence"]["testnet_cycle_id"] == "cyc_door"
+
+
+@requires_local_core
+def test_an_unnamed_or_unearned_cycle_asks_for_nothing(tmp_path):
+    _testnet(tmp_path)
+    before = len(ApprovalStore.default(tmp_path).read_all())
+    for cycle in (None, "cyc_missing"):
+        with pytest.raises(MvpRuntimeError) as exc:
+            door.run_request(root=tmp_path, now=NOW, target="LIVE_AUTONOMOUS", registered_by="t",
+                             reason="r", attestation=None, testnet_cycle=cycle)
+        assert exc.value.reason_code in (es.STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED,
+                                         "TESTNET_EVIDENCE_INCOMPLETE")
+    assert len(ApprovalStore.default(tmp_path).read_all()) == before, (
+        "a refused climb still spent Thomas's attention: it stored an approval request")
+
+
+@requires_local_core
+def test_a_cycle_tampered_between_the_ask_and_the_spend_installs_nothing(tmp_path):
+    """The spend re-plans, so the registry is read again: an approval won on a row that has since
+    been edited writes no record and stays APPROVED."""
+    import json
+
+    from runtime.mvp_runtime.crypto import testnet_evidence
+
+    _testnet(tmp_path)
+    record = _complete_cycle(tmp_path)
+    asked = door.run_request(root=tmp_path, now=NOW, target="LIVE_AUTONOMOUS", registered_by="thomas",
+                             reason="r", attestation=None, testnet_cycle="cyc_door")
+    _approve(tmp_path, asked["approval_id"])
+    tampered = {**record, "symbol": "ETHUSDT"}          # hash left alone
+    testnet_evidence.evidence_path(tmp_path).write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert exc.value.reason_code == testnet_evidence.EVIDENCE_TAMPERED
+    assert ApprovalStore.default(tmp_path).get(asked["approval_id"])["status"] == "APPROVED"
+    assert es.read_registered_stage(tmp_path)["stage"] == "SIGNED_TESTNET"
