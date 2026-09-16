@@ -460,6 +460,8 @@ Rows are keyed by the name in `.env` (what leaves the file), not by the containe
 | `BINANCE_ACCOUNT_API_SECRET` | `scheduler` | same |
 | `MVP_LIVE_ORDER_API_KEY` | `scheduler` | the live order path — the one service that may place an order |
 | `MVP_LIVE_ORDER_API_SECRET` | `scheduler` | same |
+| `MVP_TESTNET_ORDER_API_KEY` | `scheduler` | the signed testnet path (PR1d-1) — no real money, its own venue and its own key |
+| `MVP_TESTNET_ORDER_API_SECRET` | `scheduler` | the signed testnet path's secret — never the live one |
 | `COINALYZE_API_KEY` | `scheduler`, `scheduler-maint` | derivatives feed for the cycle (risk) and the candle archive (maintenance) |
 | `OPENROUTER_API_KEY` | `hermes`, `operator`, `pipeline-worker` | the model plane: analyses, validation, the front desk, and the assistant's own model — never the money plane |
 | `GOOGLE_AI_STUDIO_API_KEY` | `operator`, `pipeline-worker` | same plane, second provider in the chain |

@@ -4,10 +4,10 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **557** distinct codes across **1071** raise sites
+- **562** distinct codes across **1078** raise sites
 - **22** exception classes carry them
 - **68** codes are raised from more than one module (see below)
-- **125** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
+- **133** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
 - **29** raise sites carry a human-readable **message** where a code would go, so there is nothing to look up — a different gap from the line above, and counted apart from it
 
 ## Codes raised from more than one module
@@ -321,33 +321,33 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `EVENT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 918 | `rechain_events` | `—` |
 | `EVENT_INVALID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow.py` | 483 | `event_record` | `—` |
 | `EVENT_STRUCTURE_INVALID` | `AuditError` | `runtime/mvp_runtime/audit.py` | 912 | `rechain_events` | `not (isinstance(integrity_block, MutableMapping) and isinstance(payload, MutableMapping) and is…` |
-| `EXECUTION_STAGE_ALREADY_BINDS` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 455 | `plan_transition` | `target == recorded` |
-| `EXECUTION_STAGE_ATTESTATION_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 472 | `plan_transition` | `not (isinstance(attestation, str) and attestation.strip())` |
-| `EXECUTION_STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 487 | `plan_transition` | `rebindable` |
-| `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 540 | `record_from_approved` | `content.get('stage_ref') != stage_ref(status_now)` |
-| `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 551 | `record_from_approved` | `replanned != dict(content)` |
-| `EXECUTION_STAGE_DEMOTE_FROM_UNBOUND_RECORD` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 625 | `demote_record` | `not status.binding` |
-| `EXECUTION_STAGE_NOTHING_TO_DEMOTE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 608 | `demote_record` | `not status.record_present` |
-| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 446 | `plan_transition` | `target not in LADDER` |
-| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 465 | `plan_transition` | `target == ExecutionStage.LIVE_SCALED.value` |
-| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 591 | `demote_record` | `target not in LADDER` |
-| `EXECUTION_STAGE_NOT_LOWER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 610 | `demote_record` | `status.valid and status.recorded_stage == read_only` |
-| `EXECUTION_STAGE_NOT_LOWER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 629 | `demote_record` | `rank(target) >= rank(status.recorded_stage)` |
-| `EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 544 | `record_from_approved` | `identity is None or identity['policy_version'] != content.get('policy_version') or identity['po…` |
-| `EXECUTION_STAGE_POLICY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 494 | `plan_transition` | `identity is None` |
-| `EXECUTION_STAGE_REBIND_FIRST` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 482 | `plan_transition` | `rebindable` |
-| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 293 | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 448 | `plan_transition` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
-| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 514 | `_finish` | `—` |
-| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 593 | `demote_record` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
-| `EXECUTION_STAGE_RECORD_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 289 | `read_registered_stage` | `not isinstance(stored, str) or recomputed != stored` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 278 | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 280 | `read_registered_stage` | `not isinstance(data, dict)` |
-| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 287 | `read_registered_stage` | `—` |
-| `EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 461 | `plan_transition` | `target == ExecutionStage.LIVE_AUTONOMOUS.value` |
-| `EXECUTION_STAGE_SKIP_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 459 | `plan_transition` | `rank(target) != rank(recorded) + 1` |
+| `EXECUTION_STAGE_ALREADY_BINDS` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 462 | `plan_transition` | `target == recorded` |
+| `EXECUTION_STAGE_ATTESTATION_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 479 | `plan_transition` | `not (isinstance(attestation, str) and attestation.strip())` |
+| `EXECUTION_STAGE_BOOTSTRAP_ONLY_SHADOW_OR_PAPER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 494 | `plan_transition` | `rebindable` |
+| `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 547 | `record_from_approved` | `content.get('stage_ref') != stage_ref(status_now)` |
+| `EXECUTION_STAGE_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 558 | `record_from_approved` | `replanned != dict(content)` |
+| `EXECUTION_STAGE_DEMOTE_FROM_UNBOUND_RECORD` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 632 | `demote_record` | `not status.binding` |
+| `EXECUTION_STAGE_NOTHING_TO_DEMOTE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 615 | `demote_record` | `not status.record_present` |
+| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 453 | `plan_transition` | `target not in LADDER` |
+| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 472 | `plan_transition` | `target == ExecutionStage.LIVE_SCALED.value` |
+| `EXECUTION_STAGE_NOT_DEFINED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 598 | `demote_record` | `target not in LADDER` |
+| `EXECUTION_STAGE_NOT_LOWER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 617 | `demote_record` | `status.valid and status.recorded_stage == read_only` |
+| `EXECUTION_STAGE_NOT_LOWER` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 636 | `demote_record` | `rank(target) >= rank(status.recorded_stage)` |
+| `EXECUTION_STAGE_POLICY_CHANGED_SINCE_ASK` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 551 | `record_from_approved` | `identity is None or identity['policy_version'] != content.get('policy_version') or identity['po…` |
+| `EXECUTION_STAGE_POLICY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 501 | `plan_transition` | `identity is None` |
+| `EXECUTION_STAGE_REBIND_FIRST` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 489 | `plan_transition` | `rebindable` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 300 | `read_registered_stage` | `—` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 455 | `plan_transition` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 521 | `_finish` | `—` |
+| `EXECUTION_STAGE_RECORD_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 600 | `demote_record` | `not (isinstance(registered_by, str) and registered_by.strip() and isinstance(reason, str) and r…` |
+| `EXECUTION_STAGE_RECORD_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 296 | `read_registered_stage` | `not isinstance(stored, str) or recomputed != stored` |
+| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 285 | `read_registered_stage` | `—` |
+| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 287 | `read_registered_stage` | `not isinstance(data, dict)` |
+| `EXECUTION_STAGE_RECORD_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 294 | `read_registered_stage` | `—` |
+| `EXECUTION_STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 468 | `plan_transition` | `target == ExecutionStage.LIVE_AUTONOMOUS.value` |
+| `EXECUTION_STAGE_SKIP_REFUSED` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 466 | `plan_transition` | `rank(target) != rank(recorded) + 1` |
 | `EXECUTION_STAGE_TOO_LOW_TO_ARM` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 195 | `_gate_execution_stage` | `—` |
-| `EXECUTION_STAGE_USE_DEMOTE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 457 | `plan_transition` | `rank(target) < rank(recorded)` |
+| `EXECUTION_STAGE_USE_DEMOTE` | `ToolError` | `runtime/mvp_runtime/crypto/execution_stage.py` | 464 | `plan_transition` | `rank(target) < rank(recorded)` |
 | `FACTORY_RUN_ID_MISSING` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1604 | `_execute` | `run_id is None` |
 | `FEEDBACK_TARGET_UNREADABLE` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 120 | `load_last_delivered` | `—` |
 | `FEEDBACK_TARGET_UNREADABLE` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 125 | `load_last_delivered` | `not (isinstance(trace_id, str) and trace_id and isinstance(delivered_at, str) and delivered_at)` |
@@ -1040,6 +1040,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `TARGET_NOT_CANDIDATE_ROLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 219 | `_parse_target` | `not role_id or not version` |
 | `TARGET_NOT_SWITCH` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 474 | `_spend` | `prefix is None` |
 | `TASK_NOT_FINISHED` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 298 | `apply_registry_command` | `not entry.is_terminal` |
+| `TESTNET_EVIDENCE_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 158 | `read_cycles` | `cycle_id in seen` |
+| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 182 | `assert_complete_cycle` | `row is None` |
+| `TESTNET_EVIDENCE_INCOMPLETE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 185 | `assert_complete_cycle` | `findings` |
+| `TESTNET_EVIDENCE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 154 | `read_cycles` | `not isinstance(stored, str) or recomputed != stored` |
+| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 142 | `read_cycles` | `—` |
+| `TESTNET_EVIDENCE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_evidence.py` | 152 | `read_cycles` | `—` |
+| `TESTNET_ORDER_HOST_NOT_ALLOWED` | `ToolError` | `runtime/mvp_runtime/crypto/testnet_execution.py` | 142 | `__init__` | `host not in ALLOWED_TESTNET_HOSTS` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/validator.py` | 241 | `run_validation_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOKEN_BUDGET_EXCEEDED` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 686 | `run_analysis_worker` | `token_budget and tokens_used > int(token_budget)` |
 | `TOOL_ERROR` | `ToolBlocked` | `runtime/mvp_runtime/crypto/market_data.py` | 828 | `collect_market_data` | `—` |
