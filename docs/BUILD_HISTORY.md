@@ -24,6 +24,50 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The gate checks an autonomous entry's arm against an approval Thomas answered for its
+  lineage** (crypto PR2c-2b, Thomas decisions 17 and 23, 2026-09-17; `crypto/promotion.py`,
+  `crypto/pool.py`, `crypto/live_route.py`, `crypto/pre_order_gate.py`,
+  `scripts/promote_strategy_candidates.py` through `verify_promotion_approval`).
+  - **The gap.** Since PR2b the approved profile named the approval a strategy was armed LIVE under,
+    and PR2c-2a made both pool reads agree on it. Nothing checked that the id named a real approval
+    to arm this candidate: a hand edit that wrote a tier and any id armed the strategy.
+  - **Verified at the gate.** The route reads the approval store once per ready decision, and
+    `promotion.live_arm_problem` checks the record:
+    - it is APPROVED by Thomas on the verified channel;
+    - it approves a promotion into the live tier;
+    - it still fingerprints to its recorded value, under the id that fingerprint derives;
+    - it lists the entry's candidate and rule hash;
+    - the entry was installed between the answer and the approval's expiry.
+
+    The pool entry must also arm the lineage the plan was made from. The authority records the
+    fingerprint and the result, and the profile requires a verified arm.
+  - **Why not `verify_promotion_approval`.** The install door's check judges the approval's
+    validity window and re-derives its content hash from the pool. Both have moved on by the time an
+    order is placed: every arm outlives its fifteen-minute ask, and the members a promotion returned
+    to trading are the pool as it stood at install. A promotion approval is never consumed, and only
+    a PENDING approval expires, so an approved one stays APPROVED.
+  - **Measured before the change.** All 45 promotion approvals on this machine re-fingerprint to
+    their recorded values, under ids derived from them. None arms the live tier and no strategy is
+    armed LIVE, so no running arm is refused by this.
+  - **Older rows stay readable.** An autonomous row sealed before this names no verification. The
+    verified read still accepts it; a send never does.
+  - **What the independent review of #887 found, fixed in the same PR.**
+    - **The label was checked, not the rule traded.** The router trades the entry's spec, and a
+      spec swapped under an approved label (with its own hash removed) verified. An entry whose
+      spec is not its labelled rule now names no approval, on both pool reads.
+    - **A disarmed arm put back by hand verified under its old approval.** Such an entry carries
+      the disarm door's trace, which the promotion door never writes; it now names no approval.
+      A pool restored from before the disarm carries no trace and is still not caught (§6).
+    - **The door and the gate disagreed on time.** The door took its clock before reading the
+      approval, so an answer recorded in between installed an arm no order could leave under.
+      `verify_promotion_approval` now refuses a LIVE install outside the gate's window, and the
+      window ends at the earlier of the approval's expiry and the fingerprinted one.
+    - **The older-row exemption was keyed on one field.** A row naming a failed verification
+      without the flag was read as an older row. It now needs none of the three fields.
+    - **The reason was buried.** The arm's problem is now in the cycle record's reason codes.
+    - **The docs overstated the check.** A pool edit that names an approval the lineage once had
+      still verifies, and the id/hash pairing is not checked. The contract's §6 says so.
+
 - **The gate reads again what another writer can change** (crypto PR2c-2a, Thomas decision 23,
   2026-09-17; `crypto/live_entry.py`, `crypto/live_route.py`, `crypto/probe.py`,
   `scripts/run_slippage_probe.py`).

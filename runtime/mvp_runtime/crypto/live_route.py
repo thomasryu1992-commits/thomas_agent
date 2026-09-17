@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .. import timeutil
+from ..approval_store import ApprovalStore
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
 from ..control import ControlStore
@@ -113,6 +114,7 @@ from .live_position import (
 )
 from . import paper
 from .paper import build_entry_plan
+from .promotion import live_arm_problem
 from .risk_limits import resolve_risk_limits
 
 LIVE_ROUTE_VERSION = "live_route.v0.1"
@@ -619,7 +621,8 @@ def _run_gated_live_leg(
     #     the runtime, re-register the budget or the risk limits, demote the stage or the tier, spend
     #     the day's orders or trip the bracket breaker. Those facts are read again and folded in
     #     only to narrow (`live_entry.narrow_entry_facts`); the gate below re-derives the decision on
-    #     the result. A re-read that fails holds the entry and never the fan-out.
+    #     the result. The arming approval both reads name is verified against the record Thomas
+    #     answered (PR2c-2b). A re-read that fails holds the entry and never the fan-out.
     strategy_id = str(plan.get("strategy_id") or "") if isinstance(plan, Mapping) else ""
     judged_limits = (((verdict or {}).get("risk_guard") or {}).get("limits")
                      if isinstance(verdict, Mapping) else None)
@@ -628,6 +631,15 @@ def _run_gated_live_leg(
                                    control=control, judged_limits=judged_limits,
                                    venue_realized_pnl_usdt=venue_realized,
                                    venue_required=snapshot is not None)
+        # The arming approval as both reads name it: a strategy re-armed in between is not the one
+        # the decision was made for.
+        first_approval = (live_arm_approvals or {}).get(strategy_id)
+        fresh_approval = (fresh["live_arm_approvals"] or {}).get(strategy_id)
+        live_arm = verify_live_arm(
+            root=root, strategy_id=strategy_id, plan=plan,
+            approval_id=first_approval if first_approval == fresh_approval else None,
+            armed=fresh["live_arm_entries"],
+        )
     except Exception as exc:  # noqa: BLE001 — before the venue: a hold, never an escape
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].extend(
@@ -642,11 +654,8 @@ def _run_gated_live_leg(
         "daily_loss_breached": fresh["daily_loss_breached"],
         "bracket_failures_consecutive": fresh["bracket_failures_consecutive"],
         "risk_limits_problem": fresh["risk_limits_problem"],
+        "live_arm": live_arm,
     }
-    # The arming approval as both reads name it: a strategy re-armed in between is not the one the
-    # decision was made for.
-    first_approval = (live_arm_approvals or {}).get(strategy_id)
-    fresh_approval = (fresh["live_arm_approvals"] or {}).get(strategy_id)
 
     # 3b. The pre-order gate (PR2b): the decision re-derived from the re-read facts, the order
     #     checked against it, the approved profile checked whole — sealed into the snapshot the order
@@ -659,7 +668,7 @@ def _run_gated_live_leg(
             "kind": pre_order_gate.AUTHORITY_LIVE_ARM,
             "strategy_id": strategy_id or None,
             "candidate_id": plan.get("candidate_id") if isinstance(plan, Mapping) else None,
-            "approval_id": first_approval if first_approval == fresh_approval else None,
+            **live_arm,
         },
     )
     # Not `snapshot`: that name is the account snapshot this leg read above.
@@ -675,6 +684,9 @@ def _run_gated_live_leg(
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].append(PRE_ORDER_GATE_REFUSED)
         record["live_reason_codes"].extend(risk_snapshot["failed_checks"])
+        # Why the arm was not verified, where an operator reads first (review of #887).
+        if live_arm.get("approval_problem"):
+            record["live_reason_codes"].append(live_arm["approval_problem"])
         return record
     decision = {
         **decision,
@@ -1221,6 +1233,7 @@ def reread_entry_facts(
         "live_routable_strategy_ids": (
             pool.live_routable_strategy_ids(active_pool) if active_pool is not None else None),
         "live_arm_approvals": pool.live_arm_approvals(active_pool) if active_pool is not None else None,
+        "live_arm_entries": pool.live_arm_entries(active_pool) if active_pool is not None else None,
         "submitted_today": count_today(root),
         "daily_loss_breached": bool(risk["daily_loss_limit_breached"]),
         "risk": risk,
@@ -1228,6 +1241,67 @@ def reread_entry_facts(
         "bracket_breaker_tripped": bool(breaker["tripped"]),
         "risk_limits_problem": risk_problem,
     }
+
+
+# Why the gate cannot verify the arming approval an entry names (PR2c-2b), beside the reasons
+# `promotion.live_arm_problem` gives for the record itself.
+LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
+LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
+# The entry arms nothing whatever it names (`pool.live_arm_unsound`, review of #887).
+LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
+LIVE_ARM_REARMED_OUTSIDE_THE_DOOR = "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"
+_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
+
+
+def verify_live_arm(
+    *, root: Path | None, strategy_id: str, plan: Any, approval_id: str | None,
+    armed: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The arming approval behind an autonomous entry, verified at the gate (PR2c-2b), as the
+    approved profile's ``live_arm`` authority carries it.
+
+    ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
+    `pool.live_arm_entries`:
+
+    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule,
+      and it was not put back in the tier by hand). Named even when no id was agreed, because an
+      unsound entry is why `pool.live_arm_approvals` names none;
+    - it must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`);
+    - the approval store must hold the record Thomas answered to arm it
+      (`promotion.live_arm_problem`).
+
+    Reported, never raised for a problem: the gate refuses an unverified arm
+    (`approved_profile_complete`) and the fan-out goes on."""
+    arm: dict[str, Any] = {"approval_id": approval_id, "approval_fingerprint": None,
+                           "approval_verified": False, "approval_problem": None}
+    entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
+    unsound = pool.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
+    if unsound is not None:
+        arm["approval_problem"] = _UNSOUND_ARM[unsound]
+        return arm
+    if approval_id is None:
+        return arm
+    lineage = plan if isinstance(plan, Mapping) else {}
+    if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
+            and entry.get("candidate_id") == lineage.get("candidate_id")
+            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")):
+        arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
+        return arm
+    try:
+        approval = ApprovalStore.default(root).get(approval_id)
+    except Exception:  # noqa: BLE001 — a store that cannot be read verifies nothing
+        arm["approval_problem"] = LIVE_ARM_APPROVAL_UNREADABLE
+        return arm
+    problem = live_arm_problem(
+        approval, approval_id=approval_id, candidate_id=entry.get("candidate_id"),
+        strategy_rule_hash=entry.get("strategy_rule_hash"), promoted_at=entry.get("promoted_at"),
+    )
+    if problem is not None:
+        arm["approval_problem"] = problem
+        return arm
+    arm["approval_fingerprint"] = approval.get("action_fingerprint")
+    arm["approval_verified"] = True
+    return arm
 
 
 def _entry_clock() -> str:

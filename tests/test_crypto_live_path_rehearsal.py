@@ -291,8 +291,10 @@ def _decision(plan, **kw):
             purpose="autonomous", stage=kwargs["execution_stage"],
             budget={"valid": True, "budget_id": "budget_rehearsal", "record_sha256": "sha256:" + "b" * 64},
             risk_limits=kwargs["verdict"]["risk_guard"]["limits"],
+            # An arm whose approval the route verified (PR2c-2b).
             authority={"kind": pre_order_gate.AUTHORITY_LIVE_ARM, "strategy_id": plan["strategy_id"],
-                       "approval_id": "approval_rehearsal"},
+                       "approval_id": "approval_rehearsal", "approval_fingerprint": "sha256:" + "f" * 64,
+                       pre_order_gate.LIVE_ARM_VERIFIED_FIELD: True},
         )
         snapshot = live_entry.gate_live_entry(decision["intent"], bracket=decision["bracket"],
                                               decision_kwargs=kwargs, profile=profile, now=NOW)

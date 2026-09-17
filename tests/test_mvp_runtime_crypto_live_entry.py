@@ -796,7 +796,9 @@ def _gate_profile(**authority):
         purpose="autonomous", stage=gate_stage(),
         budget={"valid": True, "budget_id": "budget_1", "record_sha256": "sha256:" + "b" * 64},
         risk_limits={"source": "default"},
+        # An arm whose approval the route verified (PR2c-2b).
         authority={"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": "appr_arm",
+                   "approval_fingerprint": "sha256:" + "f" * 64, g.LIVE_ARM_VERIFIED_FIELD: True,
                    **authority},
     )
 

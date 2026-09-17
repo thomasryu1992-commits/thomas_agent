@@ -1583,9 +1583,8 @@ LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
 # The Thomas approval a LIVE entry was armed under (PR2b, decision 17). The promotion door writes it
 # beside the tier; the disarm door removes it with the tier. The pre-order gate refuses an entry for
 # a LIVE strategy that names none, so an entry armed by hand without an id is armed for nothing.
-# Only the id's presence is checked: that it names a real approval to arm this candidate is not
-# re-verified at order time (left for PR2c's order-time re-reads), so a hand edit that also writes
-# an id is not caught here, just as a hand-edited tier was not caught before.
+# Since PR2c-2b the gate also verifies the record the id names (`promotion.live_arm_problem`): an
+# approval Thomas answered to arm this candidate at LIVE, whose window the entry was installed in.
 LIVE_TIER_APPROVAL_FIELD = "live_tier_approval_id"
 
 
@@ -1621,21 +1620,62 @@ def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
     }
 
 
-def live_arm_approvals(pool: Mapping[str, Any]) -> dict[str, str | None]:
-    """``strategy_id -> the approval it was armed LIVE under`` for every live-routable entry.
+def _spec_rule_hash(spec: Any) -> str | None:
+    """The rule hash of the spec an entry trades, or None when it does not parse."""
+    try:
+        return StrategySpec.from_dict(spec).strategy_rule_hash
+    except Exception:  # noqa: BLE001 — a spec that does not parse arms nothing
+        return None
 
-    The same membership as :func:`live_routable_strategy_ids`, with the approval each entry names —
-    ``None`` when it names none, which the pre-order gate refuses rather than infers."""
-    armed: dict[str, str | None] = {}
+
+def live_arm_entries(pool: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """``strategy_id -> what its LIVE arm stands on`` for every live-routable entry (PR2c-2b).
+
+    The same membership as :func:`live_routable_strategy_ids`. Each value names:
+
+    - the approval the entry was armed under (``None`` when it names none, which the pre-order
+      gate refuses rather than infers);
+    - the lineage it arms: its candidate, the rule hash its label names, and the hash of the spec
+      it actually trades (``spec_rule_hash``, None when the spec does not parse);
+    - when the promotion door installed it, and when the disarm door last took the tier away
+      (``disarmed_at``; the door never installs an entry that carries it)."""
+    armed: dict[str, dict[str, Any]] = {}
     for entry in pool.get("active_strategies") or []:
         if not (isinstance(entry, Mapping) and entry.get("status") in OCCUPYING_STATUSES
                 and entry.get("strategy_id") and entry_live_tier(entry) == LIVE_TIER_LIVE):
             continue
         approval = entry.get(LIVE_TIER_APPROVAL_FIELD)
-        armed[str(entry.get("strategy_id"))] = (
-            approval.strip() if isinstance(approval, str) and approval.strip() else None
-        )
+        armed[str(entry.get("strategy_id"))] = {
+            "approval_id": approval.strip() if isinstance(approval, str) and approval.strip() else None,
+            "candidate_id": entry.get("candidate_id"),
+            "strategy_rule_hash": entry.get("strategy_rule_hash"),
+            "spec_rule_hash": _spec_rule_hash(entry.get("strategy_spec")),
+            "promoted_at": entry.get("promoted_at"),
+            "disarmed_at": entry.get("live_tier_updated_at"),
+        }
     return armed
+
+
+def live_arm_unsound(armed: Mapping[str, Any]) -> str | None:
+    """Why one :func:`live_arm_entries` value arms nothing whatever approval it names, or None. Pure.
+
+    - ``spec``: the spec it trades is not the rule its label names. The router trades the spec, and
+      the approval is checked against the label, so the two must be one rule.
+    - ``disarmed``: it carries the disarm door's trace, so it was put back in the tier by hand. The
+      promotion door installs every entry fresh."""
+    if armed.get("spec_rule_hash") is None or armed.get("spec_rule_hash") != armed.get("strategy_rule_hash"):
+        return "spec"
+    if armed.get("disarmed_at") is not None:
+        return "disarmed"
+    return None
+
+
+def live_arm_approvals(pool: Mapping[str, Any]) -> dict[str, str | None]:
+    """``strategy_id -> the approval it was armed LIVE under`` for every live-routable entry
+    (:func:`live_arm_entries`). An entry :func:`live_arm_unsound` names reads as armed under none,
+    so both reads an entry door makes refuse it (review of #887)."""
+    return {sid: None if live_arm_unsound(armed) else armed["approval_id"]
+            for sid, armed in live_arm_entries(pool).items()}
 
 
 def disarm_live_tier(

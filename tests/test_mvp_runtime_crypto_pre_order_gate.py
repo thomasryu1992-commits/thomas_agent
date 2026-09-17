@@ -45,9 +45,15 @@ def _intent(**plan):
     return build_live_order_intent(base, symbol="BTCUSDT", quantity=0.001, notional_usdt=60.0, now=NOW)
 
 
+# An arm the route verified against the approval store (PR2c-2b).
+_VERIFIED_ARM = {"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": "appr_arm",
+                 "approval_fingerprint": "sha256:" + "f" * 64, g.LIVE_ARM_VERIFIED_FIELD: True,
+                 "approval_problem": None}
+
+
 def _profile(purpose=PURPOSE_AUTONOMOUS, **overrides):
     authority = {
-        PURPOSE_AUTONOMOUS: {"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": "appr_arm"},
+        PURPOSE_AUTONOMOUS: _VERIFIED_ARM,
         PURPOSE_PROBE: {"kind": g.AUTHORITY_PROBE_PLAN, "batch_id": "b1", "approval_id": "appr_probe"},
         PURPOSE_TESTNET: {"kind": g.AUTHORITY_TESTNET_CAPS, "max_order_notional_usdt": 50.0,
                           "max_daily_orders": 10},
@@ -210,6 +216,36 @@ def test_registered_risk_limits_must_name_their_record_and_defaults_need_none():
 ])
 def test_an_autonomous_entry_needs_the_approval_that_armed_its_strategy(authority):
     assert g.profile_problems(_profile(authority=authority))
+
+
+@pytest.mark.parametrize("change", [
+    {g.LIVE_ARM_VERIFIED_FIELD: False, "approval_problem": "LIVE_ARM_APPROVAL_MISSING"},
+    {g.LIVE_ARM_VERIFIED_FIELD: "true"},                 # a truthy string is not a verification
+    {g.LIVE_ARM_VERIFIED_FIELD: None},
+    {"approval_fingerprint": None},
+    {"approval_fingerprint": ""},
+], ids=["refused", "string", "none", "no-fingerprint", "blank-fingerprint"])
+def test_an_arm_the_route_did_not_verify_authorizes_nothing(change):
+    """PR2c-2b: an arming approval id is not enough; the route must have verified its record."""
+    assert not g.profile_problems(_profile(authority=_VERIFIED_ARM))
+    problems = g.profile_problems(_profile(authority={**_VERIFIED_ARM, **change}))
+    assert problems and problems[0].startswith("the arming approval was not verified")
+    assert ("LIVE_ARM_APPROVAL_MISSING" in problems[0]) is ("approval_problem" in change)
+
+
+def test_an_arm_that_names_no_verification_is_refused_except_on_the_read_of_an_older_row():
+    unnamed = {k: v for k, v in _VERIFIED_ARM.items()
+               if k not in (g.LIVE_ARM_VERIFIED_FIELD, "approval_fingerprint", "approval_problem")}
+    assert g.profile_problems(_profile(authority=unnamed))
+    assert not g.profile_problems(_profile(authority=unnamed), legacy_read=True)
+    # A row that names a verification must hold one, on any read — whichever of its fields it names
+    # (review of #887: a row with the problem but not the flag was read as an older row).
+    assert g.profile_problems(_profile(authority={**_VERIFIED_ARM, g.LIVE_ARM_VERIFIED_FIELD: False}),
+                              legacy_read=True)
+    for field, value in (("approval_problem", "LIVE_ARM_APPROVAL_MISSING"), ("approval_fingerprint", None),
+                         ("approval_problem", None)):
+        assert g.profile_problems(_profile(authority={**unnamed, field: value}), legacy_read=True), field
+    assert g.profile_problems(_profile(authority={**unnamed, "approval_id": None}), legacy_read=True)
 
 
 @pytest.mark.parametrize("authority", [
@@ -683,6 +719,8 @@ _UNSUPPORTED = {
     "profile-incomplete": lambda s, _t: _reprofiled(
         s, _profile(authority={"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": None})),
     "profile-for-a-probe": lambda s, _t: _reprofiled(s, _profile(PURPOSE_PROBE)),
+    "arm-not-verified": lambda s, _t: _reprofiled(
+        s, _profile(authority={**_VERIFIED_ARM, g.LIVE_ARM_VERIFIED_FIELD: False})),
     "profile-hash": lambda s, _t: _resealed(s, approved_profile_sha256="sha256:" + "0" * 64),
     "gate-check-missing": lambda s, _t: _without_check(s, g.CHECK_VENUE),
     "gate-check-twice": lambda s, _t: _resealed(
@@ -1034,6 +1072,40 @@ def test_a_row_the_pr2b_gate_sealed_is_still_a_record_but_never_a_send(tmp_path)
     with pytest.raises(ToolError) as refused:
         g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
     assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+
+
+def _pre_arm_verification_row(snapshot):
+    """An autonomous row as the gate sealed it before PR2c-2b: its arm names no verification."""
+    profile = dict(snapshot["approved_profile"])
+    profile["authority"] = {k: v for k, v in profile["authority"].items()
+                            if k not in (g.LIVE_ARM_VERIFIED_FIELD, "approval_fingerprint", "approval_problem")}
+    return _reprofiled(snapshot, profile)
+
+
+def test_a_row_sealed_before_arms_were_verified_is_still_a_record_but_never_a_send(tmp_path):
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _pre_arm_verification_row(snapshot)
+    assert "approval_verified" not in json.dumps(old)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    assert g.read_snapshots(tmp_path) == [old]
+    assert g.find_snapshot(old["risk_snapshot_sha256"], tmp_path) == old
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+    assert "the arming approval was not verified" in str(refused.value)
+
+
+def test_a_stored_row_whose_arm_was_not_verified_fails_the_verified_read(tmp_path):
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    forged = _reprofiled(snapshot, _profile(authority={**_VERIFIED_ARM, g.LIVE_ARM_VERIFIED_FIELD: False}))
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forged, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
 
 
 def test_a_row_that_names_the_decision_check_must_carry_every_current_check(tmp_path):
