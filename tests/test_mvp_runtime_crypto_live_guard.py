@@ -893,3 +893,58 @@ def test_an_unconfigured_cap_names_the_registered_budget_not_an_env_var():
         assert "scripts/register_live_trading_budget.py" in block, block
         assert "MVP_LIVE_" not in block, block
 
+
+
+# === PR2c-1: the caps judged at the higher of the order's price and the market's ============
+
+def _guard(intent=None, **facts):
+    from runtime.mvp_runtime.crypto.live_order import evaluate_live_order_guard
+
+    return evaluate_live_order_guard(intent or _intent(), **_ready(**facts))
+
+
+def test_a_market_above_the_order_price_is_what_the_cap_judges():
+    """0.001 at 55 USDT fits the 60 cap; the same 0.001 at a market of 60,100 does not."""
+    verdict = _guard(reference_price=60_100.0)
+    assert not verdict["approved"]
+    assert any("order notional 60.1 exceeds" in b for b in verdict["blocks"])
+    assert (verdict["notional_usdt"], verdict["order_notional_usdt"]) == (60.1, 55.0)
+    assert verdict["reference_price"] == 60_100.0
+
+
+def test_the_open_exposure_cap_judges_the_same_higher_notional():
+    verdict = _guard(reference_price=59_000.0, current_open_notional_usdt=62.0)
+    assert not verdict["approved"]
+    assert [c["check"] for c in verdict["checks"] if not c["ok"]] == ["open_exposure_within_cap"]
+    assert verdict["notional_usdt"] == 59.0
+
+
+def test_a_market_below_the_order_price_judges_the_order_price():
+    verdict = _guard(reference_price=40_000.0)
+    assert verdict["approved"], verdict["blocks"]
+    assert verdict["notional_usdt"] == 55.0
+
+
+def test_no_reference_price_judges_the_order_price_as_before():
+    verdict = _guard()
+    assert verdict["approved"] and verdict["notional_usdt"] == 55.0
+    assert verdict["reference_price"] is None
+
+
+@pytest.mark.parametrize("price", [0.0, -1.0, float("nan"), float("inf"), True, "60100"])
+def test_a_reference_price_that_is_not_a_positive_number_refuses(price):
+    verdict = _guard(reference_price=price)
+    assert not verdict["approved"]
+    assert "the reference price the caps are judged at is not a positive number" in verdict["repairs"]
+
+
+def test_a_reference_price_needs_a_quantity_to_price():
+    verdict = _guard(_intent(quantity=0.0), reference_price=60_100.0)
+    assert not verdict["approved"]
+    assert "the reference price the caps are judged at is not a positive number" in verdict["repairs"]
+
+
+def test_a_reference_price_does_not_stand_in_for_a_missing_notional():
+    verdict = _guard(_intent(order_notional_usdt=0.0), reference_price=50_000.0)
+    assert not verdict["approved"]
+    assert "order notional missing or non-positive" in verdict["repairs"]

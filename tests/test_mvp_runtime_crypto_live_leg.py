@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from runtime.mvp_runtime.crypto import live_leg as ll
+from runtime.mvp_runtime.crypto import pre_order_gate
 from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
 from runtime.mvp_runtime.crypto.live_order import (
     LIVE_CONFIRMATION_PHRASE,
@@ -51,7 +52,9 @@ def _intent(**kw):
         "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
         **kw,
     })
-    return approved_snapshot(intent)
+    # Judged at NOW, and every send in this file is judged at NOW too (the fixture below): the
+    # decisions here are sealed when the module loads, and a full run reaches them minutes later.
+    return approved_snapshot(intent, decided_at=NOW)
 
 
 INTENT, SNAPSHOT = _intent()
@@ -92,6 +95,12 @@ def _fresh_events():
     EVENTS.clear()
     yield
     EVENTS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _sent_when_decided(monkeypatch):
+    """The subject here is what the leg does after the gate; the decision's age has its own tests."""
+    monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: NOW)
 
 
 class FakeAdapter:

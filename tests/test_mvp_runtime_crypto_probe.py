@@ -589,7 +589,9 @@ def _fire(tmp_path, **kwargs):
 
 
 def _snapshot():
-    return types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0)
+    """An account read now (PR2c-1: the gate refuses one read more than a minute before it)."""
+    return types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0,
+                                 collected_at=timeutil.utc_now_iso())
 
 
 def _arm_runtime(tmp_path):
@@ -998,7 +1000,8 @@ def _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter, *, book=(), venue=()
     positions = [AccountPosition(symbol=symbol, side="LONG", quantity=0.001, entry_price=100000.0,
                                  mark_price=100000.0, unrealized_pnl=0.0, leverage=5.0, notional=100.0)
                  for symbol in venue]
-    snapshot = types.SimpleNamespace(positions=positions, realized_windows={}, available_balance=1000.0)
+    snapshot = types.SimpleNamespace(positions=positions, realized_windows={}, available_balance=1000.0,
+                                     collected_at=timeutil.utc_now_iso())
     monkeypatch.setattr(cli, "read_account", lambda **k: (snapshot, {}))
     monkeypatch.setattr(cli, "list_open_live_positions", lambda root=None: [
         {"symbol": symbol, "direction": "LONG", "quantity": 0.001, "status": "OPEN",
@@ -1283,6 +1286,8 @@ def _gate_facts(plan, **overrides):
             authority={"kind": pre_order_gate_mod.AUTHORITY_PROBE_PLAN, "batch_id": plan["batch_id"],
                        "approval_id": plan["approval_id"], "cell_index": 0}),
         now=NOW,
+        # PR2c-1: the account read at NOW, judged at NOW.
+        account_collected_at=NOW, clock=NOW,
     )
     facts.update(overrides)
     return intent, facts
@@ -1321,6 +1326,64 @@ def test_the_probe_gate_re_derives_every_refusal(tmp_path, overrides, check_id):
     snapshot = probe.gate_probe_order(intent, **facts)
     assert snapshot["approved"] is False
     assert check_id in snapshot["failed_checks"]
+
+
+@pytest.mark.parametrize("collected_at,fresh", [
+    (-60, True),           # read exactly a minute before the gate
+    (-61, False),          # a second past it
+    (1, False),            # read after the gate: the clock went back
+    (None, False),         # an account that cannot say when it was read
+], ids=["a-minute", "past-a-minute", "after", "unknown"])
+def test_the_probe_gate_judges_an_account_at_most_a_minute_old(tmp_path, collected_at, fresh):
+    """PR2c-1: between the account read and the gate a probe makes venue calls, each with its own
+    timeout; the caps and the loss breaker must not be judged on an account older than a minute."""
+    plan = _active_plan(tmp_path)
+    read_at = None if collected_at is None else timeutil.plus_seconds(NOW, collected_at)
+    intent, facts = _gate_facts(plan, account_collected_at=read_at)
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is fresh, snapshot["failed_checks"]
+    assert ("account_fresh" in snapshot["failed_checks"]) is not fresh
+    [judged] = [c for c in snapshot["checks"] if c["check"] == "account_fresh"]
+    assert judged["detail"]["collected_at"] == read_at and judged["detail"]["max_age_seconds"] == 60
+
+
+def test_the_probe_gate_seals_when_it_judged(tmp_path):
+    plan = _active_plan(tmp_path)
+    judged_at = timeutil.plus_seconds(NOW, 5)
+    intent, facts = _gate_facts(plan, clock=judged_at)
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert (snapshot["facts"]["decided_at"], snapshot["facts"]["account_collected_at"]) == (judged_at, NOW)
+    assert snapshot["created_at"] == NOW
+
+
+def test_fire_refuses_an_account_read_over_a_minute_before_its_gate(tmp_path, monkeypatch):
+    """The fire judges its gate at the wall clock, not at its own start."""
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    old = types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0,
+                                collected_at=timeutil.plus_seconds(timeutil.utc_now_iso(), -120))
+    monkeypatch.setattr(cli, "read_account", lambda **k: (old, {}))
+    counter = _FakeCounter(adapter=adapter)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "account_fresh" in str(exc.value)
+    assert adapter.submitted == [] and counter.count == 0
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_refuses_an_account_with_no_read_time(tmp_path, monkeypatch):
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    timeless = types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (timeless, {}))
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter(adapter=adapter))
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "account_fresh" in str(exc.value) and adapter.submitted == []
 
 
 def test_the_probe_gate_refuses_a_plan_that_is_no_longer_active(tmp_path):
@@ -1844,3 +1907,48 @@ def test_fire_says_a_confirmed_but_unpriced_time_close_withdrew_its_stop(tmp_pat
     err = capsys.readouterr().err
     assert "the close confirmed but could not be priced" in err and "its stop was withdrawn" in err
     assert adapter.cancelled
+
+
+class _PastTheGate(Exception):
+    """Raised by the first step after an approving gate, so a test can stop the fire there."""
+
+
+def _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, *, account_read_at):
+    """The fire starts at T0 and every later wall-clock read says T0 + 120 s. Returns T0."""
+    start = timeutil.utc_now_iso()
+    later = timeutil.plus_seconds(start, 120)
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    read_at = timeutil.plus_seconds(start, account_read_at)
+    account = types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0,
+                                    collected_at=read_at)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (account, {}))
+
+    def _past_the_gate(now=None, root=None):
+        raise _PastTheGate()
+
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store", _past_the_gate)
+    calls = []
+
+    def _wall():
+        calls.append(None)
+        return start if len(calls) == 1 else later
+
+    monkeypatch.setattr(timeutil, "utc_now_iso", _wall)
+    return adapter
+
+
+def test_fire_judges_its_gate_at_the_wall_clock_not_at_its_start(tmp_path, monkeypatch):
+    """An account read as the fire started is two minutes old when its gate runs (PR2c-1)."""
+    adapter = _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, account_read_at=0)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "account_fresh" in str(exc.value) and adapter.submitted == []
+
+
+def test_fire_judges_the_account_it_read_not_its_own_start(tmp_path, monkeypatch):
+    """Read ten seconds before the gate, the account is fresh however long ago the fire began."""
+    _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, account_read_at=110)
+    with pytest.raises(_PastTheGate):
+        _fire(tmp_path)

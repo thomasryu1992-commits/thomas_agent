@@ -1,7 +1,8 @@
 # Pre-Order Risk Snapshot v0.1 — the one gate before an order that opens exposure
 
 **Status:** enforced since crypto PR2b. `live_execution.submit_and_reconcile` refuses every order
-that is not reduce-only unless it carries an approved snapshot that has already been recorded.
+that is not reduce-only unless it carries an approved snapshot that has already been recorded, and,
+since PR2c-1, one judged at most 60 seconds before the send.
 **Owner:** Thomas. **Authority:** this contract describes the behaviour. The authoritative sources are
 `runtime/mvp_runtime/crypto/pre_order_gate.py`, `schemas/pre_order_risk_snapshot.v0.1.schema.json`
 and their tests.
@@ -12,17 +13,47 @@ and their tests.
 - Decision 17: the approved profile is a composite of existing records.
 - Decision 19: snapshots are stored in a per-venue append-only store.
 - Decision 20: the signed testnet entry passes the same gate.
+- Decision 24 (PR2c-1): the autonomous entry keeps its bar-close plan and is checked against the
+  market's price at the moment of the decision. The caps are judged at the higher of the two prices.
 
 ## 1. What passes through it
 
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
-| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the same facts mapping. This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). |
-| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account, the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode. |
+| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the same facts mapping. This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
+| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
 The gate never judges reduce-only orders: closes, brackets and cancels. The venue enforces that
 they cannot add exposure, and a gate that could refuse them could trap a position.
+
+**Freshness of an autonomous entry (PR2c-1, decisions 18 and 24).** The plan's size, stop and
+target stay the bar close's; a 1d plan can be most of a day old. The decision is judged at `clock`,
+the wall clock read after every other fact, not at the fire's start (`now`).
+
+| Door | Refuses when | Code |
+|---|---|---|
+| `account_fresh` | the account was read more than 60 seconds before `clock`, after it, or not at all | `LIVE_ENTRY_ACCOUNT_STALE` |
+| `reference_price_fresh` | the market price (the last closed 1m candle, `market_data.read_reference_quote`) is synthetic, absent, unreadable, or its candle closed more than 300 seconds before `clock` | `LIVE_ENTRY_REFERENCE_PRICE_UNUSABLE` |
+| `price_within_divergence` | that price is more than 50 bps from the plan's entry | `LIVE_ENTRY_PRICE_DIVERGED` |
+| `price_between_protective_legs` | that price is at or past the rounded stop or target | `LIVE_ENTRY_PRICE_BEYOND_BRACKET` |
+
+- The first three accumulate with the other cheap doors. The fourth runs right after the bracket is
+  priced, before the liquidation and economics doors.
+- **The caps at the higher price.** Sizing takes the per-order cap at the higher of the entry and the
+  market price (`size_live_order(cap_price=...)`). The final guard judges the per-order and
+  open-exposure caps on the quantity at that price (`evaluate_live_order_guard(reference_price=...)`).
+  The order itself still names its bar close and its own notional.
+- The route reads the market price only for a context with a plan. A read that fails in any way
+  refuses the entry and never halts the fan-out. The reader's own reason (`REFERENCE_PRICE_*`) is
+  recorded on the cycle record beside the decision's refusal.
+- A price is unreadable when its candle closes more than one bar after `clock`: the forming candle
+  is the latest a venue has.
+- **The cost of the read.** A failed read is not memoized. Each context of the symbol with a plan
+  asks again, each up to its call timeout, on the sequential fan-out that also carries later
+  contexts' settle and protect steps. A rate-limit refusal ends every market read for the fire.
+- The limits are indexed in `crypto/tunables.py`: `REFERENCE_PRICE_MAX_AGE_SECONDS`,
+  `MAX_ACCOUNT_AGE_SECONDS` and `MAX_REFERENCE_DIVERGENCE_BPS`.
 
 ## 2. The gate's own checks
 
@@ -44,6 +75,9 @@ The gate adds these to the door's checks:
 - `approved_profile_complete`: the profile must be whole and built for this purpose.
 - `venue_matches_purpose`: autonomous and probe orders go to `binance_futures`, signed testnet orders
   to `binance_futures_testnet`. A testnet cycle's caps authorize nothing on mainnet.
+- `decision_time_recorded` (PR2c-1): the door said when it judged its facts (`decided_at`, the wall
+  clock, in exactly the form this runtime writes, `YYYY-MM-DDThh:mm:ssZ`). The gate seals it into `facts.decided_at`, over any value the door
+  put there. `created_at` stays the fire's start.
 
 `approved` is true only when every check passed.
 
@@ -98,6 +132,9 @@ The profile names records that already authorize trading. Nothing new is registe
 - **Verified reads:** `read_snapshots` refuses any row that fails its seal, the schema, or what the
   gate requires of an approved snapshot (§5, step 6). The readiness board shows the mainnet record as
   the `pre_order_snapshots` check.
+- **Rows the PR2b gate sealed stay readable.** They name six gate checks and no decision time
+  (`PR2B_GATE_CHECK_IDS`). The verified read accepts them; a send never does. A row that names
+  `decision_time_recorded` must carry every current check.
 
 ## 5. The binding
 
@@ -122,12 +159,20 @@ called. A failure at any step is a `SubmitRefused` (a `ToolError`), raised only 
    - the order opens exposure in its own direction, and its ids follow from its fields;
    - the order names the snapshot back by all three references: `pre_order_risk_snapshot_id`,
      `risk_gate_id` and `risk_snapshot_sha256`.
-8. There is a store, and it is the snapshot's venue's. An adapter that can reach a venue needs a
+8. **The decision is fresh** (`RISK_SNAPSHOT_STALE`, PR2c-1): `facts.decided_at` is at most
+   `MAX_SNAPSHOT_AGE_SECONDS` (60, the account age bound) before the send, judged at the wall clock.
+   A decision time that is missing, unreadable, or after the send is refused like an old one. The
+   verified read of the record (`read_snapshots`) does not apply this: age bounds the send, not the
+   record.
+9. There is a store, and it is the snapshot's venue's. An adapter that can reach a venue needs a
    store that actually writes (`RISK_SNAPSHOT_NO_STORE`). The append returns this hash.
 
 **Ordering at the doors.** The gate spends nothing, so a refusal costs no bar and no daily slot.
 The autonomous leg then checks two things before it spends anything:
-- the snapshot (steps 3–7 above);
+- the snapshot (steps 3–8 above), so a decision already too old costs no symbol, bar or slot. The
+  age is judged again at the bind below, at the wall clock to the second: a decision that turns too
+  old between the two is refused after its bar and slot are spent, like every refusal there. That
+  needs about 60 seconds between the decision and this check;
 - that the bracket it will place carries the sealed intent's stop and target, on the sides that
   close the position (`LIVE_ENTRY_BRACKET_NOT_APPROVED`). The venue door never sees the bracket:
   its legs are reduce-only.
@@ -163,11 +208,10 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 
 ## 6. Not yet in it
 
-- **Freshness bounds (PR2c):**
-  - price age at order time;
-  - account age;
-  - the price basis;
-  - a gate-time re-read of the stage and the halts.
+- **A gate-time re-read of the stage and the halts (PR2c-2).** The freshness bounds above cover the
+  account and the market price only.
+- **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
+  for the fire, so it can be as old as the fire (about a minute). No bound checks it.
 - **The checks the directive lists that no door runs yet (PR2d):**
   - the API error breaker;
   - per-order slippage and fee evidence;
@@ -175,8 +219,11 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 - **Order-time re-reads (PR2c):** the arming approval behind `live_tier_approval_id`, the pool tier,
   and the budget are re-read at the gate only as the leg read them. The autonomous gate re-runs the
   decision on the same facts, so it catches a changed order, not a changed fact.
-- **Single use:** a snapshot can be re-bound with no time bound. A second send of the same order is
-  prevented by the doors (the bar claim and the slot) and by the venue's duplicate-client-id rule.
+- **Single use:** a snapshot can be re-bound within its 60 seconds (PR2c-1). A second send of the
+  same order is prevented by the doors (the bar claim and the slot) and by the venue's
+  duplicate-client-id rule.
+- **The probe's price is not re-judged at the gate.** The probe prices its order on the market read
+  itself, at the fire's start. Only its account's age is checked at the gate.
 - **A refusal after the slot is reserved still spends the slot**, although nothing reached the venue.
   This is the conservative direction and is kept.
 - **Protective prices outside the autonomous leg are not sealed as prices.** The probe prices its

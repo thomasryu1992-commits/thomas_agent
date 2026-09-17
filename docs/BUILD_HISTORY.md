@@ -24,6 +24,54 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **An entry is judged on facts that are still true when it is decided** (crypto PR2c-1, Thomas
+  decisions 18 and 24, 2026-09-17; `crypto/live_entry.py`, `crypto/pre_order_gate.py`,
+  `crypto/market_data.py`, `crypto/live_order.py`, `crypto/live_sizing.py`, `crypto/live_route.py`,
+  `crypto/probe.py`, both probe and testnet scripts).
+  - **The gap.** An autonomous entry was sized, bracketed and capped on its bar's close. A 1d
+    context can try an entry most of a day after that close; the PR2 investigation measured a
+    READY decision on a close 23.75 hours old. Nothing checked the market's price, the account's
+    age, or how long the sealed decision waited for its send.
+  - **Decision 24: keep the plan, check the market.** The size, stop and target stay the bar
+    close's. At the moment of the decision:
+    - the account read is at most 60 seconds old;
+    - the market price (the last closed 1m candle) is at most 300 seconds old;
+    - that price is within 50 bps of the bar close;
+    - it sits strictly between the rounded stop and target. A stop the price has crossed would
+      trigger as it rests (the venue refuses such a closePosition stop and the entry is closed
+      naked), and a crossed target means the move is over.
+  - **The caps at the higher of the two prices.** Sizing takes the cap at that price, and the
+    final guard judges the per-order and exposure caps on the quantity at it. The order still names
+    its bar close. Resizing the whole plan on the market price was declined: it changes what the
+    strategy was scored on.
+  - **Two clocks.** The decision is judged at `clock`, the wall clock read after every fact, not at
+    the fire's start: a fire runs up to about a minute. The gate seals that moment as
+    `facts.decided_at` (a new gate check, `decision_time_recorded`), and the venue door refuses a
+    decision more than 60 seconds old at the send (`RISK_SNAPSHOT_STALE`). The leg checks this
+    before it takes the symbol, the bar or the slot. The audit read of the record does not: age
+    bounds the send, not the record.
+  - **Beside it:**
+    - the probe's gate refuses an account read more than 60 seconds before it;
+    - the testnet cycle seals its own decision time;
+    - the route reads the market price only for a context with a plan, and a failed read costs
+      the entry, never the fan-out.
+  - **What the cost door already implies.** At today's cost model a stop must sit at least ~64 bps
+    from the entry, so a price within 50 bps is never past the stop. That side of the new door is
+    for a cost model that moves; the target side is reachable now.
+  - The four limits reuse existing values (decision 18) and are indexed in `tunables.py`.
+    `REFERENCE_PRICE_MAX_AGE_SECONDS` moved out of the mechanics list: it now bounds the
+    autonomous entry too.
+  - **The independent review (PR #885)** found no high or medium defect. Six low ones were fixed:
+    - A new gate check made every row the PR2b gate had sealed unreadable, and the readiness
+      board would have called the record edited. The verified read now accepts those rows; a
+      send never does.
+    - A candle that closes after the forming one no longer counts as fresh.
+    - `decided_at` must be exactly the form the runtime writes.
+    - The contract now says what a decision that turns stale at the bind costs, and what a failed
+      price read costs the fan-out.
+    - Three tests that compared code text now check behaviour.
+    - A stale comment in the tunables test was removed.
+
 - **The soft halt is granted — policy 1.5.1** (Thomas decision 7, 2026-09-15; applied 2026-09-17,
   `governance/GOVERNANCE_POLICY.yaml`).
   - **What moved:** `halt_trading` joins

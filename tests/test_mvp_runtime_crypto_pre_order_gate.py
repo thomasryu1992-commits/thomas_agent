@@ -17,6 +17,7 @@ import math
 import pytest
 from tests._helpers import FakeSnapshotStore, approved_snapshot, gate_stage, make_gate_authorization
 
+from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.crypto import live_execution as lx
 from runtime.mvp_runtime.crypto import pre_order_gate as g
 from runtime.mvp_runtime.crypto import testnet_execution as testnet
@@ -68,7 +69,8 @@ def _lineage(intent, purpose=PURPOSE_AUTONOMOUS):
 
 
 def _gate(intent=None, *, checks=None, profile=None, lineage=None, purpose=PURPOSE_AUTONOMOUS,
-          venue=None, facts=None):
+          venue=None, facts=None, decided_at=None):
+    """Judged at the wall clock unless a test says otherwise, so a send right after is fresh."""
     intent = intent if intent is not None else _intent()
     return g.evaluate_pre_order_gate(
         intent, purpose=purpose, venue=venue or g.VENUE_FOR_PURPOSE.get(purpose, VENUE_MAINNET),
@@ -76,6 +78,7 @@ def _gate(intent=None, *, checks=None, profile=None, lineage=None, purpose=PURPO
         profile=profile if profile is not None else _profile(purpose),
         lineage=lineage if lineage is not None else _lineage(intent, purpose),
         facts=facts or {"spread_bps": 1.0}, now=NOW,
+        decided_at=decided_at or timeutil.utc_now_iso(),
     )
 
 
@@ -242,8 +245,10 @@ def test_the_same_decision_seals_to_the_same_snapshot():
 
 def test_a_non_finite_fact_cannot_stop_the_record_of_a_refusal():
     snapshot = _gate(checks=[g.check("spread_within_limit", False, math.nan)],
-                     facts={"spread_bps": math.nan, "cost_r": math.inf, "levels": {1, 2}})
-    assert snapshot["facts"] == {"spread_bps": "nan", "cost_r": "inf", "levels": [1, 2]}
+                     facts={"spread_bps": math.nan, "cost_r": math.inf, "levels": {1, 2}},
+                     decided_at="2026-09-17T04:05:30Z")
+    assert snapshot["facts"] == {"spread_bps": "nan", "cost_r": "inf", "levels": [1, 2],
+                                 "decided_at": "2026-09-17T04:05:30Z"}
     assert snapshot["failed_checks"] == ["spread_within_limit"]
     assert snapshot["risk_snapshot_sha256"].startswith("sha256:")
 
@@ -897,3 +902,157 @@ def test_the_board_never_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "read_snapshots", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     assert g.snapshots_status(tmp_path) == {"readable": False, "error": "RuntimeError", "count": None,
                                             "last_created_at": None}
+
+
+# --- the decision's age at the send (PR2c-1, Thomas decision 24) ---------------------------------
+
+DECIDED = "2026-09-17T04:05:30Z"
+
+
+@pytest.mark.parametrize("decided_at", [
+    None, "", "soon", "2026-09-17 04:05:30", 1758081930,
+    # Readable instants, but not the one form this runtime writes.
+    "2026-09-17T04:05:30+00:00", "20260917T040530Z", "2026-09-17T04:05:30.5Z", "2026-09-17T04:05:30Z\n",
+])
+def test_a_door_that_does_not_say_when_it_judged_is_refused(decided_at):
+    snapshot = g.evaluate_pre_order_gate(
+        _intent(), purpose=PURPOSE_AUTONOMOUS, venue=VENUE_MAINNET, checks=[g.check("door_ok", True)],
+        profile=_profile(), lineage=_lineage(_intent()), facts={}, now=NOW, decided_at=decided_at,
+    )
+    assert snapshot["approved"] is False
+    assert snapshot["failed_checks"] == [g.CHECK_DECIDED_AT]
+
+
+def test_the_gate_seals_when_the_door_judged_over_what_the_door_says():
+    snapshot = _gate(facts={"decided_at": "2026-01-01T00:00:00Z", "spread_bps": 1.0}, decided_at=DECIDED)
+    assert snapshot["facts"]["decided_at"] == DECIDED
+    assert snapshot["created_at"] == NOW
+    assert g.decision_age_seconds(snapshot, clock="2026-09-17T04:06:00Z") == 30.0
+
+
+@pytest.mark.parametrize("clock,stale", [
+    ("2026-09-17T04:05:30Z", False),     # sent the second it was judged
+    ("2026-09-17T04:06:30Z", False),     # exactly a minute later
+    ("2026-09-17T04:06:31Z", True),      # a second past it
+    ("2026-09-17T04:05:29Z", True),      # judged after the send: the clock went back
+    ("whenever", True),                  # a send time that cannot be read
+    ("2026-09-17T04:05:40+00:00", True),  # nor one in a form this runtime does not write
+])
+def test_a_decision_may_wait_at_most_a_minute_for_its_send(clock, stale):
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    if stale:
+        with pytest.raises(ToolError) as refused:
+            g.verify_snapshot(intent, snapshot, clock=clock)
+        assert refused.value.reason_code == g.RISK_SNAPSHOT_STALE
+    else:
+        assert g.verify_snapshot(intent, snapshot, clock=clock) == snapshot["risk_snapshot_sha256"]
+
+
+def test_the_send_is_judged_at_the_wall_clock_unless_told(monkeypatch):
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    monkeypatch.setattr(g, "_send_clock", lambda: "2026-09-17T04:06:31Z")
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(intent, snapshot)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STALE
+    assert "61s before this send" in str(refused.value)
+    monkeypatch.setattr(g, "_send_clock", lambda: "2026-09-17T04:06:00Z")
+    assert g.verify_snapshot(intent, snapshot) == snapshot["risk_snapshot_sha256"]
+
+
+def test_a_snapshot_whose_decision_time_was_removed_is_stale_not_unsupported():
+    """Not a record the gate writes — but the seal only says nothing changed, so the send checks it."""
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    stripped = _resealed(snapshot, facts={k: v for k, v in snapshot["facts"].items() if k != "decided_at"})
+    stripped_intent = g.bind_intent(intent, stripped)
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(stripped_intent, stripped, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STALE
+    assert "does not say when" in str(refused.value)
+
+
+def test_a_snapshot_without_the_decision_time_check_does_not_support_its_approval():
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    forged = _without_check(snapshot, g.CHECK_DECIDED_AT)
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, forged), forged, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+
+
+def test_a_stale_decision_is_neither_recorded_nor_sent(monkeypatch):
+    events: list[str] = []
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    monkeypatch.setattr(g, "_send_clock", lambda: "2026-09-17T04:07:00Z")
+    adapter, store = _Adapter(events), _RecordingStore(events)
+    with pytest.raises(lx.SubmitRefused) as refused:
+        lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW,
+                                risk_snapshot=snapshot, snapshot_store=store)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STALE
+    assert events == [] and adapter.submitted == []
+
+
+def test_the_binding_judges_the_send_at_the_clock_it_is_given(monkeypatch):
+    events: list[str] = []
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    store = _RecordingStore(events)
+    monkeypatch.setattr(g, "_send_clock", lambda: "2026-09-17T04:05:40Z")    # the wall clock: fresh
+    with pytest.raises(ToolError) as refused:
+        g.verify_and_persist(intent, snapshot, store=store, clock="2026-09-17T04:07:00Z")
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STALE and events == []
+    monkeypatch.setattr(g, "_send_clock", lambda: "2026-09-17T04:07:00Z")    # the wall clock: stale
+    assert g.verify_and_persist(intent, snapshot, store=store, clock="2026-09-17T04:05:40Z") == (
+        snapshot["risk_snapshot_sha256"])
+    assert events == ["record"]
+
+
+def test_the_record_of_an_old_order_stays_readable(tmp_path):
+    """Age bounds the send, not the record: a row written a year ago is still the order's reason."""
+    _, snapshot = approved_snapshot(_intent(), decided_at="2025-09-17T04:05:30Z")
+    _store(tmp_path).append(snapshot)
+    assert g.read_snapshots(tmp_path) == [snapshot]
+    assert g.snapshots_status(tmp_path)["readable"] is True
+
+
+def _pr2b_row(snapshot):
+    """A row as the PR2b gate sealed it: six gate checks and no decision time."""
+    body = {k: v for k, v in snapshot.items() if k != "risk_snapshot_sha256"}
+    body["checks"] = [c for c in body["checks"] if c["check"] != g.CHECK_DECIDED_AT]
+    body["facts"] = {k: v for k, v in body["facts"].items() if k != "decided_at"}
+    return _resealed(body)
+
+
+def test_a_row_the_pr2b_gate_sealed_is_still_a_record_but_never_a_send(tmp_path):
+    """Review of #885: adding the decision time check made every older row unreadable, and the
+    readiness board would have called the record edited."""
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _pr2b_row(snapshot)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    assert g.read_snapshots(tmp_path) == [old]
+    assert g.snapshots_status(tmp_path)["readable"] is True
+    assert g.find_snapshot(old["risk_snapshot_sha256"], tmp_path) == old
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+
+
+def test_a_row_that_names_the_decision_check_must_carry_every_current_check(tmp_path):
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    forged = _without_check(snapshot, g.CHECK_VENUE)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forged, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
+
+
+def test_a_pr2b_row_missing_one_of_its_own_checks_is_still_refused(tmp_path):
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _without_check(_pr2b_row(snapshot), g.CHECK_LINEAGE)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED

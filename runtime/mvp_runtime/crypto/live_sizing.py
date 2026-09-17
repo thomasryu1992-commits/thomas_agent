@@ -56,6 +56,7 @@ NO_RISK_DISTANCE = "SIZING_NO_RISK_DISTANCE"
 NO_ENTRY_PRICE = "SIZING_NO_ENTRY_PRICE"
 NO_FILTERS = "SIZING_NO_VENUE_FILTERS"
 NO_BUDGET_CAP = "SIZING_NO_BUDGET_CAP"
+NO_CAP_PRICE = "SIZING_NO_CAP_PRICE"
 BELOW_MIN_QTY = "SIZING_BELOW_VENUE_MIN_QTY"
 BELOW_MIN_NOTIONAL = "SIZING_BELOW_VENUE_MIN_NOTIONAL"
 ROUNDS_TO_ZERO = "SIZING_ROUNDS_TO_ZERO"
@@ -160,6 +161,7 @@ def size_live_order(
     max_order_notional_usdt: float,
     filters: SymbolFilters | None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
+    cap_price: float | None = None,
 ) -> dict[str, Any]:
     """Decide the quantity for one live entry, or refuse. Pure.
 
@@ -175,6 +177,12 @@ def size_live_order(
     The smaller wins, floored to the venue's lot step. Then the venue's own minimums and
     the budget cap are re-checked on the FINAL size, so a floored result that slipped below
     a minimum or (impossibly, but checked) above the cap refuses rather than ships.
+
+    ``cap_price`` is the price the market shows now, when it is not the entry price (PR2c-1,
+    decision 24). The risk leg still sizes on the entry and its stop; the cap is judged at the
+    higher of the two prices — the budget candidate and the final check both — so the size fits
+    the cap the final guard will judge it against. A ``cap_price`` that is not a positive number
+    refuses rather than falling back to the entry.
 
     Returns a record either way: ``sizable`` plus both candidates, so an operator reading a
     refusal can see which constraint bound and by how much.
@@ -200,13 +208,20 @@ def size_live_order(
         reasons.append(NO_BUDGET_CAP)
     if filters is None or not filters.valid():
         reasons.append(NO_FILTERS)
+    cap_basis = entry_price
+    if cap_price is not None:
+        price = _f(cap_price) if isinstance(cap_price, (int, float)) and not isinstance(cap_price, bool) else 0.0
+        if not (0 < price < math.inf):
+            reasons.append(NO_CAP_PRICE)
+        else:
+            cap_basis = max(entry_price, price)
     if reasons:
         return _refusal(reasons, equity_usdt=equity, max_order_notional_usdt=cap)
 
     assert filters is not None  # narrowed by the guard above
     risk_budget_usdt = equity * max(0.0, float(risk_fraction))
     risk_quantity = risk_budget_usdt / risk_per_unit
-    budget_quantity = cap / entry_price
+    budget_quantity = cap / cap_basis
     bound_by = "risk" if risk_quantity <= budget_quantity else "budget"
 
     # Volatility scaling, applied to the WINNER of the two candidates rather than to the risk
@@ -247,6 +262,8 @@ def size_live_order(
         "vol_size_multiplier": vol_multiplier,
         "step_size": filters.step_size,
         "entry_price": entry_price,
+        # The price the cap was judged at: the entry, or the higher market price (PR2c-1).
+        "cap_price": cap_basis,
     }
 
     if quantity <= 0:
@@ -263,7 +280,7 @@ def size_live_order(
             [BELOW_MIN_NOTIONAL], min_notional=filters.min_notional,
             notional_before_refusal=notional, **detail,
         )
-    if notional > cap:
+    if round(quantity * cap_basis, 8) > cap:
         # Cannot happen after min() + floor, and checked anyway: a sizing helper that could
         # exceed the operator's registered cap is the one bug that must never ship silently.
         return _refusal([EXCEEDS_BUDGET], notional_before_refusal=notional, **detail)
@@ -297,6 +314,7 @@ __all__ = [
     "BELOW_MIN_QTY",
     "EXCEEDS_BUDGET",
     "NO_BUDGET_CAP",
+    "NO_CAP_PRICE",
     "NO_ENTRY_PRICE",
     "NO_EQUITY",
     "NO_FILTERS",

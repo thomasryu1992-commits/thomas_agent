@@ -72,12 +72,9 @@ MECHANICS: dict[str, str] = {
     "DERIVATIVE_MAX_PAGES": "page budget bounding one collection's egress",
     "FUNDING_MAX_PAGES": "page budget bounding one collection's egress",
     "POSITIONING_MAX_PAGES": "page budget bounding one collection's egress",
-    # Borderline, and recorded as such. It was classed here while it bounded how stale a price
-    # may be when verifying the canary door's HAND-DECLARED notional — an operator input, not an
-    # order. That check went with the door (2026-09-15, PR1r); its one consumer now is the
-    # slippage probe's price read (`run_slippage_probe._read_price`), which prices a real probe
-    # order. The classification is left for its own decision, not changed as a side effect.
-    "REFERENCE_PRICE_MAX_AGE_SECONDS": "staleness tolerance on the probe's reference price read",
+    # `REFERENCE_PRICE_MAX_AGE_SECONDS` sat here while it bounded the canary door's hand-declared
+    # notional. Since PR2c-1 (decisions 18 and 24) it bounds the price an autonomous entry is
+    # judged against, and it is indexed in `tunables.py`.
 
     # --- second slice, 2026-08-08 -------------------------------------------------------------
     # Estimator warm-up floors: how many observations before a series will answer at all. Below
@@ -92,7 +89,7 @@ MECHANICS: dict[str, str] = {
     "PREMIUM_Z_MIN_PERIODS": "estimator warm-up: observations before the premium z will answer",
     "POSITIONING_Z_MIN_PERIODS": "estimator warm-up: observations before the positioning z answers",
     "REFERENCE_CORR_MIN_PERIODS": "estimator warm-up: observations before the correlation answers",
-    # Borderline, and recorded as such like the one above it. Its comment argues the trade-off
+    # Borderline, and recorded as such. Its comment argues the trade-off
     # (20 rather than 100, so a live sizing decision is not blocked for 100 bars) — but what it
     # sets is still only when the reference exists, and below it the multiplier is an unscaled
     # 1.0 rather than a guess. If it ever selects BETWEEN references it belongs in the index.

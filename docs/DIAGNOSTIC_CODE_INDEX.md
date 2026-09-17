@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **585** distinct codes across **1115** raise sites
+- **586** distinct codes across **1116** raise sites
 - **23** exception classes carry them
 - **68** codes are raised from more than one module (see below)
 - **140** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -112,23 +112,23 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AMBIGUOUS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 333 | `select_role` | `len(candidates) > 1` |
 | `ANNOUNCE_POINTER_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1024 | `record_announced` | `—` |
 | `APPROVALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | 148 | `read_approval_status` | `approval_store is None` |
-| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 806 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
+| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 820 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 525 | `verify_promotion_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 167 | `verify_retirement_approval` | `snapshot.get('content_sha256') != retirement_content_sha256(resolve_pool_entries(strategy_ids, …` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 229 | `verify_registration_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 276 | `validate_spendable_approval` | `is_expired(approval_rec, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 350 | `record_decision` | `is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 742 | `apply_command` | `approval.get('status') == STATUS_PENDING and is_expired(approval, now=now)` |
-| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 798 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
+| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 812 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 504 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 159 | `verify_retirement_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 222 | `verify_registration_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 439 | `_spend` | `approval_mod.is_expired(record, now=now)` |
-| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 792 | `verify_probe_approval` | `approval is None` |
+| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 806 | `verify_probe_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 498 | `verify_promotion_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 153 | `verify_retirement_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 216 | `verify_registration_approval` | `approval is None` |
-| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 795 | `verify_probe_approval` | `status != 'APPROVED'` |
+| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 809 | `verify_probe_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 501 | `verify_promotion_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 156 | `verify_retirement_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 219 | `verify_registration_approval` | `status != 'APPROVED'` |
@@ -145,7 +145,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_UNVERIFIED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 859 | `build_trial_consumption_audit` | `approver.get('verification_status') != 'VERIFIED'` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 65 | `append` | `—` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 107 | `append_permission_decision` | `—` |
-| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 801 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
+| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 815 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 508 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
@@ -524,9 +524,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 122 | `limit_entry_fill` | `isinstance(timeout_bars, bool) or not isinstance(timeout_bars, int) or timeout_bars < 1` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 136 | `limit_entry_fill` | `not isinstance(bar, Mapping)` |
 | `LIVE_ARM_ESCAPE_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 315 | `run_promotion_gates` | `live_tier == pool_store.LIVE_TIER_LIVE and escapes.get('allow_unconfirmed_holdout', False)` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 865 | `read_bracket_failures` | `—` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 867 | `read_bracket_failures` | `not isinstance(data, dict)` |
-| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 874 | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 918 | `read_bracket_failures` | `—` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 920 | `read_bracket_failures` | `not isinstance(data, dict)` |
+| `LIVE_BRACKET_BREAKER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 927 | `read_bracket_failures` | `—` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 116 | `build_live_trading_budget_record` | `venue != SUPPORTED_VENUE` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 120 | `build_live_trading_budget_record` | `missing` |
 | `LIVE_BUDGET_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/live_budget.py` | 127 | `build_live_trading_budget_record` | `—` |
@@ -559,23 +559,23 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 183 | `read_corrections` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 185 | `read_corrections` | `record['previous_record_sha256'] != previous` |
 | `LIVE_CORRECTION_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 193 | `read_corrections` | `correction_id in seen_ids` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 686 | `_stored_count` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 703 | `count_today` | `—` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 705 | `count_today` | `not isinstance(data, dict)` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 764 | `_increment` | `path.is_file()` |
-| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 768 | `_increment` | `not isinstance(loaded, dict)` |
-| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 773 | `_increment` | `limit is not None and current >= limit` |
-| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1306 | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
-| `LIVE_ENTRY_CLAIM_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1295 | `mutate` | `not (isinstance(claim, Mapping) and claim.get('client_order_id') == client_order_id)` |
-| `LIVE_ENTRY_CLAIM_MALFORMED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1271 | `claim_symbol` | `not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip() and …` |
-| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1201 | `stop_cooldown_until` | `isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) or timeframe_minu…` |
-| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1203 | `stop_cooldown_until` | `not _is_bar_time(closed_at)` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1126 | `read_live_entry_marks` | `—` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1128 | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1135 | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
-| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1140 | `read_live_entry_marks` | `not isinstance(in_flight, dict) or not all((_is_claim(k, v) for k, v in in_flight.items()))` |
-| `LIVE_ENTRY_SYMBOL_IN_FLIGHT` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1278 | `mutate` | `held is not None` |
-| `LIVE_ENTRY_SYMBOL_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1283 | `mutate` | `load_open_live_position(symbol, self._root, venue=self._venue) is not None` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 739 | `_stored_count` | `isinstance(value, bool) or not isinstance(value, int) or value < 0` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 756 | `count_today` | `—` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 758 | `count_today` | `not isinstance(data, dict)` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 817 | `_increment` | `path.is_file()` |
+| `LIVE_COUNTER_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 821 | `_increment` | `not isinstance(loaded, dict)` |
+| `LIVE_DAILY_ORDER_CAP_REACHED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 826 | `_increment` | `limit is not None and current >= limit` |
+| `LIVE_ENTRY_BAR_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1359 | `record_stop_cooldown` | `key is None or not _is_bar_time(until)` |
+| `LIVE_ENTRY_CLAIM_LOST` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1348 | `mutate` | `not (isinstance(claim, Mapping) and claim.get('client_order_id') == client_order_id)` |
+| `LIVE_ENTRY_CLAIM_MALFORMED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1324 | `claim_symbol` | `not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip() and …` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1254 | `stop_cooldown_until` | `isinstance(timeframe_minutes, bool) or not isinstance(timeframe_minutes, int) or timeframe_minu…` |
+| `LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1256 | `stop_cooldown_until` | `not _is_bar_time(closed_at)` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1179 | `read_live_entry_marks` | `—` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1181 | `read_live_entry_marks` | `not isinstance(data, dict) or data.get('version') != ENTRY_MARKS_VERSION` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1188 | `read_live_entry_marks` | `not isinstance(table, dict) or not all((isinstance(key, str) and _is_bar_time(value) for key, v…` |
+| `LIVE_ENTRY_MARKS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1193 | `read_live_entry_marks` | `not isinstance(in_flight, dict) or not all((_is_claim(k, v) for k, v in in_flight.items()))` |
+| `LIVE_ENTRY_SYMBOL_IN_FLIGHT` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1331 | `mutate` | `held is not None` |
+| `LIVE_ENTRY_SYMBOL_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 1336 | `mutate` | `load_open_live_position(symbol, self._root, venue=self._venue) is not None` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 348 | `read_live_outcomes_raw` | `outcome_id in seen_outcome_ids` |
 | `LIVE_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 353 | `read_live_outcomes_raw` | `settlement_id in seen_settlement_ids` |
 | `LIVE_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_pnl.py` | 344 | `read_live_outcomes_raw` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
@@ -593,7 +593,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 515 | `_require_analysis` | `not isinstance(summary, str) or not summary.strip()` |
 | `MALFORMED_ANALYSIS` | `WorkerBlocked` | `runtime/mvp_runtime/worker.py` | 518 | `_require_analysis` | `not isinstance(facts, list)` |
 | `MALFORMED_BRACKET_LEG` | `ToolError` | `runtime/mvp_runtime/crypto/live_leg.py` | 397 | `build_bracket_intent` | `leg not in ('SL', 'TP')` |
-| `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 263 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
+| `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 285 | `build_live_order_intent` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_DIRECTION` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 178 | `build_live_position` | `direction not in {'LONG', 'SHORT'}` |
 | `MALFORMED_LIVE_ORDER_INTENT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 294 | `build_order_request` | `not (isinstance(symbol, str) and symbol)` |
 | `MALFORMED_LIVE_ORDER_INTENT` | `ToolError` | `runtime/mvp_runtime/crypto/live_execution.py` | 296 | `build_order_request` | `side not in ('BUY', 'SELL')` |
@@ -703,8 +703,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_OPERATOR` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 597 | `promote_candidate` | `not (isinstance(promoted_by, str) and promoted_by.strip())` |
 | `MISSING_OPERATOR` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 139 | `create_program_request` | `not (isinstance(requested_by, str) and requested_by.strip())` |
 | `MISSING_OPERATOR` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 384 | `_require_operator` | `not (isinstance(actor, str) and actor.strip())` |
-| `MISSING_ORDER_NOTIONAL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 269 | `build_live_order_intent` | `notional_usdt <= 0` |
-| `MISSING_ORDER_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 267 | `build_live_order_intent` | `quantity <= 0` |
+| `MISSING_ORDER_NOTIONAL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 291 | `build_live_order_intent` | `notional_usdt <= 0` |
+| `MISSING_ORDER_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 289 | `build_live_order_intent` | `quantity <= 0` |
 | `MISSING_POSITION_QUANTITY` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 184 | `build_live_position` | `quantity <= 0` |
 | `MISSING_PRINCIPAL` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 308 | `submit` | `not (isinstance(principal, str) and principal.strip())` |
 | `MISSING_RATIONALE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 420 | `build_core_candidate` | `not (isinstance(rationale, str) and rationale.strip())` |
@@ -718,7 +718,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 274 | `build_entry` | `not (isinstance(requester_id, str) and requester_id.strip())` |
 | `MISSING_REQUESTER` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 301 | `build_entry` | `origin == WORKFLOW_ORIGIN and attempt is None` |
 | `MISSING_REQUEST_ID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 310 | `submit` | `not (isinstance(request_id, str) and request_id.strip())` |
-| `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 265 | `build_live_order_intent` | `not symbol` |
+| `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 287 | `build_live_order_intent` | `not symbol` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 180 | `build_live_position` | `not symbol` |
 | `MISSING_TASK_ID` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 678 | `apply_command` | `not (isinstance(arg, str) and arg.strip())` |
 | `MODE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 649 | `apply_switch` | `mode not in _DISABLE_MODES` |
@@ -867,7 +867,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 502 | `select_cell` | `not empty` |
 | `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 302 | `assert_batch_budget` | `worst > cap` |
 | `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 495 | `select_cell` | `opened is not None` |
-| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 868 | `abandon_plan` | `open_index is not None` |
+| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 882 | `abandon_plan` | `open_index is not None` |
 | `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 607 | `probe_quantity` | `filters is None or not filters.valid()` |
 | `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 630 | `probe_stop_price` | `trigger <= 0` |
 | `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 233 | `build_batch_params` | `not names` |
@@ -877,8 +877,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 258 | `build_batch_params` | `not float(stop_bps) > 0` |
 | `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 262 | `build_batch_params` | `n != grid` |
 | `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 268 | `build_batch_params` | `not (float(per_probe_notional_cap_usdt) > 0 and float(budget_cap_usdt) > 0)` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 856 | `abandon_plan` | `not isinstance(reason, str) or not reason.strip()` |
-| `PROBE_PLAN_EXISTS` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 832 | `confirm_probe_batch` | `existing is not None and existing['status'] == PLAN_ACTIVE` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 870 | `abandon_plan` | `not isinstance(reason, str) or not reason.strip()` |
+| `PROBE_PLAN_EXISTS` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 846 | `confirm_probe_batch` | `existing is not None and existing['status'] == PLAN_ACTIVE` |
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 402 | `validate_plan` | `not isinstance(plan, dict)` |
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 406 | `validate_plan` | `unknown or missing` |
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 412 | `validate_plan` | `plan['plan_version'] != PLAN_VERSION` |
@@ -892,9 +892,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 523 | `mark_cell` | `not 0 <= index < len(cells)` |
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 527 | `mark_cell` | `status not in legal.get(current, set())` |
 | `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 530 | `mark_cell` | `unknown` |
-| `PROBE_PLAN_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 859 | `abandon_plan` | `plan is None` |
+| `PROBE_PLAN_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 873 | `abandon_plan` | `plan is None` |
 | `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 491 | `select_cell` | `plan['status'] != PLAN_ACTIVE` |
-| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 861 | `abandon_plan` | `plan['status'] != PLAN_ACTIVE` |
+| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 875 | `abandon_plan` | `plan['status'] != PLAN_ACTIVE` |
 | `PROBE_PLAN_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 450 | `read_plan` | `not isinstance(stored, str) or _plan_sha256(raw) != stored` |
 | `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 445 | `read_plan` | `—` |
 | `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 447 | `read_plan` | `not isinstance(raw, dict)` |
@@ -978,27 +978,28 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RETRY_NOT_APPLICABLE` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 885 | `retry_step` | `s['status'] == wf.S_BLOCKED and s['last_reason_code'] == wf.DEPENDENCY_FAILED` |
 | `RETRY_NOT_APPLICABLE` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 890 | `retry_step` | `s['status'] not in (wf.S_FAILED, wf.S_BLOCKED, wf.S_NEEDS_RECONCILIATION)` |
 | `RISK_BELOW_DISPOSITION_FLOOR` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 593 | `build_permission_decision` | `declared_rank is None or declared_rank < RISK_ORDER[risk_floor]` |
-| `RISK_SNAPSHOT_ID_CONFLICT` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 575 | `append` | `snapshot_id in recorded` |
-| `RISK_SNAPSHOT_INTENT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 460 | `verify_snapshot` | `mismatch is not None` |
-| `RISK_SNAPSHOT_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 453 | `verify_snapshot` | `problem is not None` |
-| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 442 | `verify_snapshot` | `not isinstance(snapshot, Mapping)` |
-| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 562 | `append` | `not (isinstance(snapshot_id, str) and snapshot_id and isinstance(sha, str) and sha)` |
-| `RISK_SNAPSHOT_NOT_APPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 448 | `verify_snapshot` | `snapshot.get('approved') is not True or snapshot.get('failed_checks')` |
-| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 472 | `verify_and_persist` | `store is None` |
-| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 474 | `verify_and_persist` | `require_durable and getattr(store, 'filesystem_write', False) is not True` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 520 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 522 | `_read_rows` | `not isinstance(row, dict)` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 615 | `read_snapshots` | `not _seal_matches(row)` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 617 | `read_snapshots` | `_schema_problem(row) is not None or _unsupported(row) is not None` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 621 | `read_snapshots` | `snapshot_id in seen and seen[snapshot_id] != row.get('risk_snapshot_sha256')` |
-| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 507 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 512 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_UNWRITABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 587 | `append` | `—` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 444 | `verify_snapshot` | `snapshot.get('snapshot_version') != SNAPSHOT_VERSION or snapshot.get('risk_gate_id') != GATE_ID` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 446 | `verify_snapshot` | `not _seal_matches(snapshot)` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 482 | `verify_and_persist` | `written != sha` |
-| `RISK_SNAPSHOT_UNSUPPORTED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 456 | `verify_snapshot` | `unsupported is not None` |
-| `RISK_SNAPSHOT_VENUE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 477 | `verify_and_persist` | `getattr(store, 'venue', None) != snapshot.get('venue')` |
+| `RISK_SNAPSHOT_ID_CONFLICT` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 648 | `append` | `snapshot_id in recorded` |
+| `RISK_SNAPSHOT_INTENT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 530 | `verify_snapshot` | `mismatch is not None` |
+| `RISK_SNAPSHOT_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 523 | `verify_snapshot` | `problem is not None` |
+| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 512 | `verify_snapshot` | `not isinstance(snapshot, Mapping)` |
+| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 635 | `append` | `not (isinstance(snapshot_id, str) and snapshot_id and isinstance(sha, str) and sha)` |
+| `RISK_SNAPSHOT_NOT_APPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 518 | `verify_snapshot` | `snapshot.get('approved') is not True or snapshot.get('failed_checks')` |
+| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 545 | `verify_and_persist` | `store is None` |
+| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 547 | `verify_and_persist` | `require_durable and getattr(store, 'filesystem_write', False) is not True` |
+| `RISK_SNAPSHOT_STALE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 533 | `verify_snapshot` | `stale is not None` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 593 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 595 | `_read_rows` | `not isinstance(row, dict)` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 688 | `read_snapshots` | `not _seal_matches(row)` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 690 | `read_snapshots` | `_schema_problem(row) is not None or _unsupported(row, for_send=False) is not None` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 694 | `read_snapshots` | `snapshot_id in seen and seen[snapshot_id] != row.get('risk_snapshot_sha256')` |
+| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 580 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 585 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_UNWRITABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 660 | `append` | `—` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 514 | `verify_snapshot` | `snapshot.get('snapshot_version') != SNAPSHOT_VERSION or snapshot.get('risk_gate_id') != GATE_ID` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 516 | `verify_snapshot` | `not _seal_matches(snapshot)` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 555 | `verify_and_persist` | `written != sha` |
+| `RISK_SNAPSHOT_UNSUPPORTED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 526 | `verify_snapshot` | `unsupported is not None` |
+| `RISK_SNAPSHOT_VENUE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 550 | `verify_and_persist` | `getattr(store, 'venue', None) != snapshot.get('venue')` |
 | `ROLE_ALREADY_ACTIVE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 278 | `select_candidate_role` | `status == 'active'` |
 | `ROLE_BINDING_UNSUPPORTED` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 895 | `bind_role_output_keys` | `binder is None` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 104 | `build_role_assignment` | `—` |

@@ -606,6 +606,93 @@ class TestReferencePrice:
         assert error == market_data.PRICE_SYNTHETIC
 
 
+class TestReferenceQuote:
+    """PR2c-1: the same read as one record that also says when its candle closed, so an entry
+    decided later in the fire can judge the price's age again on its own clock."""
+
+    def test_a_fresh_quote_names_its_price_and_its_close(self):
+        quote = market_data.read_reference_quote(
+            "BTCUSDT", collector=_Snapshot([_candle(64_512.0, "2026-07-27T11:59:00Z")]), now=NOW_PRICE)
+        assert quote == {"price": 64_512.0, "close_time": "2026-07-27T11:59:00Z",
+                         "timeframe": "1m", "reason": None}
+
+    def test_a_stale_quote_keeps_its_close_and_no_price(self):
+        quote = market_data.read_reference_quote(
+            "BTCUSDT", collector=_Snapshot([_candle(64_512.0, "2026-07-27T11:00:00Z")]), now=NOW_PRICE)
+        assert quote["price"] is None and quote["reason"] == market_data.PRICE_STALE
+        assert quote["close_time"] == "2026-07-27T11:00:00Z"
+
+    @pytest.mark.parametrize("collector,reason", [
+        (_Snapshot([_candle(1.0, "2026-07-27T11:59:00Z")], synthetic=True), market_data.PRICE_SYNTHETIC),
+        (_Snapshot([]), market_data.PRICE_ABSENT),
+        (_Snapshot([_candle(0.0, "2026-07-27T11:59:00Z")]), market_data.PRICE_UNREADABLE),
+        (_Snapshot([], raises=ToolError("FEED_DOWN", "reset")), market_data.PRICE_UNREADABLE),
+    ], ids=["synthetic", "absent", "non-positive", "collector-failed"])
+    def test_a_refused_quote_has_no_price(self, collector, reason):
+        quote = market_data.read_reference_quote("BTCUSDT", collector=collector, now=NOW_PRICE)
+        assert quote["price"] is None and quote["reason"] == reason
+
+    def test_the_price_reader_is_the_quote_reader(self):
+        collector = _Snapshot([_candle(64_512.0, "2026-07-27T11:57:00Z")])
+        quote = market_data.read_reference_quote("BTCUSDT", collector=collector, now=NOW_PRICE)
+        assert market_data.read_reference_price("BTCUSDT", collector=collector, now=NOW_PRICE) == (
+            quote["price"], quote["reason"])
+
+    @staticmethod
+    def _fresh(**overrides):
+        return {"price": 64_512.0, "close_time": "2026-07-27T11:59:00Z", "timeframe": "1m",
+                "reason": None, **overrides}
+
+    def test_a_quote_is_judged_again_at_the_decision(self):
+        """Read fresh at the fire's start, stale by the time an entry is decided on it."""
+        quote = self._fresh()
+        assert market_data.reference_quote_problem(quote, clock="2026-07-27T12:04:00Z") is None
+        assert market_data.reference_quote_problem(quote, clock="2026-07-27T12:04:01Z") == market_data.PRICE_STALE
+        assert market_data.reference_quote_age_seconds(quote, clock="2026-07-27T12:04:00Z") == 300.0
+
+    def test_a_candle_still_forming_is_fresh(self):
+        quote = self._fresh(close_time="2026-07-27T12:00:59Z")
+        assert market_data.reference_quote_problem(quote, clock=NOW_PRICE) is None
+        assert market_data.reference_quote_age_seconds(quote, clock=NOW_PRICE) == -59.0
+
+    @pytest.mark.parametrize("close_time,problem", [
+        ("2026-07-27T12:01:00Z", None),                              # one bar ahead: still forming
+        ("2026-07-27T12:01:01Z", market_data.PRICE_UNREADABLE),      # past the forming candle
+        ("2099-01-01T00:00:00Z", market_data.PRICE_UNREADABLE),
+    ])
+    def test_a_candle_that_closes_after_the_forming_one_is_not_a_reading(self, close_time, problem):
+        """Review of #885: any negative age passed, while the account and the send refuse a clock
+        that stepped back."""
+        assert market_data.reference_quote_problem(self._fresh(close_time=close_time), clock=NOW_PRICE) == problem
+
+    def test_the_lead_a_quote_may_have_is_its_own_bar(self):
+        four_hour = self._fresh(timeframe="4h", close_time="2026-07-27T15:59:00Z")
+        assert market_data.reference_quote_problem(four_hour, clock=NOW_PRICE) is None
+        unknown = self._fresh(timeframe="7m", close_time="2026-07-27T12:01:01Z")
+        assert market_data.reference_quote_problem(unknown, clock=NOW_PRICE) == market_data.PRICE_UNREADABLE
+
+    def test_the_readers_own_refusal_comes_first(self):
+        quote = self._fresh(price=None, reason=market_data.PRICE_SYNTHETIC)
+        assert market_data.reference_quote_problem(quote, clock=NOW_PRICE) == market_data.PRICE_SYNTHETIC
+
+    @pytest.mark.parametrize("quote", [
+        {"price": 0.0}, {"price": -1.0}, {"price": float("nan")}, {"price": float("inf")},
+        {"price": True}, {"price": "64512"}, {"price": None},
+        {"close_time": None}, {"close_time": "2026-07-27 11:59:00"}, {"close_time": "yesterday"},
+    ], ids=["zero", "negative", "nan", "inf", "bool", "string", "none",
+            "no-close", "naive-close", "garbage-close"])
+    def test_a_quote_that_cannot_price_is_unreadable(self, quote):
+        assert market_data.reference_quote_problem(self._fresh(**quote), clock=NOW_PRICE) == (
+            market_data.PRICE_UNREADABLE)
+
+    @pytest.mark.parametrize("quote", [None, "64512", [64_512.0]])
+    def test_no_quote_is_absent(self, quote):
+        assert market_data.reference_quote_problem(quote, clock=NOW_PRICE) == market_data.PRICE_ABSENT
+
+    def test_an_unreadable_clock_cannot_show_a_quote_fresh(self):
+        assert market_data.reference_quote_problem(self._fresh(), clock="now") == market_data.PRICE_UNREADABLE
+
+
 # --- one fan-out, one request per distinct question (2026-07-29) -------------------------------
 #
 # A cycle is keyed by (symbol, timeframe); funding, liquidations, open interest and exchangeInfo

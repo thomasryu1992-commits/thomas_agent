@@ -214,6 +214,26 @@ TUNABLES: tuple[Tunable, ...] = (
             "because MAX_ENTRY_COST_R already owns entry economics",
             "a symbol whose ordinary spread is a material fraction of 50 bps joining the "
             "universe — per-symbol medians already span 0.015 to 1.42 bps"),
+    # --- freshness at the moment of an entry (PR2c-1, Thomas decisions 18 and 24) --------------
+    Tunable("REFERENCE_PRICE_MAX_AGE_SECONDS", market_data.REFERENCE_PRICE_MAX_AGE_SECONDS,
+            "crypto/market_data.py", OPERATOR,
+            "the probe's five-minute bound on its 1m reference price, reused (decision 18) as the "
+            "age the market price an autonomous entry is checked against may have at the decision",
+            "a venue whose closed 1m candles routinely arrive more than a minute late, or an entry "
+            "path slow enough that a price read at its start is often near the bound"),
+    Tunable("MAX_ACCOUNT_AGE_SECONDS", live_order.MAX_ACCOUNT_AGE_SECONDS,
+            "crypto/live_order.py", OPERATOR,
+            "decision 18: the account an entry is judged on may be at most a minute old; a pass "
+            "settles, protects and prices between the read and the decision, normally in seconds. "
+            "pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS is this value, bounding the gate-to-send wait",
+            "an entry pass whose ordinary read-to-decision time approaches a minute (fires measured "
+            "a median 26 s for thirteen contexts), or a gate-to-send path that takes seconds"),
+    Tunable("MAX_REFERENCE_DIVERGENCE_BPS", live_entry.MAX_REFERENCE_DIVERGENCE_BPS,
+            "crypto/live_entry.py", OPERATOR,
+            "decision 18: the plan's bar close and the market price may differ by at most 50 bps, "
+            "the dislocation bound the spread door already uses; the plan keeps the bar close",
+            "a timeframe whose ordinary close-to-decision move exceeds 50 bps often enough to "
+            "refuse entries its backtest took"),
     Tunable("DI_THRESHOLD", distribution_gate.DI_THRESHOLD,
             "crypto/distribution_gate.py", OPERATOR,
             "mean |z| > 3 means current features average 3 stdev from their backtest distribution",

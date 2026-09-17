@@ -31,21 +31,27 @@ Order of checks, and why:
 2d. **bar marks** (PR2a) — one entry per context per bar, and paper's post-stop-loss
    cooldown; both used to reach this leg only through paper, which applies them after the
    route it hands over is already built;
+2e. **freshness** (PR2c-1, Thomas decision 24) — the plan is sized and bracketed on its bar's
+   close, which for a 1d context can be most of a day old. At the moment of the decision the
+   account read must be at most a minute old, the market's price (a 1m close) at most five
+   minutes old, and within 50 bps of that bar close;
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
 5. **filters** — the venue's real lot step / minimums / tick (LP5.3's reader);
-6. **bracket** — the protective stop and target, rounded to the venue's tick **first**;
+6. **bracket** — the protective stop and target, rounded to the venue's tick **first** — and
+   the market's price must still sit between them (PR2c-1);
 7. **economics** — what a round trip costs as a share of the rounded risk
    (``cost.MAX_ENTRY_COST_R``): a stop tight enough that fees and slippage eat a quarter of
    the 1R being risked cannot be profitable at any win rate, and that is arithmetic rather
    than an estimate;
 8. **sizing** — LP5.2, against the *rounded* stop, so the size matches the stop that
-   would actually be placed;
+   would actually be placed; the cap is judged at the higher of the bar close and the
+   market's price (PR2c-1);
 9. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
-   truthful venue exposure.
+   truthful venue exposure, with its caps judged at that same higher price.
 
-Steps 1-5 (2b included) accumulate: an operator sees every reason at once, the guard's own
+Steps 1-5 (2b-2e included) accumulate: an operator sees every reason at once, the guard's own
 posture.
 Steps 6-9 are sequential because each consumes the previous one's output, and a step that
 cannot run is reported as the refusal it is rather than skipped.
@@ -65,6 +71,11 @@ from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
 from .cost import MAX_ENTRY_COST_R, round_trip_cost_r, worst_case_carry_r
+from .market_data import (
+    REFERENCE_PRICE_MAX_AGE_SECONDS,
+    reference_quote_age_seconds,
+    reference_quote_problem,
+)
 from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .execution_stage import StageStatus
 from .live_order import (
@@ -73,7 +84,10 @@ from .live_order import (
     LIVE_ENTRY_MARKS_UNKNOWN as MARKS_UNKNOWN,
     LIVE_ENTRY_SYMBOL_IN_FLIGHT as SYMBOL_IN_FLIGHT,
     LIVE_ENTRY_STOP_LOSS_COOLDOWN as STOP_LOSS_COOLDOWN,
+    MAX_ACCOUNT_AGE_SECONDS,
     MAX_CONSECUTIVE_BRACKET_FAILURES,
+    account_age_seconds,
+    account_fresh,
     build_live_order_intent,
     entry_context_key,
     evaluate_live_order_guard,
@@ -129,6 +143,11 @@ SIZING_REFUSED = "LIVE_ENTRY_SIZING_REFUSED"
 LIQUIDATION_REFUSED = "LIVE_ENTRY_STOP_BEYOND_LIQUIDATION"
 GUARD_REFUSED = "LIVE_ENTRY_GUARD_REFUSED"
 INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
+# PR2c-1 (Thomas decision 24): the facts are fresh enough to act on at the moment of the decision.
+ACCOUNT_STALE = "LIVE_ENTRY_ACCOUNT_STALE"
+REFERENCE_PRICE_UNUSABLE = "LIVE_ENTRY_REFERENCE_PRICE_UNUSABLE"
+PRICE_DIVERGED = "LIVE_ENTRY_PRICE_DIVERGED"
+PRICE_BEYOND_BRACKET = "LIVE_ENTRY_PRICE_BEYOND_BRACKET"
 
 # A dislocation breaker, NOT a cost control — kept at 50 deliberately, Thomas 2026-08-22, after
 # the number was measured and found to be ~15x the widest spread this venue has shown.
@@ -155,6 +174,13 @@ INTENT_REFUSED = "LIVE_ENTRY_INTENT_REFUSED"
 # measurement and the settle/protect carve-out. Reopens when unreadable-book refusals start
 # costing real entries (the code on the cycle record makes that countable).
 MAX_ENTRY_SPREAD_BPS = 50.0
+
+# How far the market's price may have moved from the bar close the plan is sized and bracketed on
+# (Thomas decisions 18 and 24, PR2c-1). The same 50 bps as the spread door above, and for a related
+# reason: past it the plan describes a market that is no longer there. It is not a cost control
+# either — the stop, the target and the size all stay the bar close's; this door only decides
+# whether that plan may still be sent.
+MAX_REFERENCE_DIVERGENCE_BPS = 50.0
 
 # Which venue price the protective orders trigger on. MARK_PRICE rather than the last
 # traded price: a stop that triggers on a single wick print on one venue's tape is the
@@ -250,6 +276,62 @@ def configured_leverage_for(snapshot: Any | None, symbol: str) -> tuple[float, s
     return float(UNREADABLE_ACCOUNT_LEVERAGE), "assumed"
 
 
+def entry_freshness(
+    snapshot: Any | None,
+    reference_quote: Mapping[str, Any] | None,
+    *,
+    plan: Mapping[str, Any],
+    clock: str,
+) -> dict[str, Any]:
+    """What the freshness door judges (PR2c-1, decision 24), as one record. Pure.
+
+    - ``account_fresh``: the account was read at most :data:`MAX_ACCOUNT_AGE_SECONDS` before
+      ``clock``. An account that cannot say when it was read (none was) is not fresh.
+    - ``reference_problem``: why the market's price cannot be used at ``clock``, or None
+      (`market_data.reference_quote_problem`: the read's own refusal, or an age past
+      :data:`REFERENCE_PRICE_MAX_AGE_SECONDS` at ``clock``).
+    - ``divergence_bps``: how far that price is from the plan's entry, its bar close; None when
+      either is unusable. ``within_divergence`` only at or under
+      :data:`MAX_REFERENCE_DIVERGENCE_BPS`."""
+    collected_at = getattr(snapshot, "collected_at", None) if snapshot is not None else None
+    quote = dict(reference_quote) if isinstance(reference_quote, Mapping) else None
+    problem = reference_quote_problem(quote, clock=clock)
+    price = float(quote["price"]) if quote is not None and problem is None else None
+    entry = _f(plan.get("entry_price"))
+    divergence = (abs(price - entry) / entry * 10_000.0
+                  if price is not None and 0 < entry < math.inf else None)
+    return {
+        "clock": clock,
+        "account_collected_at": collected_at,
+        "account_age_seconds": account_age_seconds(collected_at, clock=clock),
+        "account_max_age_seconds": MAX_ACCOUNT_AGE_SECONDS,
+        "account_fresh": account_fresh(collected_at, clock=clock),
+        "reference_price": price,
+        "reference_close_time": quote.get("close_time") if quote is not None else None,
+        "reference_age_seconds": reference_quote_age_seconds(quote, clock=clock),
+        "reference_max_age_seconds": REFERENCE_PRICE_MAX_AGE_SECONDS,
+        "reference_problem": problem,
+        "entry_price": entry,
+        "divergence_bps": round(divergence, 6) if divergence is not None else None,
+        "divergence_limit_bps": MAX_REFERENCE_DIVERGENCE_BPS,
+        "within_divergence": divergence is not None and divergence <= MAX_REFERENCE_DIVERGENCE_BPS,
+    }
+
+
+def price_between_legs(direction: Any, price: Any, bracket: Mapping[str, Any]) -> bool:
+    """Whether ``price`` sits strictly between the bracket's stop and target, on the side its
+    direction trades from. Pure. A price that is not a positive finite number sits nowhere."""
+    if isinstance(price, bool) or not isinstance(price, (int, float)) or not (0 < price < math.inf):
+        return False
+    stop, target = _f(bracket.get("stop_loss")), _f(bracket.get("take_profit"))
+    side = str(direction or "").upper()
+    if side == "LONG":
+        return stop < price < target
+    if side == "SHORT":
+        return target < price < stop
+    return False
+
+
 def plan_live_entry(
     plan: Mapping[str, Any] | None,
     *,
@@ -291,6 +373,12 @@ def plan_live_entry(
     # stop-loss cooldown, and a caller that forgot them must not be the caller that skips both.
     entry_bar_time: str | None,
     entry_marks: Mapping[str, Any] | None,
+    # The wall clock at the moment of the decision, and the market's price as the leg read it just
+    # before (PR2c-1, decision 24). No defaults, for `verdict`'s reason: they feed the doors that
+    # stop an entry priced on a market that has moved, and on an account read too long ago.
+    # ``reference_quote`` is `market_data.read_reference_quote`'s record; None refuses.
+    clock: str,
+    reference_quote: Mapping[str, Any] | None,
     # The registered budget's symbol allowlist, threaded to the guard. Empty blocks every
     # symbol, so a caller that does not state the scope cannot authorize an entry outside it —
     # the same fail-closed default the guard gives `budget_registered`.
@@ -435,6 +523,18 @@ def plan_live_entry(
         detail["spread_bps"] = round(spread_bps, 6)
         detail["spread_limit_bps"] = MAX_ENTRY_SPREAD_BPS
 
+    # 2e. Fresh enough to act on now (PR2c-1). Judged at ``clock``, the moment of the decision, not
+    #     at ``now``, the fire's start: an entry is decided up to a minute into its fire.
+    freshness = entry_freshness(snapshot, reference_quote, plan=plan, clock=clock)
+    detail["freshness"] = freshness
+    if not freshness["account_fresh"]:
+        reasons.append(ACCOUNT_STALE)
+    if freshness["reference_problem"] is not None:
+        reasons.append(REFERENCE_PRICE_UNUSABLE)
+    elif freshness["divergence_bps"] is not None and not freshness["within_divergence"]:
+        # A plan with no usable entry price has no divergence to judge; the bracket refuses it.
+        reasons.append(PRICE_DIVERGED)
+
     if reasons:
         return _decision(STATUS_REFUSED, reasons, symbol=symbol, now=now, **detail)
 
@@ -447,6 +547,19 @@ def plan_live_entry(
             STATUS_REFUSED, [bracket_reason or BRACKET_UNPRICEABLE], symbol=symbol, now=now, **detail
         )
     detail["bracket"] = bracket
+
+    # 5-. The market's price must still sit between the protective legs (PR2c-1). A stop it has
+    #     already crossed triggers the moment it rests — the venue refuses a closePosition stop that
+    #     would, and the entry is then closed naked — and a target it has crossed means the move
+    #     the plan was for is over. Rounded legs, because those are the orders that would rest.
+    reference_price = freshness["reference_price"]
+    if not price_between_legs(plan.get("direction"), reference_price, bracket):
+        detail["price_beyond_bracket"] = {
+            "reference_price": reference_price,
+            "stop_loss": bracket["stop_loss"],
+            "take_profit": bracket["take_profit"],
+        }
+        return _decision(STATUS_REFUSED, [PRICE_BEYOND_BRACKET], symbol=symbol, now=now, **detail)
 
     # 5a. The liquidation guard, on the rounded bracket stop — the price the venue will use,
     #     at the leverage the venue will actually apply rather than at a standing assumption.
@@ -502,6 +615,7 @@ def plan_live_entry(
         max_order_notional_usdt=_f(getattr(limits, "max_order_notional_usdt", 0.0)),
         filters=filters,
         risk_fraction=risk_fraction,
+        cap_price=reference_price,
     )
     detail["sizing"] = sizing
     if not sizing["sizable"]:
@@ -540,6 +654,7 @@ def plan_live_entry(
         allowed_symbols=allowed_symbols,
         limits=limits,
         execution_stage=execution_stage,
+        reference_price=reference_price,
     )
     detail["guard"] = guard
     if not guard["approved"]:
@@ -562,7 +677,11 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("venue_filters_valid", frozenset({NO_FILTERS})),
     ("fixed_exit_only", frozenset({MANAGED_EXIT_REFUSED})),
     ("spread_within_limit", frozenset({BOOK_UNREADABLE_REFUSED, SPREAD_REFUSED})),
+    ("account_fresh", frozenset({ACCOUNT_STALE})),
+    ("reference_price_fresh", frozenset({REFERENCE_PRICE_UNUSABLE})),
+    ("price_within_divergence", frozenset({PRICE_DIVERGED})),
     ("bracket_priced", frozenset({BRACKET_UNPRICEABLE})),
+    ("price_between_protective_legs", frozenset({PRICE_BEYOND_BRACKET})),
     ("stop_inside_liquidation", frozenset({LIQUIDATION_REFUSED})),
     ("entry_economic", frozenset({COST_REFUSED})),
     ("order_sizable", frozenset({SIZING_REFUSED})),
@@ -643,6 +762,8 @@ def gate_live_entry(
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),
         "entry_bar_time": kw.get("entry_bar_time"),
+        # The moment the decision was judged at (PR2c-1); the gate seals it as `decided_at`.
+        "clock": kw.get("clock"),
         # What the bar and in-flight doors judged, for this context and symbol only (PR2b-2 review).
         "entry_marks": None if marks is None else {
             "entered": (marks.get("entered") or {}).get(context),
@@ -661,10 +782,11 @@ def gate_live_entry(
         "decision": {key: rederived.get(key) for key in (
             "status", "reasons", "capacity", "bracket", "sizing", "round_trip_cost_r",
             "worst_case_carry_r", "liquidation_leverage", "liquidation_leverage_source",
-            "exit_terms", "entry_bar",
+            "exit_terms", "entry_bar", "freshness",
         )},
         "guard": {key: guard.get(key) for key in (
-            "status", "notional_usdt", "effective_cap_usdt", "open_exposure_cap_usdt",
+            "status", "notional_usdt", "order_notional_usdt", "reference_price",
+            "effective_cap_usdt", "open_exposure_cap_usdt",
             "current_open_notional_usdt", "submitted_today", "max_daily_order_count",
             "daily_loss_limit_usdt", "daily_loss_breached",
         )},
@@ -675,7 +797,7 @@ def gate_live_entry(
     )}
     return pre_order_gate.evaluate_pre_order_gate(
         intent, purpose=PURPOSE_AUTONOMOUS, venue=VENUE_MAINNET, checks=checks,
-        profile=profile, lineage=lineage, facts=facts, now=now,
+        profile=profile, lineage=lineage, facts=facts, now=now, decided_at=kw.get("clock"),
     )
 
 
@@ -709,6 +831,7 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "ACCOUNT_STALE",
     "BAR_ALREADY_ENTERED",
     "BAR_UNKNOWN",
     "BRACKET_BREAKER_REFUSED",
@@ -720,9 +843,13 @@ __all__ = [
     "INTENT_REFUSED",
     "LIVE_ENTRY_VERSION",
     "MARKS_UNKNOWN",
+    "MAX_REFERENCE_DIVERGENCE_BPS",
     "NO_FILTERS",
     "NO_PLAN",
+    "PRICE_BEYOND_BRACKET",
+    "PRICE_DIVERGED",
     "RECONCILE_REFUSED",
+    "REFERENCE_PRICE_UNUSABLE",
     "SIZING_REFUSED",
     "STATUS_NO_ROUTE",
     "STATUS_READY",
@@ -731,8 +858,10 @@ __all__ = [
     "SYMBOL_IN_FLIGHT",
     "VERDICT_REFUSED",
     "ENTRY_DOORS",
+    "entry_freshness",
     "entry_status_line",
     "gate_live_entry",
     "plan_live_entry",
+    "price_between_legs",
     "price_bracket",
 ]
