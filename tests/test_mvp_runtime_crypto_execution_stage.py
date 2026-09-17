@@ -300,9 +300,9 @@ def test_a_policy_change_unbinds_the_record(tmp_path, monkeypatch):
 def test_rebind_is_offered_only_after_a_policy_change(tmp_path, monkeypatch):
     approvals = _Approvals()
     _testnet(tmp_path, approvals)
-    _policy_moved(monkeypatch, policy_version="1.5.1")
+    _policy_moved(monkeypatch, policy_version="9.9.9")
     moved = _resolve(tmp_path, approvals)
-    content = es.plan_transition(moved, target="SIGNED_TESTNET", registered_by="t", reason="policy 1.5.1")
+    content = es.plan_transition(moved, target="SIGNED_TESTNET", registered_by="t", reason="policy 9.9.9")
     assert content["transition"] == es.T_REBIND
     assert content["evidence"] == {"replaced_reason_code": es.STAGE_POLICY_VERSION_CHANGED}
     with pytest.raises(ToolError) as exc:
@@ -363,7 +363,7 @@ def test_a_demotion_to_a_live_or_paper_rung_carries_its_witness_forward(tmp_path
     assert (shadow.stage, shadow.valid) == ("SHADOW", True)
     assert _resolve(tmp_path, _Approvals(), now=LATER).reason_code == es.STAGE_APPROVAL_NOT_CONSUMED
     # A demotion keeps the policy its witness bound: a policy change still unbinds it.
-    _policy_moved(monkeypatch, policy_version="1.5.1")
+    _policy_moved(monkeypatch, policy_version="9.9.9")
     assert _resolve(tmp_path, approvals, now=LATER).reason_code == es.STAGE_POLICY_VERSION_CHANGED
 
 
@@ -372,7 +372,7 @@ def test_a_demotion_cannot_launder_a_record_that_does_not_bind(tmp_path, monkeyp
     approvals = _Approvals()
     _testnet(tmp_path, approvals)
     forged = _resolve(tmp_path, _Approvals())
-    _policy_moved(monkeypatch, policy_version="1.5.1")
+    _policy_moved(monkeypatch, policy_version="9.9.9")
     unbound = _resolve(tmp_path, approvals)
     for status in (forged, unbound):
         with pytest.raises(ToolError) as exc:
@@ -804,16 +804,16 @@ def test_the_rung_is_what_carries_the_condition_not_the_transition_kind(tmp_path
     live = _register(tmp_path, approvals, testnet, "LIVE_AUTONOMOUS", approval_id="approval_live",
                      testnet_cycle_id="cyc_ok", evidence_root=tmp_path)
     assert (live.stage, live.valid) == ("LIVE_AUTONOMOUS", True)
-    _policy_moved(monkeypatch, policy_version="1.5.1")
+    _policy_moved(monkeypatch, policy_version="9.9.9")
     moved = _resolve(tmp_path, approvals)
     assert moved.reason_code == es.STAGE_POLICY_VERSION_CHANGED
     with pytest.raises(ToolError) as exc:
-        es.plan_transition(moved, target="LIVE_AUTONOMOUS", registered_by="t", reason="policy 1.5.1",
+        es.plan_transition(moved, target="LIVE_AUTONOMOUS", registered_by="t", reason="policy 9.9.9",
                            evidence_root=tmp_path)
     assert exc.value.reason_code == es.STAGE_SIGNED_TESTNET_EVIDENCE_REQUIRED
     # Named again, the rebind is allowed — the evidence did not expire, it has to be pointed at.
     rebind = es.plan_transition(moved, target="LIVE_AUTONOMOUS", registered_by="t",
-                                reason="policy 1.5.1", testnet_cycle_id="cyc_ok",
+                                reason="policy 9.9.9", testnet_cycle_id="cyc_ok",
                                 evidence_root=tmp_path)
     assert rebind["transition"] == es.T_REBIND
 

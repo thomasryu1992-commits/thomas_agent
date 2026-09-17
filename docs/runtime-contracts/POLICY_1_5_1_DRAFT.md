@@ -1,10 +1,11 @@
 # Governance policy 1.5.1 — draft for Thomas to apply (Trading Soft Halt grant)
 
-**Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` stays at **1.5.0** until Thomas
-applies the bump himself (decision Q2, 2026-09-03: policy edits are written together and applied by
-Thomas, at a zero-PENDING moment). The code this grant switches on is merged and **dormant**:
-`console_cli halt_trading`, Telegram `/halt_trading` and the switch door's `disable mode=soft`
-refuse as `CONTROL_VERB_NOT_GRANTED` while the committed policy does not list the verb.
+**Status:** IMPLEMENTED — applied 2026-09-17 by Thomas with `scripts/ops/policy_bump_1_5_1.py --apply`
+(decision Q2), at zero live PENDING and zero unspent APPROVED approvals;
+`governance/GOVERNANCE_POLICY.yaml` is at **1.5.1**. The services read the policy from the image, so
+`console_cli halt_trading`, Telegram `/halt_trading` and the switch door's `disable mode=soft` act once
+the image that carries 1.5.1 is deployed. An older image refuses them as `CONTROL_VERB_NOT_GRANTED`.
+The sections below are the draft as applied.
 **Owner:** Thomas.
 **Authority:** None. The committed policy, `runtime/mvp_runtime/control.py` and the tests named
 below are the authority for what the runtime does.

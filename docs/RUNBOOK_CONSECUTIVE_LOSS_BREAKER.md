@@ -226,8 +226,8 @@ docker exec thomas-scheduler python -m scripts.register_crypto_risk_limits \
   (위 2026-08-17 갱신).
 - **`MVP_LIVE_TRADING`을 해제해서 멈추는 것.** 재시작이 필요하고 **청산 경로까지 닫는다.**
   진입만 멈추고 포지션 관리(정산·보호 재확인·시간 청산)는 계속하려면 `halt_trading`을 쓴다 — 정책
-  1.5.1이 부여한 뒤부터 동작하고, 그 전에는 이름으로 거부된다. 그 전까지 즉시 멈추는 수단은 `kill`인데,
-  **포지션 관리까지 함께 멈춘다**(`/resume`까지 거래소에 걸린 브래킷만 포지션을 지킨다):
+  1.5.1(2026-09-17 적용)이 부여했고, 그 정책을 담은 이미지부터 동작한다(그보다 오래된 이미지는 이름으로
+  거부한다). `kill`도 즉시 멈추지만 **포지션 관리까지 함께 멈춘다**(`/resume`까지 거래소에 걸린 브래킷만 포지션을 지킨다):
   ```bash
   docker exec thomas-scheduler python -m runtime.mvp_runtime.console_cli halt_trading --reason "..."   # 1.5.1 이후
   docker exec thomas-scheduler python -m runtime.mvp_runtime.console_cli kill --reason "..."

@@ -146,7 +146,7 @@ def test_the_real_ledger_witnesses_a_climb_and_a_demotion_that_carries_it(tmp_pa
 def test_after_a_policy_change_a_demotion_reaches_only_read_only(tmp_path, monkeypatch):
     _testnet(tmp_path)
     real = es.policy_safety_identity()
-    monkeypatch.setattr(es, "policy_safety_identity", lambda root=None: {**real, "policy_version": "1.5.1"})
+    monkeypatch.setattr(es, "policy_safety_identity", lambda root=None: {**real, "policy_version": "9.9.9"})
     with pytest.raises(MvpRuntimeError) as exc:
         door.run_demote(root=tmp_path, now=NOW, target="PAPER", registered_by="t", reason="r")
     assert exc.value.reason_code == es.STAGE_DEMOTE_FROM_UNBOUND
