@@ -648,15 +648,23 @@ def plan_live_entry(
 
     # 8. The final guard, told the truthful venue exposure. An unreadable account reports
     #    exposure AT the cap (LP5.1), so the guard refuses rather than admits.
+    open_notional = compute_open_notional_usdt(
+        snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))
+    )
+    # What that exposure covers, for the symbol claim to judge the global caps again under its lock
+    # (PR2c-3): the figure, and the symbols the venue read held (None when it could not be read).
+    detail["exposure_seen"] = {
+        "open_notional_usdt": open_notional,
+        "symbols": (sorted({str(p.symbol) for p in snapshot.positions})
+                    if snapshot is not None else None),
+    }
     guard = evaluate_live_order_guard(
         intent,
         gate_open=gate_open,
         runtime_active=runtime_active,
         daily_loss_breached=daily_loss_breached,
         submitted_today=submitted_today,
-        current_open_notional_usdt=compute_open_notional_usdt(
-            snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))
-        ),
+        current_open_notional_usdt=open_notional,
         budget_registered=budget_registered,
         allowed_symbols=allowed_symbols,
         limits=limits,

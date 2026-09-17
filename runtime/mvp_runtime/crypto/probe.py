@@ -182,8 +182,12 @@ PROBE_PLAN_CHANGED = "PROBE_PLAN_CHANGED"
 # The fire ran to its end, but a plan write after the send failed: the plan does not say what happened.
 PROBE_PLAN_NOT_RECORDED = "PROBE_PLAN_NOT_RECORDED"
 # The symbol could not be taken for this probe (PR2b-2): another entry is in flight on it, the book
-# holds a position there, or the marks could not be read. Nothing was spent.
+# holds a position there, the global caps leave no room (PR2c-3), or the marks could not be read.
+# Nothing was spent.
 PROBE_SYMBOL_NOT_CLAIMED = "PROBE_SYMBOL_NOT_CLAIMED"
+# Orders rest at the venue on the probe's symbol, or could not be read (PR2c-3, decision 25). The
+# symbol goes back and nothing was spent.
+PROBE_RESTING_ORDERS = "PROBE_RESTING_ORDERS"
 # `--timeout-seconds` outside (0, MAX_CALL_TIMEOUT_SECONDS]: refused before anything is read.
 PROBE_CALL_TIMEOUT_REFUSED = "PROBE_CALL_TIMEOUT_REFUSED"
 # The longest per-call venue timeout `--fire` accepts (PR2b-2 review). Between taking its symbol and

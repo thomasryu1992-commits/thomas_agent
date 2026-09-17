@@ -216,6 +216,20 @@ class ScriptedVenue:
         self.cancelled.append(str(client_order_id))
         return {"status": "CANCELED"}
 
+    def _resting(self, symbol, *, conditional: bool) -> list[dict]:
+        """The legs that rest: placed, never filled here, not withdrawn (PR2c-3)."""
+        return [
+            {"clientOrderId": cid, "symbol": r["symbol"]} for cid, r in self._requests.items()
+            if self._kind(cid) in {"SL", "TP"} and cid not in self.cancelled
+            and bool(r.get("clientAlgoId")) is conditional and (symbol is None or r["symbol"] == symbol)
+        ]
+
+    def open_orders(self, symbol=None, *, timeout_seconds: int = 10):
+        return self._resting(symbol, conditional=False)
+
+    def algo_open_orders(self, symbol=None, *, timeout_seconds: int = 10):
+        return self._resting(symbol, conditional=True)
+
 
 # --- the walk ------------------------------------------------------------------
 

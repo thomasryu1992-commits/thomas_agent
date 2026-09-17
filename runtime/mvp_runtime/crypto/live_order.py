@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -1126,7 +1127,16 @@ LIVE_ENTRY_CLAIM_MALFORMED = "LIVE_ENTRY_CLAIM_MALFORMED"
 # The claim a door went to give back is not its own any more (it expired and another order took
 # it, or it is gone). Nothing is removed; the door decides what that means (PR2b-2 review).
 LIVE_ENTRY_CLAIM_LOST = "LIVE_ENTRY_CLAIM_LOST"
+# The global caps, judged again at the claim (PR2c-3, Thomas decision 26). Two doors entering two
+# different symbols each judged "the book + my order fits" on facts read before the other's order,
+# and the symbol claim did not stop them. Under the marks lock the claim now counts the book and
+# every other entry still in flight.
+LIVE_ENTRY_CAPACITY_TAKEN = "LIVE_ENTRY_CAPACITY_TAKEN"
+LIVE_ENTRY_EXPOSURE_TAKEN = "LIVE_ENTRY_EXPOSURE_TAKEN"
 _CLAIM_FIELDS = ("claimed_at", "door", "client_order_id")
+# What the claim adds since PR2c-3: the notional its door judged. A claim written before names none,
+# and counts as the whole exposure cap while it holds.
+_CLAIM_NOTIONAL = "notional_usdt"
 
 _MARK_MAPS = ("entered", "cooldown")
 _CONTEXT_SEP = "__"
@@ -1150,11 +1160,18 @@ def _empty_entry_marks() -> dict[str, Any]:
     return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {}}
 
 
+def _positive_amount(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0)
+
+
 def _is_claim(symbol: Any, claim: Any) -> bool:
     if not (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(claim, dict)
-            and set(claim) == set(_CLAIM_FIELDS) and _is_bar_time(claim.get("claimed_at"))
+            and set(claim) - {_CLAIM_NOTIONAL} == set(_CLAIM_FIELDS)
+            and _is_bar_time(claim.get("claimed_at"))
             and all(isinstance(claim.get(field), str) and claim[field].strip()
-                    for field in ("door", "client_order_id"))):
+                    for field in ("door", "client_order_id"))
+            and (_CLAIM_NOTIONAL not in claim or _positive_amount(claim[_CLAIM_NOTIONAL]))):
         return False
     # The form alone admits "2026-99-99T99:99:99Z", which never expires, and a year-9999 stamp,
     # whose expiry cannot be computed. Either is a damaged file, not a claim.
@@ -1211,6 +1228,49 @@ def symbol_in_flight(marks: Mapping[str, Any] | None, symbol: Any, *, now: str) 
     except (TypeError, ValueError, OverflowError):
         expired = False
     return None if expired else dict(claim)
+
+
+def claim_caps_problem(
+    marks: Mapping[str, Any], booked: Sequence[Mapping[str, Any]], *, symbol: str, now: str,
+    notional_usdt: float, exposure: Mapping[str, Any], max_positions: int,
+) -> tuple[str, str] | None:
+    """Why one more entry on ``symbol`` does not fit the global caps, or None. Pure (PR2c-3).
+
+    ``booked`` is the venue's book read under the marks lock. The other entries in flight are the
+    unexpired claims on other symbols the book does not hold yet. A door gives its symbol back only
+    after the book records what the venue holds, so under this lock every entry is in the book, in
+    flight, or both.
+
+    - **Positions:** the book plus those entries plus this one must not exceed ``max_positions``.
+    - **Exposure:** it starts from what the door judged, ``exposure["open_notional_usdt"]``, the
+      venue's open notional over ``exposure["symbols"]``. To that it adds each booked position on a
+      symbol that read did not cover, each other entry's notional, and this order's ``notional_usdt``.
+      The sum must stay within ``exposure["cap_usdt"]``. A claim that names no notional counts as
+      the whole cap, and a read that named no symbols counts every booked position again: both
+      err toward refusing."""
+    booked_symbols = {str(p.get("symbol") or "") for p in booked}
+    others = [
+        claim for held, claim in (marks.get("in_flight") or {}).items()
+        if held != symbol and held not in booked_symbols
+        and symbol_in_flight(marks, held, now=now) is not None
+    ]
+    if len(booked) + len(others) + 1 > max_positions:
+        return (LIVE_ENTRY_CAPACITY_TAKEN,
+                f"{len(booked)} booked and {len(others)} in flight leave no room for a "
+                f"position on {symbol} (at most {max_positions})")
+    cap = float(exposure["cap_usdt"])
+    seen = exposure.get("symbols")
+    seen_symbols = set(seen) if isinstance(seen, list) else set()
+    # A booked record whose notional cannot be read counts as the whole cap, never as nothing.
+    since = sum(float(p["notional_usdt"]) if _positive_amount(p.get("notional_usdt")) else cap
+                for p in booked if seen is None or str(p.get("symbol") or "") not in seen_symbols)
+    flying = sum(float(c[_CLAIM_NOTIONAL]) if _CLAIM_NOTIONAL in c else cap for c in others)
+    total = float(exposure["open_notional_usdt"]) + since + flying + float(notional_usdt)
+    if total > cap:
+        return (LIVE_ENTRY_EXPOSURE_TAKEN,
+                f"open exposure {exposure['open_notional_usdt']} + {since} booked since + {flying} "
+                f"in flight + {notional_usdt} exceeds the cap {cap}")
+    return None
 
 
 def live_entry_holds(
@@ -1313,16 +1373,32 @@ class LiveEntryMarks:
 
         return self._update(mutate)
 
-    def claim_symbol(self, *, symbol: Any, door: str, client_order_id: Any, now: str) -> dict[str, Any]:
+    def claim_symbol(
+        self, *, symbol: Any, door: str, client_order_id: Any, now: str,
+        notional_usdt: Any, exposure: Any,
+    ) -> dict[str, Any]:
         """Take ``symbol`` for one entry before it is sent, or refuse (PR2b-2).
 
         Under the lock, the symbol must have no other entry in flight and no position in this
-        venue's book. The claim is stamped with the later of ``now`` and the wall clock: the cycle's
-        ``now`` can be minutes old by the time its leg runs, and an early stamp would expire early."""
+        venue's book, and one more position must fit the global caps (:func:`claim_caps_problem`,
+        PR2c-3). ``notional_usdt`` is the notional the door's guard judged; ``exposure`` is what that
+        guard judged it against: ``open_notional_usdt``, the ``symbols`` that figure covers (None
+        when unknown), and ``cap_usdt``. The claim is stamped with the later of ``now`` and the
+        wall clock: the cycle's ``now`` can be minutes old by the time its leg runs, and an early
+        stamp would expire early."""
+        exposure = exposure if isinstance(exposure, Mapping) else {}
+        seen = exposure.get("symbols")
         if not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip()
-                and isinstance(client_order_id, str) and client_order_id.strip() and _is_bar_time(now)):
-            raise ToolError(LIVE_ENTRY_CLAIM_MALFORMED, "a symbol claim needs a symbol, a door, an order id and a time")
-        from .live_position import load_open_live_position  # local: the book imports this module's neighbours
+                and isinstance(client_order_id, str) and client_order_id.strip() and _is_bar_time(now)
+                and _positive_amount(notional_usdt) and _positive_amount(exposure.get("cap_usdt"))
+                and (_positive_amount(exposure.get("open_notional_usdt"))
+                     or exposure.get("open_notional_usdt") == 0)
+                and (seen is None or (isinstance(seen, list) and all(isinstance(s, str) for s in seen)))):
+            raise ToolError(LIVE_ENTRY_CLAIM_MALFORMED,
+                            "a symbol claim needs a symbol, a door, an order id, a time, the order's "
+                            "notional and the exposure it was judged against")
+        # local: the book imports this module's neighbours
+        from .live_position import MAX_LIVE_CONCURRENT_POSITIONS, list_open_live_positions
 
         def mutate(marks: dict[str, Any]) -> None:
             at = max(now, timeutil.utc_now_iso())
@@ -1332,9 +1408,15 @@ class LiveEntryMarks:
                                 f"{symbol} has an entry in flight ({held['door']} since {held['claimed_at']})")
             # Re-read under the lock: a door that booked its position and gave the symbol back after
             # this one read the book is seen here, not missed.
-            if load_open_live_position(symbol, self._root, venue=self._venue) is not None:
+            booked = list_open_live_positions(self._root, venue=self._venue)
+            if any(str(p.get("symbol") or "") == symbol for p in booked):
                 raise ToolError(LIVE_ENTRY_SYMBOL_OCCUPIED, f"{symbol} already holds a live position")
-            marks["in_flight"][symbol] = {"claimed_at": at, "door": door, "client_order_id": client_order_id}
+            problem = claim_caps_problem(marks, booked, symbol=symbol, now=at, notional_usdt=notional_usdt,
+                                         exposure=exposure, max_positions=MAX_LIVE_CONCURRENT_POSITIONS)
+            if problem is not None:
+                raise ToolError(*problem)
+            marks["in_flight"][symbol] = {"claimed_at": at, "door": door, "client_order_id": client_order_id,
+                                          _CLAIM_NOTIONAL: float(notional_usdt)}
 
         return self._update(mutate)
 

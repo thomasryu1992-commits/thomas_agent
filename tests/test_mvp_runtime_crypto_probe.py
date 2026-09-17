@@ -847,6 +847,21 @@ class _HappyPathAdapter:
         self.cancelled.append(client_order_id)
         return None  # already gone — the triggered leg
 
+    # Nothing rests at the venue before the probe (PR2c-3). A test that needs otherwise sets these.
+    resting_plain: list = []
+    resting_algo: list = []
+    resting_error = None
+
+    def open_orders(self, symbol=None, *, timeout_seconds=10):
+        if self.resting_error is not None:
+            raise self.resting_error
+        return list(self.resting_plain)
+
+    def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+        if self.resting_error is not None:
+            raise self.resting_error
+        return list(self.resting_algo)
+
 
 def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     _active_plan(tmp_path)
@@ -2317,7 +2332,8 @@ def _cell_in_flight(tmp_path, *, claimed_by="TAI_BTCUSDT_LONG_inflight"):
     _seed_plan(opened, tmp_path)
     auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
     LiveEntryMarks(root=tmp_path, authorization=auth).claim_symbol(
-        door="probe", now=NOW, symbol=cell["symbol"], client_order_id=claimed_by)
+        door="probe", now=NOW, symbol=cell["symbol"], client_order_id=claimed_by, notional_usdt=100.0,
+        exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 300.0})
     return opened
 
 
@@ -2407,3 +2423,63 @@ def test_fire_reserves_its_slot_against_the_stricter_cap(tmp_path, monkeypatch, 
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_SNAPSHOT_NOT_RECORDED
     assert counter.limits == [reserved] and adapter.submitted == []
+
+
+# --- PR2c-3: what rests at the venue, and what the claim adds ------------------------------------
+
+@pytest.mark.parametrize("rests", ["plain", "algo", "unreadable"])
+def test_fire_refuses_while_orders_rest_on_the_symbol_and_spends_nothing(tmp_path, monkeypatch, rests):
+    """Decision 25: a stop another probe left behind would close this probe's position."""
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    if rests == "unreadable":
+        adapter.resting_error = ToolError("VENUE_TIMEOUT", "scripted")
+    else:
+        setattr(adapter, f"resting_{rests}", [{"clientOrderId": f"TAI_BTCUSDT_SL_{rests}", "symbol": "BTCUSDT"}])
+    marks = _RecordingMarks(events)
+    counter = _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_RESTING_ORDERS
+    if rests != "unreadable":
+        assert f"TAI_BTCUSDT_SL_{rests}" in str(exc.value)
+    assert adapter.submitted == [] and adapter.cancelled == [] and counter.count == 0
+    assert events == ["take", "give"]
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_tells_the_claim_its_notional_and_the_exposure_it_was_judged_against(tmp_path, monkeypatch):
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    lowered = LiveOrderLimits(**{**cli.resolve_live_order_limits(tmp_path, now=NOW)[0].__dict__,
+                                 "max_open_notional_usdt": 150.0})
+    budget = cli.resolve_live_order_limits(tmp_path, now=NOW)[1]
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: (lowered, budget))
+    assert _fire(tmp_path) == cli.EXIT_OK
+    [taken] = marks.taken
+    assert taken["notional_usdt"] == pytest.approx(100.0)
+    # The venue account the fire read, and the cap the gate judged (the re-read lowered it).
+    assert taken["exposure"] == {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 150.0}
+
+
+def test_fire_tells_the_claim_the_open_exposure_its_guard_judged(tmp_path, monkeypatch):
+    """Not a flat account: the figure the claim starts from is the one the guard was given."""
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    judged = []
+    real_guard = cli.evaluate_live_order_guard
+
+    def _recording_guard(intent, **kw):
+        judged.append(kw["current_open_notional_usdt"])
+        return real_guard(intent, **kw)
+
+    monkeypatch.setattr(cli, "compute_open_notional_usdt", lambda snapshot, at_cap: 42.5)
+    monkeypatch.setattr(cli, "evaluate_live_order_guard", _recording_guard)
+    assert _fire(tmp_path) == cli.EXIT_OK
+    [taken] = marks.taken
+    assert judged and set(judged) == {42.5}
+    assert taken["exposure"]["open_notional_usdt"] == 42.5

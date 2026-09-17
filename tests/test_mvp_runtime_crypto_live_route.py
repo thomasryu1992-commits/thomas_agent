@@ -1177,6 +1177,20 @@ class _Venue:
         self.cancelled.append(str(client_order_id))
         return {"status": "CANCELED"}
 
+    def _resting(self, symbol, *, conditional):
+        """What rests on ``symbol``: a leg that neither filled nor was withdrawn (PR2c-3)."""
+        return [
+            {"clientOrderId": cid, "symbol": r["symbol"]} for cid, r in self.requests.items()
+            if r["type"] != "MARKET" and cid not in self.filled and cid not in self.cancelled
+            and bool(r.get("clientAlgoId")) is conditional and (symbol is None or r["symbol"] == symbol)
+        ]
+
+    def open_orders(self, symbol=None, *, timeout_seconds: int = 10):
+        return self._resting(symbol, conditional=False)
+
+    def algo_open_orders(self, symbol=None, *, timeout_seconds: int = 10):
+        return self._resting(symbol, conditional=True)
+
 
 class _Collector:
     def order_book(self, symbol, *, limit, timeout_seconds):
@@ -2287,3 +2301,55 @@ def test_a_failure_verifying_the_arm_holds_the_entry_as_a_failed_re_read(tmp_pat
     assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
     assert held["live_reason_codes"][-2:] == [live_route.PRE_ORDER_REREAD_FAILED, "RuntimeError"]
     assert _nothing_spent(venue, tmp_path)
+
+
+# --- PR2c-3: the global caps at the claim, and what rests at the venue ----------------------------
+
+def _another_door_in_flight(tmp_path, *, notional):
+    from runtime.mvp_runtime.crypto.live_order import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID, \
+        LiveEntryMarks
+    from tests._helpers import make_gate_authorization
+
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    LiveEntryMarks(root=tmp_path, authorization=auth).claim_symbol(
+        symbol="SOLUSDT", door="probe", client_order_id="TAI_SOLUSDT_LONG_probe", now=NOW,
+        notional_usdt=notional, exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
+
+
+def test_an_entry_another_door_leaves_no_exposure_for_is_held_before_the_bar(tmp_path, monkeypatch):
+    """Decision 26: the probe on SOL took 100 of the 120 cap after this leg read the account."""
+    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_EXPOSURE_TAKEN, read_live_entry_marks
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _another_door_in_flight(tmp_path, notional=100.0)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_pre_order_gate"]["approved"] is True
+    assert LIVE_ENTRY_EXPOSURE_TAKEN in held["live_reason_codes"]
+    assert venue.entries() == []
+    marks = read_live_entry_marks(tmp_path)
+    assert set(marks["in_flight"]) == {"SOLUSDT"} and marks["entered"] == {}
+
+
+def test_an_entry_the_other_door_leaves_room_for_opens(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _another_door_in_flight(tmp_path, notional=10.0)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+
+
+def test_a_stop_left_resting_on_the_symbol_holds_the_next_entry(tmp_path, monkeypatch):
+    """Decision 25, end to end: a trade's stop that was never withdrawn is still at the venue when
+    the next entry on the symbol comes; the entry is refused and nothing is withdrawn."""
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    venue.requests["TAI_BTCUSDT_SL_left"] = {"symbol": SYMBOL, "type": "STOP_MARKET", "side": "SELL",
+                                             "clientAlgoId": "TAI_BTCUSDT_SL_left"}
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert live_leg.RESTING_ORDERS in held["live_reason_codes"]
+    assert venue.entries() == [] and venue.cancelled == []
+    assert read_live_entry_marks(tmp_path)["entered"] == {}
+    assert read_live_entry_marks(tmp_path)["in_flight"] == {}, "the symbol was given back"

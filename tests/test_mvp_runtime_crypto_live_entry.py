@@ -1377,3 +1377,18 @@ def test_a_cap_lowered_before_the_gate_refuses_the_order_sized_on_the_old_one():
         "verdict-names-none", "malformed"])
 def test_the_risk_limits_in_force_are_judged_by_their_identity(judged, in_force, problem):
     assert le.risk_limits_moved(judged, in_force) == problem
+
+
+# --- PR2c-3: the exposure a decision judged, for the symbol claim ---------------------------------
+
+def test_a_decision_records_the_exposure_its_guard_judged_and_what_it_covers():
+    decision = _plan(snapshot=_snapshot(_position("ETHUSDT", notional=30.0), _position("SOLUSDT", notional=12.5)),
+                     reconciliation={"status": "RECONCILED", "books": {}})
+    assert decision["exposure_seen"] == {"open_notional_usdt": 42.5, "symbols": ["ETHUSDT", "SOLUSDT"]}
+    assert decision["guard"]["current_open_notional_usdt"] == 42.5
+
+
+def test_a_decision_refused_before_its_guard_carries_no_exposure_to_claim_with():
+    """An unreadable account refuses before the guard, so no claim is ever made on its behalf."""
+    decision = _plan(snapshot=None)
+    assert decision["ready"] is False and "exposure_seen" not in decision

@@ -262,6 +262,29 @@ Then:
 1. The entry takes its symbol (PR2b-2, decisions 21 and 22). Under the entry-marks lock, no other
    entry may be in flight on the symbol and the book may hold no position there. The probe takes it
    at this point too, before its slot.
+   - **The global caps are judged again at the claim** (PR2c-3, decision 26,
+     `live_order.claim_caps_problem`). Two doors entering two different symbols each judged "the
+     book plus my order fits" on facts read before the other's order. Under the same lock, the
+     claim reads the whole book again. The other entries in flight are the unexpired claims on
+     other symbols that the book does not hold yet.
+     - **Positions:** the book, plus those entries, plus this one must stay within
+       `MAX_LIVE_CONCURRENT_POSITIONS` (`LIVE_ENTRY_CAPACITY_TAKEN`).
+     - **Exposure:** start from the venue open notional the door's guard judged. Add each booked
+       position on a symbol that venue read did not hold, each other entry's notional, and this
+       order's notional as its guard judged it. The sum must stay within the exposure cap the gate
+       judged (`LIVE_ENTRY_EXPOSURE_TAKEN`).
+     - **What the claim records:** its notional (`notional_usdt`). A claim written before PR2c-3
+       names none and counts as the whole cap while it holds. So does a booked record whose
+       notional cannot be read.
+     - **Why the three sources cover every entry:** a door gives its symbol back only after the
+       book records what the venue holds. Under the lock, every entry is booked, in flight, or both.
+   - **Nothing may rest at the venue on the symbol** (PR2c-3, decision 25,
+     `live_leg.resting_orders`). Right after the claim, both doors read the plain and the
+     conditional open orders on the symbol. A leg left behind can close or shrink the next
+     position, so anything resting refuses the entry (`LIVE_ENTRY_RESTING_ORDERS`,
+     `PROBE_RESTING_ORDERS`). So does a read that fails (`LIVE_ENTRY_RESTING_ORDERS_UNREADABLE`).
+     The symbol goes back and nothing else is spent. Nothing is cancelled: the operator withdraws
+     what rests (`scripts/list_resting_orders.py` lists it).
 2. The entry leg claims the bar.
 3. It reserves the day's slot.
 4. It records the snapshot.

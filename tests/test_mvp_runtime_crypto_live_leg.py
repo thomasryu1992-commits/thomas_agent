@@ -69,7 +69,9 @@ BAR = "2026-07-25T00:00:00Z"
 
 DECISION = {
     "status": "READY", "ready": True, "symbol": "BTCUSDT",
-    "guard": {"approved": True, "status": "READY"},
+    "guard": {"approved": True, "status": "READY", "notional_usdt": 60.0},
+    # What the guard judged the order's exposure against (PR2c-3): a flat account.
+    "exposure_seen": {"open_notional_usdt": 0.0, "symbols": []},
     "intent": INTENT, "bracket": BRACKET, "risk_snapshot": SNAPSHOT,
     "sizing": {"sizable": True, "quantity": 0.001, "notional_usdt": 60.0},
     # The bar the leg claims before it sends (PR2a), as `plan_live_entry` names it.
@@ -108,7 +110,7 @@ class FakeAdapter:
     beyond what a test needs to steer one branch."""
 
     def __init__(self, *, fills=None, submit_errors=None, statuses=None, cancel_errors=None,
-                 missing=()):
+                 missing=(), resting=None, resting_error=None):
         self.submitted: list[dict] = []
         self.cancelled: list[str] = []
         self._requests: dict[str, dict] = {}
@@ -117,6 +119,20 @@ class FakeAdapter:
         self._statuses = statuses or {}
         self._cancel_errors = cancel_errors or {}
         self._missing = set(missing)
+        # What rests at the venue before the entry (PR2c-3): {"plain": [...], "algo": [...]}.
+        self._resting = resting or {}
+        self._resting_error = resting_error
+
+    def open_orders(self, symbol=None, *, timeout_seconds=10):
+        EVENTS.append("resting")
+        if self._resting_error is not None:
+            raise self._resting_error
+        return list(self._resting.get("plain", []))
+
+    def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+        if self._resting_error is not None:
+            raise self._resting_error
+        return list(self._resting.get("algo", []))
 
     def _kind(self, client_order_id: str) -> str:
         if "_SL_" in client_order_id:
@@ -949,7 +965,8 @@ def test_the_bar_is_claimed_and_the_slot_reserved_before_the_entry_is_sent():
     marks = FakeMarks()
     result = _entry(entry_marks=marks)
     assert result["status"] == ll.ENTRY_OPENED
-    assert EVENTS[:4] == ["take", "claim", "reserve", "submit"]
+    # PR2c-3: what rests at the venue is read between taking the symbol and spending the bar.
+    assert EVENTS[:5] == ["take", "resting", "claim", "reserve", "submit"]
     assert marks.claims == [{"symbol": "BTCUSDT", "timeframe": "1d", "bar_time": BAR}]
 
 
@@ -1205,7 +1222,7 @@ def test_the_snapshot_is_checked_first_and_recorded_after_the_bar_and_the_slot()
     result = _entry(snapshot_store=store)
     assert result["status"] == ll.ENTRY_OPENED
     # record, then the venue door's own idempotent re-bind (a second append that writes nothing).
-    assert EVENTS[:5] == ["take", "claim", "reserve", "record", "record"] and EVENTS[5] == "submit"
+    assert EVENTS[:6] == ["take", "resting", "claim", "reserve", "record", "record"] and EVENTS[6] == "submit"
     assert [s["risk_snapshot_sha256"] for s in store.appended] == [SNAPSHOT["risk_snapshot_sha256"]]
     assert result["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
     assert result["position"]["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
@@ -1320,7 +1337,9 @@ def test_the_symbol_is_taken_first_and_given_back_once_the_position_is_booked():
     marks = FakeMarks()
     result = _entry(entry_marks=marks)
     assert result["status"] == ll.ENTRY_OPENED
-    assert marks.taken == [{**_CLAIM, "door": "autonomous", "now": NOW}]
+    # PR2c-3: the claim carries what the guard judged, capped by the limits the gate judged.
+    assert marks.taken == [{**_CLAIM, "door": "autonomous", "now": NOW, "notional_usdt": 60.0,
+                            "exposure": {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0}}]
     assert marks.given_back == [_CLAIM]
     assert EVENTS[0] == "take" and EVENTS.index("book") < EVENTS.index("give")
 
@@ -1416,7 +1435,8 @@ def test_the_real_marks_give_the_symbol_back_and_the_book_refuses_the_next_entry
     assert read_live_entry_marks(tmp_path)["in_flight"] == {}
     with pytest.raises(ToolError) as refused:
         marks.claim_symbol(symbol="BTCUSDT", door="probe", client_order_id="TAI_BTCUSDT_LONG_next",
-                           now=NOW)
+                           now=NOW, notional_usdt=60.0,
+                           exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
     assert refused.value.reason_code == LIVE_ENTRY_SYMBOL_OCCUPIED
 
 
@@ -1638,3 +1658,75 @@ def test_an_entry_the_venue_may_still_hold_keeps_the_symbol(adapter):
 def test_a_leg_whose_outcome_the_venue_cannot_state_may_be_resting():
     placed = _leg(FakeAdapter(submit_errors={"SL": "ORDER_OUTCOME_UNKNOWN"}, missing={"SL"}))
     assert placed["may_be_resting"] is True
+
+
+# --- PR2c-3: what rests at the venue, and what the claim adds ------------------------------------
+
+@pytest.mark.parametrize("resting", [
+    {"plain": [{"clientOrderId": "TAI_BTCUSDT_TP_old", "symbol": "BTCUSDT"}]},
+    {"algo": [{"clientOrderId": "TAI_BTCUSDT_SL_old", "symbol": "BTCUSDT"}]},
+], ids=["plain", "conditional"])
+def test_an_order_resting_on_the_symbol_refuses_the_entry_and_spends_nothing(resting):
+    """Decision 25: a leg left behind can close or shrink the next position. The operator withdraws it."""
+    marks, counter, adapter, store = FakeMarks(), FakeCounter(), FakeAdapter(resting=resting), FakeSnapshotStore()
+    result = _entry(entry_marks=marks, counter=counter, adapter=adapter, snapshot_store=store)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [ll.RESTING_ORDERS]
+    [left] = [*resting.get("plain", []), *resting.get("algo", [])]
+    assert result["resting_orders"] == [left["clientOrderId"]]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+    assert marks.given_back == [_CLAIM] and adapter.cancelled == []     # nothing withdrawn here
+    assert EVENTS == ["take", "resting", "give"]
+
+
+@pytest.mark.parametrize("adapter", [
+    FakeAdapter(resting_error=ToolError("VENUE_TIMEOUT", "scripted")),
+    FakeAdapter(resting_error=RuntimeError("scripted")),
+    FakeAdapter(resting={"plain": None}),
+], ids=["timeout", "unexpected", "malformed"])
+def test_resting_orders_that_cannot_be_read_refuse_the_entry(adapter, monkeypatch):
+    if adapter._resting.get("plain", []) is None:
+        monkeypatch.setattr(adapter, "open_orders", lambda symbol=None, *, timeout_seconds=10: None)
+    marks, counter, store = FakeMarks(), FakeCounter(), FakeSnapshotStore()
+    result = _entry(entry_marks=marks, counter=counter, adapter=adapter, snapshot_store=store)
+    assert result["reason_codes"] == [ll.RESTING_ORDERS_UNREADABLE]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+    assert marks.given_back == [_CLAIM]
+
+
+def test_resting_orders_are_read_on_the_entry_s_own_symbol_both_lists():
+    asked = []
+
+    class _Asking(FakeAdapter):
+        def open_orders(self, symbol=None, *, timeout_seconds=10):
+            asked.append(("plain", symbol, timeout_seconds))
+            return []
+
+        def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+            asked.append(("algo", symbol, timeout_seconds))
+            return []
+
+    assert ll.resting_orders(_Asking(), "BTCUSDT", timeout_seconds=7) == []
+    assert asked == [("plain", "BTCUSDT", 7), ("algo", "BTCUSDT", 7)]
+
+
+def test_the_claim_is_told_what_the_guard_judged_and_the_cap_the_gate_judged():
+    narrowed = LiveOrderLimits(**{**LIMITS.__dict__, "max_open_notional_usdt": 90.0})
+    decision = {**DECISION, "guard": {**DECISION["guard"], "notional_usdt": 61.5},
+                "exposure_seen": {"open_notional_usdt": 12.0, "symbols": ["ETHUSDT"]}}
+    assert ll.claim_exposure(decision, narrowed) == (
+        61.5, {"open_notional_usdt": 12.0, "symbols": ["ETHUSDT"], "cap_usdt": 90.0})
+    assert ll.claim_exposure({**decision, "exposure_seen": None}, narrowed) == (61.5, None)
+
+
+def test_a_decision_that_does_not_say_what_it_judged_costs_nothing_on_the_real_marks(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_CLAIM_MALFORMED, read_live_entry_marks, \
+        select_live_entry_marks
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    counter, adapter = FakeCounter(), FakeAdapter()
+    result = _entry(decision={**DECISION, "exposure_seen": None}, entry_marks=select_live_entry_marks(root=tmp_path),
+                    counter=counter, adapter=adapter)
+    assert result["reason_codes"] == [LIVE_ENTRY_CLAIM_MALFORMED]
+    assert counter.count == 0 and adapter.submitted == []
+    assert read_live_entry_marks(tmp_path)["in_flight"] == {}
