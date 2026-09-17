@@ -35,7 +35,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError
-from tests._helpers import requires_local_core
+from tests._helpers import FakeSnapshotStore, requires_local_core
 
 NOW = timeutil.utc_now_iso()
 
@@ -609,14 +609,22 @@ def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
         canary_confirmation=CANARY_CONFIRMATION_PHRASE,
     )
     monkeypatch.setattr(cli, "resolve_live_order_limits",
-                        lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": list(symbols)}))
+                        lambda root, now=None: (limits, dict(_BUDGET, symbol_allowlist=list(symbols))))
     # The execution stage the probe resolves (PR1b). A real record needs a spent Thomas approval,
-    # so the resolver is stubbed here; the stage door's own refusal has its test below.
+    # so the resolver is stubbed here; the stage door's own refusal has its test below. A binding
+    # record names its id, hash and approval — the pre-order gate's profile requires them (PR2b).
     monkeypatch.setattr(cli, "resolve_execution_stage",
                         lambda root=None, **kw: es.StageStatus(
                             stage=stage if stage_valid else "READ_ONLY", valid=stage_valid,
-                            reason_code=stage_reason, recorded_stage=stage if stage_valid else None))
+                            reason_code=stage_reason, recorded_stage=stage if stage_valid else None,
+                            **(_STAGE_IDS if stage_valid else {})))
     return limits
+
+
+# What a registered budget and a binding stage record carry beside their numbers (PR2b).
+_BUDGET = {"valid": True, "budget_id": "budget_probe_test", "record_sha256": "sha256:" + "b" * 64}
+_STAGE_IDS = {"stage_id": "stage_probe_test", "record_sha256": "sha256:" + "5" * 64,
+              "approval_id": "approval_stage_probe_test"}
 
 
 def test_fire_refuses_without_a_plan(tmp_path):
@@ -843,6 +851,10 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
     monkeypatch.setattr(cli, "load_open_live_position",
@@ -920,10 +932,11 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
             canary_confirmation=CANARY_CONFIRMATION_PHRASE,
             confirmation=LIVE_CONFIRMATION_PHRASE,
         ),
-        {"valid": True, "symbol_allowlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+        dict(_BUDGET, symbol_allowlist=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
     ))
     monkeypatch.setattr(cli, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
-        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"))
+        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS",
+        **_STAGE_IDS))
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
     monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
@@ -935,6 +948,10 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
     monkeypatch.setattr(cli, "load_open_live_position",
@@ -1080,10 +1097,14 @@ def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, mon
             canary_confirmation=CANARY_CONFIRMATION_PHRASE,
             confirmation=LIVE_CONFIRMATION_PHRASE,
         ),
-        {"valid": True, "symbol_allowlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+        dict(_BUDGET, symbol_allowlist=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
     ))
     store, ledger = _FakeStore(), _FakeLedger()
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter())
     monkeypatch.setattr(cli, "load_open_live_position",
@@ -1218,3 +1239,171 @@ def test_fire_refuses_below_the_execution_stage_a_real_order_needs(tmp_path, mon
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_GUARD_REFUSED
     assert adapter.submitted == [], "the probe reached the venue below its stage"
+
+
+# --- the pre-order gate on the probe (PR2b) --------------------------------------------------------
+
+def _gate_facts(plan, **overrides):
+    """Everything `gate_probe_order` re-derives from, as `--fire` holds it just before the send."""
+    from runtime.mvp_runtime.crypto.live_position import live_capacity, reconcile_positions
+    from runtime.mvp_runtime.crypto.live_order import build_live_order_intent
+
+    limits = LiveOrderLimits(
+        max_order_notional_usdt=150.0, max_daily_order_count=10, max_open_notional_usdt=300.0,
+        daily_loss_limit_usdt=50.0, canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+    )
+    stage = es.StageStatus(stage="LIVE_AUTONOMOUS", valid=True, reason_code=None,
+                           recorded_stage="LIVE_AUTONOMOUS", **_STAGE_IDS)
+    guard_kwargs = dict(gate_open=True, execution_stage=stage, runtime_active=True,
+                        daily_loss_breached=False, submitted_today=0, current_open_notional_usdt=0.0,
+                        limits=limits, budget_registered=True, allowed_symbols=["BTCUSDT"], canary=True)
+    price, tick = 100000.0, 0.1
+    stop = probe.probe_stop_price(price, tick, stop_bps=float(plan["params"]["stop_bps"]))
+    intent = build_live_order_intent(
+        {"direction": probe.PROBE_DIRECTION, "entry_price": price, "stop_loss": stop,
+         "strategy_id": probe.probe_strategy_id(plan["batch_id"])},
+        symbol="BTCUSDT", quantity=0.001, notional_usdt=100.0, now=NOW,
+    )
+    snapshot = types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0)
+    facts = dict(
+        plan=plan, cell_index=0, price=price, tick_size=tick, quantity=0.001, notional=100.0,
+        account_readable=True, reconciliation=reconcile_positions([], snapshot, now=NOW),
+        capacity=live_capacity([], symbol="BTCUSDT"),
+        risk={"daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
+              "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"},
+        breaker={"tripped": False, "consecutive": 0, "limit": 5},
+        risk_verdict={"allow_new_position": True, "problems": []},
+        guard_kwargs=guard_kwargs,
+        profile=pre_order_gate_mod.approved_profile(
+            purpose="probe", stage=stage, budget=_BUDGET, risk_limits={"source": "default"},
+            authority={"kind": pre_order_gate_mod.AUTHORITY_PROBE_PLAN, "batch_id": plan["batch_id"],
+                       "approval_id": plan["approval_id"], "cell_index": 0}),
+        now=NOW,
+    )
+    facts.update(overrides)
+    return intent, facts
+
+
+import runtime.mvp_runtime.crypto.pre_order_gate as pre_order_gate_mod  # noqa: E402
+
+
+def test_the_probe_gate_approves_the_probe_the_facts_price(tmp_path):
+    plan = _active_plan(tmp_path)
+    intent, facts = _gate_facts(plan)
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert snapshot["purpose"] == "probe" and snapshot["lineage"]["batch_id"] == plan["batch_id"]
+    names = {c["check"] for c in snapshot["checks"]}
+    assert {"probe_plan_active", "probe_cell_open_for_this_order", "symbol_free",
+            "venue_daily_loss_within_limit", "bracket_breaker_clear", "risk_guard_allows",
+            "notional_within_plan_ceiling", "intent_matches_decision",
+            "execution_stage_admits", "confirmation_phrase"} <= names
+
+
+@pytest.mark.parametrize("overrides,check_id", [
+    ({"risk": {"daily_loss_limit_breached": True}}, "venue_daily_loss_within_limit"),
+    ({"breaker": {"tripped": True, "consecutive": 5, "limit": 5}}, "bracket_breaker_clear"),
+    ({"risk_verdict": {"allow_new_position": False, "problems": ["daily_loss_limit"]}}, "risk_guard_allows"),
+    ({"notional": 150.0}, "notional_within_plan_ceiling"),
+    ({"account_readable": False}, "account_readable"),
+    ({"capacity": {"allowed": False, "blocks": ["LIVE_MAX_POSITIONS_PER_SYMBOL"]}}, "symbol_free"),
+    ({"cell_index": 7}, "probe_cell_open_for_this_order"),
+    ({"cell_index": 99}, "probe_cell_open_for_this_order"),
+    ({"price": 90000.0}, "intent_matches_decision"),
+], ids=["loss", "breaker", "risk-guard", "ceiling", "account", "symbol", "other-cell", "no-cell", "repriced"])
+def test_the_probe_gate_re_derives_every_refusal(tmp_path, overrides, check_id):
+    plan = _active_plan(tmp_path)
+    intent, facts = _gate_facts(plan, **overrides)
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is False
+    assert check_id in snapshot["failed_checks"]
+
+
+def test_the_probe_gate_refuses_a_plan_that_is_no_longer_active(tmp_path):
+    plan = {**_active_plan(tmp_path), "status": probe.PLAN_ABANDONED}
+    intent, facts = _gate_facts(plan)
+    assert "probe_plan_active" in probe.gate_probe_order(intent, **facts)["failed_checks"]
+
+
+def test_the_probe_gate_refuses_a_plan_with_no_approval(tmp_path):
+    plan = {**_active_plan(tmp_path), "approval_id": None}
+    intent, facts = _gate_facts(plan)
+    assert probe.gate_probe_order(intent, **facts)["failed_checks"] == ["approved_profile_complete"]
+
+
+def test_fire_records_the_probes_snapshot_before_the_send(tmp_path, monkeypatch):
+    """The whole door: the snapshot is recorded on the mainnet store before the entry leaves, and
+    the booked probe names it."""
+    from tests._helpers import FakeSnapshotStore
+
+    _active_plan(tmp_path)
+    _arm_runtime(tmp_path)
+    adapter = _HappyPathAdapter()
+    events: list[str] = []
+
+    class _Store(FakeSnapshotStore):
+        def append(self, snapshot):
+            events.append(f"record:{len(adapter.submitted)}")
+            return super().append(snapshot)
+
+    store = _Store()
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store", lambda now=None, root=None: store)
+    positions, ledger = _FakeStore(), _FakeLedger()
+    saved: list[dict] = []
+    original_save = positions.save_position
+
+    def _save(position):
+        saved.append(dict(position))
+        original_save(position)
+
+    positions.save_position = _save
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: positions)
+    monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter())
+    monkeypatch.setattr(cli, "select_live_bracket_breaker", lambda now=None, root=None: _FakeBreaker())
+    monkeypatch.setattr(cli, "load_open_live_position",
+                        lambda symbol, root=None: positions.positions.get(symbol))
+
+    assert _fire(tmp_path) == cli.EXIT_OK
+    [recorded] = store.appended
+    assert events[0] == "record:0", "the snapshot was recorded after the order left"
+    assert recorded["purpose"] == "probe" and recorded["approved"] is True
+    assert adapter.submitted[0]["newClientOrderId"] == recorded["client_order_id"]
+    assert saved[0]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+    assert ledger.outcomes[0]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+
+
+def test_fire_refuses_before_the_venue_when_the_gate_refuses(tmp_path, monkeypatch):
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    # A plan the gate cannot trace to an approval (as a hand-edited plan store would read).
+    real_read = cli.probe.read_plan
+    monkeypatch.setattr(cli.probe, "read_plan",
+                        lambda root=None: {**real_read(root), "approval_id": None})
+    counter = _FakeCounter(adapter=adapter)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "approved_profile_complete" in str(exc.value)
+    assert adapter.submitted == [] and counter.count == 0
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_sends_nothing_when_the_snapshot_cannot_be_recorded(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.errors import PersistenceError
+    from tests._helpers import FakeSnapshotStore
+
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore(
+                            error=PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted")))
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter())
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_SNAPSHOT_NOT_RECORDED
+    assert "PRE_ORDER_SNAPSHOTS_LOCKED" in str(exc.value)
+    assert adapter.submitted == []
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])

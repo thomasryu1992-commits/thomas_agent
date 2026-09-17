@@ -33,8 +33,11 @@ def _testnet_auth():
 
 
 def _stage(stage="SIGNED_TESTNET", valid=True, reason=None):
+    # A binding record names its id, hash and approval; the pre-order gate's profile requires them.
+    ids = ({"stage_id": "stage_testnet_test", "record_sha256": "sha256:" + "5" * 64,
+            "approval_id": "approval_stage_testnet_test"} if valid else {})
     return es.StageStatus(stage=stage, valid=valid, reason_code=reason,
-                          recorded_stage=stage if valid else None)
+                          recorded_stage=stage if valid else None, **ids)
 
 
 def _intent(**overrides):
@@ -350,6 +353,14 @@ def test_the_door_records_one_cycle_and_counts_it_on_the_testnet_venue(tmp_path,
     # The orders counted against the TESTNET venue's counter, never the live one.
     assert live_order.count_today(tmp_path, venue=VENUE_TESTNET) >= 1
     assert live_order.count_today(tmp_path) == 0
+    # PR2b: the entry left under a snapshot recorded on the TESTNET venue's store, and the row
+    # names it; the mainnet store is untouched.
+    from runtime.mvp_runtime.crypto import pre_order_gate
+
+    [recorded] = pre_order_gate.read_snapshots(tmp_path, venue=VENUE_TESTNET)
+    assert recorded["purpose"] == es.PURPOSE_TESTNET and recorded["lineage"]["cycle_id"] == out["cycle_id"]
+    assert rows[0]["entry"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+    assert pre_order_gate.read_snapshots(tmp_path) == []
 
 
 def test_a_venue_that_answers_badly_cannot_produce_evidence(tmp_path, monkeypatch):
@@ -471,3 +482,194 @@ def test_the_entry_and_the_exit_are_two_orders_to_the_venue(tmp_path, monkeypatc
     market = [r for r in sent if r.get("type") == "MARKET"]
     assert [bool(r.get("reduceOnly")) for r in market] == [False, True]
     assert out["complete"] is True, out["findings"]
+
+
+# --- the pre-order gate on the testnet entry (PR2b, decision 20) -----------------------------------
+
+def _cycle_gate_inputs(**guard_overrides):
+    from runtime.mvp_runtime.crypto.live_order import build_live_order_intent
+
+    intent = build_live_order_intent(
+        {"direction": "LONG", "entry_price": 50000.0, "stop_loss": 49000.0,
+         "strategy_id": "signed_testnet_cycle"},
+        symbol="BTCUSDT", quantity=0.001, notional_usdt=50.0, now=NOW,
+    )
+    guard_kwargs = dict(gate_open=True, runtime_active=True, manual_kill_switch=False,
+                        submitted_today=0, execution_stage=_stage())
+    guard_kwargs.update(guard_overrides)
+    return intent, guard_kwargs
+
+
+def test_the_testnet_gate_approves_the_order_the_cycle_prices():
+    intent, guard_kwargs = _cycle_gate_inputs()
+    snapshot = testnet_execution.gate_testnet_order(
+        intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=_stage(),
+        cycle_id="cyc1", now=NOW)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert snapshot["venue"] == VENUE_TESTNET and snapshot["purpose"] == es.PURPOSE_TESTNET
+    assert set(testnet_execution.TESTNET_GUARD_CHECK_IDS) <= {c["check"] for c in snapshot["checks"]}
+    assert snapshot["approved_profile"]["budget"] is None
+
+
+@pytest.mark.parametrize("overrides,stage,check_id", [
+    ({"submitted_today": 99}, None, "daily_order_count_within_cap"),
+    ({"manual_kill_switch": True}, None, "manual_kill_switch_off"),
+    ({"execution_stage": _stage("PAPER")}, None, "execution_stage_admits"),
+    ({}, _stage(valid=False, reason="STAGE_RECORD_MISSING"), "approved_profile_complete"),
+], ids=["daily-cap", "kill", "rung", "no-record"])
+def test_the_testnet_gate_re_derives_the_guard_and_the_profile(overrides, stage, check_id):
+    intent, guard_kwargs = _cycle_gate_inputs(**overrides)
+    snapshot = testnet_execution.gate_testnet_order(
+        intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=stage or _stage(),
+        cycle_id="cyc1", now=NOW)
+    assert check_id in snapshot["failed_checks"]
+
+
+def test_a_testnet_order_that_is_not_the_priced_one_is_refused():
+    intent, guard_kwargs = _cycle_gate_inputs()
+    snapshot = testnet_execution.gate_testnet_order(
+        {**intent, "quantity": 0.5}, expected_intent=intent, guard_kwargs=guard_kwargs,
+        stage=_stage(), cycle_id="cyc1", now=NOW)
+    assert "intent_matches_decision" in snapshot["failed_checks"]
+
+
+def test_the_door_sends_nothing_and_records_no_cycle_when_the_gate_refuses(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import pre_order_gate
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    sent: list[dict] = []
+
+    class _Adapter(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, request, **kw):
+            sent.append(dict(request))
+            return super().submit(request, **kw)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Adapter())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    # A stage the guard admits but whose record names no approval: only the gate can refuse it.
+    unwitnessed = es.StageStatus(stage="SIGNED_TESTNET", valid=True, reason_code=None,
+                                 recorded_stage="SIGNED_TESTNET", stage_id="s1",
+                                 record_sha256="sha256:" + "5" * 64, approval_id=None)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: unwitnessed)
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_PRE_ORDER_GATE_REFUSED"
+    assert sent == []
+    assert testnet_evidence.read_cycles(tmp_path) == []
+    assert pre_order_gate.read_snapshots(tmp_path, venue=VENUE_TESTNET) == []
+
+
+def test_the_door_sends_nothing_when_the_testnet_snapshot_cannot_be_recorded(tmp_path, monkeypatch):
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    sent: list[dict] = []
+
+    class _Adapter(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = None           # no testnet authorization: the store refuses to write
+
+        def submit(self, request, **kw):
+            sent.append(dict(request))
+            return super().submit(request, **kw)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Adapter())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_SNAPSHOT_NOT_RECORDED"
+    assert sent == [] and testnet_evidence.read_cycles(tmp_path) == []
+
+
+# --- PR2b review: the door's refusals before the venue ---------------------------------------------
+
+def _capable_door(monkeypatch, sent):
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+
+    class _Adapter(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, request, **kw):
+            sent.append(dict(request))
+            return super().submit(request, **kw)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Adapter())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    return door
+
+
+def test_a_store_that_fails_any_way_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
+    """A store failure that is not typed escaped the door as a traceback (review finding 4)."""
+    from tests._helpers import FakeSnapshotStore
+
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    monkeypatch.setattr(door.testnet, "testnet_snapshot_store",
+                        lambda **kw: FakeSnapshotStore(VENUE_TESTNET, error=RuntimeError("disk")))
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_SNAPSHOT_NOT_RECORDED"
+    assert sent == [] and testnet_evidence.read_cycles(tmp_path) == []
+
+
+def test_an_entry_refused_at_the_venue_door_counts_nothing_and_records_no_cycle(tmp_path, monkeypatch):
+    """`SubmitRefused` is raised only before the adapter: the entry never left, so it is not a
+    testnet order and there is no open position to warn about (review finding 4)."""
+    from runtime.mvp_runtime.errors import PersistenceError
+    from tests._helpers import FakeSnapshotStore
+
+    class _SecondWriteFails(FakeSnapshotStore):
+        calls = 0
+
+        def append(self, snapshot):
+            type(self).calls += 1
+            if type(self).calls > 1:
+                raise PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted")
+            return super().append(snapshot)
+
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    monkeypatch.setattr(door.testnet, "testnet_snapshot_store",
+                        lambda **kw: _SecondWriteFails(VENUE_TESTNET))
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "PRE_ORDER_SNAPSHOTS_LOCKED"
+    assert sent == []
+    assert testnet_evidence.read_cycles(tmp_path) == []
+    assert testnet_execution.count_testnet_today(tmp_path) == 0      # the counter's own day
+
+
+def test_a_refusal_after_the_entry_left_still_records_the_cycle(tmp_path, monkeypatch):
+    """The other half: once the entry is at the venue, a later `SubmitRefused` (the exit) is an
+    incomplete cycle with the entry counted — the record says what may still be open."""
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    real = door.submit_and_reconcile
+    calls = {"n": 0}
+
+    def exit_refused(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise live_execution.SubmitRefused("MALFORMED_INTENT", "scripted exit refusal")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(door, "submit_and_reconcile", exit_refused)
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_CYCLE_INCOMPLETE"
+    assert len(testnet_evidence.read_cycles(tmp_path)) == 1
+    assert testnet_execution.count_testnet_today(tmp_path) == 2      # the entry and the exit

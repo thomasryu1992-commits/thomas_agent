@@ -80,6 +80,9 @@ from .live_order import (
 )
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
+from . import pre_order_gate
+from .execution_stage import PURPOSE_AUTONOMOUS
+from .state import VENUE_MAINNET
 
 LIVE_ENTRY_VERSION = "live_entry.v0.1"
 
@@ -543,6 +546,127 @@ def plan_live_entry(
     return _decision(STATUS_READY, [], symbol=symbol, now=now, **detail)
 
 
+# --- the pre-order gate for an autonomous entry (PR2b) ------------------------------------------
+
+# Every door of `plan_live_entry`, named, with the reason codes that mean it refused.
+ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("strategy_armed_live", frozenset({NOT_LIVE_ROUTABLE, LIVE_TIER_UNKNOWN})),
+    ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
+    ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
+    ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
+    ("book_reconciled", frozenset({RECONCILE_REFUSED})),
+    ("capacity_available", frozenset({CAPACITY_REFUSED})),
+    ("venue_filters_valid", frozenset({NO_FILTERS})),
+    ("fixed_exit_only", frozenset({MANAGED_EXIT_REFUSED})),
+    ("spread_within_limit", frozenset({BOOK_UNREADABLE_REFUSED, SPREAD_REFUSED})),
+    ("bracket_priced", frozenset({BRACKET_UNPRICEABLE})),
+    ("stop_inside_liquidation", frozenset({LIQUIDATION_REFUSED})),
+    ("entry_economic", frozenset({COST_REFUSED})),
+    ("order_sizable", frozenset({SIZING_REFUSED})),
+    ("intent_built", frozenset({INTENT_REFUSED})),
+    ("final_guard_approved", frozenset({GUARD_REFUSED})),
+)
+CHECK_DECISION_READY = "entry_decision_ready"
+CHECK_INTENT_MATCHES_DECISION = "intent_matches_decision"
+CHECK_BRACKET_MATCHES_DECISION = "bracket_matches_intent"
+
+
+def _limits_facts(limits: Any) -> dict[str, Any]:
+    """The caps an entry was judged against — numbers only, never the operator's phrases."""
+    return {name: getattr(limits, name, None) for name in (
+        "max_order_notional_usdt", "absolute_max_notional_usdt", "max_daily_order_count",
+        "max_open_notional_usdt", "daily_loss_limit_usdt", "manual_kill_switch",
+    )}
+
+
+def gate_live_entry(
+    intent: Mapping[str, Any],
+    *,
+    bracket: Mapping[str, Any] | None,
+    decision_kwargs: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    now: str,
+) -> dict[str, Any]:
+    """The pre-order gate for an autonomous entry (PR2b). Pure.
+
+    Re-runs :func:`plan_live_entry` on ``decision_kwargs`` — the facts the leg read — and seals what
+    it finds. The decision is pure, so the re-run re-verifies every door with no second copy of any
+    rule. What is about to leave must be what those facts decide: the ``intent`` (a size changed
+    after planning, a moved stop, another symbol) and the ``bracket`` the leg will place — its
+    protective orders come from that record, not from the intent, so it is checked on its own. Either
+    one drifting is a failed check rather than a trusted value. The re-derived decision's own guard
+    contributes its checks by name."""
+    rederived = plan_live_entry(**dict(decision_kwargs))
+    ready = rederived.get("status") == STATUS_READY and rederived.get("ready") is True
+    reasons = set(rederived.get("reasons") or [])
+    checks = [pre_order_gate.check(CHECK_DECISION_READY, ready, None if ready else sorted(reasons))]
+    for door, codes in ENTRY_DOORS:
+        refused = sorted(reasons & codes)
+        if ready or refused:
+            # A refused decision stops at its first sequential door, so only the doors it names
+            # are known; a ready one passed every door.
+            checks.append(pre_order_gate.check(door, not refused, refused or None))
+    guard = rederived.get("guard") if isinstance(rederived.get("guard"), Mapping) else {}
+    checks.extend(dict(c) for c in guard.get("checks") or () if isinstance(c, Mapping))
+
+    expected = rederived.get("intent") if isinstance(rederived.get("intent"), Mapping) else None
+    same_order = bool(ready and expected is not None
+                      and pre_order_gate.intent_fingerprint(intent) == pre_order_gate.intent_fingerprint(expected))
+    checks.append(pre_order_gate.check(
+        CHECK_INTENT_MATCHES_DECISION, same_order,
+        None if same_order else "the order is not the one these facts decide"))
+    priced = rederived.get("bracket") if isinstance(rederived.get("bracket"), Mapping) else None
+    bracket_agrees = bool(ready and priced is not None and isinstance(bracket, Mapping)
+                          and dict(bracket) == dict(priced))
+    checks.append(pre_order_gate.check(
+        CHECK_BRACKET_MATCHES_DECISION, bracket_agrees,
+        None if bracket_agrees else "the protective orders are not the ones the decision priced"))
+
+    kw = decision_kwargs
+    verdict = kw.get("verdict") if isinstance(kw.get("verdict"), Mapping) else {}
+    reconciliation = kw.get("reconciliation") if isinstance(kw.get("reconciliation"), Mapping) else {}
+    filters = kw.get("filters")
+    facts = {
+        "equity_usdt": kw.get("equity_usdt"),
+        "spread_bps": kw.get("spread_bps"),
+        "submitted_today": kw.get("submitted_today"),
+        "daily_loss_breached": kw.get("daily_loss_breached"),
+        "runtime_active": kw.get("runtime_active"),
+        "gate_open": kw.get("gate_open"),
+        "budget_registered": kw.get("budget_registered"),
+        "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
+        "allowed_symbols": list(kw.get("allowed_symbols") or ()),
+        "entry_bar_time": kw.get("entry_bar_time"),
+        "local_positions": len(kw.get("local_positions") or ()),
+        "reconcile_status": reconciliation.get("status"),
+        "verdict": {"status": verdict.get("status"),
+                    "allow_new_position": verdict.get("allow_new_position"),
+                    "problems": list(verdict.get("problems") or ())},
+        "limits": _limits_facts(kw.get("limits")),
+        "filters": ({name: getattr(filters, name, None)
+                     for name in ("step_size", "min_qty", "min_notional", "tick_size")}
+                    if filters is not None else None),
+        "decision": {key: rederived.get(key) for key in (
+            "status", "reasons", "capacity", "bracket", "sizing", "round_trip_cost_r",
+            "worst_case_carry_r", "liquidation_leverage", "liquidation_leverage_source",
+            "exit_terms", "entry_bar",
+        )},
+        "guard": {key: guard.get(key) for key in (
+            "status", "notional_usdt", "effective_cap_usdt", "open_exposure_cap_usdt",
+            "current_open_notional_usdt", "submitted_today", "max_daily_order_count",
+            "daily_loss_limit_usdt", "daily_loss_breached",
+        )},
+    }
+    lineage = {field: intent.get(field) for field in (
+        "strategy_id", "candidate_id", "strategy_rule_hash", "strategy_generation_id",
+        "timeframe", "candle_time", "order_intent_id", "idempotency_key", "client_order_id",
+    )}
+    return pre_order_gate.evaluate_pre_order_gate(
+        intent, purpose=PURPOSE_AUTONOMOUS, venue=VENUE_MAINNET, checks=checks,
+        profile=profile, lineage=lineage, facts=facts, now=now,
+    )
+
+
 def _decision(status: str, reasons: list[str], *, symbol: str, now: str, **detail: Any) -> dict[str, Any]:
     return {
         "live_entry_version": LIVE_ENTRY_VERSION,
@@ -593,7 +717,9 @@ __all__ = [
     "STATUS_REFUSED",
     "STOP_LOSS_COOLDOWN",
     "VERDICT_REFUSED",
+    "ENTRY_DOORS",
     "entry_status_line",
+    "gate_live_entry",
     "plan_live_entry",
     "price_bracket",
 ]

@@ -16,7 +16,7 @@ import io
 import json
 
 import pytest
-from tests._helpers import make_gate_authorization
+from tests._helpers import FakeSnapshotStore, approved_snapshot, make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_execution as lx
 from runtime.mvp_runtime.crypto.live_order import (
@@ -47,6 +47,16 @@ def _intent(*, reduce_only=False, **kw):
         close_reason="stop_loss" if reduce_only else None,
     )
     return enrich_order_identity(intent)
+
+
+def _submit(intent, **kw):
+    """`submit_and_reconcile` as a door calls it since PR2b: an entry names the snapshot the
+    pre-order gate sealed for it, and sends only once that snapshot is recorded."""
+    if not intent.get("reduce_only"):
+        intent, snapshot = approved_snapshot(intent)
+        kw.setdefault("risk_snapshot", snapshot)
+        kw.setdefault("snapshot_store", FakeSnapshotStore())
+    return lx.submit_and_reconcile(intent, **kw)
 
 
 class _FakeAdapter:
@@ -136,7 +146,7 @@ def test_reconcile_names_every_divergence(override, needle):
 # --- submit_and_reconcile orchestration --------------------------------------
 
 def test_dry_run_reconciles_end_to_end():
-    res = lx.submit_and_reconcile(_intent(), adapter=lx.DryRunOrderAdapter(), guard_verdict=APPROVED, now=NOW)
+    res = _submit(_intent(), adapter=lx.DryRunOrderAdapter(), guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == RECONCILED and res["mismatches"] == []
     assert res["submit_error"] is None and res["exchange_order_id"].startswith("dryrun-")
 
@@ -150,7 +160,7 @@ def test_refuses_an_unapproved_guard_verdict():
 
 def test_a_lost_submit_reconciles_to_not_found():
     intent = _intent()
-    res = lx.submit_and_reconcile(intent, adapter=_FakeAdapter(venue_order=None), guard_verdict=APPROVED, now=NOW)
+    res = _submit(intent, adapter=_FakeAdapter(venue_order=None), guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == lx.NOT_FOUND
 
 
@@ -159,12 +169,12 @@ def test_an_ambiguous_submit_that_landed_still_reconciles():
     from the venue read, not assumed lost."""
     intent = _intent()
     adapter = _FakeAdapter(venue_order=_venue_order_from(intent), submit_raises="TOOL_TRANSPORT")
-    res = lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
+    res = _submit(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
     assert res["submit_error"] == "TOOL_TRANSPORT" and res["reconcile_status"] == RECONCILED
 
 
 def test_a_failed_reconcile_query_is_unreconcilable():
-    res = lx.submit_and_reconcile(
+    res = _submit(
         _intent(), adapter=_FakeAdapter(fetch_raises="TOOL_TRANSPORT"), guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == lx.UNRECONCILABLE and res["exchange_order_id"] is None
 
@@ -172,7 +182,7 @@ def test_a_failed_reconcile_query_is_unreconcilable():
 def test_a_mismatched_fill_is_surfaced():
     intent = _intent()
     adapter = _FakeAdapter(venue_order=_venue_order_from(intent, executedQty=0.002))
-    res = lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
+    res = _submit(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == lx.MISMATCH
 
 
@@ -364,15 +374,27 @@ def test_every_caller_of_the_venue_also_counts_the_order():
         "Add it here AND make it record a submission on the daily counter, or the registered "
         "max_daily_order_count silently stops bounding anything."
     )
+    import ast
+
     for path in doors:
         source = path.read_text(encoding="utf-8")
         assert "record_submission()" in source or "reserve_submission(" in source, (
             f"{path.name} can place a live order but never records it on the daily counter"
         )
+    # PR2b: every door that sends an entry hands the venue door its pre-order snapshot and the
+    # store to record it on. (The binding itself refuses an entry without them; this keeps a new
+    # entry call from reaching review as a guaranteed runtime refusal.)
+    for path in doors:
+        entry_calls = [
+            call for call in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(call, ast.Call)
+            and getattr(call.func, "attr", getattr(call.func, "id", None)) == "submit_and_reconcile"
+            and {kw.arg for kw in call.keywords} >= {"risk_snapshot", "snapshot_store"}
+        ]
+        assert entry_calls, f"{path.name} sends an entry without naming its pre-order snapshot"
+
     # A reservation only bounds anything if it happens first: in the function that sends the
     # entry, the slot is taken on an earlier line than the submit.
-    import ast
-
     def _calls(node, name):
         return [c.lineno for c in ast.walk(node) if isinstance(c, ast.Call)
                 and getattr(c.func, "attr", getattr(c.func, "id", None)) == name]
@@ -615,14 +637,14 @@ def test_reconcile_result_carries_the_actual_fill():
     intent = _intent()
     adapter = _FakeAdapter(venue_order={**_venue_order_from(intent),
                                         "avgPrice": "60000.5", "cumQuote": "60.0005"})
-    res = lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
+    res = _submit(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW)
     assert res["fill"]["avg_price"] == 60000.5 and res["fill"]["cum_quote"] == 60.0005
     assert res["order_type"] == "MARKET"
 
 
 def test_an_unreconciled_order_reports_an_unknown_fill_not_a_free_trade():
     """None, never 0.0 — a missing fill price must not read as a costless trade."""
-    res = lx.submit_and_reconcile(
+    res = _submit(
         _intent(), adapter=_FakeAdapter(fetch_raises="TOOL_TRANSPORT"),
         guard_verdict=APPROVED, now=NOW)
     assert res["reconcile_status"] == lx.UNRECONCILABLE
@@ -792,7 +814,7 @@ def test_the_entry_record_carries_the_price_the_plan_meant_to_pay():
     """
     intent = _intent()
     intent["entry_price"] = 64_000.0
-    res = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+    res = _submit(intent, adapter=lx.DryRunOrderAdapter(),
                                   guard_verdict=APPROVED, now=NOW)
     assert res["intended_price"] == 64_000.0
 
@@ -800,7 +822,7 @@ def test_the_entry_record_carries_the_price_the_plan_meant_to_pay():
 def test_a_plan_with_no_entry_price_records_none_rather_than_the_fill():
     """Substituting the fill would make every such row read as zero slippage — the flattering
     direction, and the same shape `cost.outcome_net_r` refuses in its own domain."""
-    res = lx.submit_and_reconcile(_intent(), adapter=lx.DryRunOrderAdapter(),
+    res = _submit(_intent(), adapter=lx.DryRunOrderAdapter(),
                                   guard_verdict=APPROVED, now=NOW)
     assert "intended_price" in res and res["intended_price"] is None
 
@@ -810,7 +832,7 @@ def test_an_unusable_intended_price_reads_as_not_recorded(value):
     """`True` is the one worth naming: it is an int in Python and would record as 1.0."""
     intent = _intent()
     intent["entry_price"] = value
-    res = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+    res = _submit(intent, adapter=lx.DryRunOrderAdapter(),
                                   guard_verdict=APPROVED, now=NOW)
     assert res["intended_price"] is None
 
@@ -818,10 +840,10 @@ def test_an_unusable_intended_price_reads_as_not_recorded(value):
 def test_recording_it_changes_nothing_else_about_the_order():
     """Recording only: the request sent and the reconcile verdict must be untouched."""
     intent = _intent()
-    without = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+    without = _submit(intent, adapter=lx.DryRunOrderAdapter(),
                                       guard_verdict=APPROVED, now=NOW)
     intent["entry_price"] = 64_000.0
-    with_price = lx.submit_and_reconcile(intent, adapter=lx.DryRunOrderAdapter(),
+    with_price = _submit(intent, adapter=lx.DryRunOrderAdapter(),
                                          guard_verdict=APPROVED, now=NOW)
     for key in ("reconcile_status", "mismatches", "symbol", "order_type", "reduce_only"):
         assert without[key] == with_price[key]

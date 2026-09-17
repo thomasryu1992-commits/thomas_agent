@@ -134,6 +134,24 @@ LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
 # not expire, and it still takes a written operator reason to clear.
 MAX_CONSECUTIVE_BRACKET_FAILURES = 5
 
+# The checks `evaluate_live_order_guard` runs, in its order (PR2b). Every block names one of these,
+# and the tests hold the roster and the blocks together.
+GUARD_CHECK_IDS = (
+    "budget_registered",
+    "symbol_allowlisted",
+    "trading_opted_in",
+    "confirmation_phrase",
+    "manual_kill_switch_off",
+    "runtime_active",
+    "daily_loss_within_limit",
+    "execution_stage_admits",
+    "not_connectivity_test",
+    "order_notional_within_cap",
+    "daily_order_count_within_cap",
+    "open_exposure_within_cap",
+)
+INTENT_SHAPE_CHECK = "intent_shape_complete"
+
 _TRUTHY = frozenset({"1", "true", "yes", "y", "on", "enabled"})
 
 
@@ -439,6 +457,13 @@ def evaluate_live_order_guard(
     cfg = limits
     blocks: list[str] = []
     repairs: list[str] = []
+    # Which named check each block failed (PR2b): the pre-order gate records every check by name,
+    # and the prose in `blocks` stays exactly what an operator has always read.
+    failed: dict[str, list[str]] = {}
+
+    def block(check_id: str, message: str) -> None:
+        blocks.append(message)
+        failed.setdefault(check_id, []).append(message)
 
     # 0. The registered trading budget. ``autonomous_spend_without_registered_budget: '0'`` —
     #    no live order until a self-hashed budget record is registered and valid. The caps below
@@ -446,7 +471,7 @@ def evaluate_live_order_guard(
     #    or a legacy one outside its stored window, arrives here as budget_registered=False and
     #    blocks regardless of the env caps.
     if not budget_registered:
-        blocks.append(
+        block("budget_registered", 
             "no valid registered live-trading budget "
             "(autonomous_spend_without_registered_budget); register one with "
             "scripts/register_live_trading_budget.py"
@@ -459,20 +484,20 @@ def evaluate_live_order_guard(
     allowlist = normalize_symbols(allowed_symbols)
     order_symbol = str(intent.get("symbol") or "").strip().upper()
     if not allowlist:
-        blocks.append(
+        block("symbol_allowlisted", 
             f"no symbol allowlist backs this order (an unstated scope authorizes nothing); "
             f"{REGISTER_BUDGET_HINT}"
         )
     elif not order_symbol:
-        blocks.append("live order intent names no symbol, so it cannot be checked against the allowlist")
+        block("symbol_allowlisted", "live order intent names no symbol, so it cannot be checked against the allowlist")
     elif order_symbol not in allowlist:
-        blocks.append(
+        block("symbol_allowlisted", 
             f"{order_symbol} is not in the registered budget's symbol allowlist "
             f"({', '.join(allowlist)}); re-register the budget to widen it"
         )
     # 1. The switch. Without the operator's live-trading opt-in nothing else matters.
     if not gate_open:
-        blocks.append(f"live trading is not enabled ({LIVE_TRADING_ENV} is not '{REAL_LIVE_TRADING}')")
+        block("trading_opted_in", f"live trading is not enabled ({LIVE_TRADING_ENV} is not '{REAL_LIVE_TRADING}')")
     # 2. The phrase. The opt-in enables the capability; the phrase proves intent to use it. One
     #    phrase per capability: a canary-mode order (today the slippage probe) is authorized by the
     #    canary phrase, never the autonomous one, and the canary phrase alone cannot authorize an
@@ -482,22 +507,23 @@ def evaluate_live_order_guard(
     #    LIVE-tier (docs/DEPLOYMENT.md).
     if canary:
         if not cfg.canary_confirmation_present():
-            blocks.append(f"canary confirmation phrase not present ({CANARY_CONFIRMATION_ENV})")
+            block("confirmation_phrase", f"canary confirmation phrase not present ({CANARY_CONFIRMATION_ENV})")
     elif not cfg.confirmation_present():
-        blocks.append(f"live confirmation phrase not present ({CONFIRMATION_ENV})")
+        block("confirmation_phrase", f"live confirmation phrase not present ({CONFIRMATION_ENV})")
     # 3. The trader's own halt.
     if cfg.manual_kill_switch:
-        blocks.append(f"manual kill switch is engaged ({MANUAL_KILL_SWITCH_ENV})")
+        block("manual_kill_switch_off", f"manual kill switch is engaged ({MANUAL_KILL_SWITCH_ENV})")
     # 4. The runtime's halt. Binds kill_blocks: external_execution, which had no door until
     #    now — a PAUSED or KILLED runtime must not open a live position.
     if not runtime_active:
-        blocks.append("runtime is not ACTIVE; kill_blocks external_execution forbids a live entry")
+        block("runtime_active", "runtime is not ACTIVE; kill_blocks external_execution forbids a live entry")
     # 5. Today's realized loss. An unconfigured limit arrives here already True.
     if daily_loss_breached:
         if cfg.daily_loss_limit_usdt <= 0:
-            blocks.append(f"daily loss limit is not configured; {REGISTER_BUDGET_HINT}")
+            block("daily_loss_within_limit", f"daily loss limit is not configured; {REGISTER_BUDGET_HINT}")
         else:
-            blocks.append(
+            block(
+                "daily_loss_within_limit",
                 f"daily realized-loss limit {cfg.daily_loss_limit_usdt} USDT reached - halted for today"
             )
     # 6. The execution stage: what rung this machine is registered at, and whether that record
@@ -512,43 +538,48 @@ def evaluate_live_order_guard(
         needs = required_stage(purpose)
         why = (f"reads {execution_stage.stage}" if execution_stage.valid
                else f"reads READ_ONLY ({execution_stage.reason_code})")
-        blocks.append(
+        block(
+            "execution_stage_admits",
             f"execution stage {why}; a {'probe' if canary else 'live'} entry needs {needs}"
             f" - register a transition with scripts/register_execution_stage.py (Thomas approves it)"
         )
     # 7. A connectivity probe must never ride the autonomous path.
     if intent.get("connectivity_test"):
-        blocks.append("connectivity_test intent cannot use the live order path")
+        block("not_connectivity_test", "connectivity_test intent cannot use the live order path")
 
     # 8. Per-order size.
     notional = _notional_of(intent)
     if cfg.max_order_notional_usdt <= 0:
-        blocks.append(f"per-order cap is not configured; {REGISTER_BUDGET_HINT}")
+        block("order_notional_within_cap", f"per-order cap is not configured; {REGISTER_BUDGET_HINT}")
     elif cfg.max_order_notional_usdt > cfg.absolute_max_notional_usdt:
-        blocks.append(
+        block(
+            "order_notional_within_cap",
             f"configured cap {cfg.max_order_notional_usdt} exceeds the absolute ceiling "
             f"{cfg.absolute_max_notional_usdt}"
         )
     if notional <= 0:
         repairs.append("order notional missing or non-positive")
     elif cfg.max_order_notional_usdt > 0 and notional > cfg.effective_max_notional_usdt:
-        blocks.append(
+        block(
+            "order_notional_within_cap",
             f"order notional {notional} exceeds the effective cap {cfg.effective_max_notional_usdt}"
         )
 
     # 9. Orders per UTC day.
     if cfg.max_daily_order_count <= 0:
-        blocks.append(f"daily order cap is not configured; {REGISTER_BUDGET_HINT}")
+        block("daily_order_count_within_cap", f"daily order cap is not configured; {REGISTER_BUDGET_HINT}")
     elif submitted_today >= cfg.max_daily_order_count:
-        blocks.append(
+        block(
+            "daily_order_count_within_cap",
             f"daily order cap reached ({submitted_today}/{cfg.max_daily_order_count})"
         )
 
     # 10. Total open exposure, counting what this order would add.
     if cfg.max_open_notional_usdt <= 0:
-        blocks.append(f"open exposure cap is not configured; {REGISTER_BUDGET_HINT}")
+        block("open_exposure_within_cap", f"open exposure cap is not configured; {REGISTER_BUDGET_HINT}")
     elif current_open_notional_usdt + notional > cfg.max_open_notional_usdt:
-        blocks.append(
+        block(
+            "open_exposure_within_cap",
             f"open exposure {current_open_notional_usdt} + {notional} exceeds the cap "
             f"{cfg.max_open_notional_usdt}"
         )
@@ -557,11 +588,21 @@ def evaluate_live_order_guard(
     repairs.extend(_shape_repairs(intent))
 
     status = STATUS_BLOCKED if blocks else (STATUS_REPAIR_REQUIRED if repairs else STATUS_READY)
+    checks = [
+        {"check": check_id, "ok": check_id not in failed,
+         "detail": "; ".join(failed[check_id]) if check_id in failed else None}
+        for check_id in GUARD_CHECK_IDS
+    ]
+    checks.append({"check": INTENT_SHAPE_CHECK, "ok": not repairs,
+                   "detail": "; ".join(repairs) if repairs else None})
     return {
         "status": status,
         "approved": status == STATUS_READY,
         "blocks": blocks,
         "repairs": repairs,
+        # Every check this guard ran, by name, passed or not (PR2b) — what the pre-order gate
+        # records on its snapshot. `approved` is still derived from `blocks` and `repairs` alone.
+        "checks": checks,
         "notional_usdt": notional,
         "notional_cap_usdt": cfg.max_order_notional_usdt,
         "effective_cap_usdt": cfg.effective_max_notional_usdt,

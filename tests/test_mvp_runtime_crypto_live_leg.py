@@ -19,8 +19,13 @@ import pytest
 
 from runtime.mvp_runtime.crypto import live_leg as ll
 from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
-from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
+from runtime.mvp_runtime.crypto.live_order import (
+    LIVE_CONFIRMATION_PHRASE,
+    LiveOrderLimits,
+    enrich_order_identity,
+)
 from runtime.mvp_runtime.errors import PersistenceError, SafetyGateBlocked, ToolError
+from tests._helpers import FakeSnapshotStore, approved_snapshot
 
 
 def _no_sleep(_seconds):
@@ -35,12 +40,21 @@ LIMITS = LiveOrderLimits(
     confirmation=LIVE_CONFIRMATION_PHRASE,
 )
 
-INTENT = {
-    "status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "direction": "LONG", "side": "BUY",
-    "order_type_exchange": "MARKET", "quantity": 0.001, "order_notional_usdt": 60.0,
-    "reduce_only": False, "connectivity_test": False, "client_order_id": "TAI_BTCUSDT_LONG_abc",
-    "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
-}
+def _intent(**kw):
+    """An entry intent with the identity its own fields produce, sealed by the pre-order gate
+    (PR2b): what `live_route` hands the leg."""
+    intent = enrich_order_identity({
+        "status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "direction": "LONG", "side": "BUY",
+        "order_type_exchange": "MARKET", "quantity": 0.001, "order_notional_usdt": 60.0,
+        "stop_loss": 59000.0, "take_profit": 62000.0,
+        "reduce_only": False, "connectivity_test": False, "created_at": NOW,
+        "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
+        **kw,
+    })
+    return approved_snapshot(intent)
+
+
+INTENT, SNAPSHOT = _intent()
 
 BRACKET = {
     "stop_loss": 59000.0, "take_profit": 62000.0, "risk_per_unit": 1000.0,
@@ -53,7 +67,7 @@ BAR = "2026-07-25T00:00:00Z"
 DECISION = {
     "status": "READY", "ready": True, "symbol": "BTCUSDT",
     "guard": {"approved": True, "status": "READY"},
-    "intent": INTENT, "bracket": BRACKET,
+    "intent": INTENT, "bracket": BRACKET, "risk_snapshot": SNAPSHOT,
     "sizing": {"sizable": True, "quantity": 0.001, "notional_usdt": 60.0},
     # The bar the leg claims before it sends (PR2a), as `plan_live_entry` names it.
     "entry_bar": {"context_key": "BTCUSDT__1d", "symbol": "BTCUSDT", "timeframe": "1d",
@@ -235,6 +249,7 @@ def _entry(**kw):
         position_store=kw.pop("position_store", FakeStore()),
         counter=kw.pop("counter", FakeCounter()),
         entry_marks=kw.pop("entry_marks", FakeMarks()),
+        snapshot_store=kw.pop("snapshot_store", FakeSnapshotStore()),
         governance=kw.pop("governance", GOVERNANCE),
         gate_open=kw.pop("gate_open", True),
         limits=kw.pop("limits", LIMITS),
@@ -508,7 +523,9 @@ def test_a_naked_close_states_the_same_risk_the_booked_path_would_have():
 
 def _second_entry_decision():
     """A second, distinct entry on the same symbol — a different order, so a different id."""
-    return {**DECISION, "intent": {**INTENT, "client_order_id": "TAI_BTCUSDT_LONG_def"}}
+    intent, snapshot = _intent(candle_time="2026-07-25T04:00:00Z")
+    assert intent["client_order_id"] != INTENT["client_order_id"]
+    return {**DECISION, "intent": intent, "risk_snapshot": snapshot}
 
 
 def test_a_naked_outcome_names_the_position_that_briefly_existed():
@@ -1135,3 +1152,120 @@ def test_the_submit_message_wins_over_a_later_fetch_failure():
     assert sl["error"] == "ORDER_REJECTED"
     assert "scripted SL rejection" in (sl["error_detail"] or "")
     assert "fetch blew up" not in (sl["error_detail"] or "")
+
+
+# --- the pre-order gate's snapshot at the leg (PR2b) ----------------------------------------------
+
+class _EventStore(FakeSnapshotStore):
+    def append(self, snapshot):
+        EVENTS.append("record")
+        return super().append(snapshot)
+
+
+def test_the_snapshot_is_checked_first_and_recorded_after_the_bar_and_the_slot():
+    store = _EventStore()
+    result = _entry(snapshot_store=store)
+    assert result["status"] == ll.ENTRY_OPENED
+    # record, then the venue door's own idempotent re-bind (a second append that writes nothing).
+    assert EVENTS[:4] == ["claim", "reserve", "record", "record"] and EVENTS[4] == "submit"
+    assert [s["risk_snapshot_sha256"] for s in store.appended] == [SNAPSHOT["risk_snapshot_sha256"]]
+    assert result["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
+    assert result["position"]["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
+
+
+@pytest.mark.parametrize("decision,reason", [
+    ({**DECISION, "risk_snapshot": None}, "RISK_SNAPSHOT_MISSING"),
+    ({k: v for k, v in DECISION.items() if k != "risk_snapshot"}, "RISK_SNAPSHOT_MISSING"),
+    ({**DECISION, "risk_snapshot": _intent(candle_time="2026-07-25T08:00:00Z")[1]},
+     "RISK_SNAPSHOT_INTENT_MISMATCH"),
+    ({**DECISION, "intent": {**INTENT, "quantity": 0.002}}, "RISK_SNAPSHOT_INTENT_MISMATCH"),
+    ({**DECISION, "risk_snapshot": {**SNAPSHOT, "approved": False}}, "RISK_SNAPSHOT_TAMPERED"),
+], ids=["none", "absent", "another-order", "changed-size", "edited"])
+def test_a_decision_without_its_own_snapshot_spends_nothing_and_sends_nothing(decision, reason):
+    marks, counter, adapter, store = FakeMarks(), FakeCounter(), FakeAdapter(), FakeSnapshotStore()
+    result = _entry(decision=decision, entry_marks=marks, counter=counter, adapter=adapter,
+                    snapshot_store=store)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [reason]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+
+
+_SHORT_INTENT, _SHORT_SNAPSHOT = _intent(direction="SHORT", side="SELL")
+
+
+@pytest.mark.parametrize("decision", [
+    {**DECISION, "bracket": {**BRACKET, "stop_loss": 58000.0}},
+    {**DECISION, "bracket": {**BRACKET, "take_profit": 63000.0}},
+    {**DECISION, "bracket": {**BRACKET, "stop_side": "BUY"}},
+    {**DECISION, "bracket": {**BRACKET, "take_profit_side": "BUY"}},
+    {**DECISION, "bracket": None},
+    {**DECISION, "intent": _SHORT_INTENT, "risk_snapshot": _SHORT_SNAPSHOT},
+], ids=["moved-stop", "moved-target", "stop-adds", "target-adds", "no-bracket", "long-legs-on-a-short"])
+def test_protection_that_is_not_the_approved_one_spends_nothing_and_sends_nothing(decision):
+    """The snapshot seals the intent's stop and target, and the legs are placed from the bracket:
+    a bracket that disagrees — in price, or on a side that would add to the position — is not the
+    protection that was approved."""
+    marks, counter, adapter, store = FakeMarks(), FakeCounter(), FakeAdapter(), FakeSnapshotStore()
+    result = _entry(decision=decision, entry_marks=marks, counter=counter, adapter=adapter,
+                    snapshot_store=store)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [ll.BRACKET_NOT_APPROVED]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+
+
+def test_no_snapshot_store_no_order():
+    adapter = FakeAdapter()
+    result = _entry(snapshot_store=None, adapter=adapter)
+    assert result["reason_codes"] == [ll.NO_SNAPSHOT_STORE] and adapter.submitted == []
+
+
+@pytest.mark.parametrize("error,reason", [
+    (PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted"), "PRE_ORDER_SNAPSHOTS_LOCKED"),
+    (OSError(28, "No space left on device"), "UNEXPECTED_OSError"),
+])
+def test_a_snapshot_that_cannot_be_recorded_sends_nothing(error, reason):
+    adapter = FakeAdapter()
+    result = _entry(snapshot_store=FakeSnapshotStore(error=error), adapter=adapter)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [reason]
+    assert adapter.submitted == []
+
+
+def test_a_naked_close_records_which_snapshot_its_entry_left_under():
+    outcome = _entry(adapter=FakeAdapter(missing={"TP"}))["outcome"]
+    assert outcome["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
+
+
+def test_a_booked_position_hands_its_snapshot_to_the_exit_outcome():
+    ledger = FakeLedger()
+    result = _exit(position={**POSITION, "risk_snapshot_sha256": "sha256:" + "a" * 64}, ledger=ledger)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert ledger.appended[0]["risk_snapshot_sha256"] == "sha256:" + "a" * 64
+
+
+# --- PR2b review: the protective door places protective orders only -------------------------------
+
+@pytest.mark.parametrize("intent", [
+    # An opening MARKET order handed to the leg door (the review's 3 BTC case).
+    {"symbol": "BTCUSDT", "side": "BUY", "order_type_exchange": "MARKET", "quantity": 3.0,
+     "reduce_only": False, "client_order_id": "TAI_BTCUSDT_SL_open"},
+    # A target LIMIT that lost its reduce-only flag.
+    {"symbol": "BTCUSDT", "side": "SELL", "order_type_exchange": "LIMIT", "quantity": 0.001,
+     "price": 62000.0, "time_in_force": "GTC", "reduce_only": False,
+     "client_order_id": "TAI_BTCUSDT_TP_open"},
+], ids=["market-entry", "limit-without-reduce-only"])
+def test_a_leg_that_could_add_exposure_is_never_sent(intent):
+    adapter = FakeAdapter()
+    placed = ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+    assert placed["placed"] is False and placed["may_be_resting"] is False
+    assert placed["error"] == ll.BRACKET_LEG_NOT_PROTECTIVE
+    assert adapter.submitted == [] and EVENTS == []
+
+
+@pytest.mark.parametrize("leg", ["SL", "TP"])
+def test_the_real_legs_are_protective(leg):
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg=leg, side="SELL", price=59000.0,
+                                     working_type="MARK_PRICE", position_seed="seed", quantity=0.001)
+    adapter = FakeAdapter()
+    placed = ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+    assert placed["placed"] is True and len(adapter.submitted) == 1

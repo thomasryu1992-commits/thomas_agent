@@ -329,6 +329,18 @@ TESTNET_STATUS_REPAIR_REQUIRED = "REPAIR_REQUIRED"
 TESTNET_STATUS_READY = "READY"
 
 
+# The checks `evaluate_testnet_order_guard` runs, in its order (PR2b).
+TESTNET_GUARD_CHECK_IDS = (
+    "execution_stage_admits",
+    "trading_opted_in",
+    "manual_kill_switch_off",
+    "runtime_active",
+    "order_notional_within_cap",
+    "daily_order_count_within_cap",
+    "not_connectivity_test",
+)
+
+
 def evaluate_testnet_order_guard(
     intent: Mapping[str, Any],
     *,
@@ -347,24 +359,32 @@ def evaluate_testnet_order_guard(
     from .live_order import _shape_repairs
 
     blocks: list[str] = []
+    # Which named check each block failed (PR2b), as the live guard records them.
+    failed: dict[str, list[str]] = {}
+
+    def block(check_id: str, message: str) -> None:
+        blocks.append(message)
+        failed.setdefault(check_id, []).append(message)
+
     # 1. The stage. A testnet order is the evidence for the climb out of SIGNED_TESTNET, so that
     #    is the rung it needs — and a machine below it (or with no binding record) sends nothing.
     if not execution_stage.allows(PURPOSE_TESTNET):
         needs = required_stage(PURPOSE_TESTNET)
         why = (f"reads {execution_stage.stage}" if execution_stage.valid
                else f"reads READ_ONLY ({execution_stage.reason_code})")
-        blocks.append(
+        block(
+            "execution_stage_admits",
             f"execution stage {why}; a signed testnet order needs {needs} - register a transition "
             "with scripts/register_execution_stage.py (Thomas approves it)"
         )
     # 2. The opt-in. Its own switch, never the live one.
     if not gate_open:
-        blocks.append(f"signed testnet trading is not enabled ({TESTNET_TRADING_ENV} is not '{REAL_TESTNET_TRADING}')")
+        block("trading_opted_in", f"signed testnet trading is not enabled ({TESTNET_TRADING_ENV} is not '{REAL_TESTNET_TRADING}')")
     # 3. Both halts. A machine its operator has stopped sends nothing anywhere, money or not.
     if manual_kill_switch:
-        blocks.append("manual kill switch is engaged")
+        block("manual_kill_switch_off", "manual kill switch is engaged")
     if not runtime_active:
-        blocks.append("runtime is not ACTIVE; kill_blocks external_execution forbids an order")
+        block("runtime_active", "runtime is not ACTIVE; kill_blocks external_execution forbids an order")
     # 4. The bound this path carries in code, because no record declares one for a venue that
     #    trades no money. Both are the testnet venue's own counter (PR1d-0).
     notional = 0.0
@@ -373,22 +393,30 @@ def evaluate_testnet_order_guard(
     except (TypeError, ValueError):
         notional = 0.0
     if notional > max_notional_usdt:
-        blocks.append(f"testnet order notional {notional} exceeds the path's cap {max_notional_usdt}")
+        block("order_notional_within_cap", f"testnet order notional {notional} exceeds the path's cap {max_notional_usdt}")
     if submitted_today >= max_daily_orders:
-        blocks.append(f"testnet daily order cap reached ({submitted_today}/{max_daily_orders})")
+        block("daily_order_count_within_cap", f"testnet daily order cap reached ({submitted_today}/{max_daily_orders})")
     # 5. A connectivity probe must never ride an order path, here either.
     if intent.get("connectivity_test"):
-        blocks.append("connectivity_test intent cannot use the testnet order path")
+        block("not_connectivity_test", "connectivity_test intent cannot use the testnet order path")
     if intent.get("reduce_only") and notional <= 0:
         pass  # a reduceOnly close carries no new exposure; its size is the position's
     repairs = _shape_repairs(intent)
     status = (TESTNET_STATUS_BLOCKED if blocks
               else TESTNET_STATUS_REPAIR_REQUIRED if repairs else TESTNET_STATUS_READY)
+    checks = [
+        {"check": check_id, "ok": check_id not in failed,
+         "detail": "; ".join(failed[check_id]) if check_id in failed else None}
+        for check_id in TESTNET_GUARD_CHECK_IDS
+    ]
+    checks.append({"check": "intent_shape_complete", "ok": not repairs,
+                   "detail": "; ".join(repairs) if repairs else None})
     return {
         "status": status,
         "approved": status == TESTNET_STATUS_READY,
         "blocks": blocks,
         "repairs": repairs,
+        "checks": checks,
         "venue": VENUE_TESTNET,
         "execution_stage": execution_stage.stage,
         "notional_usdt": notional,
@@ -412,6 +440,65 @@ class TestnetOrderCounter(_LiveOrderCounter):
         super().__init__(root=root, authorization=authorization, venue=VENUE_TESTNET)
 
 
+def testnet_snapshot_store(*, root: Any = None, authorization: Authorization | None = None) -> Any:
+    """The testnet venue's pre-order snapshot store (PR2b, decision 20): the mainnet store's format
+    and lock on the testnet venue's path, behind the testnet provider — as the counter above is."""
+    from .pre_order_gate import PreOrderSnapshotStore
+
+    return PreOrderSnapshotStore(
+        root=root, authorization=authorization, venue=VENUE_TESTNET,
+        provider_id=TESTNET_PROVIDER_ID, flags=TESTNET_TRADING_FLAGS,
+    )
+
+
+def gate_testnet_order(
+    intent: Mapping[str, Any],
+    *,
+    expected_intent: Mapping[str, Any],
+    guard_kwargs: Mapping[str, Any],
+    stage: Any,
+    cycle_id: str,
+    now: str,
+) -> dict[str, Any]:
+    """The pre-order gate for a signed testnet entry (PR2b, decision 20). Pure.
+
+    The testnet guard, re-run on the facts the cycle read, is the check list; the intent about to
+    be sent must be ``expected_intent``, the one the cycle's own inputs build. The authority is the
+    stage record and the caps this path carries in code — no budget backs a venue with no money."""
+    from .execution_stage import PURPOSE_TESTNET
+    from .pre_order_gate import (
+        AUTHORITY_TESTNET_CAPS, approved_profile, check, evaluate_pre_order_gate, intent_fingerprint,
+    )
+
+    guard = evaluate_testnet_order_guard(expected_intent, **dict(guard_kwargs))
+    same = intent_fingerprint(intent) == intent_fingerprint(expected_intent)
+    checks = [*guard["checks"],
+              check("intent_matches_decision", same,
+                    None if same else "the order is not the one this cycle prices")]
+    profile = approved_profile(
+        purpose=PURPOSE_TESTNET, stage=stage,
+        authority={
+            "kind": AUTHORITY_TESTNET_CAPS,
+            "max_order_notional_usdt": guard_kwargs.get("max_notional_usdt", TESTNET_MAX_ORDER_NOTIONAL_USDT),
+            "max_daily_orders": guard_kwargs.get("max_daily_orders", TESTNET_MAX_DAILY_ORDERS),
+        },
+    )
+    lineage = {
+        "strategy_id": intent.get("strategy_id"),
+        "cycle_id": cycle_id,
+        "order_intent_id": intent.get("order_intent_id"),
+        "idempotency_key": intent.get("idempotency_key"),
+        "client_order_id": intent.get("client_order_id"),
+    }
+    facts = {key: guard_kwargs.get(key) for key in (
+        "gate_open", "runtime_active", "manual_kill_switch", "submitted_today",
+    )}
+    return evaluate_pre_order_gate(
+        intent, purpose=PURPOSE_TESTNET, venue=VENUE_TESTNET, checks=checks,
+        profile=profile, lineage=lineage, facts=facts, now=now,
+    )
+
+
 def count_testnet_today(root: Any = None, *, day: str | None = None) -> int:
     """Testnet orders submitted today. An ungated read, like the live one."""
     from .live_order import count_today
@@ -425,6 +512,7 @@ __all__ = [
     "DryRunTestnetOrderAdapter",
     "REAL_TESTNET_TRADING",
     "TESTNET_ADAPTER_TOOL_ID",
+    "TESTNET_GUARD_CHECK_IDS",
     "TESTNET_API_KEY_ENV",
     "TESTNET_API_SECRET_ENV",
     "TESTNET_BASE_URL",
@@ -437,5 +525,7 @@ __all__ = [
     "TestnetOrderCounter",
     "count_testnet_today",
     "evaluate_testnet_order_guard",
+    "gate_testnet_order",
     "select_testnet_order_adapter",
+    "testnet_snapshot_store",
 ]

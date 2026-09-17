@@ -235,6 +235,11 @@ def run_promotion(
             # writes it. Two fields because the ladder recovers WARNING back to PAPER_ACTIVE,
             # so a tier carried in `status` would be re-granted by a demotion path.
             pool_store.LIVE_TIER_FIELD: live_tier,
+            # The approval this entry was armed under (PR2b, decision 17): the pre-order gate
+            # names it in every order's approved profile. Only a LIVE install carries one, and a
+            # LIVE install cannot happen without a verified approval (PR1c).
+            **({pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id}
+               if live_tier == pool_store.LIVE_TIER_LIVE and verified_approval is not None else {}),
             "champion_score": c.get("champion_score"),
             "strategy_rule_hash": c.get("strategy_rule_hash"),
             "generation_id": c.get("generation_id"),

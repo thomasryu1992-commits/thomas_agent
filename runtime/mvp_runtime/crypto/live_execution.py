@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from .. import safety_gate, timeutil
-from ..errors import ToolError
+from ..errors import MvpRuntimeError, ToolError
 from ..safety_gate import Authorization
 from .live_pnl import (
     LIVE_TRADING_ENV,
@@ -68,6 +68,8 @@ from .live_pnl import (
     REAL_LIVE_TRADING,
 )
 from .live_promotion import RECONCILED
+from . import pre_order_gate
+from .state import VENUE_MAINNET
 
 ORDER_ADAPTER_TOOL_ID = "crypto.live.order_adapter"
 ORDER_ADAPTER_TOOL_VERSION = "0.1.0"
@@ -216,6 +218,13 @@ NOT_FOUND = "NOT_FOUND"
 UNRECONCILABLE = "UNRECONCILABLE"
 
 GUARD_NOT_APPROVED = "GUARD_NOT_APPROVED"
+
+
+class SubmitRefused(ToolError):
+    """Raised by :func:`submit_and_reconcile` only BEFORE the adapter is called: nothing was sent.
+
+    A ``ToolError`` so every existing catch still holds; its own class so a caller can tell a
+    refusal from a failure that may have happened after an order left (PR2b)."""
 MALFORMED_INTENT = "MALFORMED_LIVE_ORDER_INTENT"
 NO_ORDER_API_KEY = "NO_ORDER_API_KEY"
 ORDER_REJECTED = "ORDER_REJECTED"
@@ -873,6 +882,24 @@ def select_order_adapter(*, now: str | None = None, root: Path | None = None) ->
     )
 
 
+def select_pre_order_snapshot_store(*, now: str | None = None, root: Path | None = None) -> Any:
+    """The mainnet pre-order snapshot store if live trading is opted in, else the inert one (PR2b).
+
+    On the order adapter's own gate, for the counter's reason: a capable adapter beside an inert
+    store would send orders that leave no record of why they were allowed."""
+    return safety_gate.select_env_gated(
+        env_var=LIVE_TRADING_ENV,
+        opt_in_value=REAL_LIVE_TRADING,
+        flags=LIVE_TRADING_FLAGS,
+        provider_id=LIVE_TRADING_PROVIDER_ID,
+        default_factory=lambda: pre_order_gate.DryRunPreOrderSnapshotStore(venue=VENUE_MAINNET),
+        gated_factory=lambda authorization: pre_order_gate.PreOrderSnapshotStore(
+            root=root, authorization=authorization, venue=VENUE_MAINNET,
+            provider_id=LIVE_TRADING_PROVIDER_ID, flags=LIVE_TRADING_FLAGS,
+        ),
+    )
+
+
 def submit_and_reconcile(
     intent: Mapping[str, Any],
     *,
@@ -880,6 +907,8 @@ def submit_and_reconcile(
     guard_verdict: Mapping[str, Any],
     now: str,
     timeout_seconds: int = 10,
+    risk_snapshot: Mapping[str, Any] | None = None,
+    snapshot_store: Any = None,
 ) -> dict[str, Any]:
     """Submit one guard-approved order and reconcile it against the venue.
 
@@ -894,12 +923,39 @@ def submit_and_reconcile(
     ``UNRECONCILABLE`` (fail closed, surfaced). LP4 never resubmits — and could not open a second
     position if it did, because ``newClientOrderId`` is the idempotency key the venue dedupes on.
 
+    **The pre-order gate is bound here (PR2b).** An order that is not reduce-only is sent only
+    under ``risk_snapshot`` — the snapshot ``pre_order_gate`` sealed for exactly this intent, which
+    the intent names back — and only after that snapshot is written to ``snapshot_store``, its
+    venue's record. A reduce-only order cannot add exposure (the venue enforces it) and is judged by
+    the close guard alone, so a gate can never trap a position. Every refusal before the adapter is
+    a :class:`SubmitRefused`.
+
     Returns a result dict carrying ``reconcile_status`` + ``mismatches`` + ``exchange_order_id``,
     from which the caller judges the order clean (``RECONCILED`` and no mismatch)."""
     if not (isinstance(guard_verdict, Mapping) and guard_verdict.get("approved") is True):
-        raise ToolError(GUARD_NOT_APPROVED, "LP4 refuses to submit an order the final guard did not approve")
+        raise SubmitRefused(GUARD_NOT_APPROVED, "LP4 refuses to submit an order the final guard did not approve")
 
-    request = build_order_request(intent)
+    try:
+        request = build_order_request(intent)
+    except ToolError as exc:
+        raise SubmitRefused(exc.reason_code, getattr(exc, "reason", str(exc))) from exc
+    risk_snapshot_sha256: str | None = None
+    if not bool(request.get("reduceOnly")):
+        try:
+            risk_snapshot_sha256 = pre_order_gate.verify_and_persist(
+                intent, risk_snapshot, store=snapshot_store,
+                # An adapter that can reach a venue is never paired with a store that records
+                # nothing: the order would leave while reporting a record that does not exist.
+                require_durable=bool(getattr(adapter, "network_egress", False)),
+            )
+        except MvpRuntimeError as exc:
+            # The store's own failures (a lock, the gate re-check) keep their reason codes.
+            raise SubmitRefused(exc.reason_code, getattr(exc, "reason", str(exc))) from exc
+        except Exception as exc:  # noqa: BLE001 — a store that fails any other way records nothing
+            raise SubmitRefused(
+                pre_order_gate.RISK_SNAPSHOT_STORE_UNWRITABLE,
+                f"the pre-order snapshot could not be recorded ({type(exc).__name__}); nothing was sent",
+            ) from exc
     submit_error: str | None = None
     submit_response: dict[str, Any] | None = None
     try:
@@ -931,6 +987,8 @@ def submit_and_reconcile(
         "mismatches": mismatches,
         "exchange_order_id": exchange_order_id,
         "client_order_id": request["newClientOrderId"],
+        # The snapshot the order left under (PR2b); None for a reduce-only order.
+        "risk_snapshot_sha256": risk_snapshot_sha256,
         "symbol": request["symbol"],
         # A closePosition leg carries no reduceOnly (mutually exclusive at the venue).
         "reduce_only": bool(request.get("reduceOnly")),

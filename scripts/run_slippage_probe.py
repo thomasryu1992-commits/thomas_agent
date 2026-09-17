@@ -67,13 +67,13 @@ from runtime.mvp_runtime.cli_common import (  # noqa: E402
 )
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import live_execution, live_governance, live_leg, probe  # noqa: E402
-from runtime.mvp_runtime.crypto import live_promotion  # noqa: E402
+from runtime.mvp_runtime.crypto import live_promotion, pre_order_gate  # noqa: E402
 from runtime.mvp_runtime.crypto.account import read_account, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
-from runtime.mvp_runtime.crypto.guards import run_risk_guard  # noqa: E402
+from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
 from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE  # noqa: E402
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
-from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
+from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
     bracket_breaker_status,
     build_live_order_intent,
@@ -501,7 +501,8 @@ def run_fire(
             "clear it (scripts/clear_bracket_breaker.py) after reading why",
         )
     readable, _excluded = live_outcomes_for_analysis(read_live_outcomes(root))
-    guard_verdict = run_risk_guard(readable, now=now, limits=resolve_risk_limits(root, now=now))
+    risk_limits = resolve_risk_limits(root, now=now)
+    guard_verdict = run_risk_guard(readable, now=now, limits=risk_limits)
     if not guard_verdict["allow_new_position"]:
         raise _Refusal(
             probe.PROBE_RISK_GUARD_BLOCKED,
@@ -537,8 +538,9 @@ def run_fire(
     # same rung an autonomous entry needs; a machine with no binding record reads READ_ONLY and
     # the guard refuses below.
     stage = resolve_execution_stage(root, now=now)
-    verdict = evaluate_live_order_guard(
-        intent,
+    # The guard's facts in one mapping: the guard reads it now, and the pre-order gate re-runs the
+    # guard on the same mapping before anything is sent (PR2b).
+    guard_kwargs = dict(
         gate_open=True,  # the capable adapter above IS the opt-in
         execution_stage=stage,
         runtime_active=runtime_active,
@@ -552,9 +554,34 @@ def run_fire(
         # order — authorized by the canary phrase, never the autonomous one.
         canary=True,
     )
+    verdict = evaluate_live_order_guard(intent, **guard_kwargs)
     print(render_guard_text(verdict))
     if not verdict["approved"]:
         raise _Refusal(probe.PROBE_GUARD_REFUSED, "the final order guard refused; fix what it names")
+
+    # The pre-order gate (PR2b): every refusal above re-derived from the same facts, the order
+    # rebuilt and judged again, the approved profile checked whole — sealed into the snapshot the
+    # order will name. The plan's approval is this order's authority.
+    profile = pre_order_gate.approved_profile(
+        purpose=PURPOSE_PROBE, stage=stage, budget=budget,
+        # The limits the risk guard judged on; with none resolved it judged on the defaults.
+        risk_limits=(risk_limits or DEFAULT_RISK_LIMITS).as_record(),
+        authority={"kind": pre_order_gate.AUTHORITY_PROBE_PLAN, "batch_id": plan.get("batch_id"),
+                   "approval_id": plan.get("approval_id"), "cell_index": cell_index},
+    )
+    snapshot_record = probe.gate_probe_order(
+        intent, plan=plan, cell_index=cell_index, price=price, tick_size=filters.tick_size,
+        quantity=quantity, notional=notional, account_readable=snapshot is not None,
+        reconciliation=reconciliation, capacity=capacity, risk=risk, breaker=breaker,
+        risk_verdict=guard_verdict, guard_kwargs=guard_kwargs, profile=profile, now=now,
+    )
+    if not snapshot_record["approved"]:
+        raise _Refusal(
+            probe.PROBE_PRE_ORDER_GATE_REFUSED,
+            f"the pre-order gate refused: {', '.join(snapshot_record['failed_checks'])}",
+        )
+    intent = pre_order_gate.bind_intent(intent, snapshot_record)
+    snapshot_store = live_execution.select_pre_order_snapshot_store(now=now, root=root)
 
     # Governance BEFORE the order: a refusal here costs nothing.
     governance = live_governance.prepare_live_order_governance(
@@ -574,6 +601,15 @@ def run_fire(
             f"no order slot reserved ({getattr(exc, 'reason_code', type(exc).__name__)}); "
             "nothing was sent",
         ) from exc
+    # And the reason the order is allowed, on the disk before the order is at the venue.
+    try:
+        pre_order_gate.verify_and_persist(intent, snapshot_record, store=snapshot_store)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal(
+            probe.PROBE_SNAPSHOT_NOT_RECORDED,
+            f"the pre-order snapshot was not recorded "
+            f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
+        ) from exc
 
     # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
     #    which is the honest state (an order may be at the venue) and what keeps
@@ -586,10 +622,20 @@ def run_fire(
 
     position_store = select_live_position_store(now=now, root=root)
     ledger = select_live_ledger(now=now, root=root)
-    entry = live_execution.submit_and_reconcile(
-        intent, adapter=adapter, guard_verdict=verdict, now=now,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        entry = live_execution.submit_and_reconcile(
+            intent, adapter=adapter, guard_verdict=verdict, now=now,
+            timeout_seconds=timeout_seconds,
+            risk_snapshot=snapshot_record, snapshot_store=snapshot_store,
+        )
+    except live_execution.SubmitRefused as exc:
+        # Raised only before the adapter was called: nothing left, so the cell goes back.
+        probe.write_plan(
+            probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
+                            now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
+            root,
+        )
+        raise _Refusal(exc.reason_code, f"the order was refused before the venue: {exc}") from exc
     audit_error = _audit_order(governance, entry, guard=verdict, now=now, root=root)
 
     fill = entry.get("fill") or {}
@@ -615,6 +661,7 @@ def run_fire(
                 entry_price=fill_price if fill_price > 0 else price, opened_at=now,
                 entry_client_order_id=entry["client_order_id"],
                 entry_exchange_order_id=entry["exchange_order_id"], strategy_id=sid,
+                risk_snapshot_sha256=intent.get("risk_snapshot_sha256"),
             )
             closed = live_leg.execute_live_exit(
                 naked, adapter=adapter, position_store=position_store, ledger=ledger,
@@ -655,6 +702,7 @@ def run_fire(
             entry_price=fill_price, opened_at=now,
             entry_client_order_id=entry["client_order_id"],
             entry_exchange_order_id=entry["exchange_order_id"], strategy_id=sid,
+            risk_snapshot_sha256=intent.get("risk_snapshot_sha256"),
         )
         naked = {**naked, "stop_client_order_id": placement.get("client_order_id")}
         closed = live_leg.execute_live_exit(
@@ -695,6 +743,7 @@ def run_fire(
         entry_price=fill_price, stop_loss=trigger, opened_at=now,
         entry_client_order_id=entry["client_order_id"],
         entry_exchange_order_id=entry["exchange_order_id"], strategy_id=sid,
+        risk_snapshot_sha256=intent.get("risk_snapshot_sha256"),
     )
     position = {
         **position,

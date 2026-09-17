@@ -57,7 +57,7 @@ from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import pool
+from . import pool, pre_order_gate
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
@@ -528,6 +528,25 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         )
     checks.append(_check("entry_marks", marks is not None, marks_detail))
 
+    # 6d. The mainnet pre-order snapshot record (PR2b). On the board for the entry marks' reason: the
+    # store will not append past a damaged line, so every live entry is refused while every other row
+    # can read green. A row that parses but fails its seal, the schema or the gate's requirements
+    # fails this row as well — entries go on, but the record no longer proves why past orders left.
+    snapshots = pre_order_gate.snapshots_status(root)
+    if snapshots["readable"]:
+        snapshots_detail = (
+            f"{snapshots['count']} recorded, latest {snapshots['last_created_at']}" if snapshots["count"]
+            else "none recorded (no order has left under the gate)"
+        )
+    else:
+        snapshots_detail = (
+            f"UNREADABLE ({snapshots['error']}) - the record of why past orders were allowed no longer "
+            "proves itself. A damaged line refuses every live entry: move "
+            f"{pre_order_gate.SNAPSHOT_FILENAME} aside (keep it) and check this row again. A row that "
+            "fails its seal was edited: find out by whom before trusting the record"
+        )
+    checks.append(_check("pre_order_snapshots", snapshots["readable"], snapshots_detail))
+
     # 7. Retired 2026-09-15 (PR1r): the `canary_evidence` row, with the promotion gate it reported.
     #    The frozen canary history is still readable on its own board:
     #    python -m runtime.mvp_runtime.crypto.live_promotion
@@ -679,6 +698,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The signed testnet cycles this machine has earned (PR1d-2). Read here rather than at
         # `resolve_execution_stage`, whose contract with the live leg is that it never raises.
         "testnet_evidence": _testnet_evidence(root),
+        # The pre-order snapshots real orders left under (PR2b), verified; the `pre_order_snapshots`
+        # check row above reads the same value.
+        "pre_order_snapshots": snapshots,
     }
 
 

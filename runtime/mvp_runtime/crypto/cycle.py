@@ -652,6 +652,8 @@ def run_crypto_cycle(
     # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
     live_routable_ids: set[str] | None
+    # Which approval armed each of them (PR2b) — None beside a None set, for the same reason.
+    live_arm_approvals: dict[str, str | None] | None
     # #615 §5. Read alongside the breaker's own read below; `readable` stays False on any path
     # that did not produce a trustworthy history, and the allowance treats that as a breach.
     live_readable: list[dict[str, Any]] = []
@@ -660,10 +662,12 @@ def run_crypto_cycle(
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
         live_routable_ids = pool.live_routable_strategy_ids(active_pool)
+        live_arm_approvals = pool.live_arm_approvals(active_pool)
     except ToolError as exc:
         active_pool = {"active_strategies": []}
         routable_ids = None
         live_routable_ids = None
+        live_arm_approvals = None
         reason_codes.append(exc.reason_code)
 
     # The breaker limits themselves: the registered per-machine record when one is registered
@@ -1033,6 +1037,7 @@ def run_crypto_cycle(
         timeframe=timeframe,
         root=root,
         control_store=control_store,
+        live_arm_approvals=live_arm_approvals,
     )
     reason_codes.extend(live["live_reason_codes"])
 

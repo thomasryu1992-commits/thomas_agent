@@ -75,9 +75,10 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
-from . import live_execution, live_governance, live_leg
+from . import live_execution, live_governance, live_leg, pre_order_gate
 from .account import read_account, select_account_feed
-from .live_entry import STATUS_NO_ROUTE, plan_live_entry
+from .execution_stage import PURPOSE_AUTONOMOUS
+from .live_entry import STATUS_NO_ROUTE, gate_live_entry, plan_live_entry
 from .live_filters import read_symbol_filters
 from .market_data import ORDER_BOOK_LEVELS, TIMEFRAMES
 from .orderbook_store import summarize_book
@@ -135,6 +136,9 @@ BRACKET_BREAKER_UNRECORDED = "LIVE_BRACKET_BREAKER_UNRECORDED"
 # A live stop-out whose cooldown could not be written (PR2a). The settlement itself stands; what
 # is missing is the hold that keeps the context out for the next bars, so the operator hears it.
 STOP_COOLDOWN_UNRECORDED = "LIVE_STOP_COOLDOWN_UNRECORDED"
+# The pre-order gate refused an entry the decision had found READY (PR2b). The failed checks ride
+# beside it, by name, so the ledger says which one.
+PRE_ORDER_GATE_REFUSED = "LIVE_PRE_ORDER_GATE_REFUSED"
 # This position is judged by the timeframe table rather than by the `max_holding_bars` its own
 # backtest was built on, because it predates the record shape that carries one. Reported so a
 # live/backtest R gap stays attributable instead of being rediscovered from a curve.
@@ -258,6 +262,10 @@ def run_live_leg(
     root: Path | None = None,
     control_store: ControlStore | None = None,
     timeout_seconds: int = 10,
+    # PR2b, decision 17: which approval armed each LIVE strategy (`pool.live_arm_approvals`). Part
+    # of the approved profile the pre-order gate requires; None — the pool could not be read, or a
+    # caller that does not say — leaves every entry's profile incomplete, which refuses it.
+    live_arm_approvals: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """One cycle's live leg: reconcile, settle, protect, maybe open. Returns a record.
 
@@ -298,6 +306,7 @@ def run_live_leg(
             adapter=adapter,
             route=route,
             live_routable_strategy_ids=live_routable_strategy_ids,
+            live_arm_approvals=live_arm_approvals,
             feature_row=feature_row,
             verdict=verdict,
             symbol=symbol,
@@ -341,6 +350,7 @@ def _run_gated_live_leg(
     root: Path | None,
     control_store: ControlStore | None,
     timeout_seconds: int,
+    live_arm_approvals: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """The leg proper, once the gate is open. Split out so every exit path above is one
     ``except`` rather than a ``try`` wrapped around two hundred lines."""
@@ -500,8 +510,10 @@ def _run_gated_live_leg(
         entry_marks = None
         record["live_reason_codes"].append(exc.reason_code)
 
-    decision = plan_live_entry(
-        plan,
+    # Every fact the decision is judged on, in one mapping: the decision reads it now, and the
+    # pre-order gate re-derives the decision from the same mapping before anything is sent (PR2b).
+    decision_kwargs = dict(
+        plan=plan,
         symbol=symbol,
         live_routable_strategy_ids=live_routable_strategy_ids,
         reconciliation=reconciliation,
@@ -534,6 +546,7 @@ def _run_gated_live_leg(
         now=now,
         spread_bps=spread_bps,
     )
+    decision = plan_live_entry(**decision_kwargs)
     record["live_decision"] = {
         "status": decision["status"],
         "ready": decision["ready"],
@@ -549,6 +562,41 @@ def _run_gated_live_leg(
             record["live_reason_codes"].extend(decision["reasons"])
         return record
 
+    # 3b. The pre-order gate (PR2b): the decision re-derived from the same facts, the order checked
+    #     against it, the approved profile checked whole — sealed into the snapshot the order will
+    #     name. A refusal here sends nothing and spends nothing.
+    strategy_id = str(plan.get("strategy_id") or "") if isinstance(plan, Mapping) else ""
+    profile = pre_order_gate.approved_profile(
+        purpose=PURPOSE_AUTONOMOUS, stage=stage, budget=budget,
+        risk_limits=((verdict or {}).get("risk_guard") or {}).get("limits")
+        if isinstance(verdict, Mapping) else None,
+        authority={
+            "kind": pre_order_gate.AUTHORITY_LIVE_ARM,
+            "strategy_id": strategy_id or None,
+            "candidate_id": plan.get("candidate_id") if isinstance(plan, Mapping) else None,
+            "approval_id": (live_arm_approvals or {}).get(strategy_id),
+        },
+    )
+    # Not `snapshot`: that name is the account snapshot this leg read above.
+    risk_snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
+                                    decision_kwargs=decision_kwargs, profile=profile, now=now)
+    record["live_pre_order_gate"] = {
+        "approved": risk_snapshot["approved"],
+        "failed_checks": risk_snapshot["failed_checks"],
+        "pre_order_risk_snapshot_id": risk_snapshot["pre_order_risk_snapshot_id"],
+        "risk_snapshot_sha256": risk_snapshot["risk_snapshot_sha256"],
+    }
+    if not risk_snapshot["approved"]:
+        record["live_route_status"] = ROUTE_HELD
+        record["live_reason_codes"].append(PRE_ORDER_GATE_REFUSED)
+        record["live_reason_codes"].extend(risk_snapshot["failed_checks"])
+        return record
+    decision = {
+        **decision,
+        "intent": pre_order_gate.bind_intent(decision["intent"], risk_snapshot),
+        "risk_snapshot": risk_snapshot,
+    }
+
     # 4. The order. Governance first — a governance failure must cost nothing, so it refuses
     #    before any money moves rather than leaving an unauditable order behind.
     governance = live_governance.prepare_live_order_governance(
@@ -560,6 +608,7 @@ def _run_gated_live_leg(
         position_store=position_store,
         counter=select_live_order_counter(now=now, root=root),
         entry_marks=select_live_entry_marks(now=now, root=root),
+        snapshot_store=live_execution.select_pre_order_snapshot_store(now=now, root=root),
         governance=governance,
         gate_open=True,
         limits=limits,

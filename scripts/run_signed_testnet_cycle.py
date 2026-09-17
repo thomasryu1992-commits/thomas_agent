@@ -43,10 +43,14 @@ from runtime.mvp_runtime.cli_common import (  # noqa: E402
     gate_banners,
 )
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
-from runtime.mvp_runtime.crypto import testnet_evidence  # noqa: E402
+from runtime.mvp_runtime.crypto import pre_order_gate, testnet_evidence  # noqa: E402
 from runtime.mvp_runtime.crypto import testnet_execution as testnet  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
-from runtime.mvp_runtime.crypto.live_execution import fill_facts, submit_and_reconcile  # noqa: E402
+from runtime.mvp_runtime.crypto.live_execution import (  # noqa: E402
+    SubmitRefused,
+    fill_facts,
+    submit_and_reconcile,
+)
 from runtime.mvp_runtime.crypto.live_leg import (  # noqa: E402
     BRACKET_RESTING_STATUSES,
     CONDITIONAL_ORDER_TYPES,
@@ -90,6 +94,17 @@ def _price(symbol: str, *, now: str, root: Path | None, timeout_seconds: int) ->
     return float(price)
 
 
+def _entry_intent(*, symbol: str, quantity: float, price: float, now: str) -> dict:
+    """The cycle's entry order, from its own inputs — built once to send and once more by the
+    pre-order gate to check that what is sent is this (PR2b)."""
+    return build_live_order_intent(
+        {"direction": "LONG", "entry_price": price,
+         "stop_loss": round(price * (1 - STOP_DISTANCE_PCT / 100), 2),
+         "strategy_id": "signed_testnet_cycle"},
+        symbol=symbol, quantity=quantity, notional_usdt=round(price * quantity, 8), now=now,
+    )
+
+
 def plan_cycle(*, symbol: str, quantity: float, root: Path | None, now: str,
                timeout_seconds: int = 10) -> dict:
     """What this cycle would do, and what the machine's posture says about it. Sends nothing.
@@ -121,14 +136,8 @@ def plan_cycle(*, symbol: str, quantity: float, root: Path | None, now: str,
         posture["status"] = testnet.TESTNET_STATUS_BLOCKED
         return {"adapter": adapter, "stage": stage, "intent": None, "price": None,
                 "price_error": price_error, "verdict": posture}
-    intent = build_live_order_intent(
-        {"direction": "LONG", "entry_price": price,
-         "stop_loss": round(price * (1 - STOP_DISTANCE_PCT / 100), 2),
-         "strategy_id": "signed_testnet_cycle"},
-        symbol=symbol, quantity=quantity, notional_usdt=round(price * quantity, 8), now=now,
-    )
-    verdict = testnet.evaluate_testnet_order_guard(
-        intent,
+    intent = _entry_intent(symbol=symbol, quantity=quantity, price=price, now=now)
+    guard_kwargs = dict(
         gate_open=bool(getattr(adapter, "network_egress", False)),
         # `execution_allowed`, not `trading_allowed`: a killed or paused runtime sends nothing
         # anywhere, but the live ARM is a bigger act than a testnet rehearsal — requiring it here
@@ -138,8 +147,9 @@ def plan_cycle(*, symbol: str, quantity: float, root: Path | None, now: str,
         submitted_today=testnet.count_testnet_today(root),
         execution_stage=stage,
     )
+    verdict = testnet.evaluate_testnet_order_guard(intent, **guard_kwargs)
     return {"adapter": adapter, "stage": stage, "intent": intent, "price": price,
-            "price_error": None, "verdict": verdict}
+            "price_error": None, "verdict": verdict, "guard_kwargs": guard_kwargs}
 
 
 def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
@@ -169,6 +179,27 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
         "symbol": symbol, "quantity": f"{quantity:.8f}", "at": now,
         "seq": len(testnet_evidence.read_cycles(root)),
     })
+    # The pre-order gate (PR2b, decision 20): the testnet guard re-run on the same facts, the order
+    # rebuilt from the cycle's inputs, sealed and recorded on the testnet venue's store before the
+    # entry leaves. A refusal here sends nothing and records no cycle.
+    snapshot = testnet.gate_testnet_order(
+        intent,
+        expected_intent=_entry_intent(symbol=symbol, quantity=quantity, price=price, now=now),
+        guard_kwargs=planned["guard_kwargs"], stage=stage, cycle_id=cycle_id, now=now,
+    )
+    if not snapshot["approved"]:
+        raise _Refusal("TESTNET_PRE_ORDER_GATE_REFUSED",
+                       "the pre-order gate refused: " + ", ".join(snapshot["failed_checks"]))
+    intent = pre_order_gate.bind_intent(intent, snapshot)
+    snapshot_store = testnet.testnet_snapshot_store(
+        root=root, authorization=getattr(adapter, "_authorization", None))
+    try:
+        pre_order_gate.verify_and_persist(intent, snapshot, store=snapshot_store)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal("TESTNET_SNAPSHOT_NOT_RECORDED",
+                       f"the pre-order snapshot was not recorded "
+                       f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent") from exc
+
     started_at = now
     legs: list[dict] = []
     entry_row: dict = {}
@@ -189,15 +220,24 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
         testnet_evidence.append_cycle(row, root)
         return row
 
+    # The entry's own refusal before the venue: nothing left, so it counts no order and records no
+    # cycle. Kept apart from a SubmitRefused later in the cycle, when the entry has already left.
+    entry_refused: SubmitRefused | None = None
     try:
         # 1. The entry. Reconciled by the same pure function the live path uses, so the two can
         #    never disagree about what RECONCILED means.
         try:
             entry = submit_and_reconcile(intent, adapter=adapter, guard_verdict=verdict, now=now,
-                                         timeout_seconds=timeout_seconds)
+                                         timeout_seconds=timeout_seconds,
+                                         risk_snapshot=snapshot, snapshot_store=snapshot_store)
+        except SubmitRefused as exc:
+            entry_refused = exc
+            raise
         finally:
-            counter.record_submission()
+            if entry_refused is None:
+                counter.record_submission()
         entry_row = {
+            "risk_snapshot_sha256": entry.get("risk_snapshot_sha256"),
             "reconcile_status": entry.get("reconcile_status"),
             "mismatches": entry.get("mismatches") or [],
             "exchange_order_id": entry.get("exchange_order_id"),
@@ -290,6 +330,10 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
                                 for p in positions],
         }
     except Exception as exc:  # noqa: BLE001 — the venue has already been reached; record it
+        if exc is entry_refused:
+            raise _Refusal(entry_refused.reason_code,
+                           f"the entry was refused before the venue ({entry_refused}); nothing was "
+                           "sent and no cycle is recorded") from exc
         reason_code = getattr(exc, "reason_code", type(exc).__name__)
         record = _record(failure=reason_code)
         raise _Refusal(

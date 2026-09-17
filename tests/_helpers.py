@@ -79,3 +79,71 @@ def make_gate_authorization(*, flags, provider_id, **overrides):
     }
     fields.update(overrides)
     return Authorization(**fields)
+
+
+# --- the pre-order gate (PR2b) --------------------------------------------------------------------
+
+class FakeSnapshotStore:
+    """A venue's pre-order snapshot store, in memory: records every append, in order."""
+
+    filesystem_write = True
+
+    def __init__(self, venue=None, *, error=None):
+        from runtime.mvp_runtime.crypto.state import VENUE_MAINNET
+
+        self.venue = venue or VENUE_MAINNET
+        self.appended: list[dict] = []
+        self._error = error
+
+    def append(self, snapshot):
+        if self._error is not None:
+            raise self._error
+        if not any(s["pre_order_risk_snapshot_id"] == snapshot["pre_order_risk_snapshot_id"]
+                   for s in self.appended):
+            self.appended.append(dict(snapshot))
+        return snapshot["risk_snapshot_sha256"]
+
+
+def gate_stage():
+    """A binding stage record at the live rung, with the approval the gate's profile requires."""
+    from runtime.mvp_runtime.crypto.execution_stage import StageStatus
+
+    return StageStatus(
+        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS",
+        stage_id="stage_test", record_sha256="sha256:" + "5" * 64, approval_id="approval_stage_test",
+    )
+
+
+def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00:00Z"):
+    """``(bound_intent, snapshot)``: a snapshot the real gate sealed for ``intent`` on passing
+    checks and a whole profile — for tests whose subject is what happens AFTER the gate."""
+    from runtime.mvp_runtime.crypto import pre_order_gate as g
+    from runtime.mvp_runtime.crypto.execution_stage import (
+        PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET,
+    )
+    from runtime.mvp_runtime.crypto.state import VENUE_MAINNET, VENUE_TESTNET
+
+    purpose = purpose or PURPOSE_AUTONOMOUS
+    authority = {
+        PURPOSE_AUTONOMOUS: {"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001",
+                             "approval_id": "approval_arm_test"},
+        PURPOSE_PROBE: {"kind": g.AUTHORITY_PROBE_PLAN, "batch_id": "batch_test",
+                        "approval_id": "approval_probe_test"},
+        PURPOSE_TESTNET: {"kind": g.AUTHORITY_TESTNET_CAPS, "max_order_notional_usdt": 50.0,
+                          "max_daily_orders": 10},
+    }[purpose]
+    profile = g.approved_profile(
+        purpose=purpose, stage=gate_stage(), authority=authority,
+        budget=({"valid": True, "budget_id": "budget_test", "record_sha256": "sha256:" + "b" * 64}
+                if purpose != PURPOSE_TESTNET else None),
+        risk_limits=({"source": "default"} if purpose != PURPOSE_TESTNET else None),
+    )
+    lineage = {**{field: "x" for field in g.LINEAGE_FIELDS[purpose]},
+               "order_intent_id": intent.get("order_intent_id")}
+    snapshot = g.evaluate_pre_order_gate(
+        intent, purpose=purpose,
+        venue=venue or (VENUE_TESTNET if purpose == PURPOSE_TESTNET else VENUE_MAINNET),
+        checks=[g.check("test_door", True)], profile=profile, lineage=lineage, facts={}, now=now,
+    )
+    assert snapshot["approved"], snapshot["failed_checks"]
+    return g.bind_intent(intent, snapshot), snapshot

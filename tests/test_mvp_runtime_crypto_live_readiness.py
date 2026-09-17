@@ -90,7 +90,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
-        "daily_loss_breaker", "bracket_breaker", "entry_marks",
+        "daily_loss_breaker", "bracket_breaker", "entry_marks", "pre_order_snapshots",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired", "execution_stage",
     }
@@ -1080,3 +1080,36 @@ def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
     row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
                if c["check"] == "trading_armed")
     assert "management is stopped too" in row["detail"]
+
+
+def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
+    """PR2b: the mainnet snapshot record is a check row. The first version reported it beside the
+    checks; the review made the store refuse to append past a damaged line, which refuses every
+    live entry, so it is on the board for the entry marks' reason."""
+    from runtime.mvp_runtime.crypto import pre_order_gate
+
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["pre_order_snapshots"] == {"readable": True, "error": None, "count": 0,
+                                             "last_created_at": None}
+    row = {c["check"]: c for c in status["checks"]}["pre_order_snapshots"]
+    assert row["ok"] is True and "none recorded" in row["detail"]
+    assert "none recorded" in live_readiness.render_readiness_text(status)
+
+    # A damaged line refuses every live entry (the store will not append past it), so the record is
+    # a check, for the entry marks' reason (PR2b review).
+    path = pre_order_gate.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"pre_order_risk_snapshot_id": "x", "risk_snapshot_sha256": "sha256:0"\n',
+                    encoding="utf-8")
+    damaged = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert damaged["pre_order_snapshots"]["readable"] is False
+    row = {c["check"]: c for c in damaged["checks"]}["pre_order_snapshots"]
+    assert row["ok"] is False and pre_order_gate.RISK_SNAPSHOT_STORE_TAMPERED in row["detail"]
+    assert damaged["ready"] is False
+    assert "UNREADABLE" in live_readiness.render_readiness_text(damaged)
+
+    # A row that parses but fails its seal fails the row too.
+    path.write_text('{"pre_order_risk_snapshot_id": "x", "risk_snapshot_sha256": "sha256:0"}\n',
+                    encoding="utf-8")
+    edited = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert {c["check"]: c for c in edited["checks"]}["pre_order_snapshots"]["ok"] is False

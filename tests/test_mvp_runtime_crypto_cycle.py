@@ -1723,3 +1723,30 @@ def test_forward_book_advances_with_the_cycle_and_follows_the_store_flag(tmp_pat
     # settled its own trade this cycle, and neither row leaked into the other's file.
     assert all(r["provenance"] == fb.FORWARD_PROVENANCE for r in rows)
     assert all(o["provenance"] == "mvp_paper_kernel" for o in paper.read_outcomes(tmp_path))
+
+
+def test_the_live_leg_is_told_which_approval_armed_each_strategy(tmp_path, monkeypatch):
+    """PR2b: the pre-order gate's profile names the arming approval, and the cycle reads it from
+    the same pool object it read the live set from."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    spec = _always_spec()
+    pool.install_active_pool(
+        {"active_strategies": [{
+            "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
+            "strategy_spec": spec, "candidate_id": "cand-1", "strategy_rule_hash": "h1",
+            "generation_id": "GEN-1", pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
+            pool.LIVE_TIER_APPROVAL_FIELD: "appr_live_1",
+        }]},
+        root=tmp_path,
+    )
+    _cycle(tmp_path, FakeExchangeCollector())
+    assert seen["live_arm_approvals"] == {spec["strategy_id"]: "appr_live_1"}

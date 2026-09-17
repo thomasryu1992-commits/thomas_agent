@@ -228,3 +228,17 @@ def test_the_report_helper_delegates_to_the_audit_builder():
     )
     assert record["event_type"] == "OTHER" and sha
     assert "PURPOSE_AUTONOMOUS" in record["event"]["reason_codes"]
+
+
+def test_an_order_that_opened_exposure_names_its_pre_order_snapshot():
+    """PR2b: the record that an order happened points at the record of why it was allowed."""
+    sha = "sha256:" + "d" * 64
+    record, _ = _audit({**RESULT, "risk_snapshot_sha256": sha})
+    assert f"risk_snapshot:{sha}" in record["event"]["evidence_refs"]
+    assert record["event"]["evidence_refs"][0].startswith("live_order:")
+
+
+@pytest.mark.parametrize("value", [None, "", 7])
+def test_an_order_without_a_snapshot_names_none(value):
+    record, _ = _audit({**RESULT, "risk_snapshot_sha256": value})
+    assert not [ref for ref in record["event"]["evidence_refs"] if ref.startswith("risk_snapshot:")]

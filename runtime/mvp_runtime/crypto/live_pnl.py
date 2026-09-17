@@ -186,6 +186,7 @@ def build_live_outcome_record(
     strategy_generation_id: str | None = None,
     exit_source: str | None = None,
     stop_price: float | None = None,
+    risk_snapshot_sha256: str | None = None,
     now: str,
 ) -> dict[str, Any]:
     """One closed live position, self-hashed.
@@ -266,6 +267,9 @@ def build_live_outcome_record(
         "strategy_rule_hash": strategy_rule_hash,
         "strategy_generation_id": strategy_generation_id,
         "position_id": position_id,
+        # The pre-order snapshot the entry left under (PR2b) — why this trade was allowed. None
+        # for a position opened before the gate existed.
+        "risk_snapshot_sha256": risk_snapshot_sha256,
         "close_reason": close_reason,
         # Where the exit PRICE came from, beside the reason the position closed. The two
         # answer different questions and neither implies the other.
