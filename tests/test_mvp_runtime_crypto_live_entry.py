@@ -308,6 +308,31 @@ def test_both_holds_are_reported_at_once():
     assert decision["reasons"] == [le.BAR_ALREADY_ENTERED, le.STOP_LOSS_COOLDOWN]
 
 
+def _in_flight(claimed_at, symbol="BTCUSDT"):
+    return {**NO_MARKS, "in_flight": {symbol: {"claimed_at": claimed_at, "door": "probe",
+                                               "client_order_id": "TAI_BTCUSDT_LONG_probe"}}}
+
+
+def test_an_entry_another_door_has_in_flight_on_the_symbol_holds_the_decision():
+    """PR2b-2: the probe took the symbol a moment ago, from another process. The decision says so
+    by name; the leg's own claim is what actually excludes the two."""
+    decision = _plan(entry_marks=_in_flight("2026-07-25T11:59:00Z"))
+    assert decision["status"] == le.STATUS_REFUSED
+    assert decision["reasons"] == [le.SYMBOL_IN_FLIGHT]
+
+
+@pytest.mark.parametrize("marks", [
+    _in_flight("2026-07-25T11:30:00Z"),                     # expired at 12:00 exactly (decision 21)
+    _in_flight("2026-07-25T11:59:00Z", symbol="ETHUSDT"),   # another symbol's entry
+])
+def test_an_expired_claim_or_another_symbols_holds_nothing(marks):
+    assert _plan(entry_marks=marks)["status"] == le.STATUS_READY
+
+
+def test_the_gate_names_the_in_flight_door():
+    assert ("symbol_not_in_flight", frozenset({le.SYMBOL_IN_FLIGHT})) in le.ENTRY_DOORS
+
+
 @pytest.mark.parametrize("marks", [None, "not-a-mapping"])
 def test_marks_the_leg_could_not_read_refuse_the_entry(marks):
     decision = _plan(entry_marks=marks)

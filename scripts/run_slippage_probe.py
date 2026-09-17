@@ -81,7 +81,9 @@ from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
     evaluate_live_order_guard,
     render_guard_text,
     resolve_live_order_limits,
+    LIVE_ENTRY_CLAIM_TTL_MINUTES,
     select_live_bracket_breaker,
+    select_live_entry_marks,
     select_live_order_counter,
 )
 from runtime.mvp_runtime.crypto.live_pnl import (  # noqa: E402
@@ -389,6 +391,19 @@ def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None
     return EXIT_OK
 
 
+def _give_back_symbol(entry_marks: Any, claim: dict) -> None:
+    """Release the probe's symbol claim (PR2b-2). A failure is said, never raised: the claim
+    expires on its own and until then holds only new entries on the symbol."""
+    try:
+        entry_marks.release_symbol(**claim)
+    except Exception as exc:  # noqa: BLE001 — the probe's outcome stands either way
+        sys.stderr.write(
+            f"CLAIM     : NOT released ({getattr(exc, 'reason_code', type(exc).__name__)}) - "
+            f"{claim['symbol']} takes no new entry until the claim expires "
+            f"({LIVE_ENTRY_CLAIM_TTL_MINUTES} min)\n"
+        )
+
+
 def run_fire(
     *,
     root: Path | None,
@@ -588,6 +603,22 @@ def run_fire(
         intent, purpose=live_governance.PURPOSE_CANARY, now=now, repo_root=root,
     )
 
+    # 0. Take the symbol (PR2b-2). The scheduler's live leg can be sending an entry on it right
+    #    now, from another process, on facts it read before this probe's. Under the marks lock the
+    #    symbol must have no entry in flight and no position in the book. It is given back once
+    #    the book says what the venue holds; anywhere else it is kept until it expires (decision
+    #    21). Taken before the slot, so a busy symbol spends nothing.
+    entry_marks = select_live_entry_marks(now=now, root=root)
+    claim = {"symbol": symbol, "client_order_id": intent["client_order_id"]}
+    try:
+        entry_marks.claim_symbol(door=PURPOSE_PROBE, now=now, **claim)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal(
+            probe.PROBE_SYMBOL_NOT_CLAIMED,
+            f"{symbol} could not be taken for this probe "
+            f"({getattr(exc, 'reason_code', type(exc).__name__)}): {exc}; nothing was sent",
+        ) from exc
+
     # 1. Reserve the day's order slot BEFORE anything is claimed or sent (PR2a). The guard above
     #    judged a count read earlier, and the scheduler's live leg spends the same cap from
     #    another process; the reservation is the locked check-and-increment. It stays spent if
@@ -596,6 +627,7 @@ def run_fire(
     try:
         counter.reserve_submission(limit=limits.max_daily_order_count)
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        _give_back_symbol(entry_marks, claim)
         raise _Refusal(
             probe.PROBE_ORDER_SLOT_REFUSED,
             f"no order slot reserved ({getattr(exc, 'reason_code', type(exc).__name__)}); "
@@ -605,6 +637,7 @@ def run_fire(
     try:
         pre_order_gate.verify_and_persist(intent, snapshot_record, store=snapshot_store)
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        _give_back_symbol(entry_marks, claim)
         raise _Refusal(
             probe.PROBE_SNAPSHOT_NOT_RECORDED,
             f"the pre-order snapshot was not recorded "
@@ -629,12 +662,13 @@ def run_fire(
             risk_snapshot=snapshot_record, snapshot_store=snapshot_store,
         )
     except live_execution.SubmitRefused as exc:
-        # Raised only before the adapter was called: nothing left, so the cell goes back.
+        # Raised only before the adapter was called: nothing left, so the cell and the symbol go back.
         probe.write_plan(
             probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
                             now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
             root,
         )
+        _give_back_symbol(entry_marks, claim)
         raise _Refusal(exc.reason_code, f"the order was refused before the venue: {exc}") from exc
     audit_error = _audit_order(governance, entry, guard=verdict, now=now, root=root)
 
@@ -670,12 +704,15 @@ def run_fire(
             )
             _fail_cell(f"{probe.PROBE_ENTRY_NOT_CONFIRMED}: partial fill closed "
                        f"({closed['status']})")
-            if closed["status"] != live_leg.EXIT_CLOSED:
+            if closed["status"] == live_leg.EXIT_CLOSED:
+                _give_back_symbol(entry_marks, claim)
+            else:
                 sys.stderr.write(
                     "INCIDENT: a partially filled probe entry could not be closed; resolve "
                     f"at the venue ({closed['reason_codes']})\n"
                 )
         else:
+            # An order the venue did not confirm may still be working: the symbol stays claimed.
             _fail_cell(f"{probe.PROBE_ENTRY_NOT_CONFIRMED}: {entry['reconcile_status']}")
         sys.stderr.write(
             f"BLOCKED {probe.PROBE_ENTRY_NOT_CONFIRMED}: the entry did not confirm "
@@ -725,7 +762,9 @@ def run_fire(
             sys.stderr.write(f"BREAKER   : NOT recorded ({breaker_error}) — the stop failure is "
                              "missing from the bracket-failure streak\n")
         _fail_cell(f"{probe.PROBE_STOP_NOT_PLACED}: {placement.get('error_detail') or placement.get('error')}")
-        if closed["status"] != live_leg.EXIT_CLOSED:
+        if closed["status"] == live_leg.EXIT_CLOSED:
+            _give_back_symbol(entry_marks, claim)
+        else:
             sys.stderr.write(
                 "INCIDENT: the probe stop was refused AND the close did not confirm; "
                 f"resolve at the venue ({closed['reason_codes']})\n"
@@ -751,6 +790,8 @@ def run_fire(
         "entry_quote_usdt": float(fill.get("cum_quote") or 0.0) or None,
     }
     position_store.save_position(position)
+    # The book holds the position now, and the book is what refuses the next entry on the symbol.
+    _give_back_symbol(entry_marks, claim)
     # The cell is already OPEN (claimed before the send); stamp the booked identity onto
     # it so a later resolver can find this position's outcome in the ledger.
     cells = [dict(c) for c in plan["cells"]]

@@ -1051,6 +1051,27 @@ LIVE_ENTRY_BAR_ALREADY_ENTERED = "LIVE_ENTRY_BAR_ALREADY_ENTERED"
 LIVE_ENTRY_STOP_LOSS_COOLDOWN = "LIVE_ENTRY_STOP_LOSS_COOLDOWN"
 LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE = "LIVE_ENTRY_COOLDOWN_UNCOMPUTABLE"
 
+# --- the symbol's entry in flight (PR2b-2) ---
+#
+# The book is one record per symbol, and the venue nets per symbol. Two doors can open an entry on a
+# symbol: the scheduler's autonomous leg and the operator's `--fire` probe, in different processes.
+# Each checked "the symbol is free" on facts it read earlier and then sent, so two entries a few
+# seconds apart could both pass, and the second booking would overwrite the first. A door now takes
+# the symbol before it sends. Under the marks lock it checks that no other entry is in flight there
+# and that the book holds no position, and it gives the symbol back once the book says what the
+# venue holds.
+#
+# A claim nobody gives back expires (Thomas decision 21, 2026-09-17). A process that dies mid-entry
+# must not hold the symbol for good. The worst entry takes 2-3 minutes (the send, its confirmation,
+# two legs and a naked close, each with its own timeout), so 30 minutes is about ten of those. If
+# the dead entry did reach the venue, the next reconciliation sees a position the book does not
+# have, and that refuses entries on its own. Closes never read the claim.
+LIVE_ENTRY_CLAIM_TTL_MINUTES = 30
+LIVE_ENTRY_SYMBOL_IN_FLIGHT = "LIVE_ENTRY_SYMBOL_IN_FLIGHT"
+LIVE_ENTRY_SYMBOL_OCCUPIED = "LIVE_ENTRY_SYMBOL_OCCUPIED"
+LIVE_ENTRY_CLAIM_MALFORMED = "LIVE_ENTRY_CLAIM_MALFORMED"
+_CLAIM_FIELDS = ("claimed_at", "door", "client_order_id")
+
 _MARK_MAPS = ("entered", "cooldown")
 _CONTEXT_SEP = "__"
 # Bars align to the epoch on every timeframe this runtime trades (15m through 1d, UTC).
@@ -1070,7 +1091,14 @@ def _is_bar_time(value: Any) -> bool:
 
 
 def _empty_entry_marks() -> dict[str, Any]:
-    return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}}
+    return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {}}
+
+
+def _is_claim(symbol: Any, claim: Any) -> bool:
+    return (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(claim, dict)
+            and set(claim) == set(_CLAIM_FIELDS) and _is_bar_time(claim.get("claimed_at"))
+            and all(isinstance(claim.get(field), str) and claim[field].strip()
+                    for field in ("door", "client_order_id")))
 
 
 def read_live_entry_marks(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
@@ -1095,17 +1123,42 @@ def read_live_entry_marks(root: Path | None = None, *, venue: str = VENUE_MAINNE
         ):
             raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, f"live entry marks hold a malformed {name!r} map")
         marks[name] = dict(table)
+    # Absent in a file written before PR2b-2: no entry was in flight under a rule that did not exist.
+    in_flight = data.get("in_flight", {})
+    if not isinstance(in_flight, dict) or not all(_is_claim(k, v) for k, v in in_flight.items()):
+        raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, "live entry marks hold a malformed 'in_flight' map")
+    marks["in_flight"] = {symbol: dict(claim) for symbol, claim in in_flight.items()}
     return marks
+
+
+def claim_expires_at(claim: Mapping[str, Any]) -> str:
+    """When an in-flight claim stops holding its symbol (decision 21)."""
+    return timeutil.plus_minutes(str(claim["claimed_at"]), LIVE_ENTRY_CLAIM_TTL_MINUTES)
+
+
+def symbol_in_flight(marks: Mapping[str, Any] | None, symbol: Any, *, now: str) -> dict[str, Any] | None:
+    """The claim that still holds ``symbol`` at ``now``, or None. Pure. A ``now`` that cannot be read
+    cannot show that a claim expired, so the claim still holds."""
+    claim = ((marks or {}).get("in_flight") or {}).get(str(symbol or ""))
+    if not isinstance(claim, Mapping):
+        return None
+    try:
+        expired = timeutil.parse_iso(str(now)) >= timeutil.parse_iso(claim_expires_at(claim))
+    except (TypeError, ValueError):
+        expired = False
+    return None if expired else dict(claim)
 
 
 def live_entry_holds(
     marks: Mapping[str, Any] | None, *, symbol: Any, timeframe: Any, bar_time: Any,
+    now: str | None = None,
 ) -> list[str]:
     """Why this context may not send an entry on this bar — empty when it may. Pure.
 
     A bar at or before the last one this context sent on is refused, not only the same one: out
     of order data must not reopen a spent bar (the `routing_marks.is_fresh` rule). The cooldown
-    holds every bar that opens before its bound."""
+    holds every bar that opens before its bound. Given ``now``, an entry still in flight on the
+    symbol holds it too (PR2b-2); the claim itself re-checks that under the lock."""
     if not isinstance(marks, Mapping):
         return [LIVE_ENTRY_MARKS_UNKNOWN]
     key = entry_context_key(symbol, timeframe)
@@ -1118,6 +1171,8 @@ def live_entry_holds(
     until = (marks.get("cooldown") or {}).get(key)
     if until is not None and bar_time < until:
         holds.append(LIVE_ENTRY_STOP_LOSS_COOLDOWN)
+    if now is not None and symbol_in_flight(marks, symbol, now=now) is not None:
+        holds.append(LIVE_ENTRY_SYMBOL_IN_FLIGHT)
     return holds
 
 
@@ -1194,6 +1249,43 @@ class LiveEntryMarks:
 
         return self._update(mutate)
 
+    def claim_symbol(self, *, symbol: Any, door: str, client_order_id: Any, now: str) -> dict[str, Any]:
+        """Take ``symbol`` for one entry before it is sent, or refuse (PR2b-2).
+
+        Under the lock, the symbol must have no other entry in flight and no position in this
+        venue's book. The claim is stamped with the later of ``now`` and the wall clock: the cycle's
+        ``now`` can be minutes old by the time its leg runs, and an early stamp would expire early."""
+        if not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip()
+                and isinstance(client_order_id, str) and client_order_id.strip() and _is_bar_time(now)):
+            raise ToolError(LIVE_ENTRY_CLAIM_MALFORMED, "a symbol claim needs a symbol, a door, an order id and a time")
+        from .live_position import load_open_live_position  # local: the book imports this module's neighbours
+
+        def mutate(marks: dict[str, Any]) -> None:
+            at = max(now, timeutil.utc_now_iso())
+            held = symbol_in_flight(marks, symbol, now=at)
+            if held is not None:
+                raise ToolError(LIVE_ENTRY_SYMBOL_IN_FLIGHT,
+                                f"{symbol} has an entry in flight ({held['door']} since {held['claimed_at']})")
+            # Re-read under the lock: a door that booked its position and gave the symbol back after
+            # this one read the book is seen here, not missed.
+            if load_open_live_position(symbol, self._root, venue=self._venue) is not None:
+                raise ToolError(LIVE_ENTRY_SYMBOL_OCCUPIED, f"{symbol} already holds a live position")
+            marks["in_flight"][symbol] = {"claimed_at": at, "door": door, "client_order_id": client_order_id}
+
+        return self._update(mutate)
+
+    def release_symbol(self, *, symbol: Any, client_order_id: Any) -> dict[str, Any]:
+        """Give ``symbol`` back once the book says what the venue holds. Only the claim this order
+        took is removed; one that expired and was taken by another order is left alone."""
+        def mutate(marks: dict[str, Any]) -> bool:
+            claim = marks["in_flight"].get(symbol)
+            if not (isinstance(claim, Mapping) and claim.get("client_order_id") == client_order_id):
+                return False
+            del marks["in_flight"][symbol]
+            return True
+
+        return self._update(mutate)
+
     def record_stop_cooldown(self, *, symbol: Any, timeframe: Any, until: str) -> dict[str, Any]:
         """Hold this context until the bar ``until`` opens. Never shortens a longer hold."""
         key = entry_context_key(symbol, timeframe)
@@ -1216,6 +1308,12 @@ class DryRunLiveEntryMarks:
     filesystem_write = False
 
     def claim_bar(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_entry_marks()
+
+    def claim_symbol(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_entry_marks()
+
+    def release_symbol(self, **_kwargs: Any) -> dict[str, Any]:
         return _empty_entry_marks()
 
     def record_stop_cooldown(self, **_kwargs: Any) -> dict[str, Any]:

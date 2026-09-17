@@ -134,10 +134,21 @@ The autonomous leg then checks two things before it spends anything:
 
 Then:
 
-1. The entry leg claims the bar.
-2. It reserves the day's slot.
-3. It records the snapshot.
-4. It sends, and the venue door re-binds (a no-op append).
+1. The entry takes its symbol (PR2b-2, decisions 21 and 22). Under the entry-marks lock, no other
+   entry may be in flight on the symbol and the book may hold no position there. The probe takes it
+   at this point too, before its slot.
+2. The entry leg claims the bar.
+3. It reserves the day's slot.
+4. It records the snapshot.
+5. It sends, and the venue door re-binds (a no-op append).
+
+The symbol is given back only where the book says what the venue holds:
+- a refusal before the venue;
+- a booked position;
+- a naked close the venue confirmed.
+
+Anywhere else the claim stays until it expires after 30 minutes. That covers an unconfirmed
+entry, a close that did not confirm, and a book that could not be written.
 
 **Where the hash goes.** It rides to the submit result, the live position, the outcome row, the
 audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence row.
@@ -153,8 +164,6 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
   - the API error breaker;
   - per-order slippage and fee evidence;
   - optional-data health as a gate.
-- **A shared per-symbol entry lock between the probe and the autonomous leg:** left from PR2a
-  (PR2b-2).
 - **Order-time re-reads (PR2c):** the arming approval behind `live_tier_approval_id`, the pool tier,
   and the budget are re-read at the gate only as the leg read them. The autonomous gate re-runs the
   decision on the same facts, so it catches a changed order, not a changed fact.

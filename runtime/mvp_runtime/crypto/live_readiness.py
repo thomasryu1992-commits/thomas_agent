@@ -73,6 +73,7 @@ from .live_order import (
     count_today,
     evaluate_live_order_guard,
     read_live_entry_marks,
+    symbol_in_flight,
     resolve_live_order_limits,
 )
 from .execution_stage import (
@@ -522,9 +523,18 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"{context} until the {until} bar" for context, until in marks["cooldown"].items()
             if _cooldown_holds_now(context, until, now)
         )
+        # PR2b-2: the symbols an entry has taken and not yet given back. One whose claim expired was
+        # left by an entry that never finished; the book and the venue may disagree about it.
+        in_flight = sorted(
+            f"{symbol} ({claim['door']} since {claim['claimed_at']}"
+            + ("" if symbol_in_flight(marks, symbol, now=now)
+               else "; EXPIRED unreleased - check the book against the venue") + ")"
+            for symbol, claim in marks["in_flight"].items()
+        )
         marks_detail = (
             f"{len(marks['entered'])} context(s) have sent an entry; "
             + (f"stop-loss cooldown: {', '.join(holding)}" if holding else "no stop-loss cooldown active")
+            + (f"; entries in flight: {', '.join(in_flight)}" if in_flight else "")
         )
     checks.append(_check("entry_marks", marks is not None, marks_detail))
 

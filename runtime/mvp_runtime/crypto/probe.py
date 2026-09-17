@@ -175,6 +175,9 @@ PROBE_ORDER_SLOT_REFUSED = "PROBE_ORDER_SLOT_REFUSED"
 # PR2b: the pre-order gate refused the probe, or its snapshot could not be recorded before the send.
 PROBE_PRE_ORDER_GATE_REFUSED = "PROBE_PRE_ORDER_GATE_REFUSED"
 PROBE_SNAPSHOT_NOT_RECORDED = "PROBE_SNAPSHOT_NOT_RECORDED"
+# The symbol could not be taken for this probe (PR2b-2): another entry is in flight on it, the book
+# holds a position there, or the marks could not be read. Nothing was spent.
+PROBE_SYMBOL_NOT_CLAIMED = "PROBE_SYMBOL_NOT_CLAIMED"
 
 # The closed key sets `validate_plan` holds records to. Additive fields are a plan
 # version bump, never a silent widening — an unknown key is indistinguishable from

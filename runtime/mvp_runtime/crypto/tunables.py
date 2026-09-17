@@ -197,6 +197,12 @@ TUNABLES: tuple[Tunable, ...] = (
             "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
             "before its own error_detail could be read",
             "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
+    Tunable("LIVE_ENTRY_CLAIM_TTL_MINUTES", live_order.LIVE_ENTRY_CLAIM_TTL_MINUTES,
+            "crypto/live_order.py", OPERATOR,
+            "Thomas decision 21 (2026-09-17): an entry's claim on its symbol expires after 30 "
+            "minutes, about ten times the slowest entry (send, confirm, two legs, a naked close)",
+            "an entry path whose worst case approaches the bound — a longer confirm backoff or a "
+            "third leg — which would let a live entry outlast its own claim"),
     Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
             "crypto/live_entry.py", OPERATOR,
             "a dislocation breaker, not a cost control: re-measured 2026-08-22 at ~15x the "

@@ -1407,3 +1407,198 @@ def test_fire_sends_nothing_when_the_snapshot_cannot_be_recorded(tmp_path, monke
     assert "PRE_ORDER_SNAPSHOTS_LOCKED" in str(exc.value)
     assert adapter.submitted == []
     assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+# --- PR2b-2: the probe takes the symbol before it spends anything ---------------------------------
+
+class _RecordingMarks:
+    def __init__(self, events, *, symbol_error=None):
+        self.events = events
+        self.taken: list[dict] = []
+        self.given_back: list[dict] = []
+        self._symbol_error = symbol_error
+
+    def claim_symbol(self, **kw):
+        self.events.append("take")
+        if self._symbol_error:
+            raise ToolError(self._symbol_error, "scripted symbol claim failure")
+        self.taken.append(dict(kw))
+        return {}
+
+    def release_symbol(self, **kw):
+        self.events.append("give")
+        self.given_back.append(dict(kw))
+        return {}
+
+
+def _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events, *, snapshot_store=None):
+    positions, ledger = _FakeStore(), _FakeLedger()
+    counter = _FakeCounter(adapter=adapter)
+    reserve, save = counter.reserve_submission, positions.save_position
+
+    def _reserve(**kw):
+        events.append("reserve")
+        return reserve(**kw)
+
+    def _save(position):
+        events.append("book")
+        save(position)
+
+    counter.reserve_submission, positions.save_position = _reserve, _save
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: snapshot_store or FakeSnapshotStore())
+    monkeypatch.setattr(cli, "select_live_entry_marks", lambda now=None, root=None: marks)
+    monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: positions)
+    monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: _FakeLedger())
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    monkeypatch.setattr(cli, "select_live_bracket_breaker", lambda now=None, root=None: _FakeBreaker())
+    monkeypatch.setattr(cli, "load_open_live_position",
+                        lambda symbol, root=None: positions.positions.get(symbol))
+    return counter
+
+
+def test_fire_takes_the_symbol_first_and_gives_it_back_once_the_probe_is_booked(tmp_path, monkeypatch):
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    assert _fire(tmp_path) == cli.EXIT_OK
+    [taken] = marks.taken
+    assert taken["door"] == "probe" and taken["symbol"] == "BTCUSDT"
+    assert taken["client_order_id"] == adapter.submitted[0]["newClientOrderId"]
+    assert marks.given_back == [{"symbol": "BTCUSDT", "client_order_id": taken["client_order_id"]}]
+    assert events[:2] == ["take", "reserve"] and events.index("book") < events.index("give")
+
+
+@pytest.mark.parametrize("code", ["LIVE_ENTRY_SYMBOL_IN_FLIGHT", "LIVE_ENTRY_SYMBOL_OCCUPIED",
+                                  "LIVE_ENTRY_MARKS_UNREADABLE"])
+def test_fire_refuses_a_symbol_it_cannot_take_and_spends_nothing(tmp_path, monkeypatch, code):
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events, symbol_error=code)
+    counter = _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_SYMBOL_NOT_CLAIMED and code in str(exc.value)
+    assert adapter.submitted == [] and counter.count == 0 and marks.given_back == []
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+class _RebindRefused(FakeSnapshotStore):
+    def append(self, snapshot):
+        if self.appended:
+            from runtime.mvp_runtime.errors import PersistenceError
+
+            raise PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted re-bind failure")
+        return super().append(snapshot)
+
+
+@pytest.mark.parametrize("case", ["day-full", "snapshot-not-recorded", "refused-at-the-venue-door"])
+def test_fire_gives_the_symbol_back_when_it_is_refused_before_the_venue(tmp_path, monkeypatch, case):
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    store = {
+        "day-full": None,
+        "snapshot-not-recorded": FakeSnapshotStore(error=PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "x")),
+        "refused-at-the-venue-door": _RebindRefused(),
+    }[case]
+    counter = _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events, snapshot_store=store)
+    if case == "day-full":
+        counter.count = 10
+    with pytest.raises(cli._Refusal):
+        _fire(tmp_path)
+    assert adapter.submitted == []
+    assert len(marks.given_back) == 1 and marks.given_back[0]["symbol"] == "BTCUSDT"
+
+
+def test_fire_keeps_the_symbol_when_the_entry_did_not_confirm(tmp_path, monkeypatch):
+    class _Unconfirmed(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            return None                     # the venue does not answer for the entry
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, _Unconfirmed(), marks, events)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    assert marks.taken and marks.given_back == []
+
+
+@pytest.mark.parametrize("close_confirms", [True, False])
+def test_fire_gives_the_symbol_back_only_if_the_naked_close_confirmed(tmp_path, monkeypatch, close_confirms):
+    class _StopRefused(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                return None                 # the stop never rests
+            if "_CLOSE_" in client_order_id:
+                if not close_confirms:
+                    raise ToolError("VENUE_TIMEOUT", "scripted close read failure")
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.001", "avgPrice": "99990.0", "cumQuote": "99.99",
+                        "reduceOnly": True}
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, _StopRefused(), marks, events)
+    # The naked close is a runtime close: its guard needs the autonomous phrase as well.
+    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+        LiveOrderLimits(max_order_notional_usdt=150.0, max_daily_order_count=10,
+                        max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
+                        canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+                        confirmation=LIVE_CONFIRMATION_PHRASE),
+        dict(_BUDGET, symbol_allowlist=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+    ))
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    assert (len(marks.given_back) == 1) is close_confirms
+
+
+def _both_phrases(monkeypatch):
+    """A naked close is a runtime close: its guard needs the autonomous phrase as well."""
+    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+        LiveOrderLimits(max_order_notional_usdt=150.0, max_daily_order_count=10,
+                        max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
+                        canary_confirmation=CANARY_CONFIRMATION_PHRASE,
+                        confirmation=LIVE_CONFIRMATION_PHRASE),
+        dict(_BUDGET, symbol_allowlist=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+    ))
+
+
+@pytest.mark.parametrize("close_confirms", [True, False])
+def test_fire_gives_the_symbol_back_after_a_partial_fill_only_if_its_close_confirmed(
+        tmp_path, monkeypatch, close_confirms):
+    class _PartialFill(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_CLOSE_" in client_order_id:
+                if not close_confirms:
+                    raise ToolError("VENUE_TIMEOUT", "scripted close read failure")
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.0005", "avgPrice": "99990.0", "cumQuote": "49.995",
+                        "reduceOnly": True}
+            return {"symbol": symbol, "side": "BUY", "status": "PARTIALLY_FILLED", "orderId": 11,
+                    "executedQty": "0.0005", "avgPrice": "100000.0", "cumQuote": "50.0",
+                    "reduceOnly": False}
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, _PartialFill(), marks, events)
+    _both_phrases(monkeypatch)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    assert (len(marks.given_back) == 1) is close_confirms
+
+
+def test_fire_says_so_when_the_symbol_cannot_be_given_back(tmp_path, monkeypatch, capsys):
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    class _ReleaseFails(_RecordingMarks):
+        def release_symbol(self, **kw):
+            raise PersistenceError("LIVE_ENTRY_MARKS_LOCKED", "scripted release failure")
+
+    events: list[str] = []
+    _wire_claimed_fire(tmp_path, monkeypatch, _HappyPathAdapter(), _ReleaseFails(events), events)
+    assert _fire(tmp_path) == cli.EXIT_OK
+    err = capsys.readouterr().err
+    assert "CLAIM     : NOT released (LIVE_ENTRY_MARKS_LOCKED)" in err and "30 min" in err

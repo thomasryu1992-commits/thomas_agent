@@ -101,6 +101,38 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **Two doors can no longer open one symbol at once** (crypto PR2b-2, Thomas decisions 21 and 22,
+  2026-09-17; `crypto/live_order.py`, `crypto/live_entry.py`, `crypto/live_leg.py`,
+  `crypto/live_readiness.py`, `scripts/run_slippage_probe.py`). This was left open by the PR2a
+  review. The scheduler's autonomous leg and the operator's `--fire` probe run in different
+  processes. Each checked that the symbol was free on facts it had read earlier, then sent. So two
+  entries a few seconds apart could both pass. The book is one record per symbol, so the second
+  booking overwrote the first, and the venue merged the two into one position that only half the
+  book knew about.
+
+  **The claim.**
+  - Each door now takes the symbol in the live entry marks before it spends anything: the
+    autonomous leg before its bar, the probe before its slot.
+  - Under the marks lock, no other entry may be in flight on the symbol, and the book, re-read
+    there, may hold no position on it.
+  - The symbol is given back only where the book says what the venue holds: a refusal before the
+    venue, a booked position, or a naked close the venue confirmed.
+  - Anywhere else the claim stays: an unconfirmed entry may still fill.
+  - The decision names an entry still in flight (`LIVE_ENTRY_SYMBOL_IN_FLIGHT`), so the ledger
+    says why a leg held. The pre-order gate re-derives it with the other doors.
+
+  **Expiry, not an operator step (decision 21).**
+  - A claim nobody gives back expires after 30 minutes, about ten times the slowest entry.
+  - If the dead entry did reach the venue, the next reconciliation sees a position the book lacks,
+    and that refuses entries on its own.
+  - The readiness board lists the claims in flight and flags any that expired unreleased.
+  - The TTL is indexed in `tunables.py`.
+
+  **Where it is enforced (decision 22).** The two entry doors, like PR2a's slot reservation. The
+  structural test that already requires the reservation before the send now also requires the
+  claim before the reservation, and a give-back path. The testnet cycle is left out: it is the
+  only door on its venue.
+
 - **Every order that opens exposure leaves under one sealed pre-order snapshot** (crypto PR2b-1,
   Thomas decisions 17, 19 and 20, 2026-09-17; `crypto/pre_order_gate.py`,
   `schemas/pre_order_risk_snapshot.v0.1`, `docs/runtime-contracts/PRE_ORDER_RISK_SNAPSHOT_V0.1.md`,

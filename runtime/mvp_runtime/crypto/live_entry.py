@@ -71,6 +71,7 @@ from .live_order import (
     LIVE_ENTRY_BAR_ALREADY_ENTERED as BAR_ALREADY_ENTERED,
     LIVE_ENTRY_BAR_UNKNOWN as BAR_UNKNOWN,
     LIVE_ENTRY_MARKS_UNKNOWN as MARKS_UNKNOWN,
+    LIVE_ENTRY_SYMBOL_IN_FLIGHT as SYMBOL_IN_FLIGHT,
     LIVE_ENTRY_STOP_LOSS_COOLDOWN as STOP_LOSS_COOLDOWN,
     MAX_CONSECUTIVE_BRACKET_FAILURES,
     build_live_order_intent,
@@ -380,8 +381,9 @@ def plan_live_entry(
     # rules, which sit below the line where paper publishes the route this leg is handed. The
     # context is the plan's own timeframe: the route was evaluated there. Each hold is its own
     # reason code (`live_order.live_entry_holds`), so the ledger says which rule held the bar.
+    # With `now`, an entry another door still has in flight on this symbol holds it too (PR2b-2).
     holds = live_entry_holds(
-        entry_marks, symbol=symbol, timeframe=plan.get("timeframe"), bar_time=entry_bar_time,
+        entry_marks, symbol=symbol, timeframe=plan.get("timeframe"), bar_time=entry_bar_time, now=now,
     )
     if holds:
         reasons.extend(holds)
@@ -554,6 +556,7 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
     ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
     ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
+    ("symbol_not_in_flight", frozenset({SYMBOL_IN_FLIGHT})),
     ("book_reconciled", frozenset({RECONCILE_REFUSED})),
     ("capacity_available", frozenset({CAPACITY_REFUSED})),
     ("venue_filters_valid", frozenset({NO_FILTERS})),
@@ -716,6 +719,7 @@ __all__ = [
     "STATUS_READY",
     "STATUS_REFUSED",
     "STOP_LOSS_COOLDOWN",
+    "SYMBOL_IN_FLIGHT",
     "VERDICT_REFUSED",
     "ENTRY_DOORS",
     "entry_status_line",

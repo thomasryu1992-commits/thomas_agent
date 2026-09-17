@@ -111,6 +111,34 @@ def test_unreadable_entry_marks_turn_the_board_red_and_say_not_to_delete(tmp_pat
     assert "LIVE_ENTRY_MARKS_UNREADABLE" in row["detail"] and "Do not just delete it" in row["detail"]
 
 
+def test_the_entry_marks_row_names_the_entries_in_flight_and_the_ones_left_behind(tmp_path, clean_env):
+    """PR2b-2: a claim is normal while its entry runs. One that expired without being given back
+    was left by an entry that never finished, so the book and the venue need a look."""
+    import json
+
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME, ENTRY_MARKS_VERSION
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    path = venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
+        "in_flight": {
+            "BTCUSDT": {"claimed_at": timeutil.plus_minutes(NOW, -5), "door": "probe",
+                        "client_order_id": "TAI_BTCUSDT_LONG_a"},
+            "ETHUSDT": {"claimed_at": timeutil.plus_minutes(NOW, -120), "door": "autonomous",
+                        "client_order_id": "TAI_ETHUSDT_LONG_b"},
+        },
+    }), encoding="utf-8")
+    row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
+               if c["check"] == "entry_marks")
+    assert row["ok"] is True
+    assert f"BTCUSDT (probe since {timeutil.plus_minutes(NOW, -5)})" in row["detail"]
+    assert "ETHUSDT (autonomous since" in row["detail"]
+    assert row["detail"].count("EXPIRED unreleased") == 1
+
+
 def test_the_entry_marks_row_names_the_cooldowns_still_holding(tmp_path, clean_env):
     from runtime.mvp_runtime.crypto.live_order import LiveEntryMarks
     from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
