@@ -464,6 +464,10 @@ def _run_gated_live_leg(
         # a few lines ago and the venue read predates it, so every exposure figure the guard
         # would judge is now stale. The next cycle sees a consistent picture.
         record["live_route_status"] = ROUTE_SETTLED
+        # A leg that would not come off after a close may rest against the next position on the
+        # symbol (PR2c-0): the one settled outcome the operator has to act on.
+        if live_leg.BRACKET_CANCEL_FAILED in record["live_reason_codes"]:
+            _notify_operator(record, now=now, root=root)
         return record
 
     plan = build_entry_plan(route, feature_row, now=now) if isinstance(route, Mapping) else None
@@ -936,7 +940,11 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     # the account and the operator's only trace was a line in the next morning's dashboard.
     # Money moving and being reversed is not "the cycle doing nothing".
     reversed_entry = live_leg.NAKED_POSITION_CLOSED in reasons
-    if status not in (ROUTE_OPENED, ROUTE_INCIDENT) and not reversed_entry:
+    # And a protective order that could not be withdrawn after a close (PR2c-0). Nothing is wrong
+    # with the account now, but a closePosition stop left resting closes whatever the symbol holds
+    # when it triggers, and the runtime no longer knows its id. Only a person can withdraw it.
+    leg_left = live_leg.BRACKET_CANCEL_FAILED in reasons
+    if status not in (ROUTE_OPENED, ROUTE_INCIDENT) and not reversed_entry and not leg_left:
         return
     opened = record.get("live_opened") or {}
     position = opened.get("position") or {}
@@ -944,6 +952,8 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
         head = "[LIVE INCIDENT] real money is in a state the runtime cannot account for"
     elif reversed_entry:
         head = "[LIVE] entry filled but could not be protected - position was closed again"
+    elif leg_left and status != ROUTE_OPENED:
+        head = "[LIVE] a position closed, but one of its protective orders may still rest"
     else:
         head = "[LIVE] position opened and bracketed"
     lines = [
@@ -971,6 +981,12 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
                 )
         lines.append("")
         lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
+    if leg_left:
+        lines.append("")
+        lines.append("A protective order could not be withdrawn and may still rest at the venue. A resting")
+        lines.append("closePosition stop closes the next position on this symbol. Check, then withdraw by hand:")
+        lines.append(f"  docker exec thomas-scheduler python -m scripts.list_resting_orders "
+                     f"--symbol {position.get('symbol') or record.get('symbol')}")
     if status == ROUTE_INCIDENT:
         lines.append("")
         lines.append("Check the venue. " + halt_advice())

@@ -1729,3 +1729,53 @@ def _replace(positions):
     held = positions.positions["BTCUSDT"]
     positions.positions["BTCUSDT"] = {**held, "position_id": "pos_autonomous",
                                       "strategy_id": "S_AUTONOMOUS", "quantity": 0.002}
+
+
+# --- PR2c-0: a probe's close that leaves a leg resting says so, and keeps the symbol ---------------
+
+def test_fire_keeps_the_symbol_and_says_so_when_the_stop_it_could_not_rest_will_not_come_off(
+        tmp_path, monkeypatch, capsys):
+    class _StopRefusedCancelFails(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                return None
+            if "_CLOSE_" in client_order_id:
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.001", "avgPrice": "99990.0", "cumQuote": "99.99",
+                        "reduceOnly": True}
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+        def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, _StopRefusedCancelFails(), marks, events)
+    _both_phrases(monkeypatch)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    assert "ORPHAN    : a protective order may still rest at the venue for BTCUSDT" in capsys.readouterr().err
+    assert marks.taken and marks.given_back == []
+
+
+def test_fire_says_so_when_its_time_close_leaves_the_stop_resting(tmp_path, monkeypatch, capsys):
+    class _CancelFails(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                self.stop_reads += 1
+                return {"symbol": symbol, "status": "NEW", "orderId": 77}      # rests, never fills
+            if "_CLOSE_" in client_order_id:
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.001", "avgPrice": "99990.0", "cumQuote": "99.99",
+                        "reduceOnly": True}
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+        def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+    events: list[str] = []
+    _wire_claimed_fire(tmp_path, monkeypatch, _CancelFails(), _RecordingMarks(events), events)
+    _both_phrases(monkeypatch)
+    clock = iter([0.0, 1e12] + [1e12] * 10)          # straight to the timeout
+    cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None,
+                 clock=lambda: next(clock))
+    assert "ORPHAN    : a protective order may still rest at the venue for BTCUSDT" in capsys.readouterr().err

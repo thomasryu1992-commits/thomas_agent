@@ -1576,3 +1576,54 @@ def test_two_positions_meeting_on_one_symbol_halt_the_fan_out(code):
     """PR2b-2 review: an entry that outlived its claim, or a book asked to replace or clear another
     position's record, means two positions met on one symbol — an incident, like a failed book write."""
     assert live_route._is_incident({"reason_codes": [code]}) is True
+
+
+# --- PR2c-0: a protective order left resting is the operator's to withdraw -------------------------
+
+def _left_leg_record(status, **extra):
+    return {"live_route_status": status, "symbol": "BTCUSDT",
+            "live_reason_codes": [live_leg.BRACKET_CANCEL_FAILED], "live_opened": None, **extra}
+
+
+def test_a_close_that_left_a_leg_resting_tells_the_operator_what_to_run(monkeypatch):
+    sent = _notified(_left_leg_record(live_route.ROUTE_SETTLED), monkeypatch)
+    assert len(sent) == 1
+    assert sent[0].startswith("[LIVE] a position closed, but one of its protective orders may still rest")
+    assert "python -m scripts.list_resting_orders --symbol BTCUSDT" in sent[0]
+
+
+def test_a_reversed_entry_that_left_a_leg_says_both(monkeypatch):
+    record = _left_leg_record(live_route.ROUTE_HELD, live_opened={"status": "ENTRY_NAKED_CLOSED", "bracket": []})
+    record["live_reason_codes"].append(live_leg.NAKED_POSITION_CLOSED)
+    [message] = _notified(record, monkeypatch)
+    assert message.startswith("[LIVE] entry filled but could not be protected")
+    assert "may still rest at the venue" in message
+
+
+def test_a_clean_settle_stays_quiet(monkeypatch):
+    assert _notified({"live_route_status": live_route.ROUTE_SETTLED, "live_reason_codes": []},
+                     monkeypatch) == []
+
+
+class _CancelFails(_Venue):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
+        from runtime.mvp_runtime.errors import ToolError
+
+        raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+
+@pytest.mark.parametrize("cancel_fails", [True, False])
+def test_the_settle_pass_notifies_only_when_a_leg_would_not_come_off(tmp_path, monkeypatch, cancel_fails):
+    venue = _CancelFails() if cancel_fails else _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    notified: list[str] = []
+    monkeypatch.setattr(live_route, "_notify_operator",
+                        lambda record, **kw: notified.append(record["live_route_status"]))
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    notified.clear()
+    _stop_fills(venue, tmp_path)
+    settled = run("2026-07-28T04:20:00Z", BAR_00)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED
+    assert (live_leg.BRACKET_CANCEL_FAILED in settled["live_reason_codes"]) is cancel_fails
+    assert notified == ([live_route.ROUTE_SETTLED] if cancel_fails else [])

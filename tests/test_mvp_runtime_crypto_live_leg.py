@@ -472,6 +472,14 @@ def test_the_naked_close_withdraws_whichever_leg_did_place():
     assert adapter.cancelled
 
 
+def test_the_naked_close_withdraws_a_leg_whose_submit_timed_out():
+    """PR2c-0: a submit that got no answer can land after the read that did not find it."""
+    adapter = FakeAdapter(submit_errors={"TP": "ORDER_TRANSPORT"}, missing={"TP"})
+    result = _entry(adapter=adapter)
+    cancels = result["naked_close"]["cancels"]
+    assert [c["leg"] for c in cancels] == ["stop_client_order_id", "take_profit_client_order_id"]
+
+
 def test_a_failed_naked_close_is_reported_as_loudly_as_possible():
     """The one branch with no good outcome: a real, unprotected position that would not close."""
     adapter = FakeAdapter(missing={"TP", "CLOSE"})
@@ -1472,3 +1480,79 @@ def test_a_partial_fill_keeps_the_symbol_even_once_its_close_confirmed():
     result = _entry(entry_marks=marks, adapter=adapter)
     assert result["status"] == ll.ENTRY_NAKED_CLOSED
     assert marks.taken and marks.given_back == []
+
+
+# --- PR2c-0: the close path never unprotects an open position, and never forgets a leg ----------
+
+def test_an_unconfirmed_naked_close_keeps_the_stop_that_rests():
+    """The stop placed, the target did not, and the naked close could not be confirmed. Before
+    PR2c-0 the legs were withdrawn before the close was checked, so the one stop the possibly
+    still-open position had was cancelled."""
+    adapter = FakeAdapter(missing={"TP"},
+                          statuses={"CLOSE": ToolError("VENUE_TIMEOUT", "scripted close read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    assert result["naked_close"]["cancels"] == []
+    assert adapter.cancelled == []
+
+
+def test_a_confirmed_naked_close_whose_cancel_fails_says_so_and_keeps_the_symbol():
+    marks = FakeMarks()
+    adapter = FakeAdapter(missing={"TP"}, cancel_errors={"SL": "ORDER_TRANSPORT"})
+    result = _entry(adapter=adapter, entry_marks=marks)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert ll.BRACKET_CANCEL_FAILED in result["reason_codes"]
+    assert marks.taken and marks.given_back == []
+
+
+def _leg(adapter, leg="SL"):
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg=leg, side="SELL", price=59000.0,
+                                     working_type="MARK_PRICE", position_seed="seed", quantity=0.001)
+    return ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+
+
+@pytest.mark.parametrize("adapter,may_rest", [
+    # The read itself failed: nobody can say the leg is absent.
+    (FakeAdapter(statuses={"SL": ToolError("VENUE_TIMEOUT", "scripted read failure")}), True),
+    # The submit timed out and the read found nothing: the request may still land.
+    (FakeAdapter(submit_errors={"SL": "ORDER_TRANSPORT"}, missing={"SL"}), True),
+    # The venue refused it with its own code, and has no such order: certainly absent.
+    (FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}, missing={"SL"}), False),
+    # Accepted without naming an order, and not found: the ordinary miss stays ordinary.
+    (FakeAdapter(missing={"SL"}), False),
+], ids=["read-failed", "submit-timed-out", "refused-outright", "accepted-unnamed"])
+def test_a_leg_whose_absence_is_not_certain_may_be_resting(adapter, may_rest):
+    placed = _leg(adapter)
+    assert placed["placed"] is False
+    assert placed["may_be_resting"] is may_rest
+
+
+def test_a_duplicate_refusal_is_not_an_outright_one():
+    """-4116 means the original order already landed; a read that cannot find it is not proof it
+    is gone."""
+    class _Duplicate(FakeAdapter):
+        def submit(self, order_request, *, timeout_seconds=10):
+            self.submitted.append(dict(order_request))
+            raise ToolError("ORDER_REJECTED", "duplicate client order id (-4116) — the original order "
+                                              "already landed; reconcile decides the outcome")
+
+    placed = _leg(_Duplicate(missing={"SL"}))
+    assert placed["may_be_resting"] is True
+
+
+def test_a_naked_close_withdraws_a_stop_whose_confirmation_read_failed():
+    adapter = FakeAdapter(statuses={"SL": ToolError("VENUE_TIMEOUT", "scripted read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert "stop_client_order_id" in [c["leg"] for c in result["naked_close"]["cancels"]]
+
+
+def test_a_confirmed_close_that_cannot_be_priced_still_withdraws_its_legs():
+    """A booked position keeps its record for a settle retry, but the legs protect nothing once the
+    venue confirmed the close — and a probe's never-booked position has no retry at all."""
+    adapter = FakeAdapter(fills={"CLOSE": {"cumQuote": None, "avgPrice": None, "executedQty": 0.001}})
+    store = FakeStore()
+    result = _exit(adapter=adapter, position_store=store)
+    assert result["status"] == ll.EXIT_NOT_CONFIRMED
+    assert ll.FILL_FACTS_MISSING in result["reason_codes"]
+    assert len(adapter.cancelled) == 2 and store.cleared == []
