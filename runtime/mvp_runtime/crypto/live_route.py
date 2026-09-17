@@ -577,23 +577,24 @@ def _run_gated_live_leg(
             "approval_id": (live_arm_approvals or {}).get(strategy_id),
         },
     )
-    snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
-                               decision_kwargs=decision_kwargs, profile=profile, now=now)
+    # Not `snapshot`: that name is the account snapshot this leg read above.
+    risk_snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
+                                    decision_kwargs=decision_kwargs, profile=profile, now=now)
     record["live_pre_order_gate"] = {
-        "approved": snapshot["approved"],
-        "failed_checks": snapshot["failed_checks"],
-        "pre_order_risk_snapshot_id": snapshot["pre_order_risk_snapshot_id"],
-        "risk_snapshot_sha256": snapshot["risk_snapshot_sha256"],
+        "approved": risk_snapshot["approved"],
+        "failed_checks": risk_snapshot["failed_checks"],
+        "pre_order_risk_snapshot_id": risk_snapshot["pre_order_risk_snapshot_id"],
+        "risk_snapshot_sha256": risk_snapshot["risk_snapshot_sha256"],
     }
-    if not snapshot["approved"]:
+    if not risk_snapshot["approved"]:
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].append(PRE_ORDER_GATE_REFUSED)
-        record["live_reason_codes"].extend(snapshot["failed_checks"])
+        record["live_reason_codes"].extend(risk_snapshot["failed_checks"])
         return record
     decision = {
         **decision,
-        "intent": pre_order_gate.bind_intent(decision["intent"], snapshot),
-        "risk_snapshot": snapshot,
+        "intent": pre_order_gate.bind_intent(decision["intent"], risk_snapshot),
+        "risk_snapshot": risk_snapshot,
     }
 
     # 4. The order. Governance first — a governance failure must cost nothing, so it refuses

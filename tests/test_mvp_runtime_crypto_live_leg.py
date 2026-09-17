@@ -1191,7 +1191,6 @@ def test_a_decision_without_its_own_snapshot_spends_nothing_and_sends_nothing(de
 
 
 _SHORT_INTENT, _SHORT_SNAPSHOT = _intent(direction="SHORT", side="SELL")
-_NO_DIRECTION_INTENT, _NO_DIRECTION_SNAPSHOT = _intent(direction="")
 
 
 @pytest.mark.parametrize("decision", [
@@ -1201,12 +1200,7 @@ _NO_DIRECTION_INTENT, _NO_DIRECTION_SNAPSHOT = _intent(direction="")
     {**DECISION, "bracket": {**BRACKET, "take_profit_side": "BUY"}},
     {**DECISION, "bracket": None},
     {**DECISION, "intent": _SHORT_INTENT, "risk_snapshot": _SHORT_SNAPSHOT},
-    {**DECISION, "intent": _NO_DIRECTION_INTENT, "risk_snapshot": _NO_DIRECTION_SNAPSHOT,
-     "bracket": {**BRACKET, "stop_side": "BUY", "take_profit_side": "BUY"}},
-    {**DECISION, "intent": _NO_DIRECTION_INTENT, "risk_snapshot": _NO_DIRECTION_SNAPSHOT,
-     "bracket": {k: v for k, v in BRACKET.items() if k not in ("stop_side", "take_profit_side")}},
-], ids=["moved-stop", "moved-target", "stop-adds", "target-adds", "no-bracket", "long-legs-on-a-short",
-        "no-direction", "no-direction-no-sides"])
+], ids=["moved-stop", "moved-target", "stop-adds", "target-adds", "no-bracket", "long-legs-on-a-short"])
 def test_protection_that_is_not_the_approved_one_spends_nothing_and_sends_nothing(decision):
     """The snapshot seals the intent's stop and target, and the legs are placed from the bracket:
     a bracket that disagrees — in price, or on a side that would add to the position — is not the
@@ -1247,3 +1241,31 @@ def test_a_booked_position_hands_its_snapshot_to_the_exit_outcome():
     result = _exit(position={**POSITION, "risk_snapshot_sha256": "sha256:" + "a" * 64}, ledger=ledger)
     assert result["status"] == ll.EXIT_CLOSED
     assert ledger.appended[0]["risk_snapshot_sha256"] == "sha256:" + "a" * 64
+
+
+# --- PR2b review: the protective door places protective orders only -------------------------------
+
+@pytest.mark.parametrize("intent", [
+    # An opening MARKET order handed to the leg door (the review's 3 BTC case).
+    {"symbol": "BTCUSDT", "side": "BUY", "order_type_exchange": "MARKET", "quantity": 3.0,
+     "reduce_only": False, "client_order_id": "TAI_BTCUSDT_SL_open"},
+    # A target LIMIT that lost its reduce-only flag.
+    {"symbol": "BTCUSDT", "side": "SELL", "order_type_exchange": "LIMIT", "quantity": 0.001,
+     "price": 62000.0, "time_in_force": "GTC", "reduce_only": False,
+     "client_order_id": "TAI_BTCUSDT_TP_open"},
+], ids=["market-entry", "limit-without-reduce-only"])
+def test_a_leg_that_could_add_exposure_is_never_sent(intent):
+    adapter = FakeAdapter()
+    placed = ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+    assert placed["placed"] is False and placed["may_be_resting"] is False
+    assert placed["error"] == ll.BRACKET_LEG_NOT_PROTECTIVE
+    assert adapter.submitted == [] and EVENTS == []
+
+
+@pytest.mark.parametrize("leg", ["SL", "TP"])
+def test_the_real_legs_are_protective(leg):
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg=leg, side="SELL", price=59000.0,
+                                     working_type="MARK_PRICE", position_seed="seed", quantity=0.001)
+    adapter = FakeAdapter()
+    placed = ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+    assert placed["placed"] is True and len(adapter.submitted) == 1

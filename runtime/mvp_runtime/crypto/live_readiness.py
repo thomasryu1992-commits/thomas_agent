@@ -528,6 +528,25 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         )
     checks.append(_check("entry_marks", marks is not None, marks_detail))
 
+    # 6d. The mainnet pre-order snapshot record (PR2b). On the board for the entry marks' reason: the
+    # store will not append past a damaged line, so every live entry is refused while every other row
+    # can read green. A row that parses but fails its seal, the schema or the gate's requirements
+    # fails this row as well — entries go on, but the record no longer proves why past orders left.
+    snapshots = pre_order_gate.snapshots_status(root)
+    if snapshots["readable"]:
+        snapshots_detail = (
+            f"{snapshots['count']} recorded, latest {snapshots['last_created_at']}" if snapshots["count"]
+            else "none recorded (no order has left under the gate)"
+        )
+    else:
+        snapshots_detail = (
+            f"UNREADABLE ({snapshots['error']}) - the record of why past orders were allowed no longer "
+            "proves itself. A damaged line refuses every live entry: move "
+            f"{pre_order_gate.SNAPSHOT_FILENAME} aside (keep it) and check this row again. A row that "
+            "fails its seal was edited: find out by whom before trusting the record"
+        )
+    checks.append(_check("pre_order_snapshots", snapshots["readable"], snapshots_detail))
+
     # 7. Retired 2026-09-15 (PR1r): the `canary_evidence` row, with the promotion gate it reported.
     #    The frozen canary history is still readable on its own board:
     #    python -m runtime.mvp_runtime.crypto.live_promotion
@@ -679,10 +698,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The signed testnet cycles this machine has earned (PR1d-2). Read here rather than at
         # `resolve_execution_stage`, whose contract with the live leg is that it never raises.
         "testnet_evidence": _testnet_evidence(root),
-        # The pre-order snapshots real orders left under (PR2b), verified. Reported beside the
-        # checks, never as one: a damaged history does not stop the next order's gate, but an
-        # operator must see it.
-        "pre_order_snapshots": pre_order_gate.snapshots_status(root),
+        # The pre-order snapshots real orders left under (PR2b), verified; the `pre_order_snapshots`
+        # check row above reads the same value.
+        "pre_order_snapshots": snapshots,
     }
 
 
@@ -813,18 +831,6 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
-def _pre_order_snapshots_line(status: Mapping[str, Any]) -> str:
-    """The mainnet pre-order snapshot record (PR2b), as one line."""
-    record = status.get("pre_order_snapshots") or {}
-    if not record.get("readable"):
-        return (f"[----] {'pre_order_snapshots':24} UNREADABLE - {record.get('error')}; the record of "
-                "why past orders were allowed no longer proves itself")
-    if not record.get("count"):
-        return f"[----] {'pre_order_snapshots':24} none recorded (no order has left under the gate)"
-    return (f"[----] {'pre_order_snapshots':24} {record['count']} recorded, latest "
-            f"{record.get('last_created_at')}")
-
-
 def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
     """What the SIGNED_TESTNET -> LIVE_AUTONOMOUS climb would find. Informational: it gates no
     check here, because the ladder's own door is where it decides anything (PR1d-2)."""
@@ -887,7 +893,6 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     lines.append(_testnet_evidence_line(status))
-    lines.append(_pre_order_snapshots_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

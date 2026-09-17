@@ -154,6 +154,27 @@ Append a new entry when a milestone ships, in the same PR.
   The signed testnet entry passes the same gate into its own venue's store (decision 20), so the rule
   at the door has no venue exception.
 
+  **The independent review (PR #881) found no bypass of the gate, one medium finding and several
+  low ones.**
+  - **Medium: the venue door trusted what a snapshot said about itself.** The seal is a plain hash,
+    so any intact snapshot marked approved passed the door. The gate would also seal a
+    testnet-purpose snapshot for mainnet, and the door then sent the order on testnet-level
+    authority.
+    - The gate now checks that the venue matches the purpose.
+    - The door re-checks what the gate requires of every approved snapshot: the profile, the gate's
+      own checks, the lineage, the venue, and the order itself.
+  - **Low findings, all fixed in the PR:**
+    - The store's writer and reader split lines differently. Rows are now ASCII.
+    - A damaged row was silently skipped. It is now refused, and the writer will not append past it.
+    - A store error escaped the testnet door untyped.
+    - The testnet door counted an entry it never sent and recorded a cycle for it.
+    - The fingerprint left out request fields the venue receives.
+    - The bracket door would place a leg that adds exposure.
+    - A capable adapter could be paired with a store that records nothing.
+    - A malformed door check could pass.
+  - **Deferred to PR2c:** the arming approval id is checked for presence only. Verifying what it
+    approved needs an approval-store read on the order path.
+
   **Why a new store, against "reuse first".** The audit event's schema has no room for a check list,
   and "recorded before the send" means nothing unless the reasons survive. Thomas approved the store
   as decision 19. It follows the testnet evidence registry's shape. The record is closed-schema, and

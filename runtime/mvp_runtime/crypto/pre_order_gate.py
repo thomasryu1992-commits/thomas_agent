@@ -47,7 +47,7 @@ from ..safety_gate import Authorization
 from ..schema_cache import validate_against_schema
 from .execution_stage import PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET
 from .live_order import enrich_order_identity
-from .state import VENUE_MAINNET, venue_state_dir
+from .state import VENUE_MAINNET, VENUE_TESTNET, venue_state_dir
 
 GATE_ID = "pre_order_gate.v1"
 SNAPSHOT_VERSION = "pre_order_risk_snapshot.v0.1"
@@ -62,9 +62,13 @@ RISK_SNAPSHOT_INTENT_MISMATCH = "RISK_SNAPSHOT_INTENT_MISMATCH"
 RISK_SNAPSHOT_VENUE_MISMATCH = "RISK_SNAPSHOT_VENUE_MISMATCH"
 RISK_SNAPSHOT_NO_STORE = "RISK_SNAPSHOT_NO_STORE"
 RISK_SNAPSHOT_STORE_UNREADABLE = "RISK_SNAPSHOT_STORE_UNREADABLE"
+RISK_SNAPSHOT_STORE_UNWRITABLE = "RISK_SNAPSHOT_STORE_UNWRITABLE"
 RISK_SNAPSHOT_STORE_TAMPERED = "RISK_SNAPSHOT_STORE_TAMPERED"
 RISK_SNAPSHOT_ID_CONFLICT = "RISK_SNAPSHOT_ID_CONFLICT"
 RISK_SNAPSHOT_INVALID = "RISK_SNAPSHOT_INVALID"
+# Intact, approved and schema-valid, yet what it records does not support the approval: the profile,
+# the gate's own checks, the lineage or the venue are not what the gate requires.
+RISK_SNAPSHOT_UNSUPPORTED = "RISK_SNAPSHOT_UNSUPPORTED"
 
 # The gate's own checks, added to whatever the door re-derived.
 CHECK_DOOR_CHECKS = "door_checks_present"
@@ -72,6 +76,9 @@ CHECK_OPENS_EXPOSURE = "intent_opens_exposure"
 CHECK_INTENT_IDENTITY = "intent_identity"
 CHECK_LINEAGE = "lineage_complete"
 CHECK_PROFILE = "approved_profile_complete"
+CHECK_VENUE = "venue_matches_purpose"
+GATE_CHECK_IDS = (CHECK_DOOR_CHECKS, CHECK_OPENS_EXPOSURE, CHECK_INTENT_IDENTITY, CHECK_LINEAGE,
+                  CHECK_PROFILE, CHECK_VENUE)
 
 # What the snapshot binds of the intent: its identity, its material terms, and the lineage it will
 # be judged by. A change to any of them after the gate is a different order.
@@ -79,6 +86,10 @@ INTENT_BOUND_FIELDS = (
     "idempotency_key", "client_order_id", "order_intent_id",
     "symbol", "direction", "side", "order_type_exchange",
     "quantity", "order_notional_usdt", "reduce_only", "connectivity_test",
+    # Every other field `live_execution.build_order_request` turns into the venue request. None of
+    # them is set on a MARKET entry today; bound anyway, so a snapshot sealed for one request can
+    # never authorize a different one.
+    "close_position", "stop_price", "working_type", "price", "time_in_force",
     "entry_price", "stop_loss", "take_profit",
     "strategy_id", "candidate_id", "strategy_rule_hash", "strategy_generation_id",
     "position_id", "candle_time", "timeframe",
@@ -101,6 +112,15 @@ _AUTHORITY_FOR = {
     PURPOSE_PROBE: AUTHORITY_PROBE_PLAN,
     PURPOSE_TESTNET: AUTHORITY_TESTNET_CAPS,
 }
+# The venue each purpose's orders go to. A testnet cycle's caps authorize nothing on mainnet, and
+# neither an arming approval nor a probe plan authorizes an order on the testnet venue.
+VENUE_FOR_PURPOSE = {
+    PURPOSE_AUTONOMOUS: VENUE_MAINNET,
+    PURPOSE_PROBE: VENUE_MAINNET,
+    PURPOSE_TESTNET: VENUE_TESTNET,
+}
+# The side an order that opens exposure takes for its direction.
+_OPENING_SIDE = {"LONG": "BUY", "SHORT": "SELL"}
 RISK_LIMITS_DEFAULT_SOURCE = "default"
 
 
@@ -238,6 +258,15 @@ def _identity_problem(intent: Mapping[str, Any]) -> str | None:
     return f"{', '.join(wrong)} do not follow from the intent" if wrong else None
 
 
+def _opening_problem(intent: Mapping[str, Any]) -> str | None:
+    """Why ``intent`` is not an order that opens exposure in its own direction, or None."""
+    if intent.get("reduce_only") or intent.get("close_position"):
+        return "an order that reduces exposure is judged by the close guard, not this gate"
+    if _OPENING_SIDE.get(str(intent.get("direction") or "").upper()) != intent.get("side"):
+        return "the order's side does not open its direction"
+    return None
+
+
 def evaluate_pre_order_gate(
     intent: Mapping[str, Any],
     *,
@@ -253,10 +282,20 @@ def evaluate_pre_order_gate(
 
     ``checks`` is everything the door re-derived from the facts it read; ``facts`` is the numbers
     those checks judged, recorded so the snapshot can be re-read without the process that made it.
-    The result is approved only when every check — the door's and the gate's — passed."""
+    The result is approved only when every check — the door's and the gate's — passed.
+
+    A handed check passes only when its ``ok`` is ``True`` itself. One that is not a mapping, names
+    no check, carries an ``ok`` that is not a boolean, or takes a name the gate reserves for its own
+    checks is malformed, and a door that hands one has not shown what it verified."""
+    handed = list(checks)
+    malformed = [
+        c for c in handed
+        if not (isinstance(c, Mapping) and not _missing(c.get("check"))
+                and isinstance(c.get("ok"), bool) and c.get("check") not in GATE_CHECK_IDS)
+    ]
     door_checks = [
-        check(str(c.get("check")), bool(c.get("ok")), _clean(c.get("detail")))
-        for c in checks if isinstance(c, Mapping)
+        check(str(c.get("check")), c.get("ok") is True, _clean(c.get("detail")))
+        for c in handed if isinstance(c, Mapping)
     ]
     wanted = LINEAGE_FIELDS.get(purpose, ())
     missing = [field for field in wanted if _missing((lineage or {}).get(field))]
@@ -266,18 +305,22 @@ def evaluate_pre_order_gate(
         # an arming approval, and neither is a testnet cap.
         problems.append(f"the profile authorizes a {profile.get('purpose')} order, not a {purpose} one")
     identity = _identity_problem(intent)
-    reduce_only = bool(intent.get("reduce_only"))
+    opening = _opening_problem(intent)
+    venue_ok = purpose in VENUE_FOR_PURPOSE and VENUE_FOR_PURPOSE[purpose] == venue
     gate_checks = [
-        # A door that re-derived nothing has verified nothing.
-        check(CHECK_DOOR_CHECKS, bool(door_checks),
-              None if door_checks else "the door re-derived no checks"),
-        check(CHECK_OPENS_EXPOSURE, not reduce_only,
-              "a reduce-only order is judged by the close guard, not this gate" if reduce_only else None),
+        # A door that re-derived nothing has verified nothing; one that handed a malformed check
+        # has not shown what it verified.
+        check(CHECK_DOOR_CHECKS, bool(door_checks) and not malformed,
+              ("the door re-derived no checks" if not door_checks
+               else f"{len(malformed)} malformed check(s)" if malformed else None)),
+        check(CHECK_OPENS_EXPOSURE, opening is None, opening),
         check(CHECK_INTENT_IDENTITY, identity is None, identity),
         check(CHECK_LINEAGE, purpose in LINEAGE_FIELDS and not missing,
               (f"missing {', '.join(missing)}" if missing else None)
               if purpose in LINEAGE_FIELDS else f"unknown purpose {purpose!r}"),
         check(CHECK_PROFILE, not problems, "; ".join(problems) or None),
+        check(CHECK_VENUE, venue_ok,
+              None if venue_ok else f"a {purpose} order does not go to {venue}"),
     ]
     all_checks = door_checks + gate_checks
     approved = all(c["ok"] for c in all_checks)
@@ -310,15 +353,15 @@ def evaluate_pre_order_gate(
     return body
 
 
+# What a bound intent names of its snapshot (the directive's three references).
+SNAPSHOT_REFERENCE_FIELDS = ("pre_order_risk_snapshot_id", "risk_gate_id", "risk_snapshot_sha256")
+
+
 def bind_intent(intent: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    """The intent as it may be sent: naming the snapshot that approved it. The two added fields are
+    """The intent as it may be sent: naming the snapshot that approved it. The added fields are
     outside :data:`INTENT_BOUND_FIELDS`, so binding changes neither the fingerprint nor the order's
     identity at the venue."""
-    return {
-        **dict(intent),
-        "pre_order_risk_snapshot_id": snapshot.get("pre_order_risk_snapshot_id"),
-        "risk_snapshot_sha256": snapshot.get("risk_snapshot_sha256"),
-    }
+    return {**dict(intent), **{field: snapshot.get(field) for field in SNAPSHOT_REFERENCE_FIELDS}}
 
 
 def _schema_problem(record: Mapping[str, Any]) -> str | None:
@@ -341,6 +384,58 @@ def _seal_matches(snapshot: Mapping[str, Any]) -> bool:
         return False
 
 
+def _unsupported(snapshot: Mapping[str, Any]) -> str | None:
+    """Why an intact, approved, schema-valid snapshot still does not support its approval, or None.
+
+    The seal is a plain hash, so a snapshot's own ``approved`` proves only that nothing changed
+    since it was sealed, not that the gate sealed it. This re-checks what the gate requires of
+    every snapshot it approves, from the record alone."""
+    purpose = snapshot.get("purpose")
+    if VENUE_FOR_PURPOSE.get(purpose) != snapshot.get("venue"):
+        return f"a {purpose} order does not go to {snapshot.get('venue')}"
+    profile = snapshot.get("approved_profile")
+    if not isinstance(profile, Mapping) or profile.get("purpose") != purpose:
+        return "the profile was not built for this purpose"
+    problems = profile_problems(profile)
+    if problems:
+        return "; ".join(problems)
+    try:
+        profile_sha = integrity.sha256_record(dict(profile))
+    except (ValueError, TypeError, RecursionError):
+        profile_sha = None
+    if snapshot.get("approved_profile_sha256") != profile_sha:
+        return "the profile hash does not match the profile"
+    names = [c.get("check") for c in snapshot.get("checks") or () if isinstance(c, Mapping)]
+    if any(names.count(name) != 1 for name in GATE_CHECK_IDS):
+        return "the gate's own checks are not each recorded once"
+    if len(names) <= len(GATE_CHECK_IDS):
+        return "no door check is recorded"
+    lineage = snapshot.get("lineage") if isinstance(snapshot.get("lineage"), Mapping) else {}
+    missing = [field for field in LINEAGE_FIELDS[purpose] if _missing(lineage.get(field))]
+    if missing:
+        return f"the lineage is missing {', '.join(missing)}"
+    if lineage.get("order_intent_id") != snapshot.get("order_intent_id"):
+        return "the lineage names another order"
+    return None
+
+
+def _intent_mismatch(intent: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str | None:
+    """Why ``intent`` is not the order ``snapshot`` approved, or None."""
+    for field in ("symbol", "side", "client_order_id", "idempotency_key", "order_intent_id"):
+        if intent.get(field) != snapshot.get(field):
+            return f"the snapshot's {field} is not the order's"
+    if snapshot.get("intent_fingerprint") != intent_fingerprint(intent):
+        return "the pre-order risk snapshot approved a different order"
+    # What the gate checked when it sealed, checked again on the order itself.
+    problem = _opening_problem(intent) or _identity_problem(intent)
+    if problem is not None:
+        return problem
+    wrong = [field for field in SNAPSHOT_REFERENCE_FIELDS if intent.get(field) != snapshot.get(field)]
+    if wrong:
+        return f"the order does not name the snapshot that approved it ({', '.join(wrong)})"
+    return None
+
+
 def verify_snapshot(intent: Mapping[str, Any], snapshot: Any) -> str:
     """Refuse unless ``snapshot`` approved exactly this intent and is intact. Returns its hash."""
     if not isinstance(snapshot, Mapping):
@@ -356,18 +451,28 @@ def verify_snapshot(intent: Mapping[str, Any], snapshot: Any) -> str:
     if problem is not None:
         # Only a snapshot this schema describes may be recorded — and so authorize an order.
         raise ToolError(RISK_SNAPSHOT_INVALID, f"the pre-order risk snapshot is not recordable: {problem}")
-    if snapshot.get("intent_fingerprint") != intent_fingerprint(intent):
-        raise ToolError(RISK_SNAPSHOT_INTENT_MISMATCH, "the pre-order risk snapshot approved a different order")
-    if intent.get("risk_snapshot_sha256") != snapshot.get("risk_snapshot_sha256"):
-        raise ToolError(RISK_SNAPSHOT_INTENT_MISMATCH, "the order does not name the snapshot that approved it")
+    unsupported = _unsupported(snapshot)
+    if unsupported is not None:
+        raise ToolError(RISK_SNAPSHOT_UNSUPPORTED,
+                        f"the pre-order risk snapshot does not support its approval: {unsupported}")
+    mismatch = _intent_mismatch(intent, snapshot)
+    if mismatch is not None:
+        raise ToolError(RISK_SNAPSHOT_INTENT_MISMATCH, mismatch)
     return str(snapshot["risk_snapshot_sha256"])
 
 
-def verify_and_persist(intent: Mapping[str, Any], snapshot: Any, *, store: Any) -> str:
-    """The binding: verify, then write the snapshot to its venue's store — before anything is sent."""
+def verify_and_persist(intent: Mapping[str, Any], snapshot: Any, *, store: Any,
+                       require_durable: bool = False) -> str:
+    """The binding: verify, then write the snapshot to its venue's store — before anything is sent.
+
+    ``require_durable`` is the venue door's: an adapter that can reach a venue needs a store that
+    actually writes, or the order would leave with no record while reporting one."""
     sha = verify_snapshot(intent, snapshot)
     if store is None:
         raise ToolError(RISK_SNAPSHOT_NO_STORE, "no pre-order snapshot store: the order would leave no record")
+    if require_durable and getattr(store, "filesystem_write", False) is not True:
+        raise ToolError(RISK_SNAPSHOT_NO_STORE,
+                        "an order that can reach a venue needs a store that writes its snapshot")
     if getattr(store, "venue", None) != snapshot.get("venue"):
         raise ToolError(RISK_SNAPSHOT_VENUE_MISMATCH,
                         f"a {snapshot.get('venue')} snapshot cannot authorize an order through the "
@@ -384,28 +489,39 @@ def snapshot_path(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> Pa
     return venue_state_dir(root, venue=venue) / SNAPSHOT_FILENAME
 
 
-def _recorded_hashes(path: Path) -> tuple[dict[str, str], bool]:
-    """``snapshot id -> hash`` for every complete row, read raw, and whether the file ends mid-line.
+def _read_rows(path: Path) -> tuple[list[tuple[int, dict[str, Any]]], int, bool]:
+    """Every complete row as ``(line number, row)``, where the complete part ends, and whether an
+    unfinished line follows it.
 
-    An unparseable line is skipped, and that is exact rather than lenient: a row is appended and
-    synced before its order is sent, so a line the writer never finished is one no order followed.
-    The second value tells the writer to end that torn line first — appending straight after it
-    would fuse the next row into it and lose that row too."""
+    A row is complete once its newline is written, and the row and its newline go out in one write
+    that is synced before the order is sent. So the text after the last newline is a write that never
+    returned: no order followed it, and it is not a row. Every line before it must parse — a damaged
+    one could be the record of an order that did leave, so it is refused rather than skipped. Blank
+    lines carry nothing and are passed over. Only the complete part is decoded, so a crash that cut a
+    character in half cannot make the record unreadable."""
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except FileNotFoundError:
-        return {}, False
-    except (OSError, UnicodeDecodeError) as exc:
+        return [], 0, False
+    except OSError as exc:
         raise ToolError(RISK_SNAPSHOT_STORE_UNREADABLE, f"pre-order snapshots unreadable: {type(exc).__name__}") from exc
-    recorded: dict[str, str] = {}
-    for line in text.splitlines():
+    complete = data.rfind(b"\n") + 1
+    try:
+        text = data[:complete].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(RISK_SNAPSHOT_STORE_UNREADABLE, "pre-order snapshots are not UTF-8") from exc
+    rows: list[tuple[int, dict[str, Any]]] = []
+    for number, line in enumerate(text.split("\n")[:-1], start=1):
+        if not line.strip():
+            continue
         try:
             row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and isinstance(row.get("pre_order_risk_snapshot_id"), str):
-            recorded[row["pre_order_risk_snapshot_id"]] = str(row.get("risk_snapshot_sha256"))
-    return recorded, bool(text) and not text.endswith("\n")
+        except ValueError as exc:
+            raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED, f"pre-order snapshot line {number} is damaged") from exc
+        if not isinstance(row, dict):
+            raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED, f"pre-order snapshot line {number} is not a record")
+        rows.append((number, row))
+    return rows, complete, len(data) > complete
 
 
 class PreOrderSnapshotStore:
@@ -435,29 +551,41 @@ class PreOrderSnapshotStore:
 
     def append(self, snapshot: Mapping[str, Any]) -> str:
         """Write ``snapshot`` and sync it. Idempotent on its id; a different snapshot under a
-        recorded id is refused. Returns the recorded hash."""
+        recorded id is refused. Returns the recorded hash.
+
+        Rows are written as ASCII, so every reader splits them the same way whatever a field
+        holds. An unfinished line left by an earlier write is cut off before this row is added."""
         self._assert()
         snapshot_id = snapshot.get("pre_order_risk_snapshot_id")
         sha = snapshot.get("risk_snapshot_sha256")
         if not (isinstance(snapshot_id, str) and snapshot_id and isinstance(sha, str) and sha):
             raise ToolError(RISK_SNAPSHOT_MISSING, "a snapshot without an id and a hash cannot be recorded")
+        line = (json.dumps(dict(snapshot), ensure_ascii=True, sort_keys=True) + "\n").encode("ascii")
         path = snapshot_path(self._root, venue=self.venue)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with locked(path.with_suffix(".lock"), code="PRE_ORDER_SNAPSHOTS_LOCKED",
-                    label="pre-order risk snapshots"):
-            recorded, torn_tail = _recorded_hashes(path)
-            if snapshot_id in recorded:
-                if recorded[snapshot_id] == sha:
-                    return sha
-                raise ToolError(RISK_SNAPSHOT_ID_CONFLICT,
-                                f"snapshot {snapshot_id} is already recorded with different content")
-            with open(path, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(("\n" if torn_tail else "")
-                             + json.dumps(dict(snapshot), ensure_ascii=False, sort_keys=True) + "\n")
-                handle.flush()
-                # The row is the order's reason for existing; it reaches the disk before the order
-                # reaches the venue. The directory entry is not synced, as for the live book.
-                os.fsync(handle.fileno())
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with locked(path.with_suffix(".lock"), code="PRE_ORDER_SNAPSHOTS_LOCKED",
+                        label="pre-order risk snapshots"):
+                rows, complete, torn_tail = _read_rows(path)
+                recorded = {str(row.get("pre_order_risk_snapshot_id")): row.get("risk_snapshot_sha256")
+                            for _number, row in rows}
+                if snapshot_id in recorded:
+                    if recorded[snapshot_id] == sha:
+                        return sha
+                    raise ToolError(RISK_SNAPSHOT_ID_CONFLICT,
+                                    f"snapshot {snapshot_id} is already recorded with different content")
+                with open(path, "r+b" if torn_tail else "ab") as handle:
+                    if torn_tail:
+                        handle.seek(complete)
+                        handle.truncate()
+                    handle.write(line)
+                    handle.flush()
+                    # The row is the order's reason for existing; it reaches the disk before the
+                    # order reaches the venue. The directory entry is not synced, as for the book.
+                    os.fsync(handle.fileno())
+        except OSError as exc:
+            raise ToolError(RISK_SNAPSHOT_STORE_UNWRITABLE,
+                            f"the pre-order snapshot could not be written ({type(exc).__name__})") from exc
         return sha
 
 
@@ -476,32 +604,16 @@ class DryRunPreOrderSnapshotStore:
 def read_snapshots(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> list[dict[str, Any]]:
     """Every recorded snapshot at ``venue``, oldest first — a VERIFIED read for audit and the board.
 
-    Raises on a row that fails its seal or an id recorded twice with different content. A line the
-    writer never finished is not a row (see :func:`_recorded_hashes`) and is ignored — tampering
-    shows as a row that parses and fails its seal, which is refused."""
-    path = snapshot_path(root, venue=venue)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return []
-    except (OSError, UnicodeDecodeError) as exc:
-        raise ToolError(RISK_SNAPSHOT_STORE_UNREADABLE, f"pre-order snapshots unreadable: {type(exc).__name__}") from exc
-    lines = text.split("\n")
-    rows: list[dict[str, Any]] = []
+    Raises on a damaged line, a row that fails its seal, the schema or the gate's own requirements,
+    and an id recorded twice with different content. An unfinished last line is not a row (see
+    :func:`_read_rows`)."""
+    rows, _complete, _torn = _read_rows(snapshot_path(root, venue=venue))
+    verified: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
-    for index, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            # A line the writer never finished: an append that never returned, so no order followed
-            # it. At the end of the file it is the tail of the last attempt; anywhere else it is one
-            # the next append ended with a newline before writing its own row.
-            continue
-        if not isinstance(row, dict) or not _seal_matches(row):
+    for index, row in rows:
+        if not _seal_matches(row):
             raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED, f"pre-order snapshot line {index} fails its seal")
-        if _schema_problem(row) is not None:
+        if _schema_problem(row) is not None or _unsupported(row) is not None:
             raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED,
                             f"pre-order snapshot line {index} is not a recordable snapshot")
         snapshot_id = str(row.get("pre_order_risk_snapshot_id"))
@@ -509,8 +621,8 @@ def read_snapshots(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> l
             raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED, f"snapshot {snapshot_id} is recorded twice")
         if snapshot_id not in seen:
             seen[snapshot_id] = str(row.get("risk_snapshot_sha256"))
-            rows.append(row)
-    return rows
+            verified.append(row)
+    return verified
 
 
 def find_snapshot(sha: str, root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any] | None:
@@ -526,8 +638,9 @@ def snapshots_status(root: Path | None = None, *, venue: str = VENUE_MAINNET) ->
     still proves itself. Never raises."""
     try:
         rows = read_snapshots(root, venue=venue)
-    except ToolError as exc:
-        return {"readable": False, "error": exc.reason_code, "count": None, "last_created_at": None}
+    except Exception as exc:  # noqa: BLE001 — the board reports, it never fails
+        return {"readable": False, "error": getattr(exc, "reason_code", type(exc).__name__),
+                "count": None, "last_created_at": None}
     return {
         "readable": True,
         "error": None,
@@ -541,13 +654,16 @@ __all__ = [
     "AUTHORITY_PROBE_PLAN",
     "AUTHORITY_TESTNET_CAPS",
     "DryRunPreOrderSnapshotStore",
+    "GATE_CHECK_IDS",
     "GATE_ID",
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
     "PreOrderSnapshotStore",
     "SNAPSHOT_FILENAME",
+    "SNAPSHOT_REFERENCE_FIELDS",
     "SNAPSHOT_SCHEMA_FILE",
     "SNAPSHOT_VERSION",
+    "VENUE_FOR_PURPOSE",
     "approved_profile",
     "bind_intent",
     "check",

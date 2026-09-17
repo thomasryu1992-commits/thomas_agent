@@ -1582,7 +1582,10 @@ LIVE_TIER_OBSERVATION = "OBSERVATION"
 LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
 # The Thomas approval a LIVE entry was armed under (PR2b, decision 17). The promotion door writes it
 # beside the tier; the disarm door removes it with the tier. The pre-order gate refuses an entry for
-# a LIVE strategy that names none, so an entry armed by hand is armed for nothing.
+# a LIVE strategy that names none, so an entry armed by hand without an id is armed for nothing.
+# Only the id's presence is checked: that it names a real approval to arm this candidate is not
+# re-verified at order time (left for PR2c's order-time re-reads), so a hand edit that also writes
+# an id is not caught here, just as a hand-edited tier was not caught before.
 LIVE_TIER_APPROVAL_FIELD = "live_tier_approval_id"
 
 

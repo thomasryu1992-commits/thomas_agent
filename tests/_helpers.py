@@ -138,7 +138,8 @@ def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00
                 if purpose != PURPOSE_TESTNET else None),
         risk_limits=({"source": "default"} if purpose != PURPOSE_TESTNET else None),
     )
-    lineage = {field: "x" for field in g.LINEAGE_FIELDS[purpose]}
+    lineage = {**{field: "x" for field in g.LINEAGE_FIELDS[purpose]},
+               "order_intent_id": intent.get("order_intent_id")}
     snapshot = g.evaluate_pre_order_gate(
         intent, purpose=purpose,
         venue=venue or (VENUE_TESTNET if purpose == PURPOSE_TESTNET else VENUE_MAINNET),

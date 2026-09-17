@@ -35,7 +35,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError
-from tests._helpers import requires_local_core
+from tests._helpers import FakeSnapshotStore, requires_local_core
 
 NOW = timeutil.utc_now_iso()
 
@@ -851,6 +851,10 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
     monkeypatch.setattr(cli, "load_open_live_position",
@@ -944,6 +948,10 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
     monkeypatch.setattr(cli, "load_open_live_position",
@@ -1093,6 +1101,10 @@ def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, mon
     ))
     store, ledger = _FakeStore(), _FakeLedger()
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
+    # A capable adapter records its snapshot in a store that writes (PR2b review): the two
+    # selectors read one switch in production, so they are wired together here.
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store",
+                        lambda now=None, root=None: FakeSnapshotStore())
     monkeypatch.setattr(cli, "select_live_ledger", lambda now=None, root=None: ledger)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: _FakeCounter())
     monkeypatch.setattr(cli, "load_open_live_position",

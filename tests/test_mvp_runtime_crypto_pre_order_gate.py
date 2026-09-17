@@ -68,10 +68,10 @@ def _lineage(intent, purpose=PURPOSE_AUTONOMOUS):
 
 
 def _gate(intent=None, *, checks=None, profile=None, lineage=None, purpose=PURPOSE_AUTONOMOUS,
-          venue=VENUE_MAINNET, facts=None):
+          venue=None, facts=None):
     intent = intent if intent is not None else _intent()
     return g.evaluate_pre_order_gate(
-        intent, purpose=purpose, venue=venue,
+        intent, purpose=purpose, venue=venue or g.VENUE_FOR_PURPOSE.get(purpose, VENUE_MAINNET),
         checks=[g.check("door_ok", True)] if checks is None else checks,
         profile=profile if profile is not None else _profile(purpose),
         lineage=lineage if lineage is not None else _lineage(intent, purpose),
@@ -84,9 +84,7 @@ def _gate(intent=None, *, checks=None, profile=None, lineage=None, purpose=PURPO
 def test_every_check_passing_approves_and_seals():
     snapshot = _gate()
     assert snapshot["approved"] is True and snapshot["failed_checks"] == []
-    assert {c["check"] for c in snapshot["checks"]} >= {
-        "door_ok", g.CHECK_DOOR_CHECKS, g.CHECK_OPENS_EXPOSURE, g.CHECK_INTENT_IDENTITY,
-        g.CHECK_LINEAGE, g.CHECK_PROFILE}
+    assert [c["check"] for c in snapshot["checks"]] == ["door_ok", *g.GATE_CHECK_IDS]
     assert snapshot["risk_gate_id"] == g.GATE_ID and snapshot["snapshot_version"] == g.SNAPSHOT_VERSION
     assert snapshot["risk_snapshot_sha256"].startswith("sha256:")
     assert snapshot["approved_profile_sha256"].startswith("sha256:")
@@ -143,7 +141,7 @@ def test_a_probe_cell_zero_is_a_named_cell():
 
 def test_an_unknown_purpose_approves_nothing():
     snapshot = _gate(purpose="canary", profile=_profile(), lineage={"strategy_id": "S001"})
-    assert {g.CHECK_LINEAGE, g.CHECK_PROFILE} <= set(snapshot["failed_checks"])
+    assert {g.CHECK_LINEAGE, g.CHECK_PROFILE, g.CHECK_VENUE} <= set(snapshot["failed_checks"])
 
 
 @pytest.mark.parametrize("order,authority", [
@@ -409,7 +407,7 @@ def test_an_entry_without_its_recorded_snapshot_is_never_sent(kw, code):
 
 @pytest.mark.parametrize("error,code", [
     (PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted"), "PRE_ORDER_SNAPSHOTS_LOCKED"),
-    (OSError(28, "No space left on device"), g.RISK_SNAPSHOT_STORE_UNREADABLE),
+    (OSError(28, "No space left on device"), g.RISK_SNAPSHOT_STORE_UNWRITABLE),
 ])
 def test_a_snapshot_that_cannot_be_recorded_sends_nothing(error, code):
     events: list[str] = []
@@ -615,3 +613,287 @@ def test_a_recorded_row_the_schema_does_not_describe_fails_the_verified_read(tmp
 def test_every_purposes_snapshot_is_one_the_schema_describes(purpose):
     _, snapshot = approved_snapshot(_intent(), purpose=purpose)
     assert g._schema_problem(snapshot) is None
+
+
+# --- PR2b review: the gate seals only what the door would accept, and the door re-checks it ------
+
+@pytest.mark.parametrize("purpose,venue", [
+    (PURPOSE_TESTNET, VENUE_MAINNET), (PURPOSE_AUTONOMOUS, VENUE_TESTNET), (PURPOSE_PROBE, VENUE_TESTNET),
+])
+def test_a_purpose_is_sealed_only_for_its_own_venue(purpose, venue):
+    """A testnet cycle's caps authorize nothing on mainnet — measured by the review: without this,
+    a testnet-purpose snapshot for mainnet was sealed, recorded and sent."""
+    assert _gate(purpose=purpose, venue=venue)["failed_checks"] == [g.CHECK_VENUE]
+
+
+@pytest.mark.parametrize("handed", [
+    {"check": "spread_within_limit", "ok": "false"},     # a truthy string is not a pass
+    ("spread_within_limit", False),                      # not a mapping: it would vanish
+    {"ok": True},                                        # no name
+    {"check": g.CHECK_PROFILE, "ok": True},              # a name the gate keeps for itself
+], ids=["string-ok", "tuple", "unnamed", "reserved-name"])
+def test_a_malformed_door_check_refuses(handed):
+    snapshot = _gate(checks=[g.check("door_ok", True), handed])
+    assert snapshot["approved"] is False
+    assert g.CHECK_DOOR_CHECKS in snapshot["failed_checks"]
+
+
+def test_a_check_that_is_not_true_itself_is_recorded_as_failed():
+    snapshot = _gate(checks=[g.check("door_ok", True), {"check": "spread_within_limit", "ok": "false"}])
+    assert "spread_within_limit" in snapshot["failed_checks"]
+
+
+@pytest.mark.parametrize("change", [{"side": "SELL"}, {"close_position": True}, {"direction": "FLAT"}],
+                         ids=["side", "close-position", "direction"])
+def test_an_order_that_does_not_open_its_own_direction_is_not_sealed(change):
+    intent = {**_intent(), **change}
+    if "direction" in change:      # the identity follows the direction; keep it consistent
+        from runtime.mvp_runtime.crypto.live_order import enrich_order_identity
+        intent = enrich_order_identity(intent)
+    lineage = {**_lineage(intent)}
+    assert g.CHECK_OPENS_EXPOSURE in _gate(intent, lineage=lineage)["failed_checks"]
+
+
+def test_binding_names_all_three_references():
+    intent, snapshot = approved_snapshot(_intent())
+    assert {field: intent[field] for field in g.SNAPSHOT_REFERENCE_FIELDS} == {
+        "pre_order_risk_snapshot_id": snapshot["pre_order_risk_snapshot_id"],
+        "risk_gate_id": g.GATE_ID,
+        "risk_snapshot_sha256": snapshot["risk_snapshot_sha256"],
+    }
+
+
+def _reprofiled(snapshot, profile):
+    return _resealed(snapshot, approved_profile=profile,
+                     approved_profile_sha256=__import__("runtime.read_only_kernel.integrity",
+                                                        fromlist=["x"]).sha256_record(profile))
+
+
+def _without_check(snapshot, name):
+    return _resealed(snapshot, checks=[c for c in snapshot["checks"] if c["check"] != name])
+
+
+_UNSUPPORTED = {
+    "testnet-caps-on-mainnet": lambda s, _t: _resealed(_t, venue=VENUE_MAINNET),
+    "profile-incomplete": lambda s, _t: _reprofiled(
+        s, _profile(authority={"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": None})),
+    "profile-for-a-probe": lambda s, _t: _reprofiled(s, _profile(PURPOSE_PROBE)),
+    "profile-hash": lambda s, _t: _resealed(s, approved_profile_sha256="sha256:" + "0" * 64),
+    "gate-check-missing": lambda s, _t: _without_check(s, g.CHECK_VENUE),
+    "gate-check-twice": lambda s, _t: _resealed(
+        s, checks=[*s["checks"], {"check": g.CHECK_PROFILE, "ok": True, "detail": None}]),
+    "no-door-check": lambda s, _t: _resealed(
+        s, checks=[c for c in s["checks"] if c["check"] in g.GATE_CHECK_IDS]),
+    "lineage-incomplete": lambda s, _t: _resealed(
+        s, lineage={k: v for k, v in s["lineage"].items() if k != "candidate_id"}),
+    "lineage-names-another-order": lambda s, _t: _resealed(
+        s, lineage={**s["lineage"], "order_intent_id": "live_intent_" + "0" * 20}),
+}
+
+
+@pytest.mark.parametrize("forge", list(_UNSUPPORTED.values()), ids=list(_UNSUPPORTED))
+def test_an_intact_snapshot_that_does_not_support_its_approval_sends_nothing(forge):
+    """The seal is a plain hash: a snapshot can say `approved` and be intact without the gate ever
+    having sealed it. The door re-checks what the gate requires of every snapshot it approves."""
+    base_intent = _intent()
+    snapshot = _gate(base_intent)
+    testnet_snapshot = _gate(base_intent, purpose=PURPOSE_TESTNET)
+    forged = forge(snapshot, testnet_snapshot)
+    assert forged["approved"] is True and g._schema_problem(forged) is None
+    intent = g.bind_intent(base_intent, forged)
+    events: list[str] = []
+    adapter = _Adapter(events)
+    with pytest.raises(lx.SubmitRefused) as refused:
+        lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW,
+                                risk_snapshot=forged,
+                                snapshot_store=_RecordingStore(events, venue=forged["venue"]))
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+    assert adapter.submitted == [] and events == []
+
+
+@pytest.mark.parametrize("forge", list(_UNSUPPORTED.values()), ids=list(_UNSUPPORTED))
+def test_a_recorded_row_that_does_not_support_its_approval_fails_the_verified_read(tmp_path, forge):
+    base_intent = _intent()
+    forged = forge(_gate(base_intent), _gate(base_intent, purpose=PURPOSE_TESTNET))
+    path = g.snapshot_path(tmp_path, venue=forged["venue"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forged) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path, venue=forged["venue"])
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
+
+
+def _forged_for(intent):
+    """``intent`` with a snapshot resealed to match it — what a snapshot not made by the gate looks
+    like when every field it copies agrees with the order."""
+    snapshot = _gate()
+    forged = _resealed(snapshot, **{field: intent.get(field) for field in (
+        "symbol", "side", "client_order_id", "idempotency_key", "order_intent_id")},
+        intent_fingerprint=g.intent_fingerprint(intent))
+    return g.bind_intent(intent, forged), forged
+
+
+@pytest.mark.parametrize("change", [
+    {"side": "SELL"}, {"reduce_only": True}, {"close_position": True},
+    {"client_order_id": "TAI_BTCUSDT_LONG_forged"},
+], ids=["side", "reduce-only", "close-position", "identity"])
+def test_an_order_the_gate_would_not_seal_is_refused_even_under_a_matching_snapshot(change):
+    intent, forged = _forged_for({**_intent(), **change})
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(intent, forged)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_INTENT_MISMATCH
+
+
+@pytest.mark.parametrize("field", ["symbol", "side", "client_order_id", "order_intent_id"])
+def test_a_snapshot_whose_copied_fields_are_not_the_orders_is_refused(field):
+    intent, snapshot = approved_snapshot(_intent())
+    value = {"symbol": "ETHUSDT", "side": "SELL", "client_order_id": "TAI_BTCUSDT_LONG_other",
+             "order_intent_id": "live_intent_" + "1" * 20}[field]
+    forged = _resealed(snapshot, **{field: value})
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, forged), forged)
+    assert refused.value.reason_code in {g.RISK_SNAPSHOT_INTENT_MISMATCH, g.RISK_SNAPSHOT_UNSUPPORTED}
+
+
+@pytest.mark.parametrize("field", ["pre_order_risk_snapshot_id", "risk_gate_id"])
+def test_an_order_that_does_not_name_its_snapshot_back_is_refused(field):
+    intent, snapshot = approved_snapshot(_intent())
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot({**intent, field: "other"}, snapshot)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_INTENT_MISMATCH
+
+
+@pytest.mark.parametrize("field,value", [
+    ("price", 1.0), ("time_in_force", "IOC"), ("stop_price", 1.0),
+    ("working_type", "CONTRACT_PRICE"), ("close_position", True),
+])
+def test_every_request_field_is_bound(field, value):
+    intent = _intent()
+    assert g.intent_fingerprint({**intent, field: value}) != g.intent_fingerprint(intent)
+
+
+def test_the_fingerprint_binds_every_field_the_venue_request_is_built_from():
+    """Structural: a field `build_order_request` sends that the fingerprint does not bind is a way
+    for one snapshot to authorize two different requests (review finding 6)."""
+    import ast
+    import inspect
+    import textwrap
+
+    read: set[str] = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(lx.build_order_request)))):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "intent"
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            read.add(node.args[0].value)
+        if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                and node.value.id == "intent" and isinstance(node.slice, ast.Constant)):
+            read.add(node.slice.value)
+    assert {"symbol", "side", "quantity", "reduce_only"} <= read     # the scan sees the reads
+    assert read <= set(g.INTENT_BOUND_FIELDS), sorted(read - set(g.INTENT_BOUND_FIELDS))
+
+
+class _CapableAdapter(_Adapter):
+    network_egress = True
+
+
+def test_a_capable_adapter_never_sends_with_a_store_that_records_nothing():
+    events: list[str] = []
+    intent, snapshot = approved_snapshot(_intent())
+    adapter = _CapableAdapter(events)
+    with pytest.raises(lx.SubmitRefused) as refused:
+        lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW,
+                                risk_snapshot=snapshot, snapshot_store=g.DryRunPreOrderSnapshotStore())
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_NO_STORE
+    assert adapter.submitted == []
+
+
+def test_a_capable_adapter_sends_with_a_store_that_writes():
+    events: list[str] = []
+    intent, snapshot = approved_snapshot(_intent())
+    adapter = _CapableAdapter(events)
+    result = lx.submit_and_reconcile(intent, adapter=adapter, guard_verdict=APPROVED, now=NOW,
+                                     risk_snapshot=snapshot, snapshot_store=_RecordingStore(events))
+    assert events == ["record", "submit"] and result["risk_snapshot_sha256"] == snapshot["risk_snapshot_sha256"]
+
+
+# --- PR2b review: the store's lines -------------------------------------------------------------
+
+def _snapshot_with_facts(facts, **plan):
+    intent = _intent(**plan)
+    return _gate(intent, facts=facts)
+
+
+def test_rows_are_written_as_ascii_whatever_a_field_holds(tmp_path):
+    """A line separator inside a string split the writer's view of the file from the reader's, so
+    a retry was written twice and a conflicting id was accepted (review finding 2)."""
+    snapshot = _snapshot_with_facts({"note": "a\u2028b\u2029c\u0085d é"})
+    store = _store(tmp_path)
+    store.append(snapshot)
+    store.append(snapshot)
+    data = g.snapshot_path(tmp_path).read_bytes()
+    assert data.isascii() and data.count(b"\n") == 1
+    assert g.read_snapshots(tmp_path) == [snapshot]
+    with pytest.raises(ToolError) as refused:
+        store.append({**snapshot, "risk_snapshot_sha256": "sha256:" + "f" * 64})
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_ID_CONFLICT
+
+
+def test_an_unfinished_line_is_cut_off_before_the_next_row(tmp_path):
+    first = _snapshot_with_facts({"n": 1})
+    second = _snapshot_with_facts({"n": 2}, candle_time="2026-09-17T04:00:00Z")
+    store = _store(tmp_path)
+    store.append(first)
+    path = g.snapshot_path(tmp_path)
+    complete = path.read_bytes()
+    with open(path, "ab") as handle:
+        handle.write('{"note": "\u00e9'.encode("utf-8")[:-1])     # cut inside a character
+    assert g.read_snapshots(tmp_path) == [first]                      # still readable
+    assert g.snapshots_status(tmp_path)["readable"] is True
+    store.append(second)
+    assert path.read_bytes() == complete + (json.dumps(second, sort_keys=True) + "\n").encode("ascii")
+    assert g.read_snapshots(tmp_path) == [first, second]
+
+
+@pytest.mark.parametrize("damage", [
+    lambda line: line[:40] + b"\n",                  # a row cut short, then ended
+    lambda line: line.replace(b'"', b"#", 1),         # one byte of damage
+    lambda line: b"[1, 2]\n",                        # parses, but is not a record
+], ids=["cut", "byte", "not-a-record"])
+def test_a_damaged_row_refuses_the_store_and_the_read(tmp_path, damage):
+    """A row is the record of an order that may have left; one that no longer parses is refused
+    rather than skipped (review finding 3), and the writer will not append past it."""
+    first = _snapshot_with_facts({"n": 1})
+    second = _snapshot_with_facts({"n": 2}, candle_time="2026-09-17T04:00:00Z")
+    store = _store(tmp_path)
+    store.append(first)
+    path = g.snapshot_path(tmp_path)
+    path.write_bytes(damage(path.read_bytes()))
+    for attempt in (lambda: g.read_snapshots(tmp_path), lambda: store.append(second)):
+        with pytest.raises(ToolError) as refused:
+            attempt()
+        assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
+    assert g.snapshots_status(tmp_path)["error"] == g.RISK_SNAPSHOT_STORE_TAMPERED
+
+
+def test_blank_lines_carry_nothing(tmp_path):
+    snapshot = _snapshot_with_facts({"n": 1})
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\n" + (json.dumps(snapshot, sort_keys=True) + "\n\n").encode("ascii"))
+    assert g.read_snapshots(tmp_path) == [snapshot]
+
+
+def test_a_store_that_cannot_write_is_a_typed_refusal(tmp_path, monkeypatch):
+    def fail(fd):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(g.os, "fsync", fail)
+    with pytest.raises(ToolError) as refused:
+        _store(tmp_path).append(_snapshot_with_facts({"n": 1}))
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_UNWRITABLE
+
+
+def test_the_board_never_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "read_snapshots", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert g.snapshots_status(tmp_path) == {"readable": False, "error": "RuntimeError", "count": None,
+                                            "last_created_at": None}

@@ -944,13 +944,16 @@ def submit_and_reconcile(
         try:
             risk_snapshot_sha256 = pre_order_gate.verify_and_persist(
                 intent, risk_snapshot, store=snapshot_store,
+                # An adapter that can reach a venue is never paired with a store that records
+                # nothing: the order would leave while reporting a record that does not exist.
+                require_durable=bool(getattr(adapter, "network_egress", False)),
             )
         except MvpRuntimeError as exc:
             # The store's own failures (a lock, the gate re-check) keep their reason codes.
             raise SubmitRefused(exc.reason_code, getattr(exc, "reason", str(exc))) from exc
         except Exception as exc:  # noqa: BLE001 — a store that fails any other way records nothing
             raise SubmitRefused(
-                pre_order_gate.RISK_SNAPSHOT_STORE_UNREADABLE,
+                pre_order_gate.RISK_SNAPSHOT_STORE_UNWRITABLE,
                 f"the pre-order snapshot could not be recorded ({type(exc).__name__}); nothing was sent",
             ) from exc
     submit_error: str | None = None

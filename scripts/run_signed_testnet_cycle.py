@@ -46,7 +46,11 @@ from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import pre_order_gate, testnet_evidence  # noqa: E402
 from runtime.mvp_runtime.crypto import testnet_execution as testnet  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
-from runtime.mvp_runtime.crypto.live_execution import fill_facts, submit_and_reconcile  # noqa: E402
+from runtime.mvp_runtime.crypto.live_execution import (  # noqa: E402
+    SubmitRefused,
+    fill_facts,
+    submit_and_reconcile,
+)
 from runtime.mvp_runtime.crypto.live_leg import (  # noqa: E402
     BRACKET_RESTING_STATUSES,
     CONDITIONAL_ORDER_TYPES,
@@ -191,9 +195,10 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
         root=root, authorization=getattr(adapter, "_authorization", None))
     try:
         pre_order_gate.verify_and_persist(intent, snapshot, store=snapshot_store)
-    except MvpRuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
         raise _Refusal("TESTNET_SNAPSHOT_NOT_RECORDED",
-                       f"the pre-order snapshot was not recorded ({exc.reason_code}); nothing was sent") from exc
+                       f"the pre-order snapshot was not recorded "
+                       f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent") from exc
 
     started_at = now
     legs: list[dict] = []
@@ -215,6 +220,9 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
         testnet_evidence.append_cycle(row, root)
         return row
 
+    # The entry's own refusal before the venue: nothing left, so it counts no order and records no
+    # cycle. Kept apart from a SubmitRefused later in the cycle, when the entry has already left.
+    entry_refused: SubmitRefused | None = None
     try:
         # 1. The entry. Reconciled by the same pure function the live path uses, so the two can
         #    never disagree about what RECONCILED means.
@@ -222,8 +230,12 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
             entry = submit_and_reconcile(intent, adapter=adapter, guard_verdict=verdict, now=now,
                                          timeout_seconds=timeout_seconds,
                                          risk_snapshot=snapshot, snapshot_store=snapshot_store)
+        except SubmitRefused as exc:
+            entry_refused = exc
+            raise
         finally:
-            counter.record_submission()
+            if entry_refused is None:
+                counter.record_submission()
         entry_row = {
             "risk_snapshot_sha256": entry.get("risk_snapshot_sha256"),
             "reconcile_status": entry.get("reconcile_status"),
@@ -318,6 +330,10 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
                                 for p in positions],
         }
     except Exception as exc:  # noqa: BLE001 — the venue has already been reached; record it
+        if exc is entry_refused:
+            raise _Refusal(entry_refused.reason_code,
+                           f"the entry was refused before the venue ({entry_refused}); nothing was "
+                           "sent and no cycle is recorded") from exc
         reason_code = getattr(exc, "reason_code", type(exc).__name__)
         record = _record(failure=reason_code)
         raise _Refusal(

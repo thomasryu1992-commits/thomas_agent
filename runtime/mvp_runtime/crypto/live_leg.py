@@ -193,6 +193,9 @@ FILLED_STATUSES = frozenset({"FILLED", "FINISHED"})
 # The two sources disagreed and the code believed only one of them. This status is what that
 # disagreement is called, so it can never again be filed as an ordinary "did not place".
 BRACKET_QUERY_MISSING = "SUBMIT_CONFIRMED_QUERY_MISSING"
+# A "protective leg" whose request could add exposure. Only `submit_and_reconcile` sends an order
+# that opens exposure, under its pre-order snapshot (PR2b); this door places reducing legs only.
+BRACKET_LEG_NOT_PROTECTIVE = "BRACKET_LEG_NOT_PROTECTIVE"
 
 # --- the read-after-write race, and what it cost ---------------------------------------------
 #
@@ -470,6 +473,13 @@ def place_bracket_leg(
     }
     try:
         request = build_order_request(intent)
+        if not (request.get("reduceOnly") is True or request.get("closePosition") == "true"):
+            # Nothing was sent, so nothing can be resting: `placed` stays False and the caller
+            # closes the position this leg was meant to protect.
+            result["status"] = BRACKET_LEG_NOT_PROTECTIVE
+            result["error"] = BRACKET_LEG_NOT_PROTECTIVE
+            result["error_detail"] = "the leg is neither reduce-only nor close-position; not sent"
+            return result
         response = adapter.submit(request, timeout_seconds=timeout_seconds)
         if isinstance(response, Mapping):
             result["submit_response"] = dict(response)
@@ -683,7 +693,8 @@ def execute_live_entry(
         return result
     # The snapshot binds the intent's stop and target; the legs are placed from `bracket`. They must
     # be the same prices, on the sides the direction closes on, or the protection that rests is not
-    # the protection that was approved. A direction with no closing side has no protection to match.
+    # the protection that was approved. (The snapshot check has already refused a direction with no
+    # side; the None case stays refused here so this check does not depend on that order.)
     closing_side = {"LONG": "SELL", "SHORT": "BUY"}.get(str(intent.get("direction") or "").upper())
     if not (closing_side is not None and isinstance(bracket, Mapping)
             and bracket.get("stop_loss") == intent.get("stop_loss")

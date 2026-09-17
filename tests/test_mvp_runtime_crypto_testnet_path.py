@@ -587,3 +587,89 @@ def test_the_door_sends_nothing_when_the_testnet_snapshot_cannot_be_recorded(tmp
     assert exc.value.reason_code == "TESTNET_SNAPSHOT_NOT_RECORDED"
     assert sent == [] and testnet_evidence.read_cycles(tmp_path) == []
 
+
+# --- PR2b review: the door's refusals before the venue ---------------------------------------------
+
+def _capable_door(monkeypatch, sent):
+    from scripts import run_signed_testnet_cycle as door
+
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+
+    class _Adapter(testnet_execution.DryRunTestnetOrderAdapter):
+        network_egress = True
+        _authorization = _testnet_auth()
+
+        def submit(self, request, **kw):
+            sent.append(dict(request))
+            return super().submit(request, **kw)
+
+    monkeypatch.setattr(door.testnet, "select_testnet_order_adapter", lambda **kw: _Adapter())
+    monkeypatch.setattr(door, "_price", lambda symbol, **kw: 50000.0)
+    monkeypatch.setattr(door, "resolve_execution_stage", lambda root=None, **kw: _stage())
+    return door
+
+
+def test_a_store_that_fails_any_way_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
+    """A store failure that is not typed escaped the door as a traceback (review finding 4)."""
+    from tests._helpers import FakeSnapshotStore
+
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    monkeypatch.setattr(door.testnet, "testnet_snapshot_store",
+                        lambda **kw: FakeSnapshotStore(VENUE_TESTNET, error=RuntimeError("disk")))
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_SNAPSHOT_NOT_RECORDED"
+    assert sent == [] and testnet_evidence.read_cycles(tmp_path) == []
+
+
+def test_an_entry_refused_at_the_venue_door_counts_nothing_and_records_no_cycle(tmp_path, monkeypatch):
+    """`SubmitRefused` is raised only before the adapter: the entry never left, so it is not a
+    testnet order and there is no open position to warn about (review finding 4)."""
+    from runtime.mvp_runtime.errors import PersistenceError
+    from tests._helpers import FakeSnapshotStore
+
+    class _SecondWriteFails(FakeSnapshotStore):
+        calls = 0
+
+        def append(self, snapshot):
+            type(self).calls += 1
+            if type(self).calls > 1:
+                raise PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted")
+            return super().append(snapshot)
+
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    monkeypatch.setattr(door.testnet, "testnet_snapshot_store",
+                        lambda **kw: _SecondWriteFails(VENUE_TESTNET))
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "PRE_ORDER_SNAPSHOTS_LOCKED"
+    assert sent == []
+    assert testnet_evidence.read_cycles(tmp_path) == []
+    assert testnet_execution.count_testnet_today(tmp_path) == 0      # the counter's own day
+
+
+def test_a_refusal_after_the_entry_left_still_records_the_cycle(tmp_path, monkeypatch):
+    """The other half: once the entry is at the venue, a later `SubmitRefused` (the exit) is an
+    incomplete cycle with the entry counted — the record says what may still be open."""
+    sent: list[dict] = []
+    door = _capable_door(monkeypatch, sent)
+    real = door.submit_and_reconcile
+    calls = {"n": 0}
+
+    def exit_refused(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise live_execution.SubmitRefused("MALFORMED_INTENT", "scripted exit refusal")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(door, "submit_and_reconcile", exit_refused)
+    with pytest.raises(door._Refusal) as exc:
+        door.run_cycle(symbol="BTCUSDT", quantity=0.001, operator="thomas", reason="evidence",
+                       root=tmp_path, now=NOW)
+    assert exc.value.reason_code == "TESTNET_CYCLE_INCOMPLETE"
+    assert len(testnet_evidence.read_cycles(tmp_path)) == 1
+    assert testnet_execution.count_testnet_today(tmp_path) == 2      # the entry and the exit
