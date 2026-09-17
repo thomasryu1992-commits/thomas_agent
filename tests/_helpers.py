@@ -114,9 +114,13 @@ def gate_stage():
     )
 
 
-def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00:00Z"):
+def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00:00Z", decided_at=None):
     """``(bound_intent, snapshot)``: a snapshot the real gate sealed for ``intent`` on passing
-    checks and a whole profile — for tests whose subject is what happens AFTER the gate."""
+    checks and a whole profile — for tests whose subject is what happens AFTER the gate.
+
+    Judged at ``decided_at``, by default the wall clock, so a send right after is within the age
+    bound (PR2c-1) whatever ``now`` the test's fire runs at."""
+    from runtime.mvp_runtime import timeutil
     from runtime.mvp_runtime.crypto import pre_order_gate as g
     from runtime.mvp_runtime.crypto.execution_stage import (
         PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET,
@@ -144,6 +148,7 @@ def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00
         intent, purpose=purpose,
         venue=venue or (VENUE_TESTNET if purpose == PURPOSE_TESTNET else VENUE_MAINNET),
         checks=[g.check("test_door", True)], profile=profile, lineage=lineage, facts={}, now=now,
+        decided_at=decided_at or timeutil.utc_now_iso(),
     )
     assert snapshot["approved"], snapshot["failed_checks"]
     return g.bind_intent(intent, snapshot), snapshot

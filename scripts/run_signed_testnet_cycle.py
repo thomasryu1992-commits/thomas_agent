@@ -186,6 +186,8 @@ def run_cycle(*, symbol: str, quantity: float, operator: str, reason: str,
         intent,
         expected_intent=_entry_intent(symbol=symbol, quantity=quantity, price=price, now=now),
         guard_kwargs=planned["guard_kwargs"], stage=stage, cycle_id=cycle_id, now=now,
+        # The wall clock of this judgment: the entry must leave within a minute of it (PR2c-1).
+        decided_at=timeutil.utc_now_iso(),
     )
     if not snapshot["approved"]:
         raise _Refusal("TESTNET_PRE_ORDER_GATE_REFUSED",

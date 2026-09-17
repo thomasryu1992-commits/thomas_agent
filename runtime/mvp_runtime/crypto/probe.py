@@ -651,15 +651,23 @@ def gate_probe_order(
     guard_kwargs: Mapping[str, Any],
     profile: Mapping[str, Any],
     now: str,
+    # When the account was read, and the wall clock this gate judges at (PR2c-1). No defaults: an
+    # account read too long ago must not be what the caps and the loss breaker were judged on.
+    account_collected_at: str | None,
+    clock: str,
 ) -> dict[str, Any]:
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
-    account, the symbol being free, the three breakers, the notional the approval priced, and the
-    order itself — rebuilt from the plan's own stop width and judged by the live guard again in
-    canary mode. The intent about to be sent must be the rebuilt one."""
+    account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
+    the symbol being free, the three breakers, the notional the approval priced, and the order
+    itself — rebuilt from the plan's own stop width and judged by the live guard again in canary
+    mode. The intent about to be sent must be the rebuilt one."""
     from .execution_stage import PURPOSE_PROBE
-    from .live_order import build_live_order_intent, evaluate_live_order_guard
+    from .live_order import (
+        MAX_ACCOUNT_AGE_SECONDS, account_age_seconds, account_fresh, build_live_order_intent,
+        evaluate_live_order_guard,
+    )
     from .live_position import entry_allowed
     from .pre_order_gate import check, evaluate_pre_order_gate, intent_fingerprint
     from .state import VENUE_MAINNET
@@ -676,6 +684,10 @@ def gate_probe_order(
               {"cell_index": cell_index,
                "cell": dict(cell) if isinstance(cell, Mapping) else None}),
         check("account_readable", account_readable),
+        check("account_fresh", account_fresh(account_collected_at, clock=clock),
+              {"collected_at": account_collected_at,
+               "age_seconds": account_age_seconds(account_collected_at, clock=clock),
+               "max_age_seconds": MAX_ACCOUNT_AGE_SECONDS}),
         check("symbol_free", entry_allowed(reconciliation, symbol) and bool(capacity.get("allowed")),
               {"reconcile_status": reconciliation.get("status"), "caps": capacity.get("blocks")}),
         check("venue_daily_loss_within_limit", not risk.get("daily_loss_limit_breached"),
@@ -720,10 +732,12 @@ def gate_probe_order(
         "submitted_today": guard_kwargs.get("submitted_today"),
         "current_open_notional_usdt": guard_kwargs.get("current_open_notional_usdt"),
         "runtime_active": guard_kwargs.get("runtime_active"),
+        "account_collected_at": account_collected_at,
+        "clock": clock,
     }
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_PROBE, venue=VENUE_MAINNET, checks=checks,
-        profile=profile, lineage=lineage, facts=facts, now=now,
+        profile=profile, lineage=lineage, facts=facts, now=now, decided_at=clock,
     )
 
 

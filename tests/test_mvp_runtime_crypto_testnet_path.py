@@ -504,7 +504,7 @@ def test_the_testnet_gate_approves_the_order_the_cycle_prices():
     intent, guard_kwargs = _cycle_gate_inputs()
     snapshot = testnet_execution.gate_testnet_order(
         intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=_stage(),
-        cycle_id="cyc1", now=NOW)
+        cycle_id="cyc1", now=NOW, decided_at=NOW)
     assert snapshot["approved"] is True, snapshot["failed_checks"]
     assert snapshot["venue"] == VENUE_TESTNET and snapshot["purpose"] == es.PURPOSE_TESTNET
     assert set(testnet_execution.TESTNET_GUARD_CHECK_IDS) <= {c["check"] for c in snapshot["checks"]}
@@ -521,15 +521,41 @@ def test_the_testnet_gate_re_derives_the_guard_and_the_profile(overrides, stage,
     intent, guard_kwargs = _cycle_gate_inputs(**overrides)
     snapshot = testnet_execution.gate_testnet_order(
         intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=stage or _stage(),
-        cycle_id="cyc1", now=NOW)
+        cycle_id="cyc1", now=NOW, decided_at=NOW)
     assert check_id in snapshot["failed_checks"]
+
+
+def test_the_testnet_gate_seals_when_the_cycle_judged():
+    """PR2c-1: the entry must leave within a minute of the cycle's judgment, as every door's must."""
+    intent, guard_kwargs = _cycle_gate_inputs()
+    snapshot = testnet_execution.gate_testnet_order(
+        intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=_stage(),
+        cycle_id="cyc1", now=NOW, decided_at="2026-09-16T00:00:05Z")
+    assert snapshot["facts"]["decided_at"] == "2026-09-16T00:00:05Z"
+    unjudged = testnet_execution.gate_testnet_order(
+        intent, expected_intent=intent, guard_kwargs=guard_kwargs, stage=_stage(),
+        cycle_id="cyc1", now=NOW, decided_at=None)
+    assert unjudged["failed_checks"] == ["decision_time_recorded"]
+
+
+def test_the_cycle_door_judges_its_gate_at_the_wall_clock():
+    """The cycle's `now` can be handed in; the judgment the send is timed against cannot."""
+    import ast
+    import pathlib
+
+    tree = ast.parse((pathlib.Path(__file__).resolve().parents[1] / "scripts"
+                      / "run_signed_testnet_cycle.py").read_text(encoding="utf-8"))
+    [call] = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and getattr(n.func, "attr", None) == "gate_testnet_order"]
+    [decided] = [kw.value for kw in call.keywords if kw.arg == "decided_at"]
+    assert isinstance(decided, ast.Call) and ast.unparse(decided) == "timeutil.utc_now_iso()"
 
 
 def test_a_testnet_order_that_is_not_the_priced_one_is_refused():
     intent, guard_kwargs = _cycle_gate_inputs()
     snapshot = testnet_execution.gate_testnet_order(
         {**intent, "quantity": 0.5}, expected_intent=intent, guard_kwargs=guard_kwargs,
-        stage=_stage(), cycle_id="cyc1", now=NOW)
+        stage=_stage(), cycle_id="cyc1", now=NOW, decided_at=NOW)
     assert "intent_matches_decision" in snapshot["failed_checks"]
 
 

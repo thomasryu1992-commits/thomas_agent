@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 
-from runtime.mvp_runtime.crypto import live_leg, live_route
+from runtime.mvp_runtime import timeutil
+from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
@@ -732,7 +733,7 @@ def test_a_held_cycle_with_no_entry_still_says_nothing(monkeypatch):
 
 # --- the daily loss breaker needs the venue's own figure on the entry path (2026-09-15) ------
 
-def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows, bar=NOW):
+def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows, bar=NOW, route=None):
     """Drive the gated leg up to the entry decision and hand back what it was judged on.
 
     Everything before the planner is real except the venue reads: a configured 20 USDT daily
@@ -759,7 +760,7 @@ def _entry_decision_inputs(tmp_path, monkeypatch, *, realized_windows, bar=NOW):
 
     monkeypatch.setattr(live_route, "plan_live_entry", _plan)
     record = live_route.run_live_leg(
-        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": bar},
+        live_routable_strategy_ids={"S1"}, route=route, feature_row={"timestamp": bar},
         verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
         root=tmp_path,
     )
@@ -1183,12 +1184,26 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (venue, None))
     monkeypatch.setattr(live_route, "select_account_feed", lambda **kw: None)
-    flat = AccountSnapshot(
-        asset="USDT", wallet_balance=500.0, margin_balance=500.0, available_balance=400.0,
-        unrealized_pnl=0.0, positions=[], realized_windows={"today": {"net": 0.0}, "1d": {"net": 0.0}},
-        source="fake", collected_at=NOW,
-    )
-    monkeypatch.setattr(live_route, "read_account", lambda **kw: (flat, {}))
+    clock = {"now": NOW}
+
+    def _flat(**kw):
+        # Read at the pass's own clock (PR2c-1: an entry is refused on an account read over a minute
+        # before its decision).
+        return AccountSnapshot(
+            asset="USDT", wallet_balance=500.0, margin_balance=500.0, available_balance=400.0,
+            unrealized_pnl=0.0, positions=[],
+            realized_windows={"today": {"net": 0.0}, "1d": {"net": 0.0}},
+            source="fake", collected_at=clock["now"],
+        ), {}
+
+    monkeypatch.setattr(live_route, "read_account", _flat)
+    # The market a minute before the pass, at the plan's own entry; the decision, the gate and the
+    # venue door all judge at the pass's clock.
+    monkeypatch.setattr(live_route, "_read_reference_quote", lambda collector, symbol, **kw: {
+        "price": _PLAN["entry_price"], "close_time": timeutil.plus_seconds(clock["now"], -60),
+        "timeframe": "1m", "reason": None})
+    monkeypatch.setattr(live_route, "_entry_clock", lambda: clock["now"])
+    monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: clock["now"])
     limits = LiveOrderLimits(
         max_order_notional_usdt=60.0, max_daily_order_count=3, max_open_notional_usdt=120.0,
         daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
@@ -1208,7 +1223,6 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
     control = ControlStore(tmp_path)
     control.save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="test",
                               trading_armed=True))
-    clock = {"now": NOW}
     monkeypatch.setattr(live_route, "_settle_clock", lambda: clock["now"])
 
     def _pass(now, bar, *, wall=None):
@@ -1786,3 +1800,109 @@ def test_a_time_exit_that_left_a_leg_is_on_the_record():
     record = _settle(_timed(holding_candles=2), adapter=adapter)
     assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
     assert record["live_legs_left"] == [{"symbol": SYMBOL, "client_order_ids": ["sl-1", "tp-1"]}]
+
+
+# --- the entry is judged fresh at the moment it is decided (PR2c-1) ------------------------------
+
+def test_a_context_with_no_route_asks_the_venue_for_no_price(tmp_path, monkeypatch):
+    asked = []
+    monkeypatch.setattr(live_route, "_read_reference_quote",
+                        lambda *a, **kw: asked.append(a) or {"price": 1.0})
+    seen, _record = _entry_decision_inputs(tmp_path, monkeypatch, realized_windows={})
+    assert asked == [] and seen["reference_quote"] is None
+
+
+def test_the_decision_is_handed_the_market_price_and_the_moment_it_is_judged(tmp_path, monkeypatch):
+    quote = {"price": 60000.0, "close_time": "2026-07-27T23:59:00Z", "timeframe": "1m", "reason": None}
+    asked = []
+
+    def _quote(collector, symbol, *, now, timeout_seconds):
+        asked.append((symbol, now))
+        return quote
+
+    monkeypatch.setattr(live_route, "_read_reference_quote", _quote)
+    monkeypatch.setattr(live_route, "_entry_clock", lambda: "2026-07-28T00:00:09Z")
+    monkeypatch.setattr(live_route, "build_entry_plan", lambda route, row, now: dict(_PLAN))
+    seen, _record = _entry_decision_inputs(tmp_path, monkeypatch, realized_windows={}, route={"status": "X"})
+    assert asked == [(SYMBOL, NOW)]
+    assert seen["reference_quote"] is quote and seen["clock"] == "2026-07-28T00:00:09Z"
+
+
+def test_a_market_price_that_cannot_be_read_costs_the_entry_not_the_fan_out():
+    class _NoCandles:
+        def order_book(self, symbol, *, limit, timeout_seconds):
+            return {}
+
+    quote = live_route._read_reference_quote(_NoCandles(), SYMBOL, now=NOW, timeout_seconds=5)
+    assert quote["price"] is None and quote["reason"] == "REFERENCE_PRICE_UNREADABLE"
+    assert quote["error"] == "AttributeError"
+
+
+def test_a_market_that_moved_from_the_bar_close_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import PRICE_DIVERGED
+    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(live_route, "_read_reference_quote", lambda collector, symbol, **kw: {
+        "price": _PLAN["entry_price"] * 1.006, "close_time": "2026-07-28T04:04:00Z",
+        "timeframe": "1m", "reason": None})
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [PRICE_DIVERGED]
+    assert PRICE_DIVERGED in held["live_reason_codes"]
+    assert venue.entries() == [] and count_today(tmp_path) == 0
+    assert read_live_entry_marks(tmp_path)["entered"] == {}
+
+
+def test_a_market_price_that_cannot_be_used_says_why_on_the_record(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import REFERENCE_PRICE_UNUSABLE
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(live_route, "_read_reference_quote", lambda collector, symbol, **kw: {
+        "price": None, "close_time": None, "timeframe": "1m", "reason": "REFERENCE_PRICE_SYNTHETIC"})
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [REFERENCE_PRICE_UNUSABLE]
+    assert {"REFERENCE_PRICE_SYNTHETIC", REFERENCE_PRICE_UNUSABLE} <= set(held["live_reason_codes"])
+    assert venue.entries() == []
+
+
+def test_a_decision_that_waited_over_a_minute_is_not_sent(tmp_path, monkeypatch):
+    """The venue door judges the send at the wall clock: sixty-one seconds after the decision the
+    leg refuses before it takes the symbol, the bar or the day's slot."""
+    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(pre_order_gate, "_send_clock",
+                        lambda: timeutil.plus_seconds("2026-07-28T04:05:00Z", 61))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_pre_order_gate"]["approved"] is True
+    assert held["live_opened"]["reason_codes"] == [pre_order_gate.RISK_SNAPSHOT_STALE]
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert venue.entries() == [] and count_today(tmp_path) == 0
+    marks = read_live_entry_marks(tmp_path)
+    assert marks["entered"] == {} and not marks.get("in_flight")
+
+    # Sent within the minute, the same bar enters.
+    monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: "2026-07-28T04:20:30Z")
+    opened = run("2026-07-28T04:20:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+
+
+def test_the_decision_clock_is_read_after_every_fact_it_judges():
+    """Read first, it would make every fact look younger than it is (or read after the clock)."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(live_route._run_gated_live_leg)))
+    [kwargs] = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "decision_kwargs"]
+    assert kwargs.keywords[-1].arg == "clock"
+    assert ast.unparse(kwargs.keywords[-1].value) == "_entry_clock()"
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "_entry_clock"]
+    assert len(reads) == 1

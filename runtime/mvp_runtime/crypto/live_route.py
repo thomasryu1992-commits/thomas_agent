@@ -80,7 +80,7 @@ from .account import read_account, select_account_feed
 from .execution_stage import PURPOSE_AUTONOMOUS
 from .live_entry import STATUS_NO_ROUTE, gate_live_entry, plan_live_entry
 from .live_filters import read_symbol_filters
-from .market_data import ORDER_BOOK_LEVELS, TIMEFRAMES
+from .market_data import ORDER_BOOK_LEVELS, PRICE_UNREADABLE, TIMEFRAMES, read_reference_quote
 from .orderbook_store import summarize_book
 from .execution_stage import resolve_execution_stage
 from .live_order import (
@@ -497,6 +497,18 @@ def _run_gated_live_leg(
         # what plan_live_entry refuses fail-closed (Thomas 2026-08-30).
         record["live_reason_codes"].append("LIVE_ENTRY_ORDERBOOK_UNREADABLE")
 
+    # The market's price now (PR2c-1, decision 24): the plan is priced on its bar's close, and the
+    # decision checks that close against this. Read only when there is a plan to check — a context
+    # with no route asks the venue nothing more — and degraded like the book: the None-priced quote
+    # it hands down is what the decision refuses.
+    reference_quote = (
+        _read_reference_quote(collector, symbol, now=now, timeout_seconds=timeout_seconds)
+        if plan is not None else None
+    )
+    if isinstance(reference_quote, Mapping) and reference_quote.get("reason"):
+        # Why, beside the decision's own refusal — as the book's read failure is recorded above.
+        record["live_reason_codes"].append(str(reference_quote["reason"]))
+
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
     # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
     # measures late is a breaker that does not bound today (#247).
@@ -568,6 +580,10 @@ def _run_gated_live_leg(
         verdict=verdict,
         now=now,
         spread_bps=spread_bps,
+        reference_quote=reference_quote,
+        # Last, after every read above: the moment the decision (and the gate, on this same
+        # mapping) judges these facts at (PR2c-1).
+        clock=_entry_clock(),
     )
     decision = plan_live_entry(**decision_kwargs)
     record["live_decision"] = {
@@ -1120,6 +1136,21 @@ _COOLDOWN_CLOSE_REASONS = STOP_EXIT_REASONS | {live_leg.CLOSE_REASON_VENUE_EXTER
 def _settle_clock() -> str:
     """The wall clock when a settlement is recorded. Its own function so tests can set it."""
     return timeutil.utc_now_iso()
+
+
+def _entry_clock() -> str:
+    """The wall clock an entry decision is judged at (PR2c-1). Its own function so tests can set it."""
+    return timeutil.utc_now_iso()
+
+
+def _read_reference_quote(collector: Any, symbol: str, *, now: str, timeout_seconds: int) -> dict[str, Any]:
+    """`market_data.read_reference_quote`, degraded rather than raised: a collector that fails in a
+    way the reader does not type must cost this context its entry, never the fan-out."""
+    try:
+        return read_reference_quote(symbol, collector=collector, now=now, timeout_seconds=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — refuse at the decision, never halt the route
+        return {"price": None, "close_time": None, "timeframe": "1m", "reason": PRICE_UNREADABLE,
+                "error": type(exc).__name__}
 
 
 def _record_stop_cooldown(

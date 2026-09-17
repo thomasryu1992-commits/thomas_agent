@@ -134,6 +134,28 @@ LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
 # not expire, and it still takes a written operator reason to clear.
 MAX_CONSECUTIVE_BRACKET_FAILURES = 5
 
+# How old the account read an entry is judged on may be when the entry is judged (Thomas decisions
+# 18 and 24, PR2c-1). A door reads the account once, then settles, protects and prices before it
+# decides — normally seconds, with no bound: each venue call in between may take its own timeout.
+# Past a minute the balance and the exposure the caps are judged on may no longer be the account's.
+MAX_ACCOUNT_AGE_SECONDS = 60
+
+
+def account_age_seconds(collected_at: Any, *, clock: Any) -> float | None:
+    """How long before ``clock`` the account was read, or None when that cannot be said. Pure."""
+    try:
+        return (timeutil.parse_iso(str(clock)) - timeutil.parse_iso(str(collected_at))).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def account_fresh(collected_at: Any, *, clock: Any) -> bool:
+    """Whether an account read at ``collected_at`` may still be judged at ``clock``. A read that
+    seems to come after the judgment (a clock stepped back) cannot show its age and is not fresh."""
+    age = account_age_seconds(collected_at, clock=clock)
+    return age is not None and 0 <= age <= MAX_ACCOUNT_AGE_SECONDS
+
+
 # The checks `evaluate_live_order_guard` runs, in its order (PR2b). Every block names one of these,
 # and the tests hold the roster and the blocks together.
 GUARD_CHECK_IDS = (
@@ -322,6 +344,19 @@ def _notional_of(intent: Mapping[str, Any]) -> float:
     return 0.0
 
 
+def _notional_at(intent: Mapping[str, Any], price: Any) -> float | None:
+    """The order's quantity at ``price``, or None when either is not a positive finite number."""
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
+        return None
+    try:
+        quantity, price = float(intent.get("quantity")), float(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (0 < quantity < float("inf") and 0 < price < float("inf")):
+        return None
+    return round(quantity * price, 8)
+
+
 def _shape_repairs(intent: Mapping[str, Any]) -> list[str]:
     repairs: list[str] = []
     if intent.get("status") != "ORDER_INTENT_CREATED":
@@ -426,6 +461,12 @@ def evaluate_live_order_guard(
     # does not bind resolves to READ_ONLY, which admits nothing (Thomas decision 9).
     execution_stage: StageStatus,
     canary: bool = False,
+    # The price the market shows now, when the order was priced on something older (PR2c-1,
+    # decision 24): the autonomous entry is priced on its bar's close. The size and exposure caps
+    # are then judged at the higher of the two, so a market that rose since the bar cannot carry
+    # the order past a cap. None judges the order at its own price, as the probe (priced on this
+    # very read) and every earlier caller are.
+    reference_price: float | None = None,
 ) -> dict[str, Any]:
     """The last gate before a live entry. Pure: it reads no file and opens no socket.
 
@@ -547,8 +588,16 @@ def evaluate_live_order_guard(
     if intent.get("connectivity_test"):
         block("not_connectivity_test", "connectivity_test intent cannot use the live order path")
 
-    # 8. Per-order size.
-    notional = _notional_of(intent)
+    # 8. Per-order size — at the higher of the order's own price and ``reference_price``. The
+    #    order's own notional still has to be there: a reference price does not stand in for it.
+    own_notional = _notional_of(intent)
+    notional = own_notional
+    if reference_price is not None:
+        at_reference = _notional_at(intent, reference_price)
+        if at_reference is None:
+            repairs.append("the reference price the caps are judged at is not a positive number")
+        else:
+            notional = max(own_notional, at_reference)
     if cfg.max_order_notional_usdt <= 0:
         block("order_notional_within_cap", f"per-order cap is not configured; {REGISTER_BUDGET_HINT}")
     elif cfg.max_order_notional_usdt > cfg.absolute_max_notional_usdt:
@@ -557,7 +606,7 @@ def evaluate_live_order_guard(
             f"configured cap {cfg.max_order_notional_usdt} exceeds the absolute ceiling "
             f"{cfg.absolute_max_notional_usdt}"
         )
-    if notional <= 0:
+    if own_notional <= 0:
         repairs.append("order notional missing or non-positive")
     elif cfg.max_order_notional_usdt > 0 and notional > cfg.effective_max_notional_usdt:
         block(
@@ -603,7 +652,11 @@ def evaluate_live_order_guard(
         # Every check this guard ran, by name, passed or not (PR2b) — what the pre-order gate
         # records on its snapshot. `approved` is still derived from `blocks` and `repairs` alone.
         "checks": checks,
+        # What the caps judged: the order's own notional, or its quantity at the reference price
+        # when that is higher (PR2c-1).
         "notional_usdt": notional,
+        "order_notional_usdt": own_notional,
+        "reference_price": reference_price,
         "notional_cap_usdt": cfg.max_order_notional_usdt,
         "effective_cap_usdt": cfg.effective_max_notional_usdt,
         "absolute_ceiling_usdt": cfg.absolute_max_notional_usdt,

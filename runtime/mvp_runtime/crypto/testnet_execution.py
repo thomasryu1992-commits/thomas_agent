@@ -464,12 +464,15 @@ def gate_testnet_order(
     stage: Any,
     cycle_id: str,
     now: str,
+    decided_at: str,
 ) -> dict[str, Any]:
     """The pre-order gate for a signed testnet entry (PR2b, decision 20). Pure.
 
     The testnet guard, re-run on the facts the cycle read, is the check list; the intent about to
     be sent must be ``expected_intent``, the one the cycle's own inputs build. The authority is the
-    stage record and the caps this path carries in code — no budget backs a venue with no money."""
+    stage record and the caps this path carries in code — no budget backs a venue with no money.
+    ``decided_at`` is the wall clock the cycle judged at; the order must leave within
+    ``pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS`` of it (PR2c-1)."""
     from .execution_stage import PURPOSE_TESTNET
     from .pre_order_gate import (
         AUTHORITY_TESTNET_CAPS, approved_profile, check, evaluate_pre_order_gate, intent_fingerprint,
@@ -500,7 +503,7 @@ def gate_testnet_order(
     )}
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_TESTNET, venue=VENUE_TESTNET, checks=checks,
-        profile=profile, lineage=lineage, facts=facts, now=now,
+        profile=profile, lineage=lineage, facts=facts, now=now, decided_at=decided_at,
     )
 
 

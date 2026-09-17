@@ -636,6 +636,9 @@ def run_fire(
         quantity=quantity, notional=notional, account_readable=snapshot is not None,
         reconciliation=reconciliation, capacity=capacity, risk=risk, breaker=breaker,
         risk_verdict=guard_verdict, guard_kwargs=guard_kwargs, profile=profile, now=now,
+        # PR2c-1: the account the probe judged must be at most a minute old now, and the order
+        # must leave within a minute of this judgment.
+        account_collected_at=getattr(snapshot, "collected_at", None), clock=timeutil.utc_now_iso(),
     )
     if not snapshot_record["approved"]:
         raise _Refusal(

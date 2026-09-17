@@ -29,8 +29,12 @@ failure) belong to each stage's own suite and are not duplicated here.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from tests._helpers import gate_stage, make_gate_authorization
+
+from runtime.mvp_runtime import timeutil
 
 from runtime.mvp_runtime.crypto import live_entry, live_execution, live_filters, live_leg, pre_order_gate
 from runtime.mvp_runtime.crypto.state import VENUE_MAINNET
@@ -231,6 +235,14 @@ def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks
     filters, reason = live_filters.parse_symbol_filters(EXCHANGE_INFO, SYMBOL)
     assert reason is None
     local = list(local_positions or [])
+    # PR2c-1: judged on the wall clock, as the route judges, because the leg below sends through the
+    # real venue door, which refuses a decision older than a minute. The account is read at that
+    # moment and the market price is a 1m close a minute before it, at the plan's own entry.
+    clock = timeutil.utc_now_iso()
+    if dataclasses.is_dataclass(snapshot):
+        snapshot = dataclasses.replace(snapshot, collected_at=clock)
+    reference_quote = {"price": float((plan or {}).get("entry_price") or 0.0) or None,
+                       "close_time": timeutil.plus_seconds(clock, -60), "timeframe": "1m", "reason": None}
     return dict(
         plan=plan,
         symbol=SYMBOL,
@@ -264,6 +276,8 @@ def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks
         now=NOW,
         verdict={"allow_new_position": True, "problems": [],
                  "risk_guard": {"limits": {"source": "default"}}},
+        reference_quote=reference_quote,
+        clock=clock,
     )
 
 

@@ -243,3 +243,36 @@ def test_module_cannot_send_anything():
     surface = " ".join(dir(ls)).lower()
     for forbidden in ("submit", "cancel", "adapter", "post", "http"):
         assert forbidden not in surface
+
+
+# --- PR2c-1: the cap judged at the higher of the entry and the market's price ---------------
+
+def test_a_market_above_the_entry_sizes_the_cap_at_the_market():
+    """At 60,000 the 120.1 cap buys 0.002 (120.0); at a market of 60,100 that is 120.2, over the
+    cap, so the size the cap admits is 0.001. The risk leg is unchanged."""
+    at_entry = _size(max_order_notional_usdt=120.1)
+    at_market = _size(max_order_notional_usdt=120.1, cap_price=60_100.0)
+    assert (at_entry["quantity"], at_market["quantity"]) == (0.002, 0.001)
+    assert at_market["budget_quantity"] == round(120.1 / 60_100.0, 12)
+    assert at_market["risk_quantity"] == at_entry["risk_quantity"]
+    assert (at_market["cap_price"], at_market["notional_usdt"]) == (60_100.0, 60.0)
+    assert at_entry["cap_price"] == 60_000.0
+
+
+def test_a_market_below_the_entry_sizes_the_cap_at_the_entry():
+    assert _size(max_order_notional_usdt=120.1, cap_price=50_000.0)["quantity"] == 0.002
+    assert _size(max_order_notional_usdt=120.1, cap_price=50_000.0)["cap_price"] == 60_000.0
+
+
+@pytest.mark.parametrize("price", [0.0, -1.0, float("nan"), float("inf"), True, "abc", "60100"])
+def test_a_cap_price_that_is_not_a_positive_number_refuses(price):
+    result = _size(cap_price=price)
+    assert result["sizable"] is False
+    assert ls.NO_CAP_PRICE in result["reasons"]
+
+
+def test_the_final_check_judges_the_cap_at_the_market(monkeypatch):
+    """The floor makes this unreachable; forced here so the check cannot silently judge the entry."""
+    monkeypatch.setattr(ls, "floor_to_step", lambda value, step: 0.002)
+    result = _size(max_order_notional_usdt=120.1, cap_price=60_100.0)
+    assert result["sizable"] is False and result["reasons"] == [ls.EXCEEDS_BUDGET]

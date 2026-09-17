@@ -16,8 +16,8 @@ What this module is:
   check passed, and one self-hash over all of it, the intent's fingerprint included.
 - **the binding** (:func:`verify_and_persist`) — what ``live_execution.submit_and_reconcile`` runs
   before any order that is not reduce-only: the snapshot is approved and intact, it names THIS
-  intent, the intent names it back, and it has been written to its venue's store. Anything else,
-  and nothing is sent.
+  intent, the intent names it back, it was judged at most :data:`MAX_SNAPSHOT_AGE_SECONDS` ago
+  (PR2c-1), and it has been written to its venue's store. Anything else, and nothing is sent.
 - **the store** (:class:`PreOrderSnapshotStore`) — an append-only JSONL per venue, behind that
   venue's switch, fsynced before the order leaves. Only orders about to be sent are written, so a
   row means "an order was about to leave under these facts". A crash between the write and the
@@ -46,7 +46,7 @@ from ..paths import repo_root as _repo_root
 from ..safety_gate import Authorization
 from ..schema_cache import validate_against_schema
 from .execution_stage import PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET
-from .live_order import enrich_order_identity
+from .live_order import MAX_ACCOUNT_AGE_SECONDS, enrich_order_identity
 from .state import VENUE_MAINNET, VENUE_TESTNET, venue_state_dir
 
 GATE_ID = "pre_order_gate.v1"
@@ -69,6 +69,14 @@ RISK_SNAPSHOT_INVALID = "RISK_SNAPSHOT_INVALID"
 # Intact, approved and schema-valid, yet what it records does not support the approval: the profile,
 # the gate's own checks, the lineage or the venue are not what the gate requires.
 RISK_SNAPSHOT_UNSUPPORTED = "RISK_SNAPSHOT_UNSUPPORTED"
+# The decision is too old to send on, or does not say when it was made (PR2c-1).
+RISK_SNAPSHOT_STALE = "RISK_SNAPSHOT_STALE"
+
+# How long a sealed decision may wait for its send (PR2c-1, Thomas decision 24). The account age
+# bound, applied to the gate's own judgment: a door judges an account at most that old, and the
+# order it approves must leave within the same bound. Between the gate and the send there are only
+# governance and three locked, synced writes — seconds.
+MAX_SNAPSHOT_AGE_SECONDS = MAX_ACCOUNT_AGE_SECONDS
 
 # The gate's own checks, added to whatever the door re-derived.
 CHECK_DOOR_CHECKS = "door_checks_present"
@@ -77,8 +85,9 @@ CHECK_INTENT_IDENTITY = "intent_identity"
 CHECK_LINEAGE = "lineage_complete"
 CHECK_PROFILE = "approved_profile_complete"
 CHECK_VENUE = "venue_matches_purpose"
+CHECK_DECIDED_AT = "decision_time_recorded"
 GATE_CHECK_IDS = (CHECK_DOOR_CHECKS, CHECK_OPENS_EXPOSURE, CHECK_INTENT_IDENTITY, CHECK_LINEAGE,
-                  CHECK_PROFILE, CHECK_VENUE)
+                  CHECK_PROFILE, CHECK_VENUE, CHECK_DECIDED_AT)
 
 # What the snapshot binds of the intent: its identity, its material terms, and the lineage it will
 # be judged by. A change to any of them after the gate is a different order.
@@ -131,6 +140,16 @@ def check(check_id: str, ok: bool, detail: Any = None) -> dict[str, Any]:
 
 def _missing(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _instant(value: Any) -> Any:
+    """``value`` as a UTC instant, or None when it is not the RFC3339 form this runtime writes."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return timeutil.parse_iso(value)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _clean(value: Any) -> Any:
@@ -277,12 +296,17 @@ def evaluate_pre_order_gate(
     lineage: Mapping[str, Any],
     facts: Mapping[str, Any],
     now: str,
+    decided_at: str,
 ) -> dict[str, Any]:
     """Seal one pre-order decision. Pure: it reads no file and opens no socket.
 
     ``checks`` is everything the door re-derived from the facts it read; ``facts`` is the numbers
     those checks judged, recorded so the snapshot can be re-read without the process that made it.
     The result is approved only when every check — the door's and the gate's — passed.
+
+    ``decided_at`` is the wall clock the door judged its facts at (PR2c-1), not ``now``, the
+    fire's start. It is sealed into ``facts``, and the binding refuses to send on a decision older
+    than :data:`MAX_SNAPSHOT_AGE_SECONDS`.
 
     A handed check passes only when its ``ok`` is ``True`` itself. One that is not a mapping, names
     no check, carries an ``ok`` that is not a boolean, or takes a name the gate reserves for its own
@@ -307,6 +331,7 @@ def evaluate_pre_order_gate(
     identity = _identity_problem(intent)
     opening = _opening_problem(intent)
     venue_ok = purpose in VENUE_FOR_PURPOSE and VENUE_FOR_PURPOSE[purpose] == venue
+    decided = _instant(decided_at) is not None
     gate_checks = [
         # A door that re-derived nothing has verified nothing; one that handed a malformed check
         # has not shown what it verified.
@@ -321,6 +346,8 @@ def evaluate_pre_order_gate(
         check(CHECK_PROFILE, not problems, "; ".join(problems) or None),
         check(CHECK_VENUE, venue_ok,
               None if venue_ok else f"a {purpose} order does not go to {venue}"),
+        check(CHECK_DECIDED_AT, decided,
+              None if decided else "the door did not say when it judged the facts"),
     ]
     all_checks = door_checks + gate_checks
     approved = all(c["ok"] for c in all_checks)
@@ -343,7 +370,7 @@ def evaluate_pre_order_gate(
         "approved_profile": profile_clean,
         "approved_profile_sha256": integrity.sha256_record(profile_clean) if profile_clean else None,
         "lineage": _clean(dict(lineage or {})),
-        "facts": _clean(dict(facts or {})),
+        "facts": {**_clean(dict(facts or {})), "decided_at": _clean(decided_at)},
     }
     body["pre_order_risk_snapshot_id"] = integrity.short_id(
         "pre_order_risk_snapshot",
@@ -436,8 +463,38 @@ def _intent_mismatch(intent: Mapping[str, Any], snapshot: Mapping[str, Any]) -> 
     return None
 
 
-def verify_snapshot(intent: Mapping[str, Any], snapshot: Any) -> str:
-    """Refuse unless ``snapshot`` approved exactly this intent and is intact. Returns its hash."""
+def _send_clock() -> str:
+    """The wall clock a send is judged at. Its own function so tests can set it."""
+    return timeutil.utc_now_iso()
+
+
+def decision_age_seconds(snapshot: Mapping[str, Any], *, clock: str) -> float | None:
+    """How long before ``clock`` the gate judged ``snapshot``, or None when it cannot be said."""
+    facts = snapshot.get("facts") if isinstance(snapshot.get("facts"), Mapping) else {}
+    decided, at = _instant(facts.get("decided_at")), _instant(clock)
+    if decided is None or at is None:
+        return None
+    return (at - decided).total_seconds()
+
+
+def _staleness(snapshot: Mapping[str, Any], clock: str) -> str | None:
+    """Why ``snapshot`` may not be sent at ``clock``, or None. A decision that seems to come after
+    the send (a clock stepped back) cannot show its age, so it is refused like an old one."""
+    age = decision_age_seconds(snapshot, clock=clock)
+    if age is None:
+        return "the snapshot does not say when its facts were judged"
+    if age < 0:
+        return f"the snapshot's facts were judged {-age:.0f}s after this send"
+    if age > MAX_SNAPSHOT_AGE_SECONDS:
+        return (f"the snapshot's facts were judged {age:.0f}s before this send, more than the "
+                f"{MAX_SNAPSHOT_AGE_SECONDS}s an order may wait on them")
+    return None
+
+
+def verify_snapshot(intent: Mapping[str, Any], snapshot: Any, *, clock: str | None = None) -> str:
+    """Refuse unless ``snapshot`` approved exactly this intent, is intact, and was judged at most
+    :data:`MAX_SNAPSHOT_AGE_SECONDS` before ``clock`` (the wall clock when not given). Returns its
+    hash."""
     if not isinstance(snapshot, Mapping):
         raise ToolError(RISK_SNAPSHOT_MISSING, "an order that opens exposure needs a pre-order risk snapshot")
     if snapshot.get("snapshot_version") != SNAPSHOT_VERSION or snapshot.get("risk_gate_id") != GATE_ID:
@@ -458,16 +515,19 @@ def verify_snapshot(intent: Mapping[str, Any], snapshot: Any) -> str:
     mismatch = _intent_mismatch(intent, snapshot)
     if mismatch is not None:
         raise ToolError(RISK_SNAPSHOT_INTENT_MISMATCH, mismatch)
+    stale = _staleness(snapshot, clock if clock is not None else _send_clock())
+    if stale is not None:
+        raise ToolError(RISK_SNAPSHOT_STALE, stale)
     return str(snapshot["risk_snapshot_sha256"])
 
 
 def verify_and_persist(intent: Mapping[str, Any], snapshot: Any, *, store: Any,
-                       require_durable: bool = False) -> str:
+                       require_durable: bool = False, clock: str | None = None) -> str:
     """The binding: verify, then write the snapshot to its venue's store — before anything is sent.
 
     ``require_durable`` is the venue door's: an adapter that can reach a venue needs a store that
     actually writes, or the order would leave with no record while reporting one."""
-    sha = verify_snapshot(intent, snapshot)
+    sha = verify_snapshot(intent, snapshot, clock=clock)
     if store is None:
         raise ToolError(RISK_SNAPSHOT_NO_STORE, "no pre-order snapshot store: the order would leave no record")
     if require_durable and getattr(store, "filesystem_write", False) is not True:
@@ -658,6 +718,7 @@ __all__ = [
     "GATE_ID",
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
+    "MAX_SNAPSHOT_AGE_SECONDS",
     "PreOrderSnapshotStore",
     "SNAPSHOT_FILENAME",
     "SNAPSHOT_REFERENCE_FIELDS",
@@ -667,6 +728,7 @@ __all__ = [
     "approved_profile",
     "bind_intent",
     "check",
+    "decision_age_seconds",
     "evaluate_pre_order_gate",
     "find_snapshot",
     "intent_fingerprint",

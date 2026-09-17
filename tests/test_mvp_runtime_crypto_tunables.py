@@ -77,7 +77,6 @@ MECHANICS: dict[str, str] = {
     # order. That check went with the door (2026-09-15, PR1r); its one consumer now is the
     # slippage probe's price read (`run_slippage_probe._read_price`), which prices a real probe
     # order. The classification is left for its own decision, not changed as a side effect.
-    "REFERENCE_PRICE_MAX_AGE_SECONDS": "staleness tolerance on the probe's reference price read",
 
     # --- second slice, 2026-08-08 -------------------------------------------------------------
     # Estimator warm-up floors: how many observations before a series will answer at all. Below

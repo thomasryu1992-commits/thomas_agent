@@ -2197,38 +2197,94 @@ def read_reference_price(
     Returns the reason code rather than raising: the caller reports it beside its other
     refusals so an operator who must fix several things sees them in one run.
     """
+    quote = read_reference_quote(
+        symbol, collector=collector, now=now, timeframe=timeframe, timeout_seconds=timeout_seconds,
+    )
+    return quote["price"], quote["reason"]
+
+
+def read_reference_quote(
+    symbol: str,
+    *,
+    collector: MarketDataCollector,
+    now: str,
+    timeframe: str = "1m",
+    timeout_seconds: int = 10,
+) -> dict[str, Any]:
+    """:func:`read_reference_price` as one record that also says when its candle closed.
+
+    ``{"price", "close_time", "timeframe", "reason"}``, with ``price`` None exactly when
+    ``reason`` names one of the four refusals above. The close time is kept for a caller that
+    acts later than ``now`` (PR2c-1): it judges the price's age again on its own clock with
+    :func:`reference_quote_problem`, because the per-fire cache hands every context of a symbol
+    the fire's first read."""
+    quote: dict[str, Any] = {"price": None, "close_time": None, "timeframe": timeframe, "reason": None}
     try:
         snapshot, _ = collect_market_data(
             symbol, timeframe, collector=collector, now=now, limit=1,
             timeout_seconds=timeout_seconds,
         )
     except MvpRuntimeError:
-        return None, PRICE_UNREADABLE
+        return {**quote, "reason": PRICE_UNREADABLE}
 
     if snapshot.get("is_synthetic"):
-        return None, PRICE_SYNTHETIC
+        return {**quote, "reason": PRICE_SYNTHETIC}
 
     candles = snapshot.get("candles") or []
     if not candles:
-        return None, PRICE_ABSENT
+        return {**quote, "reason": PRICE_ABSENT}
 
     last = candles[-1]
     try:
         close = float(last["close"])
-        closed_at = timeutil.parse_iso(str(last["close_time"]))
+        close_time = str(last["close_time"])
+        closed_at = timeutil.parse_iso(close_time)
     except (KeyError, TypeError, ValueError):
-        return None, PRICE_UNREADABLE
+        return {**quote, "reason": PRICE_UNREADABLE}
     if not (close > 0):
-        return None, PRICE_UNREADABLE
+        return {**quote, "reason": PRICE_UNREADABLE}
 
     try:
         age = (timeutil.parse_iso(now) - closed_at).total_seconds()
     except (TypeError, ValueError):
-        return None, PRICE_UNREADABLE
+        return {**quote, "reason": PRICE_UNREADABLE}
     if age > REFERENCE_PRICE_MAX_AGE_SECONDS:
-        return None, PRICE_STALE
+        return {**quote, "close_time": close_time, "reason": PRICE_STALE}
 
-    return close, None
+    return {**quote, "price": close, "close_time": close_time}
+
+
+def reference_quote_age_seconds(quote: Any, *, clock: str) -> float | None:
+    """How long before ``clock`` the quote's candle closed, or None when that cannot be said.
+    Negative while the candle is still forming. Pure."""
+    if not isinstance(quote, dict):
+        return None
+    try:
+        age = (timeutil.parse_iso(str(clock)) - timeutil.parse_iso(str(quote.get("close_time")))).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return age
+
+
+def reference_quote_problem(quote: Any, *, clock: str) -> str | None:
+    """Why ``quote`` cannot price an order judged at ``clock``, or None when it can. Pure.
+
+    The reader's own refusal first; then a price that is not a positive finite number; then the
+    age, judged again at ``clock`` against :data:`REFERENCE_PRICE_MAX_AGE_SECONDS`. A quote that
+    cannot say when its candle closed is unreadable, not fresh."""
+    if not isinstance(quote, dict):
+        return PRICE_ABSENT
+    if quote.get("reason"):
+        return str(quote["reason"])
+    price = quote.get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float)) or not (0 < price < float("inf")):
+        return PRICE_UNREADABLE
+    age = reference_quote_age_seconds(quote, clock=clock)
+    if age is None:
+        return PRICE_UNREADABLE
+    if age > REFERENCE_PRICE_MAX_AGE_SECONDS:
+        return PRICE_STALE
+    return None
 
 
 # --- one fan-out, one request per distinct question -------------------------------------------

@@ -79,6 +79,15 @@ BAR = "2026-07-25T00:00:00Z"
 NO_MARKS = {"version": "live_entry_marks.v1", "entered": {}, "cooldown": {}}
 
 
+def _quote(price=None, *, close_time="2026-07-25T11:59:00Z", reason=None):
+    """The market's price as the leg read it (PR2c-1): by default a closed 1m candle a minute before
+    NOW, at ``price`` — the plan's own entry when a test does not say, so the freshness doors stay
+    open and each test still closes exactly one."""
+    usable = isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
+    return {"price": None if reason else (float(price) if usable else 60000.0),
+            "close_time": close_time, "timeframe": "1m", "reason": reason}
+
+
 def _stage(stage="LIVE_AUTONOMOUS", valid=True, reason=None):
     """The execution stage the caller resolved, as the doors receive it (PR1b). The helpers default
     to a rung that admits an entry so each test still closes exactly one door; the stage door has
@@ -125,6 +134,9 @@ def _plan(**kw):
         execution_stage=kw.pop("execution_stage", _stage()),
         entry_bar_time=kw.pop("entry_bar_time", BAR),
         entry_marks=kw.pop("entry_marks", NO_MARKS),
+        # PR2c-1: judged at NOW, on the account read at NOW and a price at the plan's own entry.
+        clock=kw.pop("clock", NOW),
+        reference_quote=kw.pop("reference_quote", _quote((plan or {}).get("entry_price"))),
         **kw,
     )
     return le.plan_live_entry(**args)
@@ -583,11 +595,26 @@ def test_the_exposure_the_guard_sees_comes_from_the_venue():
 
 
 def test_an_unreadable_account_reports_exposure_at_the_cap():
-    """LP5.1's fail-closed rule reaching the guard: unknown exposure blocks, never admits."""
+    """LP5.1's fail-closed rule, met twice now. An account that was not read cannot say when it
+    was, so the freshness door refuses it before the guard (PR2c-1). Were it to reach the guard,
+    unknown exposure would still read AT the cap and block, never admit."""
+    from runtime.mvp_runtime.crypto.live_order import evaluate_live_order_guard
+    from runtime.mvp_runtime.crypto.live_position import compute_open_notional_usdt
+
     decision = _plan(snapshot=None, reconciliation={"status": "RECONCILED", "books": {}})
-    assert decision["guard"]["current_open_notional_usdt"] == LIMITS.max_open_notional_usdt
     assert decision["status"] == le.STATUS_REFUSED
-    assert any("open exposure" in b for b in decision["guard"]["blocks"])
+    assert le.ACCOUNT_STALE in decision["reasons"]
+    assert decision["freshness"]["account_collected_at"] is None
+
+    at_cap = compute_open_notional_usdt(None, at_cap=LIMITS.max_open_notional_usdt)
+    assert at_cap == LIMITS.max_open_notional_usdt
+    guard = evaluate_live_order_guard(
+        _plan()["intent"], gate_open=True, runtime_active=True, daily_loss_breached=False,
+        submitted_today=0, current_open_notional_usdt=at_cap, limits=LIMITS,
+        budget_registered=True, allowed_symbols=["BTCUSDT"], execution_stage=_stage(),
+    )
+    assert not guard["approved"]
+    assert any("open exposure" in b for b in guard["blocks"])
 
 
 def test_the_canary_phrase_cannot_authorize_an_autonomous_entry():
@@ -938,3 +965,248 @@ def test_the_snapshot_records_what_the_bar_and_in_flight_doors_judged():
     assert snapshot["approved"] is True, snapshot["failed_checks"]
     assert snapshot["facts"]["entry_marks"] == {
         "entered": "2026-07-24T00:00:00Z", "cooldown": None, "in_flight": claim}
+
+
+# --- freshness at the moment of the decision (PR2c-1, Thomas decision 24) ------------------------
+
+def _account_read_at(collected_at):
+    return AccountSnapshot(
+        asset="USDT", wallet_balance=1000.0, margin_balance=1000.0, available_balance=1000.0,
+        unrealized_pnl=0.0, positions=[], realized_windows={}, source="test", collected_at=collected_at,
+    )
+
+
+@pytest.mark.parametrize("collected_at,fresh", [
+    ("2026-07-25T11:59:00Z", True),      # exactly a minute before the decision
+    ("2026-07-25T11:58:59Z", False),     # a second past it
+    ("2026-07-25T12:00:01Z", False),     # read after the decision: the clock went back
+])
+def test_the_account_may_be_at_most_a_minute_old_at_the_decision(collected_at, fresh):
+    decision = _plan(snapshot=_account_read_at(collected_at))
+    assert decision["ready"] is fresh, decision["reasons"]
+    assert (le.ACCOUNT_STALE in decision["reasons"]) is not fresh
+    assert decision["freshness"]["account_collected_at"] == collected_at
+    assert decision["freshness"]["account_max_age_seconds"] == 60
+
+
+def test_the_account_age_is_judged_at_the_decision_not_the_fire():
+    """`now` is the fire's start; an entry is decided up to a minute into it."""
+    decision = _plan(now="2026-07-25T11:59:30Z", clock="2026-07-25T12:00:01Z",
+                     snapshot=_account_read_at("2026-07-25T11:59:00Z"))
+    assert le.ACCOUNT_STALE in decision["reasons"]
+    assert decision["freshness"]["account_age_seconds"] == 61.0
+
+
+@pytest.mark.parametrize("clock", [None, "", "later", "2026-07-25 12:00:00"])
+def test_a_decision_that_cannot_say_when_it_is_refuses(clock):
+    decision = _plan(clock=clock)
+    assert le.ACCOUNT_STALE in decision["reasons"]
+    assert le.REFERENCE_PRICE_UNUSABLE in decision["reasons"]
+
+
+@pytest.mark.parametrize("quote", [
+    None,
+    _quote(reason="REFERENCE_PRICE_SYNTHETIC"),
+    _quote(reason="REFERENCE_PRICE_ABSENT"),
+    _quote(reason="REFERENCE_PRICE_STALE"),
+    _quote(reason="REFERENCE_PRICE_UNREADABLE"),
+    _quote(60000.0, close_time="2026-07-25T11:54:59Z"),     # fresh when read, 301 s old now
+    {**_quote(60000.0), "price": float("nan")},
+], ids=["none", "synthetic", "absent", "stale", "unreadable", "aged", "nan"])
+def test_an_entry_needs_a_market_price_it_can_use(quote):
+    decision = _plan(reference_quote=quote)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert decision["reasons"] == [le.REFERENCE_PRICE_UNUSABLE]
+    assert decision["freshness"]["reference_problem"] is not None
+
+
+def test_a_market_price_five_minutes_old_is_still_usable():
+    decision = _plan(reference_quote=_quote(60000.0, close_time="2026-07-25T11:55:00Z"))
+    assert decision["ready"] is True, decision["reasons"]
+    assert decision["freshness"]["reference_age_seconds"] == 300.0
+
+
+@pytest.mark.parametrize("price,diverged", [
+    (60300.0, False), (59700.0, False),               # exactly 50 bps either way
+    (60300.06, True), (59699.94, True),               # just past it either way
+])
+def test_the_market_may_be_at_most_fifty_bps_from_the_bar_close(price, diverged):
+    decision = _plan(reference_quote=_quote(price), limits=_roomy_limits())
+    assert (decision["reasons"] == [le.PRICE_DIVERGED]) is diverged, decision["reasons"]
+    assert decision["ready"] is not diverged
+    assert decision["freshness"]["divergence_limit_bps"] == 50.0
+
+
+def test_every_stale_fact_is_named_at_once():
+    decision = _plan(snapshot=_account_read_at("2026-07-25T11:00:00Z"), reference_quote=_quote(61000.0),
+                     spread_bps=80.0)
+    assert set(decision["reasons"]) == {le.ACCOUNT_STALE, le.PRICE_DIVERGED, le.SPREAD_REFUSED}
+
+
+def test_an_unusable_price_is_not_also_reported_as_diverged():
+    decision = _plan(reference_quote=_quote(reason="REFERENCE_PRICE_STALE"))
+    assert decision["reasons"] == [le.REFERENCE_PRICE_UNUSABLE]
+    assert decision["freshness"]["divergence_bps"] is None
+
+
+def test_a_plan_with_no_entry_price_is_the_brackets_to_refuse():
+    decision = _plan(plan={**PLAN, "entry_price": 0.0}, reference_quote=_quote(60000.0))
+    assert decision["reasons"] == [le.BRACKET_UNPRICEABLE]
+    assert decision["freshness"]["divergence_bps"] is None
+
+
+@pytest.mark.parametrize("direction,stop,target,price", [
+    ("LONG", 59900.0, 60200.0, 59900.0),     # at the stop
+    ("LONG", 59900.0, 60200.0, 59850.0),     # through the stop
+    ("LONG", 59900.0, 60200.0, 60200.0),     # at the target
+    ("LONG", 59900.0, 60200.0, 60250.0),     # through the target
+    ("SHORT", 60100.0, 59800.0, 60100.0),    # at the stop
+    ("SHORT", 60100.0, 59800.0, 60150.0),    # through the stop
+    ("SHORT", 60100.0, 59800.0, 59800.0),    # at the target
+    ("SHORT", 60100.0, 59800.0, 59750.0),    # through the target
+])
+def test_a_market_at_or_past_a_protective_leg_refuses(direction, stop, target, price):
+    """Within 50 bps of the bar close, yet the stop would trigger the moment it rests (the venue
+    refuses such a closePosition stop and the entry is closed naked), or the move is already over.
+    The stops here are narrower than the economics door admits; this door is judged first."""
+    plan = {**PLAN, "direction": direction, "stop_loss": stop, "take_profit": target,
+            "risk": abs(60000.0 - stop)}
+    decision = _plan(plan=plan, reference_quote=_quote(price))
+    assert decision["reasons"] == [le.PRICE_BEYOND_BRACKET]
+    assert decision["price_beyond_bracket"] == {"reference_price": price, "stop_loss": stop,
+                                                "take_profit": target}
+
+
+@pytest.mark.parametrize("direction,stop,target,price", [
+    ("LONG", 59600.0, 60200.0, 59700.0),
+    ("LONG", 59600.0, 60200.0, 60199.9),
+    ("SHORT", 60400.0, 59800.0, 60300.0),
+    ("SHORT", 60400.0, 59800.0, 59800.1),
+])
+def test_a_market_between_the_legs_may_enter(direction, stop, target, price):
+    """Legs wide enough for the economics door (a stop at least ~64 bps away at this cost model),
+    so a market within 50 bps of the close cannot be past the stop: that side of the door is the
+    one the cost door already makes rare, and it stays in case the cost model moves."""
+    plan = {**PLAN, "direction": direction, "stop_loss": stop, "take_profit": target,
+            "risk": abs(60000.0 - stop)}
+    decision = _plan(plan=plan, reference_quote=_quote(price), limits=_roomy_limits())
+    assert decision["ready"] is True, decision["reasons"]
+
+
+def test_the_legs_the_market_is_judged_against_are_the_rounded_ones():
+    """The stop rounds UP toward the entry (tick 0.1): 59899.95 rests at 59900.0, so a market at
+    59899.97 is already past the order that would actually rest."""
+    plan = {**PLAN, "stop_loss": 59899.95, "take_profit": 60200.0, "risk": 100.05}
+    decision = _plan(plan=plan, reference_quote=_quote(59899.97))
+    assert decision["reasons"] == [le.PRICE_BEYOND_BRACKET]
+    assert decision["price_beyond_bracket"]["stop_loss"] == 59900.0
+
+
+@pytest.mark.parametrize("direction", ["FLAT", None])
+def test_a_direction_with_no_side_sits_between_no_legs(direction):
+    assert le.price_between_legs(direction, 60000.0, {"stop_loss": 59000.0, "take_profit": 62000.0}) is False
+
+
+@pytest.mark.parametrize("price", [None, 0.0, float("nan"), float("inf"), True, "60000"])
+def test_a_price_that_is_not_a_number_sits_between_no_legs(price):
+    assert le.price_between_legs("LONG", price, {"stop_loss": 59000.0, "take_profit": 62000.0}) is False
+
+
+def _roomy_limits(**overrides):
+    """Room for 0.001 BTC under the per-order cap at any price within 50 bps of 60,000."""
+    base = dict(max_order_notional_usdt=70.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
+                max_open_notional_usdt=140.0, daily_loss_limit_usdt=20.0,
+                confirmation=LIVE_CONFIRMATION_PHRASE)
+    base.update(overrides)
+    return LiveOrderLimits(**base)
+
+
+def _cap_bound_limits():
+    return LiveOrderLimits(
+        max_order_notional_usdt=120.1, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
+        max_open_notional_usdt=300.0, daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
+    )
+
+
+def test_the_size_fits_the_cap_at_the_higher_price():
+    """Decision 24: the size stays the bar close's, the cap is judged at the higher of the two. At
+    60,000 the 120.1 cap takes 0.002; at a market of 60,100 that is 120.2, so the size is 0.001."""
+    at_close = _plan(limits=_cap_bound_limits(), reference_quote=_quote(60000.0))
+    at_market = _plan(limits=_cap_bound_limits(), reference_quote=_quote(60100.0))
+    assert (at_close["intent"]["quantity"], at_market["intent"]["quantity"]) == (0.002, 0.001)
+    assert at_market["ready"] is True, at_market["reasons"]
+    assert at_market["sizing"]["cap_price"] == 60100.0
+    # The order still names its bar close; the guard judged the market's price.
+    assert at_market["intent"]["entry_price"] == 60000.0
+    assert at_market["intent"]["order_notional_usdt"] == 60.0
+    assert (at_market["guard"]["notional_usdt"], at_market["guard"]["reference_price"]) == (60.1, 60100.0)
+
+
+def test_the_exposure_cap_is_judged_at_the_higher_price():
+    """0.001 at the close adds 60 to the 59.95 already open (119.95, under 120); at the market it
+    adds 60.1 (120.05, over)."""
+    held = _snapshot(_position(symbol="ETHUSDT", notional=59.95))
+    limits = _roomy_limits(max_open_notional_usdt=120.0)
+    at_close = _plan(snapshot=held, reference_quote=_quote(60000.0), limits=limits)
+    at_market = _plan(snapshot=held, reference_quote=_quote(60100.0), limits=limits)
+    assert at_close["ready"] is True, at_close.get("guard", {}).get("blocks")
+    assert at_market["reasons"] == [le.GUARD_REFUSED]
+    assert [c["check"] for c in at_market["guard"]["checks"] if not c["ok"]] == ["open_exposure_within_cap"]
+
+
+def test_a_market_below_the_close_sizes_and_judges_at_the_close():
+    decision = _plan(limits=_cap_bound_limits(), reference_quote=_quote(59900.0))
+    assert decision["intent"]["quantity"] == 0.002
+    assert decision["guard"]["notional_usdt"] == 120.0
+
+
+def test_the_gate_seals_the_decision_time_and_the_freshness_it_judged():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage(), clock="2026-07-25T12:00:07Z")
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert snapshot["facts"]["decided_at"] == "2026-07-25T12:00:07Z"
+    assert snapshot["facts"]["clock"] == "2026-07-25T12:00:07Z"
+    freshness = snapshot["facts"]["decision"]["freshness"]
+    assert (freshness["account_age_seconds"], freshness["reference_age_seconds"]) == (7.0, 67.0)
+    assert freshness["reference_price"] == 60000.0 and freshness["divergence_bps"] == 0.0
+    assert snapshot["facts"]["guard"]["reference_price"] == 60000.0
+    assert snapshot["created_at"] == NOW
+
+
+@pytest.mark.parametrize("change,door", [
+    ({"snapshot": _account_read_at("2026-07-25T11:00:00Z")}, "account_fresh"),
+    ({"reference_quote": _quote(reason="REFERENCE_PRICE_STALE")}, "reference_price_fresh"),
+    ({"reference_quote": _quote(61000.0)}, "price_within_divergence"),
+    ({"clock": "2026-07-25T12:01:01Z"}, "account_fresh"),
+])
+def test_facts_that_went_stale_before_the_gate_refuse_it_and_name_the_door(change, door):
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    kwargs.update(change)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is False
+    assert {le.CHECK_DECISION_READY, door} <= set(snapshot["failed_checks"])
+
+
+def test_a_market_past_a_leg_at_the_gate_names_the_door():
+    kwargs = _decision_kwargs(plan={**_plan_with_lineage(), "take_profit": 60200.0},
+                              execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    assert decision["ready"] is True, decision["reasons"]
+    kwargs["reference_quote"] = _quote(60250.0)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert "price_between_protective_legs" in snapshot["failed_checks"]
+
+
+def test_a_gate_with_no_decision_time_refuses():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    kwargs["clock"] = None
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert "decision_time_recorded" in snapshot["failed_checks"]
+    assert snapshot["facts"]["decided_at"] is None
