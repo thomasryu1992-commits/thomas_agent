@@ -1739,14 +1739,20 @@ def test_the_live_leg_is_told_which_approval_armed_each_strategy(tmp_path, monke
 
     monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
     spec = _always_spec()
-    pool.install_active_pool(
-        {"active_strategies": [{
-            "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
-            "strategy_spec": spec, "candidate_id": "cand-1", "strategy_rule_hash": "h1",
-            "generation_id": "GEN-1", pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
-            pool.LIVE_TIER_APPROVAL_FIELD: "appr_live_1",
-        }]},
-        root=tmp_path,
-    )
-    _cycle(tmp_path, FakeExchangeCollector())
-    assert seen["live_arm_approvals"] == {spec["strategy_id"]: "appr_live_1"}
+    # The label names the rule the spec trades: an entry whose label names another rule arms
+    # nothing (review of #887), which is the second half below.
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+
+    rule = StrategySpec.from_dict(spec).strategy_rule_hash
+    for label, named in ((rule, "appr_live_1"), ("h1", None)):
+        pool.install_active_pool(
+            {"active_strategies": [{
+                "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
+                "strategy_spec": spec, "candidate_id": "cand-1", "strategy_rule_hash": label,
+                "generation_id": "GEN-1", pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
+                pool.LIVE_TIER_APPROVAL_FIELD: "appr_live_1",
+            }]},
+            root=tmp_path,
+        )
+        _cycle(tmp_path, FakeExchangeCollector())
+        assert seen["live_arm_approvals"] == {spec["strategy_id"]: named}

@@ -232,8 +232,10 @@ def approved_profile(
     }
 
 
-# The field a `live_arm` authority carries once its approval was verified at the gate (PR2c-2b).
+# The field a `live_arm` authority carries once its approval was verified at the gate (PR2c-2b),
+# and every field that verification writes: a row naming none of them was sealed before it.
 LIVE_ARM_VERIFIED_FIELD = "approval_verified"
+_LIVE_ARM_VERIFICATION_FIELDS = (LIVE_ARM_VERIFIED_FIELD, "approval_fingerprint", "approval_problem")
 
 
 def profile_problems(profile: Mapping[str, Any] | None, *, legacy_read: bool = False) -> list[str]:
@@ -270,7 +272,7 @@ def profile_problems(profile: Mapping[str, Any] | None, *, legacy_read: bool = F
     elif kind == AUTHORITY_LIVE_ARM:
         if _missing(authority.get("approval_id")) or _missing(authority.get("strategy_id")):
             problems.append("the strategy was not armed LIVE under a recorded approval")
-        elif legacy_read and LIVE_ARM_VERIFIED_FIELD not in authority:
+        elif legacy_read and not any(field in authority for field in _LIVE_ARM_VERIFICATION_FIELDS):
             pass  # sealed before PR2c-2b: the record stands, and `for_send` never takes this branch
         elif authority.get(LIVE_ARM_VERIFIED_FIELD) is not True or _missing(authority.get("approval_fingerprint")):
             problem = authority.get("approval_problem")

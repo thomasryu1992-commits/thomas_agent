@@ -164,13 +164,22 @@ def test_an_unknown_tier_cannot_be_hashed_at_all():
 
 # --- the approval an entry was armed under (PR2b, decision 17) -------------------------------------
 
+def _traded(**entry):
+    """An entry that trades the spec its label names (review of #887)."""
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
+
+    spec = StrategySpec.from_dict(_spec_dict()).to_dict()
+    return {"strategy_spec": spec, "strategy_rule_hash": spec["strategy_rule_hash"], **entry}
+
+
 def test_the_arming_approvals_are_read_for_live_routable_entries_only():
     armed = pool_store.live_arm_approvals(_pool(
-        _entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1"),
-        _entry("S2", live_tier="LIVE"),                                # armed with no approval named
-        _entry("S3", live_tier="LIVE", live_tier_approval_id="  "),
-        _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4"),
-        _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5"),
+        _entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **_traded()),
+        _entry("S2", live_tier="LIVE", **_traded()),                   # armed with no approval named
+        _entry("S3", live_tier="LIVE", live_tier_approval_id="  ", **_traded()),
+        _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", **_traded()),
+        _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5", **_traded()),
     ))
     assert armed == {"S1": "appr_1", "S2": None, "S3": None}
     assert set(armed) == pool_store.live_routable_strategy_ids(_pool(
@@ -181,18 +190,73 @@ def test_the_arming_approvals_are_read_for_live_routable_entries_only():
 
 def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entries_only():
     """PR2c-2b: what the gate needs to verify an arm, for the same membership as the tier."""
+    traded = _traded()
     pool = _pool(
         _entry("S1", live_tier="LIVE", live_tier_approval_id=" appr_1 ", candidate_id="c1",
-               strategy_rule_hash="h1", promoted_at="2026-09-17T00:00:00Z"),
+               promoted_at="2026-09-17T00:00:00Z", **traded),
         _entry("S2", live_tier="LIVE"),
         _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", candidate_id="c4"),
         _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5"),
     )
     entries = pool_store.live_arm_entries(pool)
-    assert entries["S1"] == {"approval_id": "appr_1", "candidate_id": "c1", "strategy_rule_hash": "h1",
-                             "promoted_at": "2026-09-17T00:00:00Z"}
-    assert set(entries) == {"S1", "S2"} and entries["S2"]["approval_id"] is None
-    assert pool_store.live_arm_approvals(pool) == {sid: e["approval_id"] for sid, e in entries.items()}
+    rule = traded["strategy_rule_hash"]
+    assert entries["S1"] == {"approval_id": "appr_1", "candidate_id": "c1", "strategy_rule_hash": rule,
+                             "spec_rule_hash": rule, "promoted_at": "2026-09-17T00:00:00Z",
+                             "disarmed_at": None}
+    assert set(entries) == {"S1", "S2"}
+    assert entries["S2"]["approval_id"] is None and entries["S2"]["spec_rule_hash"] is None
+    assert pool_store.live_arm_approvals(pool) == {"S1": "appr_1", "S2": None}
+
+
+@pytest.mark.parametrize("change,unsound", [
+    ({}, None),
+    ({"strategy_rule_hash": "h_other"}, "spec"),                     # the label names another rule
+    ({"strategy_rule_hash": None}, "spec"),
+    ({"strategy_spec": {"x": 1}}, "spec"),                          # a spec that does not parse
+    ({"strategy_spec": None}, "spec"),
+    ({"strategy_spec": None, "strategy_rule_hash": None}, "spec"),  # nothing to compare is no rule
+    ({"live_tier_updated_at": "2026-09-17T00:00:00Z"}, "disarmed"),  # put back in the tier by hand
+], ids=["sound", "label", "no-label", "garbled-spec", "no-spec", "neither", "disarm-trace"])
+def test_an_unsound_arm_names_no_approval_whatever_it_carries(change, unsound):
+    """Review of #887: the router trades the spec and the approval is checked against the label, so
+    they must be one rule; and the promotion door never installs an entry carrying the disarm trace."""
+    pool = _pool(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **{**_traded(), **change}))
+    [armed] = pool_store.live_arm_entries(pool).values()
+    assert pool_store.live_arm_unsound(armed) == unsound
+    assert pool_store.live_arm_approvals(pool) == {"S1": None if unsound else "appr_1"}
+
+
+def test_a_spec_swapped_under_its_label_is_seen_even_without_its_own_hash():
+    """The spec's own hash is checked only when present; its absence must not hide a swap."""
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
+
+    traded = _traded()
+    other = StrategySpec.from_dict(_spec_dict(direction="short")).to_dict()
+    other.pop("strategy_rule_hash", None)
+    pool = _pool(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1",
+                        **{**traded, "strategy_spec": other}))
+    [armed] = pool_store.live_arm_entries(pool).values()
+    assert armed["spec_rule_hash"] != traded["strategy_rule_hash"]
+    assert pool_store.live_arm_approvals(pool) == {"S1": None}
+
+
+def test_the_disarm_door_leaves_the_trace_an_unsound_arm_is_read_by(tmp_path):
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
+
+    spec = StrategySpec.from_dict(_spec_dict()).to_dict()
+    pool_store.install_active_pool({"active_strategies": [
+        {"strategy_id": "S1", "status": "PAPER_ACTIVE", "strategy_spec": spec, "candidate_id": "c1",
+         "strategy_rule_hash": spec["strategy_rule_hash"], "live_tier": "LIVE",
+         "live_tier_approval_id": "appr_1"},
+    ]}, root=tmp_path)
+    assert pool_store.live_arm_approvals(pool_store.load_active_pool(tmp_path)) == {"S1": "appr_1"}
+    pool_store.disarm_live_tier(["S1"], root=tmp_path, now="2026-09-17T00:00:00Z")
+    pool = pool_store.load_active_pool(tmp_path)
+    # A hand edit that puts the tier and the id back is still an arm with no approval.
+    pool["active_strategies"][0].update({"live_tier": "LIVE", "live_tier_approval_id": "appr_1"})
+    assert pool_store.live_arm_approvals(pool) == {"S1": None}
 
 
 def test_disarming_takes_the_approval_with_the_tier(tmp_path):

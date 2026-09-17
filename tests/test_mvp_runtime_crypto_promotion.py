@@ -188,7 +188,10 @@ def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.
         "approval_id": "approval_test",
         "status": status,
         "validity": {"issued_at": NOW, "expires_at": expires},
-        "approved_action_snapshot": {"action_type": action, "content_sha256": content},
+        # A LIVE install must fall inside the window the gate will check (review of #887).
+        "decision": {"decision_reason": "yes", "decided_at": NOW},
+        "approved_action_snapshot": {"action_type": action, "content_sha256": content,
+                                     "expires_at": expires},
     }
 
 
@@ -1463,7 +1466,8 @@ _THOMAS = dict(approved_by="Thomas", method="telegram_private_control_channel",
 @requires_local_core
 def test_an_arm_the_door_installs_under_thomas_s_answer_is_verified_at_order_time(tmp_path):
     """End to end: the approval the ask builds and Thomas answers, and the entry the promotion door
-    installs under it, are exactly what the order-time verifier accepts — long after the ask expired."""
+    installs under it, are exactly what the order-time verifier accepts. The verifier takes no
+    clock: the ask's own expiry does not end the arm."""
     from runtime.mvp_runtime import approval as approval_mod
 
     _seed_candidates(tmp_path, _spec_dict())
@@ -1481,14 +1485,80 @@ def test_an_arm_the_door_installs_under_thomas_s_answer_is_verified_at_order_tim
     run_promotion(selectors=["S1"], promoted_by="Thomas", reason="arm", keep_active=False,
                   live_tier="LIVE", root=tmp_path, now=installed_at, approval_id=approved["approval_id"])
 
-    [armed] = pool.live_arm_entries(pool.load_active_pool(tmp_path)).values()
+    installed = pool.load_active_pool(tmp_path)
+    [(strategy_id, armed)] = pool.live_arm_entries(installed).items()
     assert armed["approval_id"] == approved["approval_id"] and armed["promoted_at"] == installed_at
+    # The entry the door writes is sound: it trades its labelled rule and carries no disarm trace.
+    assert pool.live_arm_unsound(armed) is None
+    assert pool.live_arm_approvals(installed) == {strategy_id: approved["approval_id"]}
     assert promotion_mod.live_arm_problem(
         store.get(armed["approval_id"]), approval_id=armed["approval_id"],
         candidate_id=armed["candidate_id"], strategy_rule_hash=armed["strategy_rule_hash"],
         promoted_at=armed["promoted_at"],
     ) is None
-    assert approved["validity"]["expires_at"] < timeutil.plus_seconds(asked_at, 86400)
+
+
+@requires_local_core
+@pytest.mark.parametrize("install_after_answer,installed", [(-1, False), (0, True)],
+                         ids=["before-the-answer", "at-the-answer"])
+def test_the_door_installs_no_arm_the_gate_would_refuse(tmp_path, install_after_answer, installed):
+    """Review of #887: the door took its clock before it read the approval, so an answer recorded in
+    between installed an arm that no order could ever leave under. It now refuses what the gate
+    would refuse."""
+    from runtime.mvp_runtime import approval as approval_mod
+
+    _seed_candidates(tmp_path, _spec_dict())
+    asked_at = timeutil.utc_now_iso()
+    answered_at = timeutil.plus_seconds(asked_at, 5)
+    prepared = request_promotion(["S1"], keep_active=False, live_tier="LIVE", now=asked_at,
+                                 candidates_root=tmp_path)
+    approved = approval_mod.record_decision(
+        prepared["approval_request"], prepared["permission_decision"], granted=True,
+        verification=approval_mod.Verification(**_THOMAS), reason="arm it", now=answered_at,
+    )
+    ApprovalStore(tmp_path / APPROVAL_STORE_REL).append([approved])
+    promote = lambda: run_promotion(  # noqa: E731
+        selectors=["S1"], promoted_by="Thomas", reason="arm", keep_active=False, live_tier="LIVE",
+        root=tmp_path, now=timeutil.plus_seconds(answered_at, install_after_answer),
+        approval_id=approved["approval_id"])
+    if installed:
+        promote()
+        assert pool.live_arm_approvals(pool.load_active_pool(tmp_path))
+    else:
+        with pytest.raises(SystemExit) as exc:
+            promote()
+        assert "APPROVAL_OUTSIDE_ARM_WINDOW" in str(exc.value)
+        assert pool.load_active_pool(tmp_path) == {"active_strategies": []}
+
+
+@pytest.mark.parametrize("approval,live_tier,refused", [
+    (dict(decision={"decided_at": timeutil.plus_seconds(NOW, 1)}), "LIVE", True),
+    (dict(decision={}), "LIVE", True),
+    (dict(signed_expiry=NOW), "LIVE", True),                    # the signed window already ended
+    (dict(signed_expiry=None), "LIVE", True),
+    (dict(decision={}, signed_expiry=None), "OBSERVATION", False),   # a paper change has no window
+    ({}, "LIVE", False),
+], ids=["answered-later", "no-answer-time", "signed-expiry-passed", "no-signed-expiry",
+        "observation-ignores-the-window", "inside"])
+def test_verification_holds_a_live_install_to_the_arm_window(tmp_path, approval, live_tier, refused):
+    _seed_candidates(tmp_path, _spec_dict())
+    record = pool.resolve_candidates(["S1"], tmp_path)[0]
+    content = promotion_content_sha256([record["candidate_id"]], [record["strategy_rule_hash"]],
+                                       keep_active=False, live_tier=live_tier)
+    fake = _fake_approval(tmp_path, content=content)
+    change = dict(approval)
+    if "decision" in change:
+        fake["decision"] = change.pop("decision")
+    if "signed_expiry" in change:
+        fake["approved_action_snapshot"]["expires_at"] = change.pop("signed_expiry")
+    verify = lambda: verify_promotion_approval(  # noqa: E731
+        fake, selectors=["S1"], keep_active=False, live_tier=live_tier, root=tmp_path, now=NOW)
+    if refused:
+        with pytest.raises(ApprovalBlocked) as exc:
+            verify()
+        assert exc.value.reason_code == "APPROVAL_OUTSIDE_ARM_WINDOW"
+    else:
+        assert verify()["approval_id"] == "approval_test"
 
 
 def _arm_problem(approval, **entry):
@@ -1533,6 +1603,7 @@ def _approval_cases():
     from tests._helpers import live_arm_approval
 
     arm = live_arm_approval()
+    unsigned = _rebuilt({k: v for k, v in _snapshot().items() if k != "expires_at"})
     by_string = {name: _rebuilt(_snapshot(content={field: value}))
                  for name, field, value in (("ids", "candidate_ids", "cand_1"),
                                             ("hashes", "rule_hashes", "deadbeef"),
@@ -1588,6 +1659,12 @@ def _approval_cases():
         "no-answer-time": ({**arm, "decision": {"decision_reason": "x"}}, {},
                            promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
         "no-expiry": ({**arm, "validity": None}, {}, promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        # Review of #887: the unsigned validity cannot stretch the window the snapshot signed.
+        "validity-stretched": ({**arm, "validity": {**arm["validity"], "expires_at": "2026-07-28T01:00:00Z"}},
+                               {"promoted_at": "2026-07-28T00:30:00Z"},
+                               promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "no-signed-expiry": (unsigned, {"approval_id": unsigned["approval_id"]},
+                             promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
         "pending-and-another-candidate": ({**arm, "status": "PENDING"}, {"candidate_id": "cand_2"},
                                           promotion_mod.LIVE_ARM_APPROVAL_NOT_APPROVED),
     }

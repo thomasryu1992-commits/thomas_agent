@@ -512,6 +512,17 @@ def verify_promotion_approval(
         raise ApprovalBlocked(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a promotion"
         )
+    # A LIVE install stamps `promoted_at` with this `now`, and the gate refuses an arm installed
+    # outside the approval's window (`live_arm_problem`). Refuse here what it would refuse there,
+    # so the door never installs an arm that can never trade (review of #887).
+    if live_tier == pool_store.LIVE_TIER_LIVE:
+        answered, expires = _arm_window(approval)
+        if answered is None or expires is None or not answered <= timeutil.parse_iso(now) < expires:
+            raise ApprovalBlocked(
+                "APPROVAL_OUTSIDE_ARM_WINDOW",
+                "this install's clock is not inside the approval's window (answered at or before it, "
+                "expiring after it); run the promotion again",
+            )
     candidates = _resolve_identity(selectors, root)
     candidate_ids = [c["candidate_id"] for c in candidates]
     # Recomputed from the pool as it stands NOW, deliberately not read back off the snapshot:
@@ -546,13 +557,27 @@ LIVE_ARM_APPROVAL_OTHER_CANDIDATE = "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"
 LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL = "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"
 
 
-def _instant(value: Any) -> Any:
+def _parse_instant(value: Any) -> Any:
+    """``value`` as an aware instant, or None for anything else (a naive stamp included)."""
     if not isinstance(value, str):
         return None
     try:
         return timeutil.parse_iso(value)
     except (ValueError, TypeError, OverflowError):
         return None
+
+
+def _arm_window(approval: Mapping[str, Any]) -> tuple[Any, Any]:
+    """``(answered, expires)``: the window a LIVE arm must be installed in. Either is None when
+    it cannot be read. The expiry is the earlier of the approval's own and the one its signed
+    snapshot names, so an edited ``validity`` cannot stretch the window past what was fingerprinted."""
+    decision = approval.get("decision") if isinstance(approval.get("decision"), Mapping) else {}
+    validity = approval.get("validity") if isinstance(approval.get("validity"), Mapping) else {}
+    snapshot = approval.get("approved_action_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    answered = _parse_instant(decision.get("decided_at"))
+    ends = [_parse_instant(validity.get("expires_at")), _parse_instant(snapshot.get("expires_at"))]
+    return answered, (None if None in ends else min(ends))
 
 
 def _listed(value: Any) -> tuple[str, ...]:
@@ -582,11 +607,16 @@ def live_arm_problem(
     - it approves a promotion into the live tier;
     - its snapshot still fingerprints to the recorded value, and ``approval_id`` is the id that
       fingerprint derives. Neither the snapshot nor the id changed after the answer;
-    - the entry's candidate and rule hash are among the ones it approved;
-    - the entry was installed after the answer and before the approval expired, as the promotion
-      door requires.
+    - the entry's candidate and rule hash are among the ones it approved. The ids and the hashes
+      are two separate lists, so which hash belongs to which candidate is not checked;
+    - the entry was installed after the answer and before the approval expired
+      (:func:`_arm_window`), as the promotion door requires. ``promoted_at`` is what the pool says;
+      the door writes it, and so does anyone who writes the pool.
 
-    Its validity window is not checked against now: the arm outlives the ask by design."""
+    Its validity window is not checked against now: the arm outlives the ask by design. What this
+    cannot see is a pool edited to name an approval the lineage once had: a promotion approval is
+    never consumed, so one granted before a disarm still verifies (the gate refuses an entry that
+    carries the disarm door's trace, `pool.live_arm_approvals`)."""
     # `approval`, imported above, puts the repository's `lib/` on the path this helper lives on.
     from lib.action_fingerprint import compute_action_fingerprint
 
@@ -618,11 +648,8 @@ def live_arm_problem(
     if (candidate_id not in _listed(content.get("candidate_ids"))
             or strategy_rule_hash not in _listed(content.get("rule_hashes"))):
         return LIVE_ARM_APPROVAL_OTHER_CANDIDATE
-    decision = approval.get("decision") if isinstance(approval.get("decision"), Mapping) else {}
-    validity = approval.get("validity") if isinstance(approval.get("validity"), Mapping) else {}
-    decided = _instant(decision.get("decided_at"))
-    expires = _instant(validity.get("expires_at"))
-    installed = _instant(promoted_at)
-    if decided is None or expires is None or installed is None or not decided <= installed < expires:
+    answered, expires = _arm_window(approval)
+    installed = _parse_instant(promoted_at)
+    if answered is None or expires is None or installed is None or not answered <= installed < expires:
         return LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL
     return None

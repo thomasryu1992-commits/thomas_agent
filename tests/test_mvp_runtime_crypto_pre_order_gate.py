@@ -238,9 +238,13 @@ def test_an_arm_that_names_no_verification_is_refused_except_on_the_read_of_an_o
                if k not in (g.LIVE_ARM_VERIFIED_FIELD, "approval_fingerprint", "approval_problem")}
     assert g.profile_problems(_profile(authority=unnamed))
     assert not g.profile_problems(_profile(authority=unnamed), legacy_read=True)
-    # A row that names a verification must hold one, on any read.
+    # A row that names a verification must hold one, on any read — whichever of its fields it names
+    # (review of #887: a row with the problem but not the flag was read as an older row).
     assert g.profile_problems(_profile(authority={**_VERIFIED_ARM, g.LIVE_ARM_VERIFIED_FIELD: False}),
                               legacy_read=True)
+    for field, value in (("approval_problem", "LIVE_ARM_APPROVAL_MISSING"), ("approval_fingerprint", None),
+                         ("approval_problem", None)):
+        assert g.profile_problems(_profile(authority={**unnamed, field: value}), legacy_read=True), field
     assert g.profile_problems(_profile(authority={**unnamed, "approval_id": None}), legacy_read=True)
 
 

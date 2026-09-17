@@ -684,6 +684,9 @@ def _run_gated_live_leg(
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].append(PRE_ORDER_GATE_REFUSED)
         record["live_reason_codes"].extend(risk_snapshot["failed_checks"])
+        # Why the arm was not verified, where an operator reads first (review of #887).
+        if live_arm.get("approval_problem"):
+            record["live_reason_codes"].append(live_arm["approval_problem"])
         return record
     decision = {
         **decision,
@@ -1244,6 +1247,10 @@ def reread_entry_facts(
 # `promotion.live_arm_problem` gives for the record itself.
 LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
 LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
+# The entry arms nothing whatever it names (`pool.live_arm_unsound`, review of #887).
+LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
+LIVE_ARM_REARMED_OUTSIDE_THE_DOOR = "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"
+_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
 
 
 def verify_live_arm(
@@ -1254,15 +1261,26 @@ def verify_live_arm(
     approved profile's ``live_arm`` authority carries it.
 
     ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
-    `pool.live_arm_entries`: the entry it arms must be the lineage the plan was made from
-    (`LIVE_ARM_ENTRY_CHANGED`), and the approval store must hold the record Thomas answered to arm
-    it (`promotion.live_arm_problem`). Reported, never raised for a problem: the gate refuses an
-    unverified arm (`approved_profile_complete`) and the fan-out goes on."""
+    `pool.live_arm_entries`:
+
+    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule,
+      and it was not put back in the tier by hand). Named even when no id was agreed, because an
+      unsound entry is why `pool.live_arm_approvals` names none;
+    - it must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`);
+    - the approval store must hold the record Thomas answered to arm it
+      (`promotion.live_arm_problem`).
+
+    Reported, never raised for a problem: the gate refuses an unverified arm
+    (`approved_profile_complete`) and the fan-out goes on."""
     arm: dict[str, Any] = {"approval_id": approval_id, "approval_fingerprint": None,
                            "approval_verified": False, "approval_problem": None}
+    entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
+    unsound = pool.live_arm_unsound(entry) if isinstance(entry, Mapping) else None
+    if unsound is not None:
+        arm["approval_problem"] = _UNSOUND_ARM[unsound]
+        return arm
     if approval_id is None:
         return arm
-    entry = armed.get(strategy_id) if isinstance(armed, Mapping) else None
     lineage = plan if isinstance(plan, Mapping) else {}
     if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
             and entry.get("candidate_id") == lineage.get("candidate_id")

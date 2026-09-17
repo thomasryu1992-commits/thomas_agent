@@ -1111,10 +1111,20 @@ def test_drift_that_bookkeeping_cannot_repair_still_halts_from_any_context(tmp_p
 
 BAR_00 = "2026-07-28T00:00:00Z"
 SL_FILL = 59000.0
+def _traded_spec(**overrides):
+    """A spec with its own rule hash: an armed entry must trade the rule its label names."""
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
+
+    return StrategySpec.from_dict(_spec_dict(**overrides)).to_dict()
+
+
+_SPEC = _traded_spec()
+_OTHER_SPEC = _traded_spec(direction="short")      # another rule, another hash
 _PLAN = {
     "symbol": SYMBOL, "timeframe": "4h", "direction": "LONG",
     "entry_price": 60000.0, "stop_loss": SL_FILL, "take_profit": 62000.0, "risk": 1000.0,
-    "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
+    "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": _SPEC["strategy_rule_hash"],
     "strategy_generation_id": "gen_1", "max_holding_bars": 12, "vol_size_multiplier": 1.0,
     "breakeven_at_r": None, "trail_distance": None, "supporting_strategy_ids": [],
 }
@@ -1187,7 +1197,7 @@ def _armed_pool(approval_id=None, **entry):
         pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_LIVE,
         pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id or _ARM["approval_id"],
         "candidate_id": _PLAN["candidate_id"], "strategy_rule_hash": _PLAN["strategy_rule_hash"],
-        "promoted_at": _ARMED_AT, **entry,
+        "strategy_spec": _SPEC, "promoted_at": _ARMED_AT, **entry,
     }]}
 
 
@@ -2181,19 +2191,29 @@ _UNBACKED_ARMS = {
         candidate_ids=["cand_1", "cand_2"])}, {}, "LIVE_ARM_APPROVAL_ALTERED"),
     "another-candidate": (live_arm_approval(("cand_2",), (_PLAN["strategy_rule_hash"],)), {},
                           "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"),
-    "another-rule": (live_arm_approval((_PLAN["candidate_id"],), ("cafef00d",)), {},
+    "another-rule": (live_arm_approval((_PLAN["candidate_id"],), (_OTHER_SPEC["strategy_rule_hash"],)), {},
                      "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"),
     "installed-before-the-answer": (_ARM, {"promoted_at": "2026-07-27T23:49:59Z"},
                                     "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
     "installed-after-it-expired": (_ARM, {"promoted_at": _ARM["validity"]["expires_at"]},
                                    "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
     "no-install-time": (_ARM, {"promoted_at": None}, "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
-    "entry-for-another-lineage": (_ARM, {"strategy_rule_hash": "cafef00d"}, "LIVE_ARM_ENTRY_CHANGED"),
+    "entry-for-another-lineage": (_ARM, {"strategy_rule_hash": _OTHER_SPEC["strategy_rule_hash"],
+                                         "strategy_spec": _OTHER_SPEC}, "LIVE_ARM_ENTRY_CHANGED"),
     # Armed under a real approval for its own lineage, which is not the lineage the plan was made from.
     "entry-armed-for-another-candidate": (live_arm_approval(("cand_2",), (_PLAN["strategy_rule_hash"],)),
                                           {"candidate_id": "cand_2"}, "LIVE_ARM_ENTRY_CHANGED"),
-    "entry-armed-for-another-rule": (live_arm_approval((_PLAN["candidate_id"],), ("cafef00d",)),
-                                     {"strategy_rule_hash": "cafef00d"}, "LIVE_ARM_ENTRY_CHANGED"),
+    "entry-armed-for-another-rule": (
+        live_arm_approval((_PLAN["candidate_id"],), (_OTHER_SPEC["strategy_rule_hash"],)),
+        {"strategy_rule_hash": _OTHER_SPEC["strategy_rule_hash"], "strategy_spec": _OTHER_SPEC},
+        "LIVE_ARM_ENTRY_CHANGED"),
+    # Review of #887: the rules traded are not the rule the label names, whatever the approval says.
+    "spec-swapped-under-the-label": (_ARM, {"strategy_spec": {
+        k: v for k, v in _OTHER_SPEC.items() if k != "strategy_rule_hash"}}, "LIVE_ARM_SPEC_NOT_ITS_RULE"),
+    "spec-that-does-not-parse": (_ARM, {"strategy_spec": {"x": 1}}, "LIVE_ARM_SPEC_NOT_ITS_RULE"),
+    "re-armed-by-hand-after-a-disarm": (_ARM, {"live_tier_updated_at": "2026-07-28T02:00:00Z",
+                                               "live_tier_reasons": ["operator"]},
+                                        "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"),
 }
 
 
@@ -2208,6 +2228,7 @@ def test_an_arm_its_approval_does_not_back_is_held_before_anything_is_spent(
     assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == problem
     assert held["live_pre_order_reread"]["live_arm"]["approval_verified"] is False
     assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
+    assert held["live_reason_codes"][-1] == problem
     assert _nothing_spent(venue, tmp_path)
 
 
@@ -2229,7 +2250,9 @@ def test_an_entry_that_names_another_approval_than_both_reads_is_not_verified(tm
 
     ApprovalStore.default(tmp_path).append([_ARM])
     armed = {"S001": {"approval_id": _ARM["approval_id"], "candidate_id": _PLAN["candidate_id"],
-                      "strategy_rule_hash": _PLAN["strategy_rule_hash"], "promoted_at": _ARMED_AT}}
+                      "strategy_rule_hash": _PLAN["strategy_rule_hash"],
+                      "spec_rule_hash": _PLAN["strategy_rule_hash"], "promoted_at": _ARMED_AT,
+                      "disarmed_at": None}}
     verify = lambda armed: live_route.verify_live_arm(  # noqa: E731
         root=tmp_path, strategy_id="S001", plan=_PLAN, approval_id=_ARM["approval_id"], armed=armed)
     assert verify(armed)["approval_verified"] is True
