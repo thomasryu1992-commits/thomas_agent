@@ -554,26 +554,58 @@ def test_every_entry_door_is_judged_against_the_stage():
         crypto / "live_readiness.py": "stage",
         repo / "scripts" / "run_slippage_probe.py": "stage",
     }
+    def stage_passed(tree, call):
+        """The name of the local a call passes as the stage — directly, or (PR2b) through the one
+        facts mapping a door builds with ``dict(...)`` and hands to both its decision and its
+        pre-order gate, so the two cannot be judged against different stages."""
+        direct = [kw for kw in call.keywords if kw.arg == "execution_stage"]
+        if direct:
+            return getattr(direct[0].value, "id", None)
+        spread = [kw.value for kw in call.keywords if kw.arg is None]
+        if len(spread) != 1 or not isinstance(spread[0], ast.Name):
+            return None
+        built = [n.value for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign) and [getattr(t, "id", None) for t in n.targets] == [spread[0].id]
+                 and isinstance(n.value, ast.Call) and getattr(n.value.func, "id", None) == "dict"]
+        if len(built) != 1:
+            return None
+        inner = [kw for kw in built[0].keywords if kw.arg == "execution_stage"]
+        return getattr(inner[0].value, "id", None) if inner else None
+
     seen = 0
     for path, local in callers.items():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "evaluate_live_order_guard"):
                 seen += 1
-                passed = [kw for kw in node.keywords if kw.arg == "execution_stage"]
-                assert passed, path.name
-                assert getattr(passed[0].value, "id", None) == local, (
+                assert stage_passed(tree, node) == local, (
                     f"{path.name} must pass the stage it read ({local}), not a second or a made-up one"
                 )
     assert seen == len(callers), f"expected one guard call per entry door, found {seen}"
+
+    # The probe's pre-order gate re-runs the guard on the door's own mapping — never one it builds.
+    probe_tree = ast.parse((crypto / "probe.py").read_text(encoding="utf-8"))
+    rerun = [n for n in ast.walk(probe_tree)
+             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "evaluate_live_order_guard"]
+    assert len(rerun) == 1 and not [kw for kw in rerun[0].keywords if kw.arg == "execution_stage"]
+    script = ast.parse((repo / "scripts" / "run_slippage_probe.py").read_text(encoding="utf-8"))
+    handed = [kw for n in ast.walk(script) if isinstance(n, ast.Call)
+              and getattr(n.func, "attr", None) == "gate_probe_order"
+              for kw in n.keywords if kw.arg == "guard_kwargs"]
+    assert [getattr(kw.value, "id", None) for kw in handed] == ["guard_kwargs"]
 
     # And the leg that feeds `plan_live_entry` passes the stage it stamped, not a second read.
     route = ast.parse((crypto / "live_route.py").read_text(encoding="utf-8"))
     plan_calls = [n for n in ast.walk(route)
                   if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "plan_live_entry"]
-    assert plan_calls and all(
-        any(kw.arg == "execution_stage" and getattr(kw.value, "id", None) == "stage" for kw in call.keywords)
-        for call in plan_calls
+    assert plan_calls and all(stage_passed(route, call) == "stage" for call in plan_calls)
+    # ...and its gate re-derives the decision from that same mapping.
+    gate_calls = [n for n in ast.walk(route)
+                  if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "gate_live_entry"]
+    assert gate_calls and all(
+        any(kw.arg == "decision_kwargs" and getattr(kw.value, "id", None) == "decision_kwargs"
+            for kw in call.keywords)
+        for call in gate_calls
     )
 
 

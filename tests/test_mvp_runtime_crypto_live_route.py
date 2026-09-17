@@ -31,6 +31,7 @@ from runtime.mvp_runtime.crypto import live_leg, live_route
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
+from tests._helpers import gate_stage
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1176,7 +1177,6 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
     planner, the guard, the executing leg — and a double only where the venue or the Core would
     be reached. The gate is pinned to the scripted venue, so no real adapter can be selected."""
     from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
-    from runtime.mvp_runtime.crypto import execution_stage as es
     from runtime.mvp_runtime.crypto import live_governance
     from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 
@@ -1193,10 +1193,10 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
         max_order_notional_usdt=60.0, max_daily_order_count=3, max_open_notional_usdt=120.0,
         daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
     )
-    monkeypatch.setattr(live_route, "resolve_live_order_limits",
-                        lambda root, now=None: (limits, {"valid": True, "symbol_allowlist": [SYMBOL]}))
-    monkeypatch.setattr(live_route, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
-        stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"))
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: (limits, {
+        "valid": True, "symbol_allowlist": [SYMBOL],
+        "budget_id": "budget_pr2a", "record_sha256": "sha256:" + "b" * 64}))
+    monkeypatch.setattr(live_route, "resolve_execution_stage", lambda root=None, **kw: gate_stage())
     monkeypatch.setattr(live_route, "build_entry_plan",
                         lambda route, row, now: {**_PLAN, "created_at_utc": now})
     filters = SymbolFilters(step_size=0.001, min_qty=0.001, min_notional=5.0, tick_size=0.1)
@@ -1216,9 +1216,12 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
         clock["now"] = wall or now
         return live_route.run_live_leg(
             live_routable_strategy_ids={"S001"}, route={"status": "ENTRY_CANDIDATE"},
-            feature_row={"timestamp": bar}, verdict={"allow_new_position": True, "problems": []},
+            feature_row={"timestamp": bar},
+            verdict={"allow_new_position": True, "problems": [],
+                     "risk_guard": {"limits": {"source": "default"}}},
             symbol=SYMBOL, collector=_Collector(), now=now, timeframe="4h",
             root=tmp_path, control_store=control,
+            live_arm_approvals={"S001": "approval_arm_pr2a"},
         )
 
     return _pass
@@ -1499,3 +1502,70 @@ def test_a_stop_settled_from_the_fill_history_still_starts_the_cooldown(tmp_path
     assert held["live_decision"]["reasons"] == [LIVE_ENTRY_STOP_LOSS_COOLDOWN]
     assert len(venue.entries()) == 1, "the next bar entered again after a stop-out"
 
+
+
+# --- the pre-order gate on the live leg (PR2b) ----------------------------------------------------
+
+def test_an_entry_leaves_only_under_a_recorded_snapshot_the_book_names(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import pre_order_gate
+    from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    [recorded] = pre_order_gate.read_snapshots(tmp_path)
+    assert recorded["approved"] is True
+    assert recorded["client_order_id"] == venue.entries()[0]["newClientOrderId"]
+    assert recorded["approved_profile"]["authority"]["approval_id"] == "approval_arm_pr2a"
+    assert recorded["approved_profile"]["stage"]["approval_id"] == "approval_stage_test"
+    assert opened["live_pre_order_gate"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+    [position] = list_open_live_positions(tmp_path)
+    assert position["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+    assert opened["live_opened"]["entry"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+
+
+@pytest.mark.parametrize("approvals", [None, {}, {"S001": None}, {"S002": "approval_other"}])
+def test_a_strategy_without_its_arming_approval_is_held_before_anything_is_spent(
+        tmp_path, monkeypatch, approvals):
+    """Decision 17: the arming approval is part of the approved profile. An entry the decision
+    found READY for a strategy that names none is held by the gate — no bar, no slot, no row."""
+    from runtime.mvp_runtime.crypto import pre_order_gate
+    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    original = live_route.run_live_leg
+
+    def without_approval(**kw):
+        return original(**{**kw, "live_arm_approvals": approvals})
+
+    monkeypatch.setattr(live_route, "run_live_leg", without_approval)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["ready"] is True
+    assert live_route.PRE_ORDER_GATE_REFUSED in held["live_reason_codes"]
+    assert "approved_profile_complete" in held["live_reason_codes"]
+    assert held["live_pre_order_gate"]["approved"] is False
+    assert venue.submitted == []
+    assert pre_order_gate.read_snapshots(tmp_path) == []
+    assert read_live_entry_marks(tmp_path)["entered"] == {}
+    assert count_today(tmp_path) == 0
+
+
+def test_a_leg_whose_caller_names_no_approvals_opens_nothing(tmp_path, monkeypatch):
+    """The parameter's default is the refusing one."""
+    import inspect
+
+    assert inspect.signature(live_route.run_live_leg).parameters["live_arm_approvals"].default is None
+
+
+def test_a_venue_settled_trade_still_names_the_snapshot_it_opened_under():
+    ledger = _Ledger()
+    adapter = _Adapter(orders={"sl-1": _venue_order("FILLED", price=59000.0)})
+    result = live_leg.settle_venue_closed_position(
+        _position(risk_snapshot_sha256="sha256:" + "c" * 64), adapter=adapter,
+        position_store=_Store(), ledger=ledger, now=NOW,
+    )
+    assert result["status"] == live_leg.EXIT_CLOSED
+    assert ledger.appended[0]["risk_snapshot_sha256"] == "sha256:" + "c" * 64

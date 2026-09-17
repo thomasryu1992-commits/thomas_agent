@@ -72,12 +72,14 @@ from typing import Any, Mapping
 from .. import timeutil
 from ..coerce import as_optional_float as _f
 from ..errors import ToolError
+from . import pre_order_gate
 from .live_execution import (
     CONDITIONAL_ORDER_TYPES,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
     TIME_IN_FORCE_GTC,
+    SubmitRefused,
     fill_facts,
     submit_and_reconcile,
 )
@@ -107,6 +109,8 @@ NO_GOVERNANCE = "LIVE_ORDER_NO_GOVERNANCE_RECORD"
 # PR2a: the two durable facts an entry now spends BEFORE it is sent. No store, no order.
 NO_ENTRY_MARKS = "LIVE_ENTRY_NO_MARK_STORE"
 NO_ORDER_COUNTER = "LIVE_ENTRY_NO_ORDER_COUNTER"
+# PR2b: the snapshot store is required to send, like the two above.
+NO_SNAPSHOT_STORE = "LIVE_ENTRY_NO_SNAPSHOT_STORE"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
 BRACKET_FAILED = "LIVE_BRACKET_FAILED"
 NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
@@ -584,6 +588,7 @@ def execute_live_entry(
     position_store: Any,
     counter: Any = None,
     entry_marks: Any = None,
+    snapshot_store: Any = None,
     governance: Mapping[str, Any] | None = None,
     gate_open: bool,
     limits: Any,
@@ -612,6 +617,11 @@ def execute_live_entry(
     for the same reason (PR2a): the bar is claimed and the day's order slot reserved before the
     order leaves, each under its own lock, so neither a second entry on one bar nor a second
     process under the daily cap can get an order out. A refusal from either sends nothing.
+
+    ``decision["risk_snapshot"]`` and ``snapshot_store`` are the pre-order gate's (PR2b): the
+    snapshot is checked against the intent before anything is spent, written to the store once the
+    bar and the slot are, and bound again inside ``submit_and_reconcile``. Without either, nothing
+    is sent.
 
     Returns a result record. ``position`` is non-None only on ``ENTRY_OPENED``.
     """
@@ -658,6 +668,18 @@ def execute_live_entry(
     if counter is None:
         result["reason_codes"] = [NO_ORDER_COUNTER]
         return result
+    if snapshot_store is None:
+        result["reason_codes"] = [NO_SNAPSHOT_STORE]
+        return result
+    # The snapshot first, because checking it spends nothing: a decision whose snapshot does not
+    # approve exactly this intent must not cost a bar or a slot.
+    risk_snapshot = decision.get("risk_snapshot")
+    try:
+        pre_order_gate.verify_snapshot(intent, risk_snapshot)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        result["reason_codes"] = [_persist_failure_reason(exc)]
+        return result
+    result["risk_snapshot_sha256"] = intent.get("risk_snapshot_sha256")
     entry_bar = decision.get("entry_bar") if isinstance(decision.get("entry_bar"), Mapping) else {}
     try:
         entry_marks.claim_bar(
@@ -668,14 +690,22 @@ def execute_live_entry(
         # venue must consume daily budget, or a flapping connection could spend the cap many
         # times over (LiveOrderCounter's own rule, now applied before the send).
         counter.reserve_submission(limit=int(getattr(limits, "max_daily_order_count", 0) or 0))
+        # And the reason the order is allowed, on the disk before the order is at the venue.
+        pre_order_gate.verify_and_persist(intent, risk_snapshot, store=snapshot_store)
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
         result["reason_codes"] = [_persist_failure_reason(exc)]
         return result
 
-    # 1. The entry.
-    entry = submit_and_reconcile(
-        intent, adapter=adapter, guard_verdict=guard, now=now, timeout_seconds=timeout_seconds
-    )
+    # 1. The entry. `submit_and_reconcile` binds the snapshot again; the second write is a no-op.
+    try:
+        entry = submit_and_reconcile(
+            intent, adapter=adapter, guard_verdict=guard, now=now, timeout_seconds=timeout_seconds,
+            risk_snapshot=risk_snapshot, snapshot_store=snapshot_store,
+        )
+    except SubmitRefused as exc:
+        # Raised only before the adapter is called: nothing left.
+        result["reason_codes"] = [exc.reason_code]
+        return result
     result["entry"] = entry
 
     filled_qty = _f(entry["fill"].get("executed_qty")) or 0.0
@@ -783,6 +813,7 @@ def execute_live_entry(
         # From the decision, not from a spec re-read — see `exit_terms` in live_entry.
         timeframe=_exit_terms(decision).get("timeframe"),
         max_holding_bars=_exit_terms(decision).get("max_holding_bars"),
+        risk_snapshot_sha256=intent.get("risk_snapshot_sha256"),
     )
     # The bracket ids ride on the stored record (additive keys, so LP5.1's builder is untouched)
     # because the exit path has to cancel exactly these orders and nothing else.
@@ -869,6 +900,7 @@ def _naked_close_identity(
         or intent.get("candidate_id"),
         "strategy_rule_hash": intent.get("strategy_rule_hash"),
         "strategy_generation_id": intent.get("strategy_generation_id"),
+        "risk_snapshot_sha256": intent.get("risk_snapshot_sha256"),
         "entry_exchange_order_id": entry.get("exchange_order_id"),
         "entry_quote_usdt": _f((entry.get("fill") or {}).get("cum_quote")),
         "risk_usdt": position_risk_usdt(
@@ -1032,6 +1064,7 @@ def _record_naked_outcome(
         candidate_id=identity.get("candidate_id"),
         strategy_rule_hash=identity.get("strategy_rule_hash"),
         strategy_generation_id=identity.get("strategy_generation_id"),
+        risk_snapshot_sha256=identity.get("risk_snapshot_sha256"),
         now=now,
     )
 
@@ -1226,6 +1259,7 @@ def execute_live_exit(
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),
         strategy_generation_id=position.get("strategy_generation_id"),
+        risk_snapshot_sha256=position.get("risk_snapshot_sha256"),
         now=now,
     )
     result["outcome"] = outcome
@@ -1587,6 +1621,7 @@ def settle_venue_closed_position(
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),
         strategy_generation_id=position.get("strategy_generation_id"),
+        risk_snapshot_sha256=position.get("risk_snapshot_sha256"),
         now=now,
     )
     result["outcome"] = outcome

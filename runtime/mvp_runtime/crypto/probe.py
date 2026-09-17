@@ -172,6 +172,9 @@ PROBE_POSITION_CONFLICT = "PROBE_POSITION_CONFLICT"
 # The day's order slot could not be reserved before the send (the cap is full, or the counter
 # could not be written); nothing was sent.
 PROBE_ORDER_SLOT_REFUSED = "PROBE_ORDER_SLOT_REFUSED"
+# PR2b: the pre-order gate refused the probe, or its snapshot could not be recorded before the send.
+PROBE_PRE_ORDER_GATE_REFUSED = "PROBE_PRE_ORDER_GATE_REFUSED"
+PROBE_SNAPSHOT_NOT_RECORDED = "PROBE_SNAPSHOT_NOT_RECORDED"
 
 # The closed key sets `validate_plan` holds records to. Additive fields are a plan
 # version bump, never a silent widening — an unknown key is indistinguishable from
@@ -616,6 +619,102 @@ def probe_stop_price(fill_price: float, tick_size: float, *, stop_bps: float = P
     if trigger <= 0:
         raise ToolError(PROBE_FILTERS_UNAVAILABLE, "no usable price tick; cannot round the stop trigger")
     return trigger
+
+
+# --- the pre-order gate for a probe (PR2b) ---------------------------------------------
+
+def gate_probe_order(
+    intent: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    cell_index: int,
+    price: float,
+    tick_size: float,
+    quantity: float,
+    notional: float,
+    account_readable: bool,
+    reconciliation: Mapping[str, Any],
+    capacity: Mapping[str, Any],
+    risk: Mapping[str, Any],
+    breaker: Mapping[str, Any],
+    risk_verdict: Mapping[str, Any],
+    guard_kwargs: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    now: str,
+) -> dict[str, Any]:
+    """The pre-order gate for one probe. Pure — every fact is an argument.
+
+    Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
+    account, the symbol being free, the three breakers, the notional the approval priced, and the
+    order itself — rebuilt from the plan's own stop width and judged by the live guard again in
+    canary mode. The intent about to be sent must be the rebuilt one."""
+    from .execution_stage import PURPOSE_PROBE
+    from .live_order import build_live_order_intent, evaluate_live_order_guard
+    from .live_position import entry_allowed
+    from .pre_order_gate import check, evaluate_pre_order_gate, intent_fingerprint
+    from .state import VENUE_MAINNET
+
+    params = plan.get("params") if isinstance(plan.get("params"), Mapping) else {}
+    cells = plan.get("cells") if isinstance(plan.get("cells"), list) else []
+    cell = cells[cell_index] if isinstance(cell_index, int) and 0 <= cell_index < len(cells) else None
+    symbol = str(intent.get("symbol") or "")
+    checks = [
+        check("probe_plan_active", plan.get("status") == PLAN_ACTIVE, plan.get("status")),
+        check("probe_cell_open_for_this_order",
+              isinstance(cell, Mapping) and cell.get("symbol") == symbol
+              and cell.get("status") == CELL_EMPTY,
+              {"cell_index": cell_index,
+               "cell": dict(cell) if isinstance(cell, Mapping) else None}),
+        check("account_readable", account_readable),
+        check("symbol_free", entry_allowed(reconciliation, symbol) and bool(capacity.get("allowed")),
+              {"reconcile_status": reconciliation.get("status"), "caps": capacity.get("blocks")}),
+        check("venue_daily_loss_within_limit", not risk.get("daily_loss_limit_breached"),
+              {key: risk.get(key) for key in ("daily_realized_pnl_usdt", "daily_loss_limit_usdt",
+                                              "pnl_source", "history_error")}),
+        check("bracket_breaker_clear", not breaker.get("tripped"),
+              {key: breaker.get(key) for key in ("consecutive", "limit")}),
+        check("risk_guard_allows", bool(risk_verdict.get("allow_new_position")),
+              list(risk_verdict.get("problems") or [])),
+    ]
+    try:
+        cap = float(params["per_probe_notional_cap_usdt"])
+        checks.append(check("notional_within_plan_ceiling", 0 < float(notional) <= cap,
+                            {"notional_usdt": notional, "ceiling_usdt": cap}))
+        stop = probe_stop_price(float(price), float(tick_size), stop_bps=float(params["stop_bps"]))
+        expected = build_live_order_intent(
+            {"direction": PROBE_DIRECTION, "entry_price": price, "stop_loss": stop,
+             "strategy_id": probe_strategy_id(str(plan.get("batch_id")))},
+            symbol=symbol, quantity=float(quantity), notional_usdt=float(notional), now=now,
+        )
+    except (KeyError, TypeError, ValueError, ToolError) as exc:
+        expected = None
+        checks.append(check("probe_order_rebuilt", False, getattr(exc, "reason_code", type(exc).__name__)))
+    if expected is not None:
+        guard = evaluate_live_order_guard(expected, **dict(guard_kwargs))
+        checks.extend(dict(c) for c in guard["checks"])
+        same = intent_fingerprint(intent) == intent_fingerprint(expected)
+        checks.append(check("intent_matches_decision", same,
+                            None if same else "the order is not the probe these facts price"))
+    lineage = {
+        "strategy_id": intent.get("strategy_id"),
+        "batch_id": plan.get("batch_id"),
+        "cell_index": cell_index,
+        "regime": cell.get("regime") if isinstance(cell, Mapping) else None,
+        "order_intent_id": intent.get("order_intent_id"),
+        "idempotency_key": intent.get("idempotency_key"),
+        "client_order_id": intent.get("client_order_id"),
+    }
+    facts = {
+        "price": price, "tick_size": tick_size, "quantity": quantity, "notional_usdt": notional,
+        "stop_bps": params.get("stop_bps"),
+        "submitted_today": guard_kwargs.get("submitted_today"),
+        "current_open_notional_usdt": guard_kwargs.get("current_open_notional_usdt"),
+        "runtime_active": guard_kwargs.get("runtime_active"),
+    }
+    return evaluate_pre_order_gate(
+        intent, purpose=PURPOSE_PROBE, venue=VENUE_MAINNET, checks=checks,
+        profile=profile, lineage=lineage, facts=facts, now=now,
+    )
 
 
 # --- the R9 ask / verify / confirm (mirrors crypto/promotion.py) -----------------------

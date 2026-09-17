@@ -1080,3 +1080,23 @@ def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
     row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
                if c["check"] == "trading_armed")
     assert "management is stopped too" in row["detail"]
+
+
+def test_the_board_reports_the_pre_order_snapshot_record_without_judging_readiness_on_it(tmp_path, clean_env):
+    """PR2b: beside the checks, never one of them — a damaged history does not stop the next
+    order's gate, but the operator has to see it."""
+    from runtime.mvp_runtime.crypto import pre_order_gate
+
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert status["pre_order_snapshots"] == {"readable": True, "error": None, "count": 0,
+                                             "last_created_at": None}
+    assert "pre_order_snapshots" not in {c["check"] for c in status["checks"]}
+    assert "none recorded" in live_readiness.render_readiness_text(status)
+
+    path = pre_order_gate.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"pre_order_risk_snapshot_id": "x", "risk_snapshot_sha256": "sha256:0"}\n',
+                    encoding="utf-8")
+    damaged = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    assert damaged["pre_order_snapshots"]["readable"] is False
+    assert "UNREADABLE" in live_readiness.render_readiness_text(damaged)

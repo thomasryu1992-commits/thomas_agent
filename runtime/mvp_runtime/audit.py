@@ -1219,7 +1219,13 @@ def build_live_order_audit(
             "GUARD_APPROVED" if guard_verdict.get("approved") else "GUARD_NOT_APPROVED",
         ],
         related_record_refs=[f"in_memory:{permdec_id}"],
-        evidence_refs=[f"live_order:{client_order_id}"],
+        # The pre-order snapshot the order left under (PR2b), when it opened exposure — the
+        # record of why it was allowed, beside the record that it happened.
+        evidence_refs=[f"live_order:{client_order_id}"] + (
+            [f"risk_snapshot:{submit_result['risk_snapshot_sha256']}"]
+            if isinstance(submit_result.get("risk_snapshot_sha256"), str)
+            and submit_result.get("risk_snapshot_sha256") else []
+        ),
         payload_sha256=fingerprint,
         sequence=1,
         previous_hash=previous_hash, previous_audit_id=previous_audit_id,

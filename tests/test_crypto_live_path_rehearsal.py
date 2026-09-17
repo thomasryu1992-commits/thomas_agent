@@ -30,10 +30,10 @@ failure) belong to each stage's own suite and are not duplicated here.
 from __future__ import annotations
 
 import pytest
-from tests._helpers import make_gate_authorization
+from tests._helpers import gate_stage, make_gate_authorization
 
-from runtime.mvp_runtime.crypto import execution_stage
-from runtime.mvp_runtime.crypto import live_entry, live_execution, live_filters, live_leg
+from runtime.mvp_runtime.crypto import live_entry, live_execution, live_filters, live_leg, pre_order_gate
+from runtime.mvp_runtime.crypto.state import VENUE_MAINNET
 from runtime.mvp_runtime.crypto.account import AccountSnapshot
 from runtime.mvp_runtime.crypto.guards import run_risk_guard
 from runtime.mvp_runtime.crypto.live_order import (
@@ -227,12 +227,12 @@ def _routed_plan(row=None):
 NO_MARKS = {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}}
 
 
-def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks=NO_MARKS):
+def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks=NO_MARKS):
     filters, reason = live_filters.parse_symbol_filters(EXCHANGE_INFO, SYMBOL)
     assert reason is None
     local = list(local_positions or [])
-    return live_entry.plan_live_entry(
-        plan,
+    return dict(
+        plan=plan,
         symbol=SYMBOL,
         # The bar the route was evaluated on, as `live_route` hands it over: the feature row's own
         # `timestamp`. The marks are the durable ones when a test has a root to read them from.
@@ -240,8 +240,7 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks=NO_MAR
         entry_marks=marks,
         # The rehearsal walks the path a machine registered at the live rung takes (PR1b); the
         # stage door's refusals have their own tests.
-        execution_stage=execution_stage.StageStatus(
-            stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS"),
+        execution_stage=gate_stage(),
         # #610 Part 1 — the rehearsal walks the ARMED path end to end, so the strategy this plan
         # names is in the live tier. The refusal side has its own tests.
         live_routable_strategy_ids={str((plan or {}).get("strategy_id") or "")},
@@ -263,8 +262,30 @@ def _decision(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks=NO_MAR
         spread_bps=1.0,
         equity_usdt=usable_equity_usdt(snapshot),
         now=NOW,
-        verdict={"allow_new_position": True, "problems": []},
+        verdict={"allow_new_position": True, "problems": [],
+                 "risk_guard": {"limits": {"source": "default"}}},
     )
+
+
+def _decision(plan, **kw):
+    """The decision, as `live_route` reads it — and, once READY, sealed by the real pre-order gate
+    on the same facts (PR2b), so the leg below is handed exactly what the route hands it."""
+    kwargs = _decision_kwargs(plan, **kw)
+    decision = live_entry.plan_live_entry(**kwargs)
+    if decision["ready"]:
+        profile = pre_order_gate.approved_profile(
+            purpose="autonomous", stage=kwargs["execution_stage"],
+            budget={"valid": True, "budget_id": "budget_rehearsal", "record_sha256": "sha256:" + "b" * 64},
+            risk_limits=kwargs["verdict"]["risk_guard"]["limits"],
+            authority={"kind": pre_order_gate.AUTHORITY_LIVE_ARM, "strategy_id": plan["strategy_id"],
+                       "approval_id": "approval_rehearsal"},
+        )
+        snapshot = live_entry.gate_live_entry(decision["intent"], decision_kwargs=kwargs,
+                                              profile=profile, now=NOW)
+        assert snapshot["approved"], snapshot["failed_checks"]
+        decision = {**decision, "intent": pre_order_gate.bind_intent(decision["intent"], snapshot),
+                    "risk_snapshot": snapshot}
+    return decision
 
 
 def _open(decision, *, root, venue=None):
@@ -275,6 +296,9 @@ def _open(decision, *, root, venue=None):
         position_store=RealLivePositionStore(root=root, authorization=_LIVE_AUTH),
         counter=LiveOrderCounter(root=root, authorization=_LIVE_AUTH),
         entry_marks=LiveEntryMarks(root=root, authorization=_LIVE_AUTH),
+        snapshot_store=pre_order_gate.PreOrderSnapshotStore(
+            root=root, authorization=_LIVE_AUTH, venue=VENUE_MAINNET,
+            provider_id=LIVE_TRADING_PROVIDER_ID, flags=LIVE_TRADING_FLAGS),
         governance=GOVERNANCE,
         gate_open=True,
         limits=LIMITS,
@@ -361,6 +385,13 @@ def test_the_leg_opens_a_position_from_a_decision_the_planner_actually_produced(
     assert sent["LIMIT"]["reduceOnly"] is True
     assert sent["LIMIT"]["quantity"] == sent["MARKET"]["quantity"]
 
+    # PR2b: the order left under a snapshot the real gate sealed, recorded before the send, and
+    # the book names it.
+    [recorded] = pre_order_gate.read_snapshots(tmp_path)
+    assert recorded["risk_snapshot_sha256"] == decision["risk_snapshot"]["risk_snapshot_sha256"]
+    assert recorded["approved"] is True and recorded["client_order_id"] == sent["MARKET"]["newClientOrderId"]
+    assert result["position"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
+
 
 def test_the_book_records_the_actual_fill_not_the_planned_entry(tmp_path):
     """Stage 3 -> 4. The venue filled 0.5 below the plan; the book must say so, because
@@ -432,6 +463,8 @@ def test_a_settled_live_trade_reaches_the_risk_guard_with_no_live_branch(tmp_pat
 
     assert closed["status"] == live_leg.EXIT_CLOSED
     assert closed["outcome"]["result_R"] == pytest.approx(-1.0, abs=1e-6)
+    # The closed trade still says why it was allowed to open (PR2b).
+    assert closed["outcome"]["risk_snapshot_sha256"] == decision["risk_snapshot"]["risk_snapshot_sha256"]
     # The surviving bracket leg is withdrawn — the venue auto-cancels nothing.
     assert venue.cancelled
     # And the book is clear, so the symbol is tradable again — from the next bar: the bar the

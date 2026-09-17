@@ -161,6 +161,7 @@ def build_live_position(
     cycle_id: str | None = None,
     timeframe: str | None = None,
     max_holding_bars: int | None = None,
+    risk_snapshot_sha256: str | None = None,
 ) -> dict[str, Any]:
     """One OPEN live position, from a real fill. Pure — persisting it is the store's job.
 
@@ -213,6 +214,8 @@ def build_live_position(
         # None however faithfully the other two travel.
         "strategy_generation_id": strategy_generation_id,
         "cycle_id": cycle_id,
+        # The pre-order snapshot the entry left under (PR2b); it rides to the outcome.
+        "risk_snapshot_sha256": risk_snapshot_sha256,
         # --- the time exit (2026-07-29) ------------------------------------------------
         # Until now a live position carried no holding count and no timeframe, so the live
         # leg had nothing to judge a max-hold rule against and deliberately enforced none.

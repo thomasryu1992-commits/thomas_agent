@@ -713,3 +713,159 @@ def test_the_unreadable_fallback_is_not_the_account_setting_constant():
     assert le.UNREADABLE_ACCOUNT_LEVERAGE is not paper.ASSUMED_LEVERAGE or (
         le.UNREADABLE_ACCOUNT_LEVERAGE > paper.ASSUMED_LEVERAGE
     ), "the split must be real, not two names for one value"
+
+
+# --- the pre-order gate for an autonomous entry (PR2b) --------------------------------------------
+
+def _decision_kwargs(**kw):
+    """`_plan`'s facts as the mapping the route builds once and hands to both the decision and the
+    gate."""
+    captured = {}
+
+    def capture(**args):
+        captured.update(args)
+        return {}
+
+    original = le.plan_live_entry
+    le.plan_live_entry = capture
+    try:
+        _plan(**kw)
+    finally:
+        le.plan_live_entry = original
+    captured.setdefault("verdict", ALLOWING_VERDICT)
+    return captured
+
+
+def _gate_profile(**authority):
+    from runtime.mvp_runtime.crypto import pre_order_gate as g
+    from tests._helpers import gate_stage
+
+    return g.approved_profile(
+        purpose="autonomous", stage=gate_stage(),
+        budget={"valid": True, "budget_id": "budget_1", "record_sha256": "sha256:" + "b" * 64},
+        risk_limits={"source": "default"},
+        authority={"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001", "approval_id": "appr_arm",
+                   **authority},
+    )
+
+
+def _plan_with_lineage():
+    return {**PLAN, "strategy_rule_hash": "h1", "strategy_generation_id": "gen_1"}
+
+
+def test_the_gate_approves_the_order_the_facts_decide_and_names_every_check():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    names = {c["check"] for c in snapshot["checks"]}
+    from runtime.mvp_runtime.crypto.live_order import GUARD_CHECK_IDS, INTENT_SHAPE_CHECK
+
+    assert {door for door, _codes in le.ENTRY_DOORS} <= names
+    assert set(GUARD_CHECK_IDS) | {INTENT_SHAPE_CHECK} <= names
+    assert {le.CHECK_DECISION_READY, le.CHECK_INTENT_MATCHES_DECISION, le.CHECK_BRACKET_MATCHES_DECISION} <= names
+    assert snapshot["lineage"]["candle_time"] == BAR and snapshot["lineage"]["timeframe"] == "1d"
+    assert snapshot["facts"]["spread_bps"] == 1.0 and snapshot["facts"]["limits"]["max_daily_order_count"] == 2
+
+
+@pytest.mark.parametrize("change", [
+    {"quantity": 0.002}, {"order_notional_usdt": 120.0}, {"symbol": "ETHUSDT"},
+    {"stop_loss": 58000.0}, {"take_profit": 63000.0}, {"direction": "SHORT"},
+])
+def test_an_order_that_is_not_the_decided_one_is_refused(change):
+    """Re-derived from the same facts, the decision prices one order; anything else changed on
+    the way to the venue fails the gate."""
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    intent = {**le.plan_live_entry(**kwargs)["intent"], **change}
+    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is False
+    assert le.CHECK_INTENT_MATCHES_DECISION in snapshot["failed_checks"]
+
+
+def test_facts_that_refuse_the_decision_refuse_the_gate_and_name_the_door():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    intent = le.plan_live_entry(**kwargs)["intent"]
+    kwargs["spread_bps"] = 80.0      # the book widened between the decision and the gate
+    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is False
+    assert {le.CHECK_DECISION_READY, "spread_within_limit"} <= set(snapshot["failed_checks"])
+
+
+def test_a_stage_that_no_longer_binds_refuses_by_the_guards_own_check():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    intent = le.plan_live_entry(**kwargs)["intent"]
+    kwargs["execution_stage"] = _stage("PAPER")
+    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert {"final_guard_approved", "execution_stage_admits"} <= set(snapshot["failed_checks"])
+
+
+def test_an_entry_for_a_strategy_armed_without_a_recorded_approval_is_refused():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    intent = le.plan_live_entry(**kwargs)["intent"]
+    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs,
+                                  profile=_gate_profile(approval_id=None), now=NOW)
+    assert snapshot["failed_checks"] == ["approved_profile_complete"]
+
+
+def test_an_entry_with_incomplete_lineage_is_refused():
+    kwargs = _decision_kwargs(plan=PLAN, execution_stage=_stage())   # no rule hash, no generation
+    intent = le.plan_live_entry(**kwargs)["intent"]
+    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert snapshot["failed_checks"] == ["lineage_complete"]
+
+
+# --- the guard names every check it runs (PR2b) --------------------------------------------------
+
+def _guard(**kw):
+    from runtime.mvp_runtime.crypto.live_order import evaluate_live_order_guard
+
+    intent = kw.pop("intent", {"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT",
+                               "quantity": 0.001, "order_notional_usdt": 60.0,
+                               "reduce_only": False, "connectivity_test": False})
+    args = dict(gate_open=True, runtime_active=True, daily_loss_breached=False, submitted_today=0,
+                current_open_notional_usdt=0.0, limits=LIMITS, budget_registered=True,
+                allowed_symbols=["BTCUSDT"], execution_stage=_stage())
+    args.update(kw)
+    return evaluate_live_order_guard(intent, **args)
+
+
+@pytest.mark.parametrize("kw,check_id", [
+    ({"budget_registered": False}, "budget_registered"),
+    ({"allowed_symbols": []}, "symbol_allowlisted"),
+    ({"allowed_symbols": ["ETHUSDT"]}, "symbol_allowlisted"),
+    ({"gate_open": False}, "trading_opted_in"),
+    ({"limits": LiveOrderLimits(max_order_notional_usdt=60.0, max_daily_order_count=2,
+                                max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0)},
+     "confirmation_phrase"),
+    ({"canary": True, "limits": LIMITS.__class__(**{**LIMITS.__dict__, "canary_confirmation": ""})},
+     "confirmation_phrase"),
+    ({"limits": LiveOrderLimits(**{**LIMITS.__dict__, "manual_kill_switch": True})}, "manual_kill_switch_off"),
+    ({"runtime_active": False}, "runtime_active"),
+    ({"daily_loss_breached": True}, "daily_loss_within_limit"),
+    ({"execution_stage": _stage("PAPER")}, "execution_stage_admits"),
+    ({"intent": {"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "quantity": 0.001,
+                 "order_notional_usdt": 60.0, "connectivity_test": True}}, "not_connectivity_test"),
+    ({"intent": {"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "quantity": 0.001,
+                 "order_notional_usdt": 999.0}}, "order_notional_within_cap"),
+    ({"submitted_today": 2}, "daily_order_count_within_cap"),
+    ({"current_open_notional_usdt": 100.0}, "open_exposure_within_cap"),
+])
+def test_every_guard_block_names_a_rostered_check(kw, check_id):
+    from runtime.mvp_runtime.crypto.live_order import GUARD_CHECK_IDS, INTENT_SHAPE_CHECK
+
+    verdict = _guard(**kw)
+    failed = [c["check"] for c in verdict["checks"] if not c["ok"]]
+    assert check_id in failed
+    assert set(failed) <= set(GUARD_CHECK_IDS) | {INTENT_SHAPE_CHECK}
+    assert verdict["approved"] is False
+    # Every block is carried by exactly one named check's detail.
+    details = " ".join(c["detail"] or "" for c in verdict["checks"] if not c["ok"])
+    assert all(block in details for block in verdict["blocks"])
+
+
+def test_the_guard_approves_exactly_when_every_named_check_passes():
+    verdict = _guard()
+    assert verdict["approved"] is True and all(c["ok"] for c in verdict["checks"])
+    repaired = _guard(intent={"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT"})
+    assert repaired["approved"] is False
+    assert [c["check"] for c in repaired["checks"] if not c["ok"]] == ["intent_shape_complete"]

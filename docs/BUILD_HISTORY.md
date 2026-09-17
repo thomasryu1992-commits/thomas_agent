@@ -101,6 +101,57 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **Every order that opens exposure leaves under one sealed pre-order snapshot** (crypto PR2b-1,
+  Thomas decisions 17, 19 and 20, 2026-09-17; `crypto/pre_order_gate.py`,
+  `schemas/pre_order_risk_snapshot.v0.1`, `docs/runtime-contracts/PRE_ORDER_RISK_SNAPSHOT_V0.1.md`,
+  `crypto/live_execution.py`, `crypto/live_entry.py`, `crypto/live_route.py`, `crypto/live_leg.py`,
+  `crypto/probe.py`, `crypto/testnet_execution.py`, both operator doors, `crypto/pool.py`, the
+  promotion door). The PR2 investigation measured the gap this closes: the venue door checked only
+  `guard_verdict["approved"] is True`, never which order the verdict was about. A verdict for 1 USDT
+  of BTCUSDT sent 15,000 USDT of ETHUSDT on the dry-run adapter, and no verdict was kept anywhere.
+
+  **One gate, re-derived rather than trusted.** Each door re-runs its own pure decision on the facts
+  it read: `plan_live_entry` for the autonomous leg, the probe's refusals and the live guard for
+  `--fire`, the testnet guard for the cycle. The order about to leave must be the one those facts
+  decide. The gate adds four checks of its own:
+  - identity: the order's ids follow from its fields;
+  - no reduce-only order;
+  - lineage complete;
+  - the approved profile whole and built for this purpose.
+
+  The guards now name every check they run. Their prose `blocks` are unchanged.
+
+  **The approved profile is a composite, not a record (decision 17).** It combines:
+  - the execution stage record and its approval;
+  - the registered budget and the risk limits by id and hash;
+  - the authority for the kind of order: the approval a strategy was armed LIVE under, the probe
+    plan's approval, or the testnet path's caps.
+
+  The arming approval was only on the ledger. It now rides on the pool entry
+  (`live_tier_approval_id`), written by the promotion door and removed by the disarm door. With 0/15
+  armed on this machine, requiring it costs nothing today.
+
+  **Bound at the venue door, recorded before the send (decision 19).** `submit_and_reconcile` refuses
+  an order that is not reduce-only unless both hold:
+  - its approved snapshot names this very intent, and the intent names the snapshot back;
+  - the snapshot has been appended and fsynced to its venue's store.
+
+  Every refusal there is a `SubmitRefused`, raised only before the adapter. So a leg can tell
+  "nothing left" from a failure after a send. The hash rides to:
+  - the submit result;
+  - the position;
+  - the outcome;
+  - the audit event's `evidence_refs`;
+  - the testnet evidence row.
+
+  The signed testnet entry passes the same gate into its own venue's store (decision 20), so the rule
+  at the door has no venue exception.
+
+  **Why a new store, against "reuse first".** The audit event's schema has no room for a check list,
+  and "recorded before the send" means nothing unless the reasons survive. Thomas approved the store
+  as decision 19. It follows the testnet evidence registry's shape. The record is closed-schema, and
+  the readiness board reports it beside the checks rather than as one.
+
 - **A live entry spends its bar and its day's slot before it is sent** (crypto PR2a, Thomas
   decisions 15 and 16, 2026-09-16; `crypto/live_order.py`, `crypto/live_entry.py`,
   `crypto/live_leg.py`, `crypto/live_route.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`).

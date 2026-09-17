@@ -57,7 +57,7 @@ from ..cli_common import force_utf8_io
 from ..control import ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import pool
+from . import pool, pre_order_gate
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
@@ -679,6 +679,10 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The signed testnet cycles this machine has earned (PR1d-2). Read here rather than at
         # `resolve_execution_stage`, whose contract with the live leg is that it never raises.
         "testnet_evidence": _testnet_evidence(root),
+        # The pre-order snapshots real orders left under (PR2b), verified. Reported beside the
+        # checks, never as one: a damaged history does not stop the next order's gate, but an
+        # operator must see it.
+        "pre_order_snapshots": pre_order_gate.snapshots_status(root),
     }
 
 
@@ -809,6 +813,18 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
+def _pre_order_snapshots_line(status: Mapping[str, Any]) -> str:
+    """The mainnet pre-order snapshot record (PR2b), as one line."""
+    record = status.get("pre_order_snapshots") or {}
+    if not record.get("readable"):
+        return (f"[----] {'pre_order_snapshots':24} UNREADABLE - {record.get('error')}; the record of "
+                "why past orders were allowed no longer proves itself")
+    if not record.get("count"):
+        return f"[----] {'pre_order_snapshots':24} none recorded (no order has left under the gate)"
+    return (f"[----] {'pre_order_snapshots':24} {record['count']} recorded, latest "
+            f"{record.get('last_created_at')}")
+
+
 def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
     """What the SIGNED_TESTNET -> LIVE_AUTONOMOUS climb would find. Informational: it gates no
     check here, because the ladder's own door is where it decides anything (PR1d-2)."""
@@ -871,6 +887,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     lines.append(_testnet_evidence_line(status))
+    lines.append(_pre_order_snapshots_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL

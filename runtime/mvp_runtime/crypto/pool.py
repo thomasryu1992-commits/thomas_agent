@@ -1580,6 +1580,10 @@ LIVE_TIER_FIELD = "live_tier"
 LIVE_TIER_LIVE = "LIVE"
 LIVE_TIER_OBSERVATION = "OBSERVATION"
 LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
+# The Thomas approval a LIVE entry was armed under (PR2b, decision 17). The promotion door writes it
+# beside the tier; the disarm door removes it with the tier. The pre-order gate refuses an entry for
+# a LIVE strategy that names none, so an entry armed by hand is armed for nothing.
+LIVE_TIER_APPROVAL_FIELD = "live_tier_approval_id"
 
 
 def entry_live_tier(entry: Mapping[str, Any]) -> str:
@@ -1612,6 +1616,23 @@ def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
         and entry.get("strategy_id")
         and entry_live_tier(entry) == LIVE_TIER_LIVE
     }
+
+
+def live_arm_approvals(pool: Mapping[str, Any]) -> dict[str, str | None]:
+    """``strategy_id -> the approval it was armed LIVE under`` for every live-routable entry.
+
+    The same membership as :func:`live_routable_strategy_ids`, with the approval each entry names —
+    ``None`` when it names none, which the pre-order gate refuses rather than infers."""
+    armed: dict[str, str | None] = {}
+    for entry in pool.get("active_strategies") or []:
+        if not (isinstance(entry, Mapping) and entry.get("status") in OCCUPYING_STATUSES
+                and entry.get("strategy_id") and entry_live_tier(entry) == LIVE_TIER_LIVE):
+            continue
+        approval = entry.get(LIVE_TIER_APPROVAL_FIELD)
+        armed[str(entry.get("strategy_id"))] = (
+            approval.strip() if isinstance(approval, str) and approval.strip() else None
+        )
+    return armed
 
 
 def disarm_live_tier(
@@ -1654,6 +1675,8 @@ def disarm_live_tier(
             if entry_live_tier(entry) != LIVE_TIER_LIVE:
                 continue
             entry[LIVE_TIER_FIELD] = LIVE_TIER_OBSERVATION
+            # The approval that armed it goes with the tier: a later re-arm is a new approval.
+            entry.pop(LIVE_TIER_APPROVAL_FIELD, None)
             entry["live_tier_updated_at"] = now
             entry["live_tier_reasons"] = [str(r) for r in reasons]
             moved += 1

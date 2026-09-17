@@ -160,3 +160,68 @@ def test_an_unknown_tier_cannot_be_hashed_at_all():
 
     with pytest.raises(ApprovalBlocked):
         promotion_content_sha256(["c1"], ["h1"], False, "live")
+
+
+# --- the approval an entry was armed under (PR2b, decision 17) -------------------------------------
+
+def test_the_arming_approvals_are_read_for_live_routable_entries_only():
+    armed = pool_store.live_arm_approvals(_pool(
+        _entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1"),
+        _entry("S2", live_tier="LIVE"),                                # armed with no approval named
+        _entry("S3", live_tier="LIVE", live_tier_approval_id="  "),
+        _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4"),
+        _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5"),
+    ))
+    assert armed == {"S1": "appr_1", "S2": None, "S3": None}
+    assert set(armed) == pool_store.live_routable_strategy_ids(_pool(
+        _entry("S1", live_tier="LIVE"), _entry("S2", live_tier="LIVE"), _entry("S3", live_tier="LIVE"),
+        _entry("S4", live_tier="OBSERVATION"), _entry("S5", status="SUSPENDED", live_tier="LIVE"),
+    ))
+
+
+def test_disarming_takes_the_approval_with_the_tier(tmp_path):
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
+
+    spec = StrategySpec.from_dict(_spec_dict()).to_dict()
+    pool_store.install_active_pool({"active_strategies": [
+        {"strategy_id": "S1", "status": "PAPER_ACTIVE", "strategy_spec": spec, "candidate_id": "c1",
+         "live_tier": "LIVE", "live_tier_approval_id": "appr_1"},
+    ]}, root=tmp_path)
+    assert pool_store.disarm_live_tier(["S1"], root=tmp_path, now="2026-09-17T00:00:00Z") == 1
+    [entry] = pool_store.load_active_pool(tmp_path)["active_strategies"]
+    assert entry["live_tier"] == "OBSERVATION"
+    assert pool_store.LIVE_TIER_APPROVAL_FIELD not in entry
+
+
+def _promote(tmp_path, monkeypatch, **kw):
+    from scripts import promote_strategy_candidates as prom
+    from tests.test_mvp_runtime_crypto_evidence_depth import NOW, _TODAY_1D, _seed
+
+    _seed(tmp_path, bars=_TODAY_1D)
+    # The approval's own verification and the quality gates have their tests; this pins what the
+    # door writes once they have passed.
+    monkeypatch.setattr(prom.promotion_mod, "verify_promotion_approval",
+                        lambda *a, **k: {"approval_id": kw.get("approval_id")})
+    monkeypatch.setattr(prom.promotion_mod, "run_promotion_gates", lambda *a, **k: None)
+    prom.run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                       root=tmp_path, now=NOW, **kw)
+    [entry] = pool_store.load_active_pool(tmp_path)["active_strategies"]
+    return entry
+
+
+def test_a_live_install_records_the_approval_it_was_armed_under(tmp_path, monkeypatch):
+    entry = _promote(tmp_path, monkeypatch, live_tier="LIVE", approval_id="appr_live")
+    assert entry["live_tier"] == "LIVE"
+    assert entry[pool_store.LIVE_TIER_APPROVAL_FIELD] == "appr_live"
+    assert pool_store.live_arm_approvals({"active_strategies": [entry]}) == {entry["strategy_id"]: "appr_live"}
+
+
+@pytest.mark.parametrize("kw", [
+    {"live_tier": "OBSERVATION", "approval_id": "appr_obs"},
+    {"live_tier": "OBSERVATION", "without_approval": True},
+])
+def test_an_observation_install_names_no_arming_approval(tmp_path, monkeypatch, kw):
+    entry = _promote(tmp_path, monkeypatch, **kw)
+    assert entry["live_tier"] == "OBSERVATION"
+    assert pool_store.LIVE_TIER_APPROVAL_FIELD not in entry
