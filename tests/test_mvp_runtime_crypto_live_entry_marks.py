@@ -168,7 +168,8 @@ def _write_marks(tmp_path, payload):
 
 def test_a_machine_with_no_marks_reads_empty(tmp_path):
     assert live_order.read_live_entry_marks(tmp_path) == {
-        "version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {}}
+        "version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {},
+        "in_flight_notional": {}}
 
 
 @pytest.mark.parametrize("payload", [
@@ -410,7 +411,7 @@ ORDER = "TAI_BTCUSDT_LONG_aaaa"
 
 
 # A flat account, a 60 USDT order and the approved 120 USDT exposure cap (PR2c-3).
-FLAT = {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0}
+FLAT = {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0}
 
 
 def _claim(marks, *, symbol="BTCUSDT", door="autonomous", client_order_id=ORDER, now=NOW,
@@ -438,8 +439,10 @@ def _open_position(tmp_path, symbol="BTCUSDT"):
 def test_a_symbol_is_taken_once_and_given_back_by_its_own_order(tmp_path, frozen_wall):
     marks = _marks(tmp_path)
     _claim(marks)
-    assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {
-        "BTCUSDT": {"claimed_at": NOW, "door": "autonomous", "client_order_id": ORDER, "notional_usdt": 60.0}}
+    marks_now = live_order.read_live_entry_marks(tmp_path)
+    assert marks_now["in_flight"] == {"BTCUSDT": {"claimed_at": NOW, "door": "autonomous", "client_order_id": ORDER}}
+    # PR2c-3: the notional rides beside the claim, bound to its order.
+    assert marks_now["in_flight_notional"] == {"BTCUSDT": {"client_order_id": ORDER, "notional_usdt": 60.0}}
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), door="probe", client_order_id="TAI_BTCUSDT_LONG_bbbb")
     assert _code(refused) == live_order.LIVE_ENTRY_SYMBOL_IN_FLIGHT
@@ -490,7 +493,7 @@ def test_a_claim_expires_after_thirty_minutes(tmp_path, frozen_wall):
     _claim(_marks(tmp_path), client_order_id="TAI_BTCUSDT_LONG_late")
     claim = live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]
     assert claim == {"claimed_at": "2026-09-17T04:35:00Z", "door": "autonomous",
-                     "client_order_id": "TAI_BTCUSDT_LONG_late", "notional_usdt": 60.0}
+                     "client_order_id": "TAI_BTCUSDT_LONG_late"}
     # The dead entry's late release cannot remove the claim that replaced it, and it is told so.
     with pytest.raises(ToolError) as lost:
         _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
@@ -626,23 +629,32 @@ def test_a_testnet_claim_is_not_a_mainnet_claim(tmp_path, frozen_wall):
 
 # --- the global caps, judged again at the claim (PR2c-3, decision 26) -----------------------------
 
-def _book(tmp_path, symbol, *, notional=60.0):
+def _book(tmp_path, symbol, *, notional=60.0, opened_at=NOW):
     from runtime.mvp_runtime.crypto.live_position import RealLivePositionStore, build_live_position
 
-    RealLivePositionStore(root=tmp_path, authorization=AUTH).save_position(build_live_position(
-        symbol=symbol, direction="LONG", quantity=0.001, entry_price=notional * 1000, opened_at=NOW,
-        entry_client_order_id=f"TAI_{symbol}_LONG_open", strategy_id="S001"))
+    position = build_live_position(
+        symbol=symbol, direction="LONG", quantity=0.001, entry_price=notional * 1000, opened_at=opened_at,
+        entry_client_order_id=f"TAI_{symbol}_LONG_open", strategy_id="S001")
+    RealLivePositionStore(root=tmp_path, authorization=AUTH).save_position(position)
+    return position
 
 
 def _order(symbol):
     return f"TAI_{symbol}_LONG_{symbol.lower()[:4]}"
 
 
+def _write_marks_file(tmp_path, **maps):
+    path = live_order.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
+                                **maps}), encoding="utf-8")
+
+
 def test_two_doors_on_two_symbols_cannot_both_take_the_last_position(tmp_path, frozen_wall):
     """The measured race: one position booked, and two entries on other symbols, each judged
     "booked + mine fits" before the other's order. At most two positions."""
-    _book(tmp_path, "ETHUSDT")
-    seen = {"open_notional_usdt": 60.0, "symbols": ["ETHUSDT"], "cap_usdt": 300.0}
+    eth = _book(tmp_path, "ETHUSDT")
+    seen = {"open_notional_usdt": 60.0, "position_ids": [eth["position_id"]], "cap_usdt": 300.0}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), exposure=seen)
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), symbol="BTCUSDT", door="probe", exposure=seen)
@@ -652,30 +664,33 @@ def test_two_doors_on_two_symbols_cannot_both_take_the_last_position(tmp_path, f
 
 def test_two_doors_on_two_symbols_cannot_both_spend_the_last_exposure(tmp_path, frozen_wall):
     """A flat book: each order fits alone, both together exceed the cap."""
-    seen = {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 100.0}
+    seen = {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 100.0}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), exposure=seen)
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), symbol="BTCUSDT", exposure=seen)
     assert _code(refused) == live_order.LIVE_ENTRY_EXPOSURE_TAKEN
-    # Room for the second one once the first is only 40.
+    # Room for the second one once the first is only 40; the notional goes back with the claim.
     _marks(tmp_path).release_symbol(symbol="SOLUSDT", client_order_id=_order("SOLUSDT"))
+    assert live_order.read_live_entry_marks(tmp_path)["in_flight_notional"] == {}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), notional_usdt=40.0,
            exposure=seen)
     _claim(_marks(tmp_path), symbol="BTCUSDT", exposure=seen)
 
 
-@pytest.mark.parametrize("seen,notional,fits", [
-    # The door's venue read already held ETH: its 60 is in the seen figure and counted once.
-    ({"open_notional_usdt": 60.0, "symbols": ["ETHUSDT"]}, 60.0, True),
-    # Booked after the read: added to the seen 0, up to the cap and not a cent past it.
-    ({"open_notional_usdt": 0.0, "symbols": []}, 60.0, True),
-    ({"open_notional_usdt": 0.0, "symbols": []}, 60.01, False),
-    # A read that named no symbols: every booked position is added again.
-    ({"open_notional_usdt": 60.0, "symbols": None}, 0.01, False),
+@pytest.mark.parametrize("seen_it,notional,fits", [
+    # The door's book held it when the venue figure was read: its 60 is in that figure, counted once.
+    (True, 60.0, True),
+    # Booked after the door's read: added to the seen 0, up to the cap and not a cent past it.
+    (False, 60.0, True),
+    (False, 60.01, False),
+    # A door that named no positions: every booked position is added again.
+    (None, 0.01, False),
 ], ids=["seen", "since-fits", "since-over", "unknown"])
-def test_a_booked_position_is_counted_once_against_the_exposure(tmp_path, frozen_wall, seen, notional, fits):
-    _book(tmp_path, "ETHUSDT", notional=60.0)
-    exposure = {**seen, "cap_usdt": 120.0}
+def test_a_booked_position_is_counted_once_against_the_exposure(tmp_path, frozen_wall, seen_it, notional, fits):
+    eth = _book(tmp_path, "ETHUSDT", notional=60.0)
+    exposure = {"open_notional_usdt": 0.0 if seen_it is False else 60.0,
+                "position_ids": None if seen_it is None else ([eth["position_id"]] if seen_it else []),
+                "cap_usdt": 120.0}
     if fits:
         _claim(_marks(tmp_path), notional_usdt=notional, exposure=exposure)
         return
@@ -684,8 +699,22 @@ def test_a_booked_position_is_counted_once_against_the_exposure(tmp_path, frozen
     assert _code(refused) == live_order.LIVE_ENTRY_EXPOSURE_TAKEN
 
 
+def test_a_position_replaced_on_its_symbol_since_the_read_is_counted_as_new(tmp_path, frozen_wall):
+    """Review of #888: the door read ETH e1 (20). Since, e1 was settled and ETH e2 (60) booked. Judged
+    by symbol, the claim would count 20; by position it counts the 60 that is really open."""
+    e1 = _book(tmp_path, "ETHUSDT", notional=20.0, opened_at="2026-09-17T04:00:00Z")
+    seen = {"open_notional_usdt": 20.0, "position_ids": [e1["position_id"]], "cap_usdt": 100.0}
+    from runtime.mvp_runtime.crypto.live_position import RealLivePositionStore
+
+    RealLivePositionStore(root=tmp_path, authorization=AUTH).clear_position("ETHUSDT", position_id=e1["position_id"])
+    _book(tmp_path, "ETHUSDT", notional=60.0, opened_at="2026-09-17T04:04:00Z")
+    with pytest.raises(ToolError) as refused:
+        _claim(_marks(tmp_path), exposure=seen)          # 20 seen + 60 new + 60 = 140 > 100
+    assert _code(refused) == live_order.LIVE_ENTRY_EXPOSURE_TAKEN
+
+
 def test_an_expired_claim_takes_no_room(tmp_path, frozen_wall):
-    seen = {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 100.0}
+    seen = {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 100.0}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), exposure=seen)
     frozen_wall["now"] = "2026-09-17T04:35:00Z"
     _claim(_marks(tmp_path), symbol="BTCUSDT", now="2026-09-17T04:35:00Z", exposure=seen)
@@ -693,20 +722,20 @@ def test_an_expired_claim_takes_no_room(tmp_path, frozen_wall):
 
 def test_a_claim_whose_position_is_booked_is_counted_once(tmp_path, frozen_wall):
     """A door books its position before it gives the symbol back: in between, the book counts it."""
-    seen = {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 130.0}
+    seen = {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 130.0}
     _claim(_marks(tmp_path), symbol="SOLUSDT", client_order_id=_order("SOLUSDT"), exposure=seen)
     _book(tmp_path, "SOLUSDT", notional=60.0)
     _claim(_marks(tmp_path), symbol="BTCUSDT", exposure=seen)      # 60 booked + 60 = 120 <= 130
 
 
-def test_a_claim_written_before_its_notional_was_recorded_counts_as_the_whole_cap(tmp_path, frozen_wall):
-    path = live_order.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
-                                "in_flight": {"SOLUSDT": {"claimed_at": NOW, "door": "probe",
-                                                          "client_order_id": _order("SOLUSDT")}}}),
-                    encoding="utf-8")
-    assert "notional_usdt" not in live_order.read_live_entry_marks(tmp_path)["in_flight"]["SOLUSDT"]
+@pytest.mark.parametrize("notionals", [
+    {},                                                                             # written before PR2c-3
+    {"SOLUSDT": {"client_order_id": "TAI_SOLUSDT_LONG_other", "notional_usdt": 1.0}},  # another order's
+], ids=["unrecorded", "another-order-s"])
+def test_a_claim_without_its_own_recorded_notional_counts_as_the_whole_cap(tmp_path, frozen_wall, notionals):
+    _write_marks_file(tmp_path, in_flight={"SOLUSDT": {"claimed_at": NOW, "door": "probe",
+                                                  "client_order_id": _order("SOLUSDT")}},
+                 in_flight_notional=notionals)
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), notional_usdt=0.01)
     assert _code(refused) == live_order.LIVE_ENTRY_EXPOSURE_TAKEN
@@ -714,21 +743,38 @@ def test_a_claim_written_before_its_notional_was_recorded_counts_as_the_whole_ca
 
 def test_a_booked_record_whose_notional_cannot_be_read_counts_as_the_whole_cap(tmp_path, frozen_wall):
     marks = live_order.read_live_entry_marks(tmp_path)
-    booked = [{"symbol": "ETHUSDT", "notional_usdt": None}]
+    booked = [{"symbol": "ETHUSDT", "position_id": "p1", "notional_usdt": None}]
     problem = live_order.claim_caps_problem(
         marks, booked, symbol="BTCUSDT", now=NOW, notional_usdt=0.01, max_positions=2,
-        exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
+        exposure={"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0})
     assert problem is not None and problem[0] == live_order.LIVE_ENTRY_EXPOSURE_TAKEN
+
+
+def test_the_caps_count_other_symbols_only_whatever_the_marks_hold_for_this_one():
+    """`claim_caps_problem` on its own: an entry's own symbol is never one of the others, even when
+    the marks still show a claim there (the claim itself refuses that case first)."""
+    marks = {"in_flight": {"BTCUSDT": {"claimed_at": NOW, "door": "probe", "client_order_id": ORDER},
+                           "ETHUSDT": {"claimed_at": NOW, "door": "probe",
+                                       "client_order_id": "TAI_ETHUSDT_LONG_eeee"}},
+             "in_flight_notional": {
+                 "BTCUSDT": {"client_order_id": ORDER, "notional_usdt": 60.0},
+                 "ETHUSDT": {"client_order_id": "TAI_ETHUSDT_LONG_eeee", "notional_usdt": 60.0}}}
+    fits = live_order.claim_caps_problem(
+        marks, [], symbol="BTCUSDT", now=NOW, notional_usdt=60.0, max_positions=2,
+        exposure={"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0})
+    assert fits is None, fits
 
 
 @pytest.mark.parametrize("notional,exposure", [
     (None, FLAT), (0.0, FLAT), (-1.0, FLAT), (float("nan"), FLAT), (True, FLAT), ("60", FLAT),
+    (10 ** 400, FLAT),
     (60.0, None), (60.0, {}),
     (60.0, {**FLAT, "cap_usdt": 0.0}), (60.0, {**FLAT, "cap_usdt": None}),
     (60.0, {**FLAT, "open_notional_usdt": -1.0}), (60.0, {**FLAT, "open_notional_usdt": None}),
-    (60.0, {**FLAT, "symbols": "BTCUSDT"}), (60.0, {**FLAT, "symbols": [1]}),
-], ids=["no-notional", "zero", "negative", "nan", "bool", "string", "no-exposure", "empty-exposure",
-        "zero-cap", "no-cap", "negative-open", "no-open", "symbols-string", "symbols-not-strings"])
+    (60.0, {**FLAT, "open_notional_usdt": False}),
+    (60.0, {**FLAT, "position_ids": "p1"}), (60.0, {**FLAT, "position_ids": [1]}),
+], ids=["no-notional", "zero", "negative", "nan", "bool", "string", "huge", "no-exposure", "empty-exposure",
+        "zero-cap", "no-cap", "negative-open", "no-open", "false-open", "ids-string", "ids-not-strings"])
 def test_a_claim_that_cannot_say_what_it_adds_is_refused(tmp_path, frozen_wall, notional, exposure):
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), notional_usdt=notional, exposure=exposure)
@@ -736,27 +782,33 @@ def test_a_claim_that_cannot_say_what_it_adds_is_refused(tmp_path, frozen_wall, 
     assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
 
 
-@pytest.mark.parametrize("notional", [0, -1.0, "60", True, None, float("inf")])
-def test_a_recorded_claim_with_a_bad_notional_makes_the_marks_unreadable(tmp_path, notional):
-    path = live_order.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    claim = {"claimed_at": NOW, "door": "probe", "client_order_id": ORDER, "notional_usdt": notional}
-    path.write_text(json.dumps({"version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
-                                "in_flight": {"BTCUSDT": claim}}), encoding="utf-8")
+@pytest.mark.parametrize("entry", [
+    {"client_order_id": ORDER, "notional_usdt": 0},
+    {"client_order_id": ORDER, "notional_usdt": -1.0},
+    {"client_order_id": ORDER, "notional_usdt": "60"},
+    {"client_order_id": ORDER, "notional_usdt": True},
+    {"client_order_id": ORDER, "notional_usdt": None},
+    {"client_order_id": ORDER, "notional_usdt": 10 ** 400},
+    {"client_order_id": "", "notional_usdt": 60.0},
+    {"notional_usdt": 60.0},
+    {"client_order_id": ORDER, "notional_usdt": 60.0, "extra": 1},
+    [ORDER, 60.0],
+], ids=["zero", "negative", "string", "bool", "none", "huge", "blank-order", "no-order", "extra", "list"])
+def test_a_recorded_notional_that_cannot_be_read_makes_the_marks_unreadable(tmp_path, entry):
+    _write_marks_file(tmp_path, in_flight={}, in_flight_notional={"BTCUSDT": entry})
     with pytest.raises(ToolError) as refused:
         live_order.read_live_entry_marks(tmp_path)
     assert _code(refused) == live_order.LIVE_ENTRY_MARKS_UNREADABLE
 
 
-def test_the_caps_count_other_symbols_only_whatever_the_marks_hold_for_this_one():
-    """`claim_caps_problem` on its own: an entry's own symbol is never one of the others, even when
-    the marks still show a claim there (the claim itself refuses that case first)."""
-    marks = {"version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
-             "in_flight": {"BTCUSDT": {"claimed_at": NOW, "door": "probe", "client_order_id": ORDER,
-                                       "notional_usdt": 60.0},
-                           "ETHUSDT": {"claimed_at": NOW, "door": "probe",
-                                       "client_order_id": "TAI_ETHUSDT_LONG_eeee", "notional_usdt": 60.0}}}
-    fits = live_order.claim_caps_problem(
-        marks, [], symbol="BTCUSDT", now=NOW, notional_usdt=60.0, max_positions=2,
-        exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
-    assert fits is None, fits
+def test_a_claim_keeps_the_shape_a_runtime_from_before_reads(tmp_path, frozen_wall):
+    """Review of #888: a runtime from before PR2c-3 reads a claim with a fourth field as a damaged
+    file and refuses every entry, so a rollback with a claim still in the file would stop trading.
+    The claim keeps its three fields; the notional is a map that runtime does not read, and drops."""
+    _claim(_marks(tmp_path))
+    raw = json.loads((live_order.venue_state_dir(tmp_path) / live_order.ENTRY_MARKS_FILENAME).read_text())
+    assert all(set(claim) == {"claimed_at", "door", "client_order_id"} for claim in raw["in_flight"].values())
+    assert set(raw) == {"version", "entered", "cooldown", "in_flight", "in_flight_notional"}
+    # What a runtime from before keeps of it, and this runtime then reads: the claim, at the whole cap.
+    _write_marks_file(tmp_path, in_flight=raw["in_flight"])
+    assert live_order.claim_notional(live_order.read_live_entry_marks(tmp_path), "BTCUSDT") is None

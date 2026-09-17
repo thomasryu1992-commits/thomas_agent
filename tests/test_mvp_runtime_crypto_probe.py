@@ -2333,7 +2333,7 @@ def _cell_in_flight(tmp_path, *, claimed_by="TAI_BTCUSDT_LONG_inflight"):
     auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
     LiveEntryMarks(root=tmp_path, authorization=auth).claim_symbol(
         door="probe", now=NOW, symbol=cell["symbol"], client_order_id=claimed_by, notional_usdt=100.0,
-        exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 300.0})
+        exposure={"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 300.0})
     return opened
 
 
@@ -2461,7 +2461,7 @@ def test_fire_tells_the_claim_its_notional_and_the_exposure_it_was_judged_agains
     [taken] = marks.taken
     assert taken["notional_usdt"] == pytest.approx(100.0)
     # The venue account the fire read, and the cap the gate judged (the re-read lowered it).
-    assert taken["exposure"] == {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 150.0}
+    assert taken["exposure"] == {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 150.0}
 
 
 def test_fire_tells_the_claim_the_open_exposure_its_guard_judged(tmp_path, monkeypatch):
@@ -2483,3 +2483,24 @@ def test_fire_tells_the_claim_the_open_exposure_its_guard_judged(tmp_path, monke
     [taken] = marks.taken
     assert judged and set(judged) == {42.5}
     assert taken["exposure"]["open_notional_usdt"] == 42.5
+
+
+def test_fire_refuses_a_decision_that_aged_out_during_the_resting_reads_and_spends_no_slot(tmp_path, monkeypatch):
+    """Review of #888: a probe call may wait a minute; two of them outlast the decision's bound."""
+    from runtime.mvp_runtime.crypto import pre_order_gate
+
+    events: list[str] = []
+
+    class _Slow(_HappyPathAdapter):
+        def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+            monkeypatch.setattr(pre_order_gate, "_send_clock",
+                                lambda: timeutil.plus_seconds(timeutil.utc_now_iso(), 3600))
+            return []
+
+    adapter = _Slow()
+    marks = _RecordingMarks(events)
+    counter = _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == pre_order_gate.RISK_SNAPSHOT_STALE
+    assert adapter.submitted == [] and counter.count == 0 and events == ["take", "give"]

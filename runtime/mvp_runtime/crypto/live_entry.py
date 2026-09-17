@@ -652,11 +652,13 @@ def plan_live_entry(
         snapshot, at_cap=_f(getattr(limits, "max_open_notional_usdt", 0.0))
     )
     # What that exposure covers, for the symbol claim to judge the global caps again under its lock
-    # (PR2c-3): the figure, and the symbols the venue read held (None when it could not be read).
+    # (PR2c-3): the figure, and the positions of the book it was read beside. The entry is judged
+    # only on a book the venue agrees with, so the figure is those positions' (review of #888: by
+    # position, not by symbol, so one replaced on its symbol since is counted as new).
     detail["exposure_seen"] = {
         "open_notional_usdt": open_notional,
-        "symbols": (sorted({str(p.symbol) for p in snapshot.positions})
-                    if snapshot is not None else None),
+        "position_ids": sorted({str(p.get("position_id")) for p in local_positions
+                                if isinstance(p, Mapping) and p.get("position_id")}),
     }
     guard = evaluate_live_order_guard(
         intent,

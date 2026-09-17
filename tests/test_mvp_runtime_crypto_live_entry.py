@@ -1381,10 +1381,15 @@ def test_the_risk_limits_in_force_are_judged_by_their_identity(judged, in_force,
 
 # --- PR2c-3: the exposure a decision judged, for the symbol claim ---------------------------------
 
-def test_a_decision_records_the_exposure_its_guard_judged_and_what_it_covers():
-    decision = _plan(snapshot=_snapshot(_position("ETHUSDT", notional=30.0), _position("SOLUSDT", notional=12.5)),
-                     reconciliation={"status": "RECONCILED", "books": {}})
-    assert decision["exposure_seen"] == {"open_notional_usdt": 42.5, "symbols": ["ETHUSDT", "SOLUSDT"]}
+@pytest.mark.parametrize("book,ids", [
+    ([{"symbol": "ETHUSDT", "position_id": "live_position_eth"}], ["live_position_eth"]),
+    ([{"symbol": "ETHUSDT"}], []),                               # a record naming no position is not listed
+], ids=["named", "unnamed"])
+def test_a_decision_records_the_exposure_its_guard_judged_and_the_book_it_was_read_beside(book, ids):
+    decision = _plan(snapshot=_snapshot(_position("ETHUSDT", notional=42.5)),
+                     local_positions=book, reconciliation={"status": "RECONCILED", "books": {}})
+    assert decision["ready"] is True, decision["reasons"]
+    assert decision["exposure_seen"] == {"open_notional_usdt": 42.5, "position_ids": ids}
     assert decision["guard"]["current_open_notional_usdt"] == 42.5
 
 

@@ -71,7 +71,7 @@ DECISION = {
     "status": "READY", "ready": True, "symbol": "BTCUSDT",
     "guard": {"approved": True, "status": "READY", "notional_usdt": 60.0},
     # What the guard judged the order's exposure against (PR2c-3): a flat account.
-    "exposure_seen": {"open_notional_usdt": 0.0, "symbols": []},
+    "exposure_seen": {"open_notional_usdt": 0.0, "position_ids": []},
     "intent": INTENT, "bracket": BRACKET, "risk_snapshot": SNAPSHOT,
     "sizing": {"sizable": True, "quantity": 0.001, "notional_usdt": 60.0},
     # The bar the leg claims before it sends (PR2a), as `plan_live_entry` names it.
@@ -1339,7 +1339,7 @@ def test_the_symbol_is_taken_first_and_given_back_once_the_position_is_booked():
     assert result["status"] == ll.ENTRY_OPENED
     # PR2c-3: the claim carries what the guard judged, capped by the limits the gate judged.
     assert marks.taken == [{**_CLAIM, "door": "autonomous", "now": NOW, "notional_usdt": 60.0,
-                            "exposure": {"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0}}]
+                            "exposure": {"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0}}]
     assert marks.given_back == [_CLAIM]
     assert EVENTS[0] == "take" and EVENTS.index("book") < EVENTS.index("give")
 
@@ -1436,7 +1436,7 @@ def test_the_real_marks_give_the_symbol_back_and_the_book_refuses_the_next_entry
     with pytest.raises(ToolError) as refused:
         marks.claim_symbol(symbol="BTCUSDT", door="probe", client_order_id="TAI_BTCUSDT_LONG_next",
                            now=NOW, notional_usdt=60.0,
-                           exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
+                           exposure={"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0})
     assert refused.value.reason_code == LIVE_ENTRY_SYMBOL_OCCUPIED
 
 
@@ -1713,9 +1713,9 @@ def test_resting_orders_are_read_on_the_entry_s_own_symbol_both_lists():
 def test_the_claim_is_told_what_the_guard_judged_and_the_cap_the_gate_judged():
     narrowed = LiveOrderLimits(**{**LIMITS.__dict__, "max_open_notional_usdt": 90.0})
     decision = {**DECISION, "guard": {**DECISION["guard"], "notional_usdt": 61.5},
-                "exposure_seen": {"open_notional_usdt": 12.0, "symbols": ["ETHUSDT"]}}
+                "exposure_seen": {"open_notional_usdt": 12.0, "position_ids": ["live_position_eth"]}}
     assert ll.claim_exposure(decision, narrowed) == (
-        61.5, {"open_notional_usdt": 12.0, "symbols": ["ETHUSDT"], "cap_usdt": 90.0})
+        61.5, {"open_notional_usdt": 12.0, "position_ids": ["live_position_eth"], "cap_usdt": 90.0})
     assert ll.claim_exposure({**decision, "exposure_seen": None}, narrowed) == (61.5, None)
 
 
@@ -1730,3 +1730,28 @@ def test_a_decision_that_does_not_say_what_it_judged_costs_nothing_on_the_real_m
     assert result["reason_codes"] == [LIVE_ENTRY_CLAIM_MALFORMED]
     assert counter.count == 0 and adapter.submitted == []
     assert read_live_entry_marks(tmp_path)["in_flight"] == {}
+
+
+def test_a_decision_that_ages_out_during_the_resting_reads_costs_no_bar_and_no_slot(monkeypatch):
+    """Review of #888: the two venue reads sit between the gate and the send. A decision that is too
+    old once they return is refused before the bar and the slot are spent."""
+    later = "2026-07-25T12:01:01Z"                                   # NOW + 61 s
+
+    class _Slow(FakeAdapter):
+        def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+            monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: later)
+            return []
+
+    marks, counter, store, adapter = FakeMarks(), FakeCounter(), FakeSnapshotStore(), _Slow()
+    result = _entry(entry_marks=marks, counter=counter, adapter=adapter, snapshot_store=store)
+    assert result["reason_codes"] == [pre_order_gate.RISK_SNAPSHOT_STALE]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+    assert marks.given_back == [_CLAIM]
+
+
+def test_a_conditional_order_is_named_by_its_client_id():
+    class _Resting(FakeAdapter):
+        def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+            return [{"clientAlgoId": "TAI_BTCUSDT_SL_old", "algoId": 77, "orderId": 77, "symbol": symbol}]
+
+    assert ll.resting_orders(_Resting(), "BTCUSDT", timeout_seconds=10) == ["TAI_BTCUSDT_SL_old"]

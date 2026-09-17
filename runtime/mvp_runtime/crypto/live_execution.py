@@ -425,6 +425,15 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
     return out
 
 
+def _order_rows(body: Any, label: str) -> list[dict[str, Any]]:
+    """A venue order list, or ``ORDER_MALFORMED_RESULT``. A body that is not a list of objects is
+    not "nothing is resting": a caller deciding whether an entry may go must not read it as empty
+    (review of #888)."""
+    if not (isinstance(body, list) and all(isinstance(row, dict) for row in body)):
+        raise ToolError(ORDER_MALFORMED_RESULT, f"the {label} query returned something other than a list of orders")
+    return list(body)
+
+
 def reconcile_order(
     intent: Mapping[str, Any], venue_order: Mapping[str, Any] | None
 ) -> tuple[str, list[str]]:
@@ -819,7 +828,7 @@ class BinanceFuturesOrderAdapter:
             raise ToolError(
                 ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}"
             )
-        return [o for o in body if isinstance(o, dict)] if isinstance(body, list) else []
+        return _order_rows(body, "open-orders")
 
     def algo_open_orders(
         self, symbol: str | None = None, *, timeout_seconds: int = 10
@@ -843,7 +852,7 @@ class BinanceFuturesOrderAdapter:
             raise ToolError(
                 ORDER_REJECTED, f"venue refused the algo open-orders query (code {code}): {msg}"
             )
-        rows = [normalize_algo_order(o) for o in body if isinstance(o, dict)] if isinstance(body, list) else []
+        rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
         return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
 
     def cancel_order(

@@ -1134,9 +1134,13 @@ LIVE_ENTRY_CLAIM_LOST = "LIVE_ENTRY_CLAIM_LOST"
 LIVE_ENTRY_CAPACITY_TAKEN = "LIVE_ENTRY_CAPACITY_TAKEN"
 LIVE_ENTRY_EXPOSURE_TAKEN = "LIVE_ENTRY_EXPOSURE_TAKEN"
 _CLAIM_FIELDS = ("claimed_at", "door", "client_order_id")
-# What the claim adds since PR2c-3: the notional its door judged. A claim written before names none,
-# and counts as the whole exposure cap while it holds.
-_CLAIM_NOTIONAL = "notional_usdt"
+# What each claim adds since PR2c-3: the notional its door judged, beside the claim rather than in
+# it (review of #888). A runtime from before reads a claim with a fourth field as a damaged file and
+# refuses every entry, so a rollback would stop trading; it ignores a map it does not know, and
+# drops it on its next write. A claim this map does not name for its own order counts as the whole
+# exposure cap while it holds.
+_CLAIM_NOTIONALS = "in_flight_notional"
+_NOTIONAL_FIELDS = ("client_order_id", "notional_usdt")
 
 _MARK_MAPS = ("entered", "cooldown")
 _CONTEXT_SEP = "__"
@@ -1157,21 +1161,31 @@ def _is_bar_time(value: Any) -> bool:
 
 
 def _empty_entry_marks() -> dict[str, Any]:
-    return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {}}
+    return {"version": ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {}, "in_flight": {},
+            _CLAIM_NOTIONALS: {}}
 
 
 def _positive_amount(value: Any) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and value > 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value > 0
+    except OverflowError:   # an integer too large for a float is no amount this runtime judges
+        return False
+
+
+def _is_claim_notional(symbol: Any, entry: Any) -> bool:
+    return (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(entry, dict)
+            and set(entry) == set(_NOTIONAL_FIELDS)
+            and isinstance(entry.get("client_order_id"), str) and bool(entry["client_order_id"].strip())
+            and _positive_amount(entry.get("notional_usdt")))
 
 
 def _is_claim(symbol: Any, claim: Any) -> bool:
     if not (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(claim, dict)
-            and set(claim) - {_CLAIM_NOTIONAL} == set(_CLAIM_FIELDS)
-            and _is_bar_time(claim.get("claimed_at"))
+            and set(claim) == set(_CLAIM_FIELDS) and _is_bar_time(claim.get("claimed_at"))
             and all(isinstance(claim.get(field), str) and claim[field].strip()
-                    for field in ("door", "client_order_id"))
-            and (_CLAIM_NOTIONAL not in claim or _positive_amount(claim[_CLAIM_NOTIONAL]))):
+                    for field in ("door", "client_order_id"))):
         return False
     # The form alone admits "2026-99-99T99:99:99Z", which never expires, and a year-9999 stamp,
     # whose expiry cannot be computed. Either is a damaged file, not a claim.
@@ -1209,7 +1223,24 @@ def read_live_entry_marks(root: Path | None = None, *, venue: str = VENUE_MAINNE
     if not isinstance(in_flight, dict) or not all(_is_claim(k, v) for k, v in in_flight.items()):
         raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, "live entry marks hold a malformed 'in_flight' map")
     marks["in_flight"] = {symbol: dict(claim) for symbol, claim in in_flight.items()}
+    # Absent in a file written before PR2c-3, or by a runtime from before it.
+    notionals = data.get(_CLAIM_NOTIONALS, {})
+    if not isinstance(notionals, dict) or not all(_is_claim_notional(k, v) for k, v in notionals.items()):
+        raise ToolError(LIVE_ENTRY_MARKS_UNREADABLE, f"live entry marks hold a malformed {_CLAIM_NOTIONALS!r} map")
+    marks[_CLAIM_NOTIONALS] = {symbol: dict(entry) for symbol, entry in notionals.items()}
     return marks
+
+
+def claim_notional(marks: Mapping[str, Any], symbol: Any) -> float | None:
+    """The notional the claim on ``symbol`` was taken for, or None when the marks do not name one
+    for that claim's own order (PR2c-3). Pure."""
+    claim = ((marks.get("in_flight") or {}).get(str(symbol or "")))
+    entry = ((marks.get(_CLAIM_NOTIONALS) or {}).get(str(symbol or "")))
+    if not (isinstance(claim, Mapping) and isinstance(entry, Mapping)
+            and entry.get("client_order_id") == claim.get("client_order_id")
+            and _positive_amount(entry.get("notional_usdt"))):
+        return None
+    return float(entry["notional_usdt"])
 
 
 def claim_expires_at(claim: Mapping[str, Any]) -> str:
@@ -1242,15 +1273,17 @@ def claim_caps_problem(
     flight, or both.
 
     - **Positions:** the book plus those entries plus this one must not exceed ``max_positions``.
-    - **Exposure:** it starts from what the door judged, ``exposure["open_notional_usdt"]``, the
-      venue's open notional over ``exposure["symbols"]``. To that it adds each booked position on a
-      symbol that read did not cover, each other entry's notional, and this order's ``notional_usdt``.
-      The sum must stay within ``exposure["cap_usdt"]``. A claim that names no notional counts as
-      the whole cap, and a read that named no symbols counts every booked position again: both
-      err toward refusing."""
+    - **Exposure:** it starts from what the door judged, ``exposure["open_notional_usdt"]``: the
+      venue's open notional, read when the door's book held ``exposure["position_ids"]`` (an entry
+      is judged only on a book the venue agrees with). To that it adds each booked position that
+      book did not hold (by position, so a position replaced on the same symbol is new), each other
+      entry's notional, and this order's ``notional_usdt``. The sum must stay within
+      ``exposure["cap_usdt"]``. A claim whose notional is not recorded, a booked record whose
+      notional cannot be read, and a door that named no positions all err toward refusing: the
+      first two count as the whole cap, the last counts every booked position again."""
     booked_symbols = {str(p.get("symbol") or "") for p in booked}
     others = [
-        claim for held, claim in (marks.get("in_flight") or {}).items()
+        held for held in (marks.get("in_flight") or {})
         if held != symbol and held not in booked_symbols
         and symbol_in_flight(marks, held, now=now) is not None
     ]
@@ -1259,12 +1292,14 @@ def claim_caps_problem(
                 f"{len(booked)} booked and {len(others)} in flight leave no room for a "
                 f"position on {symbol} (at most {max_positions})")
     cap = float(exposure["cap_usdt"])
-    seen = exposure.get("symbols")
-    seen_symbols = set(seen) if isinstance(seen, list) else set()
-    # A booked record whose notional cannot be read counts as the whole cap, never as nothing.
+    seen = exposure.get("position_ids")
+    seen_ids = set(seen) if isinstance(seen, list) else set()
     since = sum(float(p["notional_usdt"]) if _positive_amount(p.get("notional_usdt")) else cap
-                for p in booked if seen is None or str(p.get("symbol") or "") not in seen_symbols)
-    flying = sum(float(c[_CLAIM_NOTIONAL]) if _CLAIM_NOTIONAL in c else cap for c in others)
+                for p in booked if seen is None or str(p.get("position_id") or "") not in seen_ids)
+    flying = 0.0
+    for held in others:
+        recorded = claim_notional(marks, held)
+        flying += cap if recorded is None else recorded
     total = float(exposure["open_notional_usdt"]) + since + flying + float(notional_usdt)
     if total > cap:
         return (LIVE_ENTRY_EXPOSURE_TAKEN,
@@ -1382,17 +1417,18 @@ class LiveEntryMarks:
         Under the lock, the symbol must have no other entry in flight and no position in this
         venue's book, and one more position must fit the global caps (:func:`claim_caps_problem`,
         PR2c-3). ``notional_usdt`` is the notional the door's guard judged; ``exposure`` is what that
-        guard judged it against: ``open_notional_usdt``, the ``symbols`` that figure covers (None
-        when unknown), and ``cap_usdt``. The claim is stamped with the later of ``now`` and the
-        wall clock: the cycle's ``now`` can be minutes old by the time its leg runs, and an early
-        stamp would expire early."""
+        guard judged it against: ``open_notional_usdt``, the ``position_ids`` of the book that figure
+        was read beside (None when unknown), and ``cap_usdt``. The claim is stamped with the later
+        of ``now`` and the wall clock: the cycle's ``now`` can be minutes old by the time its leg
+        runs, and an early stamp would expire early."""
         exposure = exposure if isinstance(exposure, Mapping) else {}
-        seen = exposure.get("symbols")
+        seen = exposure.get("position_ids")
+        open_notional = exposure.get("open_notional_usdt")
         if not (isinstance(symbol, str) and symbol.strip() and isinstance(door, str) and door.strip()
                 and isinstance(client_order_id, str) and client_order_id.strip() and _is_bar_time(now)
                 and _positive_amount(notional_usdt) and _positive_amount(exposure.get("cap_usdt"))
-                and (_positive_amount(exposure.get("open_notional_usdt"))
-                     or exposure.get("open_notional_usdt") == 0)
+                and (_positive_amount(open_notional)
+                     or (open_notional == 0 and not isinstance(open_notional, bool)))
                 and (seen is None or (isinstance(seen, list) and all(isinstance(s, str) for s in seen)))):
             raise ToolError(LIVE_ENTRY_CLAIM_MALFORMED,
                             "a symbol claim needs a symbol, a door, an order id, a time, the order's "
@@ -1413,10 +1449,13 @@ class LiveEntryMarks:
                 raise ToolError(LIVE_ENTRY_SYMBOL_OCCUPIED, f"{symbol} already holds a live position")
             problem = claim_caps_problem(marks, booked, symbol=symbol, now=at, notional_usdt=notional_usdt,
                                          exposure=exposure, max_positions=MAX_LIVE_CONCURRENT_POSITIONS)
+            if problem is not None and problem[0] == LIVE_ENTRY_CAPACITY_TAKEN:
+                raise ToolError(LIVE_ENTRY_CAPACITY_TAKEN, problem[1])
             if problem is not None:
-                raise ToolError(*problem)
-            marks["in_flight"][symbol] = {"claimed_at": at, "door": door, "client_order_id": client_order_id,
-                                          _CLAIM_NOTIONAL: float(notional_usdt)}
+                raise ToolError(LIVE_ENTRY_EXPOSURE_TAKEN, problem[1])
+            marks["in_flight"][symbol] = {"claimed_at": at, "door": door, "client_order_id": client_order_id}
+            marks[_CLAIM_NOTIONALS][symbol] = {"client_order_id": client_order_id,
+                                               "notional_usdt": float(notional_usdt)}
 
         return self._update(mutate)
 
@@ -1430,6 +1469,7 @@ class LiveEntryMarks:
                 raise ToolError(LIVE_ENTRY_CLAIM_LOST,
                                 f"{symbol} is not claimed by {client_order_id} any more")
             del marks["in_flight"][symbol]
+            marks[_CLAIM_NOTIONALS].pop(symbol, None)
             return True
 
         return self._update(mutate)

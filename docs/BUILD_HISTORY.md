@@ -34,8 +34,8 @@ Append a new entry when a milestone ships, in the same PR.
       positions against a cap of two.
     - **The fix:** the claim now carries the notional its guard judged. Under the marks lock it
       re-judges both caps against the book read again and every other entry still in flight.
-    - **Double counting:** the decision records which symbols its venue read covered
-      (`exposure_seen`), so a booked position the door already saw is counted once.
+    - **Double counting:** the decision records the position ids of the book its venue read was
+      judged beside (`exposure_seen`), so a booked position the door already saw is counted once.
   - **Resting orders before the entry (decision 25).**
     - **The gap:** nothing withdrew a leg a close left behind. A resting `closePosition` stop would
       close the next LONG on the symbol whole, and a reduce-only target would shrink it.
@@ -43,8 +43,27 @@ Append a new entry when a milestone ships, in the same PR.
       resting, or a read that fails, refuses the entry before the bar or the slot is spent. The
       operator withdraws the order; the runtime still cancels nothing it did not place in this
       entry.
-  - **Older claims.** A claim written before this names no notional. It is still read, and counts
-    as the whole exposure cap until it expires (30 minutes).
+  - **Older claims, and rollback.** The notional is kept in a map beside the claims, and the
+    claims keep their three fields, so a runtime from before this still reads the file. A claim
+    the map does not name for its own order counts as the whole exposure cap until it expires
+    (30 minutes).
+  - **What the independent review of #888 found, fixed in the same PR.**
+    - **A slow resting read could spend a bar and a slot on a decision too old to send.** The two
+      reads sit between the gate and the send. Each door now judges the decision's age again right
+      after them, before it spends anything.
+    - **The real adapter read a malformed answer as "nothing rests".** `open_orders` and
+      `algo_open_orders` now raise `ORDER_MALFORMED_RESULT` for an answer that is not a list of
+      orders.
+    - **"Seen" was judged by symbol.** A position replaced on its symbol after the door's read was
+      counted at its old size. It is now judged by position id.
+    - **A rollback would have stopped trading.** A claim with a fourth field reads as a damaged file
+      to the runtime before this. The notional moved to its own map.
+    - **Smaller fixes:**
+      - an integer notional too large for a float no longer escapes as an untyped error;
+      - `False` is no longer taken as a zero exposure;
+      - the new codes are raised as literals, so the diagnostic index lists them;
+      - a conditional resting order is named by its client id.
+    - **Left open:** an entry refused for resting orders sends no message (contract §6).
 
 - **The gate checks an autonomous entry's arm against an approval Thomas answered for its
   lineage** (crypto PR2c-2b, Thomas decisions 17 and 23, 2026-09-17; `crypto/promotion.py`,

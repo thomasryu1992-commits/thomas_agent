@@ -719,7 +719,8 @@ def run_fire(
         entry_marks.claim_symbol(
             door=PURPOSE_PROBE, now=now, notional_usdt=verdict.get("notional_usdt"),
             exposure={"open_notional_usdt": open_notional,
-                      "symbols": sorted({str(p.symbol) for p in snapshot.positions}),
+                      "position_ids": sorted({str(p.get("position_id")) for p in local_positions
+                                              if p.get("position_id")}),
                       "cap_usdt": guard_kwargs["limits"].max_open_notional_usdt},
             **claim,
         )
@@ -749,6 +750,15 @@ def run_fire(
                 f"{symbol} has orders resting at the venue ({', '.join(left)}); withdraw them "
                 "(scripts/list_resting_orders.py lists them) and fire again. Nothing was sent",
             )
+        # Those reads can take their timeouts (up to a minute each here): the decision is judged
+        # again for its age before the slot is spent (review of #888).
+        try:
+            pre_order_gate.verify_snapshot(intent, snapshot_record)
+        except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+            raise _Refusal(
+                getattr(exc, "reason_code", type(exc).__name__),
+                f"the decision can no longer be sent ({exc}); nothing was sent",
+            ) from exc
         counter = select_live_order_counter(now=now, root=root)
         position_store = select_live_position_store(now=now, root=root)
         ledger = select_live_ledger(now=now, root=root)

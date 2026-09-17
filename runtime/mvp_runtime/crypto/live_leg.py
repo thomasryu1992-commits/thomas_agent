@@ -338,7 +338,10 @@ def resting_orders(adapter: Any, symbol: str, *, timeout_seconds: int) -> list[s
                         f"resting orders on {symbol} could not be read ({type(exc).__name__})") from exc
     if not (isinstance(plain, list) and isinstance(conditional, list)):
         raise ToolError(RESTING_ORDERS_UNREADABLE, f"resting orders on {symbol} came back malformed")
-    return [str(o.get("clientOrderId") or o.get("orderId") or "?") if isinstance(o, Mapping) else "?"
+    # The client id the runtime and `scripts/list_resting_orders.py` name an order by: a conditional
+    # order's is `clientAlgoId` (the algo number is aliased to `orderId`, so it comes after).
+    return [str(o.get("clientOrderId") or o.get("clientAlgoId") or o.get("orderId") or "?")
+            if isinstance(o, Mapping) else "?"
             for o in (*plain, *conditional)]
 
 
@@ -352,7 +355,7 @@ def claim_exposure(decision: Mapping[str, Any], limits: Any) -> tuple[Any, dict[
         return guard.get("notional_usdt"), None
     return guard.get("notional_usdt"), {
         "open_notional_usdt": seen.get("open_notional_usdt"),
-        "symbols": seen.get("symbols"),
+        "position_ids": seen.get("position_ids"),
         "cap_usdt": getattr(limits, "max_open_notional_usdt", None),
     }
 
@@ -787,6 +790,9 @@ def execute_live_entry(
         if left:
             result["resting_orders"] = left
             raise ToolError(RESTING_ORDERS, f"{claim['symbol']} has orders resting at the venue: {left}")
+        # Those two venue reads can take their timeouts: the decision is judged again for its age
+        # before anything is spent, so a slow read costs no bar and no slot (review of #888).
+        pre_order_gate.verify_snapshot(intent, risk_snapshot)
         entry_marks.claim_bar(
             symbol=entry_bar.get("symbol"), timeframe=entry_bar.get("timeframe"),
             bar_time=entry_bar.get("bar_time"),

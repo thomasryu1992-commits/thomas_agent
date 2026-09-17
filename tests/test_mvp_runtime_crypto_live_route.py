@@ -2313,7 +2313,7 @@ def _another_door_in_flight(tmp_path, *, notional):
     auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
     LiveEntryMarks(root=tmp_path, authorization=auth).claim_symbol(
         symbol="SOLUSDT", door="probe", client_order_id="TAI_SOLUSDT_LONG_probe", now=NOW,
-        notional_usdt=notional, exposure={"open_notional_usdt": 0.0, "symbols": [], "cap_usdt": 120.0})
+        notional_usdt=notional, exposure={"open_notional_usdt": 0.0, "position_ids": [], "cap_usdt": 120.0})
 
 
 def test_an_entry_another_door_leaves_no_exposure_for_is_held_before_the_bar(tmp_path, monkeypatch):
