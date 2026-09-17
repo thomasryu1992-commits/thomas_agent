@@ -128,6 +128,12 @@ CLAIM_NOT_RELEASED = "LIVE_ENTRY_CLAIM_NOT_RELEASED"
 CLAIM_LOST = LIVE_ENTRY_CLAIM_LOST
 # The protective orders the leg would place are not the ones the approved intent carries.
 BRACKET_NOT_APPROVED = "LIVE_ENTRY_BRACKET_NOT_APPROVED"
+# Orders still resting at the venue on the symbol an entry has just taken, or no answer about them
+# (PR2c-3, Thomas decision 25). A leg left behind — a `closePosition` stop, a reduce-only target —
+# can close or shrink the next position on that symbol. The entry is refused and the operator
+# withdraws what rests (`scripts/list_resting_orders.py` shows it); nothing is cancelled here.
+RESTING_ORDERS = "LIVE_ENTRY_RESTING_ORDERS"
+RESTING_ORDERS_UNREADABLE = "LIVE_ENTRY_RESTING_ORDERS_UNREADABLE"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
 BRACKET_FAILED = "LIVE_BRACKET_FAILED"
 NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
@@ -317,6 +323,41 @@ def _persist_failure_reason(exc: Exception) -> str:
     point — the same posture ``live_route._record_entry_outcome`` takes on the route side.
     """
     return getattr(exc, "reason_code", None) or f"UNEXPECTED_{type(exc).__name__}"
+
+
+def resting_orders(adapter: Any, symbol: str, *, timeout_seconds: int) -> list[str]:
+    """The ids of every order resting at the venue on ``symbol``, plain and conditional (PR2c-3).
+
+    Raises ``ToolError(RESTING_ORDERS_UNREADABLE)`` when either list cannot be read: "nothing
+    rests" and "the venue did not say" must never be the same answer before an entry."""
+    try:
+        plain = adapter.open_orders(symbol, timeout_seconds=timeout_seconds)
+        conditional = adapter.algo_open_orders(symbol, timeout_seconds=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — any failure to read is an unread list
+        raise ToolError(RESTING_ORDERS_UNREADABLE,
+                        f"resting orders on {symbol} could not be read ({type(exc).__name__})") from exc
+    if not (isinstance(plain, list) and isinstance(conditional, list)):
+        raise ToolError(RESTING_ORDERS_UNREADABLE, f"resting orders on {symbol} came back malformed")
+    # The client id the runtime and `scripts/list_resting_orders.py` name an order by: a conditional
+    # order's is `clientAlgoId` (the algo number is aliased to `orderId`, so it comes after).
+    return [str(o.get("clientOrderId") or o.get("clientAlgoId") or o.get("orderId") or "?")
+            if isinstance(o, Mapping) else "?"
+            for o in (*plain, *conditional)]
+
+
+def claim_exposure(decision: Mapping[str, Any], limits: Any) -> tuple[Any, dict[str, Any] | None]:
+    """``(notional_usdt, exposure)`` for the symbol claim (PR2c-3): the notional the decision's guard
+    judged, and the exposure it judged it against, capped by the limits the gate judged. None for
+    what the decision does not carry; the claim then refuses as malformed."""
+    guard = decision.get("guard") if isinstance(decision.get("guard"), Mapping) else {}
+    seen = decision.get("exposure_seen")
+    if not isinstance(seen, Mapping):
+        return guard.get("notional_usdt"), None
+    return guard.get("notional_usdt"), {
+        "open_notional_usdt": seen.get("open_notional_usdt"),
+        "position_ids": seen.get("position_ids"),
+        "cap_usdt": getattr(limits, "max_open_notional_usdt", None),
+    }
 
 
 # --- the bracket ---------------------------------------------------------------
@@ -736,10 +777,22 @@ def execute_live_entry(
     # nothing, not even its bar, which it may then take later in the bar. The claim is given back
     # only where the book says what the venue holds; anywhere else it is kept until it expires.
     claim = {"symbol": intent.get("symbol"), "client_order_id": intent.get("client_order_id")}
+    notional_usdt, exposure = claim_exposure(decision, limits)
     claimed = False
     try:
-        entry_marks.claim_symbol(door=PURPOSE_AUTONOMOUS, now=now, **claim)
+        # PR2c-3: the claim also judges the global caps again, against every other entry in flight.
+        entry_marks.claim_symbol(door=PURPOSE_AUTONOMOUS, now=now, notional_usdt=notional_usdt,
+                                 exposure=exposure, **claim)
         claimed = True
+        # PR2c-3: nothing may rest at the venue on the symbol just taken. Read before the bar and the
+        # slot, so a refusal here spends neither.
+        left = resting_orders(adapter, str(claim["symbol"]), timeout_seconds=timeout_seconds)
+        if left:
+            result["resting_orders"] = left
+            raise ToolError(RESTING_ORDERS, f"{claim['symbol']} has orders resting at the venue: {left}")
+        # Those two venue reads can take their timeouts: the decision is judged again for its age
+        # before anything is spent, so a slow read costs no bar and no slot (review of #888).
+        pre_order_gate.verify_snapshot(intent, risk_snapshot)
         entry_marks.claim_bar(
             symbol=entry_bar.get("symbol"), timeframe=entry_bar.get("timeframe"),
             bar_time=entry_bar.get("bar_time"),

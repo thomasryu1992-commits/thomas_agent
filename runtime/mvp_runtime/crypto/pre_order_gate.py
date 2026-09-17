@@ -75,8 +75,10 @@ RISK_SNAPSHOT_STALE = "RISK_SNAPSHOT_STALE"
 
 # How long a sealed decision may wait for its send (PR2c-1, Thomas decision 24). The account age
 # bound, applied to the gate's own judgment: a door judges an account at most that old, and the
-# order it approves must leave within the same bound. Between the gate and the send there are only
-# governance and three locked, synced writes — seconds.
+# order it approves must leave within the same bound. Between the gate and the send there are
+# governance, three locked and synced writes, and (PR2c-3) the two resting-order reads, which can
+# take their timeouts. Each entry door therefore judges the age again after those reads, before it
+# spends a bar or a slot.
 MAX_SNAPSHOT_AGE_SECONDS = MAX_ACCOUNT_AGE_SECONDS
 
 # The gate's own checks, added to whatever the door re-derived.

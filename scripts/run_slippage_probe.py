@@ -714,7 +714,16 @@ def run_fire(
     entry_marks = select_live_entry_marks(now=now, root=root)
     claim = {"symbol": symbol, "client_order_id": intent["client_order_id"]}
     try:
-        entry_marks.claim_symbol(door=PURPOSE_PROBE, now=now, **claim)
+        # PR2c-3: the claim also judges the global caps again, against every other entry in flight,
+        # on what the guard judged: the probe's notional, and the venue exposure it was read with.
+        entry_marks.claim_symbol(
+            door=PURPOSE_PROBE, now=now, notional_usdt=verdict.get("notional_usdt"),
+            exposure={"open_notional_usdt": open_notional,
+                      "position_ids": sorted({str(p.get("position_id")) for p in local_positions
+                                              if p.get("position_id")}),
+                      "cap_usdt": guard_kwargs["limits"].max_open_notional_usdt},
+            **claim,
+        )
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
         raise _Refusal(
             probe.PROBE_SYMBOL_NOT_CLAIMED,
@@ -724,6 +733,32 @@ def run_fire(
 
     # Whatever fails from here to the send, nothing has left: the symbol goes back (PR2b-2 review).
     try:
+        # PR2c-3 (decision 25): nothing may rest at the venue on this symbol. A stop another probe
+        # left behind would close this one's position. Read before the slot, so a refusal spends
+        # nothing; the operator withdraws what rests.
+        try:
+            left = live_leg.resting_orders(adapter, symbol, timeout_seconds=timeout_seconds)
+        except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+            raise _Refusal(
+                probe.PROBE_RESTING_ORDERS,
+                f"the orders resting on {symbol} could not be read "
+                f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
+            ) from exc
+        if left:
+            raise _Refusal(
+                probe.PROBE_RESTING_ORDERS,
+                f"{symbol} has orders resting at the venue ({', '.join(left)}); withdraw them "
+                "(scripts/list_resting_orders.py lists them) and fire again. Nothing was sent",
+            )
+        # Those reads can take their timeouts (up to a minute each here): the decision is judged
+        # again for its age before the slot is spent (review of #888).
+        try:
+            pre_order_gate.verify_snapshot(intent, snapshot_record)
+        except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+            raise _Refusal(
+                getattr(exc, "reason_code", type(exc).__name__),
+                f"the decision can no longer be sent ({exc}); nothing was sent",
+            ) from exc
         counter = select_live_order_counter(now=now, root=root)
         position_store = select_live_position_store(now=now, root=root)
         ledger = select_live_ledger(now=now, root=root)

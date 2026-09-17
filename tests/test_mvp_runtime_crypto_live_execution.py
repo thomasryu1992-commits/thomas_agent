@@ -787,6 +787,28 @@ def test_a_refused_open_orders_query_raises_rather_than_reading_as_empty(monkeyp
     assert exc.value.reason_code == lx.ORDER_REJECTED and "-1021" in exc.value.reason
 
 
+@pytest.mark.parametrize("reader", ["open_orders", "algo_open_orders"])
+@pytest.mark.parametrize("body", [None, {"orders": [{"clientOrderId": "TAI_ETHUSDT_SL_x"}]},
+                                  [["TAI_ETHUSDT_SL_x"]], [{"symbol": "ETHUSDT"}, "x"], "[]"],
+                         ids=["null", "wrapped", "rows-not-objects", "one-row-not-object", "string"])
+def test_a_resting_order_list_that_is_not_a_list_of_orders_raises(monkeypatch, order_creds, reader, body):
+    """Review of #888: an answer that is not a list of orders was read as "nothing rests", and an
+    entry decides on that answer."""
+    monkeypatch.setattr(lx.urllib.request, "urlopen", _ok(body))
+    with pytest.raises(ToolError) as exc:
+        getattr(_adapter(), reader)("ETHUSDT")
+    assert exc.value.reason_code == lx.ORDER_MALFORMED_RESULT
+
+
+def test_the_conditional_list_keeps_only_the_symbol_asked_for(monkeypatch, order_creds):
+    monkeypatch.setattr(lx.urllib.request, "urlopen", _ok([
+        {"clientAlgoId": "TAI_ETHUSDT_SL_x", "symbol": "ETHUSDT", "algoId": 7},
+        {"clientAlgoId": "TAI_BTCUSDT_SL_y", "symbol": "BTCUSDT", "algoId": 8},
+    ]))
+    assert [o["clientAlgoId"] for o in _adapter().algo_open_orders("ETHUSDT")] == ["TAI_ETHUSDT_SL_x"]
+    assert _adapter().algo_open_orders("ETHUSDT")[0]["orderId"] == 7
+
+
 def test_open_orders_places_and_cancels_nothing(monkeypatch, order_creds):
     """Read-only, asserted on the HTTP verb rather than trusted from the name."""
     seen = {}

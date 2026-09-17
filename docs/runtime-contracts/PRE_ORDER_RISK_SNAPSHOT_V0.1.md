@@ -262,6 +262,44 @@ Then:
 1. The entry takes its symbol (PR2b-2, decisions 21 and 22). Under the entry-marks lock, no other
    entry may be in flight on the symbol and the book may hold no position there. The probe takes it
    at this point too, before its slot.
+   - **The global caps are judged again at the claim** (PR2c-3, decision 26,
+     `live_order.claim_caps_problem`). Two doors entering two different symbols each judged "the
+     book plus my order fits" on facts read before the other's order. Under the same lock, the
+     claim reads the whole book again. The other entries in flight are the unexpired claims on
+     other symbols that the book does not hold yet.
+     - **Positions:** the book, plus those entries, plus this one must stay within
+       `MAX_LIVE_CONCURRENT_POSITIONS` (`LIVE_ENTRY_CAPACITY_TAKEN`).
+     - **Exposure:** start from the venue open notional the door's guard judged. That figure was
+       read beside the door's book, whose position ids the decision records (`exposure_seen`); an
+       entry is judged only on a book the venue agrees with. Add each booked position that book did
+       not hold, each other entry's notional, and this order's notional as its guard judged it. The
+       sum must stay within the exposure cap the gate judged (`LIVE_ENTRY_EXPOSURE_TAKEN`).
+       - A position counts as new by its id, not its symbol, so one replaced on its symbol since
+         the read is counted at its new size.
+     - **What the claim records:** its notional, in a map beside the claims
+       (`in_flight_notional`, bound to the claim's order id). The claim itself keeps its three
+       fields: a runtime from before PR2c-3 reads a fourth as a damaged file and would refuse every
+       entry after a rollback. That runtime ignores the map and drops it on its next write.
+     - **What counts as the whole cap:** a claim the map does not name for its own order (written
+       before PR2c-3, or by an older runtime), and a booked record whose notional cannot be read.
+     - **A claim that outlives its entry now holds room on every symbol.** An unconfirmed entry
+       keeps its claim for up to 30 minutes, and until then it counts against the position and
+       exposure caps of entries on other symbols as well as its own.
+     - **Why the three sources cover every entry:** a door gives its symbol back only after the
+       book records what the venue holds. Under the lock, every entry is booked, in flight, or both.
+   - **Nothing may rest at the venue on the symbol** (PR2c-3, decision 25,
+     `live_leg.resting_orders`). Right after the claim, both doors read the plain and the
+     conditional open orders on the symbol. A leg left behind can close or shrink the next
+     position, so anything resting refuses the entry (`LIVE_ENTRY_RESTING_ORDERS`,
+     `PROBE_RESTING_ORDERS`).
+     - **A read that fails refuses too:** `LIVE_ENTRY_RESTING_ORDERS_UNREADABLE` on the autonomous
+       leg, `PROBE_RESTING_ORDERS` on the probe. So does an answer that is not a list of orders:
+       the adapter raises `ORDER_MALFORMED_RESULT` rather than reading it as empty.
+     - **Then the decision's age is judged again.** The two reads can take their timeouts, so the
+       door judges the decision's age again before it spends a bar or a slot. A decision that aged
+       out is refused (`RISK_SNAPSHOT_STALE`).
+     - **What a refusal costs:** the symbol goes back and nothing else is spent. Nothing is
+       cancelled: the operator withdraws what rests (`scripts/list_resting_orders.py` lists it).
 2. The entry leg claims the bar.
 3. It reserves the day's slot.
 4. It records the snapshot.
@@ -301,6 +339,9 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
     pool.
   - **An append in progress.** The store is read without its lock, and a half-written last line
     makes it unreadable. The entry is held for that pass, as the stage witness is.
+- **An entry refused for resting orders sends no message (PR2c-3).** The refusal and the order ids
+  are on the cycle record, and the refusal repeats every pass until the operator withdraws the
+  order. A notice that fires once per symbol and order set needs state the route does not keep yet.
 - **The readiness board counts armed entries, not verified ones.** An arm that fails verification
   shows as armed there and is held at every gate, with the reason in the cycle record.
 - **Tampering by the state directory's own writer is out of reach.** It can forge an arm as it can
