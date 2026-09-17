@@ -172,6 +172,7 @@ class FakeStore:
     def __init__(self, error=None, raises=ToolError, clear_error=None):
         self.saved: list[dict] = []
         self.cleared: list[str] = []
+        self.cleared_ids: list = []
         self._error = error
         self._raises = raises
         self._clear_error = clear_error
@@ -179,12 +180,14 @@ class FakeStore:
     def save_position(self, position):
         if self._error:
             raise self._raises(self._error, "scripted store failure")
+        EVENTS.append("book")
         self.saved.append(dict(position))
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
         if self._clear_error:
             raise self._raises(self._clear_error, "scripted store failure")
         self.cleared.append(symbol)
+        self.cleared_ids.append(position_id)
 
 
 class FakeLedger:
@@ -220,10 +223,28 @@ class FakeCounter:
 
 
 class FakeMarks:
-    def __init__(self, error=None, raises=ToolError):
+    def __init__(self, error=None, raises=ToolError, symbol_error=None, release_error=None):
         self.claims: list[dict] = []
+        self.taken: list[dict] = []
+        self.given_back: list[dict] = []
         self._error = error
         self._raises = raises
+        self._symbol_error = symbol_error
+        self._release_error = release_error
+
+    def claim_symbol(self, **kw):
+        EVENTS.append("take")
+        if self._symbol_error:
+            raise ToolError(self._symbol_error, "scripted symbol claim failure")
+        self.taken.append(dict(kw))
+        return {}
+
+    def release_symbol(self, **kw):
+        EVENTS.append("give")
+        if self._release_error:
+            raise self._release_error
+        self.given_back.append(dict(kw))
+        return {}
 
     def claim_bar(self, **kw):
         EVENTS.append("claim")
@@ -911,7 +932,7 @@ def test_the_bar_is_claimed_and_the_slot_reserved_before_the_entry_is_sent():
     marks = FakeMarks()
     result = _entry(entry_marks=marks)
     assert result["status"] == ll.ENTRY_OPENED
-    assert EVENTS[:3] == ["claim", "reserve", "submit"]
+    assert EVENTS[:4] == ["take", "claim", "reserve", "submit"]
     assert marks.claims == [{"symbol": "BTCUSDT", "timeframe": "1d", "bar_time": BAR}]
 
 
@@ -1167,7 +1188,7 @@ def test_the_snapshot_is_checked_first_and_recorded_after_the_bar_and_the_slot()
     result = _entry(snapshot_store=store)
     assert result["status"] == ll.ENTRY_OPENED
     # record, then the venue door's own idempotent re-bind (a second append that writes nothing).
-    assert EVENTS[:4] == ["claim", "reserve", "record", "record"] and EVENTS[4] == "submit"
+    assert EVENTS[:5] == ["take", "claim", "reserve", "record", "record"] and EVENTS[5] == "submit"
     assert [s["risk_snapshot_sha256"] for s in store.appended] == [SNAPSHOT["risk_snapshot_sha256"]]
     assert result["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
     assert result["position"]["risk_snapshot_sha256"] == SNAPSHOT["risk_snapshot_sha256"]
@@ -1269,3 +1290,185 @@ def test_the_real_legs_are_protective(leg):
     adapter = FakeAdapter()
     placed = ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
     assert placed["placed"] is True and len(adapter.submitted) == 1
+
+
+
+# --- PR2b-2: the symbol is taken before anything is spent, and given back only once the book says
+# what the venue holds ------------------------------------------------------------------------------
+
+_CLAIM = {"symbol": "BTCUSDT", "client_order_id": INTENT["client_order_id"]}
+
+
+def test_the_symbol_is_taken_first_and_given_back_once_the_position_is_booked():
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks)
+    assert result["status"] == ll.ENTRY_OPENED
+    assert marks.taken == [{**_CLAIM, "door": "autonomous", "now": NOW}]
+    assert marks.given_back == [_CLAIM]
+    assert EVENTS[0] == "take" and EVENTS.index("book") < EVENTS.index("give")
+
+
+def test_an_entry_in_flight_on_the_symbol_costs_nothing():
+    marks, counter, adapter, store = (FakeMarks(symbol_error="LIVE_ENTRY_SYMBOL_IN_FLIGHT"),
+                                      FakeCounter(), FakeAdapter(), FakeSnapshotStore())
+    result = _entry(entry_marks=marks, counter=counter, adapter=adapter, snapshot_store=store)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == ["LIVE_ENTRY_SYMBOL_IN_FLIGHT"]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+    assert marks.given_back == []          # it never held the symbol
+
+
+class _SecondAppendFails(FakeSnapshotStore):
+    """Records once (the leg), then refuses the venue door's re-bind: a SubmitRefused."""
+
+    def append(self, snapshot):
+        if self.appended:
+            raise PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "scripted re-bind failure")
+        return super().append(snapshot)
+
+
+@pytest.mark.parametrize("kw,reason", [
+    ({"entry_marks": FakeMarks(error="LIVE_ENTRY_BAR_ALREADY_ENTERED")}, "LIVE_ENTRY_BAR_ALREADY_ENTERED"),
+    ({"counter": FakeCounter(count=LIMITS.max_daily_order_count)}, "LIVE_DAILY_ORDER_CAP_REACHED"),
+    ({"snapshot_store": FakeSnapshotStore(error=PersistenceError("PRE_ORDER_SNAPSHOTS_LOCKED", "x"))},
+     "PRE_ORDER_SNAPSHOTS_LOCKED"),
+    ({"snapshot_store": _SecondAppendFails()}, "PRE_ORDER_SNAPSHOTS_LOCKED"),
+], ids=["bar-spent", "day-full", "snapshot-not-recorded", "refused-at-the-venue-door"])
+def test_a_refusal_after_the_symbol_was_taken_gives_it_back(kw, reason):
+    marks = kw.pop("entry_marks", FakeMarks())
+    adapter = FakeAdapter()
+    result = _entry(entry_marks=marks, adapter=adapter, **kw)
+    assert result["status"] == ll.ENTRY_REFUSED and result["reason_codes"] == [reason]
+    assert adapter.submitted == []
+    assert marks.given_back == [_CLAIM]
+
+
+def test_an_entry_the_venue_did_not_confirm_keeps_the_symbol():
+    """No fill reported is not "nothing is working": the order may still fill, so the symbol stays
+    taken until its claim expires."""
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, adapter=FakeAdapter(statuses={"ENTRY": "NEW"}))
+    assert result["status"] == ll.ENTRY_NOT_CONFIRMED
+    assert marks.taken and marks.given_back == []
+
+
+def test_a_naked_close_the_venue_confirmed_gives_the_symbol_back():
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, adapter=FakeAdapter(missing={"TP"}))
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert marks.given_back == [_CLAIM]
+
+
+def test_a_naked_close_that_did_not_confirm_keeps_the_symbol():
+    marks = FakeMarks()
+    adapter = FakeAdapter(missing={"TP"}, statuses={"CLOSE": ToolError("VENUE_TIMEOUT", "scripted")})
+    result = _entry(entry_marks=marks, adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    assert marks.given_back == []
+
+
+def test_a_position_the_book_could_not_hold_keeps_the_symbol():
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, position_store=FakeStore(error="LIVE_STATE_LOCKED",
+                                                                raises=PersistenceError))
+    assert ll.POSITION_PERSIST_FAILED in result["reason_codes"]
+    assert marks.given_back == []
+
+
+@pytest.mark.parametrize("error", [PersistenceError("LIVE_ENTRY_MARKS_LOCKED", "x"), OSError(28, "full")])
+def test_a_claim_that_cannot_be_given_back_is_reported_never_raised(error):
+    result = _entry(entry_marks=FakeMarks(release_error=error))
+    assert result["status"] == ll.ENTRY_OPENED
+    assert result["reason_codes"] == [ll.CLAIM_NOT_RELEASED]
+
+
+def test_the_real_marks_give_the_symbol_back_and_the_book_refuses_the_next_entry(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import (
+        LIVE_ENTRY_SYMBOL_OCCUPIED,
+        read_live_entry_marks,
+        select_live_entry_marks,
+        select_live_order_counter,
+    )
+    from runtime.mvp_runtime.crypto.live_position import select_live_position_store
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    marks = select_live_entry_marks(root=tmp_path)
+    result = _entry(entry_marks=marks, counter=select_live_order_counter(root=tmp_path),
+                    position_store=select_live_position_store(root=tmp_path))
+    assert result["status"] == ll.ENTRY_OPENED, result["reason_codes"]
+    assert read_live_entry_marks(tmp_path)["in_flight"] == {}
+    with pytest.raises(ToolError) as refused:
+        marks.claim_symbol(symbol="BTCUSDT", door="probe", client_order_id="TAI_BTCUSDT_LONG_next",
+                           now=NOW)
+    assert refused.value.reason_code == LIVE_ENTRY_SYMBOL_OCCUPIED
+
+
+# --- PR2b-2 review ---------------------------------------------------------------------------------
+
+def test_the_exits_clear_only_their_own_positions_record():
+    """The book is one record per symbol: a close names the position it closed, so a record the
+    symbol holds for another position by then is left alone (the store refuses)."""
+    POS = {**POSITION, "position_id": "pos1"}
+    exit_store, settle_store = FakeStore(), FakeStore()
+    assert _exit(position=POS, position_store=exit_store)["status"] == ll.EXIT_CLOSED
+    assert _settle(position=POS, position_store=settle_store)["status"] == ll.EXIT_CLOSED
+    assert exit_store.cleared_ids == ["pos1"] and settle_store.cleared_ids == ["pos1"]
+
+
+def test_a_settle_whose_symbol_now_holds_another_position_leaves_that_record(tmp_path):
+    from runtime.mvp_runtime.crypto.live_position import (
+        LIVE_POSITION_SLOT_TAKEN,
+        RealLivePositionStore,
+        build_live_position,
+        load_open_live_position,
+    )
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    store = RealLivePositionStore(root=tmp_path, authorization=auth)
+    other = build_live_position(symbol="BTCUSDT", direction="LONG", quantity=0.002, entry_price=61000.0,
+                                opened_at="2026-07-25T13:00:00Z", strategy_id="S002")
+    store.save_position(other)
+    result = _settle(position=POSITION, position_store=store)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert LIVE_POSITION_SLOT_TAKEN in result["reason_codes"]
+    assert load_open_live_position("BTCUSDT", tmp_path)["position_id"] == other["position_id"]
+
+
+@pytest.mark.parametrize("marks,expected", [
+    (FakeMarks(release_error=ToolError("LIVE_ENTRY_CLAIM_LOST", "scripted")), [ll.CLAIM_LOST]),
+    (FakeMarks(error="LIVE_ENTRY_BAR_ALREADY_ENTERED",
+               release_error=ToolError("LIVE_ENTRY_CLAIM_LOST", "scripted")),
+     ["LIVE_ENTRY_BAR_ALREADY_ENTERED"]),
+], ids=["after-the-send", "before-the-send"])
+def test_a_lost_claim_is_an_incident_only_once_the_order_left(marks, expected):
+    result = _entry(entry_marks=marks)
+    assert result["reason_codes"] == expected
+
+
+@pytest.mark.parametrize("submit_error,found,given_back", [
+    ("ORDER_REJECTED", False, True),    # the venue refused it with its own code, and has no such order
+    ("ORDER_TRANSPORT", False, False),  # a timeout: the request may still land after the read
+    ("ORDER_REJECTED", True, False),    # a duplicate id: the original order is there, and working
+])
+def test_an_order_the_venue_does_not_have_gives_the_symbol_back_only_if_it_refused_it(
+        submit_error, found, given_back):
+    marks = FakeMarks()
+    adapter = (FakeAdapter(submit_errors={"ENTRY": submit_error}, statuses={"ENTRY": "NEW"}) if found
+               else FakeAdapter(submit_errors={"ENTRY": submit_error}, missing={"ENTRY"}))
+    result = _entry(entry_marks=marks, adapter=adapter)
+    assert result["status"] == ll.ENTRY_NOT_CONFIRMED
+    assert (result["entry"]["reconcile_status"] == "NOT_FOUND") is not found
+    assert (marks.given_back == [_CLAIM]) is given_back
+
+
+def test_a_partial_fill_keeps_the_symbol_even_once_its_close_confirmed():
+    """A partial fill is not terminal: what fills after the reported part was closed is exposure
+    nobody booked, so the symbol stays claimed until it expires."""
+    marks = FakeMarks()
+    adapter = FakeAdapter(statuses={"ENTRY": "PARTIALLY_FILLED"},
+                          fills={"ENTRY": {"executedQty": 0.0005}})
+    result = _entry(entry_marks=marks, adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert marks.taken and marks.given_back == []

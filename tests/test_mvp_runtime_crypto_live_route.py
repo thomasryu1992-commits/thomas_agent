@@ -76,7 +76,7 @@ class _Store:
     def save_position(self, position):
         self.saved.append(dict(position))
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
         self.cleared.append(str(symbol))
 
 
@@ -1569,3 +1569,10 @@ def test_a_venue_settled_trade_still_names_the_snapshot_it_opened_under():
     )
     assert result["status"] == live_leg.EXIT_CLOSED
     assert ledger.appended[0]["risk_snapshot_sha256"] == "sha256:" + "c" * 64
+
+
+@pytest.mark.parametrize("code", ["LIVE_ENTRY_CLAIM_LOST", "LIVE_POSITION_SLOT_TAKEN"])
+def test_two_positions_meeting_on_one_symbol_halt_the_fan_out(code):
+    """PR2b-2 review: an entry that outlived its claim, or a book asked to replace or clear another
+    position's record, means two positions met on one symbol — an incident, like a failed book write."""
+    assert live_route._is_incident({"reason_codes": [code]}) is True

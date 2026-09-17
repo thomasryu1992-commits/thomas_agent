@@ -392,6 +392,11 @@ def test_the_leg_opens_a_position_from_a_decision_the_planner_actually_produced(
     assert recorded["approved"] is True and recorded["client_order_id"] == sent["MARKET"]["newClientOrderId"]
     assert result["position"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
 
+    # PR2b-2: the symbol was taken for the entry and given back once the book held the position.
+    from runtime.mvp_runtime.crypto.live_order import read_live_entry_marks
+
+    assert read_live_entry_marks(tmp_path)["in_flight"] == {}
+
 
 def test_the_book_records_the_actual_fill_not_the_planned_entry(tmp_path):
     """Stage 3 -> 4. The venue filled 0.5 below the plan; the book must say so, because

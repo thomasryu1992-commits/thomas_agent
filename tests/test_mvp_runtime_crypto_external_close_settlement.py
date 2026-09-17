@@ -160,7 +160,7 @@ class _Store:
     def __init__(self):
         self.cleared = []
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
         self.cleared.append(symbol)
 
 
@@ -330,7 +330,7 @@ class _StoreClearFailsOnce:
         self.cleared = []
         self._failed = False
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
         if not self._failed:
             self._failed = True
             raise ToolError("LIVE_POSITION_STORE_LOCKED", "scripted clear failure")

@@ -408,6 +408,16 @@ def test_every_caller_of_the_venue_also_counts_the_order():
             assert min(_calls(function, "reserve_submission")) < min(_calls(function, "submit_and_reconcile")), (
                 f"{path.name}:{function.name} sends before it reserves the day's order slot"
             )
+            # PR2b-2 (decision 22): the two mainnet entry doors are the two processes that can open
+            # a position on one symbol, so each takes the symbol before it spends the slot, and
+            # gives it back on the paths where the book says what the venue holds.
+            claims = _calls(function, "claim_symbol")
+            assert claims and min(claims) < min(_calls(function, "reserve_submission")), (
+                f"{path.name}:{function.name} spends or sends before it takes the symbol"
+            )
+            assert _calls(function, "_give_back_symbol"), (
+                f"{path.name}:{function.name} takes the symbol and never gives it back"
+            )
 
 
 def test_real_adapter_refuses_without_credentials(monkeypatch):

@@ -70,10 +70,12 @@ from .live_order import (
     ENTRY_MARKS_FILENAME,
     MANUAL_KILL_SWITCH_ENV,
     bracket_breaker_status,
+    claim_expires_at,
     count_today,
     evaluate_live_order_guard,
     read_live_entry_marks,
     resolve_live_order_limits,
+    symbol_in_flight,
 )
 from .execution_stage import (
     PURPOSE_AUTONOMOUS,
@@ -121,6 +123,15 @@ DEFAULT_PROBE_SYMBOL = "BTCUSDT"
 # statement about now. Cycles land every few minutes, so two hours is far outside normal and
 # means the scheduler stopped rather than that the gate changed.
 RECORDED_GATE_STALE_AFTER_SECONDS = 2 * 60 * 60
+
+
+def _claim_worth_showing(claim: Mapping[str, Any], now: str) -> bool:
+    """A claim still holding its symbol, or one that expired less than a day ago."""
+    try:
+        shown_until = timeutil.plus_minutes(claim_expires_at(claim), 24 * 60)
+        return timeutil.parse_iso(now) < timeutil.parse_iso(shown_until)
+    except (TypeError, ValueError, OverflowError):
+        return True
 
 
 def _cooldown_holds_now(context: str, until: str, now: str) -> bool:
@@ -522,9 +533,21 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"{context} until the {until} bar" for context, until in marks["cooldown"].items()
             if _cooldown_holds_now(context, until, now)
         )
+        # PR2b-2: the symbols an entry has taken and not yet given back. One whose claim expired
+        # was left by an entry that did not finish, or kept on purpose after an outcome the venue
+        # did not confirm; either way the book and the venue deserve a look. It holds nothing, so
+        # it is shown for the day after it expired rather than for ever.
+        in_flight = sorted(
+            f"{symbol} ({claim['door']} since {claim['claimed_at']}"
+            + ("" if symbol_in_flight(marks, symbol, now=now)
+               else "; EXPIRED unreleased - check the book against the venue") + ")"
+            for symbol, claim in marks["in_flight"].items()
+            if _claim_worth_showing(claim, now)
+        )
         marks_detail = (
             f"{len(marks['entered'])} context(s) have sent an entry; "
             + (f"stop-loss cooldown: {', '.join(holding)}" if holding else "no stop-loss cooldown active")
+            + (f"; entries in flight: {', '.join(in_flight)}" if in_flight else "")
         )
     checks.append(_check("entry_marks", marks is not None, marks_detail))
 
