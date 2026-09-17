@@ -599,14 +599,18 @@ def test_every_entry_door_is_judged_against_the_stage():
     plan_calls = [n for n in ast.walk(route)
                   if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "plan_live_entry"]
     assert plan_calls and all(stage_passed(route, call) == "stage" for call in plan_calls)
-    # ...and its gate re-derives the decision from that same mapping.
+    # ...and its gate re-derives the decision from that same mapping, narrowed by the gate's
+    # re-read (PR2c-2a), which resolves the stage again on the same `now`.
     gate_calls = [n for n in ast.walk(route)
                   if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "gate_live_entry"]
-    assert gate_calls and all(
-        any(kw.arg == "decision_kwargs" and getattr(kw.value, "id", None) == "decision_kwargs"
-            for kw in call.keywords)
-        for call in gate_calls
-    )
+    handed = {getattr(kw.value, "id", None) for call in gate_calls for kw in call.keywords
+              if kw.arg == "decision_kwargs"}
+    assert gate_calls and len(handed) == 1
+    [name] = handed
+    narrowed = [n.value for n in ast.walk(route) if isinstance(n, ast.Assign)
+                and [getattr(t, "id", None) for t in n.targets] == [name]]
+    assert len(narrowed) == 1 and getattr(narrowed[0].func, "id", None) == "narrow_entry_facts"
+    assert getattr(narrowed[0].args[0], "id", None) == "decision_kwargs"
 
 
 def test_a_stage_below_the_rung_refuses_a_live_entry_and_never_a_close():

@@ -71,7 +71,8 @@ from runtime.mvp_runtime.crypto import live_promotion, pre_order_gate  # noqa: E
 from runtime.mvp_runtime.crypto.account import read_account, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
-from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE  # noqa: E402
+from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE, narrow_guard_facts  # noqa: E402
+from runtime.mvp_runtime.crypto.live_route import reread_entry_facts  # noqa: E402
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
@@ -363,6 +364,7 @@ def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None
     opened = probe.open_cell_index(plan)
     if opened is not None:
         open_symbol = plan["cells"][opened]["symbol"]
+        read = plan
         plan, resolution = probe.resolve_open_cell(
             plan,
             outcomes=read_live_outcomes(root),
@@ -370,7 +372,7 @@ def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None
             now=now,
         )
         if resolution is not None:
-            probe.write_plan(plan, root)
+            probe.write_plan(plan, root, expected_sha256=read["record_sha256"])
             print(f"resolved  : cell {resolution['index']} -> {resolution['status']} "
                   f"(outcome {resolution['outcome_id']})")
     plan = probe.abandon_plan(reason=reason, now=now, root=root)
@@ -480,6 +482,7 @@ def run_fire(
     opened = probe.open_cell_index(plan)
     if opened is not None:
         open_symbol = plan["cells"][opened]["symbol"]
+        read = plan
         plan, resolution = probe.resolve_open_cell(
             plan,
             outcomes=read_live_outcomes(root),
@@ -487,9 +490,11 @@ def run_fire(
             now=now,
         )
         if resolution is not None:
-            plan = probe.write_plan(plan, root)
+            plan = probe.write_plan(plan, root, expected_sha256=read["record_sha256"])
             print(f"resolved  : cell {resolution['index']} -> {resolution['status']} "
                   f"(outcome {resolution['outcome_id']})")
+        else:
+            plan = read
 
     adapter = live_execution.select_order_adapter(now=now, root=root)
     if not bool(getattr(adapter, "network_egress", False)):
@@ -508,7 +513,8 @@ def run_fire(
           f"measured {probe.REGIME_FEATURE}@{probe.REGIME_TIMEFRAME} regime = {regime}")
 
     limits, budget = resolve_live_order_limits(root, now=now)
-    control_state = ControlStore(root).load() if root is not None else ControlStore.default().load()
+    control_store = ControlStore(root) if root is not None else ControlStore.default()
+    control_state = control_store.load()
     # `trading_allowed`, live_route's bar for entries: a runtime whose trading arm is down
     # must hold probes too — a probe is an entry, not a close.
     runtime_active = control_state.trading_allowed
@@ -621,13 +627,37 @@ def run_fire(
     if not verdict["approved"]:
         raise _Refusal(probe.PROBE_GUARD_REFUSED, "the final order guard refused; fix what it names")
 
-    # The pre-order gate (PR2b): every refusal above re-derived from the same facts, the order
+    # The re-read (PR2c-2a): since the fire read them, another writer can halt or disarm the
+    # runtime, re-register the budget or the risk limits, demote the stage, spend the day's orders
+    # or trip the bracket breaker. Read again, folded in only to narrow, and judged by the gate
+    # below. The gate's clock is read first: a legacy validity window is judged at it too.
+    gate_clock = timeutil.utc_now_iso()
+    # The limits the risk guard judged on; with none resolved it judged on the defaults.
+    judged_limits = (risk_limits or DEFAULT_RISK_LIMITS).as_record()
+    try:
+        fresh = reread_entry_facts(root=root, now=now, clock=gate_clock, control=control_store,
+                                   judged_limits=judged_limits, with_pool=False)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal(
+            probe.PROBE_REREAD_FAILED,
+            f"the facts could not be read again before the gate "
+            f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
+        ) from exc
+    guard_kwargs = narrow_guard_facts(guard_kwargs, fresh)
+    breaker = {**breaker,
+               "consecutive": max(int(breaker.get("consecutive") or 0), fresh["bracket_failures_consecutive"]),
+               "tripped": bool(breaker.get("tripped")) or fresh["bracket_breaker_tripped"]}
+    if fresh["risk_limits_problem"]:
+        guard_verdict = {**guard_verdict, "allow_new_position": False,
+                         "problems": [*(guard_verdict.get("problems") or ()), fresh["risk_limits_problem"]]}
+
+    # The pre-order gate (PR2b): every refusal above re-derived from the re-read facts, the order
     # rebuilt and judged again, the approved profile checked whole — sealed into the snapshot the
     # order will name. The plan's approval is this order's authority.
     profile = pre_order_gate.approved_profile(
-        purpose=PURPOSE_PROBE, stage=stage, budget=budget,
-        # The limits the risk guard judged on; with none resolved it judged on the defaults.
-        risk_limits=(risk_limits or DEFAULT_RISK_LIMITS).as_record(),
+        purpose=PURPOSE_PROBE, stage=guard_kwargs["execution_stage"],
+        budget={**fresh["budget"], "valid": guard_kwargs["budget_registered"]},
+        risk_limits=judged_limits,
         authority={"kind": pre_order_gate.AUTHORITY_PROBE_PLAN, "batch_id": plan.get("batch_id"),
                    "approval_id": plan.get("approval_id"), "cell_index": cell_index},
     )
@@ -638,7 +668,7 @@ def run_fire(
         risk_verdict=guard_verdict, guard_kwargs=guard_kwargs, profile=profile, now=now,
         # PR2c-1: the account the probe judged must be at most a minute old now, and the order
         # must leave within a minute of this judgment.
-        account_collected_at=getattr(snapshot, "collected_at", None), clock=timeutil.utc_now_iso(),
+        account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
     )
     if not snapshot_record["approved"]:
         raise _Refusal(
@@ -699,11 +729,11 @@ def run_fire(
         # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
         #    which is the honest state (an order may be at the venue) and what keeps
         #    one-probe-at-a-time enforceable across processes.
-        plan = probe.mark_cell(
+        # The plan as this fire read it: an `--abandon` since then refuses the claim, nothing sent.
+        plan = probe.write_plan(probe.mark_cell(
             plan, cell_index, status=probe.CELL_OPEN, now=now,
             opened_at=now, entry_client_order_id=intent["client_order_id"],
-        )
-        plan = probe.write_plan(plan, root)
+        ), root, expected_sha256=plan["record_sha256"])
     except BaseException:
         _give_back_symbol(entry_marks, claim, sent=False)
         raise
@@ -719,7 +749,7 @@ def run_fire(
         probe.write_plan(
             probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
                             now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
-            root,
+            root, expected_sha256=plan["record_sha256"],
         )
         _give_back_symbol(entry_marks, claim, sent=False)
         raise _Refusal(exc.reason_code, f"the order was refused before the venue: {exc}") from exc
@@ -735,7 +765,7 @@ def run_fire(
         plan = probe.write_plan(
             probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
                             now=timeutil.utc_now_iso(), note=note),
-            root,
+            root, expected_sha256=plan["record_sha256"],
         )
 
     if not confirmed:
@@ -857,7 +887,7 @@ def run_fire(
     cells = [dict(c) for c in plan["cells"]]
     cells[cell_index]["position_id"] = position["position_id"]
     cells[cell_index]["updated_at"] = timeutil.utc_now_iso()
-    plan = probe.write_plan({**plan, "cells": cells}, root)
+    plan = probe.write_plan({**plan, "cells": cells}, root, expected_sha256=plan["record_sha256"])
 
     print(f"probe     : {symbol} LONG {filled_qty} @ {fill_price} (notional {notional} USDT), "
           f"stop resting at {trigger} ({placement['client_order_id']})")
@@ -872,10 +902,11 @@ def run_fire(
         """The live cycle settled the probe first — the ledger says how."""
         nonlocal plan
         resolved_now = timeutil.utc_now_iso()
+        read = plan
         plan, resolution = probe.resolve_open_cell(
             plan, outcomes=read_live_outcomes(root), position_open=False, now=resolved_now,
         )
-        plan = probe.write_plan(plan, root)
+        plan = probe.write_plan(plan, root, expected_sha256=read["record_sha256"])
         if resolution is None:
             sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the book cleared but the "
                              "cell could not be resolved\n")
@@ -916,7 +947,7 @@ def run_fire(
                                 outcome_id=outcome.get("outcome_id"),
                                 close_reason=outcome.get("close_reason"),
                                 stop_slippage_bps=outcome.get("stop_slippage_bps")),
-                root,
+                root, expected_sha256=plan["record_sha256"],
             )
             print(f"FILLED    : stop filled; slippage {outcome.get('stop_slippage_bps')} bps "
                   f"(outcome {outcome.get('outcome_id')})")
@@ -963,7 +994,7 @@ def run_fire(
         probe.mark_cell(plan, cell_index, status=probe.CELL_TIMEOUT, now=close_now,
                         outcome_id=outcome.get("outcome_id"),
                         close_reason=outcome.get("close_reason")),
-        root,
+        root, expected_sha256=plan["record_sha256"],
     )
     print(f"TIMEOUT   : closed at market after {plan['params']['timeout_minutes']}m; the row is "
           f"NOT a slippage sample (outcome {outcome.get('outcome_id')})")

@@ -1173,6 +1173,16 @@ class _Collector:
         return {}
 
 
+def _armed_pool(approval_id="approval_arm_pr2a"):
+    from runtime.mvp_runtime.crypto import pool as pool_store
+
+    return {"active_strategies": [{
+        "strategy_id": "S001", "status": "PAPER_ACTIVE",
+        pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_LIVE,
+        pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id,
+    }]}
+
+
 def _wire_whole_leg(tmp_path, monkeypatch, venue):
     """Everything real inside the leg — the book, the ledger, the counter, the marks, the
     planner, the guard, the executing leg — and a double only where the venue or the Core would
@@ -1204,6 +1214,8 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
         "timeframe": "1m", "reason": None})
     monkeypatch.setattr(live_route, "_entry_clock", lambda: clock["now"])
     monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: clock["now"])
+    # The pool the gate re-reads (PR2c-2a): S001 armed LIVE under the approval the cycle handed over.
+    monkeypatch.setattr(live_route.pool, "load_active_pool", lambda root=None: _armed_pool())
     limits = LiveOrderLimits(
         max_order_notional_usdt=60.0, max_daily_order_count=3, max_open_notional_usdt=120.0,
         daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
@@ -1917,3 +1929,176 @@ def test_the_decision_clock_is_read_after_every_fact_it_judges(tmp_path, monkeyp
     assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
     assert order.count("_entry_clock") == 1, order
     assert set(order[:order.index("_entry_clock")]) == set(_JUDGED_READS), order
+
+
+# --- the gate re-reads what another writer can move (PR2c-2a) ------------------------------------
+
+def _nothing_spent(venue, tmp_path):
+    from runtime.mvp_runtime.crypto.live_order import count_today, read_live_entry_marks
+
+    marks = read_live_entry_marks(tmp_path)
+    return venue.entries() == [] and count_today(tmp_path) == 0 and marks["entered"] == {} \
+        and not marks.get("in_flight")
+
+
+def test_a_strategy_disarmed_before_the_gate_is_held_and_spends_nothing(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(live_route.pool, "load_active_pool", lambda root=None: {"active_strategies": []})
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert "strategy_armed_live" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_strategy_re_armed_under_another_approval_is_held(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(live_route.pool, "load_active_pool",
+                        lambda root=None: _armed_pool("approval_arm_other"))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_soft_halt_before_the_gate_holds_the_entry(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    read_filters = live_route.read_symbol_filters
+
+    def _halted_meanwhile(collector, symbol, **kw):
+        ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW,
+                                                 reason="halt", trading_armed=False))
+        return read_filters(collector, symbol, **kw)
+
+    monkeypatch.setattr(live_route, "read_symbol_filters", _halted_meanwhile)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True, "the first read saw an armed runtime"
+    assert held["live_pre_order_reread"]["runtime_active"] is False
+    assert "runtime_active" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_the_day_another_door_spent_before_the_gate_holds_the_entry(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    counts = iter([0, 3])
+    monkeypatch.setattr(live_route, "count_today", lambda root=None: next(counts))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_pre_order_reread"]["submitted_today"] == 3
+    assert "daily_order_count_within_cap" in held["live_pre_order_gate"]["failed_checks"]
+    assert venue.entries() == []
+
+
+def test_a_re_read_that_fails_holds_the_entry_and_never_the_fan_out(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+
+    def _unreadable(root=None):
+        raise ToolError("STRATEGY_POOL_UNREADABLE", "scripted")
+
+    monkeypatch.setattr(live_route.pool, "load_active_pool", _unreadable)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
+    assert held["live_reason_codes"][-2:] == [live_route.PRE_ORDER_REREAD_FAILED, "STRATEGY_POOL_UNREADABLE"]
+    assert "live_pre_order_gate" not in held
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_the_day_s_slot_is_reserved_against_the_re_read_limit(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderLimits as Limits
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    first = live_route.resolve_live_order_limits(tmp_path, now=NOW)
+    lowered = Limits(**{**first[0].__dict__, "max_daily_order_count": 2})
+    reads = iter([first, (lowered, first[1]), (lowered, first[1])])
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: next(reads))
+    real_counter = live_route.select_live_order_counter
+    reserved: list[int] = []
+
+    def _recording(now=None, root=None):
+        counter = real_counter(now=now, root=root)
+        reserve = counter.reserve_submission
+        counter.reserve_submission = lambda *, limit, day=None: reserved.append(limit) or reserve(limit=limit, day=day)
+        return counter
+
+    monkeypatch.setattr(live_route, "select_live_order_counter", _recording)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert reserved == [2]
+
+
+def test_a_legacy_budget_window_is_judged_at_the_decision_too(tmp_path, monkeypatch):
+    """Valid at the fire's start, expired by the moment the decision was judged."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    limits, budget = live_route.resolve_live_order_limits(tmp_path, now=NOW)
+    window = {**budget, "valid_from": "2026-07-28T00:00:00Z", "valid_until": "2026-07-28T04:05:10Z"}
+
+    def _windowed(root, now=None):
+        inside = window["valid_from"] <= str(now) <= window["valid_until"]
+        return limits, {**window, "valid": inside, "error": None if inside else "OUTSIDE_VALIDITY_WINDOW"}
+
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", _windowed)
+    monkeypatch.setattr(live_route, "_entry_clock", lambda: "2026-07-28T04:05:30Z")
+    monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: "2026-07-28T04:05:30Z")
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True
+    assert held["live_pre_order_reread"]["budget_registered"] is False
+    assert {"budget_registered", "approved_profile_complete"} <= set(held["live_pre_order_gate"]["failed_checks"])
+    assert venue.entries() == []
+
+
+def test_a_budget_re_registered_between_the_two_re_reads_does_not_back_the_order(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    limits, budget = live_route.resolve_live_order_limits(tmp_path, now=NOW)
+    reads = iter([(limits, budget), (limits, budget),
+                  (limits, {**budget, "budget_id": "budget_new", "record_sha256": "sha256:" + "c" * 64})])
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: next(reads))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_pre_order_reread"]["budget_registered"] is False
+    assert "budget_registered" in held["live_pre_order_gate"]["failed_checks"]
+    assert venue.entries() == []
+
+
+def test_risk_limits_that_moved_or_expired_before_the_gate_refuse(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import guards
+    from runtime.mvp_runtime.crypto.live_entry import RISK_LIMITS_CHANGED
+
+    control = type("C", (), {"load": lambda self: type("S", (), {"trading_allowed": True})()})()
+    judged = guards.DEFAULT_RISK_LIMITS.as_record()
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+                                         judged_limits=judged)["risk_limits_problem"] is None
+
+    registered = guards.RiskLimits(**{**guards.DEFAULT_RISK_LIMITS.__dict__, "source": "registered",
+                                      "limits_id": "limits_new", "record_sha256": "sha256:" + "9" * 64})
+    monkeypatch.setattr(live_route, "resolve_risk_limits", lambda root=None, *, now: registered)
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+                                         judged_limits=judged)["risk_limits_problem"] == RISK_LIMITS_CHANGED
+
+    def _expired_at_clock(root=None, *, now):
+        if now != NOW:
+            raise ToolError("RISK_LIMITS_EXPIRED", "scripted")
+        return guards.DEFAULT_RISK_LIMITS
+
+    monkeypatch.setattr(live_route, "resolve_risk_limits", _expired_at_clock)
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock="2026-07-28T00:00:30Z", control=control,
+                                         judged_limits=judged)["risk_limits_problem"] == "RISK_LIMITS_EXPIRED"
+
+
+def test_a_door_no_pool_authorizes_does_not_read_the_pool(tmp_path, monkeypatch):
+    def _must_not_read(root=None):
+        raise AssertionError("the pool was read")
+
+    monkeypatch.setattr(live_route.pool, "load_active_pool", _must_not_read)
+    control = type("C", (), {"load": lambda self: type("S", (), {"trading_allowed": False})()})()
+    fresh = live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+                                          judged_limits={"source": "default"}, with_pool=False)
+    assert (fresh["live_routable_strategy_ids"], fresh["live_arm_approvals"]) == (None, None)
+    assert fresh["runtime_active"] is False
+    assert fresh["bracket_breaker_tripped"] is False and fresh["submitted_today"] == 0

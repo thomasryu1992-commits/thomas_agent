@@ -20,12 +20,43 @@ and their tests.
 
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
-| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the same facts mapping. This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
-| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode. |
+| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the decision's facts narrowed by the gate's re-read (below). This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
+| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
 The gate never judges reduce-only orders: closes, brackets and cancels. The venue enforces that
 they cannot add exposure, and a gate that could refuse them could trap a position.
+
+**The re-read (PR2c-2a).** Between a door's first read and its gate, another writer can halt or
+disarm the runtime, re-register the budget or the risk limits, demote the stage or the live tier,
+spend the day's orders, or trip the bracket breaker. Both entry doors read those facts again right
+before the gate (`live_route.reread_entry_facts`; the probe does not read the pool, which authorizes
+none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_facts`,
+`narrow_entry_facts`):
+
+| Fact | Folded in as |
+|---|---|
+| execution stage | the fresh read, on the same `now` |
+| runtime may trade (`trading_allowed`) | the first AND the fresh |
+| caps | the fresh ones; the day's slot is reserved against them too |
+| a valid budget backs the order | the first AND the fresh; a legacy window must hold at both `now` and the decision's `clock` |
+| symbol allowlist | what both reads share |
+| live tier (autonomous) | what both reads share; the arming approval only if both reads name the same one |
+| orders spent today | the fresh count |
+| bracket breaker | the higher streak, tripped if either read says so |
+| risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`, or the resolver's own code) |
+
+- The account, the book, the filters and the market price are not re-read: they are what the order
+  was sized on, and a second read would move the size by noise.
+- A fact that improved cannot widen what is sent. The gate re-derives the decision on the narrowed
+  facts, so an order the fresh caps would size differently fails `intent_matches_decision`.
+- A re-read that fails refuses the entry (`LIVE_PRE_ORDER_REREAD_FAILED`,
+  `PROBE_PRE_ORDER_REREAD_FAILED`) and never halts the fan-out.
+- The route records what the re-read found as `live_pre_order_reread`.
+- **The probe's plan store is compare-and-set.** Every write names the stored plan it replaces
+  (`probe.write_plan(..., expected_sha256=)`), and a store another door rewrote since is refused
+  (`PROBE_PLAN_CHANGED`). An `--abandon` beside a `--fire` is therefore not undone by the fire's cell
+  claim, and the fire sends nothing.
 
 **Freshness of an autonomous entry (PR2c-1, decisions 18 and 24).** The plan's size, stop and
 target stay the bar close's; a 1d plan can be most of a day old. The decision is judged at `clock`,
@@ -208,17 +239,14 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 
 ## 6. Not yet in it
 
-- **A gate-time re-read of the stage and the halts (PR2c-2).** The freshness bounds above cover the
-  account and the market price only.
+- **The arming approval is re-read, not verified (PR2c-2b).** The gate checks that both reads name
+  the same `live_tier_approval_id`, not that it is a real Thomas approval to arm this candidate.
 - **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
   for the fire, so it can be as old as the fire (about a minute). No bound checks it.
 - **The checks the directive lists that no door runs yet (PR2d):**
   - the API error breaker;
   - per-order slippage and fee evidence;
   - optional-data health as a gate.
-- **Order-time re-reads (PR2c):** the arming approval behind `live_tier_approval_id`, the pool tier,
-  and the budget are re-read at the gate only as the leg read them. The autonomous gate re-runs the
-  decision on the same facts, so it catches a changed order, not a changed fact.
 - **Single use:** a snapshot can be re-bound within its 60 seconds (PR2c-1). A second send of the
   same order is prevented by the doors (the bar claim and the slot) and by the venue's
   duplicate-client-id rule.

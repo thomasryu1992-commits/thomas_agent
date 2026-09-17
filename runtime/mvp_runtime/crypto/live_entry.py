@@ -92,6 +92,7 @@ from .live_order import (
     entry_context_key,
     evaluate_live_order_guard,
     live_entry_holds,
+    normalize_symbols,
 )
 from .live_position import compute_open_notional_usdt, entry_allowed, live_capacity
 from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_tick, size_live_order
@@ -148,6 +149,8 @@ ACCOUNT_STALE = "LIVE_ENTRY_ACCOUNT_STALE"
 REFERENCE_PRICE_UNUSABLE = "LIVE_ENTRY_REFERENCE_PRICE_UNUSABLE"
 PRICE_DIVERGED = "LIVE_ENTRY_PRICE_DIVERGED"
 PRICE_BEYOND_BRACKET = "LIVE_ENTRY_PRICE_BEYOND_BRACKET"
+# PR2c-2a: the risk limits in force are no longer the ones the verdict was judged on.
+RISK_LIMITS_CHANGED = "LIVE_ENTRY_RISK_LIMITS_CHANGED"
 
 # A dislocation breaker, NOT a cost control — kept at 50 deliberately, Thomas 2026-08-22, after
 # the number was measured and found to be ~15x the widest spread this venue has shown.
@@ -663,6 +666,81 @@ def plan_live_entry(
     return _decision(STATUS_READY, [], symbol=symbol, now=now, **detail)
 
 
+# --- what the gate re-reads (PR2c-2a) -----------------------------------------------------------
+
+# The facts another writer can move between the leg's first read and the gate: an operator's halt or
+# disarm, a re-registered budget or risk limits, a demoted stage or tier, the day's orders another
+# door spent, a bracket failure another door recorded. Read again right before the gate and folded
+# in by :func:`narrow_entry_facts`. The account, the book, the filters and the market price are not:
+# they are what the order was sized on, and a second read would move the size by noise.
+GUARD_REREAD_FIELDS = (
+    "execution_stage", "runtime_active", "limits", "budget_registered", "allowed_symbols",
+    "submitted_today",
+)
+REREAD_FIELDS = (*GUARD_REREAD_FIELDS, "live_routable_strategy_ids", "bracket_failures_consecutive")
+_RISK_LIMITS_IDENTITY = ("source", "limits_id", "record_sha256")
+
+
+def risk_limits_moved(judged: Any, in_force: Sequence[Any]) -> str | None:
+    """Why the risk limits in force are not the ones a verdict was judged on, or None. Pure.
+
+    ``judged`` is the verdict's ``risk_guard.limits``; ``in_force`` is what resolves now (one record
+    per clock it was resolved at). Identity is the source and the record, not the numbers: a
+    re-registered set with equal numbers is still a different authority."""
+    if not isinstance(judged, Mapping):
+        return "the verdict names no risk limits"
+    wanted = tuple(judged.get(key) for key in _RISK_LIMITS_IDENTITY)
+    if not in_force:
+        return "no risk limits resolved"
+    for record in in_force:
+        if not isinstance(record, Mapping) or tuple(record.get(key) for key in _RISK_LIMITS_IDENTITY) != wanted:
+            return RISK_LIMITS_CHANGED
+    return None
+
+
+def narrow_guard_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """The final guard's facts with a re-read folded in, only ever narrowing. Pure.
+
+    - the stage is the fresh one (it is resolved on the same `now`);
+    - the runtime may trade, and a valid budget backs the order, only if both reads say so;
+    - the caps are the fresh ones, and the symbol allowlist is what both reads share;
+    - the day's count is the fresh one.
+
+    A fact that improved cannot widen what is sent: every door re-runs its checks on these facts,
+    and the autonomous gate refuses an order the fresh caps would size differently."""
+    kw = dict(first)
+    kw["execution_stage"] = fresh["execution_stage"]
+    kw["runtime_active"] = bool(first.get("runtime_active")) and bool(fresh["runtime_active"])
+    kw["limits"] = fresh["limits"]
+    kw["budget_registered"] = bool(first.get("budget_registered")) and bool(fresh["budget_registered"])
+    both = set(normalize_symbols(fresh["allowed_symbols"] or ()))
+    kw["allowed_symbols"] = [s for s in normalize_symbols(first.get("allowed_symbols") or ()) if s in both]
+    kw["submitted_today"] = int(fresh["submitted_today"])
+    return kw
+
+
+def narrow_entry_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """The decision's facts with the gate's re-read folded in, only ever narrowing. Pure.
+
+    :func:`narrow_guard_facts`, and: the live tier is what both reads share; the bracket breaker is
+    the higher of the two; a risk-limits problem the re-read found turns the verdict into a
+    refusal. The gate re-derives the decision on the result, so an order sized on the first read
+    that these facts would size differently fails its `intent_matches_decision`."""
+    kw = narrow_guard_facts(first, fresh)
+    first_ids, fresh_ids = first.get("live_routable_strategy_ids"), fresh["live_routable_strategy_ids"]
+    kw["live_routable_strategy_ids"] = (
+        None if first_ids is None or fresh_ids is None else set(first_ids) & set(fresh_ids)
+    )
+    kw["bracket_failures_consecutive"] = max(
+        int(first.get("bracket_failures_consecutive") or 0), int(fresh["bracket_failures_consecutive"]))
+    problem = fresh.get("risk_limits_problem")
+    if problem:
+        verdict = dict(first["verdict"]) if isinstance(first.get("verdict"), Mapping) else {}
+        kw["verdict"] = {**verdict, "allow_new_position": False,
+                         "problems": [*(verdict.get("problems") or ()), str(problem)]}
+    return kw
+
+
 # --- the pre-order gate for an autonomous entry (PR2b) ------------------------------------------
 
 # Every door of `plan_live_entry`, named, with the reason codes that mean it refused.
@@ -850,6 +928,9 @@ __all__ = [
     "PRICE_DIVERGED",
     "RECONCILE_REFUSED",
     "REFERENCE_PRICE_UNUSABLE",
+    "GUARD_REREAD_FIELDS",
+    "REREAD_FIELDS",
+    "RISK_LIMITS_CHANGED",
     "SIZING_REFUSED",
     "STATUS_NO_ROUTE",
     "STATUS_READY",
@@ -861,7 +942,10 @@ __all__ = [
     "entry_freshness",
     "entry_status_line",
     "gate_live_entry",
+    "narrow_entry_facts",
+    "narrow_guard_facts",
     "plan_live_entry",
     "price_between_legs",
     "price_bracket",
+    "risk_limits_moved",
 ]

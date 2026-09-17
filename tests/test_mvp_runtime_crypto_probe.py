@@ -25,7 +25,7 @@ import pytest
 import scripts.run_slippage_probe as cli
 from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.crypto import execution_stage as es
-from runtime.mvp_runtime.crypto import forward_confirmation, lifecycle, probe
+from runtime.mvp_runtime.crypto import forward_confirmation, lifecycle, live_route, probe
 from runtime.mvp_runtime.crypto.live_execution import DryRunOrderAdapter
 from runtime.mvp_runtime.crypto.live_order import (
     CANARY_CONFIRMATION_PHRASE,
@@ -78,9 +78,16 @@ def _fake_approval(params, *, status="APPROVED", content=None,
     }
 
 
+def _seed_plan(plan, root):
+    """Write ``plan`` over whatever the store holds now, as a test's setup does (PR2c-2a: every
+    write names the plan it replaces)."""
+    held = probe.read_plan(root)
+    return probe.write_plan(plan, root, expected_sha256=held["record_sha256"] if held else None)
+
+
 def _active_plan(tmp_path, params=None):
     params = params or _params()
-    return probe.write_plan(
+    return _seed_plan(
         probe.build_plan(params, approval_id="approval_probe_test", now=NOW), tmp_path
     )
 
@@ -257,7 +264,7 @@ def test_a_plan_file_written_by_the_batch_one_code_loads_unchanged(tmp_path):
     index = probe.select_cell(plan, symbol="ETHUSDT", regime=probe.REGIME_LOW)
     assert plan["cells"][index]["symbol"] == "ETHUSDT"
     updated = probe.mark_cell(plan, index, status=probe.CELL_OPEN, now=NOW, position_id="pos_x")
-    probe.write_plan(updated, tmp_path)
+    _seed_plan(updated, tmp_path)
     assert probe.read_plan(tmp_path)["cells"][index]["status"] == probe.CELL_OPEN
 
 
@@ -530,7 +537,7 @@ def test_confirm_over_a_complete_plan_starts_the_next_batch(tmp_path):
                                 outcome_id=f"out_{index}", close_reason="stop_loss",
                                 stop_slippage_bps=1.0)
     assert first["status"] == probe.PLAN_COMPLETE
-    probe.write_plan(first, tmp_path)
+    _seed_plan(first, tmp_path)
 
     second = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
     plan = probe.confirm_probe_batch(
@@ -555,7 +562,7 @@ def test_status_renders_the_plans_own_symbols(tmp_path, capsys):
     """The board reads the PLAN's params, not the module defaults: a batch-2 plan must
     show its own set and none of batch 1's."""
     params = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
-    probe.write_plan(probe.build_plan(params, approval_id="approval_2", now=NOW), tmp_path)
+    _seed_plan(probe.build_plan(params, approval_id="approval_2", now=NOW), tmp_path)
     assert cli.run_status(root=tmp_path) == cli.EXIT_OK
     out = capsys.readouterr().out
     assert "n=8 BNBUSDT/DOGEUSDT" in out
@@ -610,17 +617,24 @@ def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
         max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
         canary_confirmation=CANARY_CONFIRMATION_PHRASE,
     )
-    monkeypatch.setattr(cli, "resolve_live_order_limits",
-                        lambda root, now=None: (limits, dict(_BUDGET, symbol_allowlist=list(symbols))))
+    budget = lambda root, now=None: (limits, dict(_BUDGET, symbol_allowlist=list(symbols)))  # noqa: E731
     # The execution stage the probe resolves (PR1b). A real record needs a spent Thomas approval,
     # so the resolver is stubbed here; the stage door's own refusal has its test below. A binding
     # record names its id, hash and approval — the pre-order gate's profile requires them (PR2b).
-    monkeypatch.setattr(cli, "resolve_execution_stage",
-                        lambda root=None, **kw: es.StageStatus(
-                            stage=stage if stage_valid else "READ_ONLY", valid=stage_valid,
-                            reason_code=stage_reason, recorded_stage=stage if stage_valid else None,
-                            **(_STAGE_IDS if stage_valid else {})))
+    stage_status = lambda root=None, **kw: es.StageStatus(  # noqa: E731
+        stage=stage if stage_valid else "READ_ONLY", valid=stage_valid,
+        reason_code=stage_reason, recorded_stage=stage if stage_valid else None,
+        **(_STAGE_IDS if stage_valid else {}))
+    _stub_both(monkeypatch, "resolve_live_order_limits", budget)
+    _stub_both(monkeypatch, "resolve_execution_stage", stage_status)
     return limits
+
+
+def _stub_both(monkeypatch, name, value):
+    """The fire reads the budget and the stage once, and its gate's re-read (PR2c-2a) reads them
+    again through the route: a stub stands for both reads."""
+    for module in (cli, live_route):
+        monkeypatch.setattr(module, name, value)
 
 
 # What a registered budget and a binding stage record carry beside their numbers (PR2b).
@@ -648,7 +662,7 @@ def test_fire_hard_refuses_when_live_trading_is_off(tmp_path):
 def test_fire_refuses_while_a_probe_position_is_open(tmp_path, monkeypatch):
     plan = _active_plan(tmp_path)
     plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
-    probe.write_plan(plan, tmp_path)
+    _seed_plan(plan, tmp_path)
     # The OPEN cell's position is still on the book, so the cell cannot resolve.
     monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: {"status": "OPEN"})
     monkeypatch.setattr(cli.live_execution, "select_order_adapter",
@@ -931,7 +945,7 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
     # The close guard needs the AUTONOMOUS phrase too (the naked close is a reduceOnly
     # runtime close); thread both phrases through the same resolved limits.
-    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+    _stub_both(monkeypatch, "resolve_live_order_limits", lambda root, now=None: (
         LiveOrderLimits(
             max_order_notional_usdt=150.0, max_daily_order_count=10,
             max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
@@ -940,7 +954,7 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         ),
         dict(_BUDGET, symbol_allowlist=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
     ))
-    monkeypatch.setattr(cli, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
+    _stub_both(monkeypatch, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
         stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS",
         **_STAGE_IDS))
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
@@ -1067,15 +1081,38 @@ def test_fire_on_the_real_counter_refuses_the_slot_the_live_leg_already_spent(tm
     counter = LiveOrderCounter(root=tmp_path, authorization=auth)
     for _ in range(10):
         counter.record_submission()
-    # The guard is told a stale count, as it would be if the other process spent the slot after
-    # the read: the reservation is what refuses.
-    monkeypatch.setattr(cli, "count_today", lambda root=None: 9)
+    # The guard and the gate's re-read are both told a stale count, as they would be if the other
+    # process spent the slot after the re-read: the reservation is what refuses.
+    _stub_both(monkeypatch, "count_today", lambda root=None: 9)
     monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
     with pytest.raises(cli._Refusal) as exc:
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_ORDER_SLOT_REFUSED
     assert adapter.submitted == []
     assert count_today(tmp_path) == 10
+
+
+def test_fire_s_gate_re_reads_a_slot_the_live_leg_spent_after_the_first_read(tmp_path, monkeypatch):
+    """PR2c-2a: the first read said 9 of 10; by the gate the other process had spent the tenth. The
+    re-read sees it, so the gate refuses before the symbol, the slot or the cell is touched."""
+    from runtime.mvp_runtime.crypto.live_order import LiveOrderCounter, count_today
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    counter = LiveOrderCounter(root=tmp_path, authorization=auth)
+    for _ in range(10):
+        counter.record_submission()
+    monkeypatch.setattr(cli, "count_today", lambda root=None: 9)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "daily_order_count_within_cap" in str(exc.value)
+    assert adapter.submitted == [] and count_today(tmp_path) == 10
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
 
 
 @pytest.mark.parametrize("raises,code", [
@@ -1097,7 +1134,7 @@ def test_a_breaker_that_cannot_record_the_stop_failure_is_reported(tmp_path, mon
 
     adapter = _StopNeverRests()
     _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
-    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+    _stub_both(monkeypatch, "resolve_live_order_limits", lambda root, now=None: (
         LiveOrderLimits(
             max_order_notional_usdt=150.0, max_daily_order_count=10,
             max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
@@ -1149,7 +1186,7 @@ def test_abandon_refuses_while_a_probe_is_at_the_venue(tmp_path):
     """An OPEN cell means a real position may be resting; the plan that tracks it must
     not be closed out from under it."""
     plan = _active_plan(tmp_path)
-    probe.write_plan(
+    _seed_plan(
         probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_x"),
         tmp_path,
     )
@@ -1184,7 +1221,7 @@ def test_an_abandoned_plan_still_loads_and_reports(tmp_path):
     plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
     plan = probe.mark_cell(plan, 0, status=probe.CELL_FILLED, now=NOW,
                            outcome_id="out_1", stop_slippage_bps=0.28)
-    probe.write_plan(plan, tmp_path)
+    _seed_plan(plan, tmp_path)
     probe.abandon_plan(reason="sample judged sufficient", now=NOW, root=tmp_path)
     loaded = probe.read_plan(tmp_path)
     assert loaded["status"] == probe.PLAN_ABANDONED
@@ -1200,7 +1237,7 @@ def test_abandon_reconciles_a_stale_open_cell_before_refusing(tmp_path, monkeypa
     that places a NEW probe."""
     plan = _active_plan(tmp_path)
     plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_gone")
-    probe.write_plan(plan, tmp_path)
+    _seed_plan(plan, tmp_path)
     monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: None)
     monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
     assert cli.run_abandon(reason="hand-closed; moving to batch 2", root=tmp_path, now=NOW) == cli.EXIT_OK
@@ -1212,7 +1249,7 @@ def test_abandon_reconciles_a_stale_open_cell_before_refusing(tmp_path, monkeypa
 def test_abandon_still_refuses_while_the_position_is_genuinely_on_the_book(tmp_path, monkeypatch):
     plan = _active_plan(tmp_path)
     plan = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_live")
-    probe.write_plan(plan, tmp_path)
+    _seed_plan(plan, tmp_path)
     monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: {"status": "OPEN"})
     monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
     with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
@@ -1612,7 +1649,7 @@ def test_fire_gives_the_symbol_back_only_if_the_naked_close_confirmed(tmp_path, 
     marks = _RecordingMarks(events)
     _wire_claimed_fire(tmp_path, monkeypatch, _StopRefused(), marks, events)
     # The naked close is a runtime close: its guard needs the autonomous phrase as well.
-    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+    _stub_both(monkeypatch, "resolve_live_order_limits", lambda root, now=None: (
         LiveOrderLimits(max_order_notional_usdt=150.0, max_daily_order_count=10,
                         max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
                         canary_confirmation=CANARY_CONFIRMATION_PHRASE,
@@ -1625,7 +1662,7 @@ def test_fire_gives_the_symbol_back_only_if_the_naked_close_confirmed(tmp_path, 
 
 def _both_phrases(monkeypatch):
     """A naked close is a runtime close: its guard needs the autonomous phrase as well."""
-    monkeypatch.setattr(cli, "resolve_live_order_limits", lambda root, now=None: (
+    _stub_both(monkeypatch, "resolve_live_order_limits", lambda root, now=None: (
         LiveOrderLimits(max_order_notional_usdt=150.0, max_daily_order_count=10,
                         max_open_notional_usdt=300.0, daily_loss_limit_usdt=50.0,
                         canary_confirmation=CANARY_CONFIRMATION_PHRASE,
@@ -1702,10 +1739,10 @@ def test_fire_gives_the_symbol_back_whatever_fails_before_the_send(tmp_path, mon
     if breaks == "cell-write":
         real_write = cli.probe.write_plan
 
-        def write_plan(plan, root=None):
+        def write_plan(plan, root=None, **kw):
             if any(c.get("status") == probe.CELL_OPEN for c in plan["cells"]):
                 raise OSError(28, "No space left on device")
-            return real_write(plan, root)
+            return real_write(plan, root, **kw)
 
         monkeypatch.setattr(cli.probe, "write_plan", write_plan)
     else:
@@ -1952,3 +1989,241 @@ def test_fire_judges_the_account_it_read_not_its_own_start(tmp_path, monkeypatch
     _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, account_read_at=110)
     with pytest.raises(_PastTheGate):
         _fire(tmp_path)
+
+
+# --- the plan store is compare-and-set (PR2c-2a) --------------------------------------------------
+
+def test_a_plan_write_names_the_plan_it_replaces(tmp_path):
+    plan = _active_plan(tmp_path)
+    moved = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
+    written = probe.write_plan(moved, tmp_path, expected_sha256=plan["record_sha256"])
+    assert probe.read_plan(tmp_path) == written
+    # A second writer still holding the first copy is refused; the store keeps the first write.
+    stale = probe.mark_cell(plan, 1, status=probe.CELL_OPEN, now=NOW, position_id="pos_2")
+    with pytest.raises(ToolError) as exc:
+        probe.write_plan(stale, tmp_path, expected_sha256=plan["record_sha256"])
+    assert exc.value.reason_code == probe.PROBE_PLAN_CHANGED
+    assert probe.read_plan(tmp_path) == written
+
+
+def test_a_writer_that_read_no_plan_expects_none(tmp_path):
+    plan = _active_plan(tmp_path)
+    fresh = probe.build_plan(_params(), approval_id="approval_2", now=NOW)
+    with pytest.raises(ToolError) as exc:
+        probe.write_plan(fresh, tmp_path, expected_sha256=None)
+    assert exc.value.reason_code == probe.PROBE_PLAN_CHANGED
+    with pytest.raises(ToolError) as missing:
+        probe.write_plan(plan, tmp_path / "elsewhere", expected_sha256=plan["record_sha256"])
+    assert missing.value.reason_code == probe.PROBE_PLAN_CHANGED
+    assert probe.read_plan(tmp_path / "elsewhere") is None
+
+
+@pytest.mark.parametrize("stored,code", [
+    ("{", probe.PROBE_PLAN_UNREADABLE),
+    ('{"status": "ACTIVE"}', probe.PROBE_PLAN_TAMPERED),
+])
+def test_a_store_that_cannot_say_what_it_holds_refuses_the_write(tmp_path, stored, code):
+    plan = _active_plan(tmp_path)
+    probe.plan_path(tmp_path).write_text(stored, encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        probe.write_plan(plan, tmp_path, expected_sha256=plan["record_sha256"])
+    assert exc.value.reason_code == code
+    assert probe.plan_path(tmp_path).read_text(encoding="utf-8") == stored
+
+
+def test_confirm_replaces_only_the_finished_plan_it_read(tmp_path):
+    first = _active_plan(tmp_path)
+    for index in range(len(first["cells"])):
+        first = probe.mark_cell(first, index, status=probe.CELL_OPEN, now=NOW)
+        first = probe.mark_cell(first, index, status=probe.CELL_TIMEOUT, now=NOW, outcome_id=f"out_{index}")
+    _seed_plan(first, tmp_path)
+    second = probe.build_batch_params(symbols=("BNBUSDT", "DOGEUSDT"))
+    real_read = probe.read_plan
+
+    def _rewritten_after_the_read(root=None):
+        # Another door rewrites the finished plan right after confirm has read it.
+        held = real_read(root)
+        probe.write_plan({**held, "updated_at": "2026-09-17T00:00:01Z"}, root,
+                         expected_sha256=held["record_sha256"])
+        return held
+
+    import unittest.mock as mock
+    with mock.patch.object(probe, "read_plan", _rewritten_after_the_read), pytest.raises(ToolError) as exc:
+        probe.confirm_probe_batch(_fake_approval(second), params=second, root=tmp_path, now=NOW)
+    assert exc.value.reason_code == probe.PROBE_PLAN_CHANGED
+    assert real_read(tmp_path)["updated_at"] == "2026-09-17T00:00:01Z"
+
+
+def test_an_abandon_that_raced_a_claim_is_refused(tmp_path):
+    """The mirror image: a fire claimed a cell between the abandon's read and its write."""
+    plan = _active_plan(tmp_path)
+    real_read = probe.read_plan
+
+    def _claimed_after_the_read(root=None):
+        held = real_read(root)
+        claimed = probe.mark_cell(held, 0, status=probe.CELL_OPEN, now=NOW, position_id="pos_1")
+        probe.write_plan(claimed, root, expected_sha256=held["record_sha256"])
+        return held
+
+    import unittest.mock as mock
+    with mock.patch.object(probe, "read_plan", _claimed_after_the_read), pytest.raises(ToolError) as exc:
+        probe.abandon_plan(reason="operator retired the batch", now=NOW, root=tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_CHANGED
+    stored = probe.read_plan(tmp_path)
+    assert stored["status"] == probe.PLAN_ACTIVE and stored["cells"][0]["status"] == probe.CELL_OPEN
+
+
+def test_an_abandon_beside_a_fire_is_not_undone(tmp_path, monkeypatch):
+    """The fire read the plan ACTIVE; the operator abandoned it before the fire claimed its cell. The
+    claim must not put the ACTIVE plan back, nothing is sent, and the symbol goes back."""
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    governance = cli.live_governance.prepare_live_order_governance
+
+    def _abandoned_meanwhile(intent, **kw):
+        probe.abandon_plan(reason="operator retired the batch", now=NOW, root=tmp_path)
+        return governance(intent, **kw)
+
+    monkeypatch.setattr(cli.live_governance, "prepare_live_order_governance", _abandoned_meanwhile)
+    with pytest.raises(ToolError) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PLAN_CHANGED
+    assert probe.read_plan(tmp_path)["status"] == probe.PLAN_ABANDONED
+    assert adapter.submitted == []
+    assert len(marks.given_back) == 1
+
+
+# --- the probe's gate re-reads what another writer can move (PR2c-2a) ----------------------------
+
+def _refused_at_the_gate(tmp_path, adapter, counter):
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert adapter.submitted == [] and counter.count == 0
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+    return str(exc.value)
+
+
+def _wired_with_counter(tmp_path, monkeypatch):
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    counter = _FakeCounter(adapter=adapter)
+    monkeypatch.setattr(cli, "select_live_order_counter", lambda now=None, root=None: counter)
+    return adapter, counter
+
+
+def test_fire_s_gate_sees_a_soft_halt_that_came_after_its_first_read(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
+
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+
+    def _halted_meanwhile(*a, **k):
+        ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW,
+                                                 reason="halt", trading_armed=False))
+        return 100000.0
+
+    monkeypatch.setattr(cli, "_read_price", _halted_meanwhile)
+    assert "runtime_active" in _refused_at_the_gate(tmp_path, adapter, counter)
+
+
+def test_fire_s_gate_sees_a_budget_re_registered_without_its_symbol(tmp_path, monkeypatch):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    limits, budget = cli.resolve_live_order_limits(tmp_path, now=NOW)
+    monkeypatch.setattr(live_route, "resolve_live_order_limits",
+                        lambda root, now=None: (limits, {**budget, "symbol_allowlist": ["ETHUSDT"]}))
+    assert "symbol_allowlisted" in _refused_at_the_gate(tmp_path, adapter, counter)
+
+
+def test_fire_s_gate_sees_risk_limits_re_registered_after_its_verdict(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import guards
+
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    registered = guards.RiskLimits(**{**guards.DEFAULT_RISK_LIMITS.__dict__, "source": "registered",
+                                      "limits_id": "limits_new", "record_sha256": "sha256:" + "9" * 64})
+    monkeypatch.setattr(live_route, "resolve_risk_limits", lambda root=None, *, now: registered)
+    assert "risk_guard_allows" in _refused_at_the_gate(tmp_path, adapter, counter)
+
+
+def test_fire_s_gate_sees_a_bracket_breaker_another_door_tripped(tmp_path, monkeypatch):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    monkeypatch.setattr(live_route, "bracket_breaker_status",
+                        lambda root=None: {"tripped": True, "consecutive": 5, "limit": 5})
+    assert "bracket_breaker_clear" in _refused_at_the_gate(tmp_path, adapter, counter)
+
+
+def test_fire_s_gate_judges_a_legacy_budget_window_at_its_own_clock(tmp_path, monkeypatch):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    limits, budget = cli.resolve_live_order_limits(tmp_path, now=NOW)
+    start = timeutil.utc_now_iso()
+
+    def _expires_by_the_gate(root, now=None):
+        inside = str(now) <= start
+        return limits, {**budget, "valid": inside, "valid_from": "2020-01-01T00:00:00Z", "valid_until": start}
+
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", _expires_by_the_gate)
+    real_now = timeutil.utc_now_iso
+    calls = []
+
+    def _wall():
+        calls.append(None)
+        return start if len(calls) == 1 else timeutil.plus_seconds(start, 30)
+
+    monkeypatch.setattr(timeutil, "utc_now_iso", _wall)
+    refused = _refused_at_the_gate(tmp_path, adapter, counter)
+    assert "budget_registered" in refused and "approved_profile_complete" in refused
+    monkeypatch.setattr(timeutil, "utc_now_iso", real_now)
+
+
+def test_fire_s_re_read_leaves_the_pool_alone(tmp_path, monkeypatch):
+    """No pool entry authorizes a probe, so a pool that cannot be read does not stop one."""
+    from runtime.mvp_runtime.crypto import pool as pool_store
+
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    pool_store.pool_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    pool_store.pool_path(tmp_path).write_text("{", encoding="utf-8")
+
+    def _past_the_gate(now=None, root=None):
+        raise _PastTheGate()
+
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store", _past_the_gate)
+    with pytest.raises(_PastTheGate):
+        _fire(tmp_path)
+
+
+def test_fire_s_gate_records_the_higher_breaker_streak(tmp_path, monkeypatch):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    monkeypatch.setattr(live_route, "bracket_breaker_status",
+                        lambda root=None: {"tripped": False, "consecutive": 3, "limit": 5})
+    sealed = []
+    real_gate = probe.gate_probe_order
+
+    def _recording(intent, **kw):
+        sealed.append(real_gate(intent, **kw))
+        return sealed[-1]
+
+    monkeypatch.setattr(probe, "gate_probe_order", _recording)
+
+    def _past_the_gate(now=None, root=None):
+        raise _PastTheGate()
+
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store", _past_the_gate)
+    with pytest.raises(_PastTheGate):
+        _fire(tmp_path)
+    [breaker] = [c for c in sealed[0]["checks"] if c["check"] == "bracket_breaker_clear"]
+    assert breaker["ok"] is True and breaker["detail"]["consecutive"] == 3
+
+
+def test_fire_refuses_when_its_gate_cannot_read_again(tmp_path, monkeypatch):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+
+    def _unreadable(root=None):
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(live_route, "bracket_breaker_status", _unreadable)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_REREAD_FAILED
+    assert "OSError" in str(exc.value)
+    assert adapter.submitted == [] and counter.count == 0
