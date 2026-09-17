@@ -175,6 +175,12 @@ PROBE_ORDER_SLOT_REFUSED = "PROBE_ORDER_SLOT_REFUSED"
 # PR2b: the pre-order gate refused the probe, or its snapshot could not be recorded before the send.
 PROBE_PRE_ORDER_GATE_REFUSED = "PROBE_PRE_ORDER_GATE_REFUSED"
 PROBE_SNAPSHOT_NOT_RECORDED = "PROBE_SNAPSHOT_NOT_RECORDED"
+# The gate's re-read (PR2c-2a) could not be completed; nothing was sent or spent.
+PROBE_REREAD_FAILED = "PROBE_PRE_ORDER_REREAD_FAILED"
+# The stored plan is not the one the writer read (PR2c-2a): another door rewrote it in between.
+PROBE_PLAN_CHANGED = "PROBE_PLAN_CHANGED"
+# The fire ran to its end, but a plan write after the send failed: the plan does not say what happened.
+PROBE_PLAN_NOT_RECORDED = "PROBE_PLAN_NOT_RECORDED"
 # The symbol could not be taken for this probe (PR2b-2): another entry is in flight on it, the book
 # holds a position there, or the marks could not be read. Nothing was spent.
 PROBE_SYMBOL_NOT_CLAIMED = "PROBE_SYMBOL_NOT_CLAIMED"
@@ -451,10 +457,30 @@ def read_plan(root: Path | None = None) -> dict[str, Any] | None:
     return validate_plan(raw)
 
 
-def write_plan(plan: Mapping[str, Any], root: Path | None = None) -> dict[str, Any]:
+def _stored_plan_sha256(path: Path) -> str | None:
+    """The stored plan's recorded hash, None when there is no plan. Raises when it cannot be read."""
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ToolError(PROBE_PLAN_UNREADABLE, f"probe plan unreadable: {type(exc).__name__}") from exc
+    stored = raw.get("record_sha256") if isinstance(raw, dict) else None
+    if not isinstance(stored, str):
+        raise ToolError(PROBE_PLAN_TAMPERED, "probe plan names no hash")
+    return stored
+
+
+def write_plan(plan: Mapping[str, Any], root: Path | None = None, *,
+               expected_sha256: str | None) -> dict[str, Any]:
     """Persist the plan atomically (lock + tmp + fsync + replace), re-stamping its hash.
 
-    Validates before writing — a plan this module cannot read back must never land."""
+    Validates before writing — a plan this module cannot read back must never land.
+
+    Compare-and-set (PR2c-2a): ``expected_sha256`` is the hash of the stored plan this one was
+    derived from, None when the writer read no plan. Under the lock the store must still hold that
+    plan, or nothing is written (``PROBE_PLAN_CHANGED``). A door acting on a copy another door has
+    since rewritten — a ``--fire`` beside an ``--abandon`` — would otherwise put the old state back."""
     body = dict(plan)
     body["record_sha256"] = _plan_sha256(body)
     validate_plan(body)
@@ -462,6 +488,12 @@ def write_plan(plan: Mapping[str, Any], root: Path | None = None) -> dict[str, A
     target.mkdir(parents=True, exist_ok=True)
     path = plan_path(root)
     with locked(path.with_suffix(".lock"), code="PROBE_PLAN_LOCKED", label="probe plan"):
+        stored = _stored_plan_sha256(path)
+        if stored != expected_sha256:
+            raise ToolError(
+                PROBE_PLAN_CHANGED,
+                "the probe plan changed since it was read (another door wrote it); nothing was written",
+            )
         tmp = path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(body, ensure_ascii=False, indent=1))
@@ -849,7 +881,7 @@ def confirm_probe_batch(
             "confirming another batch",
         )
     plan = build_plan(batch, approval_id=str(verified.get("approval_id")), now=now)
-    return write_plan(plan, root)
+    return write_plan(plan, root, expected_sha256=existing["record_sha256"] if existing is not None else None)
 
 
 def abandon_plan(*, reason: str, now: str | None = None, root: Path | None = None) -> dict[str, Any]:
@@ -887,7 +919,7 @@ def abandon_plan(*, reason: str, now: str | None = None, root: Path | None = Non
     updated = dict(plan)
     updated["status"] = PLAN_ABANDONED
     updated["updated_at"] = now
-    return write_plan(updated, root)
+    return write_plan(updated, root, expected_sha256=plan["record_sha256"])
 
 
 # --- the sample + §5-5 readiness -------------------------------------------------------

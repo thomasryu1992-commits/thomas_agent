@@ -75,10 +75,16 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
-from . import live_execution, live_governance, live_leg, pre_order_gate
+from . import live_execution, live_governance, live_leg, pool, pre_order_gate
 from .account import read_account, select_account_feed
 from .execution_stage import PURPOSE_AUTONOMOUS
-from .live_entry import STATUS_NO_ROUTE, gate_live_entry, plan_live_entry
+from .live_entry import (
+    STATUS_NO_ROUTE,
+    gate_live_entry,
+    narrow_entry_facts,
+    plan_live_entry,
+    risk_limits_moved,
+)
 from .live_filters import read_symbol_filters
 from .market_data import ORDER_BOOK_LEVELS, PRICE_UNREADABLE, TIMEFRAMES, read_reference_quote
 from .orderbook_store import summarize_book
@@ -107,6 +113,7 @@ from .live_position import (
 )
 from . import paper
 from .paper import build_entry_plan
+from .risk_limits import resolve_risk_limits
 
 LIVE_ROUTE_VERSION = "live_route.v0.1"
 
@@ -142,6 +149,9 @@ STOP_COOLDOWN_UNRECORDED = "LIVE_STOP_COOLDOWN_UNRECORDED"
 # The pre-order gate refused an entry the decision had found READY (PR2b). The failed checks ride
 # beside it, by name, so the ledger says which one.
 PRE_ORDER_GATE_REFUSED = "LIVE_PRE_ORDER_GATE_REFUSED"
+# The gate's re-read (PR2c-2a) could not be completed. The entry is held; nothing was spent. The
+# failure's own reason code rides beside it.
+PRE_ORDER_REREAD_FAILED = "LIVE_PRE_ORDER_REREAD_FAILED"
 # This position is judged by the timeframe table rather than by the `max_holding_bars` its own
 # backtest was built on, because it predates the record shape that carries one. Reported so a
 # live/backtest R gap stays attributable instead of being rediscovered from a curve.
@@ -258,10 +268,11 @@ def run_live_leg(
     *,
     route: Mapping[str, Any] | None,
     # #610 Part 1 — which strategies the pool says may open a REAL position. Threaded from the
-    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and a
-    # second read is a second chance for the two to disagree about the same fact. `None` refuses
-    # every entry (see `live_entry`'s door 2a); closes are decided above the entry block and are
-    # never affected by it.
+    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and the
+    # decision is judged on that read. The gate reads the pool again (PR2c-2a) only to narrow: a
+    # strategy disarmed since then is refused, and nothing the second read adds is admitted.
+    # `None` refuses every entry (see `live_entry`'s door 2a); closes are decided above the entry
+    # block and are never affected by it.
     live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
@@ -369,8 +380,9 @@ def _run_gated_live_leg(
     #    options are a book the services cannot rewrite or a real position with no record.
     assert_not_foreign_root_run(root)
 
-    # 1. The facts, each read once and shared by every door below — so the guard, the sizing
-    #    and the record cannot disagree about what was true this cycle.
+    # 1. The facts, each read once and shared by every door of the decision — so the guard, the
+    #    sizing and the record cannot disagree about what was true this cycle. The gate reads the
+    #    ones another writer can move again (step 3a, PR2c-2a), only to narrow.
     limits, budget = resolve_live_order_limits(root, now=now)
     # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
     # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
@@ -512,11 +524,12 @@ def _run_gated_live_leg(
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
     # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
     # measures late is a breaker that does not bound today (#247).
+    venue_realized = (
+        venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
+    )
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
-        venue_realized_pnl_usdt=(
-            venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
-        ),
+        venue_realized_pnl_usdt=venue_realized,
         # This leg opens positions: a snapshot with no venue figure is a tripped breaker, not the
         # local ledger. No snapshot at all is already ACCOUNT_UNREADABLE and refuses on its own.
         venue_required=snapshot is not None,
@@ -546,7 +559,8 @@ def _run_gated_live_leg(
         record["live_reason_codes"].append(exc.reason_code)
 
     # Every fact the decision is judged on, in one mapping: the decision reads it now, and the
-    # pre-order gate re-derives the decision from the same mapping before anything is sent (PR2b).
+    # pre-order gate re-derives the decision from this mapping, narrowed by its re-read (PR2b,
+    # PR2c-2a), before anything is sent.
     decision_kwargs = dict(
         plan=plan,
         symbol=symbol,
@@ -601,24 +615,56 @@ def _run_gated_live_leg(
             record["live_reason_codes"].extend(decision["reasons"])
         return record
 
-    # 3b. The pre-order gate (PR2b): the decision re-derived from the same facts, the order checked
-    #     against it, the approved profile checked whole — sealed into the snapshot the order will
-    #     name. A refusal here sends nothing and spends nothing.
+    # 3a. The re-read (PR2c-2a). Between the first read and here, another writer can halt or disarm
+    #     the runtime, re-register the budget or the risk limits, demote the stage or the tier, spend
+    #     the day's orders or trip the bracket breaker. Those facts are read again and folded in
+    #     only to narrow (`live_entry.narrow_entry_facts`); the gate below re-derives the decision on
+    #     the result. A re-read that fails holds the entry and never the fan-out.
     strategy_id = str(plan.get("strategy_id") or "") if isinstance(plan, Mapping) else ""
+    judged_limits = (((verdict or {}).get("risk_guard") or {}).get("limits")
+                     if isinstance(verdict, Mapping) else None)
+    try:
+        fresh = reread_entry_facts(root=root, now=now, clock=decision_kwargs["clock"],
+                                   control=control, judged_limits=judged_limits,
+                                   venue_realized_pnl_usdt=venue_realized,
+                                   venue_required=snapshot is not None)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a hold, never an escape
+        record["live_route_status"] = ROUTE_HELD
+        record["live_reason_codes"].extend(
+            [PRE_ORDER_REREAD_FAILED, getattr(exc, "reason_code", type(exc).__name__)])
+        return record
+    gate_kwargs = narrow_entry_facts(decision_kwargs, fresh)
+    record["live_pre_order_reread"] = {
+        "execution_stage": fresh["execution_stage"].stage,
+        "runtime_active": fresh["runtime_active"],
+        "budget_registered": fresh["budget_registered"],
+        "submitted_today": fresh["submitted_today"],
+        "daily_loss_breached": fresh["daily_loss_breached"],
+        "bracket_failures_consecutive": fresh["bracket_failures_consecutive"],
+        "risk_limits_problem": fresh["risk_limits_problem"],
+    }
+    # The arming approval as both reads name it: a strategy re-armed in between is not the one the
+    # decision was made for.
+    first_approval = (live_arm_approvals or {}).get(strategy_id)
+    fresh_approval = (fresh["live_arm_approvals"] or {}).get(strategy_id)
+
+    # 3b. The pre-order gate (PR2b): the decision re-derived from the re-read facts, the order
+    #     checked against it, the approved profile checked whole — sealed into the snapshot the order
+    #     will name. A refusal here sends nothing and spends nothing.
     profile = pre_order_gate.approved_profile(
-        purpose=PURPOSE_AUTONOMOUS, stage=stage, budget=budget,
-        risk_limits=((verdict or {}).get("risk_guard") or {}).get("limits")
-        if isinstance(verdict, Mapping) else None,
+        purpose=PURPOSE_AUTONOMOUS, stage=gate_kwargs["execution_stage"],
+        budget={**fresh["budget"], "valid": gate_kwargs["budget_registered"]},
+        risk_limits=judged_limits,
         authority={
             "kind": pre_order_gate.AUTHORITY_LIVE_ARM,
             "strategy_id": strategy_id or None,
             "candidate_id": plan.get("candidate_id") if isinstance(plan, Mapping) else None,
-            "approval_id": (live_arm_approvals or {}).get(strategy_id),
+            "approval_id": first_approval if first_approval == fresh_approval else None,
         },
     )
     # Not `snapshot`: that name is the account snapshot this leg read above.
     risk_snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
-                                    decision_kwargs=decision_kwargs, profile=profile, now=now)
+                                    decision_kwargs=gate_kwargs, profile=profile, now=now)
     record["live_pre_order_gate"] = {
         "approved": risk_snapshot["approved"],
         "failed_checks": risk_snapshot["failed_checks"],
@@ -650,7 +696,8 @@ def _run_gated_live_leg(
         snapshot_store=live_execution.select_pre_order_snapshot_store(now=now, root=root),
         governance=governance,
         gate_open=True,
-        limits=limits,
+        # The re-read caps: the day's slot is reserved against the limit in force now.
+        limits=gate_kwargs["limits"],
         now=now,
         timeout_seconds=timeout_seconds,
     )
@@ -1136,6 +1183,51 @@ _COOLDOWN_CLOSE_REASONS = STOP_EXIT_REASONS | {live_leg.CLOSE_REASON_VENUE_EXTER
 def _settle_clock() -> str:
     """The wall clock when a settlement is recorded. Its own function so tests can set it."""
     return timeutil.utc_now_iso()
+
+
+def reread_entry_facts(
+    *, root: Path | None, now: str, clock: str, control: Any, judged_limits: Any,
+    venue_realized_pnl_usdt: float | None, venue_required: bool, with_pool: bool = True,
+) -> dict[str, Any]:
+    """What another writer can move between an entry door's first read and its gate, read again
+    (PR2c-2a), in the shape `live_entry.narrow_entry_facts` / `narrow_guard_facts` take.
+
+    A legacy validity window (a budget or risk limits registered before PR1r) is judged at both the
+    fire's ``now`` and ``clock``, the moment the door judged: a record that expired in between no
+    longer backs the order. Today's loss is judged again against the fresh limit, on the realized
+    figure the door already read (the account is not read again). ``with_pool=False`` (the probe,
+    which no pool entry authorizes) leaves the pool unread. Raises on anything it cannot read; the
+    caller refuses."""
+    limits, budget = resolve_live_order_limits(root, now=now)
+    _, budget_at_clock = resolve_live_order_limits(root, now=clock)
+    active_pool = pool.load_active_pool(root) if with_pool else None
+    breaker = bracket_breaker_status(root)
+    risk = live_risk_snapshot(limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
+                              venue_realized_pnl_usdt=venue_realized_pnl_usdt,
+                              venue_required=venue_required)
+    try:
+        in_force = [resolve_risk_limits(root, now=at).as_record() for at in (now, clock)]
+        risk_problem = risk_limits_moved(judged_limits, in_force)
+    except MvpRuntimeError as exc:
+        risk_problem = exc.reason_code
+    return {
+        "execution_stage": resolve_execution_stage(root, now=now),
+        "runtime_active": control.load().trading_allowed,
+        "limits": limits,
+        "budget": budget,
+        "budget_registered": bool(budget.get("valid")) and bool(budget_at_clock.get("valid"))
+                             and budget.get("record_sha256") == budget_at_clock.get("record_sha256"),
+        "allowed_symbols": budget.get("symbol_allowlist") or (),
+        "live_routable_strategy_ids": (
+            pool.live_routable_strategy_ids(active_pool) if active_pool is not None else None),
+        "live_arm_approvals": pool.live_arm_approvals(active_pool) if active_pool is not None else None,
+        "submitted_today": count_today(root),
+        "daily_loss_breached": bool(risk["daily_loss_limit_breached"]),
+        "risk": risk,
+        "bracket_failures_consecutive": int(breaker["consecutive"]),
+        "bracket_breaker_tripped": bool(breaker["tripped"]),
+        "risk_limits_problem": risk_problem,
+    }
 
 
 def _entry_clock() -> str:

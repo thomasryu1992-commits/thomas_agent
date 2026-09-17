@@ -71,7 +71,8 @@ from runtime.mvp_runtime.crypto import live_promotion, pre_order_gate  # noqa: E
 from runtime.mvp_runtime.crypto.account import read_account, select_account_feed  # noqa: E402
 from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
-from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE  # noqa: E402
+from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE, narrow_guard_facts  # noqa: E402
+from runtime.mvp_runtime.crypto.live_route import reread_entry_facts  # noqa: E402
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
@@ -81,11 +82,13 @@ from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
     build_live_order_intent,
     count_today,
     evaluate_live_order_guard,
+    read_live_entry_marks,
     render_guard_text,
     resolve_live_order_limits,
     select_live_bracket_breaker,
     select_live_entry_marks,
     select_live_order_counter,
+    symbol_in_flight,
 )
 from runtime.mvp_runtime.crypto.live_pnl import (  # noqa: E402
     live_outcomes_for_analysis,
@@ -363,14 +366,17 @@ def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None
     opened = probe.open_cell_index(plan)
     if opened is not None:
         open_symbol = plan["cells"][opened]["symbol"]
+        read = plan
         plan, resolution = probe.resolve_open_cell(
             plan,
             outcomes=read_live_outcomes(root),
-            position_open=load_open_live_position(open_symbol, root) is not None,
+            # A cell whose fire is still sending or booking is not finished (PR2c-2a review).
+            position_open=(load_open_live_position(open_symbol, root) is not None
+                           or _entry_in_flight(plan["cells"][opened], root, now=now)),
             now=now,
         )
         if resolution is not None:
-            probe.write_plan(plan, root)
+            probe.write_plan(plan, root, expected_sha256=read["record_sha256"])
             print(f"resolved  : cell {resolution['index']} -> {resolution['status']} "
                   f"(outcome {resolution['outcome_id']})")
     plan = probe.abandon_plan(reason=reason, now=now, root=root)
@@ -445,6 +451,19 @@ def _still_booked(symbol: str, root: Path | None, position_id: Any) -> bool:
     return booked is not None and booked.get("position_id") == position_id
 
 
+def _entry_in_flight(cell: Any, root: Path | None, *, now: str) -> bool:
+    """Whether the fire that opened ``cell`` may still be sending or booking its entry (PR2c-2a
+    review). That fire holds its symbol under the cell's entry id until the book says what the venue
+    holds, so a claim under that id means the cell is not finished, whatever the book says yet. A
+    marks file that cannot be read cannot show that it is."""
+    try:
+        marks = read_live_entry_marks(root)
+    except Exception:  # noqa: BLE001 — unreadable is not "nothing in flight"
+        return True
+    claim = symbol_in_flight(marks, cell.get("symbol"), now=now)
+    return claim is not None and claim.get("client_order_id") == cell.get("entry_client_order_id")
+
+
 def run_fire(
     *,
     root: Path | None,
@@ -480,16 +499,21 @@ def run_fire(
     opened = probe.open_cell_index(plan)
     if opened is not None:
         open_symbol = plan["cells"][opened]["symbol"]
+        read = plan
         plan, resolution = probe.resolve_open_cell(
             plan,
             outcomes=read_live_outcomes(root),
-            position_open=load_open_live_position(open_symbol, root) is not None,
+            # A cell whose fire is still sending or booking is not finished (PR2c-2a review).
+            position_open=(load_open_live_position(open_symbol, root) is not None
+                           or _entry_in_flight(plan["cells"][opened], root, now=now)),
             now=now,
         )
         if resolution is not None:
-            plan = probe.write_plan(plan, root)
+            plan = probe.write_plan(plan, root, expected_sha256=read["record_sha256"])
             print(f"resolved  : cell {resolution['index']} -> {resolution['status']} "
                   f"(outcome {resolution['outcome_id']})")
+        else:
+            plan = read
 
     adapter = live_execution.select_order_adapter(now=now, root=root)
     if not bool(getattr(adapter, "network_egress", False)):
@@ -508,7 +532,8 @@ def run_fire(
           f"measured {probe.REGIME_FEATURE}@{probe.REGIME_TIMEFRAME} regime = {regime}")
 
     limits, budget = resolve_live_order_limits(root, now=now)
-    control_state = ControlStore(root).load() if root is not None else ControlStore.default().load()
+    control_store = ControlStore(root) if root is not None else ControlStore.default()
+    control_state = control_store.load()
     # `trading_allowed`, live_route's bar for entries: a runtime whose trading arm is down
     # must hold probes too — a probe is an entry, not a close.
     runtime_active = control_state.trading_allowed
@@ -542,9 +567,10 @@ def run_fire(
     # own (stricter of calendar day / rolling 24h), the bracket breaker is the counter the
     # naked-entry loop latches, and the R-based guard reads the same live rows the cycle
     # meters — all three refuse BEFORE the guard so the refusal names the breaker.
+    venue_realized = venue_daily_realized_net(snapshot.realized_windows)
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
-        venue_realized_pnl_usdt=venue_daily_realized_net(snapshot.realized_windows),
+        venue_realized_pnl_usdt=venue_realized,
         # A probe opens a position: no venue figure is a tripped breaker (2026-09-15).
         venue_required=True,
     )
@@ -621,13 +647,40 @@ def run_fire(
     if not verdict["approved"]:
         raise _Refusal(probe.PROBE_GUARD_REFUSED, "the final order guard refused; fix what it names")
 
-    # The pre-order gate (PR2b): every refusal above re-derived from the same facts, the order
+    # The re-read (PR2c-2a): since the fire read them, another writer can halt or disarm the
+    # runtime, re-register the budget or the risk limits, demote the stage, spend the day's orders
+    # or trip the bracket breaker. Read again, folded in only to narrow, and judged by the gate
+    # below. The gate's clock is read first: a legacy validity window is judged at it too.
+    gate_clock = timeutil.utc_now_iso()
+    # The limits the risk guard judged on; with none resolved it judged on the defaults.
+    judged_limits = (risk_limits or DEFAULT_RISK_LIMITS).as_record()
+    try:
+        fresh = reread_entry_facts(root=root, now=now, clock=gate_clock, control=control_store,
+                                   judged_limits=judged_limits, venue_realized_pnl_usdt=venue_realized,
+                                   venue_required=True, with_pool=False)
+    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+        raise _Refusal(
+            probe.PROBE_REREAD_FAILED,
+            f"the facts could not be read again before the gate "
+            f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
+        ) from exc
+    guard_kwargs = narrow_guard_facts(guard_kwargs, fresh)
+    # Today's loss judged against the fresh limit too; the gate's loss check reads this record.
+    risk = {**fresh["risk"], "daily_loss_limit_breached": guard_kwargs["daily_loss_breached"]}
+    breaker = {**breaker,
+               "consecutive": max(int(breaker.get("consecutive") or 0), fresh["bracket_failures_consecutive"]),
+               "tripped": bool(breaker.get("tripped")) or fresh["bracket_breaker_tripped"]}
+    if fresh["risk_limits_problem"]:
+        guard_verdict = {**guard_verdict, "allow_new_position": False,
+                         "problems": [*(guard_verdict.get("problems") or ()), fresh["risk_limits_problem"]]}
+
+    # The pre-order gate (PR2b): every refusal above re-derived from the re-read facts, the order
     # rebuilt and judged again, the approved profile checked whole — sealed into the snapshot the
     # order will name. The plan's approval is this order's authority.
     profile = pre_order_gate.approved_profile(
-        purpose=PURPOSE_PROBE, stage=stage, budget=budget,
-        # The limits the risk guard judged on; with none resolved it judged on the defaults.
-        risk_limits=(risk_limits or DEFAULT_RISK_LIMITS).as_record(),
+        purpose=PURPOSE_PROBE, stage=guard_kwargs["execution_stage"],
+        budget={**fresh["budget"], "valid": guard_kwargs["budget_registered"]},
+        risk_limits=judged_limits,
         authority={"kind": pre_order_gate.AUTHORITY_PROBE_PLAN, "batch_id": plan.get("batch_id"),
                    "approval_id": plan.get("approval_id"), "cell_index": cell_index},
     )
@@ -638,7 +691,7 @@ def run_fire(
         risk_verdict=guard_verdict, guard_kwargs=guard_kwargs, profile=profile, now=now,
         # PR2c-1: the account the probe judged must be at most a minute old now, and the order
         # must leave within a minute of this judgment.
-        account_collected_at=getattr(snapshot, "collected_at", None), clock=timeutil.utc_now_iso(),
+        account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
     )
     if not snapshot_record["approved"]:
         raise _Refusal(
@@ -679,7 +732,8 @@ def run_fire(
         #    from another process; the reservation is the locked check-and-increment. It stays
         #    spent if the send fails — an ambiguous submit may have reached the venue.
         try:
-            counter.reserve_submission(limit=limits.max_daily_order_count)
+            # The narrowed caps the gate judged: a cap lowered since the first read binds here too.
+            counter.reserve_submission(limit=guard_kwargs["limits"].max_daily_order_count)
         except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
             raise _Refusal(
                 probe.PROBE_ORDER_SLOT_REFUSED,
@@ -699,11 +753,11 @@ def run_fire(
         # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
         #    which is the honest state (an order may be at the venue) and what keeps
         #    one-probe-at-a-time enforceable across processes.
-        plan = probe.mark_cell(
+        # The plan as this fire read it: an `--abandon` since then refuses the claim, nothing sent.
+        plan = probe.write_plan(probe.mark_cell(
             plan, cell_index, status=probe.CELL_OPEN, now=now,
             opened_at=now, entry_client_order_id=intent["client_order_id"],
-        )
-        plan = probe.write_plan(plan, root)
+        ), root, expected_sha256=plan["record_sha256"])
     except BaseException:
         _give_back_symbol(entry_marks, claim, sent=False)
         raise
@@ -716,14 +770,46 @@ def run_fire(
         )
     except live_execution.SubmitRefused as exc:
         # Raised only before the adapter was called: nothing left, so the cell and the symbol go back.
-        probe.write_plan(
-            probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
-                            now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
-            root,
-        )
+        unwritten = None
+        try:
+            probe.write_plan(
+                probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
+                                now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
+                root, expected_sha256=plan["record_sha256"],
+            )
+        except Exception as write_exc:  # noqa: BLE001 — the symbol still goes back
+            unwritten = getattr(write_exc, "reason_code", type(write_exc).__name__)
         _give_back_symbol(entry_marks, claim, sent=False)
-        raise _Refusal(exc.reason_code, f"the order was refused before the venue: {exc}") from exc
+        raise _Refusal(
+            exc.reason_code,
+            f"the order was refused before the venue: {exc}"
+            + (f"; the cell could not be returned ({unwritten})" if unwritten else ""),
+        ) from exc
     audit_error = _audit_order(governance, entry, guard=verdict, now=now, root=root)
+
+    # Past the send, the plan is bookkeeping and the position is what matters: a plan write that
+    # fails — another door changed the store, or the write itself failed — is reported, and the
+    # fire still supervises what it sent to its end (PR2c-2a review). The exit says so.
+    unrecorded: list[str] = []
+
+    def _record_plan(updated: Any, *, over: Any, what: str) -> None:
+        nonlocal plan
+        try:
+            plan = probe.write_plan(updated, root, expected_sha256=over["record_sha256"])
+        except Exception as exc:  # noqa: BLE001 — past the send: report, never escape
+            code = getattr(exc, "reason_code", type(exc).__name__)
+            unrecorded.append(f"{what} ({code})")
+            sys.stderr.write(f"PLAN      : NOT recorded — {what} ({code}); what was sent is still "
+                             "supervised\n")
+
+    def _done(code: int) -> int:
+        if unrecorded:
+            sys.stderr.write(
+                f"BLOCKED {probe.PROBE_PLAN_NOT_RECORDED}: the plan does not say what this probe did "
+                f"({'; '.join(unrecorded)}); reconcile the cell by hand\n"
+            )
+            return EXIT_BLOCKED
+        return code
 
     fill = entry.get("fill") or {}
     filled_qty = float(fill.get("executed_qty") or 0.0)
@@ -731,12 +817,9 @@ def run_fire(
     confirmed = entry["reconcile_status"] == live_promotion.RECONCILED and filled_qty > 0 and fill_price > 0
 
     def _fail_cell(note: str) -> None:
-        nonlocal plan
-        plan = probe.write_plan(
-            probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
-                            now=timeutil.utc_now_iso(), note=note),
-            root,
-        )
+        _record_plan(probe.mark_cell(plan, cell_index, status=probe.CELL_EMPTY,
+                                     now=timeutil.utc_now_iso(), note=note),
+                     over=plan, what=f"cell {cell_index} back to EMPTY")
 
     if not confirmed:
         if filled_qty > 0:
@@ -775,7 +858,7 @@ def run_fire(
             f"BLOCKED {probe.PROBE_ENTRY_NOT_CONFIRMED}: the entry did not confirm "
             f"({entry['reconcile_status']}); the cell is EMPTY again\n"
         )
-        return EXIT_BLOCKED
+        return _done(EXIT_BLOCKED)
 
     # 3. The resting stop, through the same leg placement the autonomous bracket uses.
     # Width from the plan, as above — hung on the ACTUAL fill.
@@ -833,7 +916,7 @@ def run_fire(
             f"BLOCKED {probe.PROBE_STOP_NOT_PLACED}: the stop would not rest "
             f"({placement.get('error')}); the entry was closed and the cell is EMPTY again\n"
         )
-        return EXIT_BLOCKED
+        return _done(EXIT_BLOCKED)
 
     # 4. Book the position from the ACTUAL fill, stop id attached, so the ordinary live
     #    machinery (reconcile / settle / protect) owns it if this process dies.
@@ -857,7 +940,8 @@ def run_fire(
     cells = [dict(c) for c in plan["cells"]]
     cells[cell_index]["position_id"] = position["position_id"]
     cells[cell_index]["updated_at"] = timeutil.utc_now_iso()
-    plan = probe.write_plan({**plan, "cells": cells}, root)
+    _record_plan({**plan, "cells": cells}, over=plan,
+                 what=f"cell {cell_index} names position {position['position_id']}")
 
     print(f"probe     : {symbol} LONG {filled_qty} @ {fill_price} (notional {notional} USDT), "
           f"stop resting at {trigger} ({placement['client_order_id']})")
@@ -870,19 +954,19 @@ def run_fire(
 
     def _settled_elsewhere() -> int:
         """The live cycle settled the probe first — the ledger says how."""
-        nonlocal plan
         resolved_now = timeutil.utc_now_iso()
-        plan, resolution = probe.resolve_open_cell(
-            plan, outcomes=read_live_outcomes(root), position_open=False, now=resolved_now,
+        read = plan
+        resolved, resolution = probe.resolve_open_cell(
+            read, outcomes=read_live_outcomes(root), position_open=False, now=resolved_now,
         )
-        plan = probe.write_plan(plan, root)
+        _record_plan(resolved, over=read, what=f"cell {cell_index} settled by the live cycle")
         if resolution is None:
             sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the book cleared but the "
                              "cell could not be resolved\n")
-            return EXIT_BLOCKED
+            return _done(EXIT_BLOCKED)
         print(f"settled   : cell -> {resolution['status']} (outcome {resolution['outcome_id']}, "
               "recorded by the live cycle)")
-        return EXIT_OK if resolution["status"] != probe.CELL_EMPTY else EXIT_BLOCKED
+        return _done(EXIT_OK if resolution["status"] != probe.CELL_EMPTY else EXIT_BLOCKED)
 
     # The probe's own record, by id: once the cycle has settled it, a record on the symbol is
     # another entry's, and settling or closing it here would erase or shrink that position.
@@ -910,17 +994,17 @@ def run_fire(
             if settled["status"] != live_leg.EXIT_CLOSED or not isinstance(outcome, dict):
                 sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the stop filled but the "
                                  f"settle did not close ({settled['reason_codes']})\n")
-                return EXIT_BLOCKED
-            plan = probe.write_plan(
+                return _done(EXIT_BLOCKED)
+            _record_plan(
                 probe.mark_cell(plan, cell_index, status=probe.CELL_FILLED, now=settle_now,
                                 outcome_id=outcome.get("outcome_id"),
                                 close_reason=outcome.get("close_reason"),
                                 stop_slippage_bps=outcome.get("stop_slippage_bps")),
-                root,
+                over=plan, what=f"cell {cell_index} FILLED",
             )
             print(f"FILLED    : stop filled; slippage {outcome.get('stop_slippage_bps')} bps "
                   f"(outcome {outcome.get('outcome_id')})")
-            return EXIT_OK
+            return _done(EXIT_OK)
         sleep(max(0.0, float(poll_seconds)))
 
     # 5. Timeout: close at market. The row this writes is a `time_exit` — NOT a slippage
@@ -958,18 +1042,18 @@ def run_fire(
             + ("its stop was withdrawn" if closed.get("cancels") else "the stop is still resting")
             + " and the cell stays OPEN\n"
         )
-        return EXIT_BLOCKED
-    plan = probe.write_plan(
+        return _done(EXIT_BLOCKED)
+    _record_plan(
         probe.mark_cell(plan, cell_index, status=probe.CELL_TIMEOUT, now=close_now,
                         outcome_id=outcome.get("outcome_id"),
                         close_reason=outcome.get("close_reason")),
-        root,
+        over=plan, what=f"cell {cell_index} TIMEOUT",
     )
     print(f"TIMEOUT   : closed at market after {plan['params']['timeout_minutes']}m; the row is "
           f"NOT a slippage sample (outcome {outcome.get('outcome_id')})")
     if close_audit_error:
         print(f"AUDIT     : close NOT recorded ({close_audit_error}) — the close IS done")
-    return EXIT_OK
+    return _done(EXIT_OK)
 
 
 def main(argv: list[str] | None = None) -> int:

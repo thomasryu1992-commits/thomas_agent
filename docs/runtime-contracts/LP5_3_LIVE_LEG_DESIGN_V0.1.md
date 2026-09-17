@@ -207,7 +207,8 @@ which moves the daily-loss breaker the *permissive* way.
        What landed with it:
 
        - `live_route.run_live_leg` — gate → reconcile → settle → protect → maybe open, with
-         every runtime fact read once and shared by every door;
+         every runtime fact read once and shared by every door of the decision (since PR2c-2a the
+         pre-order gate reads the facts another writer can move again, only to narrow);
        - the **shared route**: `run_paper_update` now returns its own routing result and both
          the counterfactual shadow and the live leg consume it, so three consumers cannot
          disagree about what the pool said (it was evaluated twice before, identically, which

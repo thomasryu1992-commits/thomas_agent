@@ -24,6 +24,57 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The gate reads again what another writer can change** (crypto PR2c-2a, Thomas decision 23,
+  2026-09-17; `crypto/live_entry.py`, `crypto/live_route.py`, `crypto/probe.py`,
+  `scripts/run_slippage_probe.py`).
+  - **The gap.** An entry door read the stage, the halts and the arm, the budget and the risk limits,
+    the live tier, the day's count and the bracket breaker once, at its start, and judged its gate on
+    those reads. An operator's halt, a disarm, a re-registered budget, or an order another door
+    spent in between reached the next context, not this one. Only the live-trading env var was read
+    at the send, and a running process never sees that change.
+  - **Read again, narrow only.** Both doors re-read those facts right before the gate and fold them
+    in with rules that can only narrow:
+    - the halt and a valid budget must hold on both reads;
+    - the allowlist and the live tier are what both reads share;
+    - the stage, the caps and the day's count are fresh;
+    - the breaker keeps the higher streak;
+    - an arming approval counts only if both reads name the same one;
+    - the risk verdict stands only on the limits record it was judged on.
+
+    The autonomous gate re-derives the decision on the result, so a fact that improved cannot widen
+    the order: a size the fresh caps would change fails `intent_matches_decision`.
+  - **Not re-read:** the account, the book, the filters and the market price. They are what the
+    order was sized on, and a second read would refuse on noise.
+  - **Legacy validity windows at the wall clock.** A budget or risk limits record still carrying a
+    window (registered before PR1r) is now judged at the decision's `clock` as well as the fire's
+    `now`. Before, a window that ended mid-fire still read as valid.
+  - **The probe plan is compare-and-set.** `--fire` read the plan once and later wrote its whole
+    copy back, so an `--abandon` in between was undone and the plan came back ACTIVE. Every write
+    now names the plan it replaces, and a changed store refuses the write.
+  - **Two tests were changed on purpose.**
+    - A structural test pinned the gate to the decision's own mapping; it now pins that mapping
+      narrowed by the re-read. The stage the leg stamps is still read once, and the gate reads
+      again only for a decision that is ready.
+    - The probe's reservation test now makes both reads stale. Otherwise the re-read catches the
+      spent slot first, which has its own test.
+  - **What the independent review of #886 found, fixed in the same PR.**
+    - **A raised cap widened the order.** The fresh caps were taken as they were read, so a cap
+      raised mid-fire reached the slot and the guard. Each cap is now the lower of the two reads,
+      and a manual kill engaged on either read stays engaged.
+    - **Today's loss was not judged again.** A loss limit lowered mid-fire left the first read's
+      verdict standing. Both doors now judge the realized figure they already read against the
+      fresh limit, and the loss counts as breached if either read says so.
+    - **The probe reserved its slot against the first read's cap.** It now uses the narrowed caps,
+      as the route does.
+    - **Compare-and-set could end a fire's supervision.** After the send, a write refused because
+      an `--abandon` had changed the store raised out of the fire. The fire stopped watching the
+      position it had opened, and its time exit never ran. Such a write is now reported, the fire
+      supervises to its end, and it exits `BLOCKED` (`PROBE_PLAN_NOT_RECORDED`).
+    - **An abandon could resolve a cell whose fire was still sending.** The book is empty until the
+      fire books its fill, so the cell read as finished. An OPEN cell now stays unresolved while the
+      entry marks hold a claim under its entry id, or cannot be read.
+    - **The risk-limits refusals were prose.** They are now reason codes.
+
 - **An entry is judged on facts that are still true when it is decided** (crypto PR2c-1, Thomas
   decisions 18 and 24, 2026-09-17; `crypto/live_entry.py`, `crypto/pre_order_gate.py`,
   `crypto/market_data.py`, `crypto/live_order.py`, `crypto/live_sizing.py`, `crypto/live_route.py`,
