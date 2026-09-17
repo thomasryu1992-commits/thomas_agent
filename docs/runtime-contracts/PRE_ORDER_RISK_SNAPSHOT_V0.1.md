@@ -17,7 +17,7 @@ and their tests.
 
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
-| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the same facts mapping. This covers every door by name and the final guard's checks. The order must be the one those facts decide. |
+| Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the same facts mapping. This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). |
 | Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account, the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
@@ -88,7 +88,14 @@ called. A failure at any step is a `SubmitRefused` (a `ToolError`), raised only 
 7. The intent's `risk_snapshot_sha256` names this snapshot.
 8. There is a store, it is the snapshot's venue's, and the append returns this hash.
 
-**Ordering at the doors.** The gate spends nothing, so a refusal costs no bar and no daily slot. Then:
+**Ordering at the doors.** The gate spends nothing, so a refusal costs no bar and no daily slot.
+The autonomous leg then checks two things before it spends anything:
+- the snapshot (steps 3–7 above);
+- that the bracket it will place carries the sealed intent's stop and target, on the sides that
+  close the position (`LIVE_ENTRY_BRACKET_NOT_APPROVED`). The venue door never sees the bracket:
+  its legs are reduce-only.
+
+Then:
 
 1. The entry leg claims the bar.
 2. It reserves the day's slot.
@@ -110,3 +117,6 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
   - per-order slippage and fee evidence;
   - optional-data health as a gate.
 - **A shared per-symbol entry lock between the probe and the autonomous leg:** left from PR2a.
+- **Protective prices outside the autonomous leg are not sealed as prices.** The probe prices its
+  stop on the actual fill, from the approved plan's width, because that price does not exist
+  before the fill. The testnet cycle places fixed-distance legs and withdraws them at once.

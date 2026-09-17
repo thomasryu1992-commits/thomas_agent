@@ -582,6 +582,7 @@ def _limits_facts(limits: Any) -> dict[str, Any]:
 def gate_live_entry(
     intent: Mapping[str, Any],
     *,
+    bracket: Mapping[str, Any] | None,
     decision_kwargs: Mapping[str, Any],
     profile: Mapping[str, Any],
     now: str,
@@ -590,9 +591,11 @@ def gate_live_entry(
 
     Re-runs :func:`plan_live_entry` on ``decision_kwargs`` — the facts the leg read — and seals what
     it finds. The decision is pure, so the re-run re-verifies every door with no second copy of any
-    rule, and the intent about to be sent must be the one those facts decide: a size changed after
-    planning, a moved stop, another symbol, is a failed check rather than a trusted value. The
-    re-derived decision's own guard contributes its checks by name."""
+    rule. What is about to leave must be what those facts decide: the ``intent`` (a size changed
+    after planning, a moved stop, another symbol) and the ``bracket`` the leg will place — its
+    protective orders come from that record, not from the intent, so it is checked on its own. Either
+    one drifting is a failed check rather than a trusted value. The re-derived decision's own guard
+    contributes its checks by name."""
     rederived = plan_live_entry(**dict(decision_kwargs))
     ready = rederived.get("status") == STATUS_READY and rederived.get("ready") is True
     reasons = set(rederived.get("reasons") or [])
@@ -612,13 +615,12 @@ def gate_live_entry(
     checks.append(pre_order_gate.check(
         CHECK_INTENT_MATCHES_DECISION, same_order,
         None if same_order else "the order is not the one these facts decide"))
-    bracket = rederived.get("bracket") if isinstance(rederived.get("bracket"), Mapping) else {}
-    bracket_agrees = bool(ready and bracket
-                          and intent.get("stop_loss") == bracket.get("stop_loss")
-                          and intent.get("take_profit") == bracket.get("take_profit"))
+    priced = rederived.get("bracket") if isinstance(rederived.get("bracket"), Mapping) else None
+    bracket_agrees = bool(ready and priced is not None and isinstance(bracket, Mapping)
+                          and dict(bracket) == dict(priced))
     checks.append(pre_order_gate.check(
         CHECK_BRACKET_MATCHES_DECISION, bracket_agrees,
-        None if bracket_agrees else "the protective prices are not the ones the decision priced"))
+        None if bracket_agrees else "the protective orders are not the ones the decision priced"))
 
     kw = decision_kwargs
     verdict = kw.get("verdict") if isinstance(kw.get("verdict"), Mapping) else {}

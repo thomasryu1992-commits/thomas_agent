@@ -144,6 +144,13 @@ Append a new entry when a milestone ships, in the same PR.
   - the audit event's `evidence_refs`;
   - the testnet evidence row.
 
+  **The protection is bound as well as the order.** The leg places its stop and target from the
+  decision's bracket record, not from the intent. So the autonomous gate compares the bracket the leg
+  will place with the one the re-derived decision priced. Before it spends the bar, the leg also
+  refuses a bracket whose prices differ from the sealed intent's, or whose sides would add to the
+  position (`LIVE_ENTRY_BRACKET_NOT_APPROVED`). The mutation run found this: the first version
+  compared the intent's own prices, which the order check already covered.
+
   The signed testnet entry passes the same gate into its own venue's store (decision 20), so the rule
   at the door has no venue exception.
 

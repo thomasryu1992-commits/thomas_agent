@@ -507,6 +507,27 @@ def test_a_tampered_row_fails_the_verified_read_and_the_board(tmp_path):
                                             "count": None, "last_created_at": None}
 
 
+@pytest.mark.parametrize("edit", [
+    lambda row: row["facts"].update(equity_usdt=10_000_000.0),
+    lambda row: row["checks"][0].update(detail="edited"),
+    lambda row: row["lineage"].update(strategy_id="S999"),
+    lambda row: row["approved_profile"]["authority"].update(approval_id="appr_forged"),
+], ids=["fact", "check-detail", "lineage", "authority"])
+def test_an_edit_the_schema_still_accepts_fails_the_seal_on_read(tmp_path, edit):
+    """The schema says a row is recordable; only the seal says it is the row that was recorded."""
+    _, snapshot = approved_snapshot(_intent())
+    _store(tmp_path).append(snapshot)
+    path = g.snapshot_path(tmp_path)
+    row = json.loads(path.read_text(encoding="utf-8"))
+    edit(row)
+    assert g._schema_problem(row) is None      # the schema alone would let this row through
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
+    assert g.snapshots_status(tmp_path)["error"] == g.RISK_SNAPSHOT_STORE_TAMPERED
+
+
 def test_an_unreadable_store_refuses_the_append(tmp_path):
     g.snapshot_path(tmp_path).mkdir(parents=True)   # a directory where the file should be
     _, snapshot = approved_snapshot(_intent())

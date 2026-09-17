@@ -111,6 +111,8 @@ NO_ENTRY_MARKS = "LIVE_ENTRY_NO_MARK_STORE"
 NO_ORDER_COUNTER = "LIVE_ENTRY_NO_ORDER_COUNTER"
 # PR2b: the snapshot store is required to send, like the two above.
 NO_SNAPSHOT_STORE = "LIVE_ENTRY_NO_SNAPSHOT_STORE"
+# The protective orders the leg would place are not the ones the approved intent carries.
+BRACKET_NOT_APPROVED = "LIVE_ENTRY_BRACKET_NOT_APPROVED"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
 BRACKET_FAILED = "LIVE_BRACKET_FAILED"
 NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
@@ -678,6 +680,17 @@ def execute_live_entry(
         pre_order_gate.verify_snapshot(intent, risk_snapshot)
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
         result["reason_codes"] = [_persist_failure_reason(exc)]
+        return result
+    # The snapshot binds the intent's stop and target; the legs are placed from `bracket`. They must
+    # be the same prices, on the sides the direction closes on, or the protection that rests is not
+    # the protection that was approved. A direction with no closing side has no protection to match.
+    closing_side = {"LONG": "SELL", "SHORT": "BUY"}.get(str(intent.get("direction") or "").upper())
+    if not (closing_side is not None and isinstance(bracket, Mapping)
+            and bracket.get("stop_loss") == intent.get("stop_loss")
+            and bracket.get("take_profit") == intent.get("take_profit")
+            and bracket.get("stop_side") == closing_side
+            and bracket.get("take_profit_side") == closing_side):
+        result["reason_codes"] = [BRACKET_NOT_APPROVED]
         return result
     result["risk_snapshot_sha256"] = intent.get("risk_snapshot_sha256")
     entry_bar = decision.get("entry_bar") if isinstance(decision.get("entry_bar"), Mapping) else {}

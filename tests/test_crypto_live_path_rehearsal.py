@@ -280,8 +280,8 @@ def _decision(plan, **kw):
             authority={"kind": pre_order_gate.AUTHORITY_LIVE_ARM, "strategy_id": plan["strategy_id"],
                        "approval_id": "approval_rehearsal"},
         )
-        snapshot = live_entry.gate_live_entry(decision["intent"], decision_kwargs=kwargs,
-                                              profile=profile, now=NOW)
+        snapshot = live_entry.gate_live_entry(decision["intent"], bracket=decision["bracket"],
+                                              decision_kwargs=kwargs, profile=profile, now=NOW)
         assert snapshot["approved"], snapshot["failed_checks"]
         decision = {**decision, "intent": pre_order_gate.bind_intent(decision["intent"], snapshot),
                     "risk_snapshot": snapshot}

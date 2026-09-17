@@ -46,6 +46,7 @@ def _intent(**kw):
     intent = enrich_order_identity({
         "status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT", "direction": "LONG", "side": "BUY",
         "order_type_exchange": "MARKET", "quantity": 0.001, "order_notional_usdt": 60.0,
+        "stop_loss": 59000.0, "take_profit": 62000.0,
         "reduce_only": False, "connectivity_test": False, "created_at": NOW,
         "strategy_id": "S001", "candidate_id": "cand_1", "strategy_rule_hash": "deadbeef",
         **kw,
@@ -1186,6 +1187,35 @@ def test_a_decision_without_its_own_snapshot_spends_nothing_and_sends_nothing(de
                     snapshot_store=store)
     assert result["status"] == ll.ENTRY_REFUSED
     assert result["reason_codes"] == [reason]
+    assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
+
+
+_SHORT_INTENT, _SHORT_SNAPSHOT = _intent(direction="SHORT", side="SELL")
+_NO_DIRECTION_INTENT, _NO_DIRECTION_SNAPSHOT = _intent(direction="")
+
+
+@pytest.mark.parametrize("decision", [
+    {**DECISION, "bracket": {**BRACKET, "stop_loss": 58000.0}},
+    {**DECISION, "bracket": {**BRACKET, "take_profit": 63000.0}},
+    {**DECISION, "bracket": {**BRACKET, "stop_side": "BUY"}},
+    {**DECISION, "bracket": {**BRACKET, "take_profit_side": "BUY"}},
+    {**DECISION, "bracket": None},
+    {**DECISION, "intent": _SHORT_INTENT, "risk_snapshot": _SHORT_SNAPSHOT},
+    {**DECISION, "intent": _NO_DIRECTION_INTENT, "risk_snapshot": _NO_DIRECTION_SNAPSHOT,
+     "bracket": {**BRACKET, "stop_side": "BUY", "take_profit_side": "BUY"}},
+    {**DECISION, "intent": _NO_DIRECTION_INTENT, "risk_snapshot": _NO_DIRECTION_SNAPSHOT,
+     "bracket": {k: v for k, v in BRACKET.items() if k not in ("stop_side", "take_profit_side")}},
+], ids=["moved-stop", "moved-target", "stop-adds", "target-adds", "no-bracket", "long-legs-on-a-short",
+        "no-direction", "no-direction-no-sides"])
+def test_protection_that_is_not_the_approved_one_spends_nothing_and_sends_nothing(decision):
+    """The snapshot seals the intent's stop and target, and the legs are placed from the bracket:
+    a bracket that disagrees — in price, or on a side that would add to the position — is not the
+    protection that was approved."""
+    marks, counter, adapter, store = FakeMarks(), FakeCounter(), FakeAdapter(), FakeSnapshotStore()
+    result = _entry(decision=decision, entry_marks=marks, counter=counter, adapter=adapter,
+                    snapshot_store=store)
+    assert result["status"] == ll.ENTRY_REFUSED
+    assert result["reason_codes"] == [ll.BRACKET_NOT_APPROVED]
     assert marks.claims == [] and counter.count == 0 and store.appended == [] and adapter.submitted == []
 
 

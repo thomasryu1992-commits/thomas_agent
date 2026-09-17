@@ -577,8 +577,8 @@ def _run_gated_live_leg(
             "approval_id": (live_arm_approvals or {}).get(strategy_id),
         },
     )
-    snapshot = gate_live_entry(decision["intent"], decision_kwargs=decision_kwargs,
-                               profile=profile, now=now)
+    snapshot = gate_live_entry(decision["intent"], bracket=decision.get("bracket"),
+                               decision_kwargs=decision_kwargs, profile=profile, now=now)
     record["live_pre_order_gate"] = {
         "approved": snapshot["approved"],
         "failed_checks": snapshot["failed_checks"],

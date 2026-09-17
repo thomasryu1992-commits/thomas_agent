@@ -756,7 +756,8 @@ def _plan_with_lineage():
 def test_the_gate_approves_the_order_the_facts_decide_and_names_every_check():
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
     decision = le.plan_live_entry(**kwargs)
-    snapshot = le.gate_live_entry(decision["intent"], decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
     assert snapshot["approved"] is True, snapshot["failed_checks"]
     names = {c["check"] for c in snapshot["checks"]}
     from runtime.mvp_runtime.crypto.live_order import GUARD_CHECK_IDS, INTENT_SHAPE_CHECK
@@ -776,41 +777,69 @@ def test_an_order_that_is_not_the_decided_one_is_refused(change):
     """Re-derived from the same facts, the decision prices one order; anything else changed on
     the way to the venue fails the gate."""
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
-    intent = {**le.plan_live_entry(**kwargs)["intent"], **change}
-    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    decision = le.plan_live_entry(**kwargs)
+    intent = {**decision["intent"], **change}
+    snapshot = le.gate_live_entry(intent, bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
     assert snapshot["approved"] is False
     assert le.CHECK_INTENT_MATCHES_DECISION in snapshot["failed_checks"]
 
 
+@pytest.mark.parametrize("change", [
+    {"stop_loss": 58000.0}, {"take_profit": 63000.0}, {"stop_side": "BUY"},
+    {"take_profit_side": "BUY"}, {"working_type": "CONTRACT_PRICE"}, {"tick_size": 0.5},
+])
+def test_protective_orders_that_are_not_the_priced_ones_are_refused(change):
+    """The leg places its stop and target from the bracket record, not from the intent, so the
+    record is checked on its own: an intent that still matches does not vouch for it."""
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket={**decision["bracket"], **change},
+                                  decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    assert snapshot["failed_checks"] == [le.CHECK_BRACKET_MATCHES_DECISION]
+
+
+@pytest.mark.parametrize("bracket", [None, {}, "SL=59000"])
+def test_an_entry_with_no_bracket_to_place_is_refused(bracket):
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=bracket, decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["failed_checks"] == [le.CHECK_BRACKET_MATCHES_DECISION]
+
+
 def test_facts_that_refuse_the_decision_refuse_the_gate_and_name_the_door():
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
-    intent = le.plan_live_entry(**kwargs)["intent"]
+    decision = le.plan_live_entry(**kwargs)
     kwargs["spread_bps"] = 80.0      # the book widened between the decision and the gate
-    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
     assert snapshot["approved"] is False
     assert {le.CHECK_DECISION_READY, "spread_within_limit"} <= set(snapshot["failed_checks"])
 
 
 def test_a_stage_that_no_longer_binds_refuses_by_the_guards_own_check():
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
-    intent = le.plan_live_entry(**kwargs)["intent"]
+    decision = le.plan_live_entry(**kwargs)
     kwargs["execution_stage"] = _stage("PAPER")
-    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
     assert {"final_guard_approved", "execution_stage_admits"} <= set(snapshot["failed_checks"])
 
 
 def test_an_entry_for_a_strategy_armed_without_a_recorded_approval_is_refused():
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
-    intent = le.plan_live_entry(**kwargs)["intent"]
-    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs,
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
                                   profile=_gate_profile(approval_id=None), now=NOW)
     assert snapshot["failed_checks"] == ["approved_profile_complete"]
 
 
 def test_an_entry_with_incomplete_lineage_is_refused():
     kwargs = _decision_kwargs(plan=PLAN, execution_stage=_stage())   # no rule hash, no generation
-    intent = le.plan_live_entry(**kwargs)["intent"]
-    snapshot = le.gate_live_entry(intent, decision_kwargs=kwargs, profile=_gate_profile(), now=NOW)
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
     assert snapshot["failed_checks"] == ["lineage_complete"]
 
 
