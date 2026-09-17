@@ -378,8 +378,8 @@ is `docs/runtime-contracts/CRYPTO_LIVE_EXECUTION_V0.1.md`, Gate 2.
 
 **When you are done trading,** stop the entries first and clear the switch last:
 
-1. Stop new entries and keep managing positions: `console_cli halt_trading`, once the 1.5.1 policy
-   grants it. Until then the entries-only halt is `MVP_LIVE_MANUAL_KILL_SWITCH=true` in the compose
+1. Stop new entries and keep managing positions: `console_cli halt_trading`, granted by policy
+   1.5.1 (2026-09-17). On an image older than that policy, the entries-only halt is `MVP_LIVE_MANUAL_KILL_SWITCH=true` in the compose
    `.env`, applied by **recreating** the scheduler (`docker compose ... up -d`, as in the deploy
    steps above; `docker restart` keeps the environment the container was created with and does not
    pick up the change). Confirm the `manual_kill_switch` row reads engaged on
@@ -400,7 +400,7 @@ said only "remove `MVP_LIVE_TRADING` and restart", with no step before it.)*
 **To halt a scheduler that is trading right now, do not clear `MVP_LIVE_TRADING`.** It takes
 effect only on the next start, and because the close guard also requires the opt-in it would
 strand every open position. To stop new entries and keep managing positions, use the soft halt
-below (`halt_trading`, once the 1.5.1 policy grants it). A runtime `kill` lands on the running
+below (`halt_trading`, granted by policy 1.5.1). A runtime `kill` lands on the running
 service too, but it stops position management with the entries (corrected 2026-09-15).
 
 ## Emergency controls on a running service

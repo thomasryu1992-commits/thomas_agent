@@ -356,8 +356,8 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   `console_cli halt_trading` or `/halt_trading` (Thomas decision 7, 2026-09-15). The runtime stays
   ACTIVE, so settlement, the protection re-check, the time exit and reconciliation keep running;
   only new entries (autonomous and probe) are refused, until `/resume`. From a PAUSED or
-  KILLED runtime the operator's `/halt_trading` moves it straight to that state. **It acts once
-  the 1.5.1 policy grants the verb; until then it refuses by name.**
+  KILLED runtime the operator's `/halt_trading` moves it straight to that state. **Policy 1.5.1
+  grants the verb (2026-09-17); an image older than that policy refuses it by name.**
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries

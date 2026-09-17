@@ -24,6 +24,24 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The soft halt is granted — policy 1.5.1** (Thomas decision 7, 2026-09-15; applied 2026-09-17,
+  `governance/GOVERNANCE_POLICY.yaml`).
+  - **What moved:** `halt_trading` joins
+    `control_channel.local_operator_console.emergency_controls_allowed`, and `/halt_trading` joins
+    `kill_switch.commands`, but not `kill_blocks`, because it is not a kill. Three comments that
+    called `console_cli kill` the stop that keeps closes running are corrected: a KILLED runtime
+    never reaches the close path. Nothing else moved.
+  - **When it acts:** the verbs were merged dormant in #871. They act once the image that carries
+    this policy is deployed.
+  - **How it was applied:** by Thomas, with `scripts/ops/policy_bump_1_5_1.py --apply` (decision
+    Q2), at zero live PENDING and zero unspent APPROVED approvals. The radius is the same as
+    1.5.0's: validator literals, 62 example bindings and fixtures, and both replay bundles rebuilt.
+  - **Why before the PAPER stage:** a stage record binds the policy version, so the bump unbinds
+    any record written before it and needs a REBIND. None existed yet, because the machine reads
+    READ_ONLY.
+  - **Tests:** the execution-stage tests used `1.5.1` as "some other policy version" and failed
+    once it became the real one. They now use `9.9.9`.
+
 - **The canary door and both validity windows are gone, and a window already stored is still
   honoured** (crypto PR1r, Thomas decision 2026-09-15 — "걷어내자" for the canary pieces, and the
   budget and risk-limits windows with them; `scripts/place_canary_order.py` deleted,

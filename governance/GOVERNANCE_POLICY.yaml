@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.5.0
+policy_version: 1.5.1
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -160,9 +160,11 @@ authority:
       # the gate. A halt that traps an open position is exactly what those exemptions exist to
       # prevent, and expiry could produce one.
       #
-      # Revocation did not go with it: `console_cli kill` is file-based, instant, checked by the
-      # order guard, and deliberately exempted by the close path — so it stops new entries
-      # without trapping a position, which is what the grant could not do.
+      # Revocation did not go with it: the file-based halts are instant and checked by the order
+      # guard. `console_cli halt_trading` (1.5.1) stops new entries without trapping a position,
+      # which is what the grant could not do. `console_cli kill` stops entries too, but its
+      # kill_blocks include scheduler_execution: a KILLED runtime never reaches the close path,
+      # so it stops settlement and protection as well (1.5.0 said it exempted closes; corrected).
       - live_trading_opt_in              # MVP_LIVE_TRADING=real — the gate, not a second factor
       - operator_confirmation_phrase     # distinct per capability
       - registered_budget_record         # a registered trading budget (autonomous_spend_without_registered_budget: '0')
@@ -246,6 +248,13 @@ control_channel:
       - status
       - audit
       - recovery
+      # halt_trading: the Trading Soft Halt (Thomas decision 7, 2026-09-15; 1.5.1). Refuses new
+      # live entries and leaves the runtime ACTIVE, so open positions keep being settled,
+      # protected, time-exited and reconciled — the halt `kill`/`pause` are not (they stop the
+      # scheduler too). From PAUSED/KILLED the authenticated operator's /halt_trading moves the
+      # runtime straight to that state; the assistant's switch door (`disable mode=soft`) can
+      # halt entries but never release a stop. No approval: a stop must be cheap.
+      - halt_trading
       # resume: explicit Thomas decision (2026-07-19 QA wave 6b). The host console has had
       # /resume since R4 — physical/SSH access to the host IS the operator authentication
       # for the emergency path (the runtime itself still can never self-clear a kill:
@@ -301,7 +310,7 @@ control_channel:
       - crypto                            # the door's own closed set
     verbs:
       status: read_only                   # answers even while halted
-      disable: fail_safe_immediate        # kill|pause, reason required, NO approval — the
+      disable: fail_safe_immediate        # kill|pause|soft, reason required, NO approval — the
                                           # assistant may always stop; a stop needing sign-off
                                           # is not a fail-safe (S3: the halt door lives here)
       enable: approval_required_always    # S2 REJECTED (Thomas 2026-08-01): approval is
@@ -443,7 +452,8 @@ financial:
   # is actually load-bearing now, and where each is computed rather than asserted:
   #   - `MVP_LIVE_TRADING=real` in the trading process's environment — a DEPLOY action, not a
   #     runtime one, and NOT revocable by clearing it (it takes effect on restart and shuts the
-  #     close path, stranding open positions). The runtime stop is `console_cli kill`.
+  #     close path, stranding open positions). The runtime stop that keeps positions managed is
+  #     `console_cli halt_trading`; `console_cli kill` stops management too (1.5.1).
   #   - the canary confirmation phrase, a registered trading budget, both kill switches, the
   #     loss breaker, and (for the autonomous path) >= 3 clean canary orders.
   # Every one of those is a computed row on `python -m runtime.mvp_runtime.crypto.live_readiness`,
@@ -498,6 +508,7 @@ kill_switch:
     - /stop <task_id>
     - /kill
     - /resume
+    - /halt_trading                      # soft halt: entries only (1.5.1); not a kill_blocks stop
   kill_blocks:
     - new_execution
     - pending_execution
