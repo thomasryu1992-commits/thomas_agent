@@ -1892,17 +1892,28 @@ def test_a_decision_that_waited_over_a_minute_is_not_sent(tmp_path, monkeypatch)
     assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
 
 
-def test_the_decision_clock_is_read_after_every_fact_it_judges():
-    """Read first, it would make every fact look younger than it is (or read after the clock)."""
-    import ast
-    import inspect
-    import textwrap
+_JUDGED_READS = (
+    "read_account", "resolve_live_order_limits", "resolve_execution_stage", "list_open_live_positions",
+    "read_symbol_filters", "summarize_book", "_read_reference_quote", "live_risk_snapshot",
+    "bracket_breaker_status", "read_live_entry_marks", "count_today",
+)
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(live_route._run_gated_live_leg)))
-    [kwargs] = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                and getattr(n.targets[0], "id", None) == "decision_kwargs"]
-    assert kwargs.keywords[-1].arg == "clock"
-    assert ast.unparse(kwargs.keywords[-1].value) == "_entry_clock()"
-    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-             and getattr(n.func, "id", None) == "_entry_clock"]
-    assert len(reads) == 1
+
+def test_the_decision_clock_is_read_after_every_fact_it_judges(tmp_path, monkeypatch):
+    """Read before any of them, it would make that fact look younger than it is (PR2c-1)."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    order: list[str] = []
+
+    def _tracked(name, read):
+        def tracked(*args, **kwargs):
+            order.append(name)
+            return read(*args, **kwargs)
+        return tracked
+
+    for name in (*_JUDGED_READS, "_entry_clock"):
+        monkeypatch.setattr(live_route, name, _tracked(name, getattr(live_route, name)))
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert order.count("_entry_clock") == 1, order
+    assert set(order[:order.index("_entry_clock")]) == set(_JUDGED_READS), order

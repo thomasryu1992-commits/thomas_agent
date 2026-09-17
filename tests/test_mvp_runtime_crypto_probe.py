@@ -1909,15 +1909,46 @@ def test_fire_says_a_confirmed_but_unpriced_time_close_withdrew_its_stop(tmp_pat
     assert adapter.cancelled
 
 
-def test_fire_judges_its_gate_at_the_wall_clock_on_the_account_it_read():
-    """`now` is the fire's start; the gate's clock is read when the gate runs (PR2c-1)."""
-    import ast
-    import pathlib
+class _PastTheGate(Exception):
+    """Raised by the first step after an approving gate, so a test can stop the fire there."""
 
-    tree = ast.parse((pathlib.Path(__file__).resolve().parents[1] / "scripts"
-                      / "run_slippage_probe.py").read_text(encoding="utf-8"))
-    [call] = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-              and getattr(n.func, "attr", None) == "gate_probe_order"]
-    handed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
-    assert handed["clock"] == "timeutil.utc_now_iso()"
-    assert handed["account_collected_at"] == "getattr(snapshot, 'collected_at', None)"
+
+def _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, *, account_read_at):
+    """The fire starts at T0 and every later wall-clock read says T0 + 120 s. Returns T0."""
+    start = timeutil.utc_now_iso()
+    later = timeutil.plus_seconds(start, 120)
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    read_at = timeutil.plus_seconds(start, account_read_at)
+    account = types.SimpleNamespace(positions=[], realized_windows={}, available_balance=1000.0,
+                                    collected_at=read_at)
+    monkeypatch.setattr(cli, "read_account", lambda **k: (account, {}))
+
+    def _past_the_gate(now=None, root=None):
+        raise _PastTheGate()
+
+    monkeypatch.setattr(cli.live_execution, "select_pre_order_snapshot_store", _past_the_gate)
+    calls = []
+
+    def _wall():
+        calls.append(None)
+        return start if len(calls) == 1 else later
+
+    monkeypatch.setattr(timeutil, "utc_now_iso", _wall)
+    return adapter
+
+
+def test_fire_judges_its_gate_at_the_wall_clock_not_at_its_start(tmp_path, monkeypatch):
+    """An account read as the fire started is two minutes old when its gate runs (PR2c-1)."""
+    adapter = _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, account_read_at=0)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "account_fresh" in str(exc.value) and adapter.submitted == []
+
+
+def test_fire_judges_the_account_it_read_not_its_own_start(tmp_path, monkeypatch):
+    """Read ten seconds before the gate, the account is fresh however long ago the fire began."""
+    _fire_to_the_gate_two_minutes_in(tmp_path, monkeypatch, account_read_at=110)
+    with pytest.raises(_PastTheGate):
+        _fire(tmp_path)

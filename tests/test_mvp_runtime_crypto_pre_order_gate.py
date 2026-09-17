@@ -909,7 +909,11 @@ def test_the_board_never_raises(tmp_path, monkeypatch):
 DECIDED = "2026-09-17T04:05:30Z"
 
 
-@pytest.mark.parametrize("decided_at", [None, "", "soon", "2026-09-17 04:05:30", 1758081930])
+@pytest.mark.parametrize("decided_at", [
+    None, "", "soon", "2026-09-17 04:05:30", 1758081930,
+    # Readable instants, but not the one form this runtime writes.
+    "2026-09-17T04:05:30+00:00", "20260917T040530Z", "2026-09-17T04:05:30.5Z", "2026-09-17T04:05:30Z\n",
+])
 def test_a_door_that_does_not_say_when_it_judged_is_refused(decided_at):
     snapshot = g.evaluate_pre_order_gate(
         _intent(), purpose=PURPOSE_AUTONOMOUS, venue=VENUE_MAINNET, checks=[g.check("door_ok", True)],
@@ -932,6 +936,7 @@ def test_the_gate_seals_when_the_door_judged_over_what_the_door_says():
     ("2026-09-17T04:06:31Z", True),      # a second past it
     ("2026-09-17T04:05:29Z", True),      # judged after the send: the clock went back
     ("whenever", True),                  # a send time that cannot be read
+    ("2026-09-17T04:05:40+00:00", True),  # nor one in a form this runtime does not write
 ])
 def test_a_decision_may_wait_at_most_a_minute_for_its_send(clock, stale):
     intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
@@ -1005,3 +1010,49 @@ def test_the_record_of_an_old_order_stays_readable(tmp_path):
     _store(tmp_path).append(snapshot)
     assert g.read_snapshots(tmp_path) == [snapshot]
     assert g.snapshots_status(tmp_path)["readable"] is True
+
+
+def _pr2b_row(snapshot):
+    """A row as the PR2b gate sealed it: six gate checks and no decision time."""
+    body = {k: v for k, v in snapshot.items() if k != "risk_snapshot_sha256"}
+    body["checks"] = [c for c in body["checks"] if c["check"] != g.CHECK_DECIDED_AT]
+    body["facts"] = {k: v for k, v in body["facts"].items() if k != "decided_at"}
+    return _resealed(body)
+
+
+def test_a_row_the_pr2b_gate_sealed_is_still_a_record_but_never_a_send(tmp_path):
+    """Review of #885: adding the decision time check made every older row unreadable, and the
+    readiness board would have called the record edited."""
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _pr2b_row(snapshot)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    assert g.read_snapshots(tmp_path) == [old]
+    assert g.snapshots_status(tmp_path)["readable"] is True
+    assert g.find_snapshot(old["risk_snapshot_sha256"], tmp_path) == old
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+
+
+def test_a_row_that_names_the_decision_check_must_carry_every_current_check(tmp_path):
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    forged = _without_check(snapshot, g.CHECK_VENUE)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forged, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
+
+
+def test_a_pr2b_row_missing_one_of_its_own_checks_is_still_refused(tmp_path):
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _without_check(_pr2b_row(snapshot), g.CHECK_LINEAGE)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED

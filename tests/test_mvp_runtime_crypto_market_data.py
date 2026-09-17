@@ -655,6 +655,22 @@ class TestReferenceQuote:
         assert market_data.reference_quote_problem(quote, clock=NOW_PRICE) is None
         assert market_data.reference_quote_age_seconds(quote, clock=NOW_PRICE) == -59.0
 
+    @pytest.mark.parametrize("close_time,problem", [
+        ("2026-07-27T12:01:00Z", None),                              # one bar ahead: still forming
+        ("2026-07-27T12:01:01Z", market_data.PRICE_UNREADABLE),      # past the forming candle
+        ("2099-01-01T00:00:00Z", market_data.PRICE_UNREADABLE),
+    ])
+    def test_a_candle_that_closes_after_the_forming_one_is_not_a_reading(self, close_time, problem):
+        """Review of #885: any negative age passed, while the account and the send refuse a clock
+        that stepped back."""
+        assert market_data.reference_quote_problem(self._fresh(close_time=close_time), clock=NOW_PRICE) == problem
+
+    def test_the_lead_a_quote_may_have_is_its_own_bar(self):
+        four_hour = self._fresh(timeframe="4h", close_time="2026-07-27T15:59:00Z")
+        assert market_data.reference_quote_problem(four_hour, clock=NOW_PRICE) is None
+        unknown = self._fresh(timeframe="7m", close_time="2026-07-27T12:01:01Z")
+        assert market_data.reference_quote_problem(unknown, clock=NOW_PRICE) == market_data.PRICE_UNREADABLE
+
     def test_the_readers_own_refusal_comes_first(self):
         quote = self._fresh(price=None, reason=market_data.PRICE_SYNTHETIC)
         assert market_data.reference_quote_problem(quote, clock=NOW_PRICE) == market_data.PRICE_SYNTHETIC

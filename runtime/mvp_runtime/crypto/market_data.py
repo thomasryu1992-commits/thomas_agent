@@ -2271,7 +2271,8 @@ def reference_quote_problem(quote: Any, *, clock: str) -> str | None:
 
     The reader's own refusal first; then a price that is not a positive finite number; then the
     age, judged again at ``clock`` against :data:`REFERENCE_PRICE_MAX_AGE_SECONDS`. A quote that
-    cannot say when its candle closed is unreadable, not fresh."""
+    cannot say when its candle closed is unreadable, not fresh — and so is one whose candle closes
+    more than one bar after ``clock``: the forming candle is the latest a venue has."""
     if not isinstance(quote, dict):
         return PRICE_ABSENT
     if quote.get("reason"):
@@ -2280,7 +2281,7 @@ def reference_quote_problem(quote: Any, *, clock: str) -> str | None:
     if isinstance(price, bool) or not isinstance(price, (int, float)) or not (0 < price < float("inf")):
         return PRICE_UNREADABLE
     age = reference_quote_age_seconds(quote, clock=clock)
-    if age is None:
+    if age is None or age < -60 * TIMEFRAMES.get(str(quote.get("timeframe") or ""), 1):
         return PRICE_UNREADABLE
     if age > REFERENCE_PRICE_MAX_AGE_SECONDS:
         return PRICE_STALE

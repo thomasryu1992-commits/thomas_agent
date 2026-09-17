@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -86,8 +87,12 @@ CHECK_LINEAGE = "lineage_complete"
 CHECK_PROFILE = "approved_profile_complete"
 CHECK_VENUE = "venue_matches_purpose"
 CHECK_DECIDED_AT = "decision_time_recorded"
-GATE_CHECK_IDS = (CHECK_DOOR_CHECKS, CHECK_OPENS_EXPOSURE, CHECK_INTENT_IDENTITY, CHECK_LINEAGE,
-                  CHECK_PROFILE, CHECK_VENUE, CHECK_DECIDED_AT)
+# The gate's own checks as the PR2b gate sealed them, before the decision time (PR2c-1). A record
+# written then is still the record of its order, so the verified read accepts it; it can never
+# authorize a send, which needs every current check and a decision time.
+PR2B_GATE_CHECK_IDS = (CHECK_DOOR_CHECKS, CHECK_OPENS_EXPOSURE, CHECK_INTENT_IDENTITY, CHECK_LINEAGE,
+                       CHECK_PROFILE, CHECK_VENUE)
+GATE_CHECK_IDS = (*PR2B_GATE_CHECK_IDS, CHECK_DECIDED_AT)
 
 # What the snapshot binds of the intent: its identity, its material terms, and the lineage it will
 # be judged by. A change to any of them after the gate is a different order.
@@ -142,9 +147,13 @@ def _missing(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+# The one timestamp form this runtime writes (`timeutil.utc_now_iso`), as the schema pins `created_at`.
+_UTC_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
 def _instant(value: Any) -> Any:
-    """``value`` as a UTC instant, or None when it is not the RFC3339 form this runtime writes."""
-    if not isinstance(value, str):
+    """``value`` as a UTC instant, or None unless it is exactly the form this runtime writes."""
+    if not (isinstance(value, str) and _UTC_INSTANT.fullmatch(value)):
         return None
     try:
         return timeutil.parse_iso(value)
@@ -411,12 +420,15 @@ def _seal_matches(snapshot: Mapping[str, Any]) -> bool:
         return False
 
 
-def _unsupported(snapshot: Mapping[str, Any]) -> str | None:
+def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
     """Why an intact, approved, schema-valid snapshot still does not support its approval, or None.
 
     The seal is a plain hash, so a snapshot's own ``approved`` proves only that nothing changed
     since it was sealed, not that the gate sealed it. This re-checks what the gate requires of
-    every snapshot it approves, from the record alone."""
+    every snapshot it approves, from the record alone.
+
+    ``for_send`` requires the current gate's checks. The verified read of the record also accepts
+    a row the PR2b gate sealed, which names no decision time check (:data:`PR2B_GATE_CHECK_IDS`)."""
     purpose = snapshot.get("purpose")
     if VENUE_FOR_PURPOSE.get(purpose) != snapshot.get("venue"):
         return f"a {purpose} order does not go to {snapshot.get('venue')}"
@@ -433,9 +445,10 @@ def _unsupported(snapshot: Mapping[str, Any]) -> str | None:
     if snapshot.get("approved_profile_sha256") != profile_sha:
         return "the profile hash does not match the profile"
     names = [c.get("check") for c in snapshot.get("checks") or () if isinstance(c, Mapping)]
-    if any(names.count(name) != 1 for name in GATE_CHECK_IDS):
+    gate_checks = GATE_CHECK_IDS if for_send or CHECK_DECIDED_AT in names else PR2B_GATE_CHECK_IDS
+    if any(names.count(name) != 1 for name in gate_checks):
         return "the gate's own checks are not each recorded once"
-    if len(names) <= len(GATE_CHECK_IDS):
+    if len(names) <= len(gate_checks):
         return "no door check is recorded"
     lineage = snapshot.get("lineage") if isinstance(snapshot.get("lineage"), Mapping) else {}
     missing = [field for field in LINEAGE_FIELDS[purpose] if _missing(lineage.get(field))]
@@ -508,7 +521,7 @@ def verify_snapshot(intent: Mapping[str, Any], snapshot: Any, *, clock: str | No
     if problem is not None:
         # Only a snapshot this schema describes may be recorded — and so authorize an order.
         raise ToolError(RISK_SNAPSHOT_INVALID, f"the pre-order risk snapshot is not recordable: {problem}")
-    unsupported = _unsupported(snapshot)
+    unsupported = _unsupported(snapshot, for_send=True)
     if unsupported is not None:
         raise ToolError(RISK_SNAPSHOT_UNSUPPORTED,
                         f"the pre-order risk snapshot does not support its approval: {unsupported}")
@@ -673,7 +686,7 @@ def read_snapshots(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> l
     for index, row in rows:
         if not _seal_matches(row):
             raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED, f"pre-order snapshot line {index} fails its seal")
-        if _schema_problem(row) is not None or _unsupported(row) is not None:
+        if _schema_problem(row) is not None or _unsupported(row, for_send=False) is not None:
             raise ToolError(RISK_SNAPSHOT_STORE_TAMPERED,
                             f"pre-order snapshot line {index} is not a recordable snapshot")
         snapshot_id = str(row.get("pre_order_risk_snapshot_id"))
@@ -719,6 +732,7 @@ __all__ = [
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
     "MAX_SNAPSHOT_AGE_SECONDS",
+    "PR2B_GATE_CHECK_IDS",
     "PreOrderSnapshotStore",
     "SNAPSHOT_FILENAME",
     "SNAPSHOT_REFERENCE_FIELDS",

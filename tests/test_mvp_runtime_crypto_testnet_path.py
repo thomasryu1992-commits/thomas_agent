@@ -538,19 +538,6 @@ def test_the_testnet_gate_seals_when_the_cycle_judged():
     assert unjudged["failed_checks"] == ["decision_time_recorded"]
 
 
-def test_the_cycle_door_judges_its_gate_at_the_wall_clock():
-    """The cycle's `now` can be handed in; the judgment the send is timed against cannot."""
-    import ast
-    import pathlib
-
-    tree = ast.parse((pathlib.Path(__file__).resolve().parents[1] / "scripts"
-                      / "run_signed_testnet_cycle.py").read_text(encoding="utf-8"))
-    [call] = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-              and getattr(n.func, "attr", None) == "gate_testnet_order"]
-    [decided] = [kw.value for kw in call.keywords if kw.arg == "decided_at"]
-    assert isinstance(decided, ast.Call) and ast.unparse(decided) == "timeutil.utc_now_iso()"
-
-
 def test_a_testnet_order_that_is_not_the_priced_one_is_refused():
     intent, guard_kwargs = _cycle_gate_inputs()
     snapshot = testnet_execution.gate_testnet_order(

@@ -61,6 +61,16 @@ Append a new entry when a milestone ships, in the same PR.
   - The four limits reuse existing values (decision 18) and are indexed in `tunables.py`.
     `REFERENCE_PRICE_MAX_AGE_SECONDS` moved out of the mechanics list: it now bounds the
     autonomous entry too.
+  - **The independent review (PR #885)** found no high or medium defect. Six low ones were fixed:
+    - A new gate check made every row the PR2b gate had sealed unreadable, and the readiness
+      board would have called the record edited. The verified read now accepts those rows; a
+      send never does.
+    - A candle that closes after the forming one no longer counts as fresh.
+    - `decided_at` must be exactly the form the runtime writes.
+    - The contract now says what a decision that turns stale at the bind costs, and what a failed
+      price read costs the fan-out.
+    - Three tests that compared code text now check behaviour.
+    - A stale comment in the tunables test was removed.
 
 - **The soft halt is granted — policy 1.5.1** (Thomas decision 7, 2026-09-15; applied 2026-09-17,
   `governance/GOVERNANCE_POLICY.yaml`).

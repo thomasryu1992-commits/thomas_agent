@@ -978,28 +978,28 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `RETRY_NOT_APPLICABLE` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 885 | `retry_step` | `s['status'] == wf.S_BLOCKED and s['last_reason_code'] == wf.DEPENDENCY_FAILED` |
 | `RETRY_NOT_APPLICABLE` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 890 | `retry_step` | `s['status'] not in (wf.S_FAILED, wf.S_BLOCKED, wf.S_NEEDS_RECONCILIATION)` |
 | `RISK_BELOW_DISPOSITION_FLOOR` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 593 | `build_permission_decision` | `declared_rank is None or declared_rank < RISK_ORDER[risk_floor]` |
-| `RISK_SNAPSHOT_ID_CONFLICT` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 635 | `append` | `snapshot_id in recorded` |
-| `RISK_SNAPSHOT_INTENT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 517 | `verify_snapshot` | `mismatch is not None` |
-| `RISK_SNAPSHOT_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 510 | `verify_snapshot` | `problem is not None` |
-| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 499 | `verify_snapshot` | `not isinstance(snapshot, Mapping)` |
-| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 622 | `append` | `not (isinstance(snapshot_id, str) and snapshot_id and isinstance(sha, str) and sha)` |
-| `RISK_SNAPSHOT_NOT_APPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 505 | `verify_snapshot` | `snapshot.get('approved') is not True or snapshot.get('failed_checks')` |
-| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 532 | `verify_and_persist` | `store is None` |
-| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 534 | `verify_and_persist` | `require_durable and getattr(store, 'filesystem_write', False) is not True` |
-| `RISK_SNAPSHOT_STALE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 520 | `verify_snapshot` | `stale is not None` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 580 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 582 | `_read_rows` | `not isinstance(row, dict)` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 675 | `read_snapshots` | `not _seal_matches(row)` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 677 | `read_snapshots` | `_schema_problem(row) is not None or _unsupported(row) is not None` |
-| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 681 | `read_snapshots` | `snapshot_id in seen and seen[snapshot_id] != row.get('risk_snapshot_sha256')` |
-| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 567 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 572 | `_read_rows` | `—` |
-| `RISK_SNAPSHOT_STORE_UNWRITABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 647 | `append` | `—` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 501 | `verify_snapshot` | `snapshot.get('snapshot_version') != SNAPSHOT_VERSION or snapshot.get('risk_gate_id') != GATE_ID` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 503 | `verify_snapshot` | `not _seal_matches(snapshot)` |
-| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 542 | `verify_and_persist` | `written != sha` |
-| `RISK_SNAPSHOT_UNSUPPORTED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 513 | `verify_snapshot` | `unsupported is not None` |
-| `RISK_SNAPSHOT_VENUE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 537 | `verify_and_persist` | `getattr(store, 'venue', None) != snapshot.get('venue')` |
+| `RISK_SNAPSHOT_ID_CONFLICT` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 648 | `append` | `snapshot_id in recorded` |
+| `RISK_SNAPSHOT_INTENT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 530 | `verify_snapshot` | `mismatch is not None` |
+| `RISK_SNAPSHOT_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 523 | `verify_snapshot` | `problem is not None` |
+| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 512 | `verify_snapshot` | `not isinstance(snapshot, Mapping)` |
+| `RISK_SNAPSHOT_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 635 | `append` | `not (isinstance(snapshot_id, str) and snapshot_id and isinstance(sha, str) and sha)` |
+| `RISK_SNAPSHOT_NOT_APPROVED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 518 | `verify_snapshot` | `snapshot.get('approved') is not True or snapshot.get('failed_checks')` |
+| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 545 | `verify_and_persist` | `store is None` |
+| `RISK_SNAPSHOT_NO_STORE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 547 | `verify_and_persist` | `require_durable and getattr(store, 'filesystem_write', False) is not True` |
+| `RISK_SNAPSHOT_STALE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 533 | `verify_snapshot` | `stale is not None` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 593 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 595 | `_read_rows` | `not isinstance(row, dict)` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 688 | `read_snapshots` | `not _seal_matches(row)` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 690 | `read_snapshots` | `_schema_problem(row) is not None or _unsupported(row, for_send=False) is not None` |
+| `RISK_SNAPSHOT_STORE_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 694 | `read_snapshots` | `snapshot_id in seen and seen[snapshot_id] != row.get('risk_snapshot_sha256')` |
+| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 580 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 585 | `_read_rows` | `—` |
+| `RISK_SNAPSHOT_STORE_UNWRITABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 660 | `append` | `—` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 514 | `verify_snapshot` | `snapshot.get('snapshot_version') != SNAPSHOT_VERSION or snapshot.get('risk_gate_id') != GATE_ID` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 516 | `verify_snapshot` | `not _seal_matches(snapshot)` |
+| `RISK_SNAPSHOT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 555 | `verify_and_persist` | `written != sha` |
+| `RISK_SNAPSHOT_UNSUPPORTED` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 526 | `verify_snapshot` | `unsupported is not None` |
+| `RISK_SNAPSHOT_VENUE_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/pre_order_gate.py` | 550 | `verify_and_persist` | `getattr(store, 'venue', None) != snapshot.get('venue')` |
 | `ROLE_ALREADY_ACTIVE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 278 | `select_candidate_role` | `status == 'active'` |
 | `ROLE_BINDING_UNSUPPORTED` | `ProviderError` | `runtime/mvp_runtime/providers.py` | 895 | `bind_role_output_keys` | `binder is None` |
 | `ROLE_DEFINITION_INVALID` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 104 | `build_role_assignment` | `—` |

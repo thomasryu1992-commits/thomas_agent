@@ -47,6 +47,11 @@ the wall clock read after every other fact, not at the fire's start (`now`).
 - The route reads the market price only for a context with a plan. A read that fails in any way
   refuses the entry and never halts the fan-out. The reader's own reason (`REFERENCE_PRICE_*`) is
   recorded on the cycle record beside the decision's refusal.
+- A price is unreadable when its candle closes more than one bar after `clock`: the forming candle
+  is the latest a venue has.
+- **The cost of the read.** A failed read is not memoized. Each context of the symbol with a plan
+  asks again, each up to its call timeout, on the sequential fan-out that also carries later
+  contexts' settle and protect steps. A rate-limit refusal ends every market read for the fire.
 - The limits are indexed in `crypto/tunables.py`: `REFERENCE_PRICE_MAX_AGE_SECONDS`,
   `MAX_ACCOUNT_AGE_SECONDS` and `MAX_REFERENCE_DIVERGENCE_BPS`.
 
@@ -71,7 +76,7 @@ The gate adds these to the door's checks:
 - `venue_matches_purpose`: autonomous and probe orders go to `binance_futures`, signed testnet orders
   to `binance_futures_testnet`. A testnet cycle's caps authorize nothing on mainnet.
 - `decision_time_recorded` (PR2c-1): the door said when it judged its facts (`decided_at`, the wall
-  clock, in the RFC3339 `Z` form). The gate seals it into `facts.decided_at`, over any value the door
+  clock, in exactly the form this runtime writes, `YYYY-MM-DDThh:mm:ssZ`). The gate seals it into `facts.decided_at`, over any value the door
   put there. `created_at` stays the fire's start.
 
 `approved` is true only when every check passed.
@@ -127,6 +132,9 @@ The profile names records that already authorize trading. Nothing new is registe
 - **Verified reads:** `read_snapshots` refuses any row that fails its seal, the schema, or what the
   gate requires of an approved snapshot (§5, step 6). The readiness board shows the mainnet record as
   the `pre_order_snapshots` check.
+- **Rows the PR2b gate sealed stay readable.** They name six gate checks and no decision time
+  (`PR2B_GATE_CHECK_IDS`). The verified read accepts them; a send never does. A row that names
+  `decision_time_recorded` must carry every current check.
 
 ## 5. The binding
 
@@ -161,7 +169,10 @@ called. A failure at any step is a `SubmitRefused` (a `ToolError`), raised only 
 
 **Ordering at the doors.** The gate spends nothing, so a refusal costs no bar and no daily slot.
 The autonomous leg then checks two things before it spends anything:
-- the snapshot (steps 3–8 above), so a decision that waited too long costs no symbol, bar or slot;
+- the snapshot (steps 3–8 above), so a decision already too old costs no symbol, bar or slot. The
+  age is judged again at the bind below, at the wall clock to the second: a decision that turns too
+  old between the two is refused after its bar and slot are spent, like every refusal there. That
+  needs about 60 seconds between the decision and this check;
 - that the bracket it will place carries the sealed intent's stop and target, on the sides that
   close the position (`LIVE_ENTRY_BRACKET_NOT_APPROVED`). The venue door never sees the bracket:
   its legs are reduce-only.
@@ -199,6 +210,8 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 
 - **A gate-time re-read of the stage and the halts (PR2c-2).** The freshness bounds above cover the
   account and the market price only.
+- **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
+  for the fire, so it can be as old as the fire (about a minute). No bound checks it.
 - **The checks the directive lists that no door runs yet (PR2d):**
   - the API error breaker;
   - per-order slippage and fee evidence;
