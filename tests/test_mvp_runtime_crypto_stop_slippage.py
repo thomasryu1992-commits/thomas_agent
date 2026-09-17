@@ -239,7 +239,7 @@ class _Store:
     def __init__(self):
         self.cleared = []
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
         self.cleared.append(symbol)
 
 

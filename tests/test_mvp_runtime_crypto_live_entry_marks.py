@@ -437,7 +437,9 @@ def test_a_symbol_is_taken_once_and_given_back_by_its_own_order(tmp_path, frozen
     with pytest.raises(ToolError) as refused:
         _claim(_marks(tmp_path), door="probe", client_order_id="TAI_BTCUSDT_LONG_bbbb")
     assert _code(refused) == live_order.LIVE_ENTRY_SYMBOL_IN_FLIGHT
-    _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id="TAI_BTCUSDT_LONG_bbbb")
+    with pytest.raises(ToolError) as lost:
+        _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id="TAI_BTCUSDT_LONG_bbbb")
+    assert _code(lost) == live_order.LIVE_ENTRY_CLAIM_LOST
     assert "BTCUSDT" in live_order.read_live_entry_marks(tmp_path)["in_flight"], "not that order's claim"
     marks.release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
     assert live_order.read_live_entry_marks(tmp_path)["in_flight"] == {}
@@ -483,9 +485,15 @@ def test_a_claim_expires_after_thirty_minutes(tmp_path, frozen_wall):
     claim = live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"]
     assert claim == {"claimed_at": "2026-09-17T04:35:00Z", "door": "autonomous",
                      "client_order_id": "TAI_BTCUSDT_LONG_late"}
-    # The dead entry's late release cannot remove the claim that replaced it.
-    _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
+    # The dead entry's late release cannot remove the claim that replaced it, and it is told so.
+    with pytest.raises(ToolError) as lost:
+        _marks(tmp_path).release_symbol(symbol="BTCUSDT", client_order_id=ORDER)
+    assert _code(lost) == live_order.LIVE_ENTRY_CLAIM_LOST
     assert live_order.read_live_entry_marks(tmp_path)["in_flight"]["BTCUSDT"] == claim
+    # A claim that is gone altogether is lost too.
+    with pytest.raises(ToolError) as gone:
+        _marks(tmp_path).release_symbol(symbol="ETHUSDT", client_order_id=ORDER)
+    assert _code(gone) == live_order.LIVE_ENTRY_CLAIM_LOST
 
 
 def test_a_claim_is_stamped_with_the_later_of_now_and_the_wall_clock(tmp_path, frozen_wall):
@@ -548,7 +556,10 @@ def test_a_file_from_before_the_rule_reads_with_nothing_in_flight(tmp_path):
     {"BTCUSDT": {"claimed_at": NOW, "door": "", "client_order_id": ORDER}},
     {"BTCUSDT": {"claimed_at": NOW, "door": "probe"}},
     {"BTCUSDT": {"claimed_at": NOW, "door": "probe", "client_order_id": ORDER, "extra": 1}},
-])
+    {"BTCUSDT": {"claimed_at": "2026-99-99T99:99:99Z", "door": "probe", "client_order_id": ORDER}},
+    {"BTCUSDT": {"claimed_at": "9999-12-31T23:59:59Z", "door": "probe", "client_order_id": ORDER}},
+], ids=["list", "not-a-claim", "no-symbol", "time-form", "no-door", "missing-field", "extra-field",
+        "impossible-date", "no-expiry"])
 def test_an_in_flight_map_that_cannot_be_trusted_refuses(tmp_path, in_flight):
     _write_marks(tmp_path, {"version": live_order.ENTRY_MARKS_VERSION, "entered": {}, "cooldown": {},
                             "in_flight": in_flight})
@@ -581,6 +592,14 @@ def test_the_pure_read_of_a_claim(now, held):
     # Without a time, the bar rules alone: the claim is the lock's to judge.
     assert live_order.live_entry_holds(dict(marks, entered={}, cooldown={}), symbol="BTCUSDT",
                                        timeframe="4h", bar_time=BAR) == []
+
+
+def test_a_claim_whose_expiry_cannot_be_computed_still_holds():
+    """Reachable only through a damaged file the reader already refuses; the pure read must still
+    fail towards holding, never raise into the leg."""
+    marks = {"in_flight": {"BTCUSDT": {"claimed_at": "9999-12-31T23:59:59Z", "door": "probe",
+                                       "client_order_id": ORDER}}}
+    assert live_order.symbol_in_flight(marks, "BTCUSDT", now=NOW) is not None
 
 
 def test_claims_need_the_live_authorization_and_are_inert_with_the_switch_off(tmp_path, monkeypatch):

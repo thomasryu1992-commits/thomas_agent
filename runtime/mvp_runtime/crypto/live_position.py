@@ -341,13 +341,32 @@ def local_open_notional_usdt(root: Path | None = None, *, venue: str = VENUE_MAI
 
 # --- the gated store ----------------------------------------------------------
 
+# The book holds one record per symbol. A write that would replace, or a clear that would remove,
+# the record of ANOTHER position is refused (PR2b-2 review): two positions on one symbol are an
+# incident for the operator, and silently keeping only one of them hides the other one.
+LIVE_POSITION_SLOT_TAKEN = "LIVE_POSITION_SLOT_TAKEN"
+
+
 class LivePositionStore(Protocol):
     """Mutating the live book is gated; reading it is not."""
 
     filesystem_write: bool
 
     def save_position(self, position: Mapping[str, Any]) -> None: ...
-    def clear_position(self, symbol: str) -> None: ...
+    def clear_position(self, symbol: str, *, position_id: Any = ...) -> None: ...
+
+
+_ANY_POSITION = object()
+
+
+def _readable_record(path: Path) -> dict[str, Any] | None:
+    """The OPEN record at ``path`` if it can be read, else None. A record nobody can read cannot be
+    shown to belong to another position, so it does not block the write (the pre-review behaviour)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("status") == "OPEN" else None
 
 
 class DryRunLivePositionStore:
@@ -361,7 +380,7 @@ class DryRunLivePositionStore:
     def save_position(self, position: Mapping[str, Any]) -> None:
         return None
 
-    def clear_position(self, symbol: str) -> None:
+    def clear_position(self, symbol: str, *, position_id: Any = None) -> None:
         return None
 
 
@@ -395,8 +414,15 @@ class RealLivePositionStore:
             now=timeutil.utc_now_iso(),
         )
 
-    def _write(self, path: Path, payload: Mapping[str, Any] | None) -> None:
+    def _write(self, path: Path, payload: Mapping[str, Any] | None, *, owner: Any = _ANY_POSITION) -> None:
         with locked(path.with_suffix(".lock"), code="LIVE_STATE_LOCKED", label="live position"):
+            if owner is not _ANY_POSITION:
+                held = _readable_record(path)
+                if held is not None and held.get("position_id") != owner:
+                    raise ToolError(
+                        LIVE_POSITION_SLOT_TAKEN,
+                        f"{path.stem} holds position {held.get('position_id')!r}, not {owner!r}",
+                    )
             if payload is None:
                 path.unlink(missing_ok=True)
                 return
@@ -408,12 +434,16 @@ class RealLivePositionStore:
             tmp.replace(path)
 
     def save_position(self, position: Mapping[str, Any]) -> None:
+        """Book ``position``, or update its own record. Never replaces another position's."""
         self._assert()
-        self._write(live_position_path(position_symbol(position), self._root, venue=self._venue), position)
+        self._write(live_position_path(position_symbol(position), self._root, venue=self._venue), position,
+                    owner=position.get("position_id"))
 
-    def clear_position(self, symbol: str) -> None:
+    def clear_position(self, symbol: str, *, position_id: Any = _ANY_POSITION) -> None:
+        """Remove the symbol's record. Given ``position_id``, only that position's record: one the
+        symbol now holds for another position is left alone, and the call refuses."""
         self._assert()
-        self._write(live_position_path(symbol, self._root, venue=self._venue), None)
+        self._write(live_position_path(symbol, self._root, venue=self._venue), None, owner=position_id)
 
 
 def select_live_position_store(

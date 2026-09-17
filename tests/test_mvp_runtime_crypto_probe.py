@@ -742,7 +742,11 @@ class _FakeStore:
     def save_position(self, position):
         self.positions[position["symbol"]] = dict(position)
 
-    def clear_position(self, symbol):
+    def clear_position(self, symbol, *, position_id=None):
+        # The real store's rule: only the named position's record is removed.
+        held = self.positions.get(symbol)
+        if held is not None and position_id is not None and held.get("position_id") != position_id:
+            raise ToolError("LIVE_POSITION_SLOT_TAKEN", "scripted: another position holds the symbol")
         self.positions.pop(symbol, None)
 
 
@@ -1568,8 +1572,10 @@ def _both_phrases(monkeypatch):
 
 
 @pytest.mark.parametrize("close_confirms", [True, False])
-def test_fire_gives_the_symbol_back_after_a_partial_fill_only_if_its_close_confirmed(
+def test_fire_keeps_the_symbol_after_a_partial_fill_even_once_its_close_confirmed(
         tmp_path, monkeypatch, close_confirms):
+    """A partial fill is not a terminal state: the rest of the order may still fill after the
+    reported part was closed, so the symbol stays claimed until it expires (PR2b-2 review)."""
     class _PartialFill(_HappyPathAdapter):
         def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
             if "_CLOSE_" in client_order_id:
@@ -1584,10 +1590,12 @@ def test_fire_gives_the_symbol_back_after_a_partial_fill_only_if_its_close_confi
 
     events: list[str] = []
     marks = _RecordingMarks(events)
-    _wire_claimed_fire(tmp_path, monkeypatch, _PartialFill(), marks, events)
+    adapter = _PartialFill()
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
     _both_phrases(monkeypatch)
     assert _fire(tmp_path) == cli.EXIT_BLOCKED
-    assert (len(marks.given_back) == 1) is close_confirms
+    assert any(r.get("reduceOnly") for r in adapter.submitted) is True    # the close was sent
+    assert marks.taken and marks.given_back == []
 
 
 def test_fire_says_so_when_the_symbol_cannot_be_given_back(tmp_path, monkeypatch, capsys):
@@ -1602,3 +1610,122 @@ def test_fire_says_so_when_the_symbol_cannot_be_given_back(tmp_path, monkeypatch
     assert _fire(tmp_path) == cli.EXIT_OK
     err = capsys.readouterr().err
     assert "CLAIM     : NOT released (LIVE_ENTRY_MARKS_LOCKED)" in err and "30 min" in err
+
+
+# --- PR2b-2 review -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("timeout", [0, -1, 61, True])
+def test_fire_refuses_a_call_timeout_that_could_outlive_the_claim(tmp_path, timeout):
+    with pytest.raises(cli._Refusal) as exc:
+        cli.run_fire(root=tmp_path, symbol="BTCUSDT", timeout_seconds=timeout, poll_seconds=0.0,
+                     sleep=lambda s: None)
+    assert exc.value.reason_code == probe.PROBE_CALL_TIMEOUT_REFUSED
+
+
+def test_fire_accepts_a_sixty_second_call_timeout(tmp_path, monkeypatch):
+    """The bound the review asked for: about ten calls at 60 s stay well inside the 30-minute claim."""
+    events: list[str] = []
+    _wire_claimed_fire(tmp_path, monkeypatch, _HappyPathAdapter(), _RecordingMarks(events), events)
+    assert cli.run_fire(root=tmp_path, symbol="BTCUSDT", timeout_seconds=60,
+                        poll_seconds=0.0, sleep=lambda s: None) == cli.EXIT_OK
+
+
+@pytest.mark.parametrize("breaks", ["cell-write", "ledger-selector"])
+def test_fire_gives_the_symbol_back_whatever_fails_before_the_send(tmp_path, monkeypatch, breaks):
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    if breaks == "cell-write":
+        real_write = cli.probe.write_plan
+
+        def write_plan(plan, root=None):
+            if any(c.get("status") == probe.CELL_OPEN for c in plan["cells"]):
+                raise OSError(28, "No space left on device")
+            return real_write(plan, root)
+
+        monkeypatch.setattr(cli.probe, "write_plan", write_plan)
+    else:
+        monkeypatch.setattr(cli, "select_live_ledger",
+                            lambda now=None, root=None: (_ for _ in ()).throw(RuntimeError("no ledger")))
+    with pytest.raises((OSError, RuntimeError)):
+        _fire(tmp_path)
+    assert adapter.submitted == []
+    assert len(marks.given_back) == 1
+
+
+@pytest.mark.parametrize("submit_error,given_back", [("ORDER_REJECTED", True), ("ORDER_TRANSPORT", False)])
+def test_fire_gives_the_symbol_back_after_a_plain_rejection_only(tmp_path, monkeypatch, submit_error,
+                                                                  given_back):
+    class _Refused(_HappyPathAdapter):
+        def submit(self, order_request, *, timeout_seconds=10):
+            self.submitted.append(order_request)
+            raise ToolError(submit_error, "scripted submit failure")
+
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            return None
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, _Refused(), marks, events)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    assert (len(marks.given_back) == 1) is given_back
+
+
+def test_fire_says_so_when_it_outlived_its_claim(tmp_path, monkeypatch, capsys):
+    from runtime.mvp_runtime.crypto.live_order import LIVE_ENTRY_CLAIM_LOST
+
+    class _Lost(_RecordingMarks):
+        def release_symbol(self, **kw):
+            raise ToolError(LIVE_ENTRY_CLAIM_LOST, "scripted: another order holds the symbol")
+
+    events: list[str] = []
+    _wire_claimed_fire(tmp_path, monkeypatch, _HappyPathAdapter(), _Lost(events), events)
+    assert _fire(tmp_path) == cli.EXIT_OK
+    assert "INCIDENT: the probe outlived its claim on BTCUSDT" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("path", ["seen-at-the-poll", "seen-after-the-stop-read", "seen-at-the-timeout"])
+def test_fire_never_settles_or_closes_a_position_that_is_not_the_probes(tmp_path, monkeypatch, path):
+    events: list[str] = []
+    positions_box = {}
+
+    class _Adapter(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            answer = super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+            if path == "seen-after-the-stop-read" and "_SL_" in client_order_id and self.stop_reads == 2:
+                _replace(positions_box["store"])     # the cycle settled it while this read was out
+            return answer
+
+    adapter = _Adapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    _both_phrases(monkeypatch)       # so a time-close WOULD be sent, were the probe to try one
+    positions = positions_box["store"] = cli.select_live_position_store()
+    if path != "seen-after-the-stop-read":
+        save = positions.save_position
+
+        def _save(position):
+            save(position)
+            _replace(positions)
+
+        positions.save_position = _save
+    ticks = {"seen-at-the-poll": [0.0, 0.0], "seen-after-the-stop-read": [0.0, 0.0],
+             "seen-at-the-timeout": [0.0, 1e12]}[path]
+    clock = iter(ticks + [1e12] * 10)
+    code = cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None,
+                        clock=lambda: next(clock))
+    assert code == cli.EXIT_BLOCKED          # nothing in the ledger says how the probe ended
+    assert [r for r in adapter.submitted if r.get("reduceOnly")] == []
+    assert positions.positions["BTCUSDT"]["position_id"] == "pos_autonomous"
+    assert positions.positions["BTCUSDT"]["quantity"] == 0.002
+    # Seen at the poll, before the venue is asked anything more about the probe's stop.
+    assert adapter.stop_reads == (2 if path == "seen-after-the-stop-read" else 1)
+
+
+def _replace(positions):
+    """The cycle settled the probe and an autonomous entry booked its own position on the symbol —
+    the interleaving the review found."""
+    held = positions.positions["BTCUSDT"]
+    positions.positions["BTCUSDT"] = {**held, "position_id": "pos_autonomous",
+                                      "strategy_id": "S_AUTONOMOUS", "quantity": 0.002}

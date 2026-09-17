@@ -144,11 +144,19 @@ Then:
 
 The symbol is given back only where the book says what the venue holds:
 - a refusal before the venue;
+- a submit the venue refused with its own code, followed by an answer that the order does not
+  exist;
 - a booked position;
-- a naked close the venue confirmed.
+- a naked close the venue confirmed, after an entry the venue confirmed FILLED.
 
-Anywhere else the claim stays until it expires after 30 minutes. That covers an unconfirmed
-entry, a close that did not confirm, and a book that could not be written.
+Anywhere else the claim stays until it expires after 30 minutes, including:
+- an unconfirmed entry, and a partial fill even once its close confirmed (the rest may still fill);
+- a close that did not confirm;
+- a book that could not be written.
+
+An entry that finds its claim gone after its order left (`LIVE_ENTRY_CLAIM_LOST`) outlived it,
+and the fan-out halts. The probe accepts no per-call timeout above 60 seconds, so its entry stays
+well inside the claim.
 
 **Where the hash goes.** It rides to the submit result, the live position, the outcome row, the
 audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence row.

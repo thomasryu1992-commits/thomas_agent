@@ -75,6 +75,8 @@ from ..errors import ToolError
 from . import pre_order_gate
 from .live_execution import (
     CONDITIONAL_ORDER_TYPES,
+    NOT_FOUND,
+    ORDER_REJECTED,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
@@ -84,7 +86,12 @@ from .live_execution import (
     submit_and_reconcile,
 )
 from .execution_stage import PURPOSE_AUTONOMOUS
-from .live_order import evaluate_live_close_guard, make_client_order_id, make_idempotency_key
+from .live_order import (
+    LIVE_ENTRY_CLAIM_LOST,
+    evaluate_live_close_guard,
+    make_client_order_id,
+    make_idempotency_key,
+)
 from .live_pnl import build_live_outcome_record
 from .live_position import build_live_position, position_risk_usdt, unbooked_position_id
 from .live_promotion import RECONCILED
@@ -115,6 +122,9 @@ NO_SNAPSHOT_STORE = "LIVE_ENTRY_NO_SNAPSHOT_STORE"
 # The entry's claim on its symbol could not be given back (PR2b-2). It expires on its own (Thomas
 # decision 21) and holds only new entries on that symbol until then.
 CLAIM_NOT_RELEASED = "LIVE_ENTRY_CLAIM_NOT_RELEASED"
+# The claim was no longer this entry's when it went to give it back, after its order had left: the
+# entry outlived its claim, and another entry may have taken the symbol meanwhile. An incident.
+CLAIM_LOST = LIVE_ENTRY_CLAIM_LOST
 # The protective orders the leg would place are not the ones the approved intent carries.
 BRACKET_NOT_APPROVED = "LIVE_ENTRY_BRACKET_NOT_APPROVED"
 ENTRY_UNCONFIRMED = "LIVE_ENTRY_UNCONFIRMED"
@@ -730,7 +740,7 @@ def execute_live_entry(
     except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
         result["reason_codes"] = [_persist_failure_reason(exc)]
         if claimed:
-            _give_back_symbol(result, entry_marks, **claim)
+            _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result
 
     # 1. The entry. `submit_and_reconcile` binds the snapshot again; the second write is a no-op.
@@ -742,7 +752,7 @@ def execute_live_entry(
     except SubmitRefused as exc:
         # Raised only before the adapter is called: nothing left.
         result["reason_codes"] = [exc.reason_code]
-        _give_back_symbol(result, entry_marks, **claim)
+        _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result
     result["entry"] = entry
 
@@ -767,9 +777,12 @@ def execute_live_entry(
         result["reason_codes"].append(
             ENTRY_UNCONFIRMED if entry["reconcile_status"] != RECONCILED else FILL_FACTS_MISSING
         )
+        # The symbol stays claimed on this branch, even after a close the venue confirmed: an
+        # entry that is not confirmed may still be filling (a partial fill is not a terminal
+        # state), and what fills later is exposure nobody has booked (PR2b-2 review).
         if filled_qty > 0:
             result["reason_codes"].append(BRACKET_FAILED)
-            return _released_if_flat(_close_naked_position(
+            return _close_naked_position(
                 result,
                 symbol=str(intent["symbol"]),
                 direction=str(intent["direction"]),
@@ -784,9 +797,13 @@ def execute_live_entry(
                 limits=limits,
                 now=now,
                 timeout_seconds=timeout_seconds,
-            ), entry_marks, claim)
-        # An order the venue did not confirm may still be working: the symbol stays claimed.
+            )
         result["status"] = ENTRY_NOT_CONFIRMED
+        # The one outcome that is not open: the venue refused the submit with its own code, and
+        # then answered that the order does not exist. A timeout that then reads NOT_FOUND is
+        # not that — a request still on the wire can land after the read.
+        if entry.get("submit_error") == ORDER_REJECTED and entry["reconcile_status"] == NOT_FOUND:
+            _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result
 
     # 2. The protective bracket, before anything is booked.
@@ -817,6 +834,8 @@ def execute_live_entry(
     if not all(p["placed"] for p in placements):
         # Rule 2: an unprotected live position is closed immediately, not reported and left open.
         result["reason_codes"].append(BRACKET_FAILED)
+        # The entry itself was confirmed FILLED, so nothing more of it can arrive; a close the
+        # venue confirmed leaves the symbol flat and unbooked.
         return _released_if_flat(_close_naked_position(
             result,
             symbol=symbol,
@@ -865,7 +884,7 @@ def execute_live_entry(
     try:
         position_store.save_position(position)
         # The book now holds the position, and the book is what refuses the next entry here.
-        _give_back_symbol(result, entry_marks, **claim)
+        _give_back_symbol(result, entry_marks, sent=True, **claim)
     except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         # The position is real and bracketed; only the local book failed. Say so loudly rather
         # than reporting a clean open — the venue and the book now disagree, and the next
@@ -880,12 +899,20 @@ def execute_live_entry(
     return result
 
 
-def _give_back_symbol(result: dict[str, Any], entry_marks: Any, *, symbol: Any,
+def _give_back_symbol(result: dict[str, Any], entry_marks: Any, *, sent: bool, symbol: Any,
                       client_order_id: Any) -> None:
     """Release the entry's symbol claim (PR2b-2). A failure is reported, never raised: the claim
-    then expires on its own, and until it does it holds only new entries on this symbol."""
+    then expires on its own, and until it does it holds only new entries on this symbol.
+
+    A claim that is no longer this entry's is a lost claim. Before anything was sent it costs
+    nothing. After a send it means the entry outlived its claim (``sent``): an incident."""
     try:
         entry_marks.release_symbol(symbol=symbol, client_order_id=client_order_id)
+    except ToolError as exc:
+        if exc.reason_code != LIVE_ENTRY_CLAIM_LOST:
+            result["reason_codes"].append(CLAIM_NOT_RELEASED)
+        elif sent:
+            result["reason_codes"].append(CLAIM_LOST)
     except Exception:  # noqa: BLE001 — the entry's outcome stands either way
         result["reason_codes"].append(CLAIM_NOT_RELEASED)
 
@@ -894,7 +921,7 @@ def _released_if_flat(result: dict[str, Any], entry_marks: Any, claim: Mapping[s
     """A naked close that the venue confirmed leaves nothing open and nothing booked: the symbol
     goes back. A close that failed leaves a position the book does not hold, so the claim stays."""
     if result.get("status") == ENTRY_NAKED_CLOSED:
-        _give_back_symbol(result, entry_marks, **claim)
+        _give_back_symbol(result, entry_marks, sent=True, **claim)
     return result
 
 
@@ -1344,7 +1371,8 @@ def execute_live_exit(
         result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
-        position_store.clear_position(symbol)
+        # Only this position's record: the symbol may already hold another one (PR2b-2 review).
+        position_store.clear_position(symbol, position_id=position.get("position_id"))
     except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(_persist_failure_reason(exc))
 
@@ -1702,7 +1730,8 @@ def settle_venue_closed_position(
         result["reason_codes"].append(OUTCOME_ALREADY_RECORDED)
 
     try:
-        position_store.clear_position(str(position.get("symbol") or ""))
+        position_store.clear_position(str(position.get("symbol") or ""),
+                                      position_id=position.get("position_id"))
     except Exception as exc:  # noqa: BLE001 — see _persist_failure_reason
         result["reason_codes"].append(_persist_failure_reason(exc))
 

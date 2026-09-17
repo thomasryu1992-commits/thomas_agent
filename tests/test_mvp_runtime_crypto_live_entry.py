@@ -923,3 +923,18 @@ def test_the_guard_approves_exactly_when_every_named_check_passes():
     repaired = _guard(intent={"status": "ORDER_INTENT_CREATED", "symbol": "BTCUSDT"})
     assert repaired["approved"] is False
     assert [c["check"] for c in repaired["checks"] if not c["ok"]] == ["intent_shape_complete"]
+
+
+def test_the_snapshot_records_what_the_bar_and_in_flight_doors_judged():
+    """PR2b-2 review: the snapshot said `symbol_not_in_flight: ok` without the claim it judged."""
+    claim = {"claimed_at": "2026-07-25T11:00:00Z", "door": "probe", "client_order_id": "TAI_BTCUSDT_LONG_p"}
+    marks = {**NO_MARKS, "entered": {"BTCUSDT__1d": "2026-07-24T00:00:00Z", "ETHUSDT__1d": BAR},
+             "in_flight": {"BTCUSDT": claim, "ETHUSDT": {**claim, "claimed_at": NOW}}}
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage(), entry_marks=marks)
+    decision = le.plan_live_entry(**kwargs)
+    assert decision["status"] == le.STATUS_READY            # the BTCUSDT claim expired at 11:30
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert snapshot["facts"]["entry_marks"] == {
+        "entered": "2026-07-24T00:00:00Z", "cooldown": None, "in_flight": claim}

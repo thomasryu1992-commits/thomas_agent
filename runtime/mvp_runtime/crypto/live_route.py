@@ -97,6 +97,7 @@ from .live_pnl import STOP_EXIT_REASONS, live_risk_snapshot, select_live_ledger,
 from .live_position import (
     DRIFT,
     DRIFT_MISSING_AT_VENUE,
+    LIVE_POSITION_SLOT_TAKEN,
     list_open_live_positions,
     position_symbol,
     reconcile_positions,
@@ -163,6 +164,10 @@ _INCIDENT_REASONS = frozenset({
     live_leg.VENUE_CLOSE_UNSETTLEABLE,
     live_leg.POSITION_PERSIST_FAILED,
     live_leg.OUTCOME_PERSIST_FAILED,
+    # PR2b-2 review: an entry that outlived its symbol claim, and a book asked to replace or
+    # clear another position's record. Either way two positions met on one symbol.
+    live_leg.CLAIM_LOST,
+    LIVE_POSITION_SLOT_TAKEN,
 })
 
 

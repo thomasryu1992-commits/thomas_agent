@@ -627,6 +627,9 @@ def gate_live_entry(
 
     kw = decision_kwargs
     verdict = kw.get("verdict") if isinstance(kw.get("verdict"), Mapping) else {}
+    marks = kw.get("entry_marks") if isinstance(kw.get("entry_marks"), Mapping) else None
+    plan_timeframe = (kw.get("plan") or {}).get("timeframe") if isinstance(kw.get("plan"), Mapping) else None
+    context = entry_context_key(kw.get("symbol"), plan_timeframe)
     reconciliation = kw.get("reconciliation") if isinstance(kw.get("reconciliation"), Mapping) else {}
     filters = kw.get("filters")
     facts = {
@@ -640,6 +643,12 @@ def gate_live_entry(
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),
         "entry_bar_time": kw.get("entry_bar_time"),
+        # What the bar and in-flight doors judged, for this context and symbol only (PR2b-2 review).
+        "entry_marks": None if marks is None else {
+            "entered": (marks.get("entered") or {}).get(context),
+            "cooldown": (marks.get("cooldown") or {}).get(context),
+            "in_flight": (marks.get("in_flight") or {}).get(str(kw.get("symbol") or "")),
+        },
         "local_positions": len(kw.get("local_positions") or ()),
         "reconcile_status": reconciliation.get("status"),
         "verdict": {"status": verdict.get("status"),

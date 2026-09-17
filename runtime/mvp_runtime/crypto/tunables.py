@@ -203,6 +203,10 @@ TUNABLES: tuple[Tunable, ...] = (
             "minutes, about ten times the slowest entry (send, confirm, two legs, a naked close)",
             "an entry path whose worst case approaches the bound — a longer confirm backoff or a "
             "third leg — which would let a live entry outlast its own claim"),
+    Tunable("MAX_CALL_TIMEOUT_SECONDS", probe.MAX_CALL_TIMEOUT_SECONDS,
+            "crypto/probe.py", DERIVED,
+            "bounds a probe entry (about ten venue calls) well inside the 30-minute symbol claim",
+            "LIVE_ENTRY_CLAIM_TTL_MINUTES moving, or a probe entry making many more venue calls"),
     Tunable("MAX_ENTRY_SPREAD_BPS", live_entry.MAX_ENTRY_SPREAD_BPS,
             "crypto/live_entry.py", OPERATOR,
             "a dislocation breaker, not a cost control: re-measured 2026-08-22 at ~15x the "

@@ -310,3 +310,66 @@ def test_module_exposes_no_order_capability():
     surface = " ".join(dir(lp)).lower()
     for forbidden in ("submit", "cancel", "order_adapter", "post"):
         assert forbidden not in surface
+
+
+# --- one record per symbol, and never another position's (PR2b-2 review) --------------------------
+
+def _two_positions():
+    first = _position(entry_client_order_id="TAI_BTCUSDT_LONG_first")
+    second = _position(entry_client_order_id="TAI_BTCUSDT_LONG_second", opened_at="2026-07-25T01:00:00Z")
+    assert first["position_id"] != second["position_id"]
+    return first, second
+
+
+def test_the_book_never_replaces_another_positions_record(tmp_path):
+    """Two positions met on one symbol: refusing is loud, replacing hides one of them."""
+    first, second = _two_positions()
+    store = lp.RealLivePositionStore(root=tmp_path, authorization=_LIVE_AUTH)
+    store.save_position(first)
+    with pytest.raises(ToolError) as refused:
+        store.save_position(second)
+    assert refused.value.reason_code == lp.LIVE_POSITION_SLOT_TAKEN
+    assert lp.load_open_live_position("BTCUSDT", tmp_path)["position_id"] == first["position_id"]
+    store.save_position({**first, "holding_candles": 3})             # its own record updates
+    assert lp.load_open_live_position("BTCUSDT", tmp_path)["holding_candles"] == 3
+
+
+def test_a_clear_that_names_a_position_removes_only_that_positions_record(tmp_path):
+    first, second = _two_positions()
+    store = lp.RealLivePositionStore(root=tmp_path, authorization=_LIVE_AUTH)
+    store.save_position(first)
+    with pytest.raises(ToolError) as refused:
+        store.clear_position("BTCUSDT", position_id=second["position_id"])
+    assert refused.value.reason_code == lp.LIVE_POSITION_SLOT_TAKEN
+    assert lp.load_open_live_position("BTCUSDT", tmp_path) is not None
+    store.clear_position("BTCUSDT", position_id=first["position_id"])
+    assert lp.load_open_live_position("BTCUSDT", tmp_path) is None
+    store.clear_position("BTCUSDT", position_id=first["position_id"])   # already gone: a no-op
+
+
+def test_a_clear_that_names_no_position_keeps_the_old_behaviour(tmp_path):
+    first, _ = _two_positions()
+    store = lp.RealLivePositionStore(root=tmp_path, authorization=_LIVE_AUTH)
+    store.save_position(first)
+    store.clear_position("BTCUSDT")
+    assert lp.load_open_live_position("BTCUSDT", tmp_path) is None
+
+
+@pytest.mark.parametrize("stored", ["{torn", json.dumps({"status": "CLOSED", "position_id": "old"})])
+def test_a_record_that_proves_no_owner_does_not_block_the_write(tmp_path, stored):
+    """An unreadable or closed record cannot be shown to be another open position's, so the write
+    and the clear go ahead as they did before the rule."""
+    first, _ = _two_positions()
+    path = lp.live_position_path("BTCUSDT", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(stored, encoding="utf-8")
+    store = lp.RealLivePositionStore(root=tmp_path, authorization=_LIVE_AUTH)
+    store.save_position(first)
+    assert lp.load_open_live_position("BTCUSDT", tmp_path)["position_id"] == first["position_id"]
+    path.write_text(stored, encoding="utf-8")
+    store.clear_position("BTCUSDT", position_id=first["position_id"])
+    assert not path.exists()
+
+
+def test_the_inert_book_accepts_the_owner_too():
+    lp.DryRunLivePositionStore().clear_position("BTCUSDT", position_id="p1")

@@ -1070,6 +1070,9 @@ LIVE_ENTRY_CLAIM_TTL_MINUTES = 30
 LIVE_ENTRY_SYMBOL_IN_FLIGHT = "LIVE_ENTRY_SYMBOL_IN_FLIGHT"
 LIVE_ENTRY_SYMBOL_OCCUPIED = "LIVE_ENTRY_SYMBOL_OCCUPIED"
 LIVE_ENTRY_CLAIM_MALFORMED = "LIVE_ENTRY_CLAIM_MALFORMED"
+# The claim a door went to give back is not its own any more (it expired and another order took
+# it, or it is gone). Nothing is removed; the door decides what that means (PR2b-2 review).
+LIVE_ENTRY_CLAIM_LOST = "LIVE_ENTRY_CLAIM_LOST"
 _CLAIM_FIELDS = ("claimed_at", "door", "client_order_id")
 
 _MARK_MAPS = ("entered", "cooldown")
@@ -1095,10 +1098,18 @@ def _empty_entry_marks() -> dict[str, Any]:
 
 
 def _is_claim(symbol: Any, claim: Any) -> bool:
-    return (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(claim, dict)
+    if not (isinstance(symbol, str) and bool(symbol.strip()) and isinstance(claim, dict)
             and set(claim) == set(_CLAIM_FIELDS) and _is_bar_time(claim.get("claimed_at"))
             and all(isinstance(claim.get(field), str) and claim[field].strip()
-                    for field in ("door", "client_order_id")))
+                    for field in ("door", "client_order_id"))):
+        return False
+    # The form alone admits "2026-99-99T99:99:99Z", which never expires, and a year-9999 stamp,
+    # whose expiry cannot be computed. Either is a damaged file, not a claim.
+    try:
+        timeutil.parse_iso(claim_expires_at(claim))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
 
 
 def read_live_entry_marks(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
@@ -1144,7 +1155,7 @@ def symbol_in_flight(marks: Mapping[str, Any] | None, symbol: Any, *, now: str) 
         return None
     try:
         expired = timeutil.parse_iso(str(now)) >= timeutil.parse_iso(claim_expires_at(claim))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         expired = False
     return None if expired else dict(claim)
 
@@ -1276,11 +1287,13 @@ class LiveEntryMarks:
 
     def release_symbol(self, *, symbol: Any, client_order_id: Any) -> dict[str, Any]:
         """Give ``symbol`` back once the book says what the venue holds. Only the claim this order
-        took is removed; one that expired and was taken by another order is left alone."""
+        took is removed. One that is gone, or that expired and was taken by another order, is left
+        alone and the call raises ``LIVE_ENTRY_CLAIM_LOST``."""
         def mutate(marks: dict[str, Any]) -> bool:
             claim = marks["in_flight"].get(symbol)
             if not (isinstance(claim, Mapping) and claim.get("client_order_id") == client_order_id):
-                return False
+                raise ToolError(LIVE_ENTRY_CLAIM_LOST,
+                                f"{symbol} is not claimed by {client_order_id} any more")
             del marks["in_flight"][symbol]
             return True
 

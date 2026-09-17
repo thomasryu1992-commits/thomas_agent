@@ -75,13 +75,14 @@ from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE  # noqa: 
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
+    LIVE_ENTRY_CLAIM_LOST,
+    LIVE_ENTRY_CLAIM_TTL_MINUTES,
     bracket_breaker_status,
     build_live_order_intent,
     count_today,
     evaluate_live_order_guard,
     render_guard_text,
     resolve_live_order_limits,
-    LIVE_ENTRY_CLAIM_TTL_MINUTES,
     select_live_bracket_breaker,
     select_live_entry_marks,
     select_live_order_counter,
@@ -391,17 +392,34 @@ def run_abandon(*, reason: str, root: Path | None = None, now: str | None = None
     return EXIT_OK
 
 
-def _give_back_symbol(entry_marks: Any, claim: dict) -> None:
+def _give_back_symbol(entry_marks: Any, claim: dict, *, sent: bool) -> None:
     """Release the probe's symbol claim (PR2b-2). A failure is said, never raised: the claim
-    expires on its own and until then holds only new entries on the symbol."""
+    expires on its own and until then holds only new entries on the symbol. A claim that is no
+    longer the probe's after its order left means the probe outlived it: an incident."""
     try:
         entry_marks.release_symbol(**claim)
     except Exception as exc:  # noqa: BLE001 — the probe's outcome stands either way
+        code = getattr(exc, "reason_code", type(exc).__name__)
+        if code == LIVE_ENTRY_CLAIM_LOST:
+            if sent:
+                sys.stderr.write(
+                    f"INCIDENT: the probe outlived its claim on {claim['symbol']}; another entry may "
+                    "have taken the symbol meanwhile - check the book against the venue\n"
+                )
+            return
         sys.stderr.write(
-            f"CLAIM     : NOT released ({getattr(exc, 'reason_code', type(exc).__name__)}) - "
+            f"CLAIM     : NOT released ({code}) - "
             f"{claim['symbol']} takes no new entry until the claim expires "
             f"({LIVE_ENTRY_CLAIM_TTL_MINUTES} min)\n"
         )
+
+
+def _still_booked(symbol: str, root: Path | None, position_id: Any) -> bool:
+    """Whether the book still holds THIS probe's position (PR2b-2 review). Once the live cycle has
+    settled it, the symbol is free again and the autonomous leg may book its own position there; a
+    record under another id is that position, never the probe's."""
+    booked = load_open_live_position(symbol, root)
+    return booked is not None and booked.get("position_id") == position_id
 
 
 def run_fire(
@@ -419,6 +437,12 @@ def run_fire(
     posture flips — report everything, imply nothing."""
     symbol = str(symbol).strip().upper()
     now = timeutil.utc_now_iso()
+    if isinstance(timeout_seconds, bool) or not (0 < timeout_seconds <= probe.MAX_CALL_TIMEOUT_SECONDS):
+        raise _Refusal(
+            probe.PROBE_CALL_TIMEOUT_REFUSED,
+            f"--timeout-seconds must be in (0, {probe.MAX_CALL_TIMEOUT_SECONDS}], got {timeout_seconds!r}: "
+            "a probe entry must finish well inside its symbol claim",
+        )
 
     # 0. Ordered refusals. Nothing below the guard block touches the venue.
     assert_not_foreign_root_run(root)
@@ -619,42 +643,45 @@ def run_fire(
             f"({getattr(exc, 'reason_code', type(exc).__name__)}): {exc}; nothing was sent",
         ) from exc
 
-    # 1. Reserve the day's order slot BEFORE anything is claimed or sent (PR2a). The guard above
-    #    judged a count read earlier, and the scheduler's live leg spends the same cap from
-    #    another process; the reservation is the locked check-and-increment. It stays spent if
-    #    the send fails — an ambiguous submit may have reached the venue.
-    counter = select_live_order_counter(now=now, root=root)
+    # Whatever fails from here to the send, nothing has left: the symbol goes back (PR2b-2 review).
     try:
-        counter.reserve_submission(limit=limits.max_daily_order_count)
-    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
-        _give_back_symbol(entry_marks, claim)
-        raise _Refusal(
-            probe.PROBE_ORDER_SLOT_REFUSED,
-            f"no order slot reserved ({getattr(exc, 'reason_code', type(exc).__name__)}); "
-            "nothing was sent",
-        ) from exc
-    # And the reason the order is allowed, on the disk before the order is at the venue.
-    try:
-        pre_order_gate.verify_and_persist(intent, snapshot_record, store=snapshot_store)
-    except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
-        _give_back_symbol(entry_marks, claim)
-        raise _Refusal(
-            probe.PROBE_SNAPSHOT_NOT_RECORDED,
-            f"the pre-order snapshot was not recorded "
-            f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
-        ) from exc
+        counter = select_live_order_counter(now=now, root=root)
+        position_store = select_live_position_store(now=now, root=root)
+        ledger = select_live_ledger(now=now, root=root)
+        # 1. Reserve the day's order slot BEFORE anything is claimed or sent (PR2a). The guard
+        #    above judged a count read earlier, and the scheduler's live leg spends the same cap
+        #    from another process; the reservation is the locked check-and-increment. It stays
+        #    spent if the send fails — an ambiguous submit may have reached the venue.
+        try:
+            counter.reserve_submission(limit=limits.max_daily_order_count)
+        except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+            raise _Refusal(
+                probe.PROBE_ORDER_SLOT_REFUSED,
+                f"no order slot reserved ({getattr(exc, 'reason_code', type(exc).__name__)}); "
+                "nothing was sent",
+            ) from exc
+        # And the reason the order is allowed, on the disk before the order is at the venue.
+        try:
+            pre_order_gate.verify_and_persist(intent, snapshot_record, store=snapshot_store)
+        except Exception as exc:  # noqa: BLE001 — before the venue: a refusal, never an escape
+            raise _Refusal(
+                probe.PROBE_SNAPSHOT_NOT_RECORDED,
+                f"the pre-order snapshot was not recorded "
+                f"({getattr(exc, 'reason_code', type(exc).__name__)}); nothing was sent",
+            ) from exc
 
-    # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
-    #    which is the honest state (an order may be at the venue) and what keeps
-    #    one-probe-at-a-time enforceable across processes.
-    plan = probe.mark_cell(
-        plan, cell_index, status=probe.CELL_OPEN, now=now,
-        opened_at=now, entry_client_order_id=intent["client_order_id"],
-    )
-    plan = probe.write_plan(plan, root)
+        # 2. Claim the cell BEFORE the send: a crash between the two leaves the cell OPEN,
+        #    which is the honest state (an order may be at the venue) and what keeps
+        #    one-probe-at-a-time enforceable across processes.
+        plan = probe.mark_cell(
+            plan, cell_index, status=probe.CELL_OPEN, now=now,
+            opened_at=now, entry_client_order_id=intent["client_order_id"],
+        )
+        plan = probe.write_plan(plan, root)
+    except BaseException:
+        _give_back_symbol(entry_marks, claim, sent=False)
+        raise
 
-    position_store = select_live_position_store(now=now, root=root)
-    ledger = select_live_ledger(now=now, root=root)
     try:
         entry = live_execution.submit_and_reconcile(
             intent, adapter=adapter, guard_verdict=verdict, now=now,
@@ -668,7 +695,7 @@ def run_fire(
                             now=timeutil.utc_now_iso(), note=f"{exc.reason_code}: not sent"),
             root,
         )
-        _give_back_symbol(entry_marks, claim)
+        _give_back_symbol(entry_marks, claim, sent=False)
         raise _Refusal(exc.reason_code, f"the order was refused before the venue: {exc}") from exc
     audit_error = _audit_order(governance, entry, guard=verdict, now=now, root=root)
 
@@ -704,16 +731,20 @@ def run_fire(
             )
             _fail_cell(f"{probe.PROBE_ENTRY_NOT_CONFIRMED}: partial fill closed "
                        f"({closed['status']})")
-            if closed["status"] == live_leg.EXIT_CLOSED:
-                _give_back_symbol(entry_marks, claim)
-            else:
+            # The symbol stays claimed even after a confirmed close: an entry that is not
+            # confirmed may still be filling (PR2b-2 review).
+            if closed["status"] != live_leg.EXIT_CLOSED:
                 sys.stderr.write(
                     "INCIDENT: a partially filled probe entry could not be closed; resolve "
                     f"at the venue ({closed['reason_codes']})\n"
                 )
         else:
-            # An order the venue did not confirm may still be working: the symbol stays claimed.
             _fail_cell(f"{probe.PROBE_ENTRY_NOT_CONFIRMED}: {entry['reconcile_status']}")
+            # An order the venue did not confirm may still be working, so the symbol stays claimed
+            # — unless the venue refused it with its own code and then answered it does not exist.
+            if (entry.get("submit_error") == live_execution.ORDER_REJECTED
+                    and entry["reconcile_status"] == live_execution.NOT_FOUND):
+                _give_back_symbol(entry_marks, claim, sent=False)
         sys.stderr.write(
             f"BLOCKED {probe.PROBE_ENTRY_NOT_CONFIRMED}: the entry did not confirm "
             f"({entry['reconcile_status']}); the cell is EMPTY again\n"
@@ -763,7 +794,7 @@ def run_fire(
                              "missing from the bracket-failure streak\n")
         _fail_cell(f"{probe.PROBE_STOP_NOT_PLACED}: {placement.get('error_detail') or placement.get('error')}")
         if closed["status"] == live_leg.EXIT_CLOSED:
-            _give_back_symbol(entry_marks, claim)
+            _give_back_symbol(entry_marks, claim, sent=True)
         else:
             sys.stderr.write(
                 "INCIDENT: the probe stop was refused AND the close did not confirm; "
@@ -791,7 +822,7 @@ def run_fire(
     }
     position_store.save_position(position)
     # The book holds the position now, and the book is what refuses the next entry on the symbol.
-    _give_back_symbol(entry_marks, claim)
+    _give_back_symbol(entry_marks, claim, sent=True)
     # The cell is already OPEN (claimed before the send); stamp the booked identity onto
     # it so a later resolver can find this position's outcome in the ledger.
     cells = [dict(c) for c in plan["cells"]]
@@ -807,21 +838,28 @@ def run_fire(
     # 5. Wait for the venue: stop fill -> settle through #683; timeout -> market close.
     deadline = clock() + float(plan["params"]["timeout_minutes"]) * 60.0
     account_feed = select_account_feed(now=now, root=root)
+
+    def _settled_elsewhere() -> int:
+        """The live cycle settled the probe first — the ledger says how."""
+        nonlocal plan
+        resolved_now = timeutil.utc_now_iso()
+        plan, resolution = probe.resolve_open_cell(
+            plan, outcomes=read_live_outcomes(root), position_open=False, now=resolved_now,
+        )
+        plan = probe.write_plan(plan, root)
+        if resolution is None:
+            sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the book cleared but the "
+                             "cell could not be resolved\n")
+            return EXIT_BLOCKED
+        print(f"settled   : cell -> {resolution['status']} (outcome {resolution['outcome_id']}, "
+              "recorded by the live cycle)")
+        return EXIT_OK if resolution["status"] != probe.CELL_EMPTY else EXIT_BLOCKED
+
+    # The probe's own record, by id: once the cycle has settled it, a record on the symbol is
+    # another entry's, and settling or closing it here would erase or shrink that position.
     while clock() < deadline:
-        if load_open_live_position(symbol, root) is None:
-            # Someone else (the scheduler's live leg) settled it first — the ledger says how.
-            resolved_now = timeutil.utc_now_iso()
-            plan, resolution = probe.resolve_open_cell(
-                plan, outcomes=read_live_outcomes(root), position_open=False, now=resolved_now,
-            )
-            plan = probe.write_plan(plan, root)
-            if resolution is None:
-                sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the book cleared but the "
-                                 "cell could not be resolved\n")
-                return EXIT_BLOCKED
-            print(f"settled   : cell -> {resolution['status']} (outcome {resolution['outcome_id']}, "
-                  "recorded by the live cycle)")
-            return EXIT_OK if resolution["status"] != probe.CELL_EMPTY else EXIT_BLOCKED
+        if not _still_booked(symbol, root, position["position_id"]):
+            return _settled_elsewhere()
         try:
             leg = adapter.fetch_order(
                 symbol, placement["client_order_id"], timeout_seconds=timeout_seconds, algo=True,
@@ -831,6 +869,8 @@ def run_fire(
         status = str((leg or {}).get("status") or "")
         executed = float((live_execution.fill_facts(leg) or {}).get("executed_qty") or 0.0)
         if status in live_leg.FILLED_STATUSES and executed > 0:
+            if not _still_booked(symbol, root, position["position_id"]):
+                return _settled_elsewhere()     # the cycle settled it while this read was out
             settle_now = timeutil.utc_now_iso()
             settled = live_leg.settle_venue_closed_position(
                 position, adapter=adapter, position_store=position_store, ledger=ledger,
@@ -854,7 +894,11 @@ def run_fire(
         sleep(max(0.0, float(poll_seconds)))
 
     # 5. Timeout: close at market. The row this writes is a `time_exit` — NOT a slippage
-    #    sample, by `STOP_EXIT_REASONS`'s own definition — and the cell says so.
+    #    sample, by `STOP_EXIT_REASONS`'s own definition — and the cell says so. Only while the
+    #    book still holds the probe's own position: a reduce-only close sized for the probe would
+    #    otherwise shrink whatever the symbol holds now.
+    if not _still_booked(symbol, root, position["position_id"]):
+        return _settled_elsewhere()
     close_now = timeutil.utc_now_iso()
     closed = live_leg.execute_live_exit(
         position, adapter=adapter, position_store=position_store, ledger=ledger,

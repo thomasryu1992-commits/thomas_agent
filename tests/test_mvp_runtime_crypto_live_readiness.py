@@ -129,6 +129,9 @@ def test_the_entry_marks_row_names_the_entries_in_flight_and_the_ones_left_behin
                         "client_order_id": "TAI_BTCUSDT_LONG_a"},
             "ETHUSDT": {"claimed_at": timeutil.plus_minutes(NOW, -120), "door": "autonomous",
                         "client_order_id": "TAI_ETHUSDT_LONG_b"},
+            # Expired more than a day ago: it holds nothing and is no longer shown.
+            "SOLUSDT": {"claimed_at": timeutil.plus_minutes(NOW, -(24 * 60 + 31)), "door": "probe",
+                        "client_order_id": "TAI_SOLUSDT_LONG_c"},
         },
     }), encoding="utf-8")
     row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
@@ -137,6 +140,7 @@ def test_the_entry_marks_row_names_the_entries_in_flight_and_the_ones_left_behin
     assert f"BTCUSDT (probe since {timeutil.plus_minutes(NOW, -5)})" in row["detail"]
     assert "ETHUSDT (autonomous since" in row["detail"]
     assert row["detail"].count("EXPIRED unreleased") == 1
+    assert "SOLUSDT" not in row["detail"]
 
 
 def test_the_entry_marks_row_names_the_cooldowns_still_holding(tmp_path, clean_env):

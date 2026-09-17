@@ -178,6 +178,13 @@ PROBE_SNAPSHOT_NOT_RECORDED = "PROBE_SNAPSHOT_NOT_RECORDED"
 # The symbol could not be taken for this probe (PR2b-2): another entry is in flight on it, the book
 # holds a position there, or the marks could not be read. Nothing was spent.
 PROBE_SYMBOL_NOT_CLAIMED = "PROBE_SYMBOL_NOT_CLAIMED"
+# `--timeout-seconds` outside (0, MAX_CALL_TIMEOUT_SECONDS]: refused before anything is read.
+PROBE_CALL_TIMEOUT_REFUSED = "PROBE_CALL_TIMEOUT_REFUSED"
+# The longest per-call venue timeout `--fire` accepts (PR2b-2 review). Between taking its symbol and
+# booking (or closing), a probe makes about ten venue calls, so at this bound it still finishes well
+# inside the claim's 30 minutes (`live_order.LIVE_ENTRY_CLAIM_TTL_MINUTES`). An entry that outlived
+# its claim could meet another door's entry on the same symbol.
+MAX_CALL_TIMEOUT_SECONDS = 60
 
 # The closed key sets `validate_plan` holds records to. Additive fields are a plan
 # version bump, never a silent widening — an unknown key is indistinguishable from
