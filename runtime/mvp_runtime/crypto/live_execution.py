@@ -228,6 +228,10 @@ class SubmitRefused(ToolError):
 MALFORMED_INTENT = "MALFORMED_LIVE_ORDER_INTENT"
 NO_ORDER_API_KEY = "NO_ORDER_API_KEY"
 ORDER_REJECTED = "ORDER_REJECTED"
+# The venue answered with a code whose own documentation says the order's execution status is
+# unknown: it may still have been applied. Its own reason, so no caller reads it as a refusal
+# (PR2c-0 review).
+ORDER_OUTCOME_UNKNOWN = "ORDER_OUTCOME_UNKNOWN"
 ORDER_TRANSPORT = "ORDER_TRANSPORT"
 ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
 
@@ -235,6 +239,24 @@ ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
 VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
 VENUE_DUPLICATE_CLIENT_ORDER_ID = -4116  # the idempotency key already landed => reconcile finds it
 VENUE_UNKNOWN_ORDER = -2011             # a cancelled/filled/never-placed order => already gone
+# UNKNOWN, DISCONNECTED, UNEXPECTED_RESP ("execution status unknown") and TIMEOUT ("send status
+# unknown; execution status unknown"): none of them says the order was not applied.
+VENUE_UNKNOWN_OUTCOME_CODES = frozenset({-1000, -1001, -1006, -1007})
+# Refusals that happen before anything is sent, whatever the adapter.
+NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED"})
+
+
+def submit_refused_outright(error: Any, detail: Any) -> bool:
+    """Whether a failed submit proves the order is not at the venue: the venue refused it with its
+    own code, and not as a duplicate of an order that already landed (whose message names -4116).
+    A timeout, an unreadable answer, or a code that leaves the outcome unknown proves nothing."""
+    return error == ORDER_REJECTED and f"({VENUE_DUPLICATE_CLIENT_ORDER_ID})" not in str(detail or "")
+
+
+def submit_may_have_landed(error: Any, detail: Any) -> bool:
+    """Whether a submit that raised may still have reached the venue. Only a refusal before the
+    send and an outright venue refusal say it did not."""
+    return error is not None and error not in NOTHING_SENT_ERRORS and not submit_refused_outright(error, detail)
 
 
 def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
@@ -682,6 +704,9 @@ class BinanceFuturesOrderAdapter:
                     "reconcile decides the outcome",
                 )
             msg = body.get("msg") if isinstance(body, dict) else None
+            if code in VENUE_UNKNOWN_OUTCOME_CODES:
+                raise ToolError(ORDER_OUTCOME_UNKNOWN,
+                                f"venue could not say whether the order was applied (code {code}): {msg}")
             raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}")
         return body if isinstance(body, dict) else {}
 
@@ -957,6 +982,7 @@ def submit_and_reconcile(
                 f"the pre-order snapshot could not be recorded ({type(exc).__name__}); nothing was sent",
             ) from exc
     submit_error: str | None = None
+    submit_error_detail: str | None = None
     submit_response: dict[str, Any] | None = None
     try:
         submit_response = adapter.submit(request, timeout_seconds=timeout_seconds)
@@ -964,6 +990,7 @@ def submit_and_reconcile(
         # A rejected OR ambiguous submit: do not assume nothing landed and do not blind-retry.
         # Reconcile by client_order_id below to learn the truth from the venue.
         submit_error = exc.reason_code
+        submit_error_detail = str(exc)
 
     try:
         venue_order = adapter.fetch_order(
@@ -1017,6 +1044,9 @@ def submit_and_reconcile(
         # from what was kept.
         "intended_price": _intended_price(intent),
         "submit_error": submit_error,
+        # The venue's words beside the code, so a caller can tell a refusal from a duplicate
+        # (`submit_refused_outright`). The adapter never puts the signed URL in a message.
+        "submit_error_detail": submit_error_detail,
         "submit_response": submit_response,
         "created_at": now,
     }

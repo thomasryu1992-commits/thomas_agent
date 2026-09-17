@@ -130,6 +130,29 @@ Append a new entry when a milestone ships, in the same PR.
   - **Why this matters.** A `closePosition` stop left resting closes whatever the symbol holds when
     it triggers, so a later position on that symbol can be closed by an order it never placed.
     Refusing entries while such an order rests is PR2c-3 (decision 25).
+  - **The independent review (PR #883)** found one high and three medium findings on the same
+    path. The high one and one medium one were older than the PR.
+    - **High, older than the PR.** A naked close's client id was keyed on the symbol, the cycle's
+      time and the size. Two naked closes of one symbol and size in one fan-out therefore shared an
+      id: the second was refused as a duplicate, its read found the first close and "reconciled",
+      and the second position lost its only stop while reported flat. The id is now keyed on the
+      entry the close undoes.
+    - **Medium, older than the PR.** An exit is reconciled on the book's quantity. When the venue
+      held more on the symbol, a time exit closed the book's part, withdrew the closePosition stop
+      that covered all of it, and suppressed the drift halt because something had settled.
+      - The time exit now waits while the symbol shows a quantity or side drift.
+      - An unprotected close still happens, but keeps its legs.
+      - Any drift a settle cannot resolve halts the pass.
+    - **Medium, from the PR.** The notice named the pass's own symbol when the leg it reported was
+      another symbol's. Legs are now recorded per close under their own symbol (`live_legs_left`).
+    - **Medium, from the PR.** Legs kept by an unconfirmed naked close were never named. They now
+      are, and the incident notice lists them.
+    - **Low findings:**
+      - The venue codes that leave an order's outcome unknown (-1000, -1001, -1006, -1007) are now
+        `ORDER_OUTCOME_UNKNOWN`, not a refusal.
+      - A refusal as a duplicate no longer releases an entry's symbol.
+      - A halted pass still reports legs left behind.
+      - The probe no longer says a withdrawn stop still rests.
 
 - **Two doors can no longer open one symbol at once** (crypto PR2b-2, Thomas decisions 21 and 22,
   2026-09-17; `crypto/live_order.py`, `crypto/live_entry.py`, `crypto/live_leg.py`,

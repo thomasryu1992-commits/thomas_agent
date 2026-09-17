@@ -49,6 +49,7 @@ from .live_execution import (
     ALGO_ORDER_PATH,
     NO_ORDER_API_KEY,
     ORDER_MALFORMED_RESULT,
+    ORDER_OUTCOME_UNKNOWN,
     ORDER_PATH,
     ORDER_REJECTED,
     ORDER_TRANSPORT,
@@ -56,6 +57,7 @@ from .live_execution import (
     VENUE_DUPLICATE_CLIENT_ORDER_ID,
     VENUE_ORDER_DOES_NOT_EXIST,
     VENUE_UNKNOWN_ORDER,
+    VENUE_UNKNOWN_OUTCOME_CODES,
     is_algo_request,
     normalize_algo_order,
 )
@@ -240,6 +242,9 @@ class BinanceTestnetOrderAdapter:
                     "reconcile decides the outcome",
                 )
             msg = body.get("msg") if isinstance(body, dict) else None
+            if code in VENUE_UNKNOWN_OUTCOME_CODES:
+                raise ToolError(ORDER_OUTCOME_UNKNOWN,
+                                f"testnet could not say whether the order was applied (code {code}): {msg}")
             raise ToolError(ORDER_REJECTED, f"testnet rejected the order (code {code}): {msg}")
         return body if isinstance(body, dict) else {}
 

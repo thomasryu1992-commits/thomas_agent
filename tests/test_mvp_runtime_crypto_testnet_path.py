@@ -673,3 +673,24 @@ def test_a_refusal_after_the_entry_left_still_records_the_cycle(tmp_path, monkey
     assert exc.value.reason_code == "TESTNET_CYCLE_INCOMPLETE"
     assert len(testnet_evidence.read_cycles(tmp_path)) == 1
     assert testnet_execution.count_testnet_today(tmp_path) == 2      # the entry and the exit
+
+
+@pytest.mark.parametrize("code,reason", [(-1007, live_execution.ORDER_OUTCOME_UNKNOWN),
+                                         (-2019, live_execution.ORDER_REJECTED)])
+def test_the_testnet_adapter_tells_an_unknown_outcome_from_a_refusal(monkeypatch, code, reason):
+    import io
+    import urllib.error
+
+    monkeypatch.setenv(testnet_execution.TESTNET_API_KEY_ENV, "tn-key")
+    monkeypatch.setenv(testnet_execution.TESTNET_API_SECRET_ENV, "tn-secret")
+    monkeypatch.setenv(testnet_execution.TESTNET_TRADING_ENV, testnet_execution.REAL_TESTNET_TRADING)
+    adapter = testnet_execution.select_testnet_order_adapter(now=NOW)
+    body = json.dumps({"code": code, "msg": "scripted"}).encode("utf-8")
+    monkeypatch.setattr(testnet_execution.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
+        urllib.error.HTTPError("https://redacted", 400, "scripted", {}, io.BytesIO(body))))
+    request = live_execution.build_order_request({
+        "symbol": "BTCUSDT", "side": "BUY", "order_type_exchange": "MARKET", "quantity": 0.001,
+        "reduce_only": False, "client_order_id": "TAI_BTCUSDT_LONG_t"})
+    with pytest.raises(ToolError) as exc:
+        adapter.submit(request)
+    assert exc.value.reason_code == reason

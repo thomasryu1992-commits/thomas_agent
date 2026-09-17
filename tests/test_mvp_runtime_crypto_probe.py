@@ -1753,7 +1753,7 @@ def test_fire_keeps_the_symbol_and_says_so_when_the_stop_it_could_not_rest_will_
     _wire_claimed_fire(tmp_path, monkeypatch, _StopRefusedCancelFails(), marks, events)
     _both_phrases(monkeypatch)
     assert _fire(tmp_path) == cli.EXIT_BLOCKED
-    assert "ORPHAN    : a protective order may still rest at the venue for BTCUSDT" in capsys.readouterr().err
+    assert "ORPHAN    : protective orders may still rest at the venue for BTCUSDT" in capsys.readouterr().err
     assert marks.taken and marks.given_back == []
 
 
@@ -1778,4 +1778,69 @@ def test_fire_says_so_when_its_time_close_leaves_the_stop_resting(tmp_path, monk
     clock = iter([0.0, 1e12] + [1e12] * 10)          # straight to the timeout
     cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None,
                  clock=lambda: next(clock))
-    assert "ORPHAN    : a protective order may still rest at the venue for BTCUSDT" in capsys.readouterr().err
+    assert "ORPHAN    : protective orders may still rest at the venue for BTCUSDT" in capsys.readouterr().err
+
+
+# --- PR2c-0 review ---------------------------------------------------------------------------------
+
+def test_fire_says_so_when_the_settle_after_a_stop_fill_leaves_a_leg(tmp_path, monkeypatch, capsys):
+    """The stop filled and the settle ran; its cancel of whatever else rests failed."""
+    class _FillsThenCancelFails(_HappyPathAdapter):
+        def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+    events: list[str] = []
+    _wire_claimed_fire(tmp_path, monkeypatch, _FillsThenCancelFails(), _RecordingMarks(events), events)
+    monkeypatch.setattr(cli, "select_account_feed", lambda now=None, root=None: None)
+    cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None)
+    err = capsys.readouterr().err
+    assert "ORPHAN    : protective orders may still rest at the venue for BTCUSDT" in err
+
+
+def test_fire_names_the_stop_that_may_still_rest_when_its_naked_close_did_not_confirm(
+        tmp_path, monkeypatch, capsys):
+    class _StopRefusedCloseUnread(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                return None
+            if "_CLOSE_" in client_order_id:
+                raise ToolError("VENUE_TIMEOUT", "scripted close read failure")
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+    events: list[str] = []
+    marks = _RecordingMarks(events)
+    adapter = _StopRefusedCloseUnread()
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+    _both_phrases(monkeypatch)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    err = capsys.readouterr().err
+    stop_id = next(r["clientAlgoId"] for r in adapter.submitted if "clientAlgoId" in r)
+    assert "the close did not confirm" in err and f"The stop {stop_id} may still rest" in err
+    assert marks.given_back == []
+
+
+def test_fire_says_a_confirmed_but_unpriced_time_close_withdrew_its_stop(tmp_path, monkeypatch, capsys):
+    class _UnpricedClose(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                self.stop_reads += 1
+                return {"symbol": symbol, "status": "NEW", "orderId": 77}
+            if "_CLOSE_" in client_order_id:
+                return {"symbol": symbol, "side": "SELL", "status": "FILLED", "orderId": 12,
+                        "executedQty": "0.001", "avgPrice": None, "cumQuote": None, "reduceOnly": True}
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+        def cancel_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            self.cancelled.append(client_order_id)
+            return None
+
+    events: list[str] = []
+    adapter = _UnpricedClose()
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, _RecordingMarks(events), events)
+    _both_phrases(monkeypatch)
+    clock = iter([0.0, 1e12] + [1e12] * 10)
+    assert cli.run_fire(root=tmp_path, symbol="BTCUSDT", poll_seconds=0.0, sleep=lambda s: None,
+                        clock=lambda: next(clock)) == cli.EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "the close confirmed but could not be priced" in err and "its stop was withdrawn" in err
+    assert adapter.cancelled

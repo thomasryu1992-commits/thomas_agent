@@ -97,6 +97,8 @@ from .live_pnl import STOP_EXIT_REASONS, live_risk_snapshot, select_live_ledger,
 from .live_position import (
     DRIFT,
     DRIFT_MISSING_AT_VENUE,
+    DRIFT_QUANTITY_MISMATCH,
+    DRIFT_SIDE_MISMATCH,
     LIVE_POSITION_SLOT_TAKEN,
     list_open_live_positions,
     position_symbol,
@@ -152,6 +154,9 @@ LIVE_TIME_EXIT_DEFERRED = "LIVE_ROUTING_TIME_EXIT_DEFERRED"
 # rather than silent: "the counter did not move this cycle" and "this context may not move it"
 # look identical in a record that says nothing.
 LIVE_HOLD_NOT_TIMED_HERE = "LIVE_ROUTING_HOLD_NOT_TIMED_HERE"
+# The position's time is up, but the venue holds a different position on its symbol than the book
+# (PR2c-0 review): the time exit waits for the drift to be resolved, its stop still resting.
+LIVE_TIME_EXIT_HELD_ON_DRIFT = "LIVE_ROUTING_TIME_EXIT_HELD_ON_DRIFT"
 
 # The leg results that mean real money is in a state this runtime cannot account for. Each one
 # is a fact about the venue, not a local error: an unprotected position that would not close, a
@@ -449,13 +454,22 @@ def _run_gated_live_leg(
     # A book that still disagrees with the venue AFTER settlement is the dangerous kind: the
     # normal bracket-closed drift resolved itself just above, so what remains is a position
     # this runtime cannot account for. Entries are already refused per symbol; the halt is
-    # what stops the *other* contexts from opening under the same uncertainty.
-    if reconciliation["status"] == DRIFT and record["live_settled"] is None:
+    # what stops the *other* contexts from opening under the same uncertainty. Only a
+    # MISSING_AT_VENUE drift is one a settle can resolve; any other kind halts even when this pass
+    # settled something (PR2c-0 review) — an exit sized from the book does not reconcile the venue.
+    unresolvable = any(
+        reason != DRIFT_MISSING_AT_VENUE
+        for book in books.values() for reason in ((book or {}).get("reasons") or ())
+    )
+    if reconciliation["status"] == DRIFT and (record["live_settled"] is None or unresolvable):
         record["live_reason_codes"].append(BOOK_DRIFT)
         record["halt"] = True
 
     if record["halt"]:
         record["live_route_status"] = ROUTE_INCIDENT
+        # A close that left a leg resting still has to reach the operator on a halted pass.
+        if record.get("live_legs_left"):
+            _notify_operator(record, now=now, root=root)
         return record
 
     # 3. The entry decision. Everything above this line can run with no route at all.
@@ -464,9 +478,9 @@ def _run_gated_live_leg(
         # a few lines ago and the venue read predates it, so every exposure figure the guard
         # would judge is now stale. The next cycle sees a consistent picture.
         record["live_route_status"] = ROUTE_SETTLED
-        # A leg that would not come off after a close may rest against the next position on the
-        # symbol (PR2c-0): the one settled outcome the operator has to act on.
-        if live_leg.BRACKET_CANCEL_FAILED in record["live_reason_codes"]:
+        # A leg a close left resting may act on the next position on its symbol (PR2c-0): the one
+        # settled outcome the operator has to act on.
+        if record.get("live_legs_left"):
             _notify_operator(record, now=now, root=root)
         return record
 
@@ -626,6 +640,7 @@ def _run_gated_live_leg(
     )
     record["live_opened"] = entry
     record["live_reason_codes"].extend(entry["reason_codes"])
+    _note_legs_left(record, entry, symbol=symbol)
     # Before the audit report and the operator notice, both of which can fail on their own: this
     # is the state that stops the next cycle re-entering, and it is the one thing here that must
     # be durable even if everything after it goes wrong.
@@ -666,6 +681,10 @@ def _settle_or_protect(
     symbol = position_symbol(position)
     book = (reconciliation.get("books") or {}).get(symbol) or {}
     reasons = list(book.get("reasons") or [])
+    # The venue holds a different position on this symbol than the book (PR2c-0 review). A close
+    # is sized from the book, so it would leave the rest open — and withdrawing the closePosition
+    # stop would leave that rest unprotected.
+    drifted = any(reason in (DRIFT_QUANTITY_MISMATCH, DRIFT_SIDE_MISMATCH) for reason in reasons)
 
     if DRIFT_MISSING_AT_VENUE in reasons:
         # Something at the venue closed it. Nothing to send — read what it filled at.
@@ -683,6 +702,7 @@ def _settle_or_protect(
         )
         record["live_settled"] = settled
         record["live_reason_codes"].extend(settled["reason_codes"])
+        _note_legs_left(record, settled, symbol=symbol)
         _record_stop_cooldown(record, position, settled, now=now, root=root)
         if _is_incident(settled):
             record["halt"] = True
@@ -702,7 +722,7 @@ def _settle_or_protect(
             record, position,
             adapter=adapter, position_store=position_store, ledger=ledger,
             limits=limits, candle_ts=candle_ts, context_timeframe=context_timeframe,
-            now=now, root=root, timeout_seconds=timeout_seconds,
+            now=now, root=root, timeout_seconds=timeout_seconds, drifted=drifted,
         )
         return
 
@@ -718,9 +738,13 @@ def _settle_or_protect(
         close_reason=live_leg.CLOSE_REASON_UNPROTECTED,
         now=now,
         timeout_seconds=timeout_seconds,
+        # Still closed — an unprotected position is the more urgent risk — but under drift the legs
+        # stay: one of them may be the stop that protects what the book does not know about.
+        withdraw_legs=not drifted,
     )
     record["live_settled"] = closed
     record["live_reason_codes"].extend(closed["reason_codes"])
+    _note_legs_left(record, closed, symbol=symbol)
     if closed["status"] == live_leg.EXIT_CLOSED and isinstance(closed.get("intent"), Mapping):
         # Audited AFTER the fact, unlike the entry, and the asymmetry is deliberate: refusing
         # to close because governance could not be prepared would trap a position that is
@@ -755,8 +779,13 @@ def _time_exit_or_hold(
     now: str,
     root: Path | None,
     timeout_seconds: int,
+    drifted: bool = False,
 ) -> None:
     """Advance this position's holding count and close it if the strategy's time is up.
+
+    ``drifted``: the venue holds a different position on this symbol than the book. The time exit
+    then waits (PR2c-0 review): it is sized from the book and would withdraw the stop that still
+    protects the rest, and the pass halts on the drift anyway.
 
     The rule paper has always enforced and live did not (added 2026-07-29). Why it had to be
     added rather than left as a documented difference: the promotion evidence gating live
@@ -822,6 +851,9 @@ def _time_exit_or_hold(
         record["live_reason_codes"].append(LIVE_MAX_HOLD_FALLBACK)
     if held < max_hold:
         return
+    if drifted:
+        record["live_reason_codes"].append(LIVE_TIME_EXIT_HELD_ON_DRIFT)
+        return
 
     closed = live_leg.execute_live_exit(
         updated,
@@ -836,6 +868,7 @@ def _time_exit_or_hold(
     )
     record["live_settled"] = closed
     record["live_reason_codes"].extend(closed["reason_codes"])
+    _note_legs_left(record, closed, symbol=position_symbol(updated))
     if closed["status"] == live_leg.EXIT_CLOSED and isinstance(closed.get("intent"), Mapping):
         try:
             governance = live_governance.prepare_live_order_governance(
@@ -854,6 +887,15 @@ def _time_exit_or_hold(
         # resting at the venue, so it is protected — just held longer than the strategy wanted.
         # Reported, retried next cycle (the counter is already past the threshold), not escalated.
         record["live_reason_codes"].append(LIVE_TIME_EXIT_DEFERRED)
+
+
+def _note_legs_left(record: dict[str, Any], result: Mapping[str, Any], *, symbol: str) -> None:
+    """Keep, by symbol, the protective legs a close left at the venue (PR2c-0), for the notice.
+    A pass can settle other symbols than its own, so the symbol is the result's, never the pass's."""
+    left = live_leg.legs_left_resting(result)
+    if left:
+        record.setdefault("live_legs_left", []).append(
+            {"symbol": str(result.get("symbol") or symbol), "client_order_ids": left})
 
 
 def _report(
@@ -940,11 +982,12 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     # the account and the operator's only trace was a line in the next morning's dashboard.
     # Money moving and being reversed is not "the cycle doing nothing".
     reversed_entry = live_leg.NAKED_POSITION_CLOSED in reasons
-    # And a protective order that could not be withdrawn after a close (PR2c-0). Nothing is wrong
-    # with the account now, but a closePosition stop left resting closes whatever the symbol holds
-    # when it triggers, and the runtime no longer knows its id. Only a person can withdraw it.
-    leg_left = live_leg.BRACKET_CANCEL_FAILED in reasons
-    if status not in (ROUTE_OPENED, ROUTE_INCIDENT) and not reversed_entry and not leg_left:
+    # And protective orders a close left at the venue (PR2c-0): a cancel that failed, or legs kept
+    # on purpose while the position may still be open. A closePosition stop left resting closes
+    # whatever its symbol holds when it triggers, and no book record will withdraw it. Named by
+    # the symbol each close was for, which on a settle need not be this pass's own.
+    legs_left = [entry for entry in record.get("live_legs_left") or () if isinstance(entry, Mapping)]
+    if status not in (ROUTE_OPENED, ROUTE_INCIDENT) and not reversed_entry and not legs_left:
         return
     opened = record.get("live_opened") or {}
     position = opened.get("position") or {}
@@ -952,21 +995,22 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
         head = "[LIVE INCIDENT] real money is in a state the runtime cannot account for"
     elif reversed_entry:
         head = "[LIVE] entry filled but could not be protected - position was closed again"
-    elif leg_left and status != ROUTE_OPENED:
-        head = "[LIVE] a position closed, but one of its protective orders may still rest"
+    elif legs_left and status != ROUTE_OPENED:
+        head = "[LIVE] a position closed, but protective orders may still rest at the venue"
     else:
         head = "[LIVE] position opened and bracketed"
-    lines = [
-        head,
-        f"symbol   : {position.get('symbol') or record.get('symbol')}",
-        f"side     : {position.get('direction') or position.get('side')}",
-        f"quantity : {position.get('quantity')}",
-        f"entry    : {position.get('entry_price')}",
-        f"stop     : {position.get('stop_price')}",
-        f"target   : {position.get('target_price')}",
-        f"status   : {opened.get('status')}",
-        f"at       : {now}",
-    ]
+    lines = [head, f"symbol   : {position.get('symbol') or record.get('symbol')}"]
+    if position:
+        lines += [
+            f"side     : {position.get('direction') or position.get('side')}",
+            f"quantity : {position.get('quantity')}",
+            f"entry    : {position.get('entry_price')}",
+            f"stop     : {position.get('stop_loss', position.get('stop_price'))}",
+            f"target   : {position.get('take_profit', position.get('target_price'))}",
+        ]
+    if opened:
+        lines.append(f"status   : {opened.get('status')}")
+    lines.append(f"at       : {now}")
     if reasons:
         lines.append("reasons  : " + ",".join(str(r) for r in reasons[:8]))
     if reversed_entry:
@@ -981,12 +1025,15 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
                 )
         lines.append("")
         lines.append("The account is flat for this attempt; the daily order cap bounds a repeat.")
-    if leg_left:
+    if legs_left:
         lines.append("")
-        lines.append("A protective order could not be withdrawn and may still rest at the venue. A resting")
-        lines.append("closePosition stop closes the next position on this symbol. Check, then withdraw by hand:")
-        lines.append(f"  docker exec thomas-scheduler python -m scripts.list_resting_orders "
-                     f"--symbol {position.get('symbol') or record.get('symbol')}")
+        lines.append("Protective orders a close left at the venue. A resting closePosition stop closes the")
+        lines.append("next position on its symbol. Once the symbol holds no position, withdraw them by hand:")
+        for entry in legs_left:
+            lines.append(f"  {entry.get('symbol')}: {', '.join(str(i) for i in entry.get('client_order_ids') or ())}")
+        for leg_symbol in sorted({str(entry.get("symbol")) for entry in legs_left}):
+            lines.append("  docker exec thomas-scheduler python -m scripts.list_resting_orders "
+                         f"--symbol {leg_symbol}")
     if status == ROUTE_INCIDENT:
         lines.append("")
         lines.append("Check the venue. " + halt_advice())

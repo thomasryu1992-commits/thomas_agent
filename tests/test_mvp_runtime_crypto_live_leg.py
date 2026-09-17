@@ -1556,3 +1556,76 @@ def test_a_confirmed_close_that_cannot_be_priced_still_withdraws_its_legs():
     assert result["status"] == ll.EXIT_NOT_CONFIRMED
     assert ll.FILL_FACTS_MISSING in result["reason_codes"]
     assert len(adapter.cancelled) == 2 and store.cleared == []
+
+
+# --- PR2c-0 review ---------------------------------------------------------------------------------
+
+def test_two_naked_closes_of_one_symbol_in_one_pass_never_share_an_id():
+    """Two entries of one symbol, one fire's `now`, the same size: keyed on symbol, time and size,
+    their naked closes shared a client id, the second was refused as a duplicate, and its read
+    reconciled against the FIRST close — while the second position lost its stop."""
+    ids = []
+    for bar in ("2026-07-25T00:00:00Z", "2026-07-25T08:00:00Z"):
+        intent, snapshot = _intent(candle_time=bar)
+        decision = {**DECISION, "intent": intent, "risk_snapshot": snapshot,
+                    "entry_bar": {**DECISION["entry_bar"], "bar_time": bar}}
+        result = _entry(decision=decision, adapter=FakeAdapter(missing={"TP"}))
+        assert result["status"] == ll.ENTRY_NAKED_CLOSED
+        ids.append(result["naked_close"]["result"]["client_order_id"])
+    assert ids[0] != ids[1]
+
+
+def test_an_unconfirmed_naked_close_names_the_legs_it_left():
+    adapter = FakeAdapter(missing={"TP"},
+                          statuses={"CLOSE": ToolError("VENUE_TIMEOUT", "scripted close read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    stop_id = result["bracket"][0]["client_order_id"]
+    assert result["naked_close"]["left_resting"] == [stop_id]
+    assert ll.BRACKET_LEFT_RESTING in result["reason_codes"]
+    assert ll.legs_left_resting(result) == [stop_id]
+
+
+def test_the_legs_left_are_the_failed_cancels_and_the_ones_kept():
+    result = {"cancels": [{"client_order_id": "a", "error": "X"}, {"client_order_id": "b", "error": None}],
+              "left_resting": ["c"],
+              "naked_close": {"cancels": [{"client_order_id": "d", "error": "Y"}], "left_resting": ["a"]}}
+    assert ll.legs_left_resting(result) == ["a", "c", "d"]
+    assert ll.legs_left_resting({}) == []
+
+
+def test_an_exit_asked_to_keep_its_legs_closes_and_names_them():
+    adapter, store = FakeAdapter(), FakeStore()
+    result = _exit(adapter=adapter, position_store=store, withdraw_legs=False)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert adapter.cancelled == []
+    assert result["left_resting"] == [POSITION["stop_client_order_id"], POSITION["take_profit_client_order_id"]]
+    assert ll.BRACKET_LEFT_RESTING in result["reason_codes"]
+    assert store.cleared == ["BTCUSDT"]
+
+
+class _DuplicateEntry(FakeAdapter):
+    def submit(self, order_request, *, timeout_seconds=10):
+        if "_SL_" in str(order_request.get("clientAlgoId") or "") or "_TP_" in str(order_request.get("newClientOrderId") or ""):
+            return super().submit(order_request, timeout_seconds=timeout_seconds)
+        self.submitted.append(dict(order_request))
+        raise ToolError("ORDER_REJECTED", "duplicate client order id (-4116) — the original order "
+                                          "already landed; reconcile decides the outcome")
+
+
+@pytest.mark.parametrize("adapter", [
+    FakeAdapter(submit_errors={"ENTRY": "ORDER_OUTCOME_UNKNOWN"}, missing={"ENTRY"}),
+    _DuplicateEntry(missing={"ENTRY"}),
+], ids=["outcome-unknown", "duplicate"])
+def test_an_entry_the_venue_may_still_hold_keeps_the_symbol(adapter):
+    """Neither a code that leaves the outcome unknown nor a duplicate refusal proves the order is
+    absent, whatever the read says."""
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, adapter=adapter)
+    assert result["status"] == ll.ENTRY_NOT_CONFIRMED
+    assert marks.taken and marks.given_back == []
+
+
+def test_a_leg_whose_outcome_the_venue_cannot_state_may_be_resting():
+    placed = _leg(FakeAdapter(submit_errors={"SL": "ORDER_OUTCOME_UNKNOWN"}, missing={"SL"}))
+    assert placed["may_be_resting"] is True
