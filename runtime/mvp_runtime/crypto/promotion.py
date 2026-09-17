@@ -28,7 +28,11 @@ from ..binding import bind_task_to_core
 from ..errors import ApprovalBlocked, MvpRuntimeError, ToolError
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
-from ..permission import build_strategy_promotion_permission_decision
+from ..permission import (
+    STRATEGY_POOL_LIVE_TARGET_REF,
+    STRATEGY_POOL_TIER_LIVE,
+    build_strategy_promotion_permission_decision,
+)
 from . import execution_stage as execution_stage_mod
 from . import forward_book, forward_confirmation
 from . import paper as paper_store
@@ -528,3 +532,97 @@ def verify_promotion_approval(
             "terminal members it returns to trading changed)",
         )
     return dict(approval)
+
+
+# --- the arming approval at order time (PR2c-2b) ------------------------------------------------
+
+# Why a pool entry armed LIVE is not backed by the approval it names, in the order they are checked.
+LIVE_ARM_APPROVAL_MISSING = "LIVE_ARM_APPROVAL_MISSING"
+LIVE_ARM_APPROVAL_NOT_APPROVED = "LIVE_ARM_APPROVAL_NOT_APPROVED"
+LIVE_ARM_APPROVER_UNVERIFIED = "LIVE_ARM_APPROVER_UNVERIFIED"
+LIVE_ARM_APPROVAL_NOT_AN_ARM = "LIVE_ARM_APPROVAL_NOT_AN_ARM"
+LIVE_ARM_APPROVAL_ALTERED = "LIVE_ARM_APPROVAL_ALTERED"
+LIVE_ARM_APPROVAL_OTHER_CANDIDATE = "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"
+LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL = "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"
+
+
+def _instant(value: Any) -> Any:
+    if not isinstance(value, str):
+        return None
+    try:
+        return timeutil.parse_iso(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _listed(value: Any) -> tuple[str, ...]:
+    """The strings of a list; anything else lists nothing (a string is not a list of ids)."""
+    return tuple(v for v in value if isinstance(v, str)) if isinstance(value, list) else ()
+
+
+def live_arm_problem(
+    approval: Mapping[str, Any] | None,
+    *,
+    approval_id: str,
+    candidate_id: Any,
+    strategy_rule_hash: Any,
+    promoted_at: Any,
+) -> str | None:
+    """Why ``approval`` does not back a pool entry armed LIVE under ``approval_id``, or None. Pure.
+
+    The promotion door verified the approval when it installed the entry
+    (:func:`verify_promotion_approval`). This is the order-time check that the entry still stands on
+    that kind of approval (PR2c-2b). It does not re-derive the content hash: that hash names the
+    members the promotion returned to trading, which is the pool as it stood at install and moves
+    after it. It checks instead:
+
+    - the record exists, is APPROVED, and names Thomas, verified on the private control channel.
+      A promotion approval is verified and never consumed, and only a PENDING approval expires, so
+      an approved one stays APPROVED;
+    - it approves a promotion into the live tier;
+    - its snapshot still fingerprints to the recorded value, and ``approval_id`` is the id that
+      fingerprint derives. Neither the snapshot nor the id changed after the answer;
+    - the entry's candidate and rule hash are among the ones it approved;
+    - the entry was installed after the answer and before the approval expired, as the promotion
+      door requires.
+
+    Its validity window is not checked against now: the arm outlives the ask by design."""
+    # `approval`, imported above, puts the repository's `lib/` on the path this helper lives on.
+    from lib.action_fingerprint import compute_action_fingerprint
+
+    if not isinstance(approval, Mapping):
+        return LIVE_ARM_APPROVAL_MISSING
+    if approval.get("status") != approval_mod.STATUS_APPROVED:
+        return LIVE_ARM_APPROVAL_NOT_APPROVED
+    approver = approval.get("approver") if isinstance(approval.get("approver"), Mapping) else {}
+    if (approver.get("approved_by") != approval_mod.REQUIRED_APPROVER
+            or approver.get("verification_status") != "VERIFIED"
+            or approver.get("identity_verification_method") != approval_mod.TELEGRAM_VERIFICATION_METHOD):
+        return LIVE_ARM_APPROVER_UNVERIFIED
+    snapshot = approval.get("approved_action_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    content = snapshot.get("normalized_parameters")
+    content = content if isinstance(content, Mapping) else {}
+    if (snapshot.get("action_type") != PROMOTION_ACTION_TYPE
+            or snapshot.get("target_ref") != STRATEGY_POOL_LIVE_TARGET_REF
+            or content.get("live_tier") != STRATEGY_POOL_TIER_LIVE):
+        return LIVE_ARM_APPROVAL_NOT_AN_ARM
+    try:
+        fingerprint = compute_action_fingerprint(dict(snapshot))
+    except (ValueError, TypeError):
+        return LIVE_ARM_APPROVAL_ALTERED
+    if (fingerprint != approval.get("action_fingerprint")
+            or approval.get("approval_id") != approval_id
+            or approval_id != integrity.short_id("approval", {"action_fingerprint": fingerprint})):
+        return LIVE_ARM_APPROVAL_ALTERED
+    if (candidate_id not in _listed(content.get("candidate_ids"))
+            or strategy_rule_hash not in _listed(content.get("rule_hashes"))):
+        return LIVE_ARM_APPROVAL_OTHER_CANDIDATE
+    decision = approval.get("decision") if isinstance(approval.get("decision"), Mapping) else {}
+    validity = approval.get("validity") if isinstance(approval.get("validity"), Mapping) else {}
+    decided = _instant(decision.get("decided_at"))
+    expires = _instant(validity.get("expires_at"))
+    installed = _instant(promoted_at)
+    if decided is None or expires is None or installed is None or not decided <= installed < expires:
+        return LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL
+    return None

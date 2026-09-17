@@ -42,7 +42,7 @@ none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_fa
 | today's realized loss | breached if either read says so. The re-read judges the realized figure the door already read against the fresh limit |
 | a valid budget backs the order | the first AND the fresh; a legacy window must hold at both `now` and the decision's `clock`, and both must resolve the same record |
 | symbol allowlist | what both reads share |
-| live tier (autonomous) | what both reads share; the arming approval only if both reads name the same one |
+| live tier (autonomous) | what both reads share; the arming approval only if both reads name the same one, and then verified (§3) |
 | orders spent today | the fresh count |
 | bracket breaker | the higher streak, tripped if either read says so |
 | risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`; `LIVE_ENTRY_RISK_LIMITS_UNNAMED` for a verdict that names none, `LIVE_ENTRY_RISK_LIMITS_UNRESOLVED` when nothing resolves, or the resolver's own code) |
@@ -138,9 +138,32 @@ The profile names records that already authorize trading. Nothing new is registe
   registered set that names its id and hash.
 - **The authority for this kind of order:**
   - autonomous: `live_arm`, the approval the strategy was armed LIVE under. The promotion door
-    writes it to `live_tier_approval_id` beside the tier, and the disarm door removes it. Only the
-    id's presence is checked. That it names a real approval to arm this candidate is not re-verified
-    at order time (§6).
+    writes it to `live_tier_approval_id` beside the tier, and the disarm door removes it.
+    **The route verifies it at the gate (PR2c-2b)** (`live_route.verify_live_arm`). The fresh pool
+    entry must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`). The approval
+    store must hold the record the entry names, and `promotion.live_arm_problem` must accept it:
+
+    | The record must | Otherwise |
+    |---|---|
+    | exist | `LIVE_ARM_APPROVAL_MISSING` |
+    | be APPROVED | `LIVE_ARM_APPROVAL_NOT_APPROVED` |
+    | name Thomas, VERIFIED on the private control channel | `LIVE_ARM_APPROVER_UNVERIFIED` |
+    | approve a strategy-pool promotion into the live target, at the LIVE tier | `LIVE_ARM_APPROVAL_NOT_AN_ARM` |
+    | still fingerprint to its recorded value, under the id that fingerprint derives | `LIVE_ARM_APPROVAL_ALTERED` |
+    | list the entry's candidate id and rule hash | `LIVE_ARM_APPROVAL_OTHER_CANDIDATE` |
+    | have been answered before the entry was installed, and expire after it | `LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL` |
+
+    - **An approved promotion stays APPROVED.** It is verified, never consumed, and only a PENDING
+      approval expires. The check does not judge its validity window against the order: the arm
+      outlives the ask.
+    - **The content hash is not re-derived.** It names the members the promotion returned to
+      trading, which is the pool as it stood at install.
+    - **What the authority carries:** `approval_fingerprint`, `approval_verified` and
+      `approval_problem`. The profile requires `approval_verified` to be `true`, with a fingerprint.
+    - **Failures hold the entry and never halt the fan-out.** A store that cannot be read gives
+      `LIVE_ARM_APPROVAL_UNREADABLE`, and any other failure while verifying is a failed re-read.
+    - **A row sealed before PR2c-2b** names no verification. The verified read still accepts it,
+      but a send never does.
   - probe: `probe_plan`, the batch and its approval.
   - testnet: `testnet_caps`, the caps the path carries in code. No budget backs a venue with no money.
 
@@ -251,8 +274,13 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 
 ## 6. Not yet in it
 
-- **The arming approval is re-read, not verified (PR2c-2b).** The gate checks that both reads name
-  the same `live_tier_approval_id`, not that it is a real Thomas approval to arm this candidate.
+- **The readiness board counts armed entries, not verified ones.** An arm whose approval fails
+  verification shows as armed there and is held at every gate. Apart from an unreadable approval
+  store, only a hand edit of the pool or the store can produce one: the promotion door verifies the
+  approval before it installs.
+- **Tampering by the state directory's own writer is out of reach.** A writer that can rewrite the
+  approval store and the pool together can forge a consistent arm, as it can forge the stage record
+  (`EXECUTION_STAGE_V0.1.md`).
 - **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
   for the fire, so it can be as old as the fire (about a minute). No bound checks it.
 - **The checks the directive lists that no door runs yet (PR2d):**

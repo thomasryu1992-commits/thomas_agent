@@ -179,6 +179,22 @@ def test_the_arming_approvals_are_read_for_live_routable_entries_only():
     ))
 
 
+def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entries_only():
+    """PR2c-2b: what the gate needs to verify an arm, for the same membership as the tier."""
+    pool = _pool(
+        _entry("S1", live_tier="LIVE", live_tier_approval_id=" appr_1 ", candidate_id="c1",
+               strategy_rule_hash="h1", promoted_at="2026-09-17T00:00:00Z"),
+        _entry("S2", live_tier="LIVE"),
+        _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", candidate_id="c4"),
+        _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5"),
+    )
+    entries = pool_store.live_arm_entries(pool)
+    assert entries["S1"] == {"approval_id": "appr_1", "candidate_id": "c1", "strategy_rule_hash": "h1",
+                             "promoted_at": "2026-09-17T00:00:00Z"}
+    assert set(entries) == {"S1", "S2"} and entries["S2"]["approval_id"] is None
+    assert pool_store.live_arm_approvals(pool) == {sid: e["approval_id"] for sid, e in entries.items()}
+
+
 def test_disarming_takes_the_approval_with_the_tier(tmp_path):
     from runtime.mvp_runtime.crypto.strategy import StrategySpec
     from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict

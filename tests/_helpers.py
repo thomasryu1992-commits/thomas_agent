@@ -114,6 +114,54 @@ def gate_stage():
     )
 
 
+def live_arm_approval(candidate_ids=("cand_1",), rule_hashes=("deadbeef",), *,
+                      decided_at="2026-07-27T23:50:00Z", expires_at="2026-07-28T00:05:00Z",
+                      live_tier="LIVE", **overrides):
+    """An APPROVED promotion approval that arms ``candidate_ids`` at ``live_tier``, in the shape
+    `approval.record_decision` leaves one and under the id `permission` derives from its fingerprint
+    — for tests of the gate's order-time verification of an arm (PR2c-2b). ``overrides`` replace
+    top-level fields after the id is derived."""
+    from runtime.mvp_runtime import approval as approval_mod  # noqa: F401 — puts `lib/` on the path
+    from runtime.mvp_runtime.permission import (
+        STRATEGY_POOL_LIVE_TARGET_REF, STRATEGY_POOL_PAPER_TARGET_REF,
+    )
+    from runtime.read_only_kernel import integrity
+    from lib.action_fingerprint import compute_action_fingerprint
+
+    snapshot = {
+        "schema_version": "action_fingerprint_payload.v0.1",
+        "action_type": "crypto.strategy_pool.promotion",
+        "permission_scope": "RUNTIME_GOVERNANCE",
+        "target_ref": STRATEGY_POOL_LIVE_TARGET_REF if live_tier == "LIVE" else STRATEGY_POOL_PAPER_TARGET_REF,
+        "task_id": "task_arm_test", "task_revision": 1, "core_context_binding_id": "ccb_arm_test",
+        "requester_ref": "thomas.prime", "tool_id": None, "program_id": None,
+        "data_scope": ["crypto.active_strategy_pool", "crypto.strategy_candidates"],
+        "content_sha256": "sha256:" + "c" * 64, "amount_decimal": None, "currency": None,
+        "normalized_parameters": {
+            "candidate_ids": sorted(candidate_ids), "strategy_ids": ["S001"],
+            "rule_hashes": sorted(rule_hashes), "keep_active": False, "live_tier": live_tier,
+        },
+        "expires_at": expires_at,
+    }
+    fingerprint = compute_action_fingerprint(snapshot)
+    record = {
+        "approval_id": integrity.short_id("approval", {"action_fingerprint": fingerprint}),
+        "status": "APPROVED",
+        "action_fingerprint": fingerprint,
+        "approved_action_snapshot": snapshot,
+        "approver": {
+            "required_approver": "Thomas", "approved_by": "Thomas", "verification_status": "VERIFIED",
+            "identity_verification_method": "telegram_private_control_channel",
+            "verification_ref": "telegram:private_chat:test:msg-1",
+        },
+        "decision": {"decision_reason": "Approved by Thomas on the verified control channel.",
+                     "decided_at": decided_at},
+        "validity": {"issued_at": "2026-07-27T23:45:00Z", "expires_at": expires_at},
+    }
+    record.update(overrides)
+    return record
+
+
 def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00:00Z", decided_at=None):
     """``(bound_intent, snapshot)``: a snapshot the real gate sealed for ``intent`` on passing
     checks and a whole profile — for tests whose subject is what happens AFTER the gate.
@@ -129,8 +177,11 @@ def approved_snapshot(intent, *, purpose=None, venue=None, now="2026-07-25T12:00
 
     purpose = purpose or PURPOSE_AUTONOMOUS
     authority = {
+        # An arm whose approval the route verified (PR2c-2b).
         PURPOSE_AUTONOMOUS: {"kind": g.AUTHORITY_LIVE_ARM, "strategy_id": "S001",
-                             "approval_id": "approval_arm_test"},
+                             "approval_id": "approval_arm_test",
+                             "approval_fingerprint": "sha256:" + "a" * 64,
+                             g.LIVE_ARM_VERIFIED_FIELD: True},
         PURPOSE_PROBE: {"kind": g.AUTHORITY_PROBE_PLAN, "batch_id": "batch_test",
                         "approval_id": "approval_probe_test"},
         PURPOSE_TESTNET: {"kind": g.AUTHORITY_TESTNET_CAPS, "max_order_notional_usdt": 50.0,

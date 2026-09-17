@@ -1452,3 +1452,150 @@ def test_a_gate_that_names_no_escape_cannot_be_escaped_by_one(tmp_path, monkeypa
             execution_stage=_stage(monkeypatch, stage="PAPER", valid=True, reason=None),
         )
     assert blocked.value.reason_code == "EXECUTION_STAGE_TOO_LOW_TO_ARM"
+
+
+# --- the arming approval at order time (PR2c-2b) ----------------------------------------------
+
+_THOMAS = dict(approved_by="Thomas", method="telegram_private_control_channel",
+               verification_ref="telegram:private_chat:test:msg-1")
+
+
+@requires_local_core
+def test_an_arm_the_door_installs_under_thomas_s_answer_is_verified_at_order_time(tmp_path):
+    """End to end: the approval the ask builds and Thomas answers, and the entry the promotion door
+    installs under it, are exactly what the order-time verifier accepts — long after the ask expired."""
+    from runtime.mvp_runtime import approval as approval_mod
+
+    _seed_candidates(tmp_path, _spec_dict())
+    asked_at = timeutil.utc_now_iso()
+    prepared = request_promotion(["S1"], keep_active=False, live_tier="LIVE", now=asked_at,
+                                 candidates_root=tmp_path)
+    approved = approval_mod.record_decision(
+        prepared["approval_request"], prepared["permission_decision"], granted=True,
+        verification=approval_mod.Verification(**_THOMAS), reason="arm it",
+        now=timeutil.plus_seconds(asked_at, 30),
+    )
+    store = ApprovalStore(tmp_path / APPROVAL_STORE_REL)
+    store.append([approved])
+    installed_at = timeutil.plus_seconds(asked_at, 60)
+    run_promotion(selectors=["S1"], promoted_by="Thomas", reason="arm", keep_active=False,
+                  live_tier="LIVE", root=tmp_path, now=installed_at, approval_id=approved["approval_id"])
+
+    [armed] = pool.live_arm_entries(pool.load_active_pool(tmp_path)).values()
+    assert armed["approval_id"] == approved["approval_id"] and armed["promoted_at"] == installed_at
+    assert promotion_mod.live_arm_problem(
+        store.get(armed["approval_id"]), approval_id=armed["approval_id"],
+        candidate_id=armed["candidate_id"], strategy_rule_hash=armed["strategy_rule_hash"],
+        promoted_at=armed["promoted_at"],
+    ) is None
+    assert approved["validity"]["expires_at"] < timeutil.plus_seconds(asked_at, 86400)
+
+
+def _arm_problem(approval, **entry):
+    from tests._helpers import live_arm_approval
+
+    base = live_arm_approval()
+    facts = {"approval_id": base["approval_id"], "candidate_id": "cand_1",
+             "strategy_rule_hash": "deadbeef", "promoted_at": "2026-07-27T23:55:00Z", **entry}
+    return promotion_mod.live_arm_problem(approval, **facts)
+
+
+def _rebuilt(snapshot, **fields):
+    """A record for ``snapshot`` whose fingerprint and id are its own: only what it approves differs."""
+    from lib.action_fingerprint import compute_action_fingerprint
+    from runtime.read_only_kernel import integrity
+    from tests._helpers import live_arm_approval
+
+    fingerprint = compute_action_fingerprint(snapshot)
+    return {**live_arm_approval(), "approved_action_snapshot": snapshot, "action_fingerprint": fingerprint,
+            "approval_id": integrity.short_id("approval", {"action_fingerprint": fingerprint}), **fields}
+
+
+def _snapshot(**changes):
+    from tests._helpers import live_arm_approval
+
+    snapshot = dict(live_arm_approval()["approved_action_snapshot"])
+    content = {**snapshot["normalized_parameters"], **changes.pop("content", {})}
+    return {**snapshot, "normalized_parameters": content, **changes}
+
+
+def test_the_approval_that_armed_the_entry_backs_it():
+    from tests._helpers import live_arm_approval
+
+    assert _arm_problem(live_arm_approval()) is None
+    # The window's bounds: installed the moment Thomas answered, and not at the moment it expired.
+    assert _arm_problem(live_arm_approval(), promoted_at="2026-07-27T23:50:00Z") is None
+    assert _arm_problem(live_arm_approval(), promoted_at="2026-07-28T00:05:00Z") == \
+        promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL
+
+
+def _approval_cases():
+    from tests._helpers import live_arm_approval
+
+    arm = live_arm_approval()
+    by_string = {name: _rebuilt(_snapshot(content={field: value}))
+                 for name, field, value in (("ids", "candidate_ids", "cand_1"),
+                                            ("hashes", "rule_hashes", "deadbeef"),
+                                            # One character: iterating the string yields the id itself.
+                                            ("one-letter-id", "candidate_ids", "c"))}
+    return {
+        "none": (None, {}, promotion_mod.LIVE_ARM_APPROVAL_MISSING),
+        "not-a-record": (["approval"], {}, promotion_mod.LIVE_ARM_APPROVAL_MISSING),
+        **{f"status-{s.lower()}": ({**arm, "status": s}, {}, promotion_mod.LIVE_ARM_APPROVAL_NOT_APPROVED)
+           for s in ("PENDING", "REJECTED", "EXPIRED", "CONSUMED")},
+        "no-approver": ({**arm, "approver": None}, {}, promotion_mod.LIVE_ARM_APPROVER_UNVERIFIED),
+        "approver-a-name": ({**arm, "approver": "Thomas"}, {}, promotion_mod.LIVE_ARM_APPROVER_UNVERIFIED),
+        **{f"approver-{k}": ({**arm, "approver": {**arm["approver"], k: "other"}}, {},
+                             promotion_mod.LIVE_ARM_APPROVER_UNVERIFIED)
+           for k in ("approved_by", "verification_status", "identity_verification_method")},
+        "another-action": ({**arm, "approved_action_snapshot": _snapshot(action_type="memory.promotion")}, {},
+                           promotion_mod.LIVE_ARM_APPROVAL_NOT_AN_ARM),
+        "paper-target": ({**arm, "approved_action_snapshot": _snapshot(target_ref="active_strategy_pool:paper")},
+                         {}, promotion_mod.LIVE_ARM_APPROVAL_NOT_AN_ARM),
+        "observation-tier": ({**arm, "approved_action_snapshot": _snapshot(content={"live_tier": "OBSERVATION"})},
+                             {}, promotion_mod.LIVE_ARM_APPROVAL_NOT_AN_ARM),
+        "no-content": ({**arm, "approved_action_snapshot": {**_snapshot(), "normalized_parameters": None}}, {},
+                       promotion_mod.LIVE_ARM_APPROVAL_NOT_AN_ARM),
+        "no-snapshot": ({**arm, "approved_action_snapshot": None}, {},
+                        promotion_mod.LIVE_ARM_APPROVAL_NOT_AN_ARM),
+        "snapshot-edited": ({**arm, "approved_action_snapshot": _snapshot(content={"candidate_ids": ["cand_1", "cand_9"]})},
+                            {}, promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "fingerprint-edited": ({**arm, "action_fingerprint": "sha256:" + "0" * 64}, {},
+                               promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "unfingerprintable": ({**arm, "approved_action_snapshot": _snapshot(content={"weight": 0.5})}, {},
+                              promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "stored-under-another-id": ({**arm, "approval_id": "approval_other"}, {},
+                                    promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "entry-names-another-id": (arm, {"approval_id": "approval_other"}, promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "id-not-derived": ({**arm, "approval_id": "approval_other"}, {"approval_id": "approval_other"},
+                           promotion_mod.LIVE_ARM_APPROVAL_ALTERED),
+        "another-candidate": (arm, {"candidate_id": "cand_2"}, promotion_mod.LIVE_ARM_APPROVAL_OTHER_CANDIDATE),
+        "another-rule": (arm, {"strategy_rule_hash": "cafef00d"}, promotion_mod.LIVE_ARM_APPROVAL_OTHER_CANDIDATE),
+        # A string holds its own id as a substring; it still lists no id.
+        **{f"{name}-as-a-string": (record, {"approval_id": record["approval_id"],
+                                            **({"candidate_id": "c"} if name == "one-letter-id" else {})},
+                                   promotion_mod.LIVE_ARM_APPROVAL_OTHER_CANDIDATE)
+           for name, record in by_string.items()},
+        "rebuilt-record": (_rebuilt(_snapshot()), {"approval_id": _rebuilt(_snapshot())["approval_id"]}, None),
+        "before-the-answer": (arm, {"promoted_at": "2026-07-27T23:49:59Z"},
+                              promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "after-the-expiry": (arm, {"promoted_at": "2026-07-28T00:05:01Z"},
+                             promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "no-install-time": (arm, {"promoted_at": None}, promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "naive-install-time": (arm, {"promoted_at": "2026-07-27T23:55:00"},
+                               promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "garbled-install-time": (arm, {"promoted_at": "yesterday"}, promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "no-answer-time": ({**arm, "decision": {"decision_reason": "x"}}, {},
+                           promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "no-expiry": ({**arm, "validity": None}, {}, promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
+        "pending-and-another-candidate": ({**arm, "status": "PENDING"}, {"candidate_id": "cand_2"},
+                                          promotion_mod.LIVE_ARM_APPROVAL_NOT_APPROVED),
+    }
+
+
+_CASES = _approval_cases()
+
+
+@pytest.mark.parametrize("approval,entry,problem", list(_CASES.values()), ids=list(_CASES))
+def test_an_approval_that_does_not_back_the_arm_is_named(approval, entry, problem):
+    assert _arm_problem(approval, **entry) == problem

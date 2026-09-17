@@ -232,8 +232,16 @@ def approved_profile(
     }
 
 
-def profile_problems(profile: Mapping[str, Any] | None) -> list[str]:
-    """Why a profile does not authorize an order — empty when it does. Pure."""
+# The field a `live_arm` authority carries once its approval was verified at the gate (PR2c-2b).
+LIVE_ARM_VERIFIED_FIELD = "approval_verified"
+
+
+def profile_problems(profile: Mapping[str, Any] | None, *, legacy_read: bool = False) -> list[str]:
+    """Why a profile does not authorize an order — empty when it does. Pure.
+
+    A `live_arm` authority must carry an arming approval the gate verified (PR2c-2b).
+    ``legacy_read`` is the verified read of a stored row: a row sealed before PR2c-2b names no
+    verification at all and is still read. A send never accepts it."""
     if not isinstance(profile, Mapping):
         return ["no approved profile"]
     purpose = profile.get("purpose")
@@ -262,6 +270,12 @@ def profile_problems(profile: Mapping[str, Any] | None) -> list[str]:
     elif kind == AUTHORITY_LIVE_ARM:
         if _missing(authority.get("approval_id")) or _missing(authority.get("strategy_id")):
             problems.append("the strategy was not armed LIVE under a recorded approval")
+        elif legacy_read and LIVE_ARM_VERIFIED_FIELD not in authority:
+            pass  # sealed before PR2c-2b: the record stands, and `for_send` never takes this branch
+        elif authority.get(LIVE_ARM_VERIFIED_FIELD) is not True or _missing(authority.get("approval_fingerprint")):
+            problem = authority.get("approval_problem")
+            problems.append("the arming approval was not verified"
+                            + (f" ({problem})" if isinstance(problem, str) and problem else ""))
     elif kind == AUTHORITY_PROBE_PLAN:
         if _missing(authority.get("approval_id")) or _missing(authority.get("batch_id")):
             problems.append("the probe plan names no approval")
@@ -428,14 +442,15 @@ def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
     every snapshot it approves, from the record alone.
 
     ``for_send`` requires the current gate's checks. The verified read of the record also accepts
-    a row the PR2b gate sealed, which names no decision time check (:data:`PR2B_GATE_CHECK_IDS`)."""
+    a row the PR2b gate sealed, which names no decision time check (:data:`PR2B_GATE_CHECK_IDS`),
+    and an autonomous row sealed before its arming approval was verified (PR2c-2b)."""
     purpose = snapshot.get("purpose")
     if VENUE_FOR_PURPOSE.get(purpose) != snapshot.get("venue"):
         return f"a {purpose} order does not go to {snapshot.get('venue')}"
     profile = snapshot.get("approved_profile")
     if not isinstance(profile, Mapping) or profile.get("purpose") != purpose:
         return "the profile was not built for this purpose"
-    problems = profile_problems(profile)
+    problems = profile_problems(profile, legacy_read=not for_send)
     if problems:
         return "; ".join(problems)
     try:
@@ -731,6 +746,7 @@ __all__ = [
     "GATE_ID",
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
+    "LIVE_ARM_VERIFIED_FIELD",
     "MAX_SNAPSHOT_AGE_SECONDS",
     "PR2B_GATE_CHECK_IDS",
     "PreOrderSnapshotStore",

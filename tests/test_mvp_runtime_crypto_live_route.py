@@ -32,7 +32,7 @@ from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
-from tests._helpers import gate_stage
+from tests._helpers import gate_stage, live_arm_approval
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1173,23 +1173,39 @@ class _Collector:
         return {}
 
 
-def _armed_pool(approval_id="approval_arm_pr2a"):
+# The approval Thomas answered to arm the plan's lineage LIVE (PR2c-2b). The pass runs hours after
+# it expired, as every arm does: the arm outlives the ask.
+_ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],))
+_ARMED_AT = "2026-07-27T23:55:00Z"
+
+
+def _armed_pool(approval_id=None, **entry):
     from runtime.mvp_runtime.crypto import pool as pool_store
 
     return {"active_strategies": [{
         "strategy_id": "S001", "status": "PAPER_ACTIVE",
         pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_LIVE,
-        pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id,
+        pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id or _ARM["approval_id"],
+        "candidate_id": _PLAN["candidate_id"], "strategy_rule_hash": _PLAN["strategy_rule_hash"],
+        "promoted_at": _ARMED_AT, **entry,
     }]}
 
 
-def _wire_whole_leg(tmp_path, monkeypatch, venue):
+def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=None):
     """Everything real inside the leg — the book, the ledger, the counter, the marks, the
     planner, the guard, the executing leg — and a double only where the venue or the Core would
-    be reached. The gate is pinned to the scripted venue, so no real adapter can be selected."""
+    be reached. The gate is pinned to the scripted venue, so no real adapter can be selected.
+
+    ``approval`` is the record in the approval store (None: the store holds none) and the id both
+    pool reads name; ``armed_entry`` changes the fresh read's pool entry."""
+    from runtime.mvp_runtime.approval_store import ApprovalStore
     from runtime.mvp_runtime.control import ACTIVE, ControlState, ControlStore
     from runtime.mvp_runtime.crypto import live_governance
     from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
+
+    arm_id = (approval or _ARM)["approval_id"]
+    if approval is not None:
+        ApprovalStore.default(tmp_path).append([approval])
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (venue, None))
@@ -1215,7 +1231,8 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
     monkeypatch.setattr(live_route, "_entry_clock", lambda: clock["now"])
     monkeypatch.setattr(pre_order_gate, "_send_clock", lambda: clock["now"])
     # The pool the gate re-reads (PR2c-2a): S001 armed LIVE under the approval the cycle handed over.
-    monkeypatch.setattr(live_route.pool, "load_active_pool", lambda root=None: _armed_pool())
+    monkeypatch.setattr(live_route.pool, "load_active_pool",
+                        lambda root=None: _armed_pool(arm_id, **(armed_entry or {})))
     limits = LiveOrderLimits(
         max_order_notional_usdt=60.0, max_daily_order_count=3, max_open_notional_usdt=120.0,
         daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE,
@@ -1247,7 +1264,7 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue):
                      "risk_guard": {"limits": {"source": "default"}}},
             symbol=SYMBOL, collector=_Collector(), now=now, timeframe="4h",
             root=tmp_path, control_store=control,
-            live_arm_approvals={"S001": "approval_arm_pr2a"},
+            live_arm_approvals={"S001": arm_id},
         )
 
     return _pass
@@ -1543,7 +1560,14 @@ def test_an_entry_leaves_only_under_a_recorded_snapshot_the_book_names(tmp_path,
     [recorded] = pre_order_gate.read_snapshots(tmp_path)
     assert recorded["approved"] is True
     assert recorded["client_order_id"] == venue.entries()[0]["newClientOrderId"]
-    assert recorded["approved_profile"]["authority"]["approval_id"] == "approval_arm_pr2a"
+    authority = recorded["approved_profile"]["authority"]
+    assert authority["approval_id"] == _ARM["approval_id"]
+    # PR2c-2b: the arm the order leaves under is the record Thomas answered, verified at the gate.
+    assert authority["approval_verified"] is True and authority["approval_problem"] is None
+    assert authority["approval_fingerprint"] == _ARM["action_fingerprint"]
+    assert opened["live_pre_order_reread"]["live_arm"] == {
+        "approval_id": _ARM["approval_id"], "approval_fingerprint": _ARM["action_fingerprint"],
+        "approval_verified": True, "approval_problem": None}
     assert recorded["approved_profile"]["stage"]["approval_id"] == "approval_stage_test"
     assert opened["live_pre_order_gate"]["risk_snapshot_sha256"] == recorded["risk_snapshot_sha256"]
     [position] = list_open_live_positions(tmp_path)
@@ -1959,6 +1983,10 @@ def test_a_strategy_re_armed_under_another_approval_is_held(tmp_path, monkeypatc
                         lambda root=None: _armed_pool("approval_arm_other"))
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
+    # The two reads name different approvals: neither is looked up.
+    assert held["live_pre_order_reread"]["live_arm"] == {
+        "approval_id": None, "approval_fingerprint": None, "approval_verified": False,
+        "approval_problem": None}
     assert _nothing_spent(venue, tmp_path)
 
 
@@ -2129,3 +2157,110 @@ def test_a_door_no_pool_authorizes_does_not_read_the_pool(tmp_path, monkeypatch)
     assert (fresh["live_routable_strategy_ids"], fresh["live_arm_approvals"]) == (None, None)
     assert fresh["runtime_active"] is False
     assert fresh["bracket_breaker_tripped"] is False and fresh["submitted_today"] == 0
+
+
+# --- the arming approval is verified at the gate (PR2c-2b) -------------------------------------
+
+def _other_snapshot(**content):
+    snapshot = dict(_ARM["approved_action_snapshot"])
+    snapshot["normalized_parameters"] = {**snapshot["normalized_parameters"], **content}
+    return snapshot
+
+
+_UNBACKED_ARMS = {
+    "no-record": (None, {}, "LIVE_ARM_APPROVAL_MISSING"),
+    "pending": ({**_ARM, "status": "PENDING"}, {}, "LIVE_ARM_APPROVAL_NOT_APPROVED"),
+    "rejected": ({**_ARM, "status": "REJECTED"}, {}, "LIVE_ARM_APPROVAL_NOT_APPROVED"),
+    "not-thomas": ({**_ARM, "approver": {**_ARM["approver"], "approved_by": "Hermes"}}, {},
+                   "LIVE_ARM_APPROVER_UNVERIFIED"),
+    "unverified": ({**_ARM, "approver": {**_ARM["approver"], "verification_status": "NOT_VERIFIED"}}, {},
+                   "LIVE_ARM_APPROVER_UNVERIFIED"),
+    "paper-promotion": (live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
+                                          live_tier="OBSERVATION"), {}, "LIVE_ARM_APPROVAL_NOT_AN_ARM"),
+    "edited-after-the-answer": ({**_ARM, "approved_action_snapshot": _other_snapshot(
+        candidate_ids=["cand_1", "cand_2"])}, {}, "LIVE_ARM_APPROVAL_ALTERED"),
+    "another-candidate": (live_arm_approval(("cand_2",), (_PLAN["strategy_rule_hash"],)), {},
+                          "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"),
+    "another-rule": (live_arm_approval((_PLAN["candidate_id"],), ("cafef00d",)), {},
+                     "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"),
+    "installed-before-the-answer": (_ARM, {"promoted_at": "2026-07-27T23:49:59Z"},
+                                    "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
+    "installed-after-it-expired": (_ARM, {"promoted_at": _ARM["validity"]["expires_at"]},
+                                   "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
+    "no-install-time": (_ARM, {"promoted_at": None}, "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"),
+    "entry-for-another-lineage": (_ARM, {"strategy_rule_hash": "cafef00d"}, "LIVE_ARM_ENTRY_CHANGED"),
+    # Armed under a real approval for its own lineage, which is not the lineage the plan was made from.
+    "entry-armed-for-another-candidate": (live_arm_approval(("cand_2",), (_PLAN["strategy_rule_hash"],)),
+                                          {"candidate_id": "cand_2"}, "LIVE_ARM_ENTRY_CHANGED"),
+    "entry-armed-for-another-rule": (live_arm_approval((_PLAN["candidate_id"],), ("cafef00d",)),
+                                     {"strategy_rule_hash": "cafef00d"}, "LIVE_ARM_ENTRY_CHANGED"),
+}
+
+
+@pytest.mark.parametrize("approval,entry,problem", list(_UNBACKED_ARMS.values()), ids=list(_UNBACKED_ARMS))
+def test_an_arm_its_approval_does_not_back_is_held_before_anything_is_spent(
+        tmp_path, monkeypatch, approval, entry, problem):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue, approval=approval, armed_entry=entry)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == problem
+    assert held["live_pre_order_reread"]["live_arm"]["approval_verified"] is False
+    assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_an_approval_store_that_cannot_be_read_holds_the_entry_and_never_the_fan_out(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    ApprovalStore.default(tmp_path).path.write_text("{not json\n", encoding="utf-8")
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
+    assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == live_route.LIVE_ARM_APPROVAL_UNREADABLE
+    assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_an_entry_that_names_another_approval_than_both_reads_is_not_verified(tmp_path):
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+
+    ApprovalStore.default(tmp_path).append([_ARM])
+    armed = {"S001": {"approval_id": _ARM["approval_id"], "candidate_id": _PLAN["candidate_id"],
+                      "strategy_rule_hash": _PLAN["strategy_rule_hash"], "promoted_at": _ARMED_AT}}
+    verify = lambda armed: live_route.verify_live_arm(  # noqa: E731
+        root=tmp_path, strategy_id="S001", plan=_PLAN, approval_id=_ARM["approval_id"], armed=armed)
+    assert verify(armed)["approval_verified"] is True
+    other = {"S001": {**armed["S001"], "approval_id": "approval_other"}}
+    assert verify(other)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+    assert verify({})["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+    assert verify(None)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+
+
+def test_an_arm_both_reads_do_not_agree_on_is_not_looked_up(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+
+    def _must_not_read(self, approval_id):
+        raise AssertionError("the approval store was read")
+
+    monkeypatch.setattr(ApprovalStore, "get", _must_not_read)
+    arm = live_route.verify_live_arm(root=tmp_path, strategy_id="S001", plan=_PLAN, approval_id=None,
+                                     armed=None)
+    assert arm == {"approval_id": None, "approval_fingerprint": None, "approval_verified": False,
+                   "approval_problem": None}
+
+
+def test_a_failure_verifying_the_arm_holds_the_entry_as_a_failed_re_read(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+
+    def _broken(**kw):
+        raise RuntimeError("scripted")
+
+    monkeypatch.setattr(live_route, "verify_live_arm", _broken)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
+    assert held["live_reason_codes"][-2:] == [live_route.PRE_ORDER_REREAD_FAILED, "RuntimeError"]
+    assert _nothing_spent(venue, tmp_path)

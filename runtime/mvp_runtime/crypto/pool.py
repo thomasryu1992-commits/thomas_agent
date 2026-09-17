@@ -1583,9 +1583,8 @@ LIVE_TIERS = frozenset({LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION})
 # The Thomas approval a LIVE entry was armed under (PR2b, decision 17). The promotion door writes it
 # beside the tier; the disarm door removes it with the tier. The pre-order gate refuses an entry for
 # a LIVE strategy that names none, so an entry armed by hand without an id is armed for nothing.
-# Only the id's presence is checked: that it names a real approval to arm this candidate is not
-# re-verified at order time (left for PR2c's order-time re-reads), so a hand edit that also writes
-# an id is not caught here, just as a hand-edited tier was not caught before.
+# Since PR2c-2b the gate also verifies the record the id names (`promotion.live_arm_problem`): an
+# approval Thomas answered to arm this candidate at LIVE, whose window the entry was installed in.
 LIVE_TIER_APPROVAL_FIELD = "live_tier_approval_id"
 
 
@@ -1621,21 +1620,32 @@ def live_routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
     }
 
 
-def live_arm_approvals(pool: Mapping[str, Any]) -> dict[str, str | None]:
-    """``strategy_id -> the approval it was armed LIVE under`` for every live-routable entry.
+def live_arm_entries(pool: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """``strategy_id -> what its LIVE arm stands on`` for every live-routable entry (PR2c-2b).
 
-    The same membership as :func:`live_routable_strategy_ids`, with the approval each entry names —
-    ``None`` when it names none, which the pre-order gate refuses rather than infers."""
-    armed: dict[str, str | None] = {}
+    The same membership as :func:`live_routable_strategy_ids`. Each value names the approval the
+    entry was armed under (``None`` when it names none, which the pre-order gate refuses rather than
+    infers), the lineage it arms, and when the promotion door installed it — what the gate needs to
+    verify that approval."""
+    armed: dict[str, dict[str, Any]] = {}
     for entry in pool.get("active_strategies") or []:
         if not (isinstance(entry, Mapping) and entry.get("status") in OCCUPYING_STATUSES
                 and entry.get("strategy_id") and entry_live_tier(entry) == LIVE_TIER_LIVE):
             continue
         approval = entry.get(LIVE_TIER_APPROVAL_FIELD)
-        armed[str(entry.get("strategy_id"))] = (
-            approval.strip() if isinstance(approval, str) and approval.strip() else None
-        )
+        armed[str(entry.get("strategy_id"))] = {
+            "approval_id": approval.strip() if isinstance(approval, str) and approval.strip() else None,
+            "candidate_id": entry.get("candidate_id"),
+            "strategy_rule_hash": entry.get("strategy_rule_hash"),
+            "promoted_at": entry.get("promoted_at"),
+        }
     return armed
+
+
+def live_arm_approvals(pool: Mapping[str, Any]) -> dict[str, str | None]:
+    """``strategy_id -> the approval it was armed LIVE under`` for every live-routable entry
+    (:func:`live_arm_entries`, the approval alone)."""
+    return {sid: armed["approval_id"] for sid, armed in live_arm_entries(pool).items()}
 
 
 def disarm_live_tier(
