@@ -112,23 +112,23 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AMBIGUOUS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 333 | `select_role` | `len(candidates) > 1` |
 | `ANNOUNCE_POINTER_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1024 | `record_announced` | `—` |
 | `APPROVALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | 148 | `read_approval_status` | `approval_store is None` |
-| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 850 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
+| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 852 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 525 | `verify_promotion_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 167 | `verify_retirement_approval` | `snapshot.get('content_sha256') != retirement_content_sha256(resolve_pool_entries(strategy_ids, …` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 229 | `verify_registration_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 276 | `validate_spendable_approval` | `is_expired(approval_rec, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 350 | `record_decision` | `is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 742 | `apply_command` | `approval.get('status') == STATUS_PENDING and is_expired(approval, now=now)` |
-| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 842 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
+| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 844 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 504 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 159 | `verify_retirement_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 222 | `verify_registration_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 439 | `_spend` | `approval_mod.is_expired(record, now=now)` |
-| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 836 | `verify_probe_approval` | `approval is None` |
+| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 838 | `verify_probe_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 498 | `verify_promotion_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 153 | `verify_retirement_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 216 | `verify_registration_approval` | `approval is None` |
-| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 839 | `verify_probe_approval` | `status != 'APPROVED'` |
+| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 841 | `verify_probe_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 501 | `verify_promotion_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 156 | `verify_retirement_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 219 | `verify_registration_approval` | `status != 'APPROVED'` |
@@ -145,7 +145,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_UNVERIFIED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 859 | `build_trial_consumption_audit` | `approver.get('verification_status') != 'VERIFIED'` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 65 | `append` | `—` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 107 | `append_permission_decision` | `—` |
-| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 845 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
+| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 847 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 508 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 163 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
@@ -864,47 +864,47 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1381 | `load_open_position` | `PositionContext.from_position(stored) != context` |
 | `POSITION_CONTEXT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1416 | `list_open_positions` | `blocker is not None` |
 | `POSITION_STATE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/paper.py` | 1360 | `_read_position_file` | `—` |
-| `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 532 | `select_cell` | `not empty` |
-| `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 306 | `assert_batch_budget` | `worst > cap` |
-| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 525 | `select_cell` | `opened is not None` |
-| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 912 | `abandon_plan` | `open_index is not None` |
-| `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 637 | `probe_quantity` | `filters is None or not filters.valid()` |
-| `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 660 | `probe_stop_price` | `trigger <= 0` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 237 | `build_batch_params` | `not names` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 240 | `build_batch_params` | `duplicates` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 254 | `build_batch_params` | `not name.endswith('USDT') or name == 'USDT' or (not name.isalnum())` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 260 | `build_batch_params` | `int(repeats) < 1 or int(timeout_minutes) < 1` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 262 | `build_batch_params` | `not float(stop_bps) > 0` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 266 | `build_batch_params` | `n != grid` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 272 | `build_batch_params` | `not (float(per_probe_notional_cap_usdt) > 0 and float(budget_cap_usdt) > 0)` |
-| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 900 | `abandon_plan` | `not isinstance(reason, str) or not reason.strip()` |
-| `PROBE_PLAN_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 491 | `write_plan` | `stored != expected_sha256` |
-| `PROBE_PLAN_EXISTS` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 876 | `confirm_probe_batch` | `existing is not None and existing['status'] == PLAN_ACTIVE` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 406 | `validate_plan` | `not isinstance(plan, dict)` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 410 | `validate_plan` | `unknown or missing` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 416 | `validate_plan` | `plan['plan_version'] != PLAN_VERSION` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 418 | `validate_plan` | `plan['status'] not in PLAN_STATUSES` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 421 | `validate_plan` | `not isinstance(params, dict) or set(params) != _PARAM_KEYS` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 423 | `validate_plan` | `plan['batch_id'] != batch_id_of(params)` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 426 | `validate_plan` | `not isinstance(cells, list) or len(cells) != int(params['n'])` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 429 | `validate_plan` | `not isinstance(cell, dict) or set(cell) != _CELL_KEYS` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 431 | `validate_plan` | `cell['status'] not in CELL_STATUSES` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 433 | `validate_plan` | `cell['symbol'] not in params['symbols'] or cell['regime'] not in REGIMES` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 553 | `mark_cell` | `not 0 <= index < len(cells)` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 557 | `mark_cell` | `status not in legal.get(current, set())` |
-| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 560 | `mark_cell` | `unknown` |
-| `PROBE_PLAN_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 903 | `abandon_plan` | `plan is None` |
-| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 521 | `select_cell` | `plan['status'] != PLAN_ACTIVE` |
-| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 905 | `abandon_plan` | `plan['status'] != PLAN_ACTIVE` |
-| `PROBE_PLAN_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 454 | `read_plan` | `not isinstance(stored, str) or _plan_sha256(raw) != stored` |
-| `PROBE_PLAN_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 468 | `_stored_plan_sha256` | `not isinstance(stored, str)` |
-| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 449 | `read_plan` | `—` |
-| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 451 | `read_plan` | `not isinstance(raw, dict)` |
-| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 465 | `_stored_plan_sha256` | `—` |
-| `PROBE_PRICE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 639 | `probe_quantity` | `not (isinstance(price, (int, float)) and (not isinstance(price, bool)) and (price > 0))` |
-| `PROBE_PRICE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 657 | `probe_stop_price` | `not (isinstance(fill_price, (int, float)) and (not isinstance(fill_price, bool)) and (fill_pric…` |
-| `PROBE_REGIME_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 538 | `select_cell` | `—` |
-| `PROBE_REGIME_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 340 | `regime_of` | `isinstance(atr_percentile, bool) or not isinstance(atr_percentile, (int, float))` |
+| `PROBE_BATCH_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 534 | `select_cell` | `not empty` |
+| `PROBE_BUDGET_EXCEEDED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 308 | `assert_batch_budget` | `worst > cap` |
+| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 527 | `select_cell` | `opened is not None` |
+| `PROBE_CELL_OPEN` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 914 | `abandon_plan` | `open_index is not None` |
+| `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 639 | `probe_quantity` | `filters is None or not filters.valid()` |
+| `PROBE_FILTERS_UNAVAILABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 662 | `probe_stop_price` | `trigger <= 0` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 239 | `build_batch_params` | `not names` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 242 | `build_batch_params` | `duplicates` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 256 | `build_batch_params` | `not name.endswith('USDT') or name == 'USDT' or (not name.isalnum())` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 262 | `build_batch_params` | `int(repeats) < 1 or int(timeout_minutes) < 1` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 264 | `build_batch_params` | `not float(stop_bps) > 0` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 268 | `build_batch_params` | `n != grid` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 274 | `build_batch_params` | `not (float(per_probe_notional_cap_usdt) > 0 and float(budget_cap_usdt) > 0)` |
+| `PROBE_PARAMS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 902 | `abandon_plan` | `not isinstance(reason, str) or not reason.strip()` |
+| `PROBE_PLAN_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 493 | `write_plan` | `stored != expected_sha256` |
+| `PROBE_PLAN_EXISTS` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 878 | `confirm_probe_batch` | `existing is not None and existing['status'] == PLAN_ACTIVE` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 408 | `validate_plan` | `not isinstance(plan, dict)` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 412 | `validate_plan` | `unknown or missing` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 418 | `validate_plan` | `plan['plan_version'] != PLAN_VERSION` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 420 | `validate_plan` | `plan['status'] not in PLAN_STATUSES` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 423 | `validate_plan` | `not isinstance(params, dict) or set(params) != _PARAM_KEYS` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 425 | `validate_plan` | `plan['batch_id'] != batch_id_of(params)` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 428 | `validate_plan` | `not isinstance(cells, list) or len(cells) != int(params['n'])` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 431 | `validate_plan` | `not isinstance(cell, dict) or set(cell) != _CELL_KEYS` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 433 | `validate_plan` | `cell['status'] not in CELL_STATUSES` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 435 | `validate_plan` | `cell['symbol'] not in params['symbols'] or cell['regime'] not in REGIMES` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 555 | `mark_cell` | `not 0 <= index < len(cells)` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 559 | `mark_cell` | `status not in legal.get(current, set())` |
+| `PROBE_PLAN_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 562 | `mark_cell` | `unknown` |
+| `PROBE_PLAN_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 905 | `abandon_plan` | `plan is None` |
+| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 523 | `select_cell` | `plan['status'] != PLAN_ACTIVE` |
+| `PROBE_PLAN_NOT_ACTIVE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 907 | `abandon_plan` | `plan['status'] != PLAN_ACTIVE` |
+| `PROBE_PLAN_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 456 | `read_plan` | `not isinstance(stored, str) or _plan_sha256(raw) != stored` |
+| `PROBE_PLAN_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 470 | `_stored_plan_sha256` | `not isinstance(stored, str)` |
+| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 451 | `read_plan` | `—` |
+| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 453 | `read_plan` | `not isinstance(raw, dict)` |
+| `PROBE_PLAN_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 467 | `_stored_plan_sha256` | `—` |
+| `PROBE_PRICE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 641 | `probe_quantity` | `not (isinstance(price, (int, float)) and (not isinstance(price, bool)) and (price > 0))` |
+| `PROBE_PRICE_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 659 | `probe_stop_price` | `not (isinstance(fill_price, (int, float)) and (not isinstance(fill_price, bool)) and (fill_pric…` |
+| `PROBE_REGIME_EXHAUSTED` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 540 | `select_cell` | `—` |
+| `PROBE_REGIME_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/probe.py` | 342 | `regime_of` | `isinstance(atr_percentile, bool) or not isinstance(atr_percentile, (int, float))` |
 | `PROGRAMIZATION_RECORD_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 228 | `_validate` | `—` |
 | `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 115 | `read_observations` | `—` |
 | `PROGRAMIZATION_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/programization.py` | 120 | `read_patterns` | `—` |

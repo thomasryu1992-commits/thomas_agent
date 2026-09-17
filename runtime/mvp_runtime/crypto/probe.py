@@ -179,6 +179,8 @@ PROBE_SNAPSHOT_NOT_RECORDED = "PROBE_SNAPSHOT_NOT_RECORDED"
 PROBE_REREAD_FAILED = "PROBE_PRE_ORDER_REREAD_FAILED"
 # The stored plan is not the one the writer read (PR2c-2a): another door rewrote it in between.
 PROBE_PLAN_CHANGED = "PROBE_PLAN_CHANGED"
+# The fire ran to its end, but a plan write after the send failed: the plan does not say what happened.
+PROBE_PLAN_NOT_RECORDED = "PROBE_PLAN_NOT_RECORDED"
 # The symbol could not be taken for this probe (PR2b-2): another entry is in flight on it, the book
 # holds a position there, or the marks could not be read. Nothing was spent.
 PROBE_SYMBOL_NOT_CLAIMED = "PROBE_SYMBOL_NOT_CLAIMED"

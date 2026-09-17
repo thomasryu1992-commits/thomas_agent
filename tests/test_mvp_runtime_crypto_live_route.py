@@ -2008,28 +2008,55 @@ def test_a_re_read_that_fails_holds_the_entry_and_never_the_fan_out(tmp_path, mo
     assert _nothing_spent(venue, tmp_path)
 
 
-def test_the_day_s_slot_is_reserved_against_the_re_read_limit(tmp_path, monkeypatch):
-    from runtime.mvp_runtime.crypto.live_order import LiveOrderLimits as Limits
-
+@pytest.mark.parametrize("fresh_cap,reserved", [(2, 2), (5, 3)], ids=["lowered", "raised"])
+def test_the_day_s_slot_is_reserved_against_the_stricter_cap(tmp_path, monkeypatch, fresh_cap, reserved):
+    """A cap lowered before the gate binds the reservation; one raised does not widen it."""
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
     first = live_route.resolve_live_order_limits(tmp_path, now=NOW)
-    lowered = Limits(**{**first[0].__dict__, "max_daily_order_count": 2})
-    reads = iter([first, (lowered, first[1]), (lowered, first[1])])
+    assert first[0].max_daily_order_count == 3
+    changed = LiveOrderLimits(**{**first[0].__dict__, "max_daily_order_count": fresh_cap})
+    reads = iter([first, (changed, first[1]), (changed, first[1])])
     monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: next(reads))
     real_counter = live_route.select_live_order_counter
-    reserved: list[int] = []
+    reserved_limits: list[int] = []
 
     def _recording(now=None, root=None):
         counter = real_counter(now=now, root=root)
         reserve = counter.reserve_submission
-        counter.reserve_submission = lambda *, limit, day=None: reserved.append(limit) or reserve(limit=limit, day=day)
+        counter.reserve_submission = lambda *, limit, day=None: reserved_limits.append(limit) or reserve(limit=limit, day=day)
         return counter
 
     monkeypatch.setattr(live_route, "select_live_order_counter", _recording)
     opened = run("2026-07-28T04:05:00Z", BAR_00)
     assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
-    assert reserved == [2]
+    assert reserved_limits == [reserved]
+
+
+def test_today_s_loss_is_judged_again_against_a_limit_lowered_before_the_gate(tmp_path, monkeypatch):
+    """Lost 10 today: under the first read's limit of 20, over the re-read's 5."""
+    import dataclasses
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    read_account = live_route.read_account
+
+    def _lost(**kw):
+        snapshot, extra = read_account(**kw)
+        return dataclasses.replace(
+            snapshot, realized_windows={"today": {"net": -10.0}, "1d": {"net": -10.0}}), extra
+
+    monkeypatch.setattr(live_route, "read_account", _lost)
+    first = live_route.resolve_live_order_limits(tmp_path, now=NOW)
+    assert first[0].daily_loss_limit_usdt == 20.0
+    lowered = LiveOrderLimits(**{**first[0].__dict__, "daily_loss_limit_usdt": 5.0})
+    reads = iter([first, (lowered, first[1]), (lowered, first[1])])
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: next(reads))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True, "the first read's limit was not reached"
+    assert held["live_pre_order_reread"]["daily_loss_breached"] is True
+    assert "daily_loss_within_limit" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)
 
 
 def test_a_legacy_budget_window_is_judged_at_the_decision_too(tmp_path, monkeypatch):
@@ -2072,13 +2099,13 @@ def test_risk_limits_that_moved_or_expired_before_the_gate_refuse(tmp_path, monk
 
     control = type("C", (), {"load": lambda self: type("S", (), {"trading_allowed": True})()})()
     judged = guards.DEFAULT_RISK_LIMITS.as_record()
-    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, venue_realized_pnl_usdt=0.0, venue_required=True, clock=NOW, control=control,
                                          judged_limits=judged)["risk_limits_problem"] is None
 
     registered = guards.RiskLimits(**{**guards.DEFAULT_RISK_LIMITS.__dict__, "source": "registered",
                                       "limits_id": "limits_new", "record_sha256": "sha256:" + "9" * 64})
     monkeypatch.setattr(live_route, "resolve_risk_limits", lambda root=None, *, now: registered)
-    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, venue_realized_pnl_usdt=0.0, venue_required=True, clock=NOW, control=control,
                                          judged_limits=judged)["risk_limits_problem"] == RISK_LIMITS_CHANGED
 
     def _expired_at_clock(root=None, *, now):
@@ -2087,7 +2114,7 @@ def test_risk_limits_that_moved_or_expired_before_the_gate_refuse(tmp_path, monk
         return guards.DEFAULT_RISK_LIMITS
 
     monkeypatch.setattr(live_route, "resolve_risk_limits", _expired_at_clock)
-    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, clock="2026-07-28T00:00:30Z", control=control,
+    assert live_route.reread_entry_facts(root=tmp_path, now=NOW, venue_realized_pnl_usdt=0.0, venue_required=True, clock="2026-07-28T00:00:30Z", control=control,
                                          judged_limits=judged)["risk_limits_problem"] == "RISK_LIMITS_EXPIRED"
 
 
@@ -2097,7 +2124,7 @@ def test_a_door_no_pool_authorizes_does_not_read_the_pool(tmp_path, monkeypatch)
 
     monkeypatch.setattr(live_route.pool, "load_active_pool", _must_not_read)
     control = type("C", (), {"load": lambda self: type("S", (), {"trading_allowed": False})()})()
-    fresh = live_route.reread_entry_facts(root=tmp_path, now=NOW, clock=NOW, control=control,
+    fresh = live_route.reread_entry_facts(root=tmp_path, now=NOW, venue_realized_pnl_usdt=0.0, venue_required=True, clock=NOW, control=control,
                                           judged_limits={"source": "default"}, with_pool=False)
     assert (fresh["live_routable_strategy_ids"], fresh["live_arm_approvals"]) == (None, None)
     assert fresh["runtime_active"] is False

@@ -66,6 +66,7 @@ After rounding, a stop that no longer sits strictly on its own side of the entry
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any, Mapping, Sequence
 
@@ -149,8 +150,11 @@ ACCOUNT_STALE = "LIVE_ENTRY_ACCOUNT_STALE"
 REFERENCE_PRICE_UNUSABLE = "LIVE_ENTRY_REFERENCE_PRICE_UNUSABLE"
 PRICE_DIVERGED = "LIVE_ENTRY_PRICE_DIVERGED"
 PRICE_BEYOND_BRACKET = "LIVE_ENTRY_PRICE_BEYOND_BRACKET"
-# PR2c-2a: the risk limits in force are no longer the ones the verdict was judged on.
+# PR2c-2a: the risk limits in force are no longer the ones the verdict was judged on; the verdict
+# names none; or none could be resolved.
 RISK_LIMITS_CHANGED = "LIVE_ENTRY_RISK_LIMITS_CHANGED"
+RISK_LIMITS_UNNAMED = "LIVE_ENTRY_RISK_LIMITS_UNNAMED"
+RISK_LIMITS_UNRESOLVED = "LIVE_ENTRY_RISK_LIMITS_UNRESOLVED"
 
 # A dislocation breaker, NOT a cost control — kept at 50 deliberately, Thomas 2026-08-22, after
 # the number was measured and found to be ~15x the widest spread this venue has shown.
@@ -675,10 +679,25 @@ def plan_live_entry(
 # they are what the order was sized on, and a second read would move the size by noise.
 GUARD_REREAD_FIELDS = (
     "execution_stage", "runtime_active", "limits", "budget_registered", "allowed_symbols",
-    "submitted_today",
+    "submitted_today", "daily_loss_breached",
 )
 REREAD_FIELDS = (*GUARD_REREAD_FIELDS, "live_routable_strategy_ids", "bracket_failures_consecutive")
 _RISK_LIMITS_IDENTITY = ("source", "limits_id", "record_sha256")
+# The caps a `LiveOrderLimits` carries; the stricter of two reads is the lower of each.
+_CAP_FIELDS = ("max_order_notional_usdt", "absolute_max_notional_usdt", "max_daily_order_count",
+               "max_open_notional_usdt", "daily_loss_limit_usdt")
+
+
+def stricter_limits(first: Any, fresh: Any) -> Any:
+    """The caps both reads allow: the lower of each, and a manual kill engaged on either. Pure.
+
+    ``fresh`` carries everything else (the confirmation phrases). A first read that is not a
+    `LiveOrderLimits` narrows nothing."""
+    if not (dataclasses.is_dataclass(first) and dataclasses.is_dataclass(fresh)):
+        return fresh
+    changes: dict[str, Any] = {name: min(getattr(first, name), getattr(fresh, name)) for name in _CAP_FIELDS}
+    changes["manual_kill_switch"] = bool(first.manual_kill_switch) or bool(fresh.manual_kill_switch)
+    return dataclasses.replace(fresh, **changes)
 
 
 def risk_limits_moved(judged: Any, in_force: Sequence[Any]) -> str | None:
@@ -688,10 +707,10 @@ def risk_limits_moved(judged: Any, in_force: Sequence[Any]) -> str | None:
     per clock it was resolved at). Identity is the source and the record, not the numbers: a
     re-registered set with equal numbers is still a different authority."""
     if not isinstance(judged, Mapping):
-        return "the verdict names no risk limits"
+        return RISK_LIMITS_UNNAMED
     wanted = tuple(judged.get(key) for key in _RISK_LIMITS_IDENTITY)
     if not in_force:
-        return "no risk limits resolved"
+        return RISK_LIMITS_UNRESOLVED
     for record in in_force:
         if not isinstance(record, Mapping) or tuple(record.get(key) for key in _RISK_LIMITS_IDENTITY) != wanted:
             return RISK_LIMITS_CHANGED
@@ -703,15 +722,20 @@ def narrow_guard_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> di
 
     - the stage is the fresh one (it is resolved on the same `now`);
     - the runtime may trade, and a valid budget backs the order, only if both reads say so;
-    - the caps are the fresh ones, and the symbol allowlist is what both reads share;
+    - the caps are the stricter of the two reads (:func:`stricter_limits`), and the symbol
+      allowlist is what both reads share;
+    - today's loss has breached the limit if either read says so — the fresh read judges the same
+      realized figure against its own limit;
     - the day's count is the fresh one.
 
-    A fact that improved cannot widen what is sent: every door re-runs its checks on these facts,
-    and the autonomous gate refuses an order the fresh caps would size differently."""
+    A fact that improved cannot widen what is sent: the caps only tighten, every door re-runs its
+    checks on these facts, and the autonomous gate refuses an order the tighter caps would size
+    differently."""
     kw = dict(first)
     kw["execution_stage"] = fresh["execution_stage"]
     kw["runtime_active"] = bool(first.get("runtime_active")) and bool(fresh["runtime_active"])
-    kw["limits"] = fresh["limits"]
+    kw["limits"] = stricter_limits(first.get("limits"), fresh["limits"])
+    kw["daily_loss_breached"] = bool(first.get("daily_loss_breached")) or bool(fresh["daily_loss_breached"])
     kw["budget_registered"] = bool(first.get("budget_registered")) and bool(fresh["budget_registered"])
     both = set(normalize_symbols(fresh["allowed_symbols"] or ()))
     kw["allowed_symbols"] = [s for s in normalize_symbols(first.get("allowed_symbols") or ()) if s in both]
@@ -931,6 +955,8 @@ __all__ = [
     "GUARD_REREAD_FIELDS",
     "REREAD_FIELDS",
     "RISK_LIMITS_CHANGED",
+    "RISK_LIMITS_UNNAMED",
+    "RISK_LIMITS_UNRESOLVED",
     "SIZING_REFUSED",
     "STATUS_NO_ROUTE",
     "STATUS_READY",
@@ -948,4 +974,5 @@ __all__ = [
     "price_between_legs",
     "price_bracket",
     "risk_limits_moved",
+    "stricter_limits",
 ]

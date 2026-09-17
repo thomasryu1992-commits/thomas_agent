@@ -268,10 +268,11 @@ def run_live_leg(
     *,
     route: Mapping[str, Any] | None,
     # #610 Part 1 — which strategies the pool says may open a REAL position. Threaded from the
-    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and a
-    # second read is a second chance for the two to disagree about the same fact. `None` refuses
-    # every entry (see `live_entry`'s door 2a); closes are decided above the entry block and are
-    # never affected by it.
+    # cycle rather than read here: `cycle.py` already holds the pool it ran the ladder on, and the
+    # decision is judged on that read. The gate reads the pool again (PR2c-2a) only to narrow: a
+    # strategy disarmed since then is refused, and nothing the second read adds is admitted.
+    # `None` refuses every entry (see `live_entry`'s door 2a); closes are decided above the entry
+    # block and are never affected by it.
     live_routable_strategy_ids: set[str] | None,
     feature_row: Mapping[str, Any],
     verdict: Mapping[str, Any],
@@ -379,8 +380,9 @@ def _run_gated_live_leg(
     #    options are a book the services cannot rewrite or a real position with no record.
     assert_not_foreign_root_run(root)
 
-    # 1. The facts, each read once and shared by every door below — so the guard, the sizing
-    #    and the record cannot disagree about what was true this cycle.
+    # 1. The facts, each read once and shared by every door of the decision — so the guard, the
+    #    sizing and the record cannot disagree about what was true this cycle. The gate reads the
+    #    ones another writer can move again (step 3a, PR2c-2a), only to narrow.
     limits, budget = resolve_live_order_limits(root, now=now)
     # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
     # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
@@ -522,11 +524,12 @@ def _run_gated_live_leg(
     # The breaker reads the VENUE's realized figure, not the local ledger: on a machine whose
     # live positions close at the venue the local ledger lags a cycle, and a loss breaker that
     # measures late is a breaker that does not bound today (#247).
+    venue_realized = (
+        venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
+    )
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
-        venue_realized_pnl_usdt=(
-            venue_daily_realized_net(snapshot.realized_windows) if snapshot is not None else None
-        ),
+        venue_realized_pnl_usdt=venue_realized,
         # This leg opens positions: a snapshot with no venue figure is a tripped breaker, not the
         # local ledger. No snapshot at all is already ACCOUNT_UNREADABLE and refuses on its own.
         venue_required=snapshot is not None,
@@ -556,7 +559,8 @@ def _run_gated_live_leg(
         record["live_reason_codes"].append(exc.reason_code)
 
     # Every fact the decision is judged on, in one mapping: the decision reads it now, and the
-    # pre-order gate re-derives the decision from the same mapping before anything is sent (PR2b).
+    # pre-order gate re-derives the decision from this mapping, narrowed by its re-read (PR2b,
+    # PR2c-2a), before anything is sent.
     decision_kwargs = dict(
         plan=plan,
         symbol=symbol,
@@ -621,7 +625,9 @@ def _run_gated_live_leg(
                      if isinstance(verdict, Mapping) else None)
     try:
         fresh = reread_entry_facts(root=root, now=now, clock=decision_kwargs["clock"],
-                                   control=control, judged_limits=judged_limits)
+                                   control=control, judged_limits=judged_limits,
+                                   venue_realized_pnl_usdt=venue_realized,
+                                   venue_required=snapshot is not None)
     except Exception as exc:  # noqa: BLE001 — before the venue: a hold, never an escape
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].extend(
@@ -633,6 +639,7 @@ def _run_gated_live_leg(
         "runtime_active": fresh["runtime_active"],
         "budget_registered": fresh["budget_registered"],
         "submitted_today": fresh["submitted_today"],
+        "daily_loss_breached": fresh["daily_loss_breached"],
         "bracket_failures_consecutive": fresh["bracket_failures_consecutive"],
         "risk_limits_problem": fresh["risk_limits_problem"],
     }
@@ -1180,19 +1187,24 @@ def _settle_clock() -> str:
 
 def reread_entry_facts(
     *, root: Path | None, now: str, clock: str, control: Any, judged_limits: Any,
-    with_pool: bool = True,
+    venue_realized_pnl_usdt: float | None, venue_required: bool, with_pool: bool = True,
 ) -> dict[str, Any]:
     """What another writer can move between an entry door's first read and its gate, read again
     (PR2c-2a), in the shape `live_entry.narrow_entry_facts` / `narrow_guard_facts` take.
 
     A legacy validity window (a budget or risk limits registered before PR1r) is judged at both the
     fire's ``now`` and ``clock``, the moment the door judged: a record that expired in between no
-    longer backs the order. ``with_pool=False`` (the probe, which no pool entry authorizes) leaves
-    the pool unread. Raises on anything it cannot read; the caller refuses."""
+    longer backs the order. Today's loss is judged again against the fresh limit, on the realized
+    figure the door already read (the account is not read again). ``with_pool=False`` (the probe,
+    which no pool entry authorizes) leaves the pool unread. Raises on anything it cannot read; the
+    caller refuses."""
     limits, budget = resolve_live_order_limits(root, now=now)
     _, budget_at_clock = resolve_live_order_limits(root, now=clock)
     active_pool = pool.load_active_pool(root) if with_pool else None
     breaker = bracket_breaker_status(root)
+    risk = live_risk_snapshot(limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
+                              venue_realized_pnl_usdt=venue_realized_pnl_usdt,
+                              venue_required=venue_required)
     try:
         in_force = [resolve_risk_limits(root, now=at).as_record() for at in (now, clock)]
         risk_problem = risk_limits_moved(judged_limits, in_force)
@@ -1210,6 +1222,8 @@ def reread_entry_facts(
             pool.live_routable_strategy_ids(active_pool) if active_pool is not None else None),
         "live_arm_approvals": pool.live_arm_approvals(active_pool) if active_pool is not None else None,
         "submitted_today": count_today(root),
+        "daily_loss_breached": bool(risk["daily_loss_limit_breached"]),
+        "risk": risk,
         "bracket_failures_consecutive": int(breaker["consecutive"]),
         "bracket_breaker_tripped": bool(breaker["tripped"]),
         "risk_limits_problem": risk_problem,

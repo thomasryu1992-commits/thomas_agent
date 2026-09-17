@@ -680,7 +680,7 @@ def test_fire_refuses_on_the_daily_loss_breaker(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
     _arm_limits(monkeypatch)
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": True, "daily_realized_pnl_usdt": -51.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
@@ -712,7 +712,7 @@ def test_fire_refuses_on_the_bracket_breaker(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
     _arm_limits(monkeypatch)
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -729,7 +729,7 @@ def test_fire_refuses_a_venue_minimum_above_the_plan_ceiling(tmp_path, monkeypat
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
     _arm_limits(monkeypatch)
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -861,7 +861,7 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_HIGH)
     _arm_limits(monkeypatch)
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -958,7 +958,7 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
         stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS",
         **_STAGE_IDS))
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -1020,7 +1020,7 @@ def _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter, *, book=(), venue=()
     monkeypatch.setattr(cli, "list_open_live_positions", lambda root=None: [
         {"symbol": symbol, "direction": "LONG", "quantity": 0.001, "status": "OPEN",
          "position_id": f"pos_{symbol}"} for symbol in book])
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -1269,7 +1269,7 @@ def test_fire_refuses_below_the_execution_stage_a_real_order_needs(tmp_path, mon
     monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_HIGH)
     _arm_limits(monkeypatch, stage_valid=False, stage_reason=es.STAGE_RECORD_MISSING)
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
-    monkeypatch.setattr(cli, "live_risk_snapshot", lambda **k: {
+    _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
         "daily_loss_limit_usdt": 50.0, "pnl_source": "venue"})
     monkeypatch.setattr(cli, "bracket_breaker_status", lambda root=None: {
@@ -2227,3 +2227,183 @@ def test_fire_refuses_when_its_gate_cannot_read_again(tmp_path, monkeypatch):
     assert exc.value.reason_code == probe.PROBE_REREAD_FAILED
     assert "OSError" in str(exc.value)
     assert adapter.submitted == [] and counter.count == 0
+
+
+# --- review of #886: after the send, a plan write never ends the fire ---------------------------
+
+def _store_changes_after_the_entry(adapter_cls, root):
+    """An adapter whose entry submit is followed by another door rewriting the plan store."""
+    class _Changed(adapter_cls):
+        rewritten = False
+
+        def submit(self, order_request, *, timeout_seconds=10):
+            out = super().submit(order_request, timeout_seconds=timeout_seconds)
+            if "clientAlgoId" not in order_request and not self.rewritten:
+                type(self).rewritten = True
+                held = probe.read_plan(root)
+                probe.write_plan({**held, "updated_at": "2026-09-17T00:00:09Z"}, root,
+                                 expected_sha256=held["record_sha256"])
+            return out
+
+    return _Changed()
+
+
+def test_a_plan_changed_under_a_fire_does_not_end_its_supervision(tmp_path, monkeypatch, capsys):
+    """The stop still rests, the fire still waits for it and settles it; only the exit says the plan
+    does not know."""
+    events: list[str] = []
+    adapter = _store_changes_after_the_entry(_HappyPathAdapter, tmp_path)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, _RecordingMarks(events), events)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    captured = capsys.readouterr()
+    assert "FILLED    : stop filled" in captured.out
+    assert captured.err.count("PLAN      : NOT recorded") == 2        # the booking, then FILLED
+    assert f"BLOCKED {probe.PROBE_PLAN_NOT_RECORDED}" in captured.err
+    assert adapter.stop_reads >= 2
+
+
+def test_a_refused_stop_still_raises_its_incident_when_the_plan_cannot_be_written(
+        tmp_path, monkeypatch, capsys):
+    class _StopRefusedCloseUnread(_HappyPathAdapter):
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+            if "_SL_" in client_order_id:
+                return None
+            if "_CLOSE_" in client_order_id:
+                raise ToolError("VENUE_TIMEOUT", "scripted close read failure")
+            return super().fetch_order(symbol, client_order_id, timeout_seconds=timeout_seconds, algo=algo)
+
+    events: list[str] = []
+    adapter = _store_changes_after_the_entry(_StopRefusedCloseUnread, tmp_path)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, _RecordingMarks(events), events)
+    _both_phrases(monkeypatch)
+    assert _fire(tmp_path) == cli.EXIT_BLOCKED
+    err = capsys.readouterr().err
+    assert "INCIDENT: the probe stop was refused AND the close did not confirm" in err
+    assert "PLAN      : NOT recorded" in err and f"BLOCKED {probe.PROBE_PLAN_NOT_RECORDED}" in err
+
+
+def test_a_refusal_before_the_venue_gives_the_symbol_back_even_if_the_cell_cannot_be_returned(
+        tmp_path, monkeypatch):
+    events: list[str] = []
+    adapter = _HappyPathAdapter()
+    marks = _RecordingMarks(events)
+    _wire_claimed_fire(tmp_path, monkeypatch, adapter, marks, events)
+
+    def _refused(intent, **kw):
+        held = probe.read_plan(tmp_path)
+        probe.write_plan({**held, "updated_at": "2026-09-17T00:00:09Z"}, tmp_path,
+                         expected_sha256=held["record_sha256"])
+        raise cli.live_execution.SubmitRefused("RISK_SNAPSHOT_STALE", "scripted")
+
+    monkeypatch.setattr(cli.live_execution, "submit_and_reconcile", _refused)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == "RISK_SNAPSHOT_STALE"
+    assert f"the cell could not be returned ({probe.PROBE_PLAN_CHANGED})" in str(exc.value)
+    assert len(marks.given_back) == 1 and adapter.submitted == []
+
+
+# --- review of #886: a cell whose fire is still sending is not finished --------------------------
+
+def _cell_in_flight(tmp_path, *, claimed_by="TAI_BTCUSDT_LONG_inflight"):
+    from runtime.mvp_runtime.crypto.live_order import LiveEntryMarks
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    plan = _active_plan(tmp_path)
+    cell = plan["cells"][0]
+    opened = probe.mark_cell(plan, 0, status=probe.CELL_OPEN, now=NOW, opened_at=NOW,
+                             entry_client_order_id="TAI_BTCUSDT_LONG_inflight")
+    _seed_plan(opened, tmp_path)
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    LiveEntryMarks(root=tmp_path, authorization=auth).claim_symbol(
+        door="probe", now=NOW, symbol=cell["symbol"], client_order_id=claimed_by)
+    return opened
+
+
+def _nothing_booked(monkeypatch):
+    monkeypatch.setattr(cli, "load_open_live_position", lambda symbol, root=None: None)
+    monkeypatch.setattr(cli, "read_live_outcomes", lambda root=None: [])
+
+
+def test_an_abandon_leaves_a_cell_whose_fire_is_still_sending(tmp_path, monkeypatch):
+    opened = _cell_in_flight(tmp_path)
+    _nothing_booked(monkeypatch)
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        cli.run_abandon(reason="r", root=tmp_path, now=NOW)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path) == opened
+
+
+def test_a_fire_leaves_a_cell_another_fire_is_still_sending(tmp_path, monkeypatch):
+    opened = _cell_in_flight(tmp_path)
+    _nothing_booked(monkeypatch)
+    monkeypatch.setattr(cli.live_execution, "select_order_adapter",
+                        lambda now=None, root=None: _VenueMustNotBeTouched())
+    monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: probe.REGIME_LOW)
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path) == opened
+
+
+@pytest.mark.parametrize("case", ["expired", "another-entry"])
+def test_a_cell_whose_claim_is_gone_or_another_s_is_resolved_as_before(tmp_path, monkeypatch, case):
+    _cell_in_flight(tmp_path, claimed_by="TAI_BTCUSDT_LONG_other" if case == "another-entry"
+                    else "TAI_BTCUSDT_LONG_inflight")
+    _nothing_booked(monkeypatch)
+    later = timeutil.plus_minutes(timeutil.utc_now_iso(), 31) if case == "expired" else NOW
+    assert cli.run_abandon(reason="r", root=tmp_path, now=later) == cli.EXIT_OK
+    loaded = probe.read_plan(tmp_path)
+    assert loaded["status"] == probe.PLAN_ABANDONED and loaded["cells"][0]["status"] == probe.CELL_EMPTY
+
+
+def test_unreadable_marks_cannot_show_a_cell_is_finished(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import ENTRY_MARKS_FILENAME
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    opened = _cell_in_flight(tmp_path)
+    (venue_state_dir(tmp_path) / ENTRY_MARKS_FILENAME).write_text("{", encoding="utf-8")
+    _nothing_booked(monkeypatch)
+    with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
+        cli.run_abandon(reason="r", root=tmp_path, now=NOW)
+    assert exc.value.reason_code == probe.PROBE_CELL_OPEN
+    assert probe.read_plan(tmp_path) == opened
+
+
+# --- review of #886: the loss limit and the slot on the re-read ----------------------------------
+
+def test_fire_s_gate_judges_today_s_loss_against_a_limit_lowered_since(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_pnl import live_risk_snapshot as real_risk
+
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    lost = types.SimpleNamespace(positions=[], available_balance=1000.0, collected_at=timeutil.utc_now_iso(),
+                                 realized_windows={"today": {"net": -10.0}, "1d": {"net": -10.0}})
+    monkeypatch.setattr(cli, "read_account", lambda **k: (lost, {}))
+    monkeypatch.setattr(live_route, "live_risk_snapshot", real_risk)
+    limits, budget = cli.resolve_live_order_limits(tmp_path, now=NOW)
+    lowered = LiveOrderLimits(**{**limits.__dict__, "daily_loss_limit_usdt": 5.0})
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: (lowered, budget))
+    refused = _refused_at_the_gate(tmp_path, adapter, counter)
+    assert "venue_daily_loss_within_limit" in refused and "daily_loss_within_limit" in refused
+
+
+@pytest.mark.parametrize("fresh_cap,reserved", [(3, 3), (20, 10)], ids=["lowered", "raised"])
+def test_fire_reserves_its_slot_against_the_stricter_cap(tmp_path, monkeypatch, fresh_cap, reserved):
+    adapter, counter = _wired_with_counter(tmp_path, monkeypatch)
+    limits, budget = cli.resolve_live_order_limits(tmp_path, now=NOW)
+    assert limits.max_daily_order_count == 10
+    changed = LiveOrderLimits(**{**limits.__dict__, "max_daily_order_count": fresh_cap})
+    monkeypatch.setattr(live_route, "resolve_live_order_limits", lambda root, now=None: (changed, budget))
+    monkeypatch.setattr(cli, "select_live_entry_marks",
+                        lambda now=None, root=None: _RecordingMarks([]))
+
+    def _past_the_slot(*a, **k):
+        raise _PastTheGate()
+
+    # The first step after the reservation fails: the slot has been judged, nothing is sent.
+    monkeypatch.setattr(cli.pre_order_gate, "verify_and_persist", _past_the_slot)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_SNAPSHOT_NOT_RECORDED
+    assert counter.limits == [reserved] and adapter.submitted == []

@@ -57,6 +57,23 @@ Append a new entry when a milestone ships, in the same PR.
       again only for a decision that is ready.
     - The probe's reservation test now makes both reads stale. Otherwise the re-read catches the
       spent slot first, which has its own test.
+  - **What the independent review of #886 found, fixed in the same PR.**
+    - **A raised cap widened the order.** The fresh caps were taken as they were read, so a cap
+      raised mid-fire reached the slot and the guard. Each cap is now the lower of the two reads,
+      and a manual kill engaged on either read stays engaged.
+    - **Today's loss was not judged again.** A loss limit lowered mid-fire left the first read's
+      verdict standing. Both doors now judge the realized figure they already read against the
+      fresh limit, and the loss counts as breached if either read says so.
+    - **The probe reserved its slot against the first read's cap.** It now uses the narrowed caps,
+      as the route does.
+    - **Compare-and-set could end a fire's supervision.** After the send, a write refused because
+      an `--abandon` had changed the store raised out of the fire. The fire stopped watching the
+      position it had opened, and its time exit never ran. Such a write is now reported, the fire
+      supervises to its end, and it exits `BLOCKED` (`PROBE_PLAN_NOT_RECORDED`).
+    - **An abandon could resolve a cell whose fire was still sending.** The book is empty until the
+      fire books its fill, so the cell read as finished. An OPEN cell now stays unresolved while the
+      entry marks hold a claim under its entry id, or cannot be read.
+    - **The risk-limits refusals were prose.** They are now reason codes.
 
 - **An entry is judged on facts that are still true when it is decided** (crypto PR2c-1, Thomas
   decisions 18 and 24, 2026-09-17; `crypto/live_entry.py`, `crypto/pre_order_gate.py`,

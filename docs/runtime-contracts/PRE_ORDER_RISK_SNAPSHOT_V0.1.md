@@ -38,18 +38,21 @@ none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_fa
 |---|---|
 | execution stage | the fresh read, on the same `now` |
 | runtime may trade (`trading_allowed`) | the first AND the fresh |
-| caps | the fresh ones; the day's slot is reserved against them too |
-| a valid budget backs the order | the first AND the fresh; a legacy window must hold at both `now` and the decision's `clock` |
+| caps | the stricter of the two reads: each cap the lower, a manual kill engaged on either (`live_entry.stricter_limits`). Both doors reserve the day's slot against them |
+| today's realized loss | breached if either read says so. The re-read judges the realized figure the door already read against the fresh limit |
+| a valid budget backs the order | the first AND the fresh; a legacy window must hold at both `now` and the decision's `clock`, and both must resolve the same record |
 | symbol allowlist | what both reads share |
 | live tier (autonomous) | what both reads share; the arming approval only if both reads name the same one |
 | orders spent today | the fresh count |
 | bracket breaker | the higher streak, tripped if either read says so |
-| risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`, or the resolver's own code) |
+| risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`; `LIVE_ENTRY_RISK_LIMITS_UNNAMED` for a verdict that names none, `LIVE_ENTRY_RISK_LIMITS_UNRESOLVED` when nothing resolves, or the resolver's own code) |
 
 - The account, the book, the filters and the market price are not re-read: they are what the order
   was sized on, and a second read would move the size by noise.
-- A fact that improved cannot widen what is sent. The gate re-derives the decision on the narrowed
-  facts, so an order the fresh caps would size differently fails `intent_matches_decision`.
+- A fact that improved cannot widen what is sent. A cap raised since the first read does not count.
+  The autonomous gate re-derives the decision on the narrowed facts, so an order the narrowed caps
+  would size differently fails `intent_matches_decision`. The probe's gate re-runs its guard on its
+  narrowed facts.
 - A re-read that fails refuses the entry (`LIVE_PRE_ORDER_REREAD_FAILED`,
   `PROBE_PRE_ORDER_REREAD_FAILED`) and never halts the fan-out.
 - The route records what the re-read found as `live_pre_order_reread`.
@@ -57,6 +60,15 @@ none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_fa
   (`probe.write_plan(..., expected_sha256=)`), and a store another door rewrote since is refused
   (`PROBE_PLAN_CHANGED`). An `--abandon` beside a `--fire` is therefore not undone by the fire's cell
   claim, and the fire sends nothing.
+  - **Before the send**, a refused write refuses the fire. If the order was refused before the venue
+    and the cell cannot be returned, the symbol still goes back and the refusal names the cell.
+  - **After the send**, the position matters more than the plan. A refused or failed write is
+    printed (`PLAN      : NOT recorded`), the fire still supervises what it sent to its end, and it
+    exits `BLOCKED` with `PROBE_PLAN_NOT_RECORDED`.
+  - **An OPEN cell is not finished while its fire may still be sending.** Until the book says what
+    the venue holds, that fire keeps its symbol claimed under the cell's entry id. While that claim
+    stands, or while the entry marks cannot be read, neither `--abandon` nor another `--fire`
+    resolves the cell (`PROBE_CELL_OPEN`).
 
 **Freshness of an autonomous entry (PR2c-1, decisions 18 and 24).** The plan's size, stop and
 target stay the bar close's; a 1d plan can be most of a day old. The decision is judged at `clock`,
@@ -254,6 +266,8 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
   itself, at the fire's start. Only its account's age is checked at the gate.
 - **A refusal after the slot is reserved still spends the slot**, although nothing reached the venue.
   This is the conservative direction and is kept.
+- **A probe plan left unrecorded after a send is not repaired.** The fire reports it
+  (`PROBE_PLAN_NOT_RECORDED`) and the operator reconciles the cell by hand.
 - **Protective prices outside the autonomous leg are not sealed as prices.** The probe prices its
   stop on the actual fill, from the approved plan's width, because that price does not exist
   before the fill. The testnet cycle places fixed-distance legs and withdraws them at once.

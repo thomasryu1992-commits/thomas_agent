@@ -1219,7 +1219,7 @@ def _fresh(**overrides):
     fresh = dict(
         execution_stage=_stage(), runtime_active=True, limits=LIMITS, budget_registered=True,
         allowed_symbols=["BTCUSDT"], live_routable_strategy_ids={"S001"}, submitted_today=0,
-        bracket_failures_consecutive=0, risk_limits_problem=None,
+        daily_loss_breached=False, bracket_failures_consecutive=0, risk_limits_problem=None,
     )
     fresh.update(overrides)
     return fresh
@@ -1260,15 +1260,47 @@ def test_each_re_read_fact_only_narrows(fresh, first, expected):
     assert {key: narrowed[key] for key in expected} == expected
 
 
-def test_the_re_read_stage_and_caps_are_the_fresh_ones():
+def test_the_re_read_stage_is_the_fresh_one_and_the_caps_the_stricter_of_both():
+    """Review of #886: a cap raised since the first read must not widen what is sent."""
     demoted = _stage("PAPER")
-    tighter = LiveOrderLimits(
-        max_order_notional_usdt=30.0, absolute_max_notional_usdt=200.0, max_daily_order_count=1,
-        max_open_notional_usdt=60.0, daily_loss_limit_usdt=20.0, confirmation=LIVE_CONFIRMATION_PHRASE)
+    mixed = LiveOrderLimits(
+        max_order_notional_usdt=30.0, absolute_max_notional_usdt=500.0, max_daily_order_count=10,
+        max_open_notional_usdt=60.0, daily_loss_limit_usdt=50.0, confirmation=LIVE_CONFIRMATION_PHRASE,
+        manual_kill_switch=True)
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
-    narrowed = le.narrow_entry_facts(kwargs, _fresh(execution_stage=demoted, limits=tighter))
-    assert narrowed["execution_stage"] is demoted and narrowed["limits"] is tighter
-    assert kwargs["execution_stage"] is not demoted, "the first read's mapping is not changed"
+    narrowed = le.narrow_entry_facts(kwargs, _fresh(execution_stage=demoted, limits=mixed))
+    assert narrowed["execution_stage"] is demoted
+    caps = narrowed["limits"]
+    assert (caps.max_order_notional_usdt, caps.absolute_max_notional_usdt, caps.max_daily_order_count,
+            caps.max_open_notional_usdt, caps.daily_loss_limit_usdt) == (30.0, 200.0, 2, 60.0, 20.0)
+    assert caps.manual_kill_switch is True and caps.confirmation == LIVE_CONFIRMATION_PHRASE
+    assert kwargs["execution_stage"] is not demoted and kwargs["limits"] is LIMITS, "the first read is unchanged"
+
+
+def test_the_stricter_caps_keep_a_kill_engaged_on_the_first_read():
+    engaged = LiveOrderLimits(**{**LIMITS.__dict__, "manual_kill_switch": True})
+    assert le.stricter_limits(engaged, LIMITS).manual_kill_switch is True
+    assert le.stricter_limits(None, LIMITS) is LIMITS
+
+
+@pytest.mark.parametrize("first,fresh,breached", [
+    (False, False, False), (True, False, True), (False, True, True),
+])
+def test_today_s_loss_is_breached_if_either_read_says_so(first, fresh, breached):
+    kwargs = {**_decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage()), "daily_loss_breached": first}
+    assert le.narrow_entry_facts(kwargs, _fresh(daily_loss_breached=fresh))["daily_loss_breached"] is breached
+
+
+def test_the_guard_narrowing_changes_only_the_fields_it_names():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    moved = _fresh(execution_stage=_stage("PAPER"), runtime_active=False, budget_registered=False,
+                   allowed_symbols=[], submitted_today=2, daily_loss_breached=True,
+                   limits=LiveOrderLimits(**{**LIMITS.__dict__, "max_daily_order_count": 1}),
+                   live_routable_strategy_ids=set(), bracket_failures_consecutive=5)
+    guard_only = le.narrow_guard_facts(kwargs, moved)
+    assert {key for key in kwargs if guard_only[key] != kwargs[key]} == set(le.GUARD_REREAD_FIELDS)
+    entry = le.narrow_entry_facts(kwargs, moved)
+    assert {key for key in kwargs if entry[key] != kwargs[key]} == set(le.REREAD_FIELDS)
 
 
 def test_a_risk_limits_problem_turns_the_verdict_into_a_refusal():
@@ -1295,10 +1327,11 @@ def test_the_guard_narrowing_touches_only_the_guards_facts():
     ({"budget_registered": False}, "budget_registered"),
     ({"allowed_symbols": ["ETHUSDT"]}, "symbol_allowlisted"),
     ({"submitted_today": 2}, "daily_order_count_within_cap"),
+    ({"daily_loss_breached": True}, "daily_loss_within_limit"),
     ({"bracket_failures_consecutive": 5}, "bracket_breaker_clear"),
     ({"execution_stage": _stage("PAPER")}, "execution_stage_admits"),
     ({"risk_limits_problem": "LIVE_ENTRY_RISK_LIMITS_CHANGED"}, "risk_verdict_allows"),
-], ids=["disarmed", "halted", "budget", "allowlist", "day-spent", "breaker", "demoted", "risk-limits"])
+], ids=["disarmed", "halted", "budget", "allowlist", "day-spent", "loss", "breaker", "demoted", "risk-limits"])
 def test_a_fact_that_moved_before_the_gate_refuses_it_and_names_the_door(fresh, door):
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
     decision = le.plan_live_entry(**kwargs)
@@ -1335,8 +1368,8 @@ def test_a_cap_lowered_before_the_gate_refuses_the_order_sized_on_the_old_one():
     ({"source": "registered", "limits_id": "l1", "record_sha256": "sha256:1"},
      [{"source": "registered", "limits_id": "l1", "record_sha256": "sha256:1"},
       {"source": "default", "limits_id": None, "record_sha256": None}], "LIVE_ENTRY_RISK_LIMITS_CHANGED"),
-    ({"source": "default"}, [], "no risk limits resolved"),
-    (None, [{"source": "default"}], "the verdict names no risk limits"),
+    ({"source": "default"}, [], "LIVE_ENTRY_RISK_LIMITS_UNRESOLVED"),
+    (None, [{"source": "default"}], "LIVE_ENTRY_RISK_LIMITS_UNNAMED"),
     ({"source": "default"}, ["default"], "LIVE_ENTRY_RISK_LIMITS_CHANGED"),
 ], ids=["defaults", "same-record", "re-registered", "same-id-new-record", "changed-between-clocks", "none-resolved",
         "verdict-names-none", "malformed"])
