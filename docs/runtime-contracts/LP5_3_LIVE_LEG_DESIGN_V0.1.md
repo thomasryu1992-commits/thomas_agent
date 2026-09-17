@@ -69,10 +69,28 @@ plan_live_entry(...) -> READY          (already built, pure, no I/O)
 2. **A naked position is closed, not warned about.** If the entry fills but a bracket leg cannot
    be placed, close immediately (reduceOnly). An unprotected live position is precisely what the
    bracket exists to prevent, so the fail-closed direction is *out*, not in.
-3. **Cancel the surviving leg on close.** The venue documents **no** auto-cancel for conditional
-   orders when a position closes (verified 2026-07-25). A leftover *reduceOnly* order cannot open
-   anything — it can only reduce — so a missed cancel is a nuisance rather than a new risk, but
-   leaving them accumulates and makes reconciliation harder to read.
+3. **Cancel the surviving legs on close, and only once the close is confirmed.** The venue
+   documents **no** auto-cancel for conditional orders when a position closes (verified
+   2026-07-25).
+   - **Why after the close.** A cancel sent before the close is confirmed can take the one stop a
+     still-open position has. The naked close did exactly this until crypto PR2c-0 (2026-09-17).
+   - **Why a leftover leg is a risk.** It cannot open a position, but it is not inert:
+     - a `closePosition` stop closes, when it triggers, whatever the symbol holds by then, which
+       may be the *next* position;
+     - a reduceOnly target shrinks that next position.
+   - **Which legs are withdrawn.** Every leg that may be resting: confirmed legs, and any leg
+     whose absence is not certain (a failed read, a submit that timed out, a refusal as a
+     duplicate). Cancelling an order that does not exist costs one "unknown order" answer.
+   - **When legs are kept on purpose** (`LIVE_BRACKET_LEFT_RESTING`). While the position may still
+     be open, a resting stop is its protection:
+     - a naked close the venue did not confirm keeps its legs;
+     - a close sized from the book keeps its legs while the venue shows another quantity or side on
+       the symbol than the book does. On such a drift the time exit waits, and the pass halts.
+   - **When a cancel fails** (`LIVE_BRACKET_CANCEL_FAILED`), or legs were kept:
+     - the record names each leg under the symbol its close was for;
+     - the operator is told to withdraw them once the symbol holds no position
+       (`scripts/list_resting_orders.py`);
+     - on a naked close, the symbol's entry claim is kept.
 
 ## Cycle routing — the shape
 

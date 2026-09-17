@@ -1576,3 +1576,213 @@ def test_two_positions_meeting_on_one_symbol_halt_the_fan_out(code):
     """PR2b-2 review: an entry that outlived its claim, or a book asked to replace or clear another
     position's record, means two positions met on one symbol — an incident, like a failed book write."""
     assert live_route._is_incident({"reason_codes": [code]}) is True
+
+
+# --- PR2c-0: a protective order left resting is the operator's to withdraw -------------------------
+
+def _left_leg_record(status, *, symbol="BTCUSDT", left_symbol="BTCUSDT", **extra):
+    return {"live_route_status": status, "symbol": symbol,
+            "live_reason_codes": [live_leg.BRACKET_CANCEL_FAILED], "live_opened": None,
+            "live_legs_left": [{"symbol": left_symbol, "client_order_ids": ["sl-1"]}], **extra}
+
+
+def test_a_close_that_left_a_leg_resting_tells_the_operator_what_to_run(monkeypatch):
+    sent = _notified(_left_leg_record(live_route.ROUTE_SETTLED), monkeypatch)
+    assert len(sent) == 1
+    assert sent[0].startswith("[LIVE] a position closed, but protective orders may still rest")
+    assert "BTCUSDT: sl-1" in sent[0]
+    assert "python -m scripts.list_resting_orders --symbol BTCUSDT" in sent[0]
+    # No position was opened on this pass: no position lines of Nones.
+    assert "side     :" not in sent[0] and "quantity :" not in sent[0]
+
+
+def test_the_notice_names_the_symbol_the_close_was_for_not_the_passs_own(monkeypatch):
+    """PR2c-0 review: an ETHUSDT pass settles a BTCUSDT position the venue closed; the leg left
+    behind is BTCUSDT's."""
+    [message] = _notified(_left_leg_record(live_route.ROUTE_SETTLED, symbol="ETHUSDT",
+                                           left_symbol="BTCUSDT"), monkeypatch)
+    assert "--symbol BTCUSDT" in message and "--symbol ETHUSDT" not in message
+    assert "BTCUSDT: sl-1" in message
+
+
+def test_an_incident_that_left_legs_names_them(monkeypatch):
+    record = _left_leg_record(live_route.ROUTE_INCIDENT)
+    record["live_reason_codes"] = [live_leg.NAKED_CLOSE_FAILED, live_leg.BRACKET_LEFT_RESTING]
+    [message] = _notified(record, monkeypatch)
+    assert message.startswith("[LIVE INCIDENT]")
+    assert "BTCUSDT: sl-1" in message and "list_resting_orders --symbol BTCUSDT" in message
+    assert "Once the symbol holds no position" in message
+
+
+def test_a_booked_positions_stop_and_target_reach_the_notice(monkeypatch):
+    """The book stores `stop_loss`/`take_profit`; the notice used to read keys it never has."""
+    record = _opened_record("OPENED")
+    position = record["live_opened"]["position"]
+    position["stop_loss"], position["take_profit"] = position.pop("stop_price"), position.pop("target_price")
+    [message] = _notified(record, monkeypatch)
+    assert "stop     : 63000.0" in message and "target   : 67000.0" in message
+
+
+def test_a_close_names_the_symbol_its_result_was_for():
+    record: dict = {}
+    live_route._note_legs_left(record, {"symbol": "BTCUSDT", "cancels": [
+        {"client_order_id": "sl-1", "error": "ORDER_TRANSPORT"},
+        {"client_order_id": "tp-1", "error": None}]}, symbol="ETHUSDT")
+    live_route._note_legs_left(record, {"symbol": "SOLUSDT", "cancels": []}, symbol="ETHUSDT")
+    assert record["live_legs_left"] == [{"symbol": "BTCUSDT", "client_order_ids": ["sl-1"]}]
+
+
+def test_a_reversed_entry_that_left_a_leg_says_both(monkeypatch):
+    record = _left_leg_record(live_route.ROUTE_HELD)
+    record["live_opened"] = {"status": "ENTRY_NAKED_CLOSED", "bracket": []}
+    record["live_reason_codes"].append(live_leg.NAKED_POSITION_CLOSED)
+    [message] = _notified(record, monkeypatch)
+    assert message.startswith("[LIVE] entry filled but could not be protected")
+    assert "Protective orders a close left at the venue" in message and "BTCUSDT: sl-1" in message
+
+
+def test_a_clean_settle_stays_quiet(monkeypatch):
+    assert _notified({"live_route_status": live_route.ROUTE_SETTLED, "live_reason_codes": []},
+                     monkeypatch) == []
+
+
+class _CancelFails(_Venue):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
+        from runtime.mvp_runtime.errors import ToolError
+
+        raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+
+@pytest.mark.parametrize("cancel_fails", [True, False])
+def test_the_settle_pass_notifies_only_when_a_leg_would_not_come_off(tmp_path, monkeypatch, cancel_fails):
+    venue = _CancelFails() if cancel_fails else _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    notified: list[str] = []
+    monkeypatch.setattr(live_route, "_notify_operator",
+                        lambda record, **kw: notified.append(record["live_route_status"]))
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    notified.clear()
+    _stop_fills(venue, tmp_path)
+    settled = run("2026-07-28T04:20:00Z", BAR_00)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED
+    assert (live_leg.BRACKET_CANCEL_FAILED in settled["live_reason_codes"]) is cancel_fails
+    assert notified == ([live_route.ROUTE_SETTLED] if cancel_fails else [])
+
+
+# --- PR2c-0 review: a close sized from the book never strips the rest of a drifted position ------
+
+def _settle_drifted(position, *, adapter, store=None, ledger=None, reasons=("POSITION_QUANTITY_MISMATCH",)):
+    record = {"live_reason_codes": [], "live_settled": None, "halt": False, "live_protection": None}
+    live_route._settle_or_protect(
+        record, position,
+        adapter=adapter, position_store=store or _Store(), ledger=ledger or _Ledger(),
+        reconciliation={"status": "DRIFT", "books": {SYMBOL: {"reasons": list(reasons)}}},
+        limits=_LIMITS, candle_ts="2026-07-28T00:00:00Z",
+        context_timeframe=str(position.get("timeframe") or live_route.DEFAULT_TIMING_CONTEXT),
+        now=NOW, root=None, timeout_seconds=10,
+    )
+    return record
+
+
+@pytest.mark.parametrize("reason", ["POSITION_QUANTITY_MISMATCH", "POSITION_SIDE_MISMATCH"])
+def test_a_time_exit_waits_while_the_venue_holds_a_different_position(reason):
+    adapter = _protected_adapter()
+    record = _settle_drifted(_timed(holding_candles=2), adapter=adapter, reasons=(reason,))
+    assert record["live_settled"] is None
+    assert live_route.LIVE_TIME_EXIT_HELD_ON_DRIFT in record["live_reason_codes"]
+    assert adapter.submitted == [] and adapter.cancelled == []
+
+
+def test_a_time_exit_still_fires_on_a_drift_a_settle_resolves_elsewhere():
+    """Only this symbol's own quantity or side drift holds it."""
+    adapter = _protected_adapter()
+    record = _settle_drifted(_timed(holding_candles=2), adapter=adapter, reasons=())
+    assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
+
+
+def test_an_unprotected_drifted_position_is_closed_but_keeps_its_legs():
+    """The unprotected close is the more urgent risk and still happens; the stop that may be what
+    protects the rest the book does not know about stays."""
+    adapter = _ClosingAdapter(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "CANCELED"}})
+    record = _settle_drifted(_position(), adapter=adapter)
+    closed = record["live_settled"]
+    assert closed["status"] == live_leg.EXIT_CLOSED
+    assert adapter.cancelled == []
+    assert live_leg.BRACKET_LEFT_RESTING in record["live_reason_codes"]
+    assert record["live_legs_left"] == [{"symbol": SYMBOL, "client_order_ids": ["sl-1", "tp-1"]}]
+
+
+def _halting_pass(tmp_path, monkeypatch, *, legs_left):
+    from runtime.mvp_runtime.crypto.live_position import DRIFT, DRIFT_QUANTITY_MISMATCH
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions", lambda local, snapshot, now: {
+        "status": DRIFT, "books": {SYMBOL: {"reasons": [DRIFT_QUANTITY_MISMATCH]}}})
+
+    def _settled(record, position, **kw):
+        record["live_settled"] = {"status": live_leg.EXIT_CLOSED, "reason_codes": []}
+        if legs_left:
+            record["live_legs_left"] = [{"symbol": SYMBOL, "client_order_ids": ["sl-1"]}]
+
+    monkeypatch.setattr(live_route, "_settle_or_protect", _settled)
+    notified: list = []
+    monkeypatch.setattr(live_route, "_notify_operator",
+                        lambda record, **kw: notified.append(record["live_route_status"]))
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route={"strategy_id": "S1"},
+        feature_row={"timestamp": NOW}, verdict={"allow_new_position": True},
+        symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
+    )
+    return record, notified
+
+
+@pytest.mark.parametrize("legs_left", [False, True])
+def test_a_drift_a_settle_cannot_resolve_halts_even_after_a_settle(tmp_path, monkeypatch, legs_left):
+    """Only a position the venue already closed is resolved by settling it. A quantity drift is
+    not, so the pass halts even though it settled something — and a leg left behind on the way is
+    still reported on the halted pass."""
+    record, notified = _halting_pass(tmp_path, monkeypatch, legs_left=legs_left)
+    assert record["halt"] is True and record["live_route_status"] == live_route.ROUTE_INCIDENT
+    assert live_route.BOOK_DRIFT in record["live_reason_codes"]
+    assert notified == ([live_route.ROUTE_INCIDENT] if legs_left else [])
+
+
+class _TargetRefusedCancelFails(_CancelFails):
+    """The target leg is refused, so the entry is closed again; the stop that did rest will not
+    come off."""
+
+    def submit(self, order_request, *, timeout_seconds: int = 10):
+        if order_request.get("type") == "LIMIT":
+            from runtime.mvp_runtime.errors import ToolError
+
+            self.submitted.append(dict(order_request))
+            raise ToolError("ORDER_REJECTED", "venue rejected the order (code -2019): scripted")
+        return super().submit(order_request, timeout_seconds=timeout_seconds)
+
+
+def test_an_entry_that_left_a_leg_is_on_the_record_and_the_notice(tmp_path, monkeypatch):
+    venue = _TargetRefusedCancelFails()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    sent: list[dict] = []
+    monkeypatch.setattr(live_route, "_notify_operator", lambda record, **kw: sent.append(record))
+    record = run("2026-07-28T04:05:00Z", BAR_00)
+    assert record["live_opened"]["status"] == live_leg.ENTRY_NAKED_CLOSED
+    stop_id = next(r["clientAlgoId"] for r in venue.submitted if r.get("clientAlgoId"))
+    assert record["live_legs_left"] == [{"symbol": SYMBOL, "client_order_ids": [stop_id]}]
+    assert sent and sent[-1]["live_legs_left"] == record["live_legs_left"]
+
+
+class _ClosingCancelFails(_ClosingAdapter):
+    def cancel_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
+        raise ToolError("ORDER_TRANSPORT", "scripted cancel failure")
+
+
+def test_a_time_exit_that_left_a_leg_is_on_the_record():
+    adapter = _ClosingCancelFails(orders={"sl-1": {"status": "NEW"}, "tp-1": {"status": "NEW"}})
+    record = _settle(_timed(holding_candles=2), adapter=adapter)
+    assert record["live_settled"]["status"] == live_leg.EXIT_CLOSED
+    assert record["live_legs_left"] == [{"symbol": SYMBOL, "client_order_ids": ["sl-1", "tp-1"]}]

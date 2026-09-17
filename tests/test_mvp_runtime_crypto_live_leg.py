@@ -472,6 +472,14 @@ def test_the_naked_close_withdraws_whichever_leg_did_place():
     assert adapter.cancelled
 
 
+def test_the_naked_close_withdraws_a_leg_whose_submit_timed_out():
+    """PR2c-0: a submit that got no answer can land after the read that did not find it."""
+    adapter = FakeAdapter(submit_errors={"TP": "ORDER_TRANSPORT"}, missing={"TP"})
+    result = _entry(adapter=adapter)
+    cancels = result["naked_close"]["cancels"]
+    assert [c["leg"] for c in cancels] == ["stop_client_order_id", "take_profit_client_order_id"]
+
+
 def test_a_failed_naked_close_is_reported_as_loudly_as_possible():
     """The one branch with no good outcome: a real, unprotected position that would not close."""
     adapter = FakeAdapter(missing={"TP", "CLOSE"})
@@ -1472,3 +1480,152 @@ def test_a_partial_fill_keeps_the_symbol_even_once_its_close_confirmed():
     result = _entry(entry_marks=marks, adapter=adapter)
     assert result["status"] == ll.ENTRY_NAKED_CLOSED
     assert marks.taken and marks.given_back == []
+
+
+# --- PR2c-0: the close path never unprotects an open position, and never forgets a leg ----------
+
+def test_an_unconfirmed_naked_close_keeps_the_stop_that_rests():
+    """The stop placed, the target did not, and the naked close could not be confirmed. Before
+    PR2c-0 the legs were withdrawn before the close was checked, so the one stop the possibly
+    still-open position had was cancelled."""
+    adapter = FakeAdapter(missing={"TP"},
+                          statuses={"CLOSE": ToolError("VENUE_TIMEOUT", "scripted close read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    assert result["naked_close"]["cancels"] == []
+    assert adapter.cancelled == []
+
+
+def test_a_confirmed_naked_close_whose_cancel_fails_says_so_and_keeps_the_symbol():
+    marks = FakeMarks()
+    adapter = FakeAdapter(missing={"TP"}, cancel_errors={"SL": "ORDER_TRANSPORT"})
+    result = _entry(adapter=adapter, entry_marks=marks)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert ll.BRACKET_CANCEL_FAILED in result["reason_codes"]
+    assert marks.taken and marks.given_back == []
+
+
+def _leg(adapter, leg="SL"):
+    intent = ll.build_bracket_intent(symbol="BTCUSDT", leg=leg, side="SELL", price=59000.0,
+                                     working_type="MARK_PRICE", position_seed="seed", quantity=0.001)
+    return ll.place_bracket_leg(intent, adapter=adapter, sleep=_no_sleep)
+
+
+@pytest.mark.parametrize("adapter,may_rest", [
+    # The read itself failed: nobody can say the leg is absent.
+    (FakeAdapter(statuses={"SL": ToolError("VENUE_TIMEOUT", "scripted read failure")}), True),
+    # The submit timed out and the read found nothing: the request may still land.
+    (FakeAdapter(submit_errors={"SL": "ORDER_TRANSPORT"}, missing={"SL"}), True),
+    # The venue refused it with its own code, and has no such order: certainly absent.
+    (FakeAdapter(submit_errors={"SL": "ORDER_REJECTED"}, missing={"SL"}), False),
+    # Accepted without naming an order, and not found: the ordinary miss stays ordinary.
+    (FakeAdapter(missing={"SL"}), False),
+], ids=["read-failed", "submit-timed-out", "refused-outright", "accepted-unnamed"])
+def test_a_leg_whose_absence_is_not_certain_may_be_resting(adapter, may_rest):
+    placed = _leg(adapter)
+    assert placed["placed"] is False
+    assert placed["may_be_resting"] is may_rest
+
+
+def test_a_duplicate_refusal_is_not_an_outright_one():
+    """-4116 means the original order already landed; a read that cannot find it is not proof it
+    is gone."""
+    class _Duplicate(FakeAdapter):
+        def submit(self, order_request, *, timeout_seconds=10):
+            self.submitted.append(dict(order_request))
+            raise ToolError("ORDER_REJECTED", "duplicate client order id (-4116) — the original order "
+                                              "already landed; reconcile decides the outcome")
+
+    placed = _leg(_Duplicate(missing={"SL"}))
+    assert placed["may_be_resting"] is True
+
+
+def test_a_naked_close_withdraws_a_stop_whose_confirmation_read_failed():
+    adapter = FakeAdapter(statuses={"SL": ToolError("VENUE_TIMEOUT", "scripted read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_CLOSED
+    assert "stop_client_order_id" in [c["leg"] for c in result["naked_close"]["cancels"]]
+
+
+def test_a_confirmed_close_that_cannot_be_priced_still_withdraws_its_legs():
+    """A booked position keeps its record for a settle retry, but the legs protect nothing once the
+    venue confirmed the close — and a probe's never-booked position has no retry at all."""
+    adapter = FakeAdapter(fills={"CLOSE": {"cumQuote": None, "avgPrice": None, "executedQty": 0.001}})
+    store = FakeStore()
+    result = _exit(adapter=adapter, position_store=store)
+    assert result["status"] == ll.EXIT_NOT_CONFIRMED
+    assert ll.FILL_FACTS_MISSING in result["reason_codes"]
+    assert len(adapter.cancelled) == 2 and store.cleared == []
+
+
+# --- PR2c-0 review ---------------------------------------------------------------------------------
+
+def test_two_naked_closes_of_one_symbol_in_one_pass_never_share_an_id():
+    """Two entries of one symbol, one fire's `now`, the same size: keyed on symbol, time and size,
+    their naked closes shared a client id, the second was refused as a duplicate, and its read
+    reconciled against the FIRST close — while the second position lost its stop."""
+    ids = []
+    for bar in ("2026-07-25T00:00:00Z", "2026-07-25T08:00:00Z"):
+        intent, snapshot = _intent(candle_time=bar)
+        decision = {**DECISION, "intent": intent, "risk_snapshot": snapshot,
+                    "entry_bar": {**DECISION["entry_bar"], "bar_time": bar}}
+        result = _entry(decision=decision, adapter=FakeAdapter(missing={"TP"}))
+        assert result["status"] == ll.ENTRY_NAKED_CLOSED
+        ids.append(result["naked_close"]["result"]["client_order_id"])
+    assert ids[0] != ids[1]
+
+
+def test_an_unconfirmed_naked_close_names_the_legs_it_left():
+    adapter = FakeAdapter(missing={"TP"},
+                          statuses={"CLOSE": ToolError("VENUE_TIMEOUT", "scripted close read failure")})
+    result = _entry(adapter=adapter)
+    assert result["status"] == ll.ENTRY_NAKED_OPEN
+    stop_id = result["bracket"][0]["client_order_id"]
+    assert result["naked_close"]["left_resting"] == [stop_id]
+    assert ll.BRACKET_LEFT_RESTING in result["reason_codes"]
+    assert ll.legs_left_resting(result) == [stop_id]
+
+
+def test_the_legs_left_are_the_failed_cancels_and_the_ones_kept():
+    result = {"cancels": [{"client_order_id": "a", "error": "X"}, {"client_order_id": "b", "error": None}],
+              "left_resting": ["c"],
+              "naked_close": {"cancels": [{"client_order_id": "d", "error": "Y"}], "left_resting": ["a"]}}
+    assert ll.legs_left_resting(result) == ["a", "c", "d"]
+    assert ll.legs_left_resting({}) == []
+
+
+def test_an_exit_asked_to_keep_its_legs_closes_and_names_them():
+    adapter, store = FakeAdapter(), FakeStore()
+    result = _exit(adapter=adapter, position_store=store, withdraw_legs=False)
+    assert result["status"] == ll.EXIT_CLOSED
+    assert adapter.cancelled == []
+    assert result["left_resting"] == [POSITION["stop_client_order_id"], POSITION["take_profit_client_order_id"]]
+    assert ll.BRACKET_LEFT_RESTING in result["reason_codes"]
+    assert store.cleared == ["BTCUSDT"]
+
+
+class _DuplicateEntry(FakeAdapter):
+    def submit(self, order_request, *, timeout_seconds=10):
+        if "_SL_" in str(order_request.get("clientAlgoId") or "") or "_TP_" in str(order_request.get("newClientOrderId") or ""):
+            return super().submit(order_request, timeout_seconds=timeout_seconds)
+        self.submitted.append(dict(order_request))
+        raise ToolError("ORDER_REJECTED", "duplicate client order id (-4116) — the original order "
+                                          "already landed; reconcile decides the outcome")
+
+
+@pytest.mark.parametrize("adapter", [
+    FakeAdapter(submit_errors={"ENTRY": "ORDER_OUTCOME_UNKNOWN"}, missing={"ENTRY"}),
+    _DuplicateEntry(missing={"ENTRY"}),
+], ids=["outcome-unknown", "duplicate"])
+def test_an_entry_the_venue_may_still_hold_keeps_the_symbol(adapter):
+    """Neither a code that leaves the outcome unknown nor a duplicate refusal proves the order is
+    absent, whatever the read says."""
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, adapter=adapter)
+    assert result["status"] == ll.ENTRY_NOT_CONFIRMED
+    assert marks.taken and marks.given_back == []
+
+
+def test_a_leg_whose_outcome_the_venue_cannot_state_may_be_resting():
+    placed = _leg(FakeAdapter(submit_errors={"SL": "ORDER_OUTCOME_UNKNOWN"}, missing={"SL"}))
+    assert placed["may_be_resting"] is True

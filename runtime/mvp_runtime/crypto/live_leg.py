@@ -76,7 +76,6 @@ from . import pre_order_gate
 from .live_execution import (
     CONDITIONAL_ORDER_TYPES,
     NOT_FOUND,
-    ORDER_REJECTED,
     ORDER_TYPE_LIMIT,
     ORDER_TYPE_MARKET,
     ORDER_TYPE_STOP_MARKET,
@@ -84,6 +83,8 @@ from .live_execution import (
     SubmitRefused,
     fill_facts,
     submit_and_reconcile,
+    submit_may_have_landed,
+    submit_refused_outright,
 )
 from .execution_stage import PURPOSE_AUTONOMOUS
 from .live_order import (
@@ -133,6 +134,10 @@ NAKED_POSITION_CLOSED = "LIVE_NAKED_POSITION_CLOSED"
 NAKED_CLOSE_FAILED = "LIVE_NAKED_CLOSE_FAILED"
 EXIT_UNCONFIRMED = "LIVE_EXIT_UNCONFIRMED"
 BRACKET_CANCEL_FAILED = "LIVE_BRACKET_CANCEL_FAILED"
+# Protective legs a close deliberately left at the venue (PR2c-0 review): after a naked close the
+# venue did not confirm, or a close under book drift, where a resting stop may be what still
+# protects the position. The operator withdraws them once the position is resolved.
+BRACKET_LEFT_RESTING = "LIVE_BRACKET_LEFT_RESTING"
 FILL_FACTS_MISSING = "LIVE_FILL_FACTS_MISSING"
 POSITION_PERSIST_FAILED = "LIVE_POSITION_PERSIST_FAILED"
 OUTCOME_PERSIST_FAILED = "LIVE_OUTCOME_PERSIST_FAILED"
@@ -537,6 +542,9 @@ def place_bracket_leg(
         # the cause.
         result["error_detail"] = result["error_detail"] or str(exc)
         result["status"] = "UNRECONCILABLE"
+        # Nobody could look, so nobody can say it is absent: a close withdraws it too (PR2c-0).
+        # Cancelling an order that does not exist costs one "unknown order" answer.
+        result["may_be_resting"] = True
         return result
 
     if venue_order is None:
@@ -554,6 +562,11 @@ def place_bracket_leg(
             )
             return result
         result["status"] = "NOT_FOUND"
+        # A submit that failed without the venue refusing it (a timeout) can still land after the
+        # read, and one refused as a duplicate means the original already landed: both may rest,
+        # so the close withdraws them too (PR2c-0). An accepted submit that named nothing, and an
+        # outright refusal, created nothing to withdraw — the ordinary miss stays ordinary.
+        result["may_be_resting"] = submit_may_have_landed(result["error"], result["error_detail"])
         return result
     status = str(venue_order.get("status") or "")
     result["status"] = status
@@ -802,7 +815,8 @@ def execute_live_entry(
         # The one outcome that is not open: the venue refused the submit with its own code, and
         # then answered that the order does not exist. A timeout that then reads NOT_FOUND is
         # not that — a request still on the wire can land after the read.
-        if entry.get("submit_error") == ORDER_REJECTED and entry["reconcile_status"] == NOT_FOUND:
+        if (submit_refused_outright(entry.get("submit_error"), entry.get("submit_error_detail"))
+                and entry["reconcile_status"] == NOT_FOUND):
             _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result
 
@@ -920,9 +934,23 @@ def _give_back_symbol(result: dict[str, Any], entry_marks: Any, *, sent: bool, s
 def _released_if_flat(result: dict[str, Any], entry_marks: Any, claim: Mapping[str, Any]) -> dict[str, Any]:
     """A naked close that the venue confirmed leaves nothing open and nothing booked: the symbol
     goes back. A close that failed leaves a position the book does not hold, so the claim stays."""
-    if result.get("status") == ENTRY_NAKED_CLOSED:
+    if result.get("status") == ENTRY_NAKED_CLOSED and BRACKET_CANCEL_FAILED not in result["reason_codes"]:
         _give_back_symbol(result, entry_marks, sent=True, **claim)
     return result
+
+
+def legs_left_resting(result: Mapping[str, Any]) -> list[str]:
+    """The client order ids of protective legs a close left at the venue (PR2c-0): legs whose
+    cancel failed, and legs kept on purpose (``left_resting``). Pure; empty when none."""
+    naked = result.get("naked_close") if isinstance(result.get("naked_close"), Mapping) else {}
+    ids: list[str] = []
+    for cancels in (result.get("cancels"), naked.get("cancels")):
+        for cancel in cancels or ():
+            if isinstance(cancel, Mapping) and cancel.get("error") and cancel.get("client_order_id"):
+                ids.append(str(cancel["client_order_id"]))
+    for kept in (result.get("left_resting"), naked.get("left_resting")):
+        ids.extend(str(leg_id) for leg_id in kept or () if leg_id)
+    return sorted(set(ids))
 
 
 def _placed_id(placements: list[dict[str, Any]], index: int) -> str | None:
@@ -1044,9 +1072,14 @@ def _close_naked_position(
         "reduce_only": True,
         "close_reason": CLOSE_REASON_NAKED,
         "connectivity_test": False,
+        # Keyed on the entry this close undoes (PR2c-0 review). Keyed on the symbol, the cycle's
+        # time and the quantity, two naked closes of one symbol in one fan-out shared an id: the
+        # second was refused as a duplicate, its read found the FIRST close and reconciled, and the
+        # second position lost its stop while reported flat.
         "client_order_id": make_client_order_id(
             symbol, "CLOSE",
-            make_idempotency_key({"symbol": symbol, "naked": True, "at": now, "qty": quantity}),
+            make_idempotency_key({"naked": True, "position_id": identity.get("position_id"),
+                                  "symbol": symbol, "at": now, "qty": quantity}),
         ),
     }
     close_guard = evaluate_live_close_guard(close_intent, gate_open=gate_open, limits=limits)
@@ -1062,19 +1095,24 @@ def _close_naked_position(
         close_intent, adapter=adapter, guard_verdict=close_guard, now=now,
         timeout_seconds=timeout_seconds,
     )
-    result["naked_close"] = {"guard": close_guard, "submitted": True, "result": close}
-    # Withdraw whichever legs placed, if any. `placements` is empty when the entry itself was
-    # never confirmed, in which case no bracket was attempted and there is nothing to withdraw.
-    placed = {
-        "stop_client_order_id": _placed_id(placements, 0),
-        "take_profit_client_order_id": _placed_id(placements, 1),
-        "symbol": symbol,
-    }
-    result["naked_close"]["cancels"] = cancel_bracket_legs(
-        placed, adapter=adapter, timeout_seconds=timeout_seconds
-    )
+    result["naked_close"] = {"guard": close_guard, "submitted": True, "result": close, "cancels": []}
 
     if close["reconcile_status"] == RECONCILED:
+        # Withdraw whichever legs may be resting, and only now (PR2c-0): before the close was
+        # confirmed, a cancel could take the one stop a still-open position had. `placements` is
+        # empty when the entry itself was never confirmed, so nothing was attempted to withdraw.
+        placed = {
+            "stop_client_order_id": _placed_id(placements, 0),
+            "take_profit_client_order_id": _placed_id(placements, 1),
+            "symbol": symbol,
+        }
+        result["naked_close"]["cancels"] = cancel_bracket_legs(
+            placed, adapter=adapter, timeout_seconds=timeout_seconds
+        )
+        if any(c.get("error") for c in result["naked_close"]["cancels"]):
+            # A leg that would not come off may still rest: a closePosition stop closes whatever
+            # the symbol holds next. Said on the record, and the symbol stays claimed.
+            result["reason_codes"].append(BRACKET_CANCEL_FAILED)
         result["status"] = ENTRY_NAKED_CLOSED
         result["reason_codes"].append(NAKED_POSITION_CLOSED)
         _record_naked_outcome(
@@ -1088,10 +1126,16 @@ def _close_naked_position(
             now=now,
         )
     else:
-        # Nothing to record: the position is still OPEN at the venue, so there is no realized
-        # figure. `ENTRY_NAKED_OPEN` is the loud state and reconciliation is what resolves it.
+        # Nothing to record: the position may still be OPEN at the venue, so there is no realized
+        # figure. `ENTRY_NAKED_OPEN` is the loud state and reconciliation is what resolves it. The
+        # legs stay where they are: a stop that rests is still protecting whatever is open. They
+        # are named, because no book record will ever withdraw them.
         result["status"] = ENTRY_NAKED_OPEN
         result["reason_codes"].append(NAKED_CLOSE_FAILED)
+        left = [leg_id for leg_id in (_placed_id(placements, 0), _placed_id(placements, 1)) if leg_id]
+        result["naked_close"]["left_resting"] = left
+        if left:
+            result["reason_codes"].append(BRACKET_LEFT_RESTING)
     return result
 
 
@@ -1241,8 +1285,13 @@ def execute_live_exit(
     close_reason: str,
     now: str,
     timeout_seconds: int = 10,
+    withdraw_legs: bool = True,
 ) -> dict[str, Any]:
     """Close one open live position, withdraw its bracket, and record the realized outcome.
+
+    ``withdraw_legs=False`` closes the position and leaves its legs resting (PR2c-0 review). The
+    route asks for that when the venue holds more on the symbol than the book: the close covers the
+    book's quantity only, and the resting stop is what still protects the rest.
 
     The close guard is deliberately narrower than the entry guard: a reduceOnly close is exempt
     from the loss breaker, the caps, the daily count and both kill switches,
@@ -1307,6 +1356,20 @@ def execute_live_exit(
         result["reason_codes"].append(EXIT_UNCONFIRMED)
         return result
 
+    # Rule 3: withdraw the surviving leg. After the close, so a cancel can never unprotect a
+    # position that is still open — and before the pricing below, which a confirmed close does
+    # not need: a close that cannot be priced leaves the book for a retry, but a position that
+    # was never booked (a probe's naked close) has no retry to withdraw its legs (PR2c-0).
+    if withdraw_legs:
+        result["cancels"] = cancel_bracket_legs(position, adapter=adapter, timeout_seconds=timeout_seconds)
+        if any(c.get("error") for c in result["cancels"]):
+            result["reason_codes"].append(BRACKET_CANCEL_FAILED)
+    else:
+        result["left_resting"] = [position[key] for key, _reason, _algo in _BRACKET_LEGS
+                                  if isinstance(position.get(key), str) and position.get(key)]
+        if result["left_resting"]:
+            result["reason_codes"].append(BRACKET_LEFT_RESTING)
+
     pnl, pnl_detail = realized_pnl_usdt(position, exit_result["fill"])
     result["pnl_detail"] = pnl_detail
     if pnl is None:
@@ -1315,12 +1378,6 @@ def execute_live_exit(
         result["status"] = EXIT_NOT_CONFIRMED
         result["reason_codes"].append(FILL_FACTS_MISSING)
         return result
-
-    # Rule 3: withdraw the surviving leg. After the close, so a cancel can never unprotect a
-    # position that is still open.
-    result["cancels"] = cancel_bracket_legs(position, adapter=adapter, timeout_seconds=timeout_seconds)
-    if any(c.get("error") for c in result["cancels"]):
-        result["reason_codes"].append(BRACKET_CANCEL_FAILED)
 
     outcome = build_live_outcome_record(
         realized_pnl_usdt=pnl,
@@ -1753,6 +1810,7 @@ def leg_status_line(result: Mapping[str, Any]) -> str:
 
 __all__ = [
     "BRACKET_CANCEL_FAILED",
+    "BRACKET_LEFT_RESTING",
     "BRACKET_FAILED",
     "BRACKET_IDS_MISSING",
     "BRACKET_RESTING_STATUSES",
@@ -1792,6 +1850,7 @@ __all__ = [
     "execute_live_entry",
     "execute_live_exit",
     "leg_status_line",
+    "legs_left_resting",
     "place_bracket_leg",
     "read_bracket_legs",
     "CLOSE_REASON_VENUE_EXTERNAL",

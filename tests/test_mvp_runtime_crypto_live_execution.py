@@ -858,3 +858,53 @@ def test_recording_it_changes_nothing_else_about_the_order():
     for key in ("reconcile_status", "mismatches", "symbol", "order_type", "reduce_only"):
         assert without[key] == with_price[key]
 
+
+# --- PR2c-0 review: a venue code that leaves the outcome unknown is not a refusal ----------------
+
+@pytest.mark.parametrize("code", sorted(lx.VENUE_UNKNOWN_OUTCOME_CODES))
+def test_a_submit_whose_outcome_the_venue_cannot_state_is_not_a_refusal(monkeypatch, order_creds, code):
+    monkeypatch.setattr(lx.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(code, "execution status unknown")))
+    with pytest.raises(ToolError) as exc:
+        _adapter().submit(lx.build_order_request(_intent()))
+    assert exc.value.reason_code == lx.ORDER_OUTCOME_UNKNOWN and str(code) in exc.value.reason
+
+
+def test_the_unknown_outcome_codes_are_the_documented_four():
+    assert lx.VENUE_UNKNOWN_OUTCOME_CODES == frozenset({-1000, -1001, -1006, -1007})
+
+
+@pytest.mark.parametrize("error,detail,landed", [
+    (None, None, False),
+    ("ORDER_TRANSPORT", "timed out", True),
+    ("ORDER_MALFORMED_RESULT", "unparseable", True),
+    (lx.ORDER_OUTCOME_UNKNOWN, "venue could not say (code -1007)", True),
+    (lx.ORDER_REJECTED, "venue rejected the order (code -2019): Margin is insufficient.", False),
+    (lx.ORDER_REJECTED, "duplicate client order id (-4116) — the original order already landed", True),
+    (lx.MALFORMED_INTENT, "no quantity", False),
+    (lx.NO_ORDER_API_KEY, "no key", False),
+    ("ORDER_HOST_NOT_ALLOWED", "host", False),
+])
+def test_what_a_failed_submit_says_about_the_venue(error, detail, landed):
+    assert lx.submit_may_have_landed(error, detail) is landed
+    assert lx.submit_refused_outright(error, detail) is (
+        error == lx.ORDER_REJECTED and "-4116" not in detail)
+
+
+def test_the_submit_result_keeps_the_venues_words(monkeypatch):
+    class _Refuses:
+        network_egress = False
+
+        def submit(self, request, *, timeout_seconds=10):
+            raise ToolError(lx.ORDER_REJECTED, "venue rejected the order (code -2019): Margin is insufficient.")
+
+        def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10):
+            return None
+
+    from tests._helpers import FakeSnapshotStore, approved_snapshot
+
+    intent, snapshot = approved_snapshot(_intent())
+    result = lx.submit_and_reconcile(intent, adapter=_Refuses(), guard_verdict={"approved": True}, now=NOW,
+                                     risk_snapshot=snapshot, snapshot_store=FakeSnapshotStore())
+    assert result["submit_error"] == lx.ORDER_REJECTED
+    assert "-2019" in result["submit_error_detail"]

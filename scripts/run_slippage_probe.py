@@ -414,6 +414,29 @@ def _give_back_symbol(entry_marks: Any, claim: dict, *, sent: bool) -> None:
         )
 
 
+def _warn_if_leg_left(result: dict, symbol: str) -> bool:
+    """Say so when a close left a protective order at the venue (PR2c-0): a cancel that failed, or
+    a leg kept on purpose. A probe's position is never re-read by anything after this process ends,
+    so this line is the only trace."""
+    left = live_leg.legs_left_resting(result)
+    if not left:
+        return False
+    sys.stderr.write(
+        f"ORPHAN    : protective orders may still rest at the venue for {symbol} ({', '.join(left)}); "
+        "a resting closePosition stop closes the next position there. Once the symbol holds no "
+        f"position, withdraw them by hand: python -m scripts.list_resting_orders --symbol {symbol}\n"
+    )
+    return True
+
+
+def _close_failure(closed: dict) -> str:
+    """What an unsuccessful close actually was, in words: an unconfirmed close is not the same as
+    one the venue confirmed and this runtime could not price (whose legs are already withdrawn)."""
+    if closed.get("exit") and (closed["exit"].get("reconcile_status") == live_promotion.RECONCILED):
+        return "the close confirmed but could not be priced"
+    return "the close did not confirm"
+
+
 def _still_booked(symbol: str, root: Path | None, position_id: Any) -> bool:
     """Whether the book still holds THIS probe's position (PR2b-2 review). Once the live cycle has
     settled it, the symbol is free again and the autonomous leg may book its own position there; a
@@ -793,12 +816,15 @@ def run_fire(
             sys.stderr.write(f"BREAKER   : NOT recorded ({breaker_error}) — the stop failure is "
                              "missing from the bracket-failure streak\n")
         _fail_cell(f"{probe.PROBE_STOP_NOT_PLACED}: {placement.get('error_detail') or placement.get('error')}")
-        if closed["status"] == live_leg.EXIT_CLOSED:
+        leg_left = _warn_if_leg_left(closed, symbol)
+        if closed["status"] == live_leg.EXIT_CLOSED and not leg_left:
             _give_back_symbol(entry_marks, claim, sent=True)
-        else:
+        elif closed["status"] != live_leg.EXIT_CLOSED:
             sys.stderr.write(
-                "INCIDENT: the probe stop was refused AND the close did not confirm; "
-                f"resolve at the venue ({closed['reason_codes']})\n"
+                f"INCIDENT: the probe stop was refused AND {_close_failure(closed)}; "
+                f"resolve at the venue ({closed['reason_codes']}). The stop "
+                f"{placement.get('client_order_id')} may still rest: it protects what is open, and "
+                "nothing in the runtime will withdraw it\n"
             )
         sys.stderr.write(
             f"BLOCKED {probe.PROBE_STOP_NOT_PLACED}: the stop would not rest "
@@ -876,6 +902,7 @@ def run_fire(
                 position, adapter=adapter, position_store=position_store, ledger=ledger,
                 account_feed=account_feed, now=settle_now, timeout_seconds=timeout_seconds,
             )
+            _warn_if_leg_left(settled, symbol)
             outcome = settled.get("outcome")
             if settled["status"] != live_leg.EXIT_CLOSED or not isinstance(outcome, dict):
                 sys.stderr.write(f"BLOCKED {probe.PROBE_UNSETTLED}: the stop filled but the "
@@ -905,6 +932,7 @@ def run_fire(
         gate_open=True, limits=limits, close_reason=live_leg.CLOSE_REASON_TIME_EXIT,
         now=close_now, timeout_seconds=timeout_seconds,
     )
+    _warn_if_leg_left(closed, symbol)
     close_audit_error = None
     if closed["status"] == live_leg.EXIT_CLOSED and isinstance(closed.get("intent"), dict):
         try:
@@ -922,8 +950,10 @@ def run_fire(
     outcome = closed.get("outcome")
     if closed["status"] != live_leg.EXIT_CLOSED or not isinstance(outcome, dict):
         sys.stderr.write(
-            f"BLOCKED {probe.PROBE_UNSETTLED}: the timeout close did not confirm "
-            f"({closed['reason_codes']}); the stop is still resting and the cell stays OPEN\n"
+            f"BLOCKED {probe.PROBE_UNSETTLED}: the timeout close: {_close_failure(closed)} "
+            f"({closed['reason_codes']}); "
+            + ("its stop was withdrawn" if closed.get("cancels") else "the stop is still resting")
+            + " and the cell stays OPEN\n"
         )
         return EXIT_BLOCKED
     plan = probe.write_plan(

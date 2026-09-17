@@ -101,6 +101,59 @@ Append a new entry when a milestone ships, in the same PR.
   closes keep working. A record the old script writes during a rollback carries a window, and the
   new code keeps honouring it.
 
+- **The close path never unprotects an open position, and never forgets a leg** (crypto PR2c-0,
+  Thomas decision 23, 2026-09-17; `crypto/live_leg.py`, `crypto/live_route.py`,
+  `scripts/run_slippage_probe.py`, `LP5_3_LIVE_LEG_DESIGN_V0.1.md` rule 3). The PR2c
+  investigation found three defects on the close path. None had fired: this machine is READ_ONLY.
+  - **The naked close cancelled first and checked second.** The bracket legs were withdrawn before
+    the close order's reconciliation was read. When the close could not be confirmed, a stop that
+    had placed (the target was the leg that failed) was cancelled, and a position that might still
+    be open was left with no protection at all. `execute_live_exit` always had the safe order. The
+    naked close now withdraws legs only after a confirmed close, and otherwise leaves them resting.
+  - **Some legs that may rest were never withdrawn.** Two cases were recorded as `placed: false`
+    without `may_be_resting`, so no close cancelled them:
+    - a leg whose confirmation read failed;
+    - a leg whose submit timed out and whose read then found nothing.
+
+    Both are now possibly resting, as is a leg refused as a duplicate (the original landed). A leg
+    the venue refused with its own code, or accepted without naming an order, and then reported
+    absent stays an ordinary miss, as the 2026-08-03 fix intended.
+  - **A cancel that failed passed silently.** The naked close added no reason code, gave the
+    symbol's entry claim back, and the route sent no message. The same was true of an ordinary
+    settle. Now:
+    - `LIVE_BRACKET_CANCEL_FAILED` is recorded on the naked close as on the other closes;
+    - the claim is kept;
+    - the operator is told which command lists what still rests, on a settle as well.
+
+    A confirmed close that cannot be priced now withdraws its legs before it returns. The book
+    still waits for a retry, but a probe's never-booked position has no retry to withdraw them.
+  - **Why this matters.** A `closePosition` stop left resting closes whatever the symbol holds when
+    it triggers, so a later position on that symbol can be closed by an order it never placed.
+    Refusing entries while such an order rests is PR2c-3 (decision 25).
+  - **The independent review (PR #883)** found one high and three medium findings on the same
+    path. The high one and one medium one were older than the PR.
+    - **High, older than the PR.** A naked close's client id was keyed on the symbol, the cycle's
+      time and the size. Two naked closes of one symbol and size in one fan-out therefore shared an
+      id: the second was refused as a duplicate, its read found the first close and "reconciled",
+      and the second position lost its only stop while reported flat. The id is now keyed on the
+      entry the close undoes.
+    - **Medium, older than the PR.** An exit is reconciled on the book's quantity. When the venue
+      held more on the symbol, a time exit closed the book's part, withdrew the closePosition stop
+      that covered all of it, and suppressed the drift halt because something had settled.
+      - The time exit now waits while the symbol shows a quantity or side drift.
+      - An unprotected close still happens, but keeps its legs.
+      - Any drift a settle cannot resolve halts the pass.
+    - **Medium, from the PR.** The notice named the pass's own symbol when the leg it reported was
+      another symbol's. Legs are now recorded per close under their own symbol (`live_legs_left`).
+    - **Medium, from the PR.** Legs kept by an unconfirmed naked close were never named. They now
+      are, and the incident notice lists them.
+    - **Low findings:**
+      - The venue codes that leave an order's outcome unknown (-1000, -1001, -1006, -1007) are now
+        `ORDER_OUTCOME_UNKNOWN`, not a refusal.
+      - A refusal as a duplicate no longer releases an entry's symbol.
+      - A halted pass still reports legs left behind.
+      - The probe no longer says a withdrawn stop still rests.
+
 - **Two doors can no longer open one symbol at once** (crypto PR2b-2, Thomas decisions 21 and 22,
   2026-09-17; `crypto/live_order.py`, `crypto/live_entry.py`, `crypto/live_leg.py`,
   `crypto/live_readiness.py`, `scripts/run_slippage_probe.py`). This was left open by the PR2a
