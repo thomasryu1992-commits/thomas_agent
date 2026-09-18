@@ -99,6 +99,42 @@ the wall clock read after every other fact, not at the fire's start (`now`).
 - The limits are indexed in `crypto/tunables.py`: `REFERENCE_PRICE_MAX_AGE_SECONDS`,
   `MAX_ACCOUNT_AGE_SECONDS` and `MAX_REFERENCE_DIVERGENCE_BPS`.
 
+**The optional data of an autonomous entry (PR2d-2, decision 28).** Every optional leg of the cycle
+degrades rather than blocks. For money that is wrong in two ways:
+- **A failed leg leaves its columns None.** A strategy reading them can neither fire nor veto, so two
+  strategies on the context that would have disagreed become one that enters alone.
+- **A feed that stopped updating keeps its last reading.** The as-of join carries it forward with no
+  age limit.
+
+The cycle judges the context (`cycle.optional_data_health`). The door `optional_data_healthy`
+refuses the whole context, whatever the plan reads:
+
+| Refuses when | Code |
+|---|---|
+| any optional leg degraded this cycle: funding, mark, index, premium index, liquidations, open interest, the higher timeframe, the reference symbol, the cross-section | `LIVE_ENTRY_OPTIONAL_DATA_DEGRADED` |
+| a feed's reading at the bar is older than its bound: funding 16 hours, the daily liquidation and open-interest series 48 hours, positioning 3 hours | `LIVE_ENTRY_OPTIONAL_DATA_STALE` |
+| a leg the snapshot carries put no reading on the decision bar (`cycle.OPTIONAL_LEG_COLUMNS`): an answer that came back empty without a degrade code, or a same-grid series that stops a bar short | `LIVE_ENTRY_OPTIONAL_DATA_MISSING` |
+| no readable account of it, or an account of another bar than the one decided on | `LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN` |
+
+- **The age is measured from the bar's open**, the instant the as-of join keys on, not from `clock`.
+  A 1d bar opens a day before it is decided on.
+- **Which readings count.** A feed's reading at the bar is its last event at or before the bar's
+  open. Positioning counts only a time its two paired series both carry with a numeric ratio: the
+  pairs its columns are built from. A feed that holds events but none readable at or before the bar
+  is stale.
+- **What is not judged.** A leg the snapshot does not carry is not judged. That covers a leg that is
+  not configured, one that does not apply (the reference symbol's own context, a timeframe with no
+  higher one), and one with nothing to read (no positioning rows for the symbol, or a store that
+  cannot be read). Its columns are None, as they always were.
+- **What the gate seals.** The gate seals the whole assessment in `facts.optional_data`.
+- **What the records show.** Every cycle record whose bar could be read carries the feeds' ages
+  (`optional_data_ages`, about 90 bytes a row), gate open or not. It carries `optional_data_stale`
+  and `optional_data_missing` only when there are any. The degrade codes are in `reason_codes`.
+- **Not gated:** paper, the counterfactual shadow, the probe (it reads candles only) and the testnet
+  cycle.
+- **The bounds** are indexed in `crypto/tunables.py`: `FUNDING_MAX_AGE_HOURS`,
+  `DAILY_SERIES_MAX_AGE_HOURS` and `POSITIONING_MAX_AGE_HOURS`.
+
 ## 2. The gate's own checks
 
 The gate adds these to the door's checks:
@@ -349,9 +385,21 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
   forge the stage record (`EXECUTION_STAGE_V0.1.md`).
 - **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
   for the fire, so it can be as old as the fire (about a minute). No bound checks it.
-- **The checks the directive lists that no door runs yet (PR2d):**
-  - per-order slippage and fee evidence;
-  - optional-data health as a gate.
+- **The checks the directive lists that no door runs yet (PR2d):** per-order slippage and fee
+  evidence.
+- **What the optional-data door holds that a strategy may not read (PR2d-2, decision 28).**
+  - **The daily bound sits at the edge of a sound reading.** The forming day is dropped, so a sound
+    daily reading is up to about 48 hours old at an intraday bar. If the vendor publishes the closed
+    day late, the bar opening at 00:00 still passes at exactly 48 hours. The bars from 00:15 (15m)
+    and 01:00 (1h) read stale until the vendor publishes. The cycle records' `optional_data_ages`
+    show how often.
+  - **Positioning is judged although no strategy can read it yet.** Its families are minted only
+    at 1000 days of coverage. An accumulator fault (a changed payload, a blocked endpoint, one
+    series of the pair stopping) holds every context after three hours until it is fixed.
+  - **The cross-section refuses on one peer.** Four or more members still produce its columns,
+    but its degrade code fires when any peer fails.
+  - **A feed that is not carried is not judged**, however its absence came about. That includes a
+    lost opt-in and an unreadable positioning store.
 - **What the API error breaker does not count (PR2d-1, decision 27).**
   - **Calls outside the doors' roster.** It counts the five signed calls both entry doors make
     through the order adapter (`live_order.API_ADAPTER_CALLS`, pinned against the doors' own

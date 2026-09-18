@@ -25,10 +25,11 @@ opens no socket, and this cycle behaves exactly as it did before the wiring exis
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import timeutil
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, oi_store, orderbook_store, pool, positioning_store
@@ -122,6 +123,139 @@ _FUNDING_RECORDS = DEFAULT_FUNDING_RECORDS
 # the oi_* families on the same depth, and two numbers for one fetch would let the gate and the
 # fetch drift apart silently.
 _LIQUIDATION_DAYS = DERIVATIVE_HISTORY_DAYS
+
+# --- the optional data an entry is judged on (PR2d-2, Thomas decision 28) ----------------------
+#
+# Every leg above degrades rather than blocks, which is right for paper and wrong for money in two
+# ways the investigation measured (`pr2d-missing-checks-investigation.md` §4). A feed that failed
+# leaves its columns None, so a strategy reading it cannot fire — but neither can it VETO: two
+# strategies on one context that would have disagreed become one that enters alone. And a feed
+# that stopped updating keeps its last value forever (`features._asof_align` carries it forward
+# with no age limit), so a condition can hold on a reading days old with no degrade code at all.
+#
+# So the live entry door refuses the context (decision 28): any degrade code below, or any feed
+# older than its bound. Paper, the counterfactual shadow and the probe are unaffected — they do
+# not read this.
+OPTIONAL_DATA_DEGRADED_CODES = frozenset({
+    FUNDING_DEGRADED, MARK_PRICE_DEGRADED, INDEX_PRICE_DEGRADED, PREMIUM_INDEX_DEGRADED,
+    LIQUIDATION_DEGRADED, OPEN_INTEREST_DEGRADED, HTF_DEGRADED, REFERENCE_DEGRADED,
+    CROSS_SECTION_DEGRADED,
+})
+# How old the reading a bar carries may be, per feed on its own cadence — two periods each (Thomas
+# decision 28). Measured against the BAR's open time, the instant the as-of join keys on: the
+# decision reads the value that bar carries, and a 1d bar opens a day before it is decided on.
+# The same-grid legs (mark, index, premium, the reference, the cohort) join exactly and need none.
+FUNDING_MAX_AGE_HOURS = 16.0          # settlements every 8 hours
+DAILY_SERIES_MAX_AGE_HOURS = 48.0     # liquidations and open interest; the forming day is dropped
+POSITIONING_MAX_AGE_HOURS = 3.0       # accumulated hourly by this runtime
+OPTIONAL_FEED_MAX_AGE_HOURS = {
+    "funding": FUNDING_MAX_AGE_HOURS,
+    "liquidations": DAILY_SERIES_MAX_AGE_HOURS,
+    "open_interest": DAILY_SERIES_MAX_AGE_HOURS,
+    "positioning": POSITIONING_MAX_AGE_HOURS,
+}
+# The column each optional leg puts on a bar as its reading there — the one with the least warmup
+# of its own, so a healthy leg fills it. None at the decision bar means the bar carries nothing
+# from that leg: an answer that came back empty with no degrade code, or a same-grid series (a
+# cached reference or peer read) that stops a bar short. Either way a strategy reading the leg
+# can neither fire nor veto (review of #892).
+OPTIONAL_LEG_COLUMNS = {
+    "funding": ("funding_rate",),
+    "mark_prices": ("mark_price",),
+    "index_prices": ("index_price",),
+    "premium_index": ("premium_index",),
+    "liquidations": ("long_liquidation", "short_liquidation"),
+    "open_interest": ("open_interest",),
+    "htf_candles": ("htf_rsi",),
+    "reference_candles": ("ref_roc_4",),
+    "peer_candles": ("xs_rank_pct",),
+    "positioning": ("positioning_divergence",),
+}
+
+
+def _feed_readings(feed: str, events: Any) -> list[Any]:
+    """The events a feed's columns are aligned from. Positioning pairs two of its series by time
+    (`features._positioning_columns`), so a time only one of them carries is no reading: the
+    columns stay on the last pair however fresh the other series is."""
+    if not isinstance(events, list):
+        return []
+    if feed != "positioning":
+        return events
+    times: dict[str, set[str]] = {}
+    for row in events:
+        if not (isinstance(row, Mapping) and isinstance(row.get("series"), str)
+                and isinstance(row.get("timestamp"), str)):
+            continue
+        # Only a reading the columns would use: a ratio that is a number (the features' rule).
+        value = row.get("long_ratio")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        times.setdefault(row["series"], set()).add(row["timestamp"])
+    paired = (times.get("top_position") or set()) & (times.get("global_account") or set())
+    return [{"timestamp": stamp} for stamp in paired]
+
+
+def optional_data_health(
+    snapshot: Mapping[str, Any], *, codes: Sequence[str], bar_time: Any, row: Any = None,
+) -> dict[str, Any]:
+    """What the live entry door judges a context's optional data on (PR2d-2). Pure.
+
+    - ``degraded``: this cycle's degrade codes from the optional legs.
+    - ``stale``: each feed whose reading at ``bar_time`` — the last event at or before the bar's
+      open, the one the as-of join gives the bar — is older than its bound, or that holds events
+      and none readable at or before the bar.
+    - ``missing``: each optional leg the snapshot carries that put no reading on the decision
+      bar (``row``, `OPTIONAL_LEG_COLUMNS`): an answer that came back empty without a degrade
+      code, or a same-grid series that stops a bar short.
+
+    A leg the snapshot does not carry is not judged: not configured, not applicable (the
+    reference symbol's own context, a timeframe with no higher one), or nothing to read (no
+    positioning rows for the symbol) — its columns are None, as they always were. ``bar_readable``
+    says whether ``bar_time`` could be read; when it could not, every carried feed is stale."""
+    degraded = sorted({str(code) for code in codes if code in OPTIONAL_DATA_DEGRADED_CODES})
+    try:
+        bar = timeutil.parse_iso(str(bar_time))
+    except (TypeError, ValueError, OverflowError):
+        bar = None
+    values = row if isinstance(row, Mapping) else {}
+    own_proxy = str(snapshot.get("symbol") or "") == str(snapshot.get("reference_symbol") or "-")
+    missing = [
+        leg for leg, columns in OPTIONAL_LEG_COLUMNS.items()
+        if leg in snapshot and not (leg == "reference_candles" and own_proxy)
+        and all(values.get(column) is None for column in columns)
+    ]
+    feeds: dict[str, dict[str, Any]] = {}
+    stale: list[str] = []
+    for feed, bound in OPTIONAL_FEED_MAX_AGE_HOURS.items():
+        state: dict[str, Any] = {"max_age_hours": bound, "last_event_at": None, "age_hours": None}
+        if feed not in snapshot:
+            feeds[feed] = {**state, "state": "absent"}
+            continue
+        events = snapshot.get(feed)
+        if not events:
+            feeds[feed] = {**state, "state": "empty"}
+            continue
+        last = None
+        for event in _feed_readings(feed, events):
+            stamp = event.get("timestamp") if isinstance(event, Mapping) else None
+            try:
+                moment = timeutil.parse_iso(str(stamp)) if isinstance(stamp, str) else None
+            except (TypeError, ValueError, OverflowError):
+                moment = None
+            if moment is not None and bar is not None and moment <= bar and (last is None or moment > last):
+                last = moment
+        if last is None:
+            feeds[feed] = {**state, "state": "unreadable"}
+            stale.append(feed)
+            continue
+        age = (bar - last).total_seconds() / 3600.0
+        fresh = age <= bound
+        feeds[feed] = {**state, "state": "ok" if fresh else "stale",
+                       "last_event_at": timeutil.format_iso(last), "age_hours": round(age, 2)}
+        if not fresh:
+            stale.append(feed)
+    return {"bar_time": bar_time, "bar_readable": bar is not None, "degraded": degraded,
+            "stale": stale, "missing": missing, "feeds": feeds}
 
 
 def attach_feeds(
@@ -630,6 +764,14 @@ def run_crypto_cycle(
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
+    # The optional data the live entry door judges this context on (PR2d-2): computed here, where
+    # the legs' degrade codes and the series the row was built from are both in hand.
+    optional_data = optional_data_health(
+        snapshot,
+        codes=[*feed_reasons, htf_reason, reference_reason, cross_section_reason],
+        bar_time=feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None,
+        row=feature_row,
+    )
 
     # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
@@ -1038,6 +1180,7 @@ def run_crypto_cycle(
         root=root,
         control_store=control_store,
         live_arm_approvals=live_arm_approvals,
+        optional_data=optional_data,
     )
     reason_codes.extend(live["live_reason_codes"])
 
@@ -1163,6 +1306,19 @@ def run_crypto_cycle(
     # stays readable by exactly the same consumers.
     if live_excluded_digest:
         record["live_outcomes_excluded"] = live_excluded_digest
+    # The optional feeds at this bar (PR2d-2): their ages on every cycle whose bar could be read,
+    # open gate or not — the measurement the bounds are to be judged against (~90 bytes a row) —
+    # and the feeds past their bound or missing from the bar only when there are any. A cycle with
+    # no readable bar (a degraded collection) records none: its feeds were not judged, only
+    # refused. The legs' degrade codes are in `reason_codes` already.
+    if optional_data["bar_readable"]:
+        ages = {feed: state["age_hours"] for feed, state in optional_data["feeds"].items()
+                if state["age_hours"] is not None}
+        if ages:
+            record["optional_data_ages"] = ages
+        for key in ("stale", "missing"):
+            if optional_data[key]:
+                record[f"optional_data_{key}"] = list(optional_data[key])
     record["cycle_id"] = integrity.short_id(
         "crypto_cycle", {"symbol": symbol, "timeframe": timeframe, "at": now}
     )

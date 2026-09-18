@@ -32,7 +32,7 @@ from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
-from tests._helpers import gate_stage, live_arm_approval
+from tests._helpers import gate_stage, healthy_optional_data, live_arm_approval
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1289,6 +1289,7 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
             symbol=SYMBOL, collector=_Collector(), now=now, timeframe="4h",
             root=tmp_path, control_store=control,
             live_arm_approvals={"S001": arm_id},
+            optional_data=healthy_optional_data(bar),
         )
 
     return _pass
@@ -2723,4 +2724,35 @@ def test_a_breaker_that_cannot_count_by_the_gate_holds_the_entry(tmp_path, monke
     assert held["live_decision"]["ready"] is True, "the decision saw a breaker that could count"
     assert held["live_pre_order_reread"]["api_breaker_tripped"] is True
     assert "api_breaker_clear" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+
+# --- the optional data door on the leg (PR2d-2) ------------------------------------------------------
+
+def test_the_leg_judges_the_optional_data_it_was_handed_and_says_so(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import OPTIONAL_DATA_STALE
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    stale = {**healthy_optional_data(BAR_00), "stale": ["funding"],
+             "feeds": {"funding": {"state": "stale", "age_hours": 20.0}}}
+    real = live_route.run_live_leg
+    monkeypatch.setattr(live_route, "run_live_leg",
+                        lambda **kw: real(**{**kw, "optional_data": stale}))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_STALE]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_caller_that_hands_no_optional_data_opens_nothing(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import OPTIONAL_DATA_UNKNOWN
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    real = live_route.run_live_leg
+    monkeypatch.setattr(live_route, "run_live_leg",
+                        lambda **kw: real(**{k: v for k, v in kw.items() if k != "optional_data"}))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_UNKNOWN]
     assert _nothing_spent(venue, tmp_path)

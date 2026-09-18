@@ -114,6 +114,13 @@ VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
 BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 # The venue refused or could not answer five signed calls of one class in a row (PR2d-1).
 API_BREAKER_REFUSED = "LIVE_ENTRY_API_BREAKER_TRIPPED"
+# The optional data this context was judged on (PR2d-2, Thomas decision 28): a leg degraded this
+# cycle, a feed older than its bound, a leg that put no reading on the bar, or no account of it
+# (for this bar) at all.
+OPTIONAL_DATA_DEGRADED = "LIVE_ENTRY_OPTIONAL_DATA_DEGRADED"
+OPTIONAL_DATA_STALE = "LIVE_ENTRY_OPTIONAL_DATA_STALE"
+OPTIONAL_DATA_MISSING = "LIVE_ENTRY_OPTIONAL_DATA_MISSING"
+OPTIONAL_DATA_UNKNOWN = "LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
@@ -376,6 +383,10 @@ def plan_live_entry(
     # required fact, like the bracket streak: a door that forgets it opens the one this closes.
     # Only an explicit False is clear.
     api_breaker_tripped: bool,
+    # PR2d-2: the optional data this context was judged on (`cycle.optional_data_health`): the
+    # legs' degrade codes this cycle, the feeds past their age, and the legs missing from the bar.
+    # No default; None, or an account of another bar than `entry_bar_time`, refuses.
+    optional_data: Mapping[str, Any] | None,
     # The machine's execution stage, resolved once by the leg and threaded to the guard (PR1b).
     # No default: a caller that does not state the stage must not be able to enter. The leg reads
     # it beside the budget, so the record it stamps and the rung the guard judged are one answer.
@@ -487,6 +498,24 @@ def plan_live_entry(
     if api_breaker_tripped is not False:
         reasons.append(API_BREAKER_REFUSED)
         detail["api_breaker_tripped"] = api_breaker_tripped
+
+    # 2c-3. The optional data (PR2d-2, Thomas decision 28). A leg that failed this cycle leaves its
+    # columns None, so a strategy reading it can neither fire nor veto — two strategies on this
+    # context that would have disagreed become one that enters alone. A feed that stopped
+    # updating keeps its last reading forever, so a condition can hold on one days old with no
+    # degrade code at all. Any of it refuses the whole context, whatever the plan reads. An
+    # account of another bar than the one decided on is no account of this one.
+    judged = optional_data if isinstance(optional_data, Mapping) else {}
+    lists = [judged.get(key) for key in ("degraded", "stale", "missing")]
+    if (not all(isinstance(value, (list, tuple)) for value in lists)
+            or judged.get("bar_time") != entry_bar_time):
+        reasons.append(OPTIONAL_DATA_UNKNOWN)
+    else:
+        for code, key, values in zip((OPTIONAL_DATA_DEGRADED, OPTIONAL_DATA_STALE, OPTIONAL_DATA_MISSING),
+                                     ("degraded", "stale", "missing"), lists):
+            if values:
+                reasons.append(code)
+                detail[f"optional_data_{key}"] = list(values)
 
     # 2d. One entry per context per bar, and the post-stop-loss cooldown (PR2a) — paper's two
     # rules, which sit below the line where paper publishes the route this leg is handed. The
@@ -804,6 +833,8 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
     ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
     ("api_breaker_clear", frozenset({API_BREAKER_REFUSED})),
+    ("optional_data_healthy", frozenset({OPTIONAL_DATA_DEGRADED, OPTIONAL_DATA_STALE,
+                                         OPTIONAL_DATA_MISSING, OPTIONAL_DATA_UNKNOWN})),
     ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
     ("symbol_not_in_flight", frozenset({SYMBOL_IN_FLIGHT})),
     ("book_reconciled", frozenset({RECONCILE_REFUSED})),
@@ -895,6 +926,8 @@ def gate_live_entry(
         "budget_registered": kw.get("budget_registered"),
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "api_breaker_tripped": kw.get("api_breaker_tripped"),
+        # PR2d-2: the optional data the context was judged on, as the decision read it.
+        "optional_data": kw.get("optional_data"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),
         "entry_bar_time": kw.get("entry_bar_time"),
         # The moment the decision was judged at (PR2c-1); the gate seals it as `decided_at`.
@@ -982,6 +1015,10 @@ __all__ = [
     "MAX_REFERENCE_DIVERGENCE_BPS",
     "NO_FILTERS",
     "NO_PLAN",
+    "OPTIONAL_DATA_DEGRADED",
+    "OPTIONAL_DATA_MISSING",
+    "OPTIONAL_DATA_STALE",
+    "OPTIONAL_DATA_UNKNOWN",
     "PRICE_BEYOND_BRACKET",
     "PRICE_DIVERGED",
     "RECONCILE_REFUSED",
