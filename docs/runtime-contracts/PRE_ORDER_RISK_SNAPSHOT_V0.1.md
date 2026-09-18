@@ -21,7 +21,7 @@ and their tests.
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
 | Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the decision's facts narrowed by the gate's re-read (below). This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
-| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the four breakers (the daily loss, the risk guard, the bracket breaker and, since PR2d-1, the API error breaker), the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
+| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the four breakers (the daily loss, the risk guard, the bracket breaker and, since PR2d-1, the API error breaker), the order book it read just before the gate (since PR2d-3: at most 60 seconds old, a spread short of 50 bps, deep enough to fill the probe at no more than the cost model's slippage), the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
 The gate never judges reduce-only orders: closes, brackets and cancels. The venue enforces that
@@ -81,9 +81,11 @@ the wall clock read after every other fact, not at the fire's start (`now`).
 | `reference_price_fresh` | the market price (the last closed 1m candle, `market_data.read_reference_quote`) is synthetic, absent, unreadable, or its candle closed more than 300 seconds before `clock` | `LIVE_ENTRY_REFERENCE_PRICE_UNUSABLE` |
 | `price_within_divergence` | that price is more than 50 bps from the plan's entry | `LIVE_ENTRY_PRICE_DIVERGED` |
 | `price_between_protective_legs` | that price is at or past the rounded stop or target | `LIVE_ENTRY_PRICE_BEYOND_BRACKET` |
+| `order_book_fresh` (PR2d-3) | the order book the spread and the impact are judged on was in hand (`received_at`) more than 60 seconds before `clock`, after it, or at no time it says | `LIVE_ENTRY_ORDERBOOK_STALE` |
 
-- The first three accumulate with the other cheap doors. The fourth runs right after the bracket is
-  priced, before the liquidation and economics doors.
+- `account_fresh`, `reference_price_fresh`, `price_within_divergence` and `order_book_fresh`
+  accumulate with the other cheap doors. `price_between_protective_legs` runs right after the
+  bracket is priced, before the liquidation and economics doors.
 - **The caps at the higher price.** Sizing takes the per-order cap at the higher of the entry and the
   market price (`size_live_order(cap_price=...)`). The final guard judges the per-order and
   open-exposure caps on the quantity at that price (`evaluate_live_order_guard(reference_price=...)`).
@@ -97,7 +99,40 @@ the wall clock read after every other fact, not at the fire's start (`now`).
   asks again, each up to its call timeout, on the sequential fan-out that also carries later
   contexts' settle and protect steps. A rate-limit refusal ends every market read for the fire.
 - The limits are indexed in `crypto/tunables.py`: `REFERENCE_PRICE_MAX_AGE_SECONDS`,
-  `MAX_ACCOUNT_AGE_SECONDS` and `MAX_REFERENCE_DIVERGENCE_BPS`.
+  `MAX_ACCOUNT_AGE_SECONDS` (also the book's age bound, `live_entry.MAX_ORDER_BOOK_AGE_SECONDS`) and
+  `MAX_REFERENCE_DIVERGENCE_BPS`. The market-impact threshold is `DEFAULT_SLIPPAGE_BPS`'s value, and
+  the memo's re-read is `ORDER_BOOK_MEMO_MAX_AGE_SECONDS`.
+
+**What the order will pay against the book (PR2d-3, decision 29).** The economics door judges the
+friction at the cost model's slippage (`DEFAULT_SLIPPAGE_BPS`, 3.0). Once the size is known, the
+decision asks whether that holds for this order:
+- **One book.** The decision derives the spread from the same book it walks, so the two doors cannot
+  judge different books.
+- **The walk.** The decision walks that book (`orderbook_store.estimate_market_impact`): the asks for
+  a long, the bids for a short, level by level to the order's quantity, checking every level it
+  takes. The impact is the walk's average price against the mid.
+- **The refusals.** A book whose 20 levels cannot fill the order refuses
+  (`LIVE_ENTRY_BOOK_TOO_THIN`), and so does an impact above 3.0 bps
+  (`LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL`). Door `slippage_within_model`.
+- **The economics again.** The economics door judges again at the dearer of the model's slippage and
+  the impact (`round_trip_cost_r_at_book`, refusing as `LIVE_ENTRY_COST_REFUSED_AT_BOOK`). With the
+  threshold at the model's own value it binds only once either changes.
+- **Which book.** It is the one the fire read for the symbol, stamped with its `received_at`: in a
+  scheduled fire, usually the order-book accumulator's read for the symbol's first context. The
+  per-fire memo reads it again once it is over 30 seconds old (`ORDER_BOOK_MEMO_MAX_AGE_SECONDS`), so
+  a later context of a long fire is not refused on the first context's book. Otherwise there is no
+  new venue call.
+- **What is sealed.** The gate seals the impact and the re-judged cost in `facts.decision`, with the
+  book's age in `facts.decision.freshness`.
+- **The drift, recorded only.** The size and the stop are the bar close's (decision 24), so an
+  adverse drift `d` widens the risk taken to `(risk + d) / risk` of the risk planned.
+  - `drift_risk_multiplier` is measured at the 1m close.
+  - `drift_risk_multiplier_at_fill` is measured at the average price the book promises the order,
+    which is the one that matters in a fast market.
+  - Both are recorded on every decision that gets that far, and sealed on every entry. Neither is
+    ever refused on: the bound waits for the drift's measured distribution (decision 29).
+- **The probe** reads the book just before its gate (one public call) and is judged on the same
+  bounds: `order_book_fresh`, `spread_within_limit`, `slippage_within_model`.
 
 **The optional data of an autonomous entry (PR2d-2, decision 28).** Every optional leg of the cycle
 degrades rather than blocks. For money that is wrong in two ways:
@@ -383,10 +418,18 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
   shows as armed there and is held at every gate, with the reason in the cycle record.
 - **Tampering by the state directory's own writer is out of reach.** It can forge an arm as it can
   forge the stage record (`EXECUTION_STAGE_V0.1.md`).
-- **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
-  for the fire, so it can be as old as the fire (about a minute). No bound checks it.
-- **The checks the directive lists that no door runs yet (PR2d):** per-order slippage and fee
-  evidence.
+- **The checks the directive lists that no door runs yet (PR2d):** fee evidence (PR2d-4).
+- **The drift from the bar close is recorded, not bounded (PR2d-3, decision 29).**
+  `drift_risk_multiplier` is sealed on every entry; the divergence door (50 bps) is the only bound
+  until its distribution is measured.
+- **The market impact counts only the 20 levels read.** A size past them is refused, never
+  extrapolated.
+  - At today's sizes the largest order the budget allows is 7% of the thinnest top-20 depth
+    measured.
+  - On a fine-tick symbol (BTCUSDT, tick 0.1) the 20 levels span a fraction of a basis point.
+  - So once the budget passes about 3,000 USDT, a large order there is refused as too thin however
+    cheap it is. Going deeper needs a separate call (`market_data.ORDER_BOOK_LEVELS` feeds the
+    accumulator's store too).
 - **What the optional-data door holds that a strategy may not read (PR2d-2, decision 28).**
   - **The daily bound sits at the edge of a sound reading.** The forming day is dropped, so a sound
     daily reading is up to about 48 hours old at an intraday bar. If the vendor publishes the closed

@@ -110,7 +110,9 @@ TUNABLES: tuple[Tunable, ...] = (
             "Binance's published standard maker rate; NOT measured — no maker fill has happened",
             "the first live maker fill, which should replace it with a measurement"),
     Tunable("DEFAULT_SLIPPAGE_BPS", cost.DEFAULT_SLIPPAGE_BPS, "crypto/cost.py", INHERITED,
-            "carried from the source system unmeasured; a canary is one order, not a sample",
+            "carried from the source system unmeasured; a canary is one order, not a sample. "
+            "live_entry.MAX_ENTRY_SLIPPAGE_BPS is this value (decision 29): the live entry refuses a "
+            "book that prices the order above it, so re-measuring it moves a live door too",
             "enough live fills to measure realized slippage against intended price"),
     Tunable("DEFAULT_STOP_SLIPPAGE_BPS", cost.DEFAULT_STOP_SLIPPAGE_BPS, "crypto/cost.py", MEASURED,
             "measured 2026-08-21 via the stop-slippage probe (n=10, median 1.07 bps, "
@@ -233,7 +235,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/live_order.py", OPERATOR,
             "decision 18: the account an entry is judged on may be at most a minute old; a pass "
             "settles, protects and prices between the read and the decision, normally in seconds. "
-            "pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS is this value, bounding the gate-to-send wait",
+            "pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS is this value, bounding the gate-to-send wait, "
+            "and so is live_entry.MAX_ORDER_BOOK_AGE_SECONDS, bounding the book's age (decision 29)",
             "an entry pass whose ordinary read-to-decision time approaches a minute (fires measured "
             "a median 26 s for thirteen contexts), or a gate-to-send path that takes seconds"),
     Tunable("FUNDING_MAX_AGE_HOURS", cycle.FUNDING_MAX_AGE_HOURS,
@@ -255,6 +258,12 @@ TUNABLES: tuple[Tunable, ...] = (
             "accumulates hourly; a sound pair is at most 2.5 hours old at a 15m bar, so one "
             "missed accumulation late in the hour can hold a 15m context for a bar",
             "the accumulator's throttle moving, or positioning families that need a fresher pair"),
+    Tunable("ORDER_BOOK_MEMO_MAX_AGE_SECONDS", market_data.ORDER_BOOK_MEMO_MAX_AGE_SECONDS,
+            "crypto/market_data.py", OPERATOR,
+            "review of #893 (PR2d-3): half the live entry's minute on the book (decision 29), so a "
+            "book the fire read for an earlier context is read again before it could age out; fires "
+            "measured a median 26 s and a p99 of 36 s for thirteen contexts",
+            "the entry's book-age bound moving, or the depth call's weight starting to matter"),
     Tunable("MAX_REFERENCE_DIVERGENCE_BPS", live_entry.MAX_REFERENCE_DIVERGENCE_BPS,
             "crypto/live_entry.py", OPERATOR,
             "decision 18: the plan's bar close and the market price may differ by at most 50 bps, "

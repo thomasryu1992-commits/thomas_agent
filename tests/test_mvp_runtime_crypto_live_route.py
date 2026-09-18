@@ -32,7 +32,7 @@ from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
-from tests._helpers import gate_stage, healthy_optional_data, live_arm_approval
+from tests._helpers import deep_order_book, gate_stage, healthy_optional_data, live_arm_approval
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1193,8 +1193,13 @@ class _Venue:
 
 
 class _Collector:
+    """The market data a pass reads: a deep book, in hand at the pass's own clock (PR2d-3)."""
+
+    def __init__(self, clock=None):
+        self._clock = clock or (lambda: NOW)
+
     def order_book(self, symbol, *, limit, timeout_seconds):
-        return {}
+        return deep_order_book(received_at=self._clock())
 
 
 # The approval Thomas answered to arm the plan's lineage LIVE (PR2c-2b). The pass runs hours after
@@ -1269,7 +1274,6 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
                         lambda route, row, now: {**_PLAN, "created_at_utc": now})
     filters = SymbolFilters(step_size=0.001, min_qty=0.001, min_notional=5.0, tick_size=0.1)
     monkeypatch.setattr(live_route, "read_symbol_filters", lambda collector, symbol, **kw: (filters, None))
-    monkeypatch.setattr(live_route, "summarize_book", lambda book: {"spread_bps": 1.0})
     monkeypatch.setattr(live_governance, "prepare_live_order_governance", lambda intent, **kw: _GOVERNANCE)
     monkeypatch.setattr(live_route, "_report", lambda *a, **kw: None)
     monkeypatch.setattr(live_route, "_notify_operator", lambda record, **kw: None)
@@ -1286,7 +1290,7 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
             feature_row={"timestamp": bar},
             verdict={"allow_new_position": True, "problems": [],
                      "risk_guard": {"limits": {"source": "default"}}},
-            symbol=SYMBOL, collector=_Collector(), now=now, timeframe="4h",
+            symbol=SYMBOL, collector=_Collector(lambda: clock["now"]), now=now, timeframe="4h",
             root=tmp_path, control_store=control,
             live_arm_approvals={"S001": arm_id},
             optional_data=healthy_optional_data(bar),
@@ -1366,8 +1370,15 @@ def test_a_refusal_before_the_send_leaves_the_bar_open_for_the_next_tick(tmp_pat
     nothing, so the next tick of the same bar may still enter."""
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
-    books = iter([None, 1.0])
-    monkeypatch.setattr(live_route, "summarize_book", lambda book: {"spread_bps": next(books)})
+    reads = iter([ToolError("TOOL_TRANSPORT", "scripted: the book did not answer"), None])
+
+    def _book_then_fine(self, symbol, *, limit, timeout_seconds):
+        failure = next(reads)
+        if failure is not None:
+            raise failure
+        return deep_order_book(received_at=self._clock())
+
+    monkeypatch.setattr(_Collector, "order_book", _book_then_fine)
 
     refused = run("2026-07-28T04:05:00Z", BAR_00)
     assert refused["live_route_status"] == live_route.ROUTE_HELD
@@ -1955,7 +1966,7 @@ def test_a_decision_that_waited_over_a_minute_is_not_sent(tmp_path, monkeypatch)
 
 _JUDGED_READS = (
     "read_account", "resolve_live_order_limits", "resolve_execution_stage", "list_open_live_positions",
-    "read_symbol_filters", "summarize_book", "_read_reference_quote", "live_risk_snapshot",
+    "read_symbol_filters", "_read_reference_quote", "live_risk_snapshot",
     "bracket_breaker_status", "read_live_entry_marks", "count_today",
 )
 
@@ -1974,10 +1985,12 @@ def test_the_decision_clock_is_read_after_every_fact_it_judges(tmp_path, monkeyp
 
     for name in (*_JUDGED_READS, "_entry_clock"):
         monkeypatch.setattr(live_route, name, _tracked(name, getattr(live_route, name)))
+    # The book is read through the collector, and the decision derives the spread from it (PR2d-3).
+    monkeypatch.setattr(_Collector, "order_book", _tracked("order_book", _Collector.order_book))
     opened = run("2026-07-28T04:05:00Z", BAR_00)
     assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
     assert order.count("_entry_clock") == 1, order
-    assert set(order[:order.index("_entry_clock")]) == set(_JUDGED_READS), order
+    assert set(order[:order.index("_entry_clock")]) == {*_JUDGED_READS, "order_book"}, order
 
 
 # --- the gate re-reads what another writer can move (PR2c-2a) ------------------------------------
@@ -2756,3 +2769,82 @@ def test_a_caller_that_hands_no_optional_data_opens_nothing(tmp_path, monkeypatc
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_UNKNOWN]
     assert _nothing_spent(venue, tmp_path)
+
+
+# --- the book the entry crosses (PR2d-3) ---------------------------------------------------------------
+
+def test_the_leg_hands_the_decision_the_book_it_read(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    seen: dict[str, Any] = {}
+    real = live_route.plan_live_entry
+
+    def _spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _spy)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert seen["order_book"]["received_at"] == "2026-07-28T04:05:00Z"
+    assert seen["order_book"]["asks"][0][0] > seen["order_book"]["bids"][0][0]
+
+
+@pytest.mark.parametrize("book,code", [
+    (lambda clock: deep_order_book(received_at=timeutil.plus_seconds(clock, -61)), "LIVE_ENTRY_ORDERBOOK_STALE"),
+    (lambda clock: deep_order_book(received_at=clock, quantity=1e-6), "LIVE_ENTRY_BOOK_TOO_THIN"),
+    (lambda clock: deep_order_book(received_at=clock, half_spread_bps=5.0), "LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL"),
+], ids=["stale", "thin", "dear"])
+def test_a_book_the_order_should_not_cross_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch, book, code):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(_Collector, "order_book",
+                        lambda self, symbol, *, limit, timeout_seconds: book(self._clock()))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [code]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_book_the_walk_cannot_read_holds_the_entry_and_never_halts_the_fan_out(tmp_path, monkeypatch):
+    """Review of #893: a malformed deeper level used to raise out of the decision, which the route
+    turned into an incident that halts every later context."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+
+    def _malformed(self, symbol, *, limit, timeout_seconds):
+        book = deep_order_book(received_at=self._clock(), quantity=1e-6)
+        book["asks"][1] = ("not a price", 1.0)
+        return book
+
+    monkeypatch.setattr(_Collector, "order_book", _malformed)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD and held["halt"] is False
+    assert held["live_decision"]["reasons"] == ["LIVE_ENTRY_ORDERBOOK_UNREADABLE"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_through_the_fire_memo_a_book_read_early_in_the_fire_is_read_again(tmp_path, monkeypatch):
+    """The per-fire memo shares one book among the symbol's contexts; a context deep in a long
+    fire gets a fresh one rather than a book past the entry's minute (review of #893)."""
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    stamps = iter(["2026-07-28T04:03:55Z", "2026-07-28T04:05:00Z"])   # 65 s before the pass, then now
+    reads: list[str] = []
+
+    class _Early:
+        def order_book(self, symbol, *, limit, timeout_seconds):
+            reads.append(symbol)
+            return deep_order_book(received_at=next(stamps))
+
+    memo = PerRunFeedCache(_Early())
+    memo.order_book(SYMBOL, limit=20, timeout_seconds=10)       # the first context of the fire
+    monkeypatch.setattr(timeutil, "utc_now_iso", lambda: "2026-07-28T04:05:00Z")
+    monkeypatch.setattr(_Collector, "order_book",
+                        lambda self, symbol, *, limit, timeout_seconds: memo.order_book(
+                            symbol, limit=limit, timeout_seconds=timeout_seconds))
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert reads == [SYMBOL, SYMBOL]

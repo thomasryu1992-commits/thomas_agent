@@ -113,6 +113,7 @@ from runtime.mvp_runtime.crypto.live_position import (  # noqa: E402
     select_live_position_store,
 )
 from runtime.mvp_runtime.crypto.market_data import (  # noqa: E402
+    ORDER_BOOK_LEVELS,
     collect_market_data,
     read_reference_price,
     select_market_data_collector,
@@ -187,6 +188,17 @@ def _read_price(symbol: str, *, now: str, root: Path | None, timeout_seconds: in
     if price is None:
         raise _Refusal(probe.PROBE_PRICE_UNREADABLE, f"no usable reference price for {symbol} ({reason})")
     return float(price)
+
+
+def _read_book(symbol: str, *, now: str, root: Path | None, timeout_seconds: int) -> Any:
+    """The order book the gate judges the probe's crossing on (PR2d-3, decision 29), or None when
+    it cannot be read — the gate refuses on that, as the leg's spread door does."""
+    collector = select_market_data_collector(now=now, root=root)
+    try:
+        return collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — before the venue: the gate refuses, and says why
+        sys.stderr.write(f"BOOK      : unreadable ({getattr(exc, 'reason_code', type(exc).__name__)})\n")
+        return None
 
 
 def _audit_order(governance, submit_result, *, guard, now, root) -> str | None:
@@ -724,7 +736,9 @@ def run_fire(
     # The re-read (PR2c-2a): since the fire read them, another writer can halt or disarm the
     # runtime, re-register the budget or the risk limits, demote the stage, spend the day's orders
     # or trip the bracket breaker. Read again, folded in only to narrow, and judged by the gate
-    # below. The gate's clock is read first: a legacy validity window is judged at it too.
+    # below. The gate's clock is read first: a legacy validity window is judged at it too. The
+    # book the probe crosses (PR2d-3) is read just before it, so the gate judges a fresh one.
+    order_book = _read_book(symbol, now=now, root=root, timeout_seconds=timeout_seconds)
     gate_clock = timeutil.utc_now_iso()
     # The limits the risk guard judged on; with none resolved it judged on the defaults.
     judged_limits = (risk_limits or DEFAULT_RISK_LIMITS).as_record()
@@ -770,6 +784,7 @@ def run_fire(
         # PR2c-1: the account the probe judged must be at most a minute old now, and the order
         # must leave within a minute of this judgment.
         account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
+        order_book=order_book,
     )
     if not snapshot_record["approved"]:
         raise _Refusal(

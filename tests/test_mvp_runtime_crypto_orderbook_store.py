@@ -481,3 +481,143 @@ def test_a_clean_sweep_says_nothing():
         "orderbook": {symbol: "appended" for symbol in CROSS_SECTION_UNIVERSE},
     })
     assert "orderbook-degraded" not in line
+
+
+# --- what a size pays against the book (PR2d-3, Thomas decision 29) --------------------------------
+
+_BOOK = {"bids": [(99.0, 1.0), (98.0, 2.0)], "asks": [(101.0, 1.0), (102.0, 2.0)]}
+
+
+# ``move`` is the VWAP's adverse distance from the mid (100.0), so the impact is ``move`` x 100 bps.
+@pytest.mark.parametrize("side,quantity,vwap,move,levels", [
+    ("BUY", 0.5, 101.0, 1.0, 1),
+    ("BUY", 2.0, 101.5, 1.5, 2),
+    ("BUY", 3.0, 305.0 / 3, 305.0 / 3 - 100.0, 2),
+    ("SELL", 1.0, 99.0, 1.0, 1),
+    ("SELL", 3.0, 295.0 / 3, 100.0 - 295.0 / 3, 2),
+], ids=["buy-top", "buy-two-levels", "buy-whole-band", "sell-top", "sell-whole-band"])
+def test_the_walk_takes_the_side_the_order_crosses(side, quantity, vwap, move, levels):
+    """A buy lifts the asks, a sell hits the bids; the impact is adverse, in bps of the mid."""
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    result = estimate_market_impact(_BOOK, side=side, quantity=quantity)
+    assert result["fills"] is True and result["levels"] == levels and result["mid"] == 100.0
+    assert result["vwap"] == pytest.approx(vwap)
+    assert result["impact_bps"] == pytest.approx(move * 100.0)
+
+
+def test_a_size_past_the_band_is_not_filled_and_not_priced():
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    result = estimate_market_impact(_BOOK, side="BUY", quantity=3.5)
+    assert result["fills"] is False and result["impact_bps"] is None and result["levels"] == 2
+
+
+def test_the_receipt_time_does_not_change_the_walk():
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    stamped = {**_BOOK, "received_at": "2026-09-18T00:00:00Z"}
+    assert estimate_market_impact(stamped, side="SELL", quantity=2.0) == \
+        estimate_market_impact(_BOOK, side="SELL", quantity=2.0)
+
+
+@pytest.mark.parametrize("side,quantity", [
+    ("LONG", 1.0), ("BUY", 0.0), ("BUY", -1.0), ("BUY", float("nan")), ("BUY", float("inf")), ("BUY", "one"),
+], ids=["not-a-side", "zero", "negative", "nan", "inf", "text"])
+def test_an_order_no_walk_can_price_raises(side, quantity):
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    with pytest.raises(ToolError) as exc:
+        estimate_market_impact(_BOOK, side=side, quantity=quantity)
+    assert exc.value.reason_code == "ORDERBOOK_IMPACT_UNPRICEABLE"
+
+
+@pytest.mark.parametrize("book,code", [
+    ({"bids": [], "asks": [(101.0, 1.0)]}, "ORDERBOOK_SIDE_EMPTY"),
+    ({"bids": [(102.0, 1.0)], "asks": [(101.0, 1.0)]}, "ORDERBOOK_CROSSED"),
+], ids=["empty", "crossed"])
+def test_a_book_the_summary_cannot_describe_cannot_be_walked(book, code):
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    with pytest.raises(ToolError) as exc:
+        estimate_market_impact(book, side="BUY", quantity=0.5)
+    assert exc.value.reason_code == code
+
+
+def test_the_venue_book_says_when_it_was_in_hand(monkeypatch):
+    """The per-fire memo hands one book to every context of its symbol, so the book carries the
+    moment it was read and the entry judges its age from that (PR2d-3)."""
+    import json as _json
+
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto.market_data import BinanceFuturesCollector
+    from runtime.mvp_runtime.safety_gate import NETWORK_ACCESS
+    from tests._helpers import FakeResp, make_gate_authorization
+
+    payload = _json.dumps({"bids": [["99.0", "1.0"]], "asks": [["101.0", "2.0"]]})
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResp(payload))
+    monkeypatch.setattr(timeutil, "utc_now_iso", lambda: "2026-09-18T01:02:03Z")
+    book = BinanceFuturesCollector(authorization=make_gate_authorization(
+        flags=(NETWORK_ACCESS,), provider_id="binance_futures")).order_book(
+        "BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=1)
+    assert book == {"bids": [(99.0, 1.0)], "asks": [(101.0, 2.0)], "received_at": "2026-09-18T01:02:03Z"}
+
+
+
+def test_a_walk_over_a_level_it_cannot_read_raises_its_own_code():
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    for level in (("x", 1.0), (101.0, True), (101.0,), None, (101.0, -1.0)):
+        with pytest.raises(ToolError) as exc:
+            estimate_market_impact({"bids": _BOOK["bids"], "asks": [(101.0, 0.1), level]},
+                                   side="BUY", quantity=0.5)
+        assert exc.value.reason_code == "ORDERBOOK_IMPACT_UNPRICEABLE", level
+
+
+class _Stamped:
+    """A collector whose every book is stamped with the wall clock it was read at."""
+
+    network_egress = True
+
+    def __init__(self):
+        self.reads = 0
+
+    def order_book(self, symbol, *, limit, timeout_seconds):
+        from runtime.mvp_runtime import timeutil
+
+        self.reads += 1
+        return {"bids": [(99.0, 1.0)], "asks": [(101.0, 1.0)], "received_at": timeutil.utc_now_iso()}
+
+
+def test_a_memoized_book_older_than_half_a_minute_is_read_again(monkeypatch):
+    """Review of #893: a fire can outlast the entry's minute on the book, and a later context of
+    the symbol would otherwise judge the first context's read."""
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto.market_data import ORDER_BOOK_MEMO_MAX_AGE_SECONDS, PerRunFeedCache
+
+    clock = {"now": "2026-09-18T00:00:00Z"}
+    monkeypatch.setattr(timeutil, "utc_now_iso", lambda: clock["now"])
+    inner = _Stamped()
+    cache = PerRunFeedCache(inner)
+    first = cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    clock["now"] = timeutil.plus_seconds("2026-09-18T00:00:00Z", ORDER_BOOK_MEMO_MAX_AGE_SECONDS)
+    assert cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10) is first
+    assert inner.reads == 1
+    clock["now"] = timeutil.plus_seconds("2026-09-18T00:00:00Z", ORDER_BOOK_MEMO_MAX_AGE_SECONDS + 1)
+    again = cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    assert inner.reads == 2 and again["received_at"] == clock["now"]
+
+
+def test_a_memoized_book_with_no_stamp_is_kept_as_every_memo_is():
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    class _Unstamped(_Stamped):
+        def order_book(self, symbol, *, limit, timeout_seconds):
+            self.reads += 1
+            return {"bids": [(99.0, 1.0)], "asks": [(101.0, 1.0)]}
+
+    inner = _Unstamped()
+    cache = PerRunFeedCache(inner)
+    for _ in range(3):
+        cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    assert inner.reads == 1

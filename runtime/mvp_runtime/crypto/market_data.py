@@ -1488,7 +1488,9 @@ class BinanceFuturesCollector:
 
         Same grant as candles and funding — a fourth public endpoint of the already authorized
         provider, so no new provider, key or gate. Returns
-        ``{"bids": [(price, qty), ...], "asks": [...]}``, each side best-first.
+        ``{"bids": [(price, qty), ...], "asks": [...], "received_at": <ISO>}``, each side
+        best-first, and stamped with the moment it was in hand: the live entry judges a book's age
+        from it (PR2d-3). The mock's book carries no stamp, so a live decision refuses it.
 
         **Returns the book, not a verdict on it.** The imbalance arithmetic lives in
         `orderbook_store.summarize_book`, on `exchange_info`'s precedent and for its reason: that
@@ -1530,6 +1532,9 @@ class BinanceFuturesCollector:
         return {
             "bids": self._parse_book_side(payload.get("bids"), side="bids", descending=True),
             "asks": self._parse_book_side(payload.get("asks"), side="asks", descending=False),
+            # When this book was in hand (PR2d-3): the per-fire memo hands the same book to every
+            # context of the symbol, so the live entry judges its age from here, not from its read.
+            "received_at": timeutil.utc_now_iso(),
         }
 
     @staticmethod
@@ -2290,6 +2295,14 @@ def reference_quote_problem(quote: Any, *, clock: str) -> str | None:
 
 # --- one fan-out, one request per distinct question -------------------------------------------
 
+# A book is a moment, not a cadence (review of #893). The live entry judges one at most
+# `live_entry.MAX_ORDER_BOOK_AGE_SECONDS` (60) old, and a fire can outlast that: the first context
+# of a symbol reads its book, and a later context of the same symbol, deep in a long fire, would be
+# handed that one. `PerRunFeedCache` reads a memoized book again once it is older than this — at
+# most one extra public call per symbol per half-minute of fire.
+ORDER_BOOK_MEMO_MAX_AGE_SECONDS = 30
+
+
 class PerRunFeedCache:
     """Memoizes the per-SYMBOL reads a pool fan-out repeats, for the length of ONE fire.
 
@@ -2342,6 +2355,20 @@ class PerRunFeedCache:
         self.__dict__["requests"] = 0   # what was actually asked of the venue
         self.__dict__["hits"] = 0       # what a repeat context did not have to ask again
         self.__dict__["rate_limited"] = None  # the venue's refusal, once it has given one
+
+    def _book_too_old(self, memo: Any) -> bool:
+        """Whether a memoized book is past `ORDER_BOOK_MEMO_MAX_AGE_SECONDS` and should be read again. A
+        refusal stays memoized (retrying it costs another timeout); a book with no readable stamp
+        (the mock's) is kept, as every other memo is."""
+        outcome, value = memo
+        stamp = value.get("received_at") if outcome == "returned" and isinstance(value, dict) else None
+        if not isinstance(stamp, str):
+            return False
+        try:
+            age = (timeutil.parse_iso(timeutil.utc_now_iso()) - timeutil.parse_iso(stamp)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return age > ORDER_BOOK_MEMO_MAX_AGE_SECONDS
 
     def _latch(self) -> None:
         """Refuse before opening a socket, once the venue has said we are asking too often.
@@ -2416,7 +2443,7 @@ class PerRunFeedCache:
 
         def memoized(*args: Any, **kwargs: Any) -> Any:
             key = (name, args, tuple(sorted(kwargs.items())))
-            if key in self._memo:
+            if key in self._memo and not (name == "order_book" and self._book_too_old(self._memo[key])):
                 self.__dict__["hits"] += 1
                 outcome, value = self._memo[key]
                 if outcome == "raised":

@@ -695,19 +695,28 @@ def gate_probe_order(
     # account read too long ago must not be what the caps and the loss breaker were judged on.
     account_collected_at: str | None,
     clock: str,
+    # The order book the probe read just before this gate (PR2d-3, decision 29), or None when the
+    # read failed. No default: the probe crosses the book like any entry.
+    order_book: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
     account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
-    the symbol being free, the four breakers, the notional the approval priced, and the order
+    the symbol being free, the four breakers, the order book (fresh, a spread short of the
+    dislocation bound, deep enough to fill the order at no more than the cost model's slippage,
+    PR2d-3), the notional the approval priced, and the order
     itself — rebuilt from the plan's own stop width and judged by the live guard again in canary
     mode. The intent about to be sent must be the rebuilt one."""
     from .execution_stage import PURPOSE_PROBE
+    from .live_entry import (
+        MAX_ENTRY_SLIPPAGE_BPS, MAX_ENTRY_SPREAD_BPS, MAX_ORDER_BOOK_AGE_SECONDS, order_book_fresh,
+    )
     from .live_order import (
         MAX_ACCOUNT_AGE_SECONDS, account_age_seconds, account_fresh, build_live_order_intent,
         evaluate_live_order_guard,
     )
+    from .orderbook_store import estimate_market_impact, summarize_book
     from .live_position import entry_allowed
     from .pre_order_gate import check, evaluate_pre_order_gate, intent_fingerprint
     from .state import VENUE_MAINNET
@@ -739,6 +748,28 @@ def gate_probe_order(
               {key: api_breaker.get(key) for key in ("consecutive", "limit", "tripped_class")}),
         check("risk_guard_allows", bool(risk_verdict.get("allow_new_position")),
               list(risk_verdict.get("problems") or [])),
+    ]
+    # The book (PR2d-3, decision 29): the leg's spread door and its market-impact door, for the
+    # probe's own size and side. A book that cannot be read, or described, fails every one.
+    book = order_book if isinstance(order_book, Mapping) else None
+    book_at = book.get("received_at") if book is not None else None
+    try:
+        spread = summarize_book(book)["spread_bps"] if book is not None else None
+        impact = (estimate_market_impact(book, side="BUY" if PROBE_DIRECTION == "LONG" else "SELL",
+                                         quantity=float(quantity)) if book is not None else None)
+    except Exception as exc:  # noqa: BLE001 — a book that cannot be read fails its checks, never raises
+        spread, impact = None, {"problem": getattr(exc, "reason_code", type(exc).__name__)}
+    checks += [
+        check("order_book_fresh", order_book_fresh(book, clock=clock),
+              {"received_at": book_at, "age_seconds": account_age_seconds(book_at, clock=clock),
+               "max_age_seconds": MAX_ORDER_BOOK_AGE_SECONDS}),
+        check("spread_within_limit", spread is not None and spread <= MAX_ENTRY_SPREAD_BPS,
+              {"spread_bps": spread, "limit_bps": MAX_ENTRY_SPREAD_BPS}),
+        check("slippage_within_model",
+              isinstance(impact, Mapping) and impact.get("fills") is True
+              and impact.get("impact_bps") is not None and impact["impact_bps"] <= MAX_ENTRY_SLIPPAGE_BPS,
+              {"market_impact": dict(impact) if isinstance(impact, Mapping) else None,
+               "limit_bps": MAX_ENTRY_SLIPPAGE_BPS}),
     ]
     try:
         cap = float(params["per_probe_notional_cap_usdt"])
