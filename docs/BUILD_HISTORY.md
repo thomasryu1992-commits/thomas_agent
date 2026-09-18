@@ -39,8 +39,9 @@ Append a new entry when a milestone ships, in the same PR.
   - **The fix:** `iter_numbered` waits up to one second for an unparseable last line to get its
     newline (`_finished_tail`). A line that is finished is parsed like any other. A line that
     is never finished raises the caller's code, as before. The file is read as bytes and each
-    line is decoded inside the parse, so bad UTF-8 raises the store's code. This is also ~20%
-    faster on a 35 MB archive.
+    line is decoded inside the parse, so bad UTF-8 raises the store's code. It is also 10–20%
+    faster on a 35 MB archive. The wait is 100 looks 10 ms apart, a count and not a clock, because
+    tests freeze `time.monotonic` and a frozen clock would have made the wait endless.
   - **Why not the two obvious fixes:**
     - *Readers take the appender's lock, shared:* every read made while a caller already holds
       another lock becomes a new lock-order edge (the runtime takes locks in about 75 places,
