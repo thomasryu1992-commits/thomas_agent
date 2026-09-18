@@ -140,16 +140,40 @@ def _seed_candidates(tmp_path, *specs, generation_id="GEN-001", cost_summary=_MI
 # --- content hash -------------------------------------------------------------
 
 def test_content_hash_changes_on_any_material_change():
-    base = promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE",)
-    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE",) == base
-    assert promotion_content_sha256(["S2"], ["aaa"], keep_active=False, live_tier="LIVE",) != base
-    assert promotion_content_sha256(["S1"], ["bbb"], keep_active=False, live_tier="LIVE",) != base
-    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=True, live_tier="LIVE",) != base  # add vs replace
+    base = promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE", artifact_sha256s=["x"])
+    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE", artifact_sha256s=["x"]) == base
+    assert promotion_content_sha256(["S2"], ["aaa"], keep_active=False, live_tier="LIVE", artifact_sha256s=["x"]) != base
+    assert promotion_content_sha256(["S1"], ["bbb"], keep_active=False, live_tier="LIVE", artifact_sha256s=["x"]) != base
+    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=True, live_tier="LIVE", artifact_sha256s=["x"]) != base  # add vs replace
+    # v5 (PR3a): the artifact the candidate installs as.
+    assert promotion_content_sha256(["S1"], ["aaa"], keep_active=False, live_tier="LIVE", artifact_sha256s=["y"]) != base
 
 
 def test_content_hash_is_order_insensitive():
-    assert promotion_content_sha256(["S1", "S2"], ["a", "b"], keep_active=False, live_tier="LIVE",) == \
-        promotion_content_sha256(["S2", "S1"], ["b", "a"], keep_active=False, live_tier="LIVE",)
+    assert promotion_content_sha256(["S1", "S2"], ["a", "b"], keep_active=False, live_tier="LIVE",
+                                    artifact_sha256s=["x1", "x2"]) == \
+        promotion_content_sha256(["S2", "S1"], ["b", "a"], keep_active=False, live_tier="LIVE",
+                                 artifact_sha256s=["x2", "x1"])
+
+
+def test_the_hash_pairs_each_artifact_with_its_candidate():
+    """v4 sorted the ids and the rule hashes as two lists, so which belonged to which was not in the
+    hash. The artifacts are pairs: the same two artifacts swapped between the candidates are another
+    promotion."""
+    kept = promotion_content_sha256(["c1", "c2"], ["a", "b"], keep_active=False, live_tier="LIVE",
+                                    artifact_sha256s=["x1", "x2"])
+    assert promotion_content_sha256(["c1", "c2"], ["a", "b"], keep_active=False, live_tier="LIVE",
+                                    artifact_sha256s=["x2", "x1"]) != kept
+    assert promotion_mod.artifact_pairs(["c2", "c1"], ["x2", "x1"]) == [["c1", "x1"], ["c2", "x2"]]
+
+
+@pytest.mark.parametrize("artifacts", [[], ["x1"], ["x1", "x2", "x3"], ["x1", ""], ["x1", None], "x1x2"],
+                         ids=["none", "short", "long", "empty", "not-a-string", "a-string"])
+def test_a_promotion_names_exactly_one_artifact_per_candidate(artifacts):
+    with pytest.raises(ApprovalBlocked) as exc:
+        promotion_content_sha256(["c1", "c2"], ["a", "b"], keep_active=False, live_tier="LIVE",
+                                 artifact_sha256s=artifacts)
+    assert exc.value.reason_code == "PROMOTION_ARTIFACT_INVALID"
 
 
 # --- the ask ------------------------------------------------------------------
@@ -179,10 +203,12 @@ def test_request_refuses_unknown_candidate(tmp_path):
 
 def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.strategy_pool.promotion",
                    expires="2999-01-01T00:00:00Z"):
+    record = pool.resolve_candidates(["S1"], tmp_path)[0]
+    artifacts = promotion_mod.candidate_artifacts([record])
     if content is None:
-        record = pool.resolve_candidates(["S1"], tmp_path)[0]
         content = promotion_content_sha256(
             [record["candidate_id"]], [record["strategy_rule_hash"]], keep_active=False, live_tier="LIVE",
+            artifact_sha256s=artifacts,
         )
     return {
         "approval_id": "approval_test",
@@ -191,7 +217,10 @@ def _fake_approval(tmp_path, *, status="APPROVED", content=None, action="crypto.
         # A LIVE install must fall inside the window the gate will check (review of #887).
         "decision": {"decision_reason": "yes", "decided_at": NOW},
         "approved_action_snapshot": {"action_type": action, "content_sha256": content,
-                                     "expires_at": expires},
+                                     "expires_at": expires,
+                                     # The pairs the order-time check reads (PR3a).
+                                     "normalized_parameters": {
+                                         "artifacts": [[record["candidate_id"], artifacts[0]]]}},
     }
 
 
@@ -1108,19 +1137,21 @@ def test_the_reactivation_set_is_material_to_the_hash():
     authorized. `BUILD_HISTORY` records replace mode simulated against a copy of the real pool
     on 2026-07-29 — 16 reactivated, 57 lifecycle counters reset — while the hash was a function
     of ids, rules and mode alone."""
-    base = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE")
-    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[]) == base
-    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=["c1"]) != base
+    x = dict(artifact_sha256s=["x"])
+    base = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", **x)
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[], **x) == base
+    assert promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=["c1"], **x) != base
     # Order-insensitive, like the two lists beside it.
-    assert promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c2", "c1"]) == \
-        promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c1", "c2"])
+    assert promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c2", "c1"], **x) == \
+        promotion_content_sha256(["c1"], ["aaa"], False, "LIVE", ["c1", "c2"], **x)
 
 
 def test_a_promotion_that_reactivates_nothing_hashes_as_stably_as_before():
     """The cost of v3 is zero for every promotion that returns nobody: an empty set is the
     default, so a fresh install's hash does not move with the pool underneath it."""
-    empty = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[])
-    assert empty == promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE")
+    empty = promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", reactivated_candidate_ids=[],
+                                     artifact_sha256s=["x"])
+    assert empty == promotion_content_sha256(["c1"], ["aaa"], keep_active=False, live_tier="LIVE", artifact_sha256s=["x"])
 
 
 def test_add_mode_reactivates_nothing_by_construction(tmp_path):
@@ -1166,15 +1197,18 @@ def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval
                   root=tmp_path, now=NOW, without_approval=True)
     cid = pool.load_active_pool(tmp_path)["active_strategies"][0]["candidate_id"]
 
+    artifacts = promotion_mod.candidate_artifacts(pool.resolve_candidates([cid], tmp_path))
     # Asked while the member is live: nothing is being reactivated.
     asked = promotion_content_sha256(
         [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
         False, "LIVE", pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+        artifact_sha256s=artifacts,
     )
     _suspend(tmp_path)          # the lifecycle moves underneath the pending approval
     now_hash = promotion_content_sha256(
         [cid], [pool.load_active_pool(tmp_path)["active_strategies"][0]["strategy_rule_hash"]],
         False, "LIVE", pool.reactivated_candidate_ids([cid], keep_active=False, root=tmp_path),
+        artifact_sha256s=artifacts,
     )
     assert asked != now_hash, "the approval would still verify against a changed effect"
 
@@ -1403,7 +1437,7 @@ def test_the_ask_for_a_live_promotion_says_it_arms_real_money(monkeypatch):
         return {"ok": True}
 
     common = dict(candidate_ids=["cand_a"], strategy_ids=["S1"], rule_hashes=["sha256:r"],
-                  keep_active=False, content_sha256="sha256:c", now=NOW)
+                  artifact_sha256s=["sha256:x"], keep_active=False, content_sha256="sha256:c", now=NOW)
     with mock.patch.object(permission, "build_permission_decision", fake_build):
         permission.build_strategy_promotion_permission_decision({}, live_tier="OBSERVATION", **common)
         assert captured["action"].risk_level == "ORANGE"
@@ -1417,6 +1451,8 @@ def test_the_ask_for_a_live_promotion_says_it_arms_real_money(monkeypatch):
         assert "LIVE_AUTONOMOUS" in captured["action"].risk_reason        # what still has to hold
         assert "no order capability" not in captured["action"].constraint
         assert captured["action"].normalized_parameters["live_tier"] == "LIVE"
+        # Signed as pairs (PR3a): which artifact is whose.
+        assert captured["action"].normalized_parameters["artifacts"] == [["cand_a", "sha256:x"]]
 
     ask = {
         "approval_id": "approval_x", "task_id": "task_x",
@@ -1494,8 +1530,11 @@ def test_an_arm_the_door_installs_under_thomas_s_answer_is_verified_at_order_tim
     assert promotion_mod.live_arm_problem(
         store.get(armed["approval_id"]), approval_id=armed["approval_id"],
         candidate_id=armed["candidate_id"], strategy_rule_hash=armed["strategy_rule_hash"],
-        promoted_at=armed["promoted_at"],
+        strategy_artifact_sha256=armed["strategy_artifact_sha256"], promoted_at=armed["promoted_at"],
     ) is None
+    # The artifact the door installed is the one Thomas's answer pairs with the candidate (PR3a).
+    signed = store.get(armed["approval_id"])["approved_action_snapshot"]["normalized_parameters"]
+    assert signed["artifacts"] == [[armed["candidate_id"], armed["strategy_artifact_sha256"]]]
 
 
 @requires_local_core
@@ -1544,7 +1583,8 @@ def test_verification_holds_a_live_install_to_the_arm_window(tmp_path, approval,
     _seed_candidates(tmp_path, _spec_dict())
     record = pool.resolve_candidates(["S1"], tmp_path)[0]
     content = promotion_content_sha256([record["candidate_id"]], [record["strategy_rule_hash"]],
-                                       keep_active=False, live_tier=live_tier)
+                                       keep_active=False, live_tier=live_tier,
+                                       artifact_sha256s=promotion_mod.candidate_artifacts([record]))
     fake = _fake_approval(tmp_path, content=content)
     change = dict(approval)
     if "decision" in change:
@@ -1564,9 +1604,12 @@ def test_verification_holds_a_live_install_to_the_arm_window(tmp_path, approval,
 def _arm_problem(approval, **entry):
     from tests._helpers import live_arm_approval
 
+    from tests._helpers import ARM_TEST_ARTIFACT
+
     base = live_arm_approval()
     facts = {"approval_id": base["approval_id"], "candidate_id": "cand_1",
-             "strategy_rule_hash": "deadbeef", "promoted_at": "2026-07-27T23:55:00Z", **entry}
+             "strategy_rule_hash": "deadbeef", "strategy_artifact_sha256": ARM_TEST_ARTIFACT,
+             "promoted_at": "2026-07-27T23:55:00Z", **entry}
     return promotion_mod.live_arm_problem(approval, **facts)
 
 
@@ -1600,8 +1643,15 @@ def test_the_approval_that_armed_the_entry_backs_it():
 
 
 def _approval_cases():
-    from tests._helpers import live_arm_approval
+    from tests._helpers import ARM_TEST_ARTIFACT, live_arm_approval
 
+    unpaired = live_arm_approval(artifacts=None)
+    garbled_pairs = _rebuilt(_snapshot(content={"artifacts": f"cand_1 {ARM_TEST_ARTIFACT}"}))
+    other = "sha256:" + "b" * 64
+    swapped = live_arm_approval(("cand_1", "cand_2"), ("deadbeef", "cafef00d"),
+                                artifacts=(other, ARM_TEST_ARTIFACT))
+    both = live_arm_approval(("cand_1", "cand_2"), ("deadbeef", "cafef00d"),
+                             artifacts=(ARM_TEST_ARTIFACT, other))
     arm = live_arm_approval()
     unsigned = _rebuilt({k: v for k, v in _snapshot().items() if k != "expires_at"})
     by_string = {name: _rebuilt(_snapshot(content={field: value}))
@@ -1667,6 +1717,18 @@ def _approval_cases():
                              promotion_mod.LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL),
         "pending-and-another-candidate": ({**arm, "status": "PENDING"}, {"candidate_id": "cand_2"},
                                           promotion_mod.LIVE_ARM_APPROVAL_NOT_APPROVED),
+        # PR3a, decision 33: the approval pairs the entry's artifact with the entry's candidate.
+        "asked-before-v5": (unpaired, {"approval_id": unpaired["approval_id"]},
+                            promotion_mod.LIVE_ARM_APPROVAL_UNBOUND),
+        "pairs-as-a-string": (garbled_pairs, {"approval_id": garbled_pairs["approval_id"]},
+                              promotion_mod.LIVE_ARM_APPROVAL_UNBOUND),
+        "another-artifact": (arm, {"strategy_artifact_sha256": "sha256:" + "e" * 64},
+                             promotion_mod.LIVE_ARM_APPROVAL_OTHER_ARTIFACT),
+        "no-artifact": (arm, {"strategy_artifact_sha256": None}, promotion_mod.LIVE_ARM_APPROVAL_OTHER_ARTIFACT),
+        # Both candidates and both artifacts are in it, the way v4 listed ids and rules — not as pairs.
+        "pairs-swapped": (swapped, {"approval_id": swapped["approval_id"]},
+                          promotion_mod.LIVE_ARM_APPROVAL_OTHER_ARTIFACT),
+        "paired-with-this-artifact": (both, {"approval_id": both["approval_id"]}, None),
     }
 
 

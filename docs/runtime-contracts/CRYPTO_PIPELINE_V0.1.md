@@ -106,7 +106,7 @@ carries `live_tier`:
   operator's `scripts/disarm_live_strategies.py`) takes no target tier, and the history import's
   `--activate-pool` installs every entry at OBSERVATION whatever its file says (2026-09-16, PR1c
   review — it used to install the file's own tier, which armed with no approval and no stage).
-- The tier is part of `promotion_content_sha256` (`PROMOTION_HASH_VERSION`, `strategy_promotion.v4`).
+- The tier is part of `promotion_content_sha256` (`PROMOTION_HASH_VERSION`, `strategy_promotion.v5`).
   An approval granted for an observation-tier install is not spendable on a live one, or the
   reverse. Since 2026-09-16 (PR1c) arming also needs Thomas's approval every time (no
   `--without-approval`, no `--allow-unconfirmed-holdout`) and an execution stage that admits a
@@ -118,6 +118,48 @@ carries `live_tier`:
 
 This does **not** weaken the rule above it: entry to the `LIVE` tier is still an explicit,
 approval-bound operator action, and nothing automatic may grant it.
+
+### The strategy artifact (PR3a, 2026-09-18, Thomas decisions 31-34)
+
+A strategy exists as a candidate row, inside a promotion approval, and as the pool entry the
+router reads. The promotion door copies the row onto the entry. Until PR3a nothing proved the copy
+was what Thomas approved: the approval named ids and rule hashes as two separately sorted lists,
+and the rule hash covers the spec's behavioural subset and nothing the router reads beside it.
+
+`crypto/strategy_artifact.py` hashes what a strategy **is**, once (`strategy_artifact.v1`):
+
+| part | from the row | on the entry |
+|---|---|---|
+| identity: `strategy_instance_id` (= `candidate_id`, decision 32), generation, rule-hash label | the row | top level |
+| the spec, in the canonical form `StrategySpec` parses it to | `strategy_spec` | `strategy_spec` |
+| admission: regime evidence, distribution reference | `admission_evidence(row)` | top level, where the doors read them |
+| ranking: `champion_score` | the row | top level |
+| cost basis: the cost model the backtest charged | `backtest_evidence.cost_summary.cost_model` | `strategy_artifact.cost_basis` |
+| risk assumptions: the backtest doors' parameters (entry-cost cap, liquidation leverage and margin, cooldown) | `backtest_evidence` | `strategy_artifact.risk_assumptions` |
+| evidence: candle-window hash, whole-evidence hash, closed count, win rate | the row | `strategy_artifact.evidence` |
+
+- **Not in it:** the display id (the door renames on a collision, and the strategy is the same
+  under either name, decision 31), and the fields the pool's other writers own (`status`, the
+  `lifecycle_*` fields, `live_tier*`, `promoted_*`).
+- **The door stamps** each new entry with the hash (`strategy_artifact_sha256`) and refuses unless
+  three hashes are one: the row's, the approval's, and the entry it built
+  (`STRATEGY_ARTIFACT_DIVERGED`, `APPROVAL_CONTENT_MISMATCH`). The ledger event records the pairs
+  (`promoted_artifacts`) and the tier.
+- **The approval binds the pairs** (`strategy_promotion.v5`): `artifacts: [[candidate_id,
+  artifact_sha256], ...]`, in the content hash and in the signed parameters. A row appended under
+  the same candidate id after the ask mints another artifact, and the approval does not verify.
+  A v4 approval verifies nothing.
+- **Every pool read and install recomputes every stamp** from the entry itself; one entry that no
+  longer hashes to its stamp refuses the whole pool (`STRATEGY_POOL_ARTIFACT_MISMATCH`, decision
+  34), as a spec that does not parse does. The cycle then routes nothing and records the code.
+  A writer that touches a hashed field would refuse the pool on the next read; the pool's writers
+  today touch none, and tests pin that.
+- **An entry with no stamp predates the artifact** (all 121 on 2026-09-18). It papers as before and
+  can never be armed LIVE (decision 33): `pool.live_arm_unsound` names it `unbound`, and the
+  order-time check requires the approval to pair the entry's artifact with its candidate. A LIVE
+  arm needs a re-promotion under a v5 approval; there is no migration tool.
+- **The win rate stays inside the artifact.** The lifecycle reads a top-level `backtest_win_rate`,
+  and giving it a value would switch on the win-rate probation rule, a separate decision.
 
 **Deferred decision (explicit, Thomas-only):** R10 consumption is currently scoped to
 `SENSITIVE_MEMORY_GOVERNANCE`. Strategy promotion would be the **second consumption

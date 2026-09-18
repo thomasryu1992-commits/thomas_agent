@@ -1376,8 +1376,12 @@ LIVE_ARM_ENTRY_CHANGED = "LIVE_ARM_ENTRY_CHANGED"
 LIVE_ARM_APPROVAL_UNREADABLE = "LIVE_ARM_APPROVAL_UNREADABLE"
 # The entry arms nothing whatever it names (`pool.live_arm_unsound`, review of #887).
 LIVE_ARM_SPEC_NOT_ITS_RULE = "LIVE_ARM_SPEC_NOT_ITS_RULE"
+# The entry carries no artifact stamp: it predates the artifact, and only a stamped entry may spend
+# money (PR3a, decision 33).
+LIVE_ARM_ENTRY_UNBOUND = "LIVE_ARM_ENTRY_UNBOUND"
 LIVE_ARM_REARMED_OUTSIDE_THE_DOOR = "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"
-_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
+_UNSOUND_ARM = {"spec": LIVE_ARM_SPEC_NOT_ITS_RULE, "unbound": LIVE_ARM_ENTRY_UNBOUND,
+                "disarmed": LIVE_ARM_REARMED_OUTSIDE_THE_DOOR}
 
 
 def verify_live_arm(
@@ -1390,12 +1394,12 @@ def verify_live_arm(
     ``approval_id`` is the id both pool reads name, or None. ``armed`` is the fresh read's
     `pool.live_arm_entries`:
 
-    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule,
-      and it was not put back in the tier by hand). Named even when no id was agreed, because an
-      unsound entry is why `pool.live_arm_approvals` names none;
+    - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule, it
+      was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
+      when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
     - it must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`);
-    - the approval store must hold the record Thomas answered to arm it
-      (`promotion.live_arm_problem`).
+    - the approval store must hold the record Thomas answered to arm it, pairing the entry's
+      artifact with its candidate (`promotion.live_arm_problem`).
 
     Reported, never raised for a problem: the gate refuses an unverified arm
     (`approved_profile_complete`) and the fan-out goes on."""
@@ -1421,7 +1425,9 @@ def verify_live_arm(
         return arm
     problem = live_arm_problem(
         approval, approval_id=approval_id, candidate_id=entry.get("candidate_id"),
-        strategy_rule_hash=entry.get("strategy_rule_hash"), promoted_at=entry.get("promoted_at"),
+        strategy_rule_hash=entry.get("strategy_rule_hash"),
+        strategy_artifact_sha256=entry.get(pool.ARTIFACT_SHA256_FIELD),
+        promoted_at=entry.get("promoted_at"),
     )
     if problem is not None:
         arm["approval_problem"] = problem

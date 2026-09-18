@@ -59,6 +59,7 @@ from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
+from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
@@ -192,8 +193,27 @@ def run_promotion(
     # The quality gates live at the ask and at the gate-roster call below; not in between.
     try:
         candidates = pool_store.resolve_candidates(selectors, root)
+        # The artifact each candidate installs as (PR3a, decisions 31-34), from the rows this door
+        # is about to copy. Three hashes must be one: the candidate's here, the approval's pair,
+        # and the entry's once it is built below.
+        artifacts = {c["candidate_id"]: promotion_mod.candidate_artifacts([c])[0] for c in candidates}
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    if verified_approval is not None:
+        # `verify_promotion_approval` recomputed the content hash from its own read of the store.
+        # The rows THIS door copies must hash to it too, or a row appended in between would install
+        # content Thomas never saw.
+        try:
+            same = (promotion_mod.content_sha256_of(candidates, keep_active=keep_active,
+                                                    live_tier=live_tier, root=root)
+                    == (verified_approval.get("approved_action_snapshot") or {}).get("content_sha256"))
+        except MvpRuntimeError as exc:
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+        if not same:
+            raise SystemExit(
+                "BLOCKED APPROVAL_CONTENT_MISMATCH: the candidates this door read are not the "
+                "promotion the approval binds"
+            )
 
     entries = []
     if keep_active:
@@ -264,9 +284,22 @@ def run_promotion(
             # `pool.admission_evidence`, shared with anything that replays a candidate before
             # promoting it, so a probe cannot measure a lineage this door will not install.
             **pool_store.admission_evidence(c),
+            # The artifact (PR3a): the parts of it the router does not read, and its hash. Every pool
+            # read recomputes the hash from this entry and refuses the pool if they part (decision 34).
+            artifact_mod.ARTIFACT_FIELD: artifact_mod.carried_parts(c),
+            artifact_mod.ARTIFACT_SHA256_FIELD: artifacts[c["candidate_id"]],
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
+        try:
+            installed_as = artifact_mod.artifact_sha256(artifact_mod.from_pool_entry(entries[-1]))
+        except MvpRuntimeError as exc:
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+        if installed_as != artifacts[c["candidate_id"]]:
+            raise SystemExit(
+                f"BLOCKED STRATEGY_ARTIFACT_DIVERGED: the entry built for {c['candidate_id']} is not "
+                f"the artifact its candidate names"
+            )
 
     # Every quality gate, from the shared roster in `promotion` — the same list the ask door
     # ran, so the two doors cannot drift apart again (the size cap and the reactivation
@@ -321,6 +354,10 @@ def run_promotion(
         "promoted_display_ids": display_ids,
         "promoted_rule_hashes": [c.get("strategy_rule_hash") for c in candidates],
         "evidence_hashes": [c.get("evidence_input_sha256") for c in candidates],
+        # Which artifact each candidate was installed as (PR3a), and into which tier: until this,
+        # whether a promotion armed real money was on the approval but not on the ledger.
+        "promoted_artifacts": sorted([cid, sha] for cid, sha in artifacts.items()),
+        "live_tier": live_tier,
         "kept_active": keep_active,
         "pool_size": installed,
         # How large a book the pool it just installed can actually fill under the directional
