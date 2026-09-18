@@ -31,6 +31,7 @@ from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
+from .candidate_identity import outcome_attribution_key
 from .paper import position_max_hold, settle_trade_plan, state_dir
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
 
@@ -231,11 +232,12 @@ def context_duplicates(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
         if not (isinstance(opened, str) and opened):
             continue
         # Supporting shadows (`shadow_kind`) are legitimately several per context — one per
-        # benched STRATEGY — so their dedupe key carries the strategy; gate rows (kind
-        # absent, including every row written before the field) keep the context-only key.
+        # benched LINEAGE — so their dedupe key carries the lineage (the one the book opens them
+        # by, PR3b-1: never the display id); gate rows (kind absent, including every row written
+        # before the field) keep the context-only key.
         kind = str(row.get("shadow_kind") or "")
         key = (str(row.get("symbol") or ""), str(row.get("timeframe") or ""), kind,
-               str(row.get("strategy_id") or "") if kind == SHADOW_KIND_SUPPORTING else "")
+               outcome_attribution_key(row) if kind == SHADOW_KIND_SUPPORTING else "")
         by_context.setdefault(key, []).append(row)
     duplicates: list[dict[str, Any]] = []
     for group in by_context.values():
@@ -455,7 +457,7 @@ def run_counterfactual_update(
     ``supporting_plans`` are the signals the router declined this candle
     (``paper.run_paper_update``'s ``supporting_plans``, each carrying its
     ``shadow_reason``); they open as :data:`SHADOW_KIND_SUPPORTING` shadows so a benched
-    lineage still accrues judgeable evidence — one open shadow per (context, strategy),
+    lineage still accrues judgeable evidence — one open shadow per (context, lineage),
     under the same global cap.
 
     Only shadows whose (symbol, timeframe) match this cycle are touched — a foreign
@@ -533,7 +535,7 @@ def run_counterfactual_update(
         opened = build_shadow_plan(blocked_plan, block_reasons=block_reasons, now=now)
         still_open.append(opened)
 
-    # Supporting shadows — one open row per (context, strategy), not per context: a gate
+    # Supporting shadows — one open row per (context, lineage), not per context: a gate
     # shadow prices what the GATE cost the book (one trade per context, the dedupe above),
     # where a supporting shadow prices what a BENCHED LINEAGE would have done, and two
     # lineages benched in one context are two different answers. The same lineage
@@ -546,10 +548,12 @@ def run_counterfactual_update(
         if len(still_open) >= MAX_OPEN_COUNTERFACTUALS:
             supporting_skipped += 1
             continue
-        sid = str(splan.get("strategy_id") or "")
+        # The same LINEAGE, not the same display id (PR3b-1, decision 38): a reused id must not
+        # suppress another lineage's shadow, and a renamed one must not book its signal twice.
+        lineage = outcome_attribution_key(splan)
         if any(
             p.get("shadow_kind") == SHADOW_KIND_SUPPORTING
-            and str(p.get("strategy_id") or "") == sid
+            and outcome_attribution_key(p) == lineage
             and settles_in_context(p, symbol=str(splan.get("symbol") or ""),
                                    timeframe=str(splan.get("timeframe") or ""))
             for p in still_open

@@ -132,24 +132,31 @@ def test_route_direction_conflict_fails_closed():
 # --- routing priority on realized evidence (the fast-context cap's router half) ------
 
 def _stats(**by_id):
-    """``realized_stats`` in the report's ``by_strategy`` shape: S_x=(closed, expectancy)."""
-    return {sid: {"closed_count": closed, "expectancy": expectancy}
+    """``realized_stats`` as `feedback.realized_by_lineage` keys it, for entries `_lineage_entry`
+    builds: S_x=(closed, expectancy) is the record of S_x's lineage (PR3b-1, decision 35)."""
+    return {f"cand:cand_{sid}": {"closed_count": closed, "expectancy": expectancy}
             for sid, (closed, expectancy) in by_id.items()}
 
 
+def _lineage_entry(strategy_id, **kw):
+    """A pool entry with a lineage of its own, as the factory mints them. `_pool_entry`'s share
+    one generation and rule hash, so the router could not tell their records apart."""
+    return {**_pool_entry(strategy_id=strategy_id, **kw), "candidate_id": f"cand_{strategy_id}"}
+
+
 def _conflict_pool():
-    long_e = _pool_entry(strategy_id="S_long")
+    long_e = _lineage_entry("S_long")
     short_spec = _spec_dict(strategy_id="S_short", direction="short", entry_rules={
         "operator": "AND", "conditions": [{"feature": "adx", "comparison": ">=", "value": 20.0}],
     })
-    return _pool(long_e, _pool_entry(spec=short_spec, strategy_id="S_short"))
+    return _pool(long_e, _lineage_entry("S_short", spec=short_spec))
 
 
 def test_route_primary_prefers_proven_realized_edge_over_champion_score():
     """champion_score was ANTI-correlated with realized R on this machine, so a shared
     context ranks on measured expectancy first: the proven edge outranks the better score."""
-    weak = _pool_entry(strategy_id="S_weak", champion_score=0.1)
-    strong = _pool_entry(strategy_id="S_strong", champion_score=0.9)
+    weak = _lineage_entry("S_weak", champion_score=0.1)
+    strong = _lineage_entry("S_strong", champion_score=0.9)
     route = route_entries(
         _pool(weak, strong), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
         realized_stats=_stats(S_weak=(12, 0.4), S_strong=(12, -0.2)),
@@ -163,8 +170,8 @@ def test_route_primary_prefers_proven_realized_edge_over_champion_score():
 def test_route_thin_realized_sample_falls_back_to_champion_score():
     """Below the floor a realized expectancy is a coin path — the pre-evidence key decides,
     exactly as it did before the fast-context cap existed."""
-    weak = _pool_entry(strategy_id="S_weak", champion_score=0.1)
-    strong = _pool_entry(strategy_id="S_strong", champion_score=0.9)
+    weak = _lineage_entry("S_weak", champion_score=0.1)
+    strong = _lineage_entry("S_strong", champion_score=0.9)
     route = route_entries(
         _pool(weak, strong), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
         realized_stats=_stats(S_weak=(paper.MIN_PRIORITY_SAMPLE_TRADES - 1, 0.9)),
@@ -176,8 +183,8 @@ def test_route_thin_realized_sample_falls_back_to_champion_score():
 def test_route_a_proven_no_edge_ranks_below_an_untested_hypothesis():
     """An adequate sample saying "no edge" is an answer, and it loses the slot to a
     hypothesis that has not been asked yet — the bench is where it re-earns entry."""
-    proven_loser = _pool_entry(strategy_id="S_loser", champion_score=0.9)
-    hypothesis = _pool_entry(strategy_id="S_hypo", champion_score=0.1)
+    proven_loser = _lineage_entry("S_loser", champion_score=0.9)
+    hypothesis = _lineage_entry("S_hypo", champion_score=0.1)
     route = route_entries(
         _pool(proven_loser, hypothesis), ROW, symbol="BTCUSDT", timeframe="1d", now=NOW,
         realized_stats=_stats(S_loser=(15, -0.3)),
@@ -194,7 +201,7 @@ def test_route_direction_conflict_resolves_toward_the_proven_side():
     assert route["status"] == STATUS_ENTRY_CANDIDATE
     assert route["direction"] == "LONG" and route["primary_strategy_id"] == "S_long"
     assert route["direction_conflict"]["basis"] == {
-        "strategy_id": "S_long", "expectancy": 0.35, "closed_count": 12,
+        "strategy_id": "S_long", "lineage": "cand:cand_S_long", "expectancy": 0.35, "closed_count": 12,
     }
     assert route["direction_conflict"]["losing_strategy_ids"] == ["S_short"]
     lost = [s for s in route["supporting"] if s["shadow_reason"] == paper.DIRECTION_CONFLICT_LOST]

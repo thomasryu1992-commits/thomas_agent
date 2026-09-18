@@ -195,8 +195,39 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
     autonomous order whose lineage names none, and `verify_live_arm` requires the armed entry's
     artifact to be the one the plan was made from (`PRE_ORDER_RISK_SNAPSHOT_V0.1.md` §2-3).
   - The live-trades board (`live_promotion`) prints it beside the rule hash.
-  - Nothing keys on it yet: realized-performance ranking, the lifecycle and the allowances still
-    group by candidate, rule and generation (3b).
+  - Nothing keys on it: the realized ranking, the lifecycle and the allowances group by the
+    lineage key (candidate, else generation and rule, else display id), below.
+
+### Runtime keys are lineages (PR3b, Thomas decisions 35-38)
+
+`strategy_id` is a display name: the factory restarts it every generation and the promotion door
+renames on a collision. A runtime key that is the display id lets a lineage that reuses the id
+inherit another's record, and a renamed lineage lose its own. The key is
+`candidate_identity.outcome_attribution_key`: `cand:<candidate_id>`, else
+`gen:<generation>:<rule hash>`, else `sid:<display id>`. The router and the lifecycle read all three
+for a pool entry (`entry_attribution_keys`). The one imprecise join, `sid:`, reaches only rows that
+name no candidate and no generation and rule hash: minted lineages write `cand:` rows, and an entry
+installed without a candidate id writes `gen:` rows (or `sid:` rows if it names no generation).
+
+- **Realized ranking and direction conflicts** (decision 35, PR3b-1): the cycle summarizes its own
+  paper rows and the supporting-shadow settlements by lineage (`feedback.realized_by_lineage`, the
+  report's `by_strategy` arithmetic, keeping each group's unrounded sum). The router reads an
+  entry's record under every key it accepts and combines the groups from their sums into one mean,
+  rounded once, as the report rounds it: the tiers compare that mean exactly, and a mean of rounded
+  group means could turn an exact break-even into a proven edge. Ties go to the lineage key
+  (`cand:` before `gen:` before `sid:`), then the display id. A resolved conflict's `basis` names the
+  lineage.
+- **Supporting shadows** (decision 38, PR3b-1): one open supporting shadow per context and lineage,
+  both when the cycle opens one and in the book's dedupe door.
+- **The live allowance** (decision 38, PR3b-1): an armed display id with no pool entry to name its
+  lineage falls back to `sid:<display id>`; it was `id:`, which no outcome key equals. The fallback is
+  unreachable from the cycle today, which hands the pool read its armed set came from. The allowance
+  reads an entry's own key, not all three: live outcomes carry a candidate id since 2026-07-26, and
+  only stamped entries can be armed.
+- Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
+  display id names two lineages, no lineage was recorded under two display ids, each occupying entry
+  reads the same rows under both keys and none spans two keys, and no context has an exact score or
+  realized tie. So PR3b-1 changed no routing decision there.
 
 **Deferred decision (explicit, Thomas-only):** R10 consumption is currently scoped to
 `SENSITIVE_MEMORY_GOVERNANCE`. Strategy promotion would be the **second consumption
