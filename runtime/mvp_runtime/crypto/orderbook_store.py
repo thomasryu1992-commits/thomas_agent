@@ -208,6 +208,19 @@ def summarize_book(book: Mapping[str, Any]) -> dict[str, float]:
     }
 
 
+def _walked_level(level: Any) -> tuple[float, float]:
+    """One ``(price, quantity)`` level as positive finite floats, or ``ORDERBOOK_IMPACT_UNPRICEABLE``.
+    A bool or a string is no number here, whatever ``float()`` would make of it."""
+    try:
+        price, available = level
+    except (TypeError, ValueError):
+        raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", "a level of the book is not a (price, size) pair") from None
+    for value in (price, available):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0.0 < value < float("inf")):
+            raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", "a level of the book is not a positive price and size")
+    return float(price), float(available)
+
+
 def estimate_market_impact(book: Mapping[str, Any], *, side: str, quantity: float) -> dict[str, Any]:
     """What a market order of ``quantity`` would pay against ``book`` (PR2d-3, Thomas decision 29).
     Pure.
@@ -224,7 +237,12 @@ def estimate_market_impact(book: Mapping[str, Any], *, side: str, quantity: floa
 
     Raises what `summarize_book` raises on a book it cannot describe (an empty or crossed side),
     and ``ORDERBOOK_IMPACT_UNPRICEABLE`` on a side or quantity no walk can price."""
-    mid = summarize_book(book)["mid"]
+    try:
+        mid = summarize_book(book)["mid"]
+    except ToolError:
+        raise   # the summary's own codes: an empty or crossed side
+    except (TypeError, ValueError):   # a level the summary could not even unpack or sum
+        raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", "the book holds a level that is not a (price, size) pair") from None
     if side not in ("BUY", "SELL"):
         raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", f"no book side for an order that is {side!r}")
     try:
@@ -235,9 +253,12 @@ def estimate_market_impact(book: Mapping[str, Any], *, side: str, quantity: floa
         raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", "an order to price needs a positive quantity")
     levels = list(book.get("asks") if side == "BUY" else book.get("bids"))
     remaining, spent, touched = wanted, 0.0, 0
-    for price, available in levels:
-        taken = min(remaining, float(available))
-        spent += taken * float(price)
+    for level in levels:
+        # Every level walked is checked, not only the best one the summary reads (review of #893):
+        # a malformed deeper level must be a refusal, never an exception mid-walk.
+        price, available = _walked_level(level)
+        taken = min(remaining, available)
+        spent += taken * price
         remaining -= taken
         touched += 1
         if remaining <= wanted * 1e-12:

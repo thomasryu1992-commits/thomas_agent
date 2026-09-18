@@ -561,3 +561,63 @@ def test_the_venue_book_says_when_it_was_in_hand(monkeypatch):
         flags=(NETWORK_ACCESS,), provider_id="binance_futures")).order_book(
         "BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=1)
     assert book == {"bids": [(99.0, 1.0)], "asks": [(101.0, 2.0)], "received_at": "2026-09-18T01:02:03Z"}
+
+
+
+def test_a_walk_over_a_level_it_cannot_read_raises_its_own_code():
+    from runtime.mvp_runtime.crypto.orderbook_store import estimate_market_impact
+
+    for level in (("x", 1.0), (101.0, True), (101.0,), None, (101.0, -1.0)):
+        with pytest.raises(ToolError) as exc:
+            estimate_market_impact({"bids": _BOOK["bids"], "asks": [(101.0, 0.1), level]},
+                                   side="BUY", quantity=0.5)
+        assert exc.value.reason_code == "ORDERBOOK_IMPACT_UNPRICEABLE", level
+
+
+class _Stamped:
+    """A collector whose every book is stamped with the wall clock it was read at."""
+
+    network_egress = True
+
+    def __init__(self):
+        self.reads = 0
+
+    def order_book(self, symbol, *, limit, timeout_seconds):
+        from runtime.mvp_runtime import timeutil
+
+        self.reads += 1
+        return {"bids": [(99.0, 1.0)], "asks": [(101.0, 1.0)], "received_at": timeutil.utc_now_iso()}
+
+
+def test_a_memoized_book_older_than_half_a_minute_is_read_again(monkeypatch):
+    """Review of #893: a fire can outlast the entry's minute on the book, and a later context of
+    the symbol would otherwise judge the first context's read."""
+    from runtime.mvp_runtime import timeutil
+    from runtime.mvp_runtime.crypto.market_data import ORDER_BOOK_MEMO_MAX_AGE_SECONDS, PerRunFeedCache
+
+    clock = {"now": "2026-09-18T00:00:00Z"}
+    monkeypatch.setattr(timeutil, "utc_now_iso", lambda: clock["now"])
+    inner = _Stamped()
+    cache = PerRunFeedCache(inner)
+    first = cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    clock["now"] = timeutil.plus_seconds("2026-09-18T00:00:00Z", ORDER_BOOK_MEMO_MAX_AGE_SECONDS)
+    assert cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10) is first
+    assert inner.reads == 1
+    clock["now"] = timeutil.plus_seconds("2026-09-18T00:00:00Z", ORDER_BOOK_MEMO_MAX_AGE_SECONDS + 1)
+    again = cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    assert inner.reads == 2 and again["received_at"] == clock["now"]
+
+
+def test_a_memoized_book_with_no_stamp_is_kept_as_every_memo_is():
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+
+    class _Unstamped(_Stamped):
+        def order_book(self, symbol, *, limit, timeout_seconds):
+            self.reads += 1
+            return {"bids": [(99.0, 1.0)], "asks": [(101.0, 1.0)]}
+
+    inner = _Unstamped()
+    cache = PerRunFeedCache(inner)
+    for _ in range(3):
+        cache.order_book("BTCUSDT", limit=ORDER_BOOK_LEVELS, timeout_seconds=10)
+    assert inner.reads == 1

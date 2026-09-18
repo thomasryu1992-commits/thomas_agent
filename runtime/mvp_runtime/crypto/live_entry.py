@@ -34,7 +34,8 @@ Order of checks, and why:
 2e. **freshness** (PR2c-1, Thomas decision 24) — the plan is sized and bracketed on its bar's
    close, which for a 1d context can be most of a day old. At the moment of the decision the
    account read must be at most a minute old, the market's price (a 1m close) at most five
-   minutes old, and within 50 bps of that bar close;
+   minutes old, and within 50 bps of that bar close, and the order book (PR2d-3, decision 29)
+   at most a minute old;
 3. **reconciliation** — does the local book agree with the venue for this symbol
    (LP5.1: the venue is the truth; a drifted or unreadable book refuses entries);
 4. **capacity** — LP5's own concurrency caps (2 open, 1 per symbol);
@@ -48,6 +49,9 @@ Order of checks, and why:
 8. **sizing** — LP5.2, against the *rounded* stop, so the size matches the stop that
    would actually be placed; the cap is judged at the higher of the bar close and the
    market's price (PR2c-1);
+8b. **market impact** (PR2d-3, Thomas decision 29) — the sized order walked on the book: its
+   20 levels must fill it, at no more than the cost model's slippage over the mid, and the
+   economics are judged again at the dearer of the two;
 9. **guard** — LP3's ``evaluate_live_order_guard`` on the finished intent, told the
    truthful venue exposure, with its caps judged at that same higher price.
 
@@ -71,15 +75,13 @@ import math
 from typing import Any, Mapping, Sequence
 
 from ..coerce import as_float as _f
-from ..errors import ToolError
 from .cost import DEFAULT_SLIPPAGE_BPS, MAX_ENTRY_COST_R, CostModel, round_trip_cost_r, worst_case_carry_r
 from .market_data import (
-    ORDER_BOOK_LEVELS,
     REFERENCE_PRICE_MAX_AGE_SECONDS,
     reference_quote_age_seconds,
     reference_quote_problem,
 )
-from .orderbook_store import estimate_market_impact
+from .orderbook_store import estimate_market_impact, summarize_book
 from .paper import STOP_BEYOND_LIQUIDATION, stop_beyond_liquidation_refusal
 from .execution_stage import StageStatus
 from .live_order import (
@@ -168,6 +170,9 @@ PRICE_BEYOND_BRACKET = "LIVE_ENTRY_PRICE_BEYOND_BRACKET"
 ORDER_BOOK_STALE = "LIVE_ENTRY_ORDERBOOK_STALE"
 BOOK_TOO_THIN = "LIVE_ENTRY_BOOK_TOO_THIN"
 SLIPPAGE_ABOVE_MODEL = "LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL"
+# The economics judged again at the book refused (review of #893: its own code, so the ledger can
+# tell it from the model's refusal before sizing).
+BOOK_COST_REFUSED = "LIVE_ENTRY_COST_REFUSED_AT_BOOK"
 # PR2c-2a: the risk limits in force are no longer the ones the verdict was judged on; the verdict
 # names none; or none could be resolved.
 RISK_LIMITS_CHANGED = "LIVE_ENTRY_RISK_LIMITS_CHANGED"
@@ -469,7 +474,6 @@ def plan_live_entry(
     allowed_symbols: Sequence[str] = (),
     filters_reason: str | None = None,
     risk_fraction: float = RISK_PER_TRADE_FRACTION,
-    spread_bps: float | None = None,
 ) -> dict[str, Any]:
     """Decide one live entry, or refuse it. Pure: no I/O, no venue, no order.
 
@@ -620,6 +624,16 @@ def plan_live_entry(
         reasons.append(MANAGED_EXIT_REFUSED)
         detail["managed_exit"] = managed
 
+    # The spread, from the book the impact below walks (review of #893): one book, never a spread
+    # and a book that could disagree. A book the summary cannot describe is unreadable.
+    spread_bps = None
+    if isinstance(order_book, Mapping):
+        try:
+            spread_bps = summarize_book(order_book)["spread_bps"]
+        except Exception:  # noqa: BLE001 — an undescribable book refuses; it never raises out
+            spread_bps = None
+    if spread_bps is not None:
+        detail["spread_bps"] = round(spread_bps, 6)
     if spread_bps is None:
         # Fail-closed for the ENTRY only (Thomas 2026-08-30). An unreadable book is
         # correlated with exactly the dislocation this guard exists for — venue stress
@@ -632,7 +646,6 @@ def plan_live_entry(
         reasons.append(BOOK_UNREADABLE_REFUSED)
     elif spread_bps > MAX_ENTRY_SPREAD_BPS:
         reasons.append(SPREAD_REFUSED)
-        detail["spread_bps"] = round(spread_bps, 6)
         detail["spread_limit_bps"] = MAX_ENTRY_SPREAD_BPS
 
     # 2e. Fresh enough to act on now (PR2c-1). Judged at ``clock``, the moment of the decision, not
@@ -753,14 +766,18 @@ def plan_live_entry(
         try:
             impact = estimate_market_impact(
                 order_book, side="BUY" if direction == "LONG" else "SELL", quantity=sizing["quantity"])
-        except ToolError as exc:
-            detail["market_impact_problem"] = exc.reason_code
+        except Exception as exc:  # noqa: BLE001 — a book that cannot be walked refuses, never raises
+            detail["market_impact_problem"] = getattr(exc, "reason_code", type(exc).__name__)
     detail["market_impact"] = impact
     if impact is None:
         return _decision(STATUS_REFUSED, [BOOK_UNREADABLE_REFUSED], symbol=symbol, now=now, **detail)
     if not impact["fills"]:
-        detail["order_book_levels"] = ORDER_BOOK_LEVELS
+        # `market_impact["levels"]` says how many levels the band held.
         return _decision(STATUS_REFUSED, [BOOK_TOO_THIN], symbol=symbol, now=now, **detail)
+    # The drift again, at the fill this book promises rather than at the 1m close (review of #893):
+    # the one the order will actually get in a fast market. Sealed, never refused on.
+    detail["drift_risk_multiplier_at_fill"] = drift_risk_multiplier(
+        plan.get("direction"), plan.get("entry_price"), impact["vwap"], bracket["risk_per_unit"])
     if impact["impact_bps"] > MAX_ENTRY_SLIPPAGE_BPS:
         detail["slippage_limit_bps"] = MAX_ENTRY_SLIPPAGE_BPS
         return _decision(STATUS_REFUSED, [SLIPPAGE_ABOVE_MODEL], symbol=symbol, now=now, **detail)
@@ -771,7 +788,7 @@ def plan_live_entry(
     detail["round_trip_cost_r_at_book"] = round(booked_cost_r, 6) if math.isfinite(booked_cost_r) else "inf"
     if booked_cost_r > MAX_ENTRY_COST_R:
         detail["cost_limit_r"] = MAX_ENTRY_COST_R
-        return _decision(STATUS_REFUSED, [COST_REFUSED], symbol=symbol, now=now, **detail)
+        return _decision(STATUS_REFUSED, [BOOK_COST_REFUSED], symbol=symbol, now=now, **detail)
 
     # 7. The intent. Carries the rounded bracket prices, so what the guard judges and what
     #    would be sent are the same numbers.
@@ -949,7 +966,7 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("bracket_priced", frozenset({BRACKET_UNPRICEABLE})),
     ("price_between_protective_legs", frozenset({PRICE_BEYOND_BRACKET})),
     ("stop_inside_liquidation", frozenset({LIQUIDATION_REFUSED})),
-    ("entry_economic", frozenset({COST_REFUSED})),
+    ("entry_economic", frozenset({COST_REFUSED, BOOK_COST_REFUSED})),
     ("slippage_within_model", frozenset({BOOK_TOO_THIN, SLIPPAGE_ABOVE_MODEL})),
     ("order_sizable", frozenset({SIZING_REFUSED})),
     ("intent_built", frozenset({INTENT_REFUSED})),
@@ -1020,7 +1037,8 @@ def gate_live_entry(
     filters = kw.get("filters")
     facts = {
         "equity_usdt": kw.get("equity_usdt"),
-        "spread_bps": kw.get("spread_bps"),
+        # The spread the decision derived from its book (PR2d-3 review).
+        "spread_bps": rederived.get("spread_bps"),
         "submitted_today": kw.get("submitted_today"),
         "daily_loss_breached": kw.get("daily_loss_breached"),
         "runtime_active": kw.get("runtime_active"),
@@ -1056,6 +1074,7 @@ def gate_live_entry(
             # PR2d-3: what the book said this size would pay, the economics judged at it, and
             # the drift's widening of the risk (sealed, not refused on).
             "market_impact", "round_trip_cost_r_at_book", "drift_risk_multiplier",
+            "drift_risk_multiplier_at_fill",
         )},
         "guard": {key: guard.get(key) for key in (
             "status", "notional_usdt", "order_notional_usdt", "reference_price",
@@ -1120,6 +1139,7 @@ __all__ = [
     "MAX_REFERENCE_DIVERGENCE_BPS",
     "NO_FILTERS",
     "NO_PLAN",
+    "BOOK_COST_REFUSED",
     "BOOK_TOO_THIN",
     "MAX_ENTRY_SLIPPAGE_BPS",
     "MAX_ORDER_BOOK_AGE_SECONDS",

@@ -104,6 +104,7 @@ def _plan(**kw):
     the *unguarded* path the tested happy path — the review finding that closed this fail-open.
     """
     plan = kw.pop("plan", PLAN)
+    clock = kw.pop("clock", NOW)
     args = dict(
         verdict=kw.pop("verdict", ALLOWING_VERDICT),
         plan=plan,
@@ -127,7 +128,6 @@ def _plan(**kw):
         # A healthy book by default, per this helper's own rule (every door open; each test
         # closes exactly one) — since the unreadable-book fail-open closed (2026-08-30),
         # leaving this unset would close the spread door in every test at once.
-        spread_bps=kw.pop("spread_bps", 1.0),
         now=kw.pop("now", NOW),
         # #610 Part 1. Defaulted to "this plan's strategy is armed for live" so the existing
         # cases keep testing the doors they were written for; the tier door has its own tests.
@@ -139,9 +139,9 @@ def _plan(**kw):
         entry_bar_time=kw.pop("entry_bar_time", BAR),
         entry_marks=kw.pop("entry_marks", NO_MARKS),
         # PR2c-1: judged at NOW, on the account read at NOW and a price at the plan's own entry.
-        clock=kw.pop("clock", NOW),
-        # A deep book read at the decision's own moment (PR2d-3): its spread is the one above.
-        order_book=kw.pop("order_book", deep_order_book(received_at=kw.get("clock", NOW))),
+        clock=clock,
+        # A deep book read at the decision's own moment (PR2d-3); the spread door judges its 0.2 bps.
+        order_book=kw.pop("order_book", deep_order_book(received_at=clock)),
         reference_quote=kw.pop("reference_quote", _quote((plan or {}).get("entry_price"))),
         **kw,
     )
@@ -349,10 +349,46 @@ def test_the_economics_are_judged_again_at_the_book(monkeypatch, half_spread, re
     decision = _plan(order_book=_book(half_spread_bps=half_spread))
     assert decision["round_trip_cost_r_at_book"] > decision["round_trip_cost_r"]
     if refused:
-        assert decision["reasons"] == [le.COST_REFUSED]
+        assert decision["reasons"] == [le.BOOK_COST_REFUSED]
         assert decision["round_trip_cost_r_at_book"] > le.MAX_ENTRY_COST_R
     else:
         assert decision["status"] == le.STATUS_READY
+
+
+def test_the_economics_at_the_book_are_floored_at_the_model():
+    """A book cheaper than the model does not make the economics cheaper (review of #893)."""
+    decision = _plan(order_book=_book(half_spread_bps=0.1))
+    assert decision["market_impact"]["impact_bps"] < le.MAX_ENTRY_SLIPPAGE_BPS
+    assert decision["round_trip_cost_r_at_book"] == decision["round_trip_cost_r"]
+
+
+def test_a_book_with_a_level_the_walk_cannot_read_refuses_and_never_raises():
+    """The summary reads the best prices and sums the sizes; the walk checks every level it takes
+    (review of #893)."""
+    book = _book()
+    book["asks"] = [book["asks"][0], ("not a price", 1.0), *book["asks"][2:]]
+    decision = _plan(order_book={**book, "asks": [(book["asks"][0][0], 1e-6), *book["asks"][1:]]})
+    assert decision["reasons"] == [le.BOOK_UNREADABLE_REFUSED]
+    assert decision["market_impact_problem"] == "ORDERBOOK_IMPACT_UNPRICEABLE"
+
+
+def test_the_drift_at_the_fill_is_sealed_beside_the_one_at_the_close():
+    """Review of #893: in a fast market the 1m close lags the book the order will cross."""
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage(),
+                              order_book=deep_order_book(60250.0, received_at=NOW))
+    decision = le.plan_live_entry(**kwargs)
+    assert decision["ready"] is True, decision["reasons"]
+    assert decision["drift_risk_multiplier"] == 1.0
+    assert decision["drift_risk_multiplier_at_fill"] == pytest.approx(1.25, abs=0.001)
+    sealed = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                profile=_gate_profile(), now=NOW)
+    assert sealed["facts"]["decision"]["drift_risk_multiplier_at_fill"] == decision["drift_risk_multiplier_at_fill"]
+
+
+def test_a_drift_inside_the_divergence_bound_is_recorded_not_refused():
+    decision = _plan(reference_quote=_quote(60240.0), limits=_roomy_limits())
+    assert decision["ready"] is True, decision["reasons"]
+    assert decision["drift_risk_multiplier"] == pytest.approx(1.24)
 
 
 def test_the_order_book_has_no_default():
@@ -878,16 +914,17 @@ def test_the_removed_gate_left_no_reason_code_behind():
 # --- ⑨ spread veto ---------------------------------------------------------
 
 def test_a_wide_spread_refuses_the_entry():
-    decision = _plan(spread_bps=80.0)
+    decision = _plan(order_book=deep_order_book(received_at=NOW, half_spread_bps=40.0))
     assert decision["status"] == le.STATUS_REFUSED
     assert le.SPREAD_REFUSED in decision["reasons"]
-    assert decision["spread_bps"] == 80.0
+    assert decision["spread_bps"] == pytest.approx(80.0)
     assert decision["spread_limit_bps"] == le.MAX_ENTRY_SPREAD_BPS
 
 
 def test_a_narrow_spread_does_not_refuse():
-    decision = _plan(spread_bps=5.0)
+    decision = _plan(order_book=deep_order_book(received_at=NOW, half_spread_bps=2.5))
     assert decision["status"] == le.STATUS_READY
+    assert decision["spread_bps"] == pytest.approx(5.0)
 
 
 def test_an_unreadable_book_refuses_the_entry():
@@ -895,14 +932,26 @@ def test_an_unreadable_book_refuses_the_entry():
     one path that skipped the dislocation check, and it correlates with exactly the venue
     stress the check exists for. Measured before deciding: 0 unreadable books in 33,604
     recorded cycles — this refusal costs nothing on the observed record."""
-    decision = _plan(spread_bps=None)
+    decision = _plan(order_book=None)
     assert decision["status"] == le.STATUS_REFUSED
     assert le.BOOK_UNREADABLE_REFUSED in decision["reasons"]
 
 
+@pytest.mark.parametrize("book", [
+    {"bids": [], "asks": [(60001.0, 1.0)], "received_at": NOW},
+    {"bids": [(60002.0, 1.0)], "asks": [(60001.0, 1.0)], "received_at": NOW},
+    {"bids": [("x", 1.0)], "asks": [(60001.0, 1.0)], "received_at": NOW},
+], ids=["empty-side", "crossed", "not-a-price"])
+def test_a_book_the_summary_cannot_describe_is_unreadable(book):
+    """The spread comes from the same book the impact walks (review of #893)."""
+    assert _plan(order_book=book)["reasons"] == [le.BOOK_UNREADABLE_REFUSED]
+
+
 def test_spread_at_the_limit_does_not_refuse():
-    decision = _plan(spread_bps=le.MAX_ENTRY_SPREAD_BPS)
-    assert decision["status"] == le.STATUS_READY
+    """The dislocation door lets the limit through; a book that wide is refused on its impact."""
+    decision = _plan(order_book=deep_order_book(received_at=NOW, half_spread_bps=le.MAX_ENTRY_SPREAD_BPS / 2))
+    assert le.SPREAD_REFUSED not in decision["reasons"]
+    assert decision["reasons"] == [le.SLIPPAGE_ABOVE_MODEL]
 
 
 def _leveraged_snapshot(**configured):
@@ -1029,7 +1078,8 @@ def test_the_gate_approves_the_order_the_facts_decide_and_names_every_check():
     assert set(GUARD_CHECK_IDS) | {INTENT_SHAPE_CHECK} <= names
     assert {le.CHECK_DECISION_READY, le.CHECK_INTENT_MATCHES_DECISION, le.CHECK_BRACKET_MATCHES_DECISION} <= names
     assert snapshot["lineage"]["candle_time"] == BAR and snapshot["lineage"]["timeframe"] == "1d"
-    assert snapshot["facts"]["spread_bps"] == 1.0 and snapshot["facts"]["limits"]["max_daily_order_count"] == 2
+    assert snapshot["facts"]["spread_bps"] == pytest.approx(0.2)   # derived from the book (PR2d-3)
+    assert snapshot["facts"]["limits"]["max_daily_order_count"] == 2
 
 
 @pytest.mark.parametrize("change", [
@@ -1074,7 +1124,7 @@ def test_an_entry_with_no_bracket_to_place_is_refused(bracket):
 def test_facts_that_refuse_the_decision_refuse_the_gate_and_name_the_door():
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
     decision = le.plan_live_entry(**kwargs)
-    kwargs["spread_bps"] = 80.0      # the book widened between the decision and the gate
+    kwargs["order_book"] = deep_order_book(received_at=NOW, half_spread_bps=40.0)   # the book widened
     snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
                                   profile=_gate_profile(), now=NOW)
     assert snapshot["approved"] is False
@@ -1250,7 +1300,7 @@ def test_the_market_may_be_at_most_fifty_bps_from_the_bar_close(price, diverged)
 
 def test_every_stale_fact_is_named_at_once():
     decision = _plan(snapshot=_account_read_at("2026-07-25T11:00:00Z"), reference_quote=_quote(61000.0),
-                     spread_bps=80.0)
+                     order_book=deep_order_book(received_at=NOW, half_spread_bps=40.0))
     assert set(decision["reasons"]) == {le.ACCOUNT_STALE, le.PRICE_DIVERGED, le.SPREAD_REFUSED}
 
 

@@ -2775,3 +2775,45 @@ def test_a_probe_whose_book_cannot_be_read_is_refused_at_its_gate(tmp_path, monk
     assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
     assert "order_book_fresh" in str(exc.value) and "slippage_within_model" in str(exc.value)
     assert adapter.submitted == []
+
+
+
+def test_the_probe_gate_passes_an_impact_at_the_model(tmp_path):
+    intent, facts = _gate_facts(_active_plan(tmp_path),
+                                order_book=deep_order_book(100000.0, received_at=NOW, half_spread_bps=3.0))
+    record = probe.gate_probe_order(intent, **facts)
+    assert record["approved"] is True, record["failed_checks"]
+
+
+def test_the_probe_gate_never_raises_on_a_book_it_cannot_walk(tmp_path):
+    book = {"bids": [[]], "asks": [(100001.0, 1.0)], "received_at": NOW}
+    intent, facts = _gate_facts(_active_plan(tmp_path), order_book=book)
+    record = probe.gate_probe_order(intent, **facts)
+    assert {"spread_within_limit", "slippage_within_model"} <= set(record["failed_checks"])
+
+
+class _BookCollector:
+    def __init__(self, book=None, error=None):
+        self.book, self.error, self.asked = book, error, []
+
+    def order_book(self, symbol, *, limit, timeout_seconds):
+        self.asked.append((symbol, limit))
+        if self.error is not None:
+            raise self.error
+        return self.book
+
+
+def test_the_fire_reads_the_book_it_is_gated_on(monkeypatch):
+    from runtime.mvp_runtime.crypto.market_data import ORDER_BOOK_LEVELS
+
+    collector = _BookCollector(book=deep_order_book(100000.0, received_at=NOW))
+    monkeypatch.setattr(cli, "select_market_data_collector", lambda now=None, root=None: collector)
+    assert cli._read_book("BTCUSDT", now=NOW, root=None, timeout_seconds=3) is collector.book
+    assert collector.asked == [("BTCUSDT", ORDER_BOOK_LEVELS)]
+
+
+def test_a_book_the_fire_cannot_read_is_none_and_says_so(monkeypatch, capsys):
+    collector = _BookCollector(error=RuntimeError("scripted"))
+    monkeypatch.setattr(cli, "select_market_data_collector", lambda now=None, root=None: collector)
+    assert cli._read_book("BTCUSDT", now=NOW, root=None, timeout_seconds=3) is None
+    assert "BOOK      : unreadable (RuntimeError)" in capsys.readouterr().err

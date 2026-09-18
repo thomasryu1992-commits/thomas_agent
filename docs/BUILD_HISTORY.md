@@ -37,18 +37,34 @@ Append a new entry when a milestone ships, in the same PR.
   - **The doors.**
     - A book in hand more than 60 seconds before the decision, or at no time it says, refuses
       (`LIVE_ENTRY_ORDERBOOK_STALE`). The venue's book now carries its `received_at`, because the
-      per-fire memo hands one book to every context of the symbol.
+      per-fire memo hands one book to every context of the symbol; the memo reads a book again once
+      it is over 30 seconds old. The spread door judges the same book.
     - After sizing: a book too thin to fill the order (`LIVE_ENTRY_BOOK_TOO_THIN`), or an impact
       above the model's 3.0 bps (`LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL`), refuses.
     - The economics are then judged again at the dearer of the two (`round_trip_cost_r_at_book`).
-  - **The drift is sealed, not bounded** (decision 29). An adverse drift from the bar close to the
-    market widens the risk to `(risk + d) / risk` of the plan's. `drift_risk_multiplier` is
-    recorded on every entry until its distribution is measured.
+  - **The drift is sealed, not bounded** (decision 29). An adverse drift from the bar close widens
+    the risk to `(risk + d) / risk` of the plan's. It is measured at the 1m close
+    (`drift_risk_multiplier`) and at the fill the book promises (`drift_risk_multiplier_at_fill`), and
+    sealed on every entry until its distribution is measured.
   - **The probe** reads the book just before its gate (one public call) and is judged on the same
     three bounds.
   - **Measured before this** (the PR2d investigation, 18,765 books): the widest half-spread was
     1.6 bps, and the largest order the budget allows sits at 7% of the thinnest top-20 depth. At
     today's sizes the door almost never refuses; it is there for the day either stops being true.
+  - **What the independent review of #893 found, fixed in the same PR.**
+    - **A long fire refused its later contexts** (medium, latent). The minute on the book ran from
+      the first read of the symbol in the fire, usually the accumulator's, because the per-fire
+      memo never reads again. Fires measured 26 s at the median and 52 s at most, so the margin was
+      8 s. The memo now reads a book again once it is over 30 seconds old.
+    - **Smaller fixes:**
+      - a malformed deeper level refuses instead of raising and halting the fan-out, and the probe
+        gate never raises either;
+      - the drift is also sealed at the fill the book promises, not only at the 1m close;
+      - the decision derives the spread from the book it walks;
+      - the book's economics refusal has its own code;
+      - the reused limits are named in `tunables`;
+      - tests now cover the economics' floor at the model, the probe's real book read, its
+        boundary, and the fire memo.
 
 - **An entry is refused on optional data that failed or went stale** (crypto PR2d-2, Thomas decision
   28, 2026-09-18; `crypto/cycle.py`, `crypto/live_entry.py`, `crypto/live_route.py`).

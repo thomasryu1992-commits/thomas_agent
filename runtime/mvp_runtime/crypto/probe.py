@@ -757,7 +757,7 @@ def gate_probe_order(
         spread = summarize_book(book)["spread_bps"] if book is not None else None
         impact = (estimate_market_impact(book, side="BUY" if PROBE_DIRECTION == "LONG" else "SELL",
                                          quantity=float(quantity)) if book is not None else None)
-    except (ToolError, TypeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — a book that cannot be read fails its checks, never raises
         spread, impact = None, {"problem": getattr(exc, "reason_code", type(exc).__name__)}
     checks += [
         check("order_book_fresh", order_book_fresh(book, clock=clock),
