@@ -207,6 +207,11 @@ def _entry(strategy_id="S1", status="PAPER_ACTIVE", **extra):
             "strategy_spec": _spec_dict(strategy_id), **extra}
 
 
+# The lineage `_entry` names (none of the three fields): what a decision about one carries, with the
+# status it judged (PR3b-2).
+_NO_LINEAGE = {"candidate_id": None, "strategy_generation_id": None, "strategy_rule_hash": None}
+
+
 def test_run_lifecycle_skips_terminal_and_unattributed():
     active = {"active_strategies": [_entry("S1"), _entry("S2", status="SUSPENDED")]}
     decisions = run_lifecycle(active, _outcomes([-0.1] * 30, strategy_id="S_OTHER"), now=NOW)
@@ -341,16 +346,17 @@ def test_update_statuses_never_blanks_a_good_stamp(tmp_path):
     seeded["updated_at"] = "2026-07-31T10:04:33Z"
     pool.install_active_pool(seeded, root=tmp_path)
 
-    pool.update_statuses([{"strategy_id": "S1", "new_status": "WARNING",
-                           "consecutive_failures": 1}], root=tmp_path)
+    pool.update_statuses([{"strategy_id": "S1", "previous_status": "PAPER_ACTIVE", "new_status": "WARNING",
+                           "consecutive_failures": 1, **_NO_LINEAGE}], root=tmp_path)
     assert pool.load_active_pool(tmp_path)["updated_at"] == "2026-07-31T10:04:33Z"
+    assert pool.load_active_pool(tmp_path)["active_strategies"][0]["status"] == "WARNING"
 
 
 def test_update_statuses_terminal_immutable(tmp_path):
     _install_pool(tmp_path, _entry("S1", status="SUSPENDED"))
     with pytest.raises(ToolError) as exc:
-        pool.update_statuses([{"strategy_id": "S1", "new_status": "PAPER_ACTIVE",
-                               "consecutive_failures": 0}], root=tmp_path)
+        pool.update_statuses([{"strategy_id": "S1", "previous_status": "SUSPENDED", "new_status": "PAPER_ACTIVE",
+                               "consecutive_failures": 0, **_NO_LINEAGE}], root=tmp_path)
     assert exc.value.reason_code == "LIFECYCLE_TERMINAL_IMMUTABLE"
 
 

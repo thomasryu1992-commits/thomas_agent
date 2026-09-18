@@ -28,8 +28,9 @@ asymmetry:
   Imported history with no lineage at all honestly feeds nothing.
 
 Effect discipline: :func:`evaluate_lifecycle` and the performance math are pure. The
-one effect — updating pool statuses — goes through ``pool.update_statuses`` (locked,
-transition-guarded) and is applied by the cycle ONLY when the paper store is the real
+one effect — updating pool statuses — goes through ``pool.apply_status_decisions`` (locked,
+transition-guarded, and applied only to the lineage and status each decision judged) and is
+applied by the cycle ONLY when the paper store is the real
 gated store; a dry-run cycle computes and records the decisions without persisting,
 exactly like every other paper effect.
 """
@@ -47,7 +48,7 @@ from . import feedback
 # Moved to the leaf (PR3b-1) so the router can key on a lineage without importing this module,
 # which imports `feedback`, which imports `paper`. Re-exported: its callers import it from here.
 from .candidate_identity import entry_attribution_keys as _entry_attribution_keys
-from .candidate_identity import outcome_attribution_key
+from .candidate_identity import lineage_of, outcome_attribution_key
 
 DEFAULT_WINDOWS = (20, 30, 50, 100)
 
@@ -339,7 +340,7 @@ OPERATOR_RETIREMENT_REASON = "operator_retired"
 def operator_retirement_decision(
     entry: Mapping[str, Any], *, reason: str, retired_by: str, now: str,
 ) -> dict[str, Any]:
-    """One operator-originated SUSPEND, in the shape ``pool.update_statuses`` accepts.
+    """One operator-originated SUSPEND, in the shape ``pool.apply_status_decisions`` accepts.
 
     Deliberately not a second way to compute a status: the record carries the same
     fields ``evaluate_lifecycle`` produces, so the pool entry that results is
@@ -367,8 +368,9 @@ def operator_retirement_decision(
         )
     decision: dict[str, Any] = {
         "strategy_id": strategy_id,
-        "candidate_id": entry.get("candidate_id"),
-        "strategy_rule_hash": entry.get("strategy_rule_hash"),
+        # The lineage retired, all three fields (the generation since PR3b-2): the pool write
+        # refuses the decision if the id names another lineage by then.
+        **lineage_of(entry),
         "previous_status": current,
         "new_status": "SUSPENDED",
         "status_changed": True,
@@ -401,8 +403,9 @@ def run_lifecycle(
     Attribution is by LINEAGE (:func:`outcome_attribution_key`), not by display name:
     a strategy is judged only on trades its own lineage made. Returns one decision per
     non-terminal strategy (terminal ones are left untouched without even an evaluation
-    — the source rule). The caller applies ``status_changed`` decisions through
-    ``pool.update_statuses``."""
+    — the source rule). Each decision names the lineage it judged, and the caller applies them
+    through ``pool.apply_status_decisions``, which skips one whose display id names another
+    lineage by then (PR3b-2)."""
     by_lineage: dict[str, list[Mapping[str, Any]]] = {}
     for outcome in outcomes:
         if outcome.get("outcome_closed") is not True:
@@ -424,11 +427,15 @@ def run_lifecycle(
         performance = compute_strategy_performance(
             strategy_id, attributed, backtest_win_rate=entry.get("backtest_win_rate"), now=now,
         )
-        decisions.append(evaluate_lifecycle(
+        decision = evaluate_lifecycle(
             status, performance,
             consecutive_failures=int(entry.get("lifecycle_consecutive_failures") or 0),
             thresholds=thresholds, now=now,
-        ))
+        )
+        # The lineage judged (PR3b-2, Thomas decision 36). The pool can change between this read
+        # and the locked write, and the display id may then name another lineage: the write
+        # refuses this one decision rather than demote a strategy on another's record.
+        decisions.append({**decision, **lineage_of(entry)})
     return decisions
 
 
@@ -464,7 +471,7 @@ def is_noteworthy(decision: Mapping[str, Any]) -> bool:
 def split_for_record(decisions: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """Split evaluated decisions into ``(noteworthy_in_full, unchanged_strategy_ids)``.
 
-    The runtime keeps working with the FULL list — ``pool.update_statuses`` still receives
+    The runtime keeps working with the FULL list — ``pool.apply_status_decisions`` still receives
     every decision. This only governs what is persisted."""
     noteworthy = [dict(d) for d in decisions if is_noteworthy(d)]
     quiet = [str(d.get("strategy_id")) for d in decisions if not is_noteworthy(d)]

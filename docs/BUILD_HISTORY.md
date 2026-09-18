@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A lifecycle decision moves only what it judged** (crypto PR3b-2, Thomas decision 36,
+  2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`, `crypto/pool.py`,
+  `crypto/cycle.py`, `crypto/retirement.py`, `scripts/retire_strategies.py`).
+  - **The gap:** the lifecycle judges the pool the cycle read, and the locked write applied its
+    decisions by display id to the pool as it was by then. A promotion in between could put another
+    lineage under that id, and A's demotion landed on B. The operator retirement's approval bound
+    the lineage, but its write re-read the pool after the approval was verified.
+  - **The change:** `run_lifecycle` and `operator_retirement_decision` name what they judged: the
+    lineage (`lineage_of`: candidate, generation, rule hash) and the status. The status write
+    (`pool.apply_status_decisions`) finds a decision stale when its display id names another
+    lineage or status by then, or no entry, or when the decision does not say what it judged. It
+    checks after the shape guard and before the terminal guard.
+    - The cycle's lifecycle skips a stale decision, reports it (`LIFECYCLE_DECISION_STALE`,
+      `lifecycle_stale`, a marked report line) and applies the rest: a demotion held back for one
+      stale decision would be the less safe outcome, and the next cycle judges again. A write that
+      applied nothing leaves the file alone, and a refused write marks every transition not applied.
+    - An operator retirement is all or nothing, as the set it was approved as: the door reads the
+      named entries once, verifies the approval against that read and writes exactly those entries,
+      so a slot another lineage takes in between refuses the retirement. `update_statuses` is all
+      or nothing too, since its count cannot report a skip.
+  - **Review:** the "lifecycle cannot arm" pin read `update_statuses`' source, which had become a
+    wrapper; it reads the real writer now, beside a test that applies a recovery and diffs the entry.
+
 - **The router, the shadow book and the live allowance key on the lineage** (crypto PR3b-1, Thomas
   decisions 35 and 38, 2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`,
   `crypto/feedback.py`, `crypto/cycle.py`, `crypto/paper.py`, `crypto/counterfactual.py`,

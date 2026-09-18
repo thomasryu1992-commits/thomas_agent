@@ -95,3 +95,22 @@ def entry_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
     if isinstance(strategy_id, str) and strategy_id:
         keys.add(f"sid:{strategy_id}")
     return keys
+
+
+# What a record names of the lineage it is about (PR3b-2, Thomas decision 36). A lifecycle decision
+# carries these for the entry it judged, and the pool write refuses a decision whose display id now
+# names another lineage: the pool can change between the cycle's read and the locked write.
+LINEAGE_FIELDS = ("candidate_id", "strategy_generation_id", "strategy_rule_hash")
+
+
+def lineage_of(record: Mapping[str, Any]) -> dict[str, str | None]:
+    """The lineage ``record`` (a pool entry or a decision about one) names, each field None when it
+    names none. A pool entry spells its generation ``generation_id``."""
+    def named(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    return {
+        "candidate_id": named(record.get("candidate_id")),
+        "strategy_generation_id": named(record.get("strategy_generation_id") or record.get("generation_id")),
+        "strategy_rule_hash": named(record.get("strategy_rule_hash")),
+    }

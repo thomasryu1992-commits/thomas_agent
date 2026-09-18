@@ -99,19 +99,26 @@ def run_retirement(
             "BLOCKED: retirement needs --approval-id (ask first with --request) or the "
             "explicit --without-approval escape"
         )
+    # One read of the named entries: the approval is verified against them and the write retires
+    # exactly them, so a slot another lineage takes in between refuses the retirement (PR3b-2).
+    try:
+        entries = retirement_mod.resolve_pool_entries(strategy_ids, root)
+    except MvpRuntimeError as exc:
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
     verified_approval = None
     if approval_id is not None:
         approval_store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
         try:
             verified_approval = retirement_mod.verify_retirement_approval(
                 approval_store.get(approval_id), strategy_ids=strategy_ids, root=root, now=now,
+                entries=entries,
             )
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     try:
         applied = retirement_mod.apply_retirement(
-            strategy_ids, reason=reason, retired_by=retired_by, root=root, now=now,
+            strategy_ids, reason=reason, retired_by=retired_by, root=root, now=now, entries=entries,
         )
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")

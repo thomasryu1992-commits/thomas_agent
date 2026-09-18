@@ -100,8 +100,10 @@ carries `live_tier`:
   to. Conflating them would release a drawdown exclusion.
 - **Only the operator promotion door arms.** It is a field rather than a status precisely
   because the lifecycle ladder recovers `WARNING → PAPER_ACTIVE`: a tier carried in `status`
-  would be re-granted by a demotion path. `update_statuses` writes only `status`, so the ladder
-  structurally cannot arm a strategy, and a test asserts it never names the field. Two other
+  would be re-granted by a demotion path. The status write (`pool.apply_status_decisions`, which
+  `update_statuses` wraps) writes only `status` and the `lifecycle_*` fields, so the ladder
+  structurally cannot arm a strategy; tests assert the writer never names the field and that a
+  recovery leaves an OBSERVATION entry's tier untouched. Two other
   writers exist and neither can arm: `pool.disarm_live_tier` (the automatic demotion and the
   operator's `scripts/disarm_live_strategies.py`) takes no target tier, and the history import's
   `--activate-pool` installs every entry at OBSERVATION whatever its file says (2026-09-16, PR1c
@@ -224,6 +226,19 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
   unreachable from the cycle today, which hands the pool read its armed set came from. The allowance
   reads an entry's own key, not all three: live outcomes carry a candidate id since 2026-07-26, and
   only stamped entries can be armed.
+- **Lifecycle decisions** (decision 36, PR3b-2): each decision names what it judged, the lineage
+  (`candidate_identity.lineage_of`: candidate, generation, rule hash) and the status, and so does
+  an operator retirement. The locked pool write (`pool.apply_status_decisions`) finds a decision
+  stale when its display id names another lineage or another status by then, or no entry at all,
+  or when it does not say what it judged (the keys are absent). It checks this after the shape
+  guard and before the terminal guard.
+  - The cycle's lifecycle skips a stale decision, reports it (`LIFECYCLE_DECISION_STALE`,
+    `lifecycle_stale` on the cycle record, a marked report line) and applies the rest: a demotion
+    held back for one stale decision would be the less safe outcome, and the next cycle judges the
+    entry again.
+  - An operator retirement is approved as a set and is all or nothing: it builds its decisions from
+    the entries its approval was verified against, and a stale one refuses the whole retirement
+    before anything is written. `update_statuses` is all or nothing too.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or
