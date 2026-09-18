@@ -24,6 +24,43 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A reader waits for an append it caught half-written, and a line a crash cut off still fails
+  closed** (2026-09-18; `jsonl.py`).
+  - **The gap:** most JSONL readers do not hold the appender's lock (`ApprovalStore`,
+    `WorkingMemoryStore`, `LedgerStore.health`, every crypto outcome and candidate reader). The
+    kernel grows a file a page at a time while one write lands, so such a reader can see the
+    last line without its newline. Measured on this host against a writer appending ~2.6 KB
+    lines without pause: 748 of 10,885 reads on tmpfs and 1,352 of 39,561 on ext4. Every one of
+    them was refused as a corrupt store (`APPROVAL_READ_FAILED`, `WORKING_MEMORY_UNREADABLE`,
+    ...). A tear inside a multi-byte character, which Korean text makes common, escaped as a
+    bare `UnicodeDecodeError` instead of the store's code. No persisted record, archive or
+    container log shows production ever hitting either. The interactive refusals are not
+    persisted, though, and the container logs start at the last deploy.
+  - **The fix:** `iter_numbered` waits up to one second for an unparseable last line to get its
+    newline (`_finished_tail`). A line that is finished is parsed like any other. A line that
+    is never finished raises the caller's code, as before. The file is read as bytes and each
+    line is decoded inside the parse, so bad UTF-8 raises the store's code. It is also 10–20%
+    faster on a 35 MB archive. The wait is 100 looks 10 ms apart, a count and not a clock, because
+    tests freeze `time.monotonic` and a frozen clock would have made the wait endless.
+  - **Why not the two obvious fixes:**
+    - *Readers take the appender's lock, shared:* every read made while a caller already holds
+      another lock becomes a new lock-order edge (the runtime takes locks in about 75 places,
+      and the approval spend already reads approvals and working memory under `.consume.lock`).
+      A `flock` cycle across two processes hangs both, where today they only fail closed. It
+      also needs edits store by store, including the money path, and it does nothing for stores
+      whose appenders take no lock (`validated.jsonl`, `core_candidates.jsonl`).
+    - *Drop the unterminated line:* for stores that record something already done (an outcome,
+      a decision), a line a crash cut off is a fact that happened and was lost. The store would
+      read as whole, and the next append would glue its row onto the fragment. The pre-order
+      snapshot store drops such a line on purpose, because no order follows a row that was not
+      synced; that argument holds only there.
+  - **The prescreen no longer skips an unterminated last line.** A tear can end in a brace
+    that balances, so a filtered reader used to skip a cut-off line unparsed and never report
+    it.
+  - **The cost:** each read of a store whose last line really is cut off fails closed one second
+    later. That includes reads under the appender's lock, which cannot be racing anything. A
+    writer stalled longer than a second is still refused as a damaged store, the safe direction.
+
 - **Two entry doors cannot spend the same room, and nothing may rest where an entry goes**
   (crypto PR2c-3, Thomas decisions 25 and 26, 2026-09-17; `crypto/live_order.py`,
   `crypto/live_entry.py`, `crypto/live_leg.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`).

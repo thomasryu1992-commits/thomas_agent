@@ -12,10 +12,19 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, BinaryIO, Iterable, Iterator, Mapping
 
 from .errors import MvpRuntimeError, PersistenceError
+
+# How long a reader waits for an unterminated last line to be finished, and how often it looks.
+# See `_finished_tail` for why the wait exists and why it is this long. The wait is bounded by a
+# count of looks, not by a clock: a clock can be frozen (tests patch `time.monotonic`), and a
+# frozen clock would have turned a store cut off by a crash into a reader that never returns.
+_TAIL_PATIENCE_SECONDS = 1.0
+_TAIL_POLL_SECONDS = 0.01
+_TAIL_POLLS = round(_TAIL_PATIENCE_SECONDS / _TAIL_POLL_SECONDS)
 
 
 def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code: str, label: str) -> None:
@@ -23,6 +32,11 @@ def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code
 
     Deterministic on disk (``sort_keys=True``); a corrupt object or an unwritable path
     raises ``PersistenceError(write_code, ...)``.
+
+    The caller's lock keeps two appends from interleaving. It does not make an append atomic to a
+    reader that does not hold the lock: the kernel grows the file a page at a time while one write
+    lands, so such a reader can find the last line without its newline. :func:`iter_numbered`
+    waits for that line to be finished.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,28 +48,89 @@ def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code
 
 
 def _screened(
-    numbered: Iterator[tuple[int, str]], must_contain: tuple[str, ...]
-) -> Iterator[tuple[int, str]]:
+    numbered: Iterator[tuple[int, bytes]], must_contain: tuple[bytes, ...]
+) -> Iterator[tuple[int, bytes]]:
     """Drop lines that cannot carry what the caller asked for, without parsing them.
 
     Allocation-free on the dropped path, which is most of the win: rows in the record ledger
     average ~5 KB, so testing a `line.strip()` copy would have re-copied the whole store to
-    avoid decoding it. Containment reads the raw line — a trailing newline changes no
-    substring answer.
+    avoid decoding it. Containment reads the raw bytes — a trailing newline changes no
+    substring answer, and the tokens are the caller's strings in the file's own UTF-8.
 
-    A line is skipped only if it also still LOOKS whole. `endswith("}")` alone is not that
-    test: a torn append often lands just after a nested object and ends in a brace it does not
-    own, so the brace counts must balance too. Braces inside string values can only unbalance
-    a line that is in fact fine, which costs one parse and never a wrong answer; a truncated
-    line cannot balance, so it reaches the parser and fails closed there.
+    A line is skipped only if it also still LOOKS whole, and the first test of that is its
+    newline: the last line of a file can be unterminated for two reasons — an append another
+    process has not finished, or one that died mid-write — and both must reach the parser
+    (:func:`_finished_tail` tells them apart). `endswith("}")` is not enough on its own either: a
+    tear often lands just after a nested object and ends in a brace it does not own, so the
+    brace counts must balance too. Braces inside string values can unbalance a line that is in
+    fact fine, which costs one parse and never a wrong answer.
     """
     for lineno, line in numbered:
         if not any(token in line for token in must_contain):
-            if (line[:1] == "{"
-                    and (line.endswith("}\n") or line.rstrip().endswith("}"))
-                    and line.count("{") == line.count("}")):
+            if (line[:1] == b"{"
+                    and line.endswith(b"\n") and line.rstrip().endswith(b"}")
+                    and line.count(b"{") == line.count(b"}")):
                 continue
         yield lineno, line
+
+
+def _finished_tail(
+    handle: BinaryIO,
+    line: bytes,
+    lineno: int,
+    *,
+    read_code: str,
+    label: str,
+    exc_type: type[MvpRuntimeError],
+) -> Any:
+    """What an unterminated, unparseable last line holds once its append lands — or the refusal.
+
+    Such a line has two origins, and its bytes cannot tell them apart:
+
+    * **an append still landing.** The kernel grows the file a page at a time while one write is
+      copied in, so a reader that does not hold the appender's lock can see part of it. Measured
+      2026-09-18 on this host against a writer appending ~2.6 KB lines without pause: 748 of
+      10,885 reads on tmpfs and 1,352 of 39,561 on ext4 saw a last line without its newline.
+      Such a line is finished within milliseconds.
+    * **an append that died** — the writer was killed mid-write. That line is never finished. It
+      is corruption, and the store must not read as though that append never happened.
+
+    Time tells them apart, so the reader waits. It looks again every ``_TAIL_POLL_SECONDS``, up to
+    ``_TAIL_POLLS`` times (about ``_TAIL_PATIENCE_SECONDS``), and reads the line again from its
+    start whenever the file has grown, until the line ends in a newline. A finished line is
+    parsed like any other, and if it still does not parse it is corruption. A line that is never
+    finished raises the caller's code, as it did before this wait existed. A second is two orders of
+    magnitude more than an append takes, and it is also the delay every read of a store whose
+    last line really is cut off now pays before it fails closed — including reads that hold the
+    appender's lock, which cannot be racing anything. A writer stalled for longer than that is
+    still refused as a damaged store, which is the safe direction.
+
+    Only the line that was being written is waited for. Rows appended after it are not read: this
+    read ends where that append ended, which is what a read started a moment later could also
+    have seen, and a writer that never stops cannot keep the reader waiting.
+
+    Why not have readers take the appender's lock, or drop the line: ``docs/BUILD_HISTORY.md``,
+    2026-09-18.
+    """
+    start = handle.tell() - len(line)
+    for _ in range(_TAIL_POLLS):
+        time.sleep(_TAIL_POLL_SECONDS)
+        if os.fstat(handle.fileno()).st_size == start + len(line):
+            continue  # nothing has landed since the last look
+        handle.seek(start)
+        line = handle.readline()
+        if line.endswith(b"\n"):
+            break
+    else:
+        raise exc_type(
+            read_code,
+            f"could not read {label}: line {lineno} is not valid JSON and was not finished "
+            f"within {_TAIL_PATIENCE_SECONDS:g}s (a write that died, or a writer stalled that long)",
+        )
+    try:
+        return json.loads(line.decode("utf-8"))
+    except ValueError as exc:
+        raise exc_type(read_code, f"could not read {label}: line {lineno} is not valid JSON") from exc
 
 
 def iter_numbered(
@@ -94,17 +169,25 @@ def iter_numbered(
       a row that really carries the value contains the quoted substring verbatim. False
       POSITIVES are fine and expected (a payload may quote the word) — the screen only decides
       what to parse, never what a caller accepts, so the caller's own check stays the authority.
-    * **Corruption still raises.** A skipped line must first look like a complete object
-      (``{`` … ``}``), which is precisely what a torn append — this store's real corruption
-      mode, an interrupted write leaving a truncated final line — does not. What the prescreen
-      does give up, stated rather than discovered: a byte-flip *inside* a well-formed line of a
-      kind the caller did not ask for is no longer detected by that caller. Unfiltered readers
-      (the audit chain, every all-or-nothing load) are unchanged.
+    * **Corruption still raises.** A skipped line must first be terminated and look like a
+      complete object (``{`` … ``}``), which is precisely what a torn append — an interrupted
+      write leaving a truncated final line, or an append another process has not finished —
+      does not. What the prescreen does give up, stated rather than discovered: a byte-flip
+      *inside* a well-formed line of a kind the caller did not ask for is no longer detected by
+      that caller. Unfiltered readers (the audit chain, every all-or-nothing load) are unchanged.
+
+    **The last line may still be being written.** Most readers do not hold the appender's lock,
+    so an unterminated last line that does not parse is waited for rather than refused at once
+    (:func:`_finished_tail`): a line finished within the wait is read like any other, and one
+    that is never finished raises as corruption. Every other line that does not parse raises
+    at once. The file is read as bytes and each line decoded in the parse, so a byte that is not
+    UTF-8 — or a tear inside a multi-byte character — is that line's failure and raises
+    ``read_code`` too. Read as text, it escaped the loop as a bare ``UnicodeDecodeError``.
     """
     if not path.is_file():
         return
     try:
-        with path.open(encoding="utf-8") as handle:
+        with path.open("rb") as handle:
             numbered = enumerate(handle, start=1)
             # The screen is applied by WRAPPING the line source, never by a test inside the
             # loop below: an unscreened read — which is every existing caller — must execute
@@ -112,19 +195,28 @@ def iter_numbered(
             # branch on a loop-invariant is exactly the kind of "free" check that shows up as
             # a few percent on a 200 MB store.
             if must_contain is not None:
-                numbered = _screened(numbered, must_contain)
+                numbered = _screened(numbered, tuple(token.encode("utf-8") for token in must_contain))
+            unfinished: tuple[int, bytes] | None = None
             for lineno, line in numbered:
                 if not line.strip():
                     continue
                 try:
-                    obj = json.loads(line)
+                    obj = json.loads(line.decode("utf-8"))
                 except ValueError as exc:
+                    if not line.endswith(b"\n"):
+                        # Only the last line can lack its newline, so nothing follows it.
+                        unfinished = (lineno, line)
+                        break
                     # Name the line. The decoder's own "line 1 column 7" is relative to the
                     # one line it was handed, so on a 100k-line store it points at nothing.
                     raise exc_type(
                         read_code, f"could not read {label}: line {lineno} is not valid JSON"
                     ) from exc
                 yield lineno, obj
+            if unfinished is not None:
+                lineno, line = unfinished
+                yield lineno, _finished_tail(handle, line, lineno, read_code=read_code,
+                                             label=label, exc_type=exc_type)
     except OSError as exc:
         raise exc_type(read_code, f"could not read {label}: {exc}") from exc
 
