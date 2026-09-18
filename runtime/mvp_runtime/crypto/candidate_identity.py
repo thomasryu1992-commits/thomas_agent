@@ -10,7 +10,8 @@ callers, ``factory`` imports it directly, and the factory<->pool module cycle is
 The lineage KEY an outcome is attributed by (``outcome_attribution_key``) and the keys a pool entry
 accepts (``entry_attribution_keys``) moved here from ``lifecycle`` for the same reason (PR3b-1): the
 router ranks by a lineage's realized record (Thomas decision 35), and ``lifecycle -> feedback ->
-paper`` would close a cycle the other way. ``lifecycle`` re-exports them.
+paper`` would close a cycle the other way. ``lifecycle`` imports them back, so its importers are
+unchanged.
 """
 
 from __future__ import annotations
@@ -73,9 +74,11 @@ def entry_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
       what stops a replaced strategy from inheriting its predecessor's record.
     - ``sid:``  — imported history that carries nothing but the display name. It
       cannot be placed in a lineage because it never recorded one, so it attaches to
-      whoever holds that name. This is the ONE imprecise join, it is confined to
-      pre-lineage records, and the set only shrinks: every new outcome keys on
-      ``cand:`` and can never be absorbed by a different lineage. Dropping it instead
+      whoever holds that name. This is the ONE imprecise join. It is confined to records
+      that name no candidate and no (generation, rule hash): every new outcome of a minted
+      lineage keys on ``cand:`` and can never be absorbed by a different lineage, while an
+      entry installed without a candidate id (the history import's pool activation) keeps
+      writing ``gen:`` rows, or ``sid:`` rows if it names no generation. Dropping it instead
       would silently zero out the lifecycle's input for strategies still trading on
       imported history — blinding the lifecycle's auto-demotion, and since PR3b-1 the
       router's realized ranking, which reads the same keys.

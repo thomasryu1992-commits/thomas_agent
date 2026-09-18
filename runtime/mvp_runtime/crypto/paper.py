@@ -419,11 +419,16 @@ def _realized_evidence(
     Keyed by the display id, a lineage that reused another's id inherited its record, and one
     renamed lost its own.
 
+    Groups combine from their unrounded ``total_r`` into one mean, rounded once as each group is:
+    the tiers compare it exactly (``> 0``, a dead-even ``==``), and a mean of rounded group means
+    could turn an exact break-even into a proven edge (review of PR3b-1). A group without a total
+    (stats built by hand) counts as its count times its mean.
+
     None means "no adequate realized sample", which is a different fact from a measured
     zero — the ranking treats the two differently on purpose."""
     if not realized_stats:
         return None
-    groups: list[tuple[int, float]] = []
+    groups: list[tuple[int, float, float]] = []
     for key in sorted(entry_attribution_keys(match)):
         stats = realized_stats.get(key)
         if not isinstance(stats, Mapping):
@@ -434,13 +439,16 @@ def _realized_evidence(
             continue
         if not isinstance(expectancy, (int, float)) or isinstance(expectancy, bool):
             continue
-        groups.append((int(closed), float(expectancy)))
-    closed_total = sum(closed for closed, _ in groups)
+        total = stats.get("total_r")
+        if not isinstance(total, (int, float)) or isinstance(total, bool):
+            total = closed * expectancy
+        groups.append((int(closed), float(expectancy), float(total)))
+    closed_total = sum(group[0] for group in groups)
     if closed_total < MIN_PRIORITY_SAMPLE_TRADES:
         return None
     if len(groups) == 1:
-        return groups[0]
-    return closed_total, sum(closed * expectancy for closed, expectancy in groups) / closed_total
+        return groups[0][0], groups[0][1]
+    return closed_total, round(sum(group[2] for group in groups) / closed_total, 8)
 
 
 def _rank_matches(
@@ -454,8 +462,10 @@ def _rank_matches(
     sharing strictly negative under the flat cap). Tier 1 — no adequate realized sample:
     ``champion_score`` descending, the pre-evidence key, unchanged from the flat-cap router.
     Tier 2 — adequate sample, non-positive: a lineage that has PROVEN it has no edge here
-    ranks below an untested hypothesis on purpose. The lineage breaks every tie, then the display
-    id, so the order never depends on store order and a rename never reorders it (decision 35)."""
+    ranks below an untested hypothesis on purpose. The lineage key breaks every tie, then the
+    display id, so the order never depends on store order and a rename does not reorder it, unless
+    the entry's only key is its display id (decision 35). ``cand:`` sorts before ``gen:`` before
+    ``sid:``, so on an exact tie a minted lineage routes before an imported one."""
     def key(m: dict[str, Any]) -> tuple[int, float, str, str]:
         evidence = _realized_evidence(m, realized_stats)
         champion = m["champion_score"] if m["champion_score"] is not None else -math.inf

@@ -142,8 +142,9 @@ def evaluate_live_allowance(
 
     for sid in sorted(armed):
         # The fallback is the key an outcome naming only this display id carries. It was `id:`,
-        # which no outcome key ever equals, so an armed id with no pool entry read as clean
-        # (PR3b-1, decision 38).
+        # which no outcome key ever equals (PR3b-1, decision 38). Unreachable from the cycle today,
+        # which hands the pool read its armed set came from (every armed id has an entry); it
+        # charges only rows that carry no lineage fields at all.
         lineage = lineage_of.get(sid, f"sid:{sid}")
         rows = by_lineage.get(lineage) or []
         if not rows:

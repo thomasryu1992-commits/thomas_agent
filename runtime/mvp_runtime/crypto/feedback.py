@@ -161,9 +161,10 @@ def summarize_outcomes(records: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _grouped(closed: list[dict[str, Any]], key_of: Any) -> dict[str, dict[str, Any]]:
+def _grouped(closed: list[dict[str, Any]], key_of: Any, *, keep_total: bool = False) -> dict[str, dict[str, Any]]:
     """Closed rows grouped by ``key_of(row)``: count, wins, losses and mean R per group. A row
-    whose key is empty belongs to no group."""
+    whose key is empty belongs to no group. ``keep_total`` keeps each group's unrounded sum of R
+    (``total_r``), for a reader that combines groups."""
     groups: dict[str, dict[str, Any]] = {}
     for row in closed:
         key = key_of(row)
@@ -176,7 +177,10 @@ def _grouped(closed: list[dict[str, Any]], key_of: Any) -> dict[str, dict[str, A
         bucket["win_count"] += 1 if value > 0 else 0
         bucket["loss_count"] += 1 if value < 0 else 0
     for bucket in groups.values():
-        bucket["expectancy"] = round(bucket.pop("_sum") / bucket["closed_count"], 8)
+        total = bucket.pop("_sum")
+        bucket["expectancy"] = round(total / bucket["closed_count"], 8)
+        if keep_total:
+            bucket["total_r"] = total
     return groups
 
 
@@ -187,9 +191,12 @@ def realized_by_lineage(records: Iterable[Mapping[str, Any]]) -> dict[str, dict[
     Keyed by `candidate_identity.outcome_attribution_key` (``cand:``, else ``gen:``, else
     ``sid:``), so a display id reused by another lineage never lends it this one's record, and a
     lineage renamed keeps it. A row naming no lineage at all feeds nothing. The router reads every
-    key its entry accepts (`candidate_identity.entry_attribution_keys`), as the lifecycle does."""
+    key its entry accepts (`candidate_identity.entry_attribution_keys`), as the lifecycle does, and
+    combines them from each group's unrounded ``total_r``: one record, rounded once, as the report
+    rounds it (review of PR3b-1 — averaging the rounded group means could turn an exact break-even
+    into a proven edge, or a dead-even conflict into an entry)."""
     closed = [dict(r) for r in records if isinstance(r, Mapping) and r.get("outcome_closed") is True]
-    return _grouped(closed, outcome_attribution_key)
+    return _grouped(closed, outcome_attribution_key, keep_total=True)
 
 
 def r_distribution(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
@@ -607,6 +614,7 @@ __all__ = [
     "count_independent_trade_events",
     "net_result_r",
     "r_distribution",
+    "realized_by_lineage",
     "render_report_text",
     "run_paper_performance_report",
     "summarize_net_of_costs",

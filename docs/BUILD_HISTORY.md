@@ -33,16 +33,21 @@ Append a new entry when a milestone ships, in the same PR.
     the door renames on a collision, so a lineage reusing an id inherited the record behind it (a
     proven edge could take a slot, or resolve a conflict, it never earned) and a renamed lineage
     lost its own (a proven loser ranked as a fresh hypothesis). The supporting-shadow dedupe had the
-    same key, and the live allowance's fallback key `id:` could equal no outcome key at all.
+    same key, and the live allowance's fallback key `id:` could equal no outcome key at all
+    (unreachable from the cycle, which hands the pool read its armed set came from).
   - **The change:** the cycle summarizes by lineage (`feedback.realized_by_lineage`, the same
     arithmetic), and the router reads an entry's record under every key the lifecycle accepts for it
-    (`cand:`, `gen:`, `sid:`), combined. Ties go to the lineage key. The supporting-shadow dedupe,
-    when opening and in the book door, keys on the lineage; the allowance falls back to `sid:`.
-    `outcome_attribution_key` and `entry_attribution_keys` moved to the `candidate_identity` leaf
-    (the router cannot import `lifecycle`, which imports it through `feedback`); `lifecycle`
-    re-exports them.
-  - **Measured first:** no display id in this machine's paper or shadow outcomes names two lineages
-    (58 ids), so nothing routes differently today.
+    (`cand:`, `gen:`, `sid:`), combined from the groups' unrounded sums into one mean rounded once.
+    Ties go to the lineage key. The supporting-shadow dedupe, when opening and in the book door,
+    keys on the lineage; the allowance falls back to `sid:`. `outcome_attribution_key` and
+    `entry_attribution_keys` moved to the `candidate_identity` leaf (the router cannot import
+    `lifecycle`, which imports it through `feedback`); `lifecycle` imports them back.
+  - **Review:** the first draft averaged the groups' rounded means, which the tiers compare exactly:
+    a split record summing to exactly zero read +1e-9 and took a slot as a proven edge, and a
+    dead-even conflict opened an entry. Groups now keep their sums. Reproduced both, and pinned.
+  - **Measured first:** no display id names two lineages, no lineage was recorded under two ids,
+    each occupying entry reads the same rows under both keys and none spans two keys, and no context
+    has an exact score or realized tie. So nothing routes differently today.
 
 - **The artifact rides on every record its signal writes** (crypto PR3a-2, 2026-09-18;
   `crypto/paper.py`, `crypto/counterfactual.py`, `crypto/forward_book.py`, `crypto/live_order.py`,

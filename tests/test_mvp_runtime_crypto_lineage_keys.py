@@ -10,8 +10,10 @@ record, and a lineage that is renamed loses its own.
 - Decision 38: the supporting shadow's dedupe (when it opens, and in the book door) and the live
   allowance's fallback key follow.
 
-Measured 2026-09-18: no display id in this machine's outcomes names two lineages, so none of this
-changes a routing decision today; it closes the fail-open before one can happen.
+Measured 2026-09-18: no display id in this machine's outcomes names two lineages, no lineage was
+recorded under two ids, no occupying entry's record spans two keys, and no context has an exact
+score or realized tie, so none of this changes a routing decision today; it closes the fail-open
+before one can happen.
 """
 
 from __future__ import annotations
@@ -44,7 +46,9 @@ def _route(*entries, stats):
 
 def test_a_display_id_reused_by_another_lineage_does_not_inherit_its_record():
     """Lineage A proved an edge as "S_x"; A is gone and B answers to "S_x" now. B is untested, and
-    ranks as untested: by score, behind the better-scored rival."""
+    ranks as untested: by score, behind the better-scored rival. End to end: the inheritance needs
+    both the summary and the router keyed by display id; each half alone is pinned by the rename
+    and the cycle tests."""
     stats = feedback.realized_by_lineage(_closed("S_x", "cand_A", 0.4))
     route = _route(_entry("S_x", "cand_B", score=0.1), _entry("S_y", "cand_C", score=0.9), stats=stats)
     assert route["primary_strategy_id"] == "S_y"
@@ -82,22 +86,75 @@ def test_an_entry_reads_its_record_across_the_three_eras():
         {**imported, "strategy_generation_id": imported["generation_id"]}, stats)
     assert evidence is not None and evidence[0] == 2 * half
     assert abs(evidence[1] - 0.3) < 1e-9
-    route = _route(imported, _entry("S_y", "cand_C", score=0.9), stats=stats)
+    rival = {**_entry("S_y", "cand_C", score=0.9), "generation_id": "GEN-RIVAL"}
+    route = _route(imported, rival, stats=stats)
     assert route["primary_strategy_id"] == "S_imp"
 
 
+def _imported(sid="S_imp", **kw):
+    """An entry installed without a candidate id: its rows key on `gen:` or, older, on `sid:`."""
+    entry = _pool_entry(strategy_id=sid, **kw)                         # GEN-001 / deadbeef
+    return {**entry, "strategy_generation_id": entry["generation_id"]}
+
+
+def _split(sid, gen_rs, sid_rs):
+    """A record split across two keys: rows carrying the generation and rule hash, and older rows
+    carrying only the display id."""
+    return ([{"outcome_closed": True, "result_R": r, "strategy_id": sid, "provenance": "mvp_paper_kernel",
+              "strategy_generation_id": "GEN-001", "strategy_rule_hash": "deadbeef"} for r in gen_rs]
+            + [{"outcome_closed": True, "result_R": r, "strategy_id": sid, "provenance": "mvp_paper_kernel"}
+               for r in sid_rs])
+
+
+def test_a_split_record_is_weighted_by_its_rows():
+    """4 rows at +0.5 and 8 at +0.1 are one record of 12 at (2.0 + 0.8) / 12, not the mean of the
+    two groups' means (0.3)."""
+    stats = feedback.realized_by_lineage(_split("S_imp", [0.5] * 4, [0.1] * 8))
+    assert paper._realized_evidence(_imported(), stats) == (12, 0.23333333)
+
+
+def test_a_break_even_split_record_is_not_a_proven_edge():
+    """Review of PR3b-1: the rows sum to exactly zero. Averaged from the groups' rounded means the
+    record read +1e-9, a proven edge that took the slot; it is a proven zero, which ranks below the
+    untested rival."""
+    stats = feedback.realized_by_lineage(_split("S_imp", [2.0, -1.0, 0.0], [-1.0] + [0.0] * 6))
+    assert paper._realized_evidence(_imported(), stats) == (10, 0.0)
+    rival = {**_entry("S_y", "cand_C", score=0.1), "generation_id": "GEN-RIVAL"}
+    route = _route(_imported(champion_score=0.9), rival, stats=stats)
+    assert route["primary_strategy_id"] == "S_y"
+    assert route["supporting_strategy_ids"] == ["S_imp"]
+
+
+def test_a_dead_even_conflict_stays_closed_when_one_side_is_a_split_record():
+    """Review of PR3b-1: both sides earned exactly 0.25 over 12 rows. Averaged from the long side's
+    rounded group means it read 0.2499999975, and the short side won a bar that must stay closed."""
+    short_spec = _spec_dict(strategy_id="S_short", direction="short", entry_rules={
+        "operator": "AND", "conditions": [{"feature": "adx", "comparison": ">=", "value": 20.0}]})
+    rows = (_split("S_imp", [1.0, 0.0, 0.0], [2.0] + [0.0] * 8)
+            + _closed("S_short", "cand_s", 0.0, n=9) + _closed("S_short", "cand_s", 1.0, n=3))
+    stats = feedback.realized_by_lineage(rows)
+    assert paper._realized_evidence(_imported(), stats) == (12, 0.25)
+    short = {**_entry("S_short", "cand_s", spec=short_spec), "generation_id": "GEN-SHORT"}
+    route = _route(_imported(), short, stats=stats)
+    assert route["status"] == paper.STATUS_BLOCKED
+    assert route["block_reason"] == paper.BLOCK_DIRECTION_CONFLICT
+
+
 def test_a_row_naming_no_lineage_feeds_nothing():
-    rows = [{"outcome_closed": True, "result_R": 1.0}] * 20 + _closed("S_x", "cand_A", 0.2, n=3)
+    rows = [{"outcome_closed": True, "result_R": 1.0}] * 20 + _closed("S_x", "cand_A", 0.5, n=3)
     assert feedback.realized_by_lineage(rows) == {
-        "cand:cand_A": {"closed_count": 3, "win_count": 3, "loss_count": 0, "expectancy": 0.2}}
+        "cand:cand_A": {"closed_count": 3, "win_count": 3, "loss_count": 0, "expectancy": 0.5,
+                        "total_r": 1.5}}
 
 
 def test_the_lineage_summary_is_the_reports_arithmetic():
     """Where each display id names one lineage, the lineage summary is `by_strategy` re-keyed."""
     rows = _closed("S_a", "cand_a", 0.5, n=4) + _closed("S_a", "cand_a", -1.0, n=2) + _closed("S_b", "cand_b", 0.25, n=3)
     by_strategy = feedback.summarize_outcomes(rows)["by_strategy"]
-    assert feedback.realized_by_lineage(rows) == {
+    by_lineage = feedback.realized_by_lineage(rows)
+    assert {key: {k: v for k, v in group.items() if k != "total_r"} for key, group in by_lineage.items()} == {
         "cand:cand_a": by_strategy["S_a"], "cand:cand_b": by_strategy["S_b"]}
+    assert by_lineage["cand:cand_a"]["total_r"] == 0.0 and "total_r" not in by_strategy["S_a"]
 
 
 def test_a_tie_goes_to_the_lineage_and_a_rename_does_not_reorder_it():
@@ -144,9 +201,10 @@ def test_the_cycle_hands_the_router_the_record_by_lineage(tmp_path, monkeypatch)
     cycle_module.run_crypto_cycle(
         collector=FakeExchangeCollector(), store=DryRunPaperStore(), now="2026-07-22T12:00:00Z",
         root=tmp_path, control_store=ControlStore(tmp_path),
-        paper_outcomes=_closed("S_OLD", "cand_A", 0.4, n=3))
+        paper_outcomes=_closed("S_OLD", "cand_A", 0.5, n=3))
     assert seen["realized_stats"] == {
-        "cand:cand_A": {"closed_count": 3, "win_count": 3, "loss_count": 0, "expectancy": 0.4}}
+        "cand:cand_A": {"closed_count": 3, "win_count": 3, "loss_count": 0, "expectancy": 0.5,
+                        "total_r": 1.5}}
 
 
 # --- decision 38: the shadow book and the allowance ----------------------------------------------
