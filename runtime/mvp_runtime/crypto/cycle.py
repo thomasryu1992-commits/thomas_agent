@@ -803,11 +803,13 @@ def run_crypto_cycle(
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
+        routable_lineages = pool.routable_lineage_keys(active_pool)
         live_routable_ids = pool.live_routable_strategy_ids(active_pool)
         live_arm_approvals = pool.live_arm_approvals(active_pool)
     except ToolError as exc:
         active_pool = {"active_strategies": []}
         routable_ids = None
+        routable_lineages = None
         live_routable_ids = None
         live_arm_approvals = None
         reason_codes.append(exc.reason_code)
@@ -887,7 +889,7 @@ def run_crypto_cycle(
                 live_excluded_digest = excluded_outcomes_digest(live_excluded)
             risk = run_risk_guard(
                 live_readable, now=now, limits=risk_limits,
-                routable_strategy_ids=routable_ids,
+                routable_strategy_ids=routable_ids, routable_lineages=routable_lineages,
             )
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)

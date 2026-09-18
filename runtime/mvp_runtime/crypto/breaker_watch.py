@@ -272,10 +272,13 @@ def evaluate(
     # lineage confirmed retired). A watch that collapsed those two would announce a released
     # breaker on the strength of a failed read.
     try:
-        routable = pool.routable_strategy_ids(pool.load_active_pool(root))
+        active = pool.load_active_pool(root)
+        routable = pool.routable_strategy_ids(active)
+        routable_lineages = pool.routable_lineage_keys(active)
     except ToolError:
-        routable = None
-    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable)
+        routable = routable_lineages = None
+    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable,
+                                    routable_lineages=routable_lineages)
 
     # Gate 0 was read here until 2026-08-03, as the second lock on this door. It is gone — see
     # `live_entry`'s docstring and `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md` — so this

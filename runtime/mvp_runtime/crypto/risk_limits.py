@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
@@ -56,6 +56,7 @@ from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
 from . import guards
+from .candidate_identity import entry_attribution_keys, is_lineage_key
 from .guards import RiskLimits
 from .live_pnl import state_dir
 
@@ -88,6 +89,34 @@ def _schema_path(repo_root: Path | None = None) -> Path:
 def limits_path(root: Path | None = None) -> Path:
     """The per-machine registered-limits file (gitignored, beside the live outcomes)."""
     return state_dir(root) / RISK_LIMITS_FILENAME
+
+
+def seal_drawdown_exclusion(names: Sequence[str], pool: Mapping[str, Any]) -> list[str]:
+    """The lineage keys a drawdown rebase excludes, resolved against ``pool`` now (PR3b-3, Thomas
+    decisions 37 and 39).
+
+    A display id is replaced by every key an outcome of the entry holding it may carry
+    (`candidate_identity.entry_attribution_keys`: its candidate, its generation and rule hash, its
+    display id for pre-lineage rows), so the exclusion names the lineage retired, not whatever
+    holds the name later. A lineage key passes through, which is how a lineage no longer in the
+    pool is named. An id the pool does not hold is refused: its lineage cannot be sealed."""
+    by_id = {str(entry.get("strategy_id")): entry for entry in (pool.get("active_strategies") or [])
+             if isinstance(entry, Mapping) and entry.get("strategy_id")}
+    sealed: set[str] = set()
+    for name in names:
+        name = str(name).strip()
+        if is_lineage_key(name):
+            sealed.add(name)
+            continue
+        entry = by_id.get(name)
+        if entry is None:
+            raise ToolError(
+                LIMITS_INVALID,
+                f"{name!r} names no pool entry, so its lineage cannot be sealed; name it by a lineage "
+                "key (cand:<candidate id>, gen:<generation>:<rule hash>, sid:<display id>)",
+            )
+        sealed.update(entry_attribution_keys(entry))
+    return sorted(sealed)
 
 
 def build_risk_limits_record(
@@ -188,6 +217,17 @@ def build_risk_limits_record(
             raise ToolError(
                 LIMITS_INVALID,
                 "drawdown_baseline_rebase.excluded_strategy_ids contains duplicates",
+            )
+        # Sealed at registration (PR3b-3, Thomas decisions 37 and 39): a display id names whatever
+        # holds it when the guard reads the record, so the record names lineages. The field keeps
+        # its name, which keeps the schema's check unchanged; an older image reads the keys as ids
+        # no row carries, and so excludes nothing — the conservative direction on a rollback.
+        bare = [i for i in deduped if not is_lineage_key(i)]
+        if bare:
+            raise ToolError(
+                LIMITS_INVALID,
+                "drawdown_baseline_rebase names lineages, sealed against the pool when it is "
+                f"registered (seal_drawdown_exclusion); these are not lineage keys: {', '.join(bare)}",
             )
         body["drawdown_baseline_rebase"] = {
             "excluded_strategy_ids": deduped,

@@ -98,7 +98,7 @@
       ],
       "properties": {
         "excluded_strategy_ids": {
-          "description": "Strategy ids whose closed outcomes may leave the drawdown baseline, subject to the guard's own re-check that none of them is currently routable. The pool's own key, so 'is this lineage still being routed' is a lookup rather than an inference.",
+          "description": "Lineage keys (cand:<candidate id>, gen:<generation>:<rule hash>, sid:<display id>) whose closed outcomes may leave the drawdown baseline, sealed against the pool when the record is registered (PR3b-3), subject to the guard's own re-check that no entry the pool can route still accepts them. A record registered before PR3b-3 names display ids here, which the guard still judges by display id; an older runtime reads lineage keys as ids no outcome carries, and excludes nothing.",
           "type": "array",
           "items": {
             "type": "string",

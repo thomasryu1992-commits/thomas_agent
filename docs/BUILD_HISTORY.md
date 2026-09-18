@@ -24,6 +24,26 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A drawdown rebase names lineages, sealed when it is registered** (crypto PR3b-3, Thomas
+  decisions 37 and 39, 2026-09-18; `crypto/candidate_identity.py`, `crypto/risk_limits.py`,
+  `crypto/guards.py`, `crypto/pool.py`, `crypto/cycle.py`, `crypto/breaker_watch.py`,
+  `schemas/crypto_risk_limits.v0.1.schema.json` (a description), the readiness and `--show` wording).
+  - **The gap:** a rebase lets a retired strategy's losses leave the drawdown breaker's window, and
+    it named display ids, read when the guard judged. A lineage that later took a retired one's id
+    had its losses forgotten too, although nobody named it; a retired lineage installed again under
+    another name did not get its losses back.
+  - **The change:** `seal_drawdown_exclusion` resolves display ids against the pool into every key
+    the entry holding each one accepts, and the record builder refuses a bare display id. The guard
+    lets a row leave when its own lineage key is sealed and no routable entry still accepts it
+    (`pool.routable_lineage_keys`, which the cycle and the breaker watch now hand it; a caller that
+    hands none releases nothing). A record from before, naming display ids, is judged as before.
+  - **The field (decision 39):** the keys go in `excluded_strategy_ids`, so the schema's check is
+    unchanged. A new field would have made an older image refuse the record on a rollback, and with
+    it every entry until the record was replaced; this way an older image reads the keys as display
+    ids no row carries and excludes nothing, which measures the drawdown more conservatively.
+  - **Not added:** a command to register a rebase. There is none, and adding one would hand an
+    operator an easier way to forget losses; the block stays built in code.
+
 - **A lifecycle decision moves only what it judged** (crypto PR3b-2, Thomas decision 36,
   2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`, `crypto/pool.py`,
   `crypto/cycle.py`, `crypto/retirement.py`, `scripts/retire_strategies.py`).

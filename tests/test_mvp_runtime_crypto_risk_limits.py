@@ -320,7 +320,7 @@ def test_status_shows_the_effective_numbers_of_a_current_record(tmp_path):
 def test_status_counts_what_a_drawdown_rebase_sets_aside(tmp_path):
     """A rebase forgets losses, and with no window it stands as long as the numbers do — so the
     board and ``--show`` name it beside them rather than leaving it inside the file."""
-    _register(tmp_path, drawdown_baseline_rebase={"excluded_strategy_ids": ["S9", "S3"], "reason": "r"})
+    _register(tmp_path, drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c9", "cand:c3"], "reason": "r"})
     status = rl.limits_status(tmp_path, now=NOW)
     assert status["valid"] is True and status["drawdown_rebase_excluded_count"] == 2
 
@@ -554,13 +554,13 @@ def test_show_prints_a_windowless_record_and_its_rebase(tmp_path, capsys):
     import importlib
 
     reg = importlib.import_module("scripts.register_crypto_risk_limits")
-    _register(tmp_path, drawdown_baseline_rebase={"excluded_strategy_ids": ["S3", "S9"], "reason": "r"})
+    _register(tmp_path, drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c3", "cand:c9"], "reason": "r"})
     before = rl.limits_path(tmp_path).read_bytes()
     assert reg.main(["--show", "--root", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert f"by thomas at {NOW}" in out
     assert "valid:       True (no expiry" in out and "legacy window" not in out
-    assert "rebase:      the drawdown baseline excludes 2 strategy id(s)" in out
+    assert "rebase:      the drawdown baseline excludes 2 lineage key(s)" in out
     assert rl.limits_path(tmp_path).read_bytes() == before, "--show registers nothing"
 
 
@@ -589,11 +589,11 @@ def test_a_record_without_a_rebase_block_carries_no_exclusion(tmp_path):
 
 def test_the_rebase_block_rides_from_the_record_to_the_limits(tmp_path):
     _register(tmp_path, drawdown_baseline_rebase={
-        "excluded_strategy_ids": ["S9", "S3"], "reason": "15m pool retired 2026-07-31",
+        "excluded_strategy_ids": ["cand:c9", "cand:c3"], "reason": "15m pool retired 2026-07-31",
     })
     resolved = rl.resolve_risk_limits(tmp_path, now=NOW)
-    assert resolved.drawdown_excluded_strategy_ids == ("S3", "S9")   # sorted at build
-    assert resolved.as_record()["drawdown_excluded_strategy_ids"] == ["S3", "S9"]
+    assert resolved.drawdown_excluded_strategy_ids == ("cand:c3", "cand:c9")   # sorted at build
+    assert resolved.as_record()["drawdown_excluded_strategy_ids"] == ["cand:c3", "cand:c9"]
 
 
 def test_a_rebase_without_a_reason_is_refused():
@@ -620,11 +620,11 @@ def test_the_rebase_block_is_covered_by_the_records_self_hash(tmp_path):
     """Tamper evidence, which is the reason to reuse this record rather than invent one:
     editing the exclusion list after registration invalidates the hash and fails closed."""
     record = _register(tmp_path, drawdown_baseline_rebase={
-        "excluded_strategy_ids": ["S3"], "reason": "retired",
+        "excluded_strategy_ids": ["cand:c3"], "reason": "retired",
     })
     tampered = {**record}
     tampered["drawdown_baseline_rebase"] = {
-        "excluded_strategy_ids": ["S3", "S4"], "reason": "retired",
+        "excluded_strategy_ids": ["cand:c3", "cand:c4"], "reason": "retired",
     }
     rl.limits_path(tmp_path).write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ToolError):
@@ -636,7 +636,7 @@ def test_the_rebase_block_does_not_rename_the_record():
     retirement sets are the same limits applied to different populations, so the id is stable
     and the self-hash — which does cover the block — is what distinguishes them."""
     plain = _build()
-    rebased = _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["S3"], "reason": "r"})
+    rebased = _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c3"], "reason": "r"})
     assert plain["limits_id"] == rebased["limits_id"]
     assert plain["record_sha256"] != rebased["record_sha256"]
 

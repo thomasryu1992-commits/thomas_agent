@@ -316,7 +316,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         )
         rebase_count = risk_status.get("drawdown_rebase_excluded_count")
         if rebase_count:
-            risk_detail += f", drawdown baseline rebase excludes {rebase_count} strategy id(s)"
+            risk_detail += f", drawdown baseline rebase excludes {rebase_count} lineage key(s)"
     else:
         risk_detail = (
             f"registered but unusable: {risk_status['error']} - the C4 guard REFUSES new "
