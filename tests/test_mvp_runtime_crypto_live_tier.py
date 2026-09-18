@@ -147,8 +147,9 @@ def test_the_promotion_hash_separates_the_two_asks():
     Same candidates, same rules, same add/replace — different money."""
     from runtime.mvp_runtime.crypto.promotion import promotion_content_sha256
 
-    observation = promotion_content_sha256(["c1"], ["h1"], False, pool_store.LIVE_TIER_OBSERVATION)
-    live = promotion_content_sha256(["c1"], ["h1"], False, pool_store.LIVE_TIER_LIVE)
+    observation = promotion_content_sha256(["c1"], ["h1"], False, pool_store.LIVE_TIER_OBSERVATION,
+                                           artifact_sha256s=["x"])
+    live = promotion_content_sha256(["c1"], ["h1"], False, pool_store.LIVE_TIER_LIVE, artifact_sha256s=["x"])
     assert observation != live
 
 
@@ -159,7 +160,7 @@ def test_an_unknown_tier_cannot_be_hashed_at_all():
     from runtime.mvp_runtime.errors import ApprovalBlocked
 
     with pytest.raises(ApprovalBlocked):
-        promotion_content_sha256(["c1"], ["h1"], False, "live")
+        promotion_content_sha256(["c1"], ["h1"], False, "live", artifact_sha256s=["x"])
 
 
 # --- the approval an entry was armed under (PR2b, decision 17) -------------------------------------
@@ -173,13 +174,20 @@ def _traded(**entry):
     return {"strategy_spec": spec, "strategy_rule_hash": spec["strategy_rule_hash"], **entry}
 
 
+def _stamped(entry):
+    """``entry`` installed as an artifact (PR3a): only a stamped entry may be armed LIVE."""
+    from tests._helpers import stamped_pool_entry
+
+    return stamped_pool_entry(entry)
+
+
 def test_the_arming_approvals_are_read_for_live_routable_entries_only():
     armed = pool_store.live_arm_approvals(_pool(
-        _entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **_traded()),
-        _entry("S2", live_tier="LIVE", **_traded()),                   # armed with no approval named
-        _entry("S3", live_tier="LIVE", live_tier_approval_id="  ", **_traded()),
-        _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", **_traded()),
-        _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5", **_traded()),
+        _stamped(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **_traded())),
+        _stamped(_entry("S2", live_tier="LIVE", **_traded())),        # armed with no approval named
+        _stamped(_entry("S3", live_tier="LIVE", live_tier_approval_id="  ", **_traded())),
+        _stamped(_entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", **_traded())),
+        _stamped(_entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5", **_traded())),
     ))
     assert armed == {"S1": "appr_1", "S2": None, "S3": None}
     assert set(armed) == pool_store.live_routable_strategy_ids(_pool(
@@ -191,9 +199,10 @@ def test_the_arming_approvals_are_read_for_live_routable_entries_only():
 def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entries_only():
     """PR2c-2b: what the gate needs to verify an arm, for the same membership as the tier."""
     traded = _traded()
+    s1 = _stamped(_entry("S1", live_tier="LIVE", live_tier_approval_id=" appr_1 ", candidate_id="c1",
+                         promoted_at="2026-09-17T00:00:00Z", **traded))
     pool = _pool(
-        _entry("S1", live_tier="LIVE", live_tier_approval_id=" appr_1 ", candidate_id="c1",
-               promoted_at="2026-09-17T00:00:00Z", **traded),
+        s1,
         _entry("S2", live_tier="LIVE"),
         _entry("S4", live_tier="OBSERVATION", live_tier_approval_id="appr_4", candidate_id="c4"),
         _entry("S5", status="SUSPENDED", live_tier="LIVE", live_tier_approval_id="appr_5"),
@@ -201,10 +210,13 @@ def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entrie
     entries = pool_store.live_arm_entries(pool)
     rule = traded["strategy_rule_hash"]
     assert entries["S1"] == {"approval_id": "appr_1", "candidate_id": "c1", "strategy_rule_hash": rule,
-                             "spec_rule_hash": rule, "promoted_at": "2026-09-17T00:00:00Z",
-                             "disarmed_at": None}
+                             "spec_rule_hash": rule,
+                             "strategy_artifact_sha256": s1["strategy_artifact_sha256"],
+                             "promoted_at": "2026-09-17T00:00:00Z", "disarmed_at": None}
     assert set(entries) == {"S1", "S2"}
     assert entries["S2"]["approval_id"] is None and entries["S2"]["spec_rule_hash"] is None
+    # An entry that predates the artifact names none (PR3a).
+    assert entries["S2"]["strategy_artifact_sha256"] is None
     assert pool_store.live_arm_approvals(pool) == {"S1": "appr_1", "S2": None}
 
 
@@ -216,11 +228,20 @@ def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entrie
     ({"strategy_spec": None}, "spec"),
     ({"strategy_spec": None, "strategy_rule_hash": None}, "spec"),  # nothing to compare is no rule
     ({"live_tier_updated_at": "2026-09-17T00:00:00Z"}, "disarmed"),  # put back in the tier by hand
-], ids=["sound", "label", "no-label", "garbled-spec", "no-spec", "neither", "disarm-trace"])
+    # PR3a, decision 33: an entry the door did not install as an artifact arms nothing.
+    ({"strategy_artifact_sha256": None}, "unbound"),
+    ({"strategy_artifact_sha256": ""}, "unbound"),
+    # Both: the hand edit is named, not the missing stamp (PR3a review).
+    ({"strategy_artifact_sha256": None, "live_tier_updated_at": "2026-09-17T00:00:00Z"}, "disarmed"),
+], ids=["sound", "label", "no-label", "garbled-spec", "no-spec", "neither", "disarm-trace",
+        "no-stamp", "empty-stamp", "no-stamp-and-disarm-trace"])
 def test_an_unsound_arm_names_no_approval_whatever_it_carries(change, unsound):
     """Review of #887: the router trades the spec and the approval is checked against the label, so
     they must be one rule; and the promotion door never installs an entry carrying the disarm trace."""
-    pool = _pool(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **{**_traded(), **change}))
+    entry = _entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **_traded())
+    # Stamped before the change, so the change is one the stamp did not see: a pool READ would
+    # refuse the whole pool for it (decision 34), and this pins the arm's own verdict beside that.
+    pool = _pool({**_stamped(entry), **change})
     [armed] = pool_store.live_arm_entries(pool).values()
     assert pool_store.live_arm_unsound(armed) == unsound
     assert pool_store.live_arm_approvals(pool) == {"S1": None if unsound else "appr_1"}
@@ -234,8 +255,8 @@ def test_a_spec_swapped_under_its_label_is_seen_even_without_its_own_hash():
     traded = _traded()
     other = StrategySpec.from_dict(_spec_dict(direction="short")).to_dict()
     other.pop("strategy_rule_hash", None)
-    pool = _pool(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1",
-                        **{**traded, "strategy_spec": other}))
+    pool = _pool({**_stamped(_entry("S1", live_tier="LIVE", live_tier_approval_id="appr_1", **traded)),
+                  "strategy_spec": other})
     [armed] = pool_store.live_arm_entries(pool).values()
     assert armed["spec_rule_hash"] != traded["strategy_rule_hash"]
     assert pool_store.live_arm_approvals(pool) == {"S1": None}
@@ -246,10 +267,10 @@ def test_the_disarm_door_leaves_the_trace_an_unsound_arm_is_read_by(tmp_path):
     from tests.test_mvp_runtime_crypto_evidence_depth import _spec_dict
 
     spec = StrategySpec.from_dict(_spec_dict()).to_dict()
-    pool_store.install_active_pool({"active_strategies": [
+    pool_store.install_active_pool({"active_strategies": [_stamped(
         {"strategy_id": "S1", "status": "PAPER_ACTIVE", "strategy_spec": spec, "candidate_id": "c1",
          "strategy_rule_hash": spec["strategy_rule_hash"], "live_tier": "LIVE",
-         "live_tier_approval_id": "appr_1"},
+         "live_tier_approval_id": "appr_1"}),
     ]}, root=tmp_path)
     assert pool_store.live_arm_approvals(pool_store.load_active_pool(tmp_path)) == {"S1": "appr_1"}
     pool_store.disarm_live_tier(["S1"], root=tmp_path, now="2026-09-17T00:00:00Z")
@@ -281,8 +302,13 @@ def _promote(tmp_path, monkeypatch, **kw):
     _seed(tmp_path, bars=_TODAY_1D)
     # The approval's own verification and the quality gates have their tests; this pins what the
     # door writes once they have passed.
-    monkeypatch.setattr(prom.promotion_mod, "verify_promotion_approval",
-                        lambda *a, **k: {"approval_id": kw.get("approval_id")})
+    # What a verified approval binds (PR3a): the door re-hashes the rows it copies against it.
+    monkeypatch.setattr(prom.promotion_mod, "verify_promotion_approval", lambda *a, **k: {
+        "approval_id": kw.get("approval_id"),
+        "approved_action_snapshot": {"content_sha256": prom.promotion_mod.content_sha256_of(
+            pool_store.resolve_candidates(k["selectors"], k["root"]), keep_active=k["keep_active"],
+            live_tier=k["live_tier"], root=k["root"])},
+    })
     monkeypatch.setattr(prom.promotion_mod, "run_promotion_gates", lambda *a, **k: None)
     prom.run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
                        root=tmp_path, now=NOW, **kw)

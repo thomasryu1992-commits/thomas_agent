@@ -188,6 +188,22 @@ def test_synthetic_data_cycles_but_never_trades(tmp_path):
     assert record["opened"] is None
 
 
+def test_a_pool_entry_that_is_no_longer_its_artifact_refuses_routing_not_the_cycle(tmp_path):
+    """PR3a, decision 34: the whole pool, as a spec that does not parse does."""
+    from tests._helpers import stamped_pool_entry
+
+    spec = _always_spec()
+    stamped = stamped_pool_entry({"strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE",
+                                  "champion_score": 0.5, "strategy_spec": spec, "candidate_id": "cand-1"})
+    pool.install_active_pool({"active_strategies": [stamped]}, root=tmp_path)
+    path = pool.pool_path(tmp_path)
+    path.write_text(json.dumps({"active_strategies": [{**stamped, "champion_score": 9.0}]}), encoding="utf-8")
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert "STRATEGY_POOL_ARTIFACT_MISMATCH" in record["reason_codes"]
+    assert record["route_status"] == "NO_ENTRY"
+    assert record["cycle_id"].startswith("crypto_cycle")
+
+
 def test_tampered_pool_refuses_routing_not_the_cycle(tmp_path):
     path = pool.pool_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1744,14 +1760,17 @@ def test_the_live_leg_is_told_which_approval_armed_each_strategy(tmp_path, monke
     from runtime.mvp_runtime.crypto.strategy import StrategySpec
 
     rule = StrategySpec.from_dict(spec).strategy_rule_hash
+    from tests._helpers import stamped_pool_entry
+
     for label, named in ((rule, "appr_live_1"), ("h1", None)):
         pool.install_active_pool(
-            {"active_strategies": [{
+            # Installed as an artifact (PR3a): only a stamped entry may be armed LIVE.
+            {"active_strategies": [stamped_pool_entry({
                 "strategy_id": spec["strategy_id"], "status": "PAPER_ACTIVE", "champion_score": 0.5,
                 "strategy_spec": spec, "candidate_id": "cand-1", "strategy_rule_hash": label,
                 "generation_id": "GEN-1", pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE,
                 pool.LIVE_TIER_APPROVAL_FIELD: "appr_live_1",
-            }]},
+            })]},
             root=tmp_path,
         )
         _cycle(tmp_path, FakeExchangeCollector())

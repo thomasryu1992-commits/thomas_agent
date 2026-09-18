@@ -32,7 +32,9 @@ from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
-from tests._helpers import deep_order_book, gate_stage, healthy_optional_data, live_arm_approval
+from tests._helpers import (
+    deep_order_book, gate_stage, healthy_optional_data, live_arm_approval, stamped_pool_entry,
+)
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1204,19 +1206,35 @@ class _Collector:
 
 # The approval Thomas answered to arm the plan's lineage LIVE (PR2c-2b). The pass runs hours after
 # it expired, as every arm does: the arm outlives the ask.
-_ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],))
 _ARMED_AT = "2026-07-27T23:55:00Z"
 
 
-def _armed_pool(approval_id=None, **entry):
+def _armed_entry():
     from runtime.mvp_runtime.crypto import pool as pool_store
 
-    return {"active_strategies": [{
+    return {
         "strategy_id": "S001", "status": "PAPER_ACTIVE",
         pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_LIVE,
-        pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id or _ARM["approval_id"],
         "candidate_id": _PLAN["candidate_id"], "strategy_rule_hash": _PLAN["strategy_rule_hash"],
-        "strategy_spec": _SPEC, "promoted_at": _ARMED_AT, **entry,
+        "strategy_spec": _SPEC, "promoted_at": _ARMED_AT,
+    }
+
+
+# The artifact the door installed the armed entry as (PR3a), which the approval pairs with its candidate.
+_ARMED_STAMP = stamped_pool_entry(_armed_entry())["strategy_artifact_sha256"]
+_ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=(_ARMED_STAMP,))
+
+
+def _armed_pool(approval_id=None, *, stamped=True, **entry):
+    from runtime.mvp_runtime.crypto import pool as pool_store
+
+    # Stamped as the door installed it, then the test's changes: a change to a hashed field leaves
+    # the stamp behind, which a real pool read refuses (decision 34) and the read these tests stand
+    # in for does not check. `stamped=False` is an entry that predates the artifact: neither key,
+    # which is the shape a real pool read accepts.
+    return {"active_strategies": [{
+        **(stamped_pool_entry(_armed_entry()) if stamped else _armed_entry()),
+        pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id or _ARM["approval_id"], **entry,
     }]}
 
 
@@ -2242,6 +2260,16 @@ _UNBACKED_ARMS = {
     "re-armed-by-hand-after-a-disarm": (_ARM, {"live_tier_updated_at": "2026-07-28T02:00:00Z",
                                                "live_tier_reasons": ["operator"]},
                                         "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"),
+    # PR3a, decision 33: only an entry installed as an artifact, under an approval pairing that
+    # artifact with its candidate, may spend money.
+    "entry-predates-the-artifact": (_ARM, {"stamped": False}, "LIVE_ARM_ENTRY_UNBOUND"),
+    "approval-asked-before-v5": (
+        live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=None), {},
+        "LIVE_ARM_APPROVAL_UNBOUND"),
+    "approval-pairs-another-artifact": (
+        live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
+                          artifacts=("sha256:" + "e" * 64,)), {},
+        "LIVE_ARM_APPROVAL_OTHER_ARTIFACT"),
 }
 
 
@@ -2279,7 +2307,8 @@ def test_an_entry_that_names_another_approval_than_both_reads_is_not_verified(tm
     ApprovalStore.default(tmp_path).append([_ARM])
     armed = {"S001": {"approval_id": _ARM["approval_id"], "candidate_id": _PLAN["candidate_id"],
                       "strategy_rule_hash": _PLAN["strategy_rule_hash"],
-                      "spec_rule_hash": _PLAN["strategy_rule_hash"], "promoted_at": _ARMED_AT,
+                      "spec_rule_hash": _PLAN["strategy_rule_hash"],
+                      "strategy_artifact_sha256": _ARMED_STAMP, "promoted_at": _ARMED_AT,
                       "disarmed_at": None}}
     verify = lambda armed: live_route.verify_live_arm(  # noqa: E731
         root=tmp_path, strategy_id="S001", plan=_PLAN, approval_id=_ARM["approval_id"], armed=armed)

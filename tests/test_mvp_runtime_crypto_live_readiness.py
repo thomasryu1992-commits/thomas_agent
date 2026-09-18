@@ -783,6 +783,25 @@ def test_the_armed_set_is_a_row(tmp_path, clean_env):
     assert status["live_armed_strategies"] == {
         "known": True, "armed": 1, "occupying": 2, "error": None,
     }
+    # The entry carries no artifact stamp and trades no labelled rule, so the gate refuses it
+    # whatever approval it names; "armed" must not read as "can trade" (PR3a review).
+    assert "1 of them cannot trade: S1 (spec)" in row["detail"]
+
+
+def test_an_arm_that_can_trade_is_not_called_one_that_cannot(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto.strategy import StrategySpec
+    from tests._helpers import stamped_pool_entry
+
+    entry = _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE)
+    entry["strategy_rule_hash"] = StrategySpec.from_dict(entry["strategy_spec"]).strategy_rule_hash
+    armed = stamped_pool_entry(entry)
+    _write_pool(tmp_path, armed, _pool_entry("S2"))
+    row = _armed_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert "1 armed of 2 occupying" in row["detail"] and "cannot trade" not in row["detail"]
+    unbound = {k: v for k, v in armed.items() if k not in ("strategy_artifact_sha256", "strategy_artifact")}
+    _write_pool(tmp_path, unbound, _pool_entry("S2"))
+    row = _armed_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    assert "1 of them cannot trade: S1 (unbound)" in row["detail"]
 
 
 def test_zero_armed_is_said_loudly_but_cannot_move_the_ready_verdict(tmp_path, clean_env):

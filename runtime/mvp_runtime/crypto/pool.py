@@ -74,6 +74,11 @@ from .robustness import (
     selection_adjusted_z, selection_rank, verdict_rank,
 )
 from .strategy import Direction, SpecParseError, StrategySpec, load_strategy_pool
+# `admission_evidence` is re-exported: the promotion door, the signal probe and every replay read it
+# as `pool.admission_evidence`. It moved to the artifact's leaf, which hashes the projection (PR3a).
+from .strategy_artifact import (  # noqa: F401
+    ARTIFACT_SHA256_FIELD, admission_evidence, assert_pool_artifacts,
+)
 
 POOL_FILENAME = "active_strategy_pool.json"
 CANDIDATES_FILENAME = "strategy_candidates.jsonl"
@@ -1517,8 +1522,7 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
             seen_candidate.add(candidate_id)
 
 
-def load_active_pool(root: Path | None = None) -> dict[str, Any]:
-    """The active pool, validated spec-by-spec and identity-unique. Missing = empty."""
+def _read_active_pool(root: Path | None, *, artifacts: bool) -> dict[str, Any]:
     path = pool_path(root)
     if not path.is_file():
         return {"active_strategies": []}
@@ -1531,7 +1535,26 @@ def load_active_pool(root: Path | None = None) -> dict[str, Any]:
     except SpecParseError as exc:
         raise ToolError("STRATEGY_POOL_INVALID", f"active strategy pool failed validation: {exc}") from exc
     assert_pool_identity_unique(pool)
+    if artifacts:
+        assert_pool_artifacts(pool)
     return pool
+
+
+def load_active_pool(root: Path | None = None) -> dict[str, Any]:
+    """The active pool, validated spec-by-spec, identity-unique, and every stamped entry still its
+    artifact (PR3a, decision 34). Missing = empty."""
+    return _read_active_pool(root, artifacts=True)
+
+
+def read_pool_to_disarm(root: Path | None = None) -> dict[str, Any]:
+    """The active pool for the one door that may only narrow it: every check but the artifacts'.
+
+    A pool whose stamp no longer holds routes nothing (decision 34), and an operator repairing it
+    must be able to take an entry off the money path first — otherwise an entry still at LIVE is
+    armed again the moment the repaired pool loads. Disarming writes only OBSERVATION and so needs
+    no proof of what the entry is. Every other reader, and every other writer, reads through
+    :func:`load_active_pool`."""
+    return _read_active_pool(root, artifacts=False)
 
 
 def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
@@ -1637,6 +1660,8 @@ def live_arm_entries(pool: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
       gate refuses rather than infers);
     - the lineage it arms: its candidate, the rule hash its label names, and the hash of the spec
       it actually trades (``spec_rule_hash``, None when the spec does not parse);
+    - the artifact it was installed as (``strategy_artifact_sha256``, PR3a), None when the entry
+      predates the artifact. A pool that loaded has checked every stamp against the entry's content;
     - when the promotion door installed it, and when the disarm door last took the tier away
       (``disarmed_at``; the door never installs an entry that carries it)."""
     armed: dict[str, dict[str, Any]] = {}
@@ -1650,6 +1675,9 @@ def live_arm_entries(pool: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             "candidate_id": entry.get("candidate_id"),
             "strategy_rule_hash": entry.get("strategy_rule_hash"),
             "spec_rule_hash": _spec_rule_hash(entry.get("strategy_spec")),
+            ARTIFACT_SHA256_FIELD: (entry.get(ARTIFACT_SHA256_FIELD)
+                                    if isinstance(entry.get(ARTIFACT_SHA256_FIELD), str)
+                                    and entry.get(ARTIFACT_SHA256_FIELD) else None),
             "promoted_at": entry.get("promoted_at"),
             "disarmed_at": entry.get("live_tier_updated_at"),
         }
@@ -1662,11 +1690,16 @@ def live_arm_unsound(armed: Mapping[str, Any]) -> str | None:
     - ``spec``: the spec it trades is not the rule its label names. The router trades the spec, and
       the approval is checked against the label, so the two must be one rule.
     - ``disarmed``: it carries the disarm door's trace, so it was put back in the tier by hand. The
-      promotion door installs every entry fresh."""
+      promotion door installs every entry fresh. Named before ``unbound``: it says someone edited
+      the pool by hand, which is the more useful thing for an operator to read.
+    - ``unbound``: it carries no artifact stamp (PR3a, decision 33). Only an entry the door
+      installed as an artifact Thomas's approval names may spend money; an older entry papers."""
     if armed.get("spec_rule_hash") is None or armed.get("spec_rule_hash") != armed.get("strategy_rule_hash"):
         return "spec"
     if armed.get("disarmed_at") is not None:
         return "disarmed"
+    if not armed.get(ARTIFACT_SHA256_FIELD):
+        return "unbound"
     return None
 
 
@@ -1704,13 +1737,17 @@ def disarm_live_tier(
     a lineage that has since been retired out of the pool entirely, and refusing there would
     turn a stale name into a cycle failure — the outcome has already been recorded, and the
     lineage is already not routable.
+
+    Reads past an artifact stamp that no longer holds (:func:`read_pool_to_disarm`, PR3a): such a
+    pool routes nothing, and the operator must be able to disarm before repairing it. The entries
+    it does not name are written back exactly as read, so the pool stays refused until repaired.
     """
     ids = {str(s) for s in strategy_ids if isinstance(s, str) and s}
     if not ids:
         return 0
     path = pool_path(root)
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
-        pool = load_active_pool(root)
+        pool = read_pool_to_disarm(root)
         moved = 0
         for entry in pool.get("active_strategies") or []:
             if not isinstance(entry, Mapping) or str(entry.get("strategy_id")) not in ids:
@@ -1774,12 +1811,13 @@ def context_scores(pool: Mapping[str, Any]) -> dict[tuple[str, str], float]:
 def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> int:
     """Install (replace) the active pool — the OPERATOR door, not a runtime call.
 
-    Validates every spec and the identity invariant first (fail-closed), then writes
-    atomically. Returns the number of strategies installed. Callers are operator
-    scripts acting on an explicit confirmation (the pre-R10 promotion posture); the
-    runtime cycle never calls this."""
+    Validates every spec, the identity invariant and every artifact stamp first (fail-closed),
+    then writes atomically: a pool the read door would refuse is never written. Returns the number
+    of strategies installed. Callers are operator scripts acting on an explicit confirmation (the
+    pre-R10 promotion posture); the runtime cycle never calls this."""
     specs = load_strategy_pool(pool)
     assert_pool_identity_unique(pool)
+    assert_pool_artifacts(pool)
     path = pool_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
@@ -1887,29 +1925,6 @@ def update_statuses(
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)
         return changed
-
-
-def admission_evidence(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """The two admission-door inputs a promotion lifts off a candidate's backtest.
-
-    ``paper.regime_admits`` and ``distribution_gate.distribution_admits`` read these off the
-    POOL ENTRY at route time, and a candidate row does not carry them — they are projected
-    out of ``backtest_evidence`` when the entry is built. Both doors fail OPEN on a missing
-    reference, so anything that replays a bare candidate through the entry path measures a
-    lineage with its gating switched off.
-
-    That has now bitten twice in the same direction. #743 shipped the distribution gate
-    without the promotion-side line and every routed entry passed it unmeasured. Then on
-    2026-09-02 the signal probe replayed candidate rows to rank promotion picks and read
-    S004-GEN-690 at 36 opens in 60 days — it installed at 11, because its own regime evidence
-    excludes the regime it fires in most. The projection lives here, in one function both the
-    promotion door and any pre-promotion replay call, so the two can no longer disagree about
-    what a candidate becomes."""
-    evidence = candidate.get("backtest_evidence") or {}
-    return {
-        "regime_evidence": ((evidence.get("regime_breakdown") or {}).get("per_regime")),
-        "distribution_reference": evidence.get("distribution_reference"),
-    }
 
 
 def as_pool_entry_for_replay(candidate: Mapping[str, Any]) -> dict[str, Any]:

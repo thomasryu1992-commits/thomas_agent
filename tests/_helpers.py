@@ -134,13 +134,37 @@ def gate_stage():
     )
 
 
+# The artifact a test arm pairs with its candidate when the test names none (PR3a). A stand-in: a
+# pool entry that must survive a real pool read carries a real stamp (`stamped_pool_entry`), and a
+# test arming it passes that stamp as ``artifacts``.
+ARM_TEST_ARTIFACT = "sha256:" + "a" * 64
+_ARM_DEFAULT_ARTIFACTS = object()
+
+
+def stamped_pool_entry(entry):
+    """``entry`` as the promotion door installs one (PR3a): the artifact's carried parts (empty
+    evidence unless the entry brings its own) and the stamp its content really hashes to, so a pool
+    read accepts it. Stamp AFTER every change to the hashed fields, or the read refuses the pool."""
+    from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod
+
+    stamped = {**entry}
+    stamped.setdefault(artifact_mod.ARTIFACT_FIELD, artifact_mod.carried_parts({}))
+    stamped[artifact_mod.ARTIFACT_SHA256_FIELD] = artifact_mod.artifact_sha256(
+        artifact_mod.from_pool_entry(stamped))
+    return stamped
+
+
 def live_arm_approval(candidate_ids=("cand_1",), rule_hashes=("deadbeef",), *,
+                      artifacts=_ARM_DEFAULT_ARTIFACTS,
                       decided_at="2026-07-27T23:50:00Z", expires_at="2026-07-28T00:05:00Z",
                       live_tier="LIVE", **overrides):
     """An APPROVED promotion approval that arms ``candidate_ids`` at ``live_tier``, in the shape
     `approval.record_decision` leaves one and under the id `permission` derives from its fingerprint
     — for tests of the gate's order-time verification of an arm (PR2c-2b). ``overrides`` replace
-    top-level fields after the id is derived."""
+    top-level fields after the id is derived.
+
+    ``artifacts`` are the artifact hashes it pairs with ``candidate_ids`` (PR3a): by default
+    :data:`ARM_TEST_ARTIFACT` for each; None signs no pairs, as an approval asked before v5 did."""
     from runtime.mvp_runtime import approval as approval_mod  # noqa: F401 — puts `lib/` on the path
     from runtime.mvp_runtime.permission import (
         STRATEGY_POOL_LIVE_TARGET_REF, STRATEGY_POOL_PAPER_TARGET_REF,
@@ -160,6 +184,10 @@ def live_arm_approval(candidate_ids=("cand_1",), rule_hashes=("deadbeef",), *,
         "normalized_parameters": {
             "candidate_ids": sorted(candidate_ids), "strategy_ids": ["S001"],
             "rule_hashes": sorted(rule_hashes), "keep_active": False, "live_tier": live_tier,
+            **({} if artifacts is None else {"artifacts": sorted(
+                [c, a] for c, a in zip(candidate_ids, (
+                    [ARM_TEST_ARTIFACT] * len(candidate_ids)
+                    if artifacts is _ARM_DEFAULT_ARTIFACTS else list(artifacts))))}),
         },
         "expires_at": expires_at,
     }

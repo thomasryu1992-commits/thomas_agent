@@ -38,6 +38,7 @@ from . import forward_book, forward_confirmation
 from . import paper as paper_store
 from .execution_stage import StageStatus, resolve_execution_stage
 from . import pool as pool_store
+from . import strategy_artifact as artifact_mod
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
 # v4, and the jump past v3 is deliberate. TWO material fields landed independently and both
@@ -48,12 +49,19 @@ PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
 # The tier has to be in here for the same reason the reactivation set does: installing a strategy
 # that may spend real money and installing one that may only paper are different asks, and an
 # approval granted for the second must not be spendable on the first.
-PROMOTION_HASH_VERSION = "strategy_promotion.v4"
+#
+# v5 (PR3a, decisions 31-34): each candidate paired with the artifact the door will install for it.
+# Until v4 the approval named ids and rule hashes as two separately sorted lists and nothing the
+# router reads beside the spec, so an approval could not say which admission evidence, score or cost
+# basis it was answering. A v4 approval verifies nothing after this: its hash lacks the pairs.
+PROMOTION_HASH_VERSION = "strategy_promotion.v5"
 
 
 def promotion_content_sha256(
     candidate_ids: list[str], rule_hashes: list[str], keep_active: bool, live_tier: str,
     reactivated_candidate_ids: Sequence[str] = (),
+    *,
+    artifact_sha256s: Sequence[str],
 ) -> str:
     """The material identity of one promotion: which candidate lineages, which exact rules, add
     or replace, **into which tier**, and **who comes back from a terminal status**. Any change
@@ -77,6 +85,12 @@ def promotion_content_sha256(
     Both are facts about the LIVE POOL rather than about the selectors, so a change between the
     ask and the execution invalidates the approval. That is intended — the effect being
     authorized really did change.
+
+    **The artifacts, paired with their candidates (v5, PR3a).** ``artifact_sha256s[i]`` is the
+    artifact the door will install for ``candidate_ids[i]`` (:mod:`strategy_artifact`): the spec,
+    the admission evidence, the score, the cost basis, the risk assumptions and the evidence, in one
+    hash. Required rather than defaulted, like the tier: an empty default would be the one way to
+    ask for a promotion that binds no content.
     """
     if live_tier not in pool_store.LIVE_TIERS:
         raise ApprovalBlocked(
@@ -90,7 +104,50 @@ def promotion_content_sha256(
         "keep_active": bool(keep_active),
         "live_tier": live_tier,
         "reactivated_candidate_ids": sorted(reactivated_candidate_ids),
+        "artifacts": artifact_pairs(candidate_ids, artifact_sha256s),
     })
+
+
+def artifact_pairs(candidate_ids: Sequence[str], artifact_sha256s: Sequence[str]) -> list[list[str]]:
+    """``[[candidate_id, artifact_sha256], ...]`` sorted by candidate: which artifact is whose.
+
+    The form the content hash and the signed parameters both carry. Refuses lists that are not
+    one artifact per candidate, each a non-empty string."""
+    if (isinstance(artifact_sha256s, (str, bytes)) or len(artifact_sha256s) != len(candidate_ids)
+            or not all(isinstance(a, str) and a for a in artifact_sha256s)):
+        raise ApprovalBlocked(
+            "PROMOTION_ARTIFACT_INVALID",
+            "a promotion names exactly one artifact hash per candidate",
+        )
+    return sorted([str(c), str(a)] for c, a in zip(candidate_ids, artifact_sha256s))
+
+
+def content_sha256_of(
+    candidates: Sequence[Mapping[str, Any]], *, keep_active: bool, live_tier: str, root: Path | None,
+) -> str:
+    """The content hash of promoting these resolved rows now: their ids, rules and artifacts, the
+    mode, the tier, and who the pool as it stands would return from a terminal status. What the
+    verification and the install door both recompute."""
+    candidate_ids = [c["candidate_id"] for c in candidates]
+    return promotion_content_sha256(
+        candidate_ids,
+        [c["strategy_rule_hash"] for c in candidates],
+        keep_active,
+        live_tier,
+        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
+        artifact_sha256s=candidate_artifacts(candidates),
+    )
+
+
+def candidate_artifacts(candidates: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The artifact hash the door would install for each resolved candidate, in order.
+
+    Derived from the rows themselves, so an approval and the install that verifies it bind the
+    content of the rows, not only their ids (``resolve_candidates`` keeps the latest row per id)."""
+    try:
+        return [artifact_mod.candidate_artifact_sha256(c) for c in candidates]
+    except ToolError as exc:
+        raise ApprovalBlocked(exc.reason_code, exc.reason) from exc
 
 
 def _resolve_identity(selectors: list[str], root: Path | None) -> list[dict[str, Any]]:
@@ -431,6 +488,7 @@ def request_promotion(
     )
     candidate_ids = [c["candidate_id"] for c in candidates]
     rule_hashes = [c["strategy_rule_hash"] for c in candidates]
+    artifacts = candidate_artifacts(candidates)
     # Read here rather than passed in: the set is a fact about the pool as it stands, which is
     # exactly what the approval must bind. `store_root` is the candidates root, so the pool
     # comes from `root` — the same place the install door will read it from.
@@ -439,6 +497,7 @@ def request_promotion(
     )
     content = promotion_content_sha256(
         candidate_ids, rule_hashes, keep_active, live_tier, reactivated,
+        artifact_sha256s=artifacts,
     )
 
     display = sorted(f"{c.get('strategy_id')}[{c['candidate_id']}]" for c in candidates)
@@ -451,6 +510,7 @@ def request_promotion(
     permission_decision = build_strategy_promotion_permission_decision(
         bound, candidate_ids=candidate_ids,
         strategy_ids=[str(c.get("strategy_id")) for c in candidates], rule_hashes=rule_hashes,
+        artifact_sha256s=artifacts,
         keep_active=keep_active, live_tier=live_tier, content_sha256=content, now=now, repo_root=root,
     )
     approval_request = approval_mod.build_approval_request(
@@ -524,24 +584,33 @@ def verify_promotion_approval(
                 "expiring after it); run the promotion again",
             )
     candidates = _resolve_identity(selectors, root)
-    candidate_ids = [c["candidate_id"] for c in candidates]
     # Recomputed from the pool as it stands NOW, deliberately not read back off the snapshot:
     # a set carried over from the ask would let the reactivation change between the two and
     # still verify, which is the whole gap this field closes. A lifecycle transition in
     # between is therefore a refusal, and the right one — the effect being authorized changed.
-    expected = promotion_content_sha256(
-        candidate_ids,
-        [c["strategy_rule_hash"] for c in candidates],
-        keep_active,
-        live_tier,
-        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
-    )
-    if snapshot.get("content_sha256") != expected:
+    # The artifacts likewise come from the rows as they stand now (PR3a): a row whose content is
+    # no longer what was asked about mints another artifact, and the approval does not verify.
+    if snapshot.get("content_sha256") != content_sha256_of(
+            candidates, keep_active=keep_active, live_tier=live_tier, root=root):
         raise ApprovalBlocked(
             "APPROVAL_CONTENT_MISMATCH",
-            "the approval binds a different promotion (ids, rules, add/replace mode, or which "
-            "terminal members it returns to trading changed)",
+            "the approval binds a different promotion (ids, rules, artifacts, add/replace mode, or "
+            "which terminal members it returns to trading changed)",
         )
+    if live_tier == pool_store.LIVE_TIER_LIVE:
+        # The order-time check reads the pairs off the signed parameters, not the content hash
+        # (`live_arm_problem`), so a LIVE install they do not name would arm nothing. Refused here,
+        # like the window above: the door never installs an arm the gate would refuse.
+        signed = (snapshot.get("normalized_parameters") or {}).get("artifacts")
+        pairs = [p for p in signed if isinstance(p, list)] if isinstance(signed, list) else []
+        unsigned = sorted(c["candidate_id"] for c, a in zip(candidates, candidate_artifacts(candidates))
+                          if [c["candidate_id"], a] not in pairs)
+        if unsigned:
+            raise ApprovalBlocked(
+                "APPROVAL_ARTIFACT_UNSIGNED",
+                f"the approval's signed parameters do not pair these candidates with the artifacts "
+                f"they install as: {unsigned}",
+            )
     return dict(approval)
 
 
@@ -554,6 +623,10 @@ LIVE_ARM_APPROVER_UNVERIFIED = "LIVE_ARM_APPROVER_UNVERIFIED"
 LIVE_ARM_APPROVAL_NOT_AN_ARM = "LIVE_ARM_APPROVAL_NOT_AN_ARM"
 LIVE_ARM_APPROVAL_ALTERED = "LIVE_ARM_APPROVAL_ALTERED"
 LIVE_ARM_APPROVAL_OTHER_CANDIDATE = "LIVE_ARM_APPROVAL_OTHER_CANDIDATE"
+# PR3a (decision 33): the approval pairs no artifact with any candidate (it predates v5), or not
+# this entry's artifact with this entry's candidate.
+LIVE_ARM_APPROVAL_UNBOUND = "LIVE_ARM_APPROVAL_UNBOUND"
+LIVE_ARM_APPROVAL_OTHER_ARTIFACT = "LIVE_ARM_APPROVAL_OTHER_ARTIFACT"
 LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL = "LIVE_ARM_INSTALLED_OUTSIDE_APPROVAL"
 
 
@@ -591,6 +664,7 @@ def live_arm_problem(
     approval_id: str,
     candidate_id: Any,
     strategy_rule_hash: Any,
+    strategy_artifact_sha256: Any,
     promoted_at: Any,
 ) -> str | None:
     """Why ``approval`` does not back a pool entry armed LIVE under ``approval_id``, or None. Pure.
@@ -607,8 +681,9 @@ def live_arm_problem(
     - it approves a promotion into the live tier;
     - its snapshot still fingerprints to the recorded value, and ``approval_id`` is the id that
       fingerprint derives. Neither the snapshot nor the id changed after the answer;
-    - the entry's candidate and rule hash are among the ones it approved. The ids and the hashes
-      are two separate lists, so which hash belongs to which candidate is not checked;
+    - the entry's candidate and rule hash are among the ones it approved;
+    - it pairs the entry's artifact with the entry's candidate (PR3a, decision 33). An approval
+      that pairs none predates the artifact and arms nothing;
     - the entry was installed after the answer and before the approval expired
       (:func:`_arm_window`), as the promotion door requires. ``promoted_at`` is what the pool says;
       the door writes it, and so does anyone who writes the pool.
@@ -648,6 +723,13 @@ def live_arm_problem(
     if (candidate_id not in _listed(content.get("candidate_ids"))
             or strategy_rule_hash not in _listed(content.get("rule_hashes"))):
         return LIVE_ARM_APPROVAL_OTHER_CANDIDATE
+    pairs = content.get("artifacts")
+    if not isinstance(pairs, list):
+        return LIVE_ARM_APPROVAL_UNBOUND
+    if not (isinstance(candidate_id, str) and isinstance(strategy_artifact_sha256, str)
+            and strategy_artifact_sha256
+            and [candidate_id, strategy_artifact_sha256] in [p for p in pairs if isinstance(p, list)]):
+        return LIVE_ARM_APPROVAL_OTHER_ARTIFACT
     answered, expires = _arm_window(approval)
     installed = _parse_instant(promoted_at)
     if answered is None or expires is None or installed is None or not answered <= installed < expires:

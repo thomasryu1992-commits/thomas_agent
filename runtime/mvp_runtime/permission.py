@@ -1563,6 +1563,9 @@ def build_strategy_promotion_permission_decision(
     candidate_ids: list[str],
     strategy_ids: list[str],
     rule_hashes: list[str],
+    # The artifact the door will install for each candidate, aligned with ``candidate_ids`` (PR3a).
+    # Signed as pairs, so the snapshot says which artifact is whose.
+    artifact_sha256s: list[str],
     keep_active: bool,
     # Which tier this promotion installs into. No default: an ask that does not say whether it
     # arms real money is the defect this argument closes (execution-authority audit FO-5b,
@@ -1594,6 +1597,9 @@ def build_strategy_promotion_permission_decision(
         raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its display strategy id")
     if len(rule_hashes) != len(candidate_ids) or not all(isinstance(h, str) and h for h in rule_hashes):
         raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its rule hash")
+    if (isinstance(artifact_sha256s, (str, bytes)) or len(artifact_sha256s) != len(candidate_ids)
+            or not all(isinstance(a, str) and a for a in artifact_sha256s)):
+        raise PlannerBlocked("INVALID_PROMOTION", "every promoted candidate must carry its artifact hash")
     if live_tier not in (STRATEGY_POOL_TIER_OBSERVATION, STRATEGY_POOL_TIER_LIVE):
         raise PlannerBlocked("INVALID_PROMOTION", f"unknown live tier {live_tier!r}")
     arms_live = live_tier == STRATEGY_POOL_TIER_LIVE
@@ -1608,6 +1614,9 @@ def build_strategy_promotion_permission_decision(
             "candidate_ids": sorted(candidate_ids),
             "strategy_ids": sorted(strategy_ids),
             "rule_hashes": sorted(rule_hashes),
+            # Which artifact each candidate installs as (PR3a): the pairs the order-time check of
+            # a LIVE arm reads, since the content hash above is not recomputed after the install.
+            "artifacts": sorted([c, a] for c, a in zip(candidate_ids, artifact_sha256s)),
             "keep_active": bool(keep_active),
             # In the signed content, not only in the hash the door recomputes: the tier is the
             # difference between a paper change and arming real money.
