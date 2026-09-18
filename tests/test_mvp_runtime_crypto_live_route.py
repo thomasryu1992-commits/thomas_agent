@@ -32,7 +32,7 @@ from runtime.mvp_runtime.crypto import live_leg, live_route, pre_order_gate
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
-from tests._helpers import gate_stage, healthy_optional_data, live_arm_approval
+from tests._helpers import deep_order_book, gate_stage, healthy_optional_data, live_arm_approval
 
 NOW = "2026-07-28T00:00:00Z"
 SYMBOL = "BTCUSDT"
@@ -1193,8 +1193,13 @@ class _Venue:
 
 
 class _Collector:
+    """The market data a pass reads: a deep book, in hand at the pass's own clock (PR2d-3)."""
+
+    def __init__(self, clock=None):
+        self._clock = clock or (lambda: NOW)
+
     def order_book(self, symbol, *, limit, timeout_seconds):
-        return {}
+        return deep_order_book(received_at=self._clock())
 
 
 # The approval Thomas answered to arm the plan's lineage LIVE (PR2c-2b). The pass runs hours after
@@ -1286,7 +1291,7 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
             feature_row={"timestamp": bar},
             verdict={"allow_new_position": True, "problems": [],
                      "risk_guard": {"limits": {"source": "default"}}},
-            symbol=SYMBOL, collector=_Collector(), now=now, timeframe="4h",
+            symbol=SYMBOL, collector=_Collector(lambda: clock["now"]), now=now, timeframe="4h",
             root=tmp_path, control_store=control,
             live_arm_approvals={"S001": arm_id},
             optional_data=healthy_optional_data(bar),
@@ -2755,4 +2760,39 @@ def test_a_caller_that_hands_no_optional_data_opens_nothing(tmp_path, monkeypatc
                         lambda **kw: real(**{k: v for k, v in kw.items() if k != "optional_data"}))
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_UNKNOWN]
+    assert _nothing_spent(venue, tmp_path)
+
+
+# --- the book the entry crosses (PR2d-3) ---------------------------------------------------------------
+
+def test_the_leg_hands_the_decision_the_book_it_read(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    seen: dict[str, Any] = {}
+    real = live_route.plan_live_entry
+
+    def _spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _spy)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert seen["order_book"]["received_at"] == "2026-07-28T04:05:00Z"
+    assert seen["order_book"]["asks"][0][0] > seen["order_book"]["bids"][0][0]
+
+
+@pytest.mark.parametrize("book,code", [
+    (lambda clock: deep_order_book(received_at=timeutil.plus_seconds(clock, -61)), "LIVE_ENTRY_ORDERBOOK_STALE"),
+    (lambda clock: deep_order_book(received_at=clock, quantity=1e-6), "LIVE_ENTRY_BOOK_TOO_THIN"),
+    (lambda clock: deep_order_book(received_at=clock, half_spread_bps=5.0), "LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL"),
+], ids=["stale", "thin", "dear"])
+def test_a_book_the_order_should_not_cross_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch, book, code):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(_Collector, "order_book",
+                        lambda self, symbol, *, limit, timeout_seconds: book(self._clock()))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [code]
     assert _nothing_spent(venue, tmp_path)

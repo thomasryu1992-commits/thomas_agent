@@ -538,9 +538,13 @@ def _run_gated_live_leg(
     filters, filters_reason = read_symbol_filters(collector, symbol, timeout_seconds=timeout_seconds)
 
     spread_bps: float | None = None
+    # The book the spread and the market impact are judged on (PR2d-3), handed down whole: the
+    # decision walks it for the order's size once that is known.
+    order_book: Mapping[str, Any] | None = None
     try:
         raw_book = collector.order_book(symbol, limit=ORDER_BOOK_LEVELS, timeout_seconds=timeout_seconds)
         spread_bps = summarize_book(raw_book)["spread_bps"]
+        order_book = raw_book if isinstance(raw_book, Mapping) else None
     except Exception:  # noqa: BLE001 — degrade here, refuse at the entry decision: the route
         # itself must not raise (settle/protect already ran above); the None it hands down is
         # what plan_live_entry refuses fail-closed (Thomas 2026-08-30).
@@ -646,6 +650,7 @@ def _run_gated_live_leg(
         verdict=verdict,
         now=now,
         spread_bps=spread_bps,
+        order_book=order_book,
         reference_quote=reference_quote,
         # Last, after every read above: the moment the decision (and the gate, on this same
         # mapping) judges these facts at (PR2c-1).

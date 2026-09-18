@@ -35,7 +35,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError
-from tests._helpers import FakeSnapshotStore, requires_local_core
+from tests._helpers import FakeSnapshotStore, deep_order_book, requires_local_core
 
 NOW = timeutil.utc_now_iso()
 
@@ -740,6 +740,8 @@ def test_fire_refuses_a_venue_minimum_above_the_plan_ceiling(tmp_path, monkeypat
     monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
         step_size=0.001, min_qty=0.001, min_notional=120.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: deep_order_book(
+        100000.0, received_at=timeutil.utc_now_iso()))
     with pytest.raises((cli._Refusal, MvpRuntimeError)) as exc:
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_NOTIONAL_ABOVE_PLAN
@@ -885,6 +887,8 @@ def test_fire_places_measures_and_marks_one_cell(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: deep_order_book(
+        100000.0, received_at=timeutil.utc_now_iso()))
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
     # A capable adapter records its snapshot in a store that writes (PR2b review): the two
     # selectors read one switch in production, so they are wired together here.
@@ -982,6 +986,8 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: deep_order_book(
+        100000.0, received_at=timeutil.utc_now_iso()))
     monkeypatch.setattr(cli, "select_live_position_store", lambda now=None, root=None: store)
     # A capable adapter records its snapshot in a store that writes (PR2b review): the two
     # selectors read one switch in production, so they are wired together here.
@@ -1044,6 +1050,8 @@ def _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter, *, book=(), venue=()
     monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: deep_order_book(
+        100000.0, received_at=timeutil.utc_now_iso()))
     monkeypatch.setattr(cli.live_governance, "prepare_live_order_governance",
                         lambda intent, *, purpose, now, repo_root=None: {
                             "purpose": purpose, "bound_task": {},
@@ -1293,6 +1301,8 @@ def test_fire_refuses_below_the_execution_stage_a_real_order_needs(tmp_path, mon
     monkeypatch.setattr(cli, "_read_filters", lambda *a, **k: SymbolFilters(
         step_size=0.001, min_qty=0.001, min_notional=100.0, tick_size=0.1))
     monkeypatch.setattr(cli, "_read_price", lambda *a, **k: 100000.0)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: deep_order_book(
+        100000.0, received_at=timeutil.utc_now_iso()))
 
     with pytest.raises(cli._Refusal) as exc:
         _fire(tmp_path)
@@ -1341,6 +1351,8 @@ def _gate_facts(plan, **overrides):
         now=NOW,
         # PR2c-1: the account read at NOW, judged at NOW.
         account_collected_at=NOW, clock=NOW,
+        # PR2d-3: a deep book read at NOW.
+        order_book=deep_order_book(price, received_at=NOW),
     )
     facts.update(overrides)
     return intent, facts
@@ -2723,4 +2735,43 @@ def test_a_breaker_that_cannot_count_by_the_probe_s_gate_refuses_it(tmp_path, mo
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
     assert "api_breaker_clear" in str(exc.value)
+    assert adapter.submitted == []
+
+
+# === the book the probe crosses (PR2d-3) ==============================================
+
+@pytest.mark.parametrize("book,failed", [
+    (lambda: deep_order_book(100000.0, received_at="2026-01-01T00:00:00Z"), {"order_book_fresh"}),
+    (lambda: deep_order_book(100000.0, received_at=NOW, half_spread_bps=30.0),
+     {"spread_within_limit", "slippage_within_model"}),
+    (lambda: deep_order_book(100000.0, received_at=NOW, half_spread_bps=5.0), {"slippage_within_model"}),
+    (lambda: deep_order_book(100000.0, received_at=NOW, quantity=1e-6), {"slippage_within_model"}),
+    (lambda: None, {"order_book_fresh", "spread_within_limit", "slippage_within_model"}),
+    (lambda: {"bids": [(1.0, 1.0)], "asks": [(1.0, 1.0)], "received_at": NOW},
+     {"spread_within_limit", "slippage_within_model"}),
+], ids=["stale", "wide", "dear", "thin", "unread", "crossed"])
+def test_the_probe_gate_judges_the_book_as_the_leg_does(tmp_path, book, failed):
+    intent, facts = _gate_facts(_active_plan(tmp_path), order_book=book())
+    record = probe.gate_probe_order(intent, **facts)
+    assert record["approved"] is False
+    book_checks = {"order_book_fresh", "spread_within_limit", "slippage_within_model"}
+    assert set(record["failed_checks"]) & book_checks == failed
+
+
+def test_the_probe_gate_passes_a_fresh_deep_book_and_says_what_it_would_pay(tmp_path):
+    intent, facts = _gate_facts(_active_plan(tmp_path))
+    record = probe.gate_probe_order(intent, **facts)
+    assert record["approved"] is True, record["failed_checks"]
+    [check] = [c for c in record["checks"] if c["check"] == "slippage_within_model"]
+    assert check["detail"]["market_impact"]["side"] == "BUY"
+
+
+def test_a_probe_whose_book_cannot_be_read_is_refused_at_its_gate(tmp_path, monkeypatch):
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(cli, "_read_book", lambda *a, **k: None)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "order_book_fresh" in str(exc.value) and "slippage_within_model" in str(exc.value)
     assert adapter.submitted == []

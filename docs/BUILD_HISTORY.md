@@ -24,6 +24,32 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **An entry is judged on what the book says it will pay** (crypto PR2d-3, Thomas decision 29,
+  2026-09-18; `crypto/orderbook_store.py`, `crypto/live_entry.py`, `crypto/live_route.py`,
+  `crypto/market_data.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`).
+  - **The gap:** the economics door charged the cost model's 3.0 bps of slippage, never measured on
+    this account, and the book the route reads fed only the 50 bps spread door. Nothing asked
+    whether this order, on this book, would pay what the door assumed. The book's age was bounded
+    by nothing either.
+  - **The walk** (`orderbook_store.estimate_market_impact`, pure). The decision walks the book it
+    already read: the asks for a long, the bids for a short, to the sized quantity. It reports
+    whether the 20 levels fill the order and the impact against the mid.
+  - **The doors.**
+    - A book in hand more than 60 seconds before the decision, or at no time it says, refuses
+      (`LIVE_ENTRY_ORDERBOOK_STALE`). The venue's book now carries its `received_at`, because the
+      per-fire memo hands one book to every context of the symbol.
+    - After sizing: a book too thin to fill the order (`LIVE_ENTRY_BOOK_TOO_THIN`), or an impact
+      above the model's 3.0 bps (`LIVE_ENTRY_SLIPPAGE_ABOVE_MODEL`), refuses.
+    - The economics are then judged again at the dearer of the two (`round_trip_cost_r_at_book`).
+  - **The drift is sealed, not bounded** (decision 29). An adverse drift from the bar close to the
+    market widens the risk to `(risk + d) / risk` of the plan's. `drift_risk_multiplier` is
+    recorded on every entry until its distribution is measured.
+  - **The probe** reads the book just before its gate (one public call) and is judged on the same
+    three bounds.
+  - **Measured before this** (the PR2d investigation, 18,765 books): the widest half-spread was
+    1.6 bps, and the largest order the budget allows sits at 7% of the thinnest top-20 depth. At
+    today's sizes the door almost never refuses; it is there for the day either stops being true.
+
 - **An entry is refused on optional data that failed or went stale** (crypto PR2d-2, Thomas decision
   28, 2026-09-18; `crypto/cycle.py`, `crypto/live_entry.py`, `crypto/live_route.py`).
   - **The gap:** every optional leg (funding, mark/index/premium, liquidations, open interest, the

@@ -104,6 +104,18 @@ class FakeSnapshotStore:
         return snapshot["risk_snapshot_sha256"]
 
 
+def deep_order_book(mid=60000.0, *, received_at, levels=20, quantity=1_000_000.0, half_spread_bps=0.1):
+    """A book deep and tight enough that no test order moves it (PR2d-3): ``levels`` levels a
+    side, each holding ``quantity``, the best quotes ``half_spread_bps`` either side of ``mid``.
+    ``received_at`` is when the book was in hand; the entry judges its age from it."""
+    step = mid * half_spread_bps / 10_000.0
+    return {
+        "bids": [(mid - step * (i + 1), quantity) for i in range(levels)],
+        "asks": [(mid + step * (i + 1), quantity) for i in range(levels)],
+        "received_at": received_at,
+    }
+
+
 def healthy_optional_data(bar_time=None):
     """The optional data of a context whose legs all answered and whose feeds are fresh (PR2d-2):
     what `cycle.optional_data_health` returns for it at ``bar_time`` — the bar the decision is on,

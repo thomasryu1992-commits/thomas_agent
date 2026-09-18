@@ -1530,6 +1530,9 @@ class BinanceFuturesCollector:
         return {
             "bids": self._parse_book_side(payload.get("bids"), side="bids", descending=True),
             "asks": self._parse_book_side(payload.get("asks"), side="asks", descending=False),
+            # When this book was in hand (PR2d-3): the per-fire memo hands the same book to every
+            # context of the symbol, so the live entry judges its age from here, not from its read.
+            "received_at": timeutil.utc_now_iso(),
         }
 
     @staticmethod

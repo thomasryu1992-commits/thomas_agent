@@ -208,6 +208,58 @@ def summarize_book(book: Mapping[str, Any]) -> dict[str, float]:
     }
 
 
+def estimate_market_impact(book: Mapping[str, Any], *, side: str, quantity: float) -> dict[str, Any]:
+    """What a market order of ``quantity`` would pay against ``book`` (PR2d-3, Thomas decision 29).
+    Pure.
+
+    Walks the side the order takes — the asks for a ``BUY``, the bids for a ``SELL`` — level by
+    level until the quantity is filled. Returns:
+
+    - ``fills``: whether the book's band holds the whole quantity. It holds only the levels read
+      (`market_data.ORDER_BOOK_LEVELS`); a quantity past them is refused, not extrapolated.
+    - ``vwap``: the average price of the walk, over what the band could fill.
+    - ``impact_bps``: ``vwap`` against the mid, adverse positive — what the order pays for
+      crossing the spread and eating depth. None when the band does not fill it.
+    - ``levels``: how many levels the walk touched.
+
+    Raises what `summarize_book` raises on a book it cannot describe (an empty or crossed side),
+    and ``ORDERBOOK_IMPACT_UNPRICEABLE`` on a side or quantity no walk can price."""
+    mid = summarize_book(book)["mid"]
+    if side not in ("BUY", "SELL"):
+        raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", f"no book side for an order that is {side!r}")
+    try:
+        wanted = float(quantity)
+    except (TypeError, ValueError):
+        wanted = float("nan")
+    if not (wanted > 0.0) or wanted == float("inf"):
+        raise ToolError("ORDERBOOK_IMPACT_UNPRICEABLE", "an order to price needs a positive quantity")
+    levels = list(book.get("asks") if side == "BUY" else book.get("bids"))
+    remaining, spent, touched = wanted, 0.0, 0
+    for price, available in levels:
+        taken = min(remaining, float(available))
+        spent += taken * float(price)
+        remaining -= taken
+        touched += 1
+        if remaining <= wanted * 1e-12:
+            remaining = 0.0
+            break
+    filled = wanted - remaining
+    vwap = spent / filled if filled > 0.0 else None
+    fills = remaining == 0.0
+    impact = None
+    if fills and vwap is not None:
+        impact = (vwap - mid) / mid * 10_000 if side == "BUY" else (mid - vwap) / mid * 10_000
+    return {
+        "side": side,
+        "quantity": wanted,
+        "fills": fills,
+        "vwap": round(vwap, 8) if vwap is not None else None,
+        "mid": mid,
+        "impact_bps": round(impact, 6) if impact is not None else None,
+        "levels": touched,
+    }
+
+
 def _mark_key(symbol: str) -> str:
     return str(symbol).strip().upper()
 

@@ -289,6 +289,7 @@ def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks
         # A healthy book: the rehearsal walks the READY path, and since the unreadable-book
         # fail-open closed (2026-08-30) an absent reading is a refusal with its own tests.
         spread_bps=1.0,
+        order_book={"bids": [(59999.0, 1e6)], "asks": [(60001.0, 1e6)], "received_at": clock},
         equity_usdt=usable_equity_usdt(snapshot),
         now=NOW,
         verdict={"allow_new_position": True, "problems": [],
