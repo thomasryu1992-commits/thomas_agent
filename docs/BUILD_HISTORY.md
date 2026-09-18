@@ -36,12 +36,13 @@ Append a new entry when a milestone ships, in the same PR.
     2026-09-18, all 15 occupying entries matched their rows field for field, by construction
     rather than by any check (investigation `pr3-strategy-artifact-investigation.md`).
   - **The artifact** (`strategy_artifact.v1`, decision 31). It hashes the identity (the
-    `candidate_id` as `strategy_instance_id`, decision 32), the canonical spec, the admission
-    evidence, the score, the cost basis, the backtest doors' assumptions and an evidence summary
-    (the whole evidence by hash). The display id is not in it.
+    `candidate_id` as `strategy_instance_id`, decision 32), the spec as its rule fingerprint, the
+    admission evidence, the score, the cost basis, the backtest doors' assumptions and an evidence
+    summary (the whole evidence by hash). The display id is not in it.
   - **The door** stamps each new entry (`strategy_artifact_sha256`, with the non-routing parts in
-    `strategy_artifact`). It installs only when the row's, the approval's and the built entry's
-    hashes are one. The ledger records the pairs and the tier, which it did not record before.
+    `strategy_artifact`). The row's and the built entry's hashes must be one, and with an approval
+    the approval's content hash must match the rows the door copies. The ledger records the pairs
+    and the tier, which it did not record before.
   - **The approval** (`strategy_promotion.v5`) binds `[candidate_id, artifact]` pairs, in the
     content hash and in the signed parameters the order-time check reads. A LIVE install whose
     signed parameters do not pair its candidates refuses (`APPROVAL_ARTIFACT_UNSIGNED`).
@@ -54,9 +55,26 @@ Append a new entry when a milestone ships, in the same PR.
   - **Measured before shipping:** all 3,123 production candidate rows derive an artifact, and an
     entry built from each the way the door builds one survives the pool file's JSON round trip
     with the same hash. The production pool loads under the new check.
+  - **What the independent review of #894 found, fixed in the same PR.**
+    - **The hash format was not frozen** (medium). Every read recomputes the stamps on disk, and
+      the spec was hashed through `StrategySpec.to_dict()`, which has no stability rule (#461 added
+      `venue` to it unconditionally). A change like that would have moved every stamp at the next
+      deploy and, under decision 34, stopped routing on every context. The spec is now hashed as
+      its rule fingerprint, which every stored rule hash already pins, and golden tests pin the v1
+      result. A later version must keep writing the v1 stamp.
+    - **A refused pool also refused the doors that could repair it** (low). The disarm door now
+      reads past an artifact that no longer holds, because it can only narrow; adding to a refused
+      pool is refused as BLOCKED instead of a traceback. The recovery is in the contract.
+    - **Smaller fixes:** the disarm trace is named before a missing stamp; the readiness board says
+      which armed entries cannot trade; a whole-leg test runs a keyless legacy entry; the part tests
+      change one part at a time; the ask refuses a promotion that cannot pair every candidate (a
+      surviving mutant); the docs say the stamp catches drift and only the approval pairs
+      authenticate.
   - **Deliberately not here:** carrying the artifact hash through paper, shadow, forward and live
     records and the pre-order seal (PR3a-2), the runtime keys still read by display id (3b), and a
-    re-scored row passing the guards that key on `candidate_id` (3c).
+    re-scored row passing the guards that key on `candidate_id` (3c). Showing the artifacts in the
+    approval message: the ask names each candidate, and the approval binds the artifact derived
+    from it.
 
 - **An entry is judged on what the book says it will pay** (crypto PR2d-3, Thomas decision 29,
   2026-09-18; `crypto/orderbook_store.py`, `crypto/live_entry.py`, `crypto/live_route.py`,

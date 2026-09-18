@@ -46,7 +46,9 @@ DISARM_EVENT_TYPE = "crypto_strategy_disarm_event.v0"
 
 
 def armed_strategy_ids(root: Path | None) -> list[str]:
-    return sorted(pool_store.live_routable_strategy_ids(pool_store.load_active_pool(root)))
+    # Read as the disarm door reads (PR3a): a pool whose artifact stamp no longer holds routes
+    # nothing, and this door must still be able to take its entries off the money path.
+    return sorted(pool_store.live_routable_strategy_ids(pool_store.read_pool_to_disarm(root)))
 
 
 def run_disarm(*, strategy_ids: list[str], disarmed_by: str, reason: str,

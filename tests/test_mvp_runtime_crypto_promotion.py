@@ -1493,6 +1493,24 @@ def test_a_gate_that_names_no_escape_cannot_be_escaped_by_one(tmp_path, monkeypa
     assert blocked.value.reason_code == "EXECUTION_STAGE_TOO_LOW_TO_ARM"
 
 
+@pytest.mark.parametrize("artifacts", [[], ["sha256:x", "sha256:y"], [""], [None], "sha256:x"],
+                         ids=["none", "too-many", "empty", "not-a-string", "a-string"])
+def test_the_ask_names_the_artifact_of_every_candidate(artifacts):
+    """PR3a: the signed parameters pair each candidate with the artifact it installs as, and the
+    order-time check of a LIVE arm reads those pairs. An ask that cannot pair every candidate is
+    refused before anything is signed."""
+    from runtime.mvp_runtime import permission
+    from runtime.mvp_runtime.errors import PlannerBlocked
+
+    with pytest.raises(PlannerBlocked) as exc:
+        permission.build_strategy_promotion_permission_decision(
+            {}, candidate_ids=["cand_a"], strategy_ids=["S1"], rule_hashes=["sha256:r"],
+            artifact_sha256s=artifacts, keep_active=False, live_tier="LIVE",
+            content_sha256="sha256:c", now=NOW)
+    assert exc.value.reason_code == "INVALID_PROMOTION"
+    assert "artifact" in exc.value.reason
+
+
 # --- the arming approval at order time (PR2c-2b) ----------------------------------------------
 
 _THOMAS = dict(approved_by="Thomas", method="telegram_private_control_channel",

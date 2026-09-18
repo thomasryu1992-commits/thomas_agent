@@ -217,7 +217,12 @@ def run_promotion(
 
     entries = []
     if keep_active:
-        entries.extend(pool_store.load_active_pool(root).get("active_strategies") or [])
+        try:
+            entries.extend(pool_store.load_active_pool(root).get("active_strategies") or [])
+        except MvpRuntimeError as exc:
+            # A pool the read door refuses (an artifact that no longer holds, a spec that does not
+            # parse) is not one to add to: refused as the other doors refuse, not as a traceback.
+            raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
     existing_ids = {e.get("strategy_id") for e in entries}
     existing_cids = {e.get("candidate_id") for e in entries}
     display_ids: list[str] = []

@@ -231,8 +231,10 @@ def test_the_arm_facts_name_the_lineage_and_install_time_of_live_routable_entrie
     # PR3a, decision 33: an entry the door did not install as an artifact arms nothing.
     ({"strategy_artifact_sha256": None}, "unbound"),
     ({"strategy_artifact_sha256": ""}, "unbound"),
+    # Both: the hand edit is named, not the missing stamp (PR3a review).
+    ({"strategy_artifact_sha256": None, "live_tier_updated_at": "2026-09-17T00:00:00Z"}, "disarmed"),
 ], ids=["sound", "label", "no-label", "garbled-spec", "no-spec", "neither", "disarm-trace",
-        "no-stamp", "empty-stamp"])
+        "no-stamp", "empty-stamp", "no-stamp-and-disarm-trace"])
 def test_an_unsound_arm_names_no_approval_whatever_it_carries(change, unsound):
     """Review of #887: the router trades the spec and the approval is checked against the label, so
     they must be one rule; and the promotion door never installs an entry carrying the disarm trace."""

@@ -1225,14 +1225,15 @@ _ARMED_STAMP = stamped_pool_entry(_armed_entry())["strategy_artifact_sha256"]
 _ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=(_ARMED_STAMP,))
 
 
-def _armed_pool(approval_id=None, **entry):
+def _armed_pool(approval_id=None, *, stamped=True, **entry):
     from runtime.mvp_runtime.crypto import pool as pool_store
 
     # Stamped as the door installed it, then the test's changes: a change to a hashed field leaves
     # the stamp behind, which a real pool read refuses (decision 34) and the read these tests stand
-    # in for does not check.
+    # in for does not check. `stamped=False` is an entry that predates the artifact: neither key,
+    # which is the shape a real pool read accepts.
     return {"active_strategies": [{
-        **stamped_pool_entry(_armed_entry()),
+        **(stamped_pool_entry(_armed_entry()) if stamped else _armed_entry()),
         pool_store.LIVE_TIER_APPROVAL_FIELD: approval_id or _ARM["approval_id"], **entry,
     }]}
 
@@ -2261,8 +2262,7 @@ _UNBACKED_ARMS = {
                                         "LIVE_ARM_REARMED_OUTSIDE_THE_DOOR"),
     # PR3a, decision 33: only an entry installed as an artifact, under an approval pairing that
     # artifact with its candidate, may spend money.
-    "entry-predates-the-artifact": (_ARM, {"strategy_artifact_sha256": None, "strategy_artifact": None},
-                                    "LIVE_ARM_ENTRY_UNBOUND"),
+    "entry-predates-the-artifact": (_ARM, {"stamped": False}, "LIVE_ARM_ENTRY_UNBOUND"),
     "approval-asked-before-v5": (
         live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=None), {},
         "LIVE_ARM_APPROVAL_UNBOUND"),

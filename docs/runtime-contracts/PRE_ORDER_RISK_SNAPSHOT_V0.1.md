@@ -217,13 +217,14 @@ The profile names records that already authorize trading. Nothing new is registe
       - the spec it trades must be the rule its `strategy_rule_hash` label names
         (`LIVE_ARM_SPEC_NOT_ITS_RULE`). The router trades the spec, and the approval is checked
         against the label;
+      - it must not carry the disarm door's trace (`live_tier_updated_at`,
+        `LIVE_ARM_REARMED_OUTSIDE_THE_DOOR`). The promotion door installs every entry fresh, so a
+        LIVE entry with that trace was put back in the tier by hand;
       - it must carry an artifact stamp (`strategy_artifact_sha256`, `LIVE_ARM_ENTRY_UNBOUND`;
         PR3a, decision 33). Only an entry the promotion door installed as an artifact may spend
         money; an entry that predates the artifact papers. A pool that loaded has already checked
-        every stamp against its entry's content (decision 34, `CRYPTO_PIPELINE_V0.1.md`);
-      - it must not carry the disarm door's trace (`live_tier_updated_at`,
-        `LIVE_ARM_REARMED_OUTSIDE_THE_DOOR`). The promotion door installs every entry fresh, so a
-        LIVE entry with that trace was put back in the tier by hand.
+        every stamp against its entry's content (decision 34, `CRYPTO_PIPELINE_V0.1.md`). Checked
+        after the disarm trace, so a hand edit is what the operator reads.
     - **The fresh entry must arm the lineage the plan was made from** (`LIVE_ARM_ENTRY_CHANGED`).
     - **The approval store must hold the record the entry names**, and
       `promotion.live_arm_problem` must accept it:
@@ -244,7 +245,8 @@ The profile names records that already authorize trading. Nothing new is registe
     The promotion door refuses a LIVE install outside the same window
     (`APPROVAL_OUTSIDE_ARM_WINDOW`), or under an approval whose signed parameters do not pair each
     candidate with the artifact it installs as (`APPROVAL_ARTIFACT_UNSIGNED`), so it never installs
-    an arm the gate would refuse.
+    an arm the gate would refuse for its window or its pairs. It does not pre-check the approver's
+    verification, the fingerprint or the target; the gate does.
 
     - **An approved promotion stays APPROVED.** It is verified, never consumed, and only a PENDING
       approval expires. The check does not judge its validity window against the order: the arm

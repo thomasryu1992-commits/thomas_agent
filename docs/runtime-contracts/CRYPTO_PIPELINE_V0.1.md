@@ -131,7 +131,7 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
 | part | from the row | on the entry |
 |---|---|---|
 | identity: `strategy_instance_id` (= `candidate_id`, decision 32), generation, rule-hash label | the row | top level |
-| the spec, in the canonical form `StrategySpec` parses it to | `strategy_spec` | `strategy_spec` |
+| the spec, as the rule fingerprint its rule hash is computed over (parsed, so a re-serialized spec is the same spec) | `strategy_spec` | `strategy_spec` |
 | admission: regime evidence, distribution reference | `admission_evidence(row)` | top level, where the doors read them |
 | ranking: `champion_score` | the row | top level |
 | cost basis: the cost model the backtest charged | `backtest_evidence.cost_summary.cost_model` | `strategy_artifact.cost_basis` |
@@ -141,10 +141,11 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
 - **Not in it:** the display id (the door renames on a collision, and the strategy is the same
   under either name, decision 31), and the fields the pool's other writers own (`status`, the
   `lifecycle_*` fields, `live_tier*`, `promoted_*`).
-- **The door stamps** each new entry with the hash (`strategy_artifact_sha256`) and refuses unless
-  three hashes are one: the row's, the approval's, and the entry it built
-  (`STRATEGY_ARTIFACT_DIVERGED`, `APPROVAL_CONTENT_MISMATCH`). The ledger event records the pairs
-  (`promoted_artifacts`) and the tier.
+- **The door stamps** each new entry with the hash (`strategy_artifact_sha256`). The row's hash and
+  the built entry's must be one (`STRATEGY_ARTIFACT_DIVERGED`); when an approval authorizes the
+  install, the approval's content hash must also match the rows the door copies
+  (`APPROVAL_CONTENT_MISMATCH`). `--without-approval` (OBSERVATION only) has no approval to match.
+  The ledger event records the pairs (`promoted_artifacts`) and the tier.
 - **The approval binds the pairs** (`strategy_promotion.v5`): `artifacts: [[candidate_id,
   artifact_sha256], ...]`, in the content hash and in the signed parameters. A row appended under
   the same candidate id after the ask mints another artifact, and the approval does not verify.
@@ -154,6 +155,27 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
   34), as a spec that does not parse does. The cycle then routes nothing and records the code.
   A writer that touches a hashed field would refuse the pool on the next read; the pool's writers
   today touch none, and tests pin that.
+- **What the stamp proves.** It catches drift — a writer, a restore or a code path that changes
+  what the router reads on a stamped entry. It is an unkeyed hash, so it does not authenticate:
+  whoever can write the pool file can recompute it, or strip it and leave an entry that papers
+  unbound. What authenticates money is the approval: a LIVE arm must be paired with its artifact by
+  the approval Thomas answered, and an edited or stripped entry is not. The fields outside the hash
+  that the live path reads (`live_tier`, `live_tier_approval_id`, `promoted_at`, the disarm trace)
+  stay as hand-editable as before; an edit to them can now re-arm only an artifact a v5 approval
+  pairs.
+- **The format is frozen.** Every read recomputes the stamps on disk with the code deployed then,
+  so a change to the v1 format moves every stamp at once. The spec is therefore hashed as its rule
+  fingerprint (every stored rule hash already pins it), never `StrategySpec.to_dict()`, which has no
+  stability rule (#461 added `venue` to it). A golden test pins the v1 result. A later version must
+  keep writing the v1 stamp beside its own: this code treats an unknown version as a stamp that does
+  not hold, so a rollback would otherwise refuse the pool.
+- **When the pool is refused.** The error names the entry (index, display id, candidate id).
+  - Disarm first if it is armed: `scripts/disarm_live_strategies.py` reads past an artifact that no
+    longer holds, because it can only narrow (`pool.read_pool_to_disarm`). The promotion door, the
+    lifecycle and retirement refuse a refused pool, as they do a spec that does not parse.
+  - Then repair the named entry: restore its fields from the candidate row the ledger's
+    `promoted_artifacts` names, or remove its `strategy_artifact_sha256` and `strategy_artifact`,
+    which leaves an unbound entry that papers and can never be armed until it is re-promoted.
 - **An entry with no stamp predates the artifact** (all 121 on 2026-09-18). It papers as before and
   can never be armed LIVE (decision 33): `pool.live_arm_unsound` names it `unbound`, and the
   order-time check requires the approval to pair the entry's artifact with its candidate. A LIVE

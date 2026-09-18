@@ -14,7 +14,9 @@ hashed once (Thomas decisions 31-34):
 
 - **identity:** ``strategy_instance_id`` (the ``candidate_id``, decision 32), the generation, and
   the rule hash the entry is labelled with;
-- **the spec**, in the canonical form :class:`StrategySpec` parses it to;
+- **the spec**, as the rule fingerprint its rule hash is computed over
+  (:func:`strategy.strategy_rule_fingerprint`): everything in it that decides how it trades, parsed,
+  so a re-serialized spec is the same spec;
 - **admission:** the regime evidence and distribution reference the two route-time doors read off
   the entry;
 - **ranking:** ``champion_score``, the router's first key without realized evidence;
@@ -34,10 +36,22 @@ whose routing fields no longer hash to its stamp refuses the whole pool (decisio
 a spec that does not parse does. An entry with no stamp predates this and papers as before; only a
 stamped entry may be armed LIVE (decision 33).
 
+**What the stamp proves, and what it does not.** It catches DRIFT: a writer, a restore or a code
+path that changes what the router reads on a stamped entry. It is an unkeyed hash, so it does not
+authenticate: whoever can write the pool file can recompute it, or strip it and leave an entry that
+papers unbound. What authenticates money is the approval: a LIVE arm must be paired with its
+artifact by the approval Thomas answered, and an edited or stripped entry is not.
+
 **A later writer that touches any hashed field poisons the pool.** The pool's writers today are
-the promotion door (which stamps), ``pool.update_statuses`` (status and the ``lifecycle_*``
-fields) and ``pool.disarm_live_tier`` (the ``live_tier*`` fields); none of those is hashed, and
-tests pin that.
+the promotion door (which stamps), the history import's ``--activate-pool`` (which installs
+unstamped entries), ``pool.update_statuses`` (status and the ``lifecycle_*`` fields) and
+``pool.disarm_live_tier`` (the ``live_tier*`` fields); none of those touches a hashed field, and
+tests pin that. **A change to this module's hash format is such a writer too**, for every stamp
+already on disk: each read recomputes with the code deployed then. So the v1 format depends only
+on things that are already frozen — the rule fingerprint (every stored rule hash depends on it),
+the candidate-id rule (every stored id does), and field names — and a golden test pins the result.
+A later ``strategy_artifact.v2`` must keep writing the v1 stamp beside its own, or a rollback to
+this code refuses the pool: this code does not know v2 and treats it as a stamp that does not hold.
 
 The hash is :func:`integrity.sha256_record` over canonical JSON. Floats are allowed (scores, R,
 bps), so the two adapters must present them identically: both parse the spec through
@@ -57,7 +71,7 @@ from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
 from .candidate_identity import candidate_id
-from .strategy import StrategySpec
+from .strategy import StrategySpec, strategy_rule_fingerprint
 
 STRATEGY_ARTIFACT_VERSION = "strategy_artifact.v1"
 
@@ -148,11 +162,15 @@ def carried_parts(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _canonical_spec(spec: Any) -> dict[str, Any]:
+def _spec_fingerprint(spec: Any) -> dict[str, Any]:
+    """The spec as its rule fingerprint: parsed, so the bytes a writer chose do not matter, and
+    frozen, because every stored rule hash is computed over it. Never ``StrategySpec.to_dict()``,
+    which has no stability rule: #461 added ``venue`` to it unconditionally, and a change like that
+    would move every stamp on disk at the next deploy."""
     if not isinstance(spec, Mapping):
         raise ToolError(STRATEGY_ARTIFACT_UNHASHABLE, "the strategy carries no spec")
     try:
-        return StrategySpec.from_dict(dict(spec)).to_dict()
+        return strategy_rule_fingerprint(StrategySpec.from_dict(dict(spec)))
     except (ValueError, TypeError) as exc:
         raise ToolError(STRATEGY_ARTIFACT_UNHASHABLE, f"the spec does not parse: {exc}") from exc
 
@@ -166,7 +184,7 @@ def _body(
         "strategy_instance_id": instance_id,
         "generation_id": generation_id,
         "strategy_rule_hash": rule_hash,
-        "strategy_spec": _canonical_spec(spec),
+        "spec_fingerprint": _spec_fingerprint(spec),
         "admission": {
             "regime_evidence": admission.get("regime_evidence"),
             "distribution_reference": admission.get("distribution_reference"),

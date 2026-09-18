@@ -197,8 +197,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 82 | `read_canary_orders` | `order_id in seen` |
 | `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 78 | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 67 | `read_canary_orders` | `—` |
-| `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1947 | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1935 | `read_candidates` | `—` |
+| `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1968 | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1956 | `read_candidates` | `—` |
 | `CANDIDATE_AMBIGUOUS` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1482 | `resolve_candidates` | `ambiguous` |
 | `CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1190 | `assert_no_cluster_siblings` | `—` |
 | `CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1306 | `assert_observation_entry_bar` | `—` |
@@ -514,11 +514,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 206 | `append_audit_events` | `—` |
 | `LEDGER_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 260 | `_append_locked` | `—` |
 | `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 355 | `operator_retirement_decision` | `not (isinstance(strategy_id, str) and strategy_id)` |
-| `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1859 | `update_statuses` | `not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str))` |
+| `LIFECYCLE_DECISION_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1880 | `update_statuses` | `not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str))` |
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/lifecycle.py` | 360 | `operator_retirement_decision` | `current in TERMINAL_STATUSES` |
-| `LIFECYCLE_TERMINAL_IMMUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1864 | `update_statuses` | `str(entry.get('status')) in TERMINAL_STATUSES` |
+| `LIFECYCLE_TERMINAL_IMMUTABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1885 | `update_statuses` | `str(entry.get('status')) in TERMINAL_STATUSES` |
 | `LIFECYCLE_TERMINAL_IMMUTABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 80 | `resolve_pool_entries` | `terminal` |
-| `LIFECYCLE_UNKNOWN_STRATEGY` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1862 | `update_statuses` | `entry is None` |
+| `LIFECYCLE_UNKNOWN_STRATEGY` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1883 | `update_statuses` | `entry is None` |
 | `LIFECYCLE_UNKNOWN_STRATEGY` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 77 | `resolve_pool_entries` | `unknown` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 78 | `_price` | `isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0` |
 | `LIMIT_FILL_UNPRICEABLE` | `ToolError` | `runtime/mvp_runtime/crypto/limit_entry.py` | 112 | `limit_entry_fill` | `direction not in (LONG, SHORT)` |
@@ -1090,16 +1090,16 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `STOP_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 549 | `_spend` | `stop_ref(current) != approved_stop` |
 | `STOP_NOT_NAMED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 542 | `_spend` | `not isinstance(approved_stop, str) or not approved_stop` |
 | `STORE_READ_ONLY` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 257 | `_write` | `self._readonly` |
-| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 153 | `_canonical_spec` | `not isinstance(spec, Mapping)` |
-| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 157 | `_canonical_spec` | `—` |
-| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 198 | `from_pool_entry` | `not isinstance(carried, Mapping)` |
-| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 200 | `from_pool_entry` | `carried.get('version') != STRATEGY_ARTIFACT_VERSION` |
-| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 219 | `_record_sha` | `—` |
-| `STRATEGY_POOL_ARTIFACT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 267 | `assert_pool_artifacts` | `problem is not None` |
+| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 171 | `_spec_fingerprint` | `not isinstance(spec, Mapping)` |
+| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 175 | `_spec_fingerprint` | `—` |
+| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 216 | `from_pool_entry` | `not isinstance(carried, Mapping)` |
+| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 218 | `from_pool_entry` | `carried.get('version') != STRATEGY_ARTIFACT_VERSION` |
+| `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 237 | `_record_sha` | `—` |
+| `STRATEGY_POOL_ARTIFACT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 285 | `assert_pool_artifacts` | `problem is not None` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1516 | `assert_pool_identity_unique` | `strategy_id in seen_strategy` |
 | `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1521 | `assert_pool_identity_unique` | `candidate_id in seen_candidate` |
-| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1538 | `load_active_pool` | `—` |
-| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1534 | `load_active_pool` | `—` |
+| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1536 | `_read_active_pool` | `—` |
+| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1532 | `_read_active_pool` | `—` |
 | `SUBJECT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 49 | `_fingerprint` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 138 | `write` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 249 | `run_write` | `target.exists()` |

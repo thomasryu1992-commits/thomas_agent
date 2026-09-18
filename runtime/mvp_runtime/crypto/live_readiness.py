@@ -401,6 +401,19 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             armed_strategies_detail = (
                 f"{len(armed_ids)} armed of {len(occupying_ids)} occupying (live_tier=LIVE)"
             )
+            # The tier says LIVE, but the gate refuses an arm `pool.live_arm_unsound` names whatever
+            # approval it carries: an entry that predates the artifact (PR3a), trades another rule,
+            # or was put back in the tier by hand. Said here so "armed" is not read as "can trade".
+            cannot_trade = [
+                (sid, pool.live_arm_unsound(armed))
+                for sid, armed in sorted(pool.live_arm_entries(active_pool).items())
+            ]
+            cannot_trade = [(sid, why) for sid, why in cannot_trade if why is not None]
+            if cannot_trade:
+                armed_strategies_detail += (
+                    f"; {len(cannot_trade)} of them cannot trade: "
+                    + ", ".join(f"{sid} ({why})" for sid, why in cannot_trade)
+                )
         else:
             armed_strategies_detail = (
                 f"0 armed of {len(occupying_ids)} occupying - NO strategy may open a real "
