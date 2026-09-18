@@ -65,7 +65,49 @@ def test_clearing_requires_a_reason_and_an_operator(tripped, capsys):
     assert cab.main(["--root", str(tripped)]) == cab.EXIT_USAGE
     assert cab.main(["--cleared-by", "thomas", "--root", str(tripped)]) == cab.EXIT_USAGE
     assert cab.main(["--reason", "looked at it", "--root", str(tripped)]) == cab.EXIT_USAGE
+    # Stored verbatim, so a blank answer is no answer (review of #889).
+    assert cab.main(["--cleared-by", "  ", "--reason", "looked at it", "--root", str(tripped)]) == cab.EXIT_USAGE
+    assert cab.main(["--cleared-by", "thomas", "--reason", " \t", "--root", str(tripped)]) == cab.EXIT_USAGE
     assert api_breaker_status(tripped)["tripped"] is True
+
+
+def test_the_reason_is_stored_without_its_padding(tripped, capsys):
+    assert cab.main(["--cleared-by", " thomas ", "--reason", "  venue fine  ", "--root", str(tripped)]) == cab.EXIT_OK
+    status = api_breaker_status(tripped)
+    assert (status["cleared_by"], status["cleared_reason"]) == ("thomas", "venue fine")
+
+
+def test_a_failure_counted_right_after_the_reset_is_not_a_failed_reset(tripped, capsys, monkeypatch):
+    """Judged by what the clear wrote, not by the counts read back (review of #889)."""
+    breaker = _durable(tripped)
+    real_clear = breaker.clear
+
+    def _clear_then_the_venue_fails(**kw):
+        stored = real_clear(**kw)
+        breaker.record_failure(call_class="read", call="open_orders", at=NOW, reason_code="ORDER_TRANSPORT")
+        return stored
+
+    breaker.clear = _clear_then_the_venue_fails
+    monkeypatch.setattr(cab, "select_live_api_breaker", lambda **kw: breaker)
+    assert cab.main(["--cleared-by", "thomas", "--reason", "venue fine", "--root", str(tripped)]) == cab.EXIT_OK
+    captured = capsys.readouterr()
+    assert "may open a position again" in captured.out and "NOT cleared" not in captured.err
+
+
+def test_a_reset_the_venue_trips_again_at_once_says_so(tripped, capsys, monkeypatch):
+    breaker = _durable(tripped)
+    real_clear = breaker.clear
+
+    def _clear_then_it_trips(**kw):
+        stored = real_clear(**kw)
+        for _ in range(MAX_CONSECUTIVE_API_ERRORS):
+            breaker.record_failure(call_class="write", call="submit", at=NOW, reason_code="ORDER_TRANSPORT")
+        return stored
+
+    breaker.clear = _clear_then_it_trips
+    monkeypatch.setattr(cab, "select_live_api_breaker", lambda **kw: breaker)
+    assert cab.main(["--cleared-by", "thomas", "--reason", "venue fine", "--root", str(tripped)]) == cab.EXIT_BLOCKED
+    assert "tripped again since" in capsys.readouterr().err
 
 
 def test_a_reasoned_clear_reopens_the_door_and_records_why(tripped, capsys):

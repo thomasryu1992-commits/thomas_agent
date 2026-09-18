@@ -23,6 +23,7 @@ verdict is ``approved``.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -118,6 +119,8 @@ LIVE_BRACKET_BREAKER_UNREADABLE = "LIVE_BRACKET_BREAKER_UNREADABLE"
 API_BREAKER_FILENAME = "live_api_errors.json"
 LIVE_API_BREAKER_UNREADABLE = "LIVE_API_BREAKER_UNREADABLE"
 LIVE_API_BREAKER_TRIPPED = "LIVE_API_BREAKER_TRIPPED"
+# A caller named a class of signed call the breaker does not keep: this process's own bug.
+LIVE_API_CALL_CLASS_UNKNOWN = "LIVE_API_CALL_CLASS_UNKNOWN"
 # Two classes, counted apart (decision 27). Every send is preceded by reads — the resting-order
 # check and the account — so one streak would let a read that works hide a send that does not.
 API_CALL_WRITE = "write"
@@ -167,12 +170,24 @@ API_ERROR_REASON_CODES = frozenset({
     "NO_ORDER_API_KEY",         # nothing signed can work until an operator fixes it
     "NO_API_KEY",               # account.py: the same
 })
-# And the venue's own codes, where the runtime's code alone reads as an ordinary rejection.
+# And the venue's own codes. Where the venue answered with a code, its code decides: the runtime's
+# own reason is coarser (an account request refused on a business code is a `TOOL_TRANSPORT`).
 API_ERROR_VENUE_CODES = frozenset({
     -1000, -1001, -1006, -1007,   # the venue cannot say what happened
-    -1003, -1008,                 # rate limited, overloaded
-    -1021, -1022, -2014, -2015,   # clock, signature, credentials
+    -1003, -1008, -1015, -1016,   # rate limited, overloaded, too many new orders, service going down
+    -1021, -1022,                 # clock, signature
+    -1002, -1011, -1099,          # not authorized, this IP may not, not authenticated
+    -2008, -2014, -2015, -2017,   # the key: unknown, malformed, rejected, locked
 })
+# And an HTTP status that says the same whatever code rides with it: this IP is banned (418) or
+# rate limited (429), and every 5xx is the venue's own failure.
+API_ERROR_HTTP_STATUSES = frozenset({418, 429})
+
+# How long a claimed notice of the latch waits before another pass may try again (PR2d-1, review
+# of #889). The send often fails for the very outage that tripped the breaker, so it is retried —
+# on a later pass, not on every context of this one, since each attempt can hold a pass for the
+# channel's own timeout.
+API_BREAKER_NOTICE_RETRY_SECONDS = 900
 
 # How old the account read an entry is judged on may be when the entry is judged (Thomas decisions
 # 18 and 24, PR2c-1). A door reads the account once, then settles, protects and prices before it
@@ -1127,19 +1142,34 @@ def select_live_bracket_breaker(*, now: str | None = None, root: Path | None = N
 def api_error_counts(error: Any) -> bool:
     """Whether a failed signed call counts against the breaker (decision 27). Pure.
 
-    Reads the runtime's own reason code and, where that alone reads as an ordinary rejection, the
-    venue's code the adapter carries in ``data``."""
-    code = getattr(error, "reason_code", None)
-    if code in API_ERROR_REASON_CODES:
+    In order: an HTTP status that refuses everyone (418, 429, any 5xx) counts; else the venue's own
+    code, where it answered with one, decides; else the runtime's own reason code. A transport
+    failure an adapter let escape untyped (a dropped or reset connection) counts too: it is the
+    same fact as the `ORDER_TRANSPORT` it should have been."""
+    if isinstance(error, (OSError, http.client.HTTPException)):
         return True
     data = getattr(error, "data", None)
-    venue = data.get("venue_code") if isinstance(data, Mapping) else None
-    return _venue_code(venue) in API_ERROR_VENUE_CODES
+    data = data if isinstance(data, Mapping) else {}
+    status = _plain_int(data.get("http_status"))
+    if status is not None and (status in API_ERROR_HTTP_STATUSES or 500 <= status <= 599):
+        return True
+    venue = _plain_int(data.get("venue_code"))
+    if venue is not None:
+        return venue in API_ERROR_VENUE_CODES
+    return getattr(error, "reason_code", None) in API_ERROR_REASON_CODES
 
 
-def _venue_code(value: Any) -> int | None:
-    """The venue's numeric code, or None. A bool is an int to Python and never a venue code."""
+def _plain_int(value: Any) -> int | None:
+    """``value`` if it is an int, else None. A bool is an int to Python and never a code."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _age_seconds(then: Any, now: Any) -> float | None:
+    """Seconds from ``then`` to ``now``, or None when either cannot be read. Pure."""
+    try:
+        return (timeutil.parse_iso(str(now)) - timeutil.parse_iso(str(then))).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _empty_api_class() -> dict[str, Any]:
@@ -1151,15 +1181,23 @@ def _empty_api_record() -> dict[str, Any]:
     return {
         **{name: _empty_api_class() for name in API_CALL_CLASSES},
         "tripped_at": None, "tripped_class": None,
+        # The operator was told of this latch (PR2d-1, review of #889): stamped only after a send
+        # that got through, and the last attempt, so a failed one is tried again later.
+        "told_at": None, "notice_attempted_at": None,
         "cleared_at": None, "cleared_by": None, "cleared_reason": None,
     }
+
+
+_API_RECORD_FIELDS = ("tripped_at", "tripped_class", "told_at", "notice_attempted_at",
+                      "cleared_at", "cleared_by", "cleared_reason")
 
 
 def read_api_errors(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
     """The consecutive signed-call failure record. Ungated read; an unreadable file raises.
 
     Fails closed like the bracket breaker's: a breaker whose state reads as zero because the file
-    is corrupt is a breaker that reopens the door it exists to hold shut."""
+    is corrupt is a breaker that reopens the door it exists to hold shut. A count must be a whole
+    number — anything else (a string, a bool, a negative, a JSON ``Infinity``) is unreadable."""
     path = venue_state_dir(root, venue=venue) / API_BREAKER_FILENAME
     if not path.is_file():
         return _empty_api_record()
@@ -1170,7 +1208,7 @@ def read_api_errors(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> 
     if not isinstance(data, dict):
         raise ToolError(LIVE_API_BREAKER_UNREADABLE, "api failure record is malformed")
     record = _empty_api_record()
-    for key in ("tripped_at", "tripped_class", "cleared_at", "cleared_by", "cleared_reason"):
+    for key in _API_RECORD_FIELDS:
         record[key] = data.get(key, record[key])
     for name in API_CALL_CLASSES:
         held = data.get(name)
@@ -1178,13 +1216,12 @@ def read_api_errors(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> 
             raise ToolError(LIVE_API_BREAKER_UNREADABLE, f"api failure record holds no {name!r} count")
         counts = _empty_api_class()
         counts.update({key: held.get(key, counts[key]) for key in counts})
-        try:
-            counts["consecutive"] = int(counts["consecutive"])
-            counts["total"] = int(counts["total"])
-        except (TypeError, ValueError) as exc:
-            raise ToolError(
-                LIVE_API_BREAKER_UNREADABLE, "api failure record holds a non-integer count"
-            ) from exc
+        for key in ("consecutive", "total"):
+            count = _plain_int(counts[key])
+            if count is None or count < 0:
+                raise ToolError(
+                    LIVE_API_BREAKER_UNREADABLE, "api failure record holds a count that is not a whole number"
+                )
         record[name] = counts
     return record
 
@@ -1195,14 +1232,22 @@ def api_breaker_status(
 ) -> dict[str, Any]:
     """``read_api_errors`` plus the verdict, so no caller re-derives the comparison.
 
-    ``tripped`` is latched: the record says when it tripped, and only an operator clears it."""
+    ``tripped`` is latched: the record says when it tripped, and only an operator clears it. A
+    streak at the limit reads tripped even with no stamp — a limit lowered since, or a record
+    repaired by hand — because a count the door would refuse on is never clear."""
     record = read_api_errors(root, venue=venue)
+    consecutive = max(record[name]["consecutive"] for name in API_CALL_CLASSES)
     return {
         **record,
         "limit": limit,
-        "consecutive": max(int(record[name]["consecutive"]) for name in API_CALL_CLASSES),
-        "tripped": record["tripped_at"] is not None,
+        "consecutive": consecutive,
+        "tripped": record["tripped_at"] is not None or consecutive >= limit,
     }
+
+
+def _known_class(call_class: str) -> None:
+    if call_class not in API_CALL_CLASSES:
+        raise ToolError(LIVE_API_CALL_CLASS_UNKNOWN, f"unknown signed call class {call_class!r}")
 
 
 class LiveApiErrorBreaker:
@@ -1249,11 +1294,9 @@ class LiveApiErrorBreaker:
         venue_code: Any = None,
     ) -> dict[str, Any]:
         """One signed call the venue could not answer. Returns the record as stored, its
-        ``limit``, and ``just_tripped``: whether this failure is the one that latched it — the
-        moment the operator is told, once, however many processes are counting (the lock
-        serializes them, so exactly one write sees the transition)."""
-        if call_class not in API_CALL_CLASSES:
-            raise ToolError(LIVE_API_BREAKER_UNREADABLE, f"unknown signed call class {call_class!r}")
+        ``limit``, and ``just_tripped``: whether this failure is the one that latched it (the lock
+        serializes every process counting, so exactly one write sees the transition)."""
+        _known_class(call_class)
         tripped_now = False
 
         def mutate(record: dict[str, Any]) -> None:
@@ -1264,7 +1307,7 @@ class LiveApiErrorBreaker:
             counts["last_failure_at"] = at
             counts["last_call"] = call
             counts["last_reason_code"] = reason_code
-            counts["last_venue_code"] = _venue_code(venue_code)
+            counts["last_venue_code"] = _plain_int(venue_code)
             if record["tripped_at"] is None and counts["consecutive"] >= self._limit:
                 record["tripped_at"] = at
                 record["tripped_class"] = call_class
@@ -1274,15 +1317,55 @@ class LiveApiErrorBreaker:
         return {**stored, "limit": self._limit, "just_tripped": tripped_now}
 
     def record_success(self, *, call_class: str) -> dict[str, Any]:
-        """A signed call of this class the venue answered: the streak is over, unless the breaker
-        has already tripped — then only the operator's reset opens the door."""
-        if call_class not in API_CALL_CLASSES:
-            raise ToolError(LIVE_API_BREAKER_UNREADABLE, f"unknown signed call class {call_class!r}")
+        """A signed call of this class the venue answered: the streak is over — unless the breaker
+        has tripped, or the streak is already at the limit; then only the operator's reset opens
+        the door."""
+        _known_class(call_class)
 
         def mutate(record: dict[str, Any]) -> bool:
-            if record["tripped_at"] is not None or record[call_class]["consecutive"] == 0:
+            count = record[call_class]["consecutive"]
+            if record["tripped_at"] is not None or count == 0 or count >= self._limit:
                 return False
             record[call_class]["consecutive"] = 0
+            return True
+
+        return self._update(mutate)
+
+    def check_writable(self) -> None:
+        """Raise unless the record can be written right now, by rewriting it as it is (PR2d-1,
+        review of #889). An entry must not leave while a failure it causes could go uncounted."""
+        self._update(lambda record: True)
+
+    def claim_notice(
+        self, *, at: str, retry_seconds: int = API_BREAKER_NOTICE_RETRY_SECONDS,
+    ) -> dict[str, Any] | None:
+        """Whether this caller should tell the operator that the breaker latched: it has, nobody
+        has been told, and no other attempt is younger than ``retry_seconds``. Then the attempt is
+        recorded, under the lock, and the record returned (with its ``limit``) to tell it from;
+        otherwise None. A send that fails leaves ``told_at`` empty, so a later pass tries again."""
+        claimed = False
+
+        def mutate(record: dict[str, Any]) -> bool:
+            nonlocal claimed
+            if record["tripped_at"] is None or record["told_at"] is not None:
+                return False
+            age = _age_seconds(record["notice_attempted_at"], at)
+            if record["notice_attempted_at"] is not None and age is not None and 0 <= age < retry_seconds:
+                return False
+            record["notice_attempted_at"] = at
+            claimed = True
+            return True
+
+        stored = self._update(mutate)
+        return {**stored, "limit": self._limit} if claimed else None
+
+    def mark_told(self, *, at: str, tripped_at: Any) -> dict[str, Any]:
+        """The operator was told of the latch stamped ``tripped_at``. A latch cleared since, or a
+        new one, is left for its own notice."""
+        def mutate(record: dict[str, Any]) -> bool:
+            if record["tripped_at"] is None or record["tripped_at"] != tripped_at or record["told_at"] is not None:
+                return False
+            record["told_at"] = at
             return True
 
         return self._update(mutate)
@@ -1294,6 +1377,8 @@ class LiveApiErrorBreaker:
                 record[name]["consecutive"] = 0
             record["tripped_at"] = None
             record["tripped_class"] = None
+            record["told_at"] = None
+            record["notice_attempted_at"] = None
             record["cleared_at"] = at
             record["cleared_by"] = actor
             record["cleared_reason"] = reason
@@ -1310,6 +1395,15 @@ class DryRunLiveApiErrorBreaker:
         return _empty_api_record()
 
     def record_success(self, **_kwargs: Any) -> dict[str, Any]:
+        return _empty_api_record()
+
+    def check_writable(self) -> None:
+        return None
+
+    def claim_notice(self, **_kwargs: Any) -> None:
+        return None
+
+    def mark_told(self, **_kwargs: Any) -> dict[str, Any]:
         return _empty_api_record()
 
     def clear(self, **_kwargs: Any) -> dict[str, Any]:
@@ -1385,18 +1479,18 @@ API_FEED_CALLS = {"fill_history": API_CALL_READ}
 class ApiErrorRecordingAdapter:
     """An order adapter that records what the venue did with each signed call (PR2d-1).
 
-    Wraps an already-gated adapter and forwards everything: it adds no egress, no authority and no
-    behaviour of its own. Every attribute the wrapped adapter carries (`tool_id`, `network_egress`,
-    the venue's own switches) is read through, so a caller cannot tell the difference — the shape
-    `market_data.PerRunFeedCache` takes, for the same reason. The pass's other signed calls are
-    recorded into the same record: the account read (`record_account`) and the account feed's fill
-    history (`recording`).
+    Wraps an already-gated adapter and forwards everything: it adds no egress and no authority, and
+    changes no call's answer. Every attribute the wrapped adapter carries (`tool_id`,
+    `network_egress`, the venue's own switches) is read through, so a caller cannot tell the
+    difference — the shape `market_data.PerRunFeedCache` takes, for the same reason. The pass's
+    other signed calls are recorded into the same record: the account read (`record_account`) and
+    the account feed's fill history (`recording`).
 
-    Recording is best-effort and never in the call's way: the call's own result, success or
-    failure, is what the caller sees. What the caller learns instead: ``unrecorded`` lists every
-    breaker write that failed, and ``tripped`` holds the record when one of this wrapper's own
-    calls latched the breaker. The two callbacks hear the same the moment it happens; neither can
-    break a call either."""
+    Recording never changes what the caller sees: the call's own result, success or failure. What
+    the caller learns instead: ``unrecorded`` lists every breaker write that failed, and
+    ``tripped`` holds the record when one of this wrapper's own calls latched the breaker. The two
+    callbacks hear the same the moment it happens, inside the call — so they must be quick (the
+    probe prints; nothing here sends a message) — and neither can break the call."""
 
     def __init__(self, adapter: Any, breaker: Any, *, now: Any = None,
                  on_unrecorded: Any = None, on_trip: Any = None):
@@ -1413,6 +1507,14 @@ class ApiErrorRecordingAdapter:
         its signed call around the adapter, so its outcome is handed in here."""
         self._record(lambda: record_account_read(
             self._breaker, readable=readable, reason_code=reason_code, at=self._now()))
+
+    def breaker_unwritable(self) -> bool:
+        """Whether the breaker cannot count this pass (PR2d-1, review of #889): its record cannot be
+        written now, or a write of this pass already failed. A door that sends while this is true
+        sends with nothing to count a failure, so it judges the breaker not clear. A failed check
+        is reported like any other unrecorded write."""
+        self._record(lambda: self._breaker.check_writable())
+        return bool(self.unrecorded)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("__") or "_adapter" not in self.__dict__:

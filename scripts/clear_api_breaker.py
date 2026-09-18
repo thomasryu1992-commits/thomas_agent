@@ -84,7 +84,10 @@ def main(argv: list[str] | None = None) -> int:
             print(_render(status))
             return EXIT_OK
 
-        if not args.cleared_by or not args.reason:
+        # Stored verbatim, so a blank one is no answer at all.
+        actor = (args.cleared_by or "").strip()
+        reason = (args.reason or "").strip()
+        if not actor or not reason:
             print("--cleared-by and --reason are both required. Try --show first.", file=sys.stderr)
             # USAGE, not BLOCKED: the operator mistyped the command; the runtime refused nothing.
             return EXIT_USAGE
@@ -97,19 +100,26 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         breaker = select_live_api_breaker(now=timeutil.utc_now_iso(), root=root)
-        breaker.clear(actor=args.cleared_by, reason=args.reason, at=timeutil.utc_now_iso())
+        at = timeutil.utc_now_iso()
+        stored = breaker.clear(actor=actor, reason=reason, at=at)
+        after = api_breaker_status(root)
     except MvpRuntimeError as exc:
         print(f"BLOCKED: {getattr(exc, 'reason_code', 'UNKNOWN')}: {exc}", file=sys.stderr)
         return EXIT_BLOCKED
 
-    after = api_breaker_status(root)
     print(_render(after))
-    if after["tripped"] or after["consecutive"]:
+    # Judged by what the clear wrote, not by the counts: a failure the runtime counts right after
+    # the reset is not a reset that failed.
+    if not (isinstance(stored, dict) and stored.get("cleared_at") == at and stored.get("cleared_by") == actor):
         # The inert breaker writes nothing: with the live-trading switch off here, the reset went
         # nowhere. Say so rather than print "cleared" over a record that did not change.
         print("NOT cleared: nothing was written. Run this where the runtime runs, with its "
               "live-trading switch: docker exec thomas-scheduler python -m scripts.clear_api_breaker",
               file=sys.stderr)
+        return EXIT_BLOCKED
+    if after["tripped"]:
+        print("cleared — and it has tripped again since, on what the venue did right after. Look "
+              "again before clearing it a second time.", file=sys.stderr)
         return EXIT_BLOCKED
     print("cleared. The next live signal may open a position again.")
     return EXIT_OK

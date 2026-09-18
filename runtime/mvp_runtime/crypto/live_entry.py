@@ -374,6 +374,7 @@ def plan_live_entry(
     bracket_failures_consecutive: int,
     # PR2d-1: whether the API error breaker has tripped (`live_order.api_breaker_status`). A
     # required fact, like the bracket streak: a door that forgets it opens the one this closes.
+    # Only an explicit False is clear.
     api_breaker_tripped: bool,
     # The machine's execution stage, resolved once by the leg and threaded to the guard (PR1b).
     # No default: a caller that does not state the stage must not be able to enter. The leg reads
@@ -483,9 +484,9 @@ def plan_live_entry(
     # claim holds for thirty minutes, and the next fire tries again up to the daily cap. It is
     # latched — only `scripts/clear_api_breaker.py` opens it — because closes and reads keep
     # answering while the door is shut, and any success would otherwise clear it.
-    if api_breaker_tripped:
+    if api_breaker_tripped is not False:
         reasons.append(API_BREAKER_REFUSED)
-        detail["api_breaker_tripped"] = True
+        detail["api_breaker_tripped"] = api_breaker_tripped
 
     # 2d. One entry per context per bar, and the post-stop-loss cooldown (PR2a) — paper's two
     # rules, which sit below the line where paper publishes the route this leg is handed. The
@@ -783,9 +784,10 @@ def narrow_entry_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> di
     )
     kw["bracket_failures_consecutive"] = max(
         int(first.get("bracket_failures_consecutive") or 0), int(fresh["bracket_failures_consecutive"]))
-    # Tripped on either read is tripped (PR2d-1): a breaker that tripped since the first read
-    # shuts this entry too.
-    kw["api_breaker_tripped"] = bool(first.get("api_breaker_tripped")) or bool(fresh["api_breaker_tripped"])
+    # Clear only if both reads say so (PR2d-1): a breaker that tripped since the first read shuts
+    # this entry too, and a read that says nothing is not a clear one.
+    kw["api_breaker_tripped"] = not (first.get("api_breaker_tripped") is False
+                                     and fresh.get("api_breaker_tripped") is False)
     problem = fresh.get("risk_limits_problem")
     if problem:
         verdict = dict(first["verdict"]) if isinstance(first.get("verdict"), Mapping) else {}
@@ -965,9 +967,9 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 
 __all__ = [
     "ACCOUNT_STALE",
+    "API_BREAKER_REFUSED",
     "BAR_ALREADY_ENTERED",
     "BAR_UNKNOWN",
-    "API_BREAKER_REFUSED",
     "BRACKET_BREAKER_REFUSED",
     "BRACKET_UNPRICEABLE",
     "BRACKET_WORKING_TYPE",

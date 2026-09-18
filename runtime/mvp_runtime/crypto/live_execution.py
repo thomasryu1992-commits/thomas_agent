@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -593,6 +594,26 @@ class DryRunOrderAdapter:
         }
 
 
+class _SignedAnswer(tuple):
+    """``(parsed_body, venue_error_code)``, as every caller unpacks it, plus the HTTP status a
+    refusal came back with (PR2d-1). A tuple, so a caller or a test double that knows only the
+    pair is unaffected."""
+
+    http_status: int | None
+
+    def __new__(cls, body: Any, code: int | None, http_status: int | None = None) -> "_SignedAnswer":
+        answer = super().__new__(cls, (body, code))
+        answer.http_status = http_status
+        return answer
+
+
+def _refusal_data(code: int, answer: Any) -> dict[str, Any]:
+    """What a venue refusal carries for the API error breaker (PR2d-1): the venue's own code, and
+    the HTTP status it came back with — a 429 or a 5xx counts whatever code rides with it."""
+    status = getattr(answer, "http_status", None)
+    return {"venue_code": code, **({"http_status": status} if isinstance(status, int) else {})}
+
+
 class BinanceFuturesOrderAdapter:
     """The real adapter — constructed only behind the live-trading opt-in, host-allowlisted,
     re-asserting authorization at every egress.
@@ -637,7 +658,8 @@ class BinanceFuturesOrderAdapter:
     def _signed_request(
         self, method: str, path: str, params: Mapping[str, Any], *, timeout_seconds: int
     ) -> tuple[Any, int | None]:
-        """One signed request. Returns ``(parsed_body, venue_error_code)``.
+        """One signed request. Returns ``(parsed_body, venue_error_code)`` (a :class:`_SignedAnswer`,
+        which also carries a refusal's HTTP status).
 
         A venue-side rejection (HTTP 4xx) is returned as ``(body, code)`` rather than raised, so
         the caller decides what it means: for a query, "order does not exist" is a legitimate
@@ -667,7 +689,7 @@ class BinanceFuturesOrderAdapter:
         )
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
+                raw = response.read()
         except urllib.error.HTTPError as exc:
             # The venue puts its reason in the body ({"code": -2013, "msg": "..."}). Read it, but
             # never echo the request URL — it carries the signature.
@@ -683,13 +705,16 @@ class BinanceFuturesOrderAdapter:
                     ORDER_TRANSPORT, f"live order request rejected (HTTP {exc.code})",
                     data={"http_status": exc.code},
                 ) from None
-            return body, code
-        except (TimeoutError, urllib.error.URLError):
-            # Deliberately generic (the account.py / market-data transport posture).
+            return _SignedAnswer(body, code, exc.code)
+        except (OSError, http.client.HTTPException):
+            # Deliberately generic (the account.py / market-data transport posture). OSError covers
+            # a timeout and every `URLError`; a connection the venue dropped, reset or cut short
+            # (`RemoteDisconnected`, `ConnectionResetError`, `IncompleteRead`) leaves urllib
+            # unwrapped and is the same fact: the call's outcome is unknown (PR2d-1 review).
             raise ToolError(ORDER_TRANSPORT, "live order request failed or timed out") from None
         try:
-            return json.loads(raw), None
-        except ValueError:
+            return _SignedAnswer(json.loads(raw.decode("utf-8")), None)
+        except ValueError:   # an undecodable body is a UnicodeDecodeError, a ValueError too
             raise ToolError(
                 ORDER_MALFORMED_RESULT, "live order endpoint returned an unparseable response"
             ) from None
@@ -701,7 +726,7 @@ class BinanceFuturesOrderAdapter:
         caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
         actually happened. The one rejection that is *informative* is a duplicate client order id:
         it means this exact order already landed, so the reconcile read will find it."""
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
             dict(order_request),
@@ -714,15 +739,15 @@ class BinanceFuturesOrderAdapter:
                     ORDER_REJECTED,
                     f"duplicate client order id ({code}) — the original order already landed; "
                     "reconcile decides the outcome",
-                    data={"venue_code": code},
+                    data=_refusal_data(code, answer),
                 )
             msg = body.get("msg") if isinstance(body, dict) else None
             if code in VENUE_UNKNOWN_OUTCOME_CODES:
                 raise ToolError(ORDER_OUTCOME_UNKNOWN,
                                 f"venue could not say whether the order was applied (code {code}): {msg}",
-                                data={"venue_code": code})
+                                data=_refusal_data(code, answer))
             raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}",
-                            data={"venue_code": code})
+                            data=_refusal_data(code, answer))
         return body if isinstance(body, dict) else {}
 
     def validate_order(
@@ -752,7 +777,7 @@ class BinanceFuturesOrderAdapter:
                 "accepted": None, "code": None, "msg": None, "supported": False,
                 "detail": "conditional orders live on the Algo API, which has no test endpoint",
             }
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "POST", ORDER_TEST_PATH, dict(order_request), timeout_seconds=timeout_seconds
         )
         if code is not None:
@@ -788,7 +813,7 @@ class BinanceFuturesOrderAdapter:
             {"clientAlgoId": client_order_id} if algo
             else {"symbol": symbol, "origClientOrderId": client_order_id}
         )
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "GET", ALGO_ORDER_PATH if algo else ORDER_PATH, params,
             timeout_seconds=timeout_seconds,
         )
@@ -797,7 +822,7 @@ class BinanceFuturesOrderAdapter:
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}",
-                            data={"venue_code": code})
+                            data=_refusal_data(code, answer))
         if not isinstance(body, dict):
             return None
         return normalize_algo_order(body) if algo else body
@@ -827,14 +852,14 @@ class BinanceFuturesOrderAdapter:
         find out" must never arrive as the same answer to a question about live exposure.
         """
         params: dict[str, Any] = {} if symbol is None else {"symbol": symbol}
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "GET", OPEN_ORDERS_PATH, params, timeout_seconds=timeout_seconds
         )
         if code is not None:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(
                 ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}",
-                data={"venue_code": code},
+                data=_refusal_data(code, answer),
             )
         return _order_rows(body, "open-orders")
 
@@ -852,14 +877,14 @@ class BinanceFuturesOrderAdapter:
         are different questions and only the second one can find an order the runtime has
         forgotten which symbol it was for.
         """
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "GET", ALGO_OPEN_ORDERS_PATH, {}, timeout_seconds=timeout_seconds
         )
         if code is not None:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(
                 ORDER_REJECTED, f"venue refused the algo open-orders query (code {code}): {msg}",
-                data={"venue_code": code},
+                data=_refusal_data(code, answer),
             )
         rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
         return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
@@ -888,7 +913,7 @@ class BinanceFuturesOrderAdapter:
         which this function reads as *already gone* — so a stop that is still resting would be
         reported as withdrawn, and the next entry would meet the venue's per-symbol conditional
         cap with a leg nobody knows about."""
-        body, code = self._signed_request(
+        body, code = answer = self._signed_request(
             "DELETE",
             ALGO_ORDER_PATH if algo else ORDER_PATH,
             {"clientAlgoId": client_order_id} if algo
@@ -900,7 +925,7 @@ class BinanceFuturesOrderAdapter:
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(ORDER_REJECTED, f"venue refused the cancel (code {code}): {msg}",
-                            data={"venue_code": code})
+                            data=_refusal_data(code, answer))
         return body if isinstance(body, dict) else None
 
 

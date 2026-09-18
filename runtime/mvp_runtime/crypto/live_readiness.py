@@ -66,6 +66,7 @@ from .dashboard import _read_cycle_records
 from .live_position import compute_open_notional_usdt
 from .live_route import ROUTE_DISABLED
 from .live_order import (
+    API_CALL_CLASSES,
     CONFIRMATION_ENV,
     ENTRY_MARKS_FILENAME,
     MANUAL_KILL_SWITCH_ENV,
@@ -525,16 +526,21 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         api = None
         api_detail = (
             f"UNREADABLE ({getattr(exc, 'reason_code', 'UNKNOWN')}) - the entry path refuses on "
-            "this too, so live entries are blocked until the record is repaired or removed"
+            "this too, so live entries are blocked until the record is repaired (removing it "
+            "clears every count, with no name or reason on the record)"
         )
     else:
         if api["tripped"]:
-            counts = api.get(str(api["tripped_class"])) or {}
+            # A streak at the limit with no stamp (a limit lowered since) names its longest class.
+            name = api["tripped_class"] or max(API_CALL_CLASSES, key=lambda n: api[n]["consecutive"])
+            counts = api.get(str(name)) or {}
+            told = (f"The operator was told at {api['told_at']}." if api.get("told_at")
+                    else "The operator has NOT been told yet; the live cycle keeps trying.")
             api_detail = (
-                f"TRIPPED at {api['tripped_at']} - {api['tripped_class']} calls failed "
+                f"TRIPPED at {api['tripped_at']} - {name} calls failed "
                 f"{counts.get('consecutive')} times in a row (limit {api['limit']}), last "
-                f"{counts.get('last_call')} {counts.get('last_reason_code')}. New entries are "
-                "refused until an operator clears it: python -m scripts.clear_api_breaker "
+                f"{counts.get('last_call')} {counts.get('last_reason_code')}. {told} New entries "
+                "are refused until an operator clears it: python -m scripts.clear_api_breaker "
                 "--cleared-by ... --reason ..."
             )
         else:

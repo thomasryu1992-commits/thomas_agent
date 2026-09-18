@@ -2549,11 +2549,33 @@ def test_a_breaker_that_latches_before_the_gate_refuses_the_probe(tmp_path, monk
     assert adapter.submitted == []
 
 
-def test_a_fire_whose_call_latches_the_breaker_says_so_and_tells_the_operator(tmp_path, monkeypatch, capsys):
-    """The probe is the other door with signed calls. When one of them latches the breaker, the
-    operator hears it once, as from the live leg — the next cycle reads it as already tripped."""
+class _Chat:
+    """The operator's chat: ``egress`` says whether it reaches anyone (the Telegram channel does,
+    the inert one does not); ``fails`` makes the send raise."""
+
+    def __init__(self, *, egress=True, fails=False):
+        self.network_egress = egress
+        self.fails = fails
+        self.told: list[str] = []
+
+
+def _wire_chat(monkeypatch, chat):
     from runtime.mvp_runtime import operator as operator_mod
-    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS
+
+    def _notify(channel, text, repo_root=None):
+        if channel.fails:
+            raise ToolError("OPERATOR_NOT_REGISTERED", "nobody to tell")
+        channel.told.append(text)
+
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda now=None, root=None: chat)
+    monkeypatch.setattr(operator_mod, "notify_operator", _notify)
+
+
+def test_a_fire_whose_call_latches_the_breaker_says_so_at_once_and_tells_the_chat_after(
+        tmp_path, monkeypatch, capsys):
+    """The probe is the other door with signed calls. Inside the call it only prints; the chat is
+    told after the fire, once (review of #889: a send inside a signed call held the call up)."""
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
 
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
     breaker = _durable_api_breaker(tmp_path)
@@ -2563,34 +2585,65 @@ def test_a_fire_whose_call_latches_the_breaker_says_so_and_tells_the_operator(tm
     monkeypatch.setattr(cli, "read_account", lambda **k: (None, {
         "degraded": True, "degraded_reason_code": "ACCOUNT_DATA_DEGRADED",
         "error_reason_code": "TOOL_TRANSPORT"}))
-    told: list[str] = []
-    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda now=None, root=None: "chat")
-    monkeypatch.setattr(operator_mod, "notify_operator",
-                        lambda channel, text, repo_root=None: told.append(text))
+    chat = _Chat()
+    _wire_chat(monkeypatch, chat)
     with pytest.raises(cli._Refusal) as exc:
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_ACCOUNT_UNREADABLE
     err = capsys.readouterr().err
     assert "API BREAKER TRIPPED" in err and "class    : read" in err
-    [text] = told
+    assert chat.told == [], "nothing is sent inside the fire"
+
+    cli._tell_api_breaker(tmp_path)
+    [text] = chat.told
     assert "last     : read_account TOOL_TRANSPORT" in text
+    assert api_breaker_status(tmp_path)["told_at"] is not None
+    cli._tell_api_breaker(tmp_path)
+    assert len(chat.told) == 1
 
 
-def test_a_trip_the_chat_cannot_hear_is_still_said_here(tmp_path, monkeypatch, capsys):
-    from runtime.mvp_runtime import operator as operator_mod
+@pytest.mark.parametrize("chat,said", [
+    (_Chat(fails=True), "the operator chat was not told (OPERATOR_NOT_REGISTERED); the live cycle tries again"),
+    (_Chat(egress=False), None),
+], ids=["send-fails", "inert-channel"])
+def test_a_chat_that_did_not_hear_leaves_the_notice_to_be_sent(tmp_path, monkeypatch, capsys, chat, said):
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
 
-    def _unregistered(channel, text, repo_root=None):
-        raise ToolError("OPERATOR_NOT_REGISTERED", "nobody to tell")
+    breaker = _durable_api_breaker(tmp_path)
+    for _ in range(MAX_CONSECUTIVE_API_ERRORS):
+        breaker.record_failure(call_class="write", call="submit", at=NOW, reason_code="ORDER_TRANSPORT")
+    monkeypatch.setattr(cli, "select_live_api_breaker", lambda now=None, root=None: breaker)
+    _wire_chat(monkeypatch, chat)
+    cli._tell_api_breaker(tmp_path)
+    assert api_breaker_status(tmp_path)["told_at"] is None
+    if said:
+        assert said in capsys.readouterr().err
 
-    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda now=None, root=None: "chat")
-    monkeypatch.setattr(operator_mod, "notify_operator", _unregistered)
-    cli._report_api_trip({"tripped_class": "write", "limit": 5, "tripped_at": NOW,
-                          "write": {"consecutive": 5, "last_call": "submit",
-                                    "last_reason_code": "ORDER_TRANSPORT", "last_venue_code": None}},
-                         root=tmp_path)
-    err = capsys.readouterr().err
-    assert "API BREAKER TRIPPED" in err and "last     : submit ORDER_TRANSPORT" in err
-    assert "the operator chat was not told (OPERATOR_NOT_REGISTERED)" in err
+
+def test_nothing_is_told_while_the_breaker_is_clear(tmp_path, monkeypatch):
+    breaker = _durable_api_breaker(tmp_path)
+    monkeypatch.setattr(cli, "select_live_api_breaker", lambda now=None, root=None: breaker)
+    chat = _Chat()
+    _wire_chat(monkeypatch, chat)
+    cli._tell_api_breaker(tmp_path)
+    assert chat.told == []
+
+
+def test_a_fire_the_breaker_cannot_count_is_refused(tmp_path, monkeypatch):
+    """Review of #889: a failure this fire caused would go uncounted, so nothing is sent."""
+    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
+    breaker = _durable_api_breaker(tmp_path)
+    breaker.record_failure(call_class="write", call="submit", at=NOW, reason_code="ORDER_TRANSPORT")
+    (venue_state_dir(tmp_path) / API_BREAKER_FILENAME).with_suffix(".tmp").mkdir()
+    monkeypatch.setattr(cli, "select_live_api_breaker", lambda now=None, root=None: breaker)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_API_BREAKER
+    assert "cannot record this fire" in str(exc.value)
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
 
 
 def test_a_breaker_write_that_fails_is_said_on_the_spot(tmp_path, monkeypatch, capsys):
@@ -2639,3 +2692,23 @@ def test_the_fire_s_settlement_counts_its_fill_history_read(tmp_path, monkeypatc
     assert (read["total"], read["last_call"], read["last_reason_code"]) == (
         1, "fill_history", "TOOL_TRANSPORT")
     assert read["consecutive"] == 0
+
+
+@pytest.mark.parametrize("ending", ["returns", "refuses"])
+def test_the_fire_command_tells_the_chat_after_the_fire_however_it_ends(tmp_path, monkeypatch, ending):
+    """`--fire` tells the operator's chat of a latch after the venue work, never during it — and on
+    a refused fire too, since a refusal can be the latch itself."""
+    events: list[str] = []
+
+    def _fire_stub(**kw):
+        events.append("fire")
+        if ending == "refuses":
+            raise cli._Refusal(probe.PROBE_API_BREAKER, "scripted")
+        return cli.EXIT_OK
+
+    monkeypatch.setattr(cli, "run_fire", _fire_stub)
+    monkeypatch.setattr(cli, "assert_not_foreign_root_run", lambda root=None: None)
+    monkeypatch.setattr(cli, "_tell_api_breaker", lambda root: events.append("tell"))
+    code = cli.main(["--fire", "--symbol", "BTCUSDT", "--root", str(tmp_path)])
+    assert code == (cli.EXIT_OK if ending == "returns" else cli.EXIT_BLOCKED)
+    assert events == ["fire", "tell"]

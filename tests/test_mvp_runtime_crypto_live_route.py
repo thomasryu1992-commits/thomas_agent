@@ -2376,11 +2376,23 @@ def _api_failures(tmp_path, count, call_class="write"):
     return breaker
 
 
-def _messages(monkeypatch):
+def _messages(monkeypatch, *, delivered=True):
+    """What the operator's chat was handed; ``delivered`` is whether the channel took it."""
     sent: list[str] = []
-    monkeypatch.setattr(live_route, "_send_operator_text",
-                        lambda record, lines, **kw: sent.append("\n".join(lines)))
+
+    def _send(record, lines, **kw):
+        sent.append("\n".join(lines))
+        return delivered() if callable(delivered) else delivered
+
+    monkeypatch.setattr(live_route, "_send_operator_text", _send)
     return sent
+
+
+def _told(tmp_path):
+    """The latch on record was told to the operator, as a pass before this test would have."""
+    breaker = _api_breaker(tmp_path)
+    claimed = breaker.claim_notice(at=NOW)
+    breaker.mark_told(at=NOW, tripped_at=claimed["tripped_at"])
 
 
 def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch):
@@ -2390,16 +2402,30 @@ def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monk
     venue = _Venue()
     run = _wire_whole_leg(tmp_path, monkeypatch, venue)
     _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
+    _told(tmp_path)
     sent = _messages(monkeypatch)
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_route_status"] == live_route.ROUTE_HELD
     assert held["live_decision"]["reasons"] == [API_BREAKER_REFUSED]
     assert held["live_api_breaker"] == {"consecutive": MAX_CONSECUTIVE_API_ERRORS,
                                         "limit": MAX_CONSECUTIVE_API_ERRORS, "tripped": True,
-                                        "tripped_class": "write"}
+                                        "tripped_class": "write", "unwritable": False}
     assert _nothing_spent(venue, tmp_path)
-    # Tripped before this pass: the operator was told when it latched, not again on every pass.
+    # Told when it latched: not again on every pass.
     assert sent == [] and live_route.API_BREAKER_JUST_TRIPPED not in held["live_reason_codes"]
+
+
+def test_a_latch_nobody_was_told_of_is_told_by_the_next_pass(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+
+    run = _wire_whole_leg(tmp_path, monkeypatch, _Venue())
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
+    sent = _messages(monkeypatch)
+    first = run("2026-07-28T04:05:00Z", BAR_00)
+    assert len(sent) == 1 and live_route.API_BREAKER_TOLD in first["live_reason_codes"]
+    assert api_breaker_status(tmp_path)["told_at"] is not None
+    run("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")
+    assert len(sent) == 1
 
 
 class _SendFails(_Venue):
@@ -2575,3 +2601,84 @@ def test_the_fill_history_a_settlement_falls_back_to_is_counted_with_the_pass(tm
     assert (read["last_call"], read["last_reason_code"]) == ("fill_history", "TOOL_TRANSPORT")
     assert read["consecutive"] == 1
     assert list_open_live_positions(tmp_path) == [position], "an unpriced close keeps the book"
+
+
+def test_a_notice_that_did_not_get_through_is_tried_again_on_a_later_pass(tmp_path, monkeypatch):
+    """The outage that trips the breaker often takes the chat down with it. The notice is tried
+    again — on a pass the retry interval later, not on every context of the same fan-out, since
+    each attempt can hold a pass for the channel's timeout (review of #889)."""
+    from runtime.mvp_runtime import timeutil as tu
+    from runtime.mvp_runtime.crypto.live_order import (
+        API_BREAKER_NOTICE_RETRY_SECONDS,
+        MAX_CONSECUTIVE_API_ERRORS,
+        api_breaker_status,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (_Venue(), None))
+    monkeypatch.setattr(live_route, "_run_gated_live_leg", lambda record, **kw: record)
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
+    outcomes = iter([False, True])
+    sent = _messages(monkeypatch, delivered=lambda: next(outcomes))
+    clock = {"now": NOW}
+    monkeypatch.setattr(live_route, "_notice_clock", lambda: clock["now"])
+
+    def _pass(seconds):
+        clock["now"] = tu.plus_seconds(NOW, seconds)
+        return live_route.run_live_leg(
+            route=None, live_routable_strategy_ids=None, feature_row={}, verdict={}, symbol=SYMBOL,
+            collector=None, now=clock["now"], root=tmp_path)
+
+    first = _pass(0)                                           # the chat is down
+    assert len(sent) == 1 and live_route.API_BREAKER_TOLD not in first["live_reason_codes"]
+    _pass(30)                                                  # the next context of the fan-out
+    assert len(sent) == 1
+    later = _pass(API_BREAKER_NOTICE_RETRY_SECONDS)            # a cycle later: tried again
+    assert len(sent) == 2 and live_route.API_BREAKER_TOLD in later["live_reason_codes"]
+    assert api_breaker_status(tmp_path)["told_at"] == clock["now"]
+    _pass(3 * API_BREAKER_NOTICE_RETRY_SECONDS)                 # told: never again for this latch
+    assert len(sent) == 2
+
+
+def test_an_unwritable_api_breaker_holds_every_entry_and_says_why(tmp_path, monkeypatch):
+    """The record stays readable but cannot be replaced. An entry sent then would fail with
+    nothing to count it — so the breaker is not clear, on this pass and the next (review of #889)."""
+    from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
+    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    venue = _SendFails()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _api_failures(tmp_path, 1)
+    (venue_state_dir(tmp_path) / API_BREAKER_FILENAME).with_suffix(".tmp").mkdir()
+    for now, bar in (("2026-07-28T04:05:00Z", BAR_00), ("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")):
+        held = run(now, bar)
+        assert held["live_decision"]["reasons"] == [API_BREAKER_REFUSED], now
+        assert held["live_api_breaker"]["unwritable"] is True
+        assert {live_route.API_BREAKER_UNRECORDED, "IsADirectoryError"} <= set(held["live_reason_codes"])
+    assert _nothing_spent(venue, tmp_path)
+
+
+class _SendDropped(_Venue):
+    """A double that lets a dropped connection escape untyped, as the real adapter did before the
+    review of #889."""
+
+    def submit(self, order_request, *, timeout_seconds: int = 10):
+        import http.client
+
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+
+def test_a_dropped_send_counts_even_when_it_escapes_untyped(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+
+    venue = _SendDropped()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS - 1)
+    _messages(monkeypatch)
+    dropped = run("2026-07-28T04:05:00Z", BAR_00)
+    assert live_route.API_BREAKER_JUST_TRIPPED in dropped["live_reason_codes"]
+    assert api_breaker_status(tmp_path)["write"]["last_reason_code"] == "RemoteDisconnected"
+    held = run("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")
+    assert API_BREAKER_REFUSED in held["live_decision"]["reasons"]

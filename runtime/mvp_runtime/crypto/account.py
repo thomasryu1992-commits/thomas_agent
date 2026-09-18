@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
 from datetime import datetime, timezone
@@ -203,6 +204,27 @@ class NoAccountFeed:
         return None
 
 
+def _transport_error(exc: BaseException) -> ToolError:
+    """The typed error for a signed account request that failed. Never echoes the URL.
+
+    A rate limit is told from everything else (PR2d-1): "come back later" and "could not reach the
+    venue" are different facts, and the API breaker counts both but the operator reads them
+    differently. Where the venue answered, its HTTP status and its own code ride in ``data``, so
+    the breaker can tell a refusal it does not count (a business code) from one it does."""
+    error = classify_transport_error(exc, "live account")
+    data: dict[str, Any] = {}
+    if isinstance(exc, urllib.error.HTTPError) and isinstance(exc.code, int):
+        data["http_status"] = exc.code
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            code = body.get("code") if isinstance(body, dict) else None
+            if isinstance(code, int) and not isinstance(code, bool):
+                data["venue_code"] = code
+        except Exception:  # noqa: BLE001 — an unreadable error body must not mask the failure
+            pass
+    return ToolError(error.reason_code, error.reason, data=data or None)
+
+
 class BinanceFuturesAccountFeed:
     """Signed read of a real Binance USD-M Futures account.
 
@@ -340,17 +362,16 @@ class BinanceFuturesAccountFeed:
         )
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError) as exc:
+                raw = response.read()
+        except (OSError, http.client.HTTPException) as exc:
             # Deliberately generic: the URL carries the signature, so it must never reach
-            # a message, a log, or a record (the market-data transport posture). The one thing
-            # read off it is a rate limit (PR2d-1): "come back later" and "could not reach the
-            # venue" are different facts, and the API breaker counts both but the operator reads
-            # them differently.
-            raise classify_transport_error(exc, "live account") from None
+            # a message, a log, or a record (the market-data transport posture). OSError covers a
+            # timeout and every `URLError`; a connection the venue dropped, reset or cut short
+            # escapes urllib unwrapped and is the same fact (PR2d-1 review).
+            raise _transport_error(exc) from None
         try:
-            return json.loads(raw)
-        except ValueError:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError:   # an undecodable body is a UnicodeDecodeError, a ValueError too
             raise ToolError("MALFORMED_RESULT", "live account returned an unparseable response") from None
 
     def _build(

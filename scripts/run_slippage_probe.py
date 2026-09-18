@@ -473,21 +473,42 @@ def _report_api_unrecorded(code: str) -> None:
     sys.stderr.write(f"API BREAKER: a signed call was not recorded ({code})\n")
 
 
-def _report_api_trip(stored: Any, *, root: Path | None) -> None:
-    """This fire's own call latched the API error breaker (PR2d-1): say so here, and tell the
-    operator's chat once, as the live leg does (decision 27) — the next cycle would not, because
-    to it the breaker has already tripped. Best-effort: the fire goes on supervising what it sent."""
-    lines = api_breaker_trip_lines(stored)
-    sys.stderr.write("API BREAKER TRIPPED:\n" + "\n".join(lines) + "\n")
+def _report_api_trip(stored: Any) -> None:
+    """This fire's own call latched the API error breaker (PR2d-1): say so here, at once. It runs
+    inside the signed call, so it only prints; the operator's chat is told after the fire
+    (`_tell_api_breaker`), or by the live cycle's next pass."""
+    sys.stderr.write("API BREAKER TRIPPED:\n" + "\n".join(api_breaker_trip_lines(stored)) + "\n")
+
+
+def _tell_api_breaker(root: Path | None) -> None:
+    """Tell the operator's chat the API error breaker latched, if nobody has been told yet (decision
+    27; review of #889). After the fire's venue work, never inside a call. The claim in the
+    breaker's record keeps this and the live cycle from both sending; a send that fails is left for
+    the live cycle to try again."""
+    try:
+        breaker = select_live_api_breaker(now=timeutil.utc_now_iso(), root=root)
+        claimed = breaker.claim_notice(at=timeutil.utc_now_iso())
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"API BREAKER: could not check whether to tell the operator ({exc.reason_code})\n")
+        return
+    if claimed is None:
+        return
     try:
         # Imported here, as live_route does: `operator` imports back into the crypto package.
         from runtime.mvp_runtime import operator as operator_mod
 
         channel = operator_mod.select_operator_channel(now=timeutil.utc_now_iso(), root=root)
-        operator_mod.notify_operator(channel, "\n".join(lines), repo_root=root)
-    except Exception as exc:  # noqa: BLE001 — told on stderr already; the chat is the extra
+        operator_mod.notify_operator(channel, "\n".join(api_breaker_trip_lines(claimed)), repo_root=root)
+    except Exception as exc:  # noqa: BLE001 — the fire is over; say so and leave it to the cycle
         sys.stderr.write(f"API BREAKER: the operator chat was not told "
-                         f"({getattr(exc, 'reason_code', type(exc).__name__)})\n")
+                         f"({getattr(exc, 'reason_code', type(exc).__name__)}); the live cycle tries again\n")
+        return
+    if not getattr(channel, "network_egress", False):
+        return  # the inert channel tells nobody: leave the notice to be sent
+    try:
+        breaker.mark_told(at=timeutil.utc_now_iso(), tripped_at=claimed["tripped_at"])
+    except MvpRuntimeError as exc:
+        sys.stderr.write(f"API BREAKER: told, but not recorded as told ({exc.reason_code})\n")
 
 
 def run_fire(
@@ -556,7 +577,7 @@ def run_fire(
     adapter = ApiErrorRecordingAdapter(
         adapter, select_live_api_breaker(now=now, root=root),
         on_unrecorded=_report_api_unrecorded,
-        on_trip=lambda stored: _report_api_trip(stored, root=root),
+        on_trip=_report_api_trip,
     )
 
     regime = _read_regime(symbol, now=now, root=root, timeout_seconds=timeout_seconds)
@@ -626,13 +647,20 @@ def run_fire(
             f"bracket-failure breaker is tripped ({breaker['consecutive']}/{breaker['limit']}); "
             "clear it (scripts/clear_bracket_breaker.py) after reading why",
         )
-    # PR2d-1: the venue has been refusing or failing to answer this machine's signed calls.
+    # PR2d-1: the venue has been refusing or failing to answer this machine's signed calls — or the
+    # breaker cannot count this fire, and a failure it caused would go uncounted.
     api = api_breaker_status(root)
     if api["tripped"]:
         raise _Refusal(
             probe.PROBE_API_BREAKER,
             f"the API error breaker is tripped ({api['tripped_class']} calls, since "
             f"{api['tripped_at']}); look at the venue, then clear it (scripts/clear_api_breaker.py)",
+        )
+    if adapter.breaker_unwritable():
+        raise _Refusal(
+            probe.PROBE_API_BREAKER,
+            f"the API error breaker cannot record this fire ({', '.join(adapter.unrecorded)}); "
+            "nothing was sent",
         )
     readable, _excluded = live_outcomes_for_analysis(read_live_outcomes(root))
     risk_limits = resolve_risk_limits(root, now=now)
@@ -716,8 +744,10 @@ def run_fire(
     breaker = {**breaker,
                "consecutive": max(int(breaker.get("consecutive") or 0), fresh["bracket_failures_consecutive"]),
                "tripped": bool(breaker.get("tripped")) or fresh["bracket_breaker_tripped"]}
-    # The API breaker as both reads saw it (PR2d-1): tripped on either is tripped.
-    api = {**api, "tripped": bool(api["tripped"]) or bool(fresh["api_breaker_tripped"])}
+    # The API breaker as both reads saw it (PR2d-1): tripped on either, or unable to count, is not
+    # clear.
+    api = {**api, "tripped": bool(api["tripped"]) or bool(fresh["api_breaker_tripped"])
+           or adapter.breaker_unwritable()}
     if fresh["risk_limits_problem"]:
         guard_verdict = {**guard_verdict, "allow_new_position": False,
                          "problems": [*(guard_verdict.get("problems") or ()), fresh["risk_limits_problem"]]}
@@ -1203,10 +1233,15 @@ def main(argv: list[str] | None = None) -> int:
         if not args.symbol:
             print("USAGE: --fire needs --symbol")
             return EXIT_USAGE
-        return run_fire(
-            root=args.root, symbol=args.symbol,
-            timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds,
-        )
+        try:
+            return run_fire(
+                root=args.root, symbol=args.symbol,
+                timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds,
+            )
+        finally:
+            # A latch this fire caused (or one nobody was told of) reaches the operator's chat now,
+            # after the venue work (PR2d-1).
+            _tell_api_breaker(args.root)
     except _Refusal as exc:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc}\n")
         return EXIT_BLOCKED

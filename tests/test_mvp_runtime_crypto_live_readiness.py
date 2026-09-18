@@ -1176,7 +1176,26 @@ def test_the_api_breaker_row_counts_each_class_and_turns_red_once_tripped(tmp_pa
     assert row["ok"] is False
     assert row["detail"].startswith(f"TRIPPED at {NOW} - write calls failed {limit} times in a row")
     assert "submit ORDER_OUTCOME_UNKNOWN" in row["detail"] and "scripts.clear_api_breaker" in row["detail"]
+    assert "has NOT been told yet" in row["detail"]
     assert live_readiness.build_readiness(root=tmp_path, now=NOW)["ready"] is False
+
+    claimed = breaker.claim_notice(at=NOW)
+    breaker.mark_told(at="2026-07-23T12:01:00Z", tripped_at=claimed["tripped_at"])
+    assert "The operator was told at 2026-07-23T12:01:00Z." in _api_row(tmp_path)["detail"]
+
+
+def test_a_streak_at_the_limit_with_no_stamp_names_its_class(tmp_path, clean_env):
+    import json as _json
+    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME, MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"write": {"consecutive": 0}, "read": {
+        "consecutive": MAX_CONSECUTIVE_API_ERRORS, "last_call": "open_orders",
+        "last_reason_code": "ORDER_TRANSPORT"}}), encoding="utf-8")
+    row = _api_row(tmp_path)
+    assert row["ok"] is False and "read calls failed" in row["detail"]
 
 
 def test_an_unreadable_api_breaker_turns_the_board_red(tmp_path, clean_env):

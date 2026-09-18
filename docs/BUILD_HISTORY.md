@@ -32,24 +32,26 @@ Append a new entry when a milestone ships, in the same PR.
     keep answering while sends did not. Each entry would then leave with an outcome nobody knew,
     and the symbol's claim held it for thirty minutes. The next fire tried again, up to the daily
     order cap, and nobody was told.
-  - **What counts (decision 27).** Each signed call counts once, in one of two classes. Writes are
-    sends and cancels. Reads are order queries, resting-order queries, the account read and the
-    fill history a settlement falls back to. The classes are counted apart, because every send is
-    preceded by reads.
-    - **Counted:** transport failures, answers that cannot be read, unknown outcomes, rate limits
-      and overload, and credential or clock refusals. The venue's own code now rides in the
-      error's `data`, so no message is parsed.
+  - **What counts (decision 27).** The doors' signed calls count in one of two classes. Writes
+    are sends and cancels. Reads are order queries, resting-order queries, the account read (once,
+    for its main call) and the fill history a settlement falls back to. The classes are counted
+    apart, because every send is preceded by reads.
+    - **Counted:** transport failures (a dropped or reset connection included), answers that
+      cannot be read, unknown outcomes, rate limits and overload, and credential or clock
+      refusals. A refusal that came back 418, 429 or 5xx counts whatever its code. The venue's
+      code and the HTTP status ride in the error's `data`, so no message is parsed.
     - **Not counted:** business rejections, duplicate ids and a normal "no such order". Public
-      market data and the testnet cycle are not counted either.
+      market data, the funds board's refresh and the testnet cycle are not counted either.
     - **What ends a streak:** only a success of the same class. A refusal the venue answered is
       neither a failure nor a success.
   - **Latched at five.** Once tripped, no success clears it, because closes, settlement and the
     account keep calling the venue while entries are shut. Only `scripts/clear_api_breaker.py`
     clears it, with an operator name and a written reason. Run where the live switch is off, the
     script says the reset went nowhere rather than printing "cleared".
-  - **Told once.** The write that latches it says so (`just_tripped`; the lock lets exactly one
-    write see the transition). The leg sends one Telegram message however its pass ends. A
-    trip from the probe's own call goes to its stderr and to the same chat.
+  - **Told until it gets through.** After a latch, the next pass claims the notice in the
+    breaker's own record, sends one Telegram message, and stamps `told_at` only when the channel
+    took it. A send that fails, often for the same outage, is tried again a cycle later. The probe
+    prints a latch its own call caused at once, and tells the chat after the fire.
   - **Where it is judged:** as a door in `plan_live_entry` (`LIVE_ENTRY_API_BREAKER_TRIPPED`) and in
     the gate's re-read, where tripped on either read is tripped. It is also a refusal and a gate
     check in the probe (`PROBE_API_BREAKER`) and a readiness row. Closing, settling and protection
@@ -57,9 +59,26 @@ Append a new entry when a milestone ships, in the same PR.
   - **Found while wiring it:** `read_account` sums every failure up as `ACCOUNT_DATA_DEGRADED` and
     keeps the feed's own code in `error_reason_code`. Counted by the first, no account read would
     ever have counted. The account read now also tells a rate limit from a transport failure.
-  - **History:** in the seven weeks before this shipped, no class failed twice in a row (five
-    isolated account-read failures, four business rejections of protective legs). The replayed
-    history never trips it.
+  - **History** (the PR2d investigation, from seven weeks of cycle records): five isolated
+    account-read failures and four business rejections of protective legs. The replayed history
+    never trips it. Counting per call also means one fan-out whose account reads all fail, one
+    per context, is already five in a row: a single bad cycle latches it.
+  - **What the independent review of #889 found, fixed in the same PR.**
+    - **A dropped connection was never counted.** `urlopen` lets `RemoteDisconnected`,
+      `ConnectionResetError` and `IncompleteRead` escape unwrapped. Both adapters now type them as
+      transport failures, and the wrapper counts one that escapes anyway. On the account read, it
+      had taken the whole pass down before settle and protect.
+    - **The notice was one attempt.** It is now claimed, stamped when delivered, and retried.
+    - **A breaker that could not be written failed open**, silently. The doors now check that the
+      record can be written before deciding, and refuse while it cannot.
+    - **Smaller fixes:**
+      - a 429 with `-1015`, and `-1002`, `-1011`, `-1016`, `-1099`, `-2008` and `-2017`, now count;
+      - an account refusal on a business code no longer counts;
+      - the probe no longer sends inside a signed call;
+      - a blank name or reason no longer clears, and a clear is judged by what it wrote;
+      - a non-finite count is unreadable;
+      - a streak at the limit reads tripped even without its stamp;
+      - only an explicit `False` opens the leg's door.
 
 - **Two entry doors cannot spend the same room, and nothing may rest where an entry goes**
   (crypto PR2c-3, Thomas decisions 25 and 26, 2026-09-17; `crypto/live_order.py`,

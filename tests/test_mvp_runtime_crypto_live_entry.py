@@ -274,6 +274,13 @@ def test_the_api_breaker_refuses_once_tripped():
     assert _plan(api_breaker_tripped=False)["status"] == le.STATUS_READY
 
 
+@pytest.mark.parametrize("unknown", [None, 0, "false"], ids=["none", "zero", "text"])
+def test_only_an_explicit_false_clears_the_api_breaker_door(unknown):
+    """Review of #889: the probe's gate already read it this way, and the leg's door now does."""
+    decision = _plan(api_breaker_tripped=unknown)
+    assert decision["reasons"] == [le.API_BREAKER_REFUSED]
+
+
 def test_the_api_breaker_fact_has_no_default():
     """A door that forgets the breaker opens the one it closes."""
     import inspect
@@ -1275,10 +1282,13 @@ def test_a_re_read_that_agrees_changes_nothing_the_gate_judges():
     ({"api_breaker_tripped": True}, {}, {"api_breaker_tripped": True}),
     ({}, {"api_breaker_tripped": True}, {"api_breaker_tripped": True}),
     ({}, {}, {"api_breaker_tripped": False}),
+    ({"api_breaker_tripped": None}, {}, {"api_breaker_tripped": True}),
+    ({}, {"api_breaker_tripped": None}, {"api_breaker_tripped": True}),
 ], ids=["halted-since", "halted-before", "budget-gone", "budget-was-gone", "allowlist-shrank",
         "allowlist-emptied", "count-is-fresh", "disarmed", "tier-unreadable", "tier-was-unreadable",
         "breaker-keeps-higher", "breaker-rose", "api-breaker-tripped-since",
-        "api-breaker-was-tripped", "api-breaker-clear-on-both"])
+        "api-breaker-was-tripped", "api-breaker-clear-on-both", "api-breaker-fresh-unknown",
+        "api-breaker-first-unknown"])
 def test_each_re_read_fact_only_narrows(fresh, first, expected):
     kwargs = {**_decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage()), **first}
     narrowed = le.narrow_entry_facts(kwargs, _fresh(**fresh))
