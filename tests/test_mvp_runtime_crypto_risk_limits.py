@@ -620,6 +620,24 @@ def test_a_malformed_rebase_block_is_refused(block, message):
     assert exc.value.reason_code == rl.LIMITS_INVALID and message in str(exc.value)
 
 
+def test_an_older_record_naming_display_ids_is_read_and_counted_apart(tmp_path):
+    """A record registered before PR3b-3 names display ids, which the builder no longer writes: it
+    still resolves, and the board counts its display ids apart from lineage keys."""
+    from runtime.read_only_kernel import integrity
+
+    record = _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c9"], "reason": "r"})
+    body = {k: v for k, v in record.items() if k != "record_sha256"}
+    body["drawdown_baseline_rebase"] = {"excluded_strategy_ids": ["S3", "cand:c9"], "reason": "r"}
+    older = {**body, "record_sha256": integrity.sha256_record(body)}
+    rl.limits_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    rl.limits_path(tmp_path).write_text(json.dumps(older), encoding="utf-8")
+    assert rl.resolve_risk_limits(tmp_path, now=NOW).drawdown_excluded_strategy_ids == ("S3", "cand:c9")
+    status = rl.limits_status(tmp_path, now=NOW)
+    assert status["valid"] is True
+    assert (status["drawdown_rebase_excluded_count"], status["drawdown_rebase_display_id_count"]) == (2, 1)
+    assert rl.rebase_names(status) == "1 lineage key(s) and 1 display id(s)"
+
+
 def test_the_rebase_block_is_covered_by_the_records_self_hash(tmp_path):
     """Tamper evidence, which is the reason to reuse this record rather than invent one:
     editing the exclusion list after registration invalidates the hash and fails closed."""
