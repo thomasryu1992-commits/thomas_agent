@@ -239,6 +239,9 @@ def live_trade_evidence_rows(root: Path | None = None) -> list[dict[str, Any]]:
             "candidate_id": candidate_id,
             "strategy_rule_hash": rule_hash if isinstance(rule_hash, str) and rule_hash else None,
             "strategy_generation_id": record.get("strategy_generation_id"),
+            # The artifact the order was approved as (PR3a-2): two installs of one candidate
+            # share its id, rule and generation and differ here. None before it rode on orders.
+            "strategy_artifact_sha256": record.get("strategy_artifact_sha256") or None,
             # Its own field rather than something the reader infers from a null: "no
             # candidate_id" is a statement about the STRATEGY (imported, never minted by the
             # factory), not about this trade.
@@ -287,8 +290,10 @@ def render_live_trade_evidence_text(rows: list[dict[str, Any]]) -> str:
         # identifying it; the generation and the rule hash are what make it a lineage.
         rule_hash = row["strategy_rule_hash"]
         short_hash = f"{rule_hash[:12]}…" if rule_hash else "NO RULE HASH"
+        artifact = row.get("strategy_artifact_sha256")
         lines.append(f"           strategy {row['strategy_id'] or '-'} "
-                     f"({row['strategy_generation_id'] or 'no generation'})  rule {short_hash}")
+                     f"({row['strategy_generation_id'] or 'no generation'})  rule {short_hash}"
+                     + (f"  artifact {str(artifact).removeprefix('sha256:')[:12]}…" if artifact else ""))
         if not row["lineage_attributable"]:
             lines.append("           ^ NOT ATTRIBUTABLE — no candidate_id, so this trade cannot "
                          "be traced back to")

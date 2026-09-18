@@ -188,10 +188,13 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
   outcome; the shadow book's bench and conflict sides, the shadow position and its outcome; the
   forward book's position and outcome; the live intent, the pre-order snapshot's lineage, the live
   position and every live outcome (runtime exit, venue-closed settle, naked close).
-  - An entry with no stamp writes the field as None; a record written before PR3a-2 has no field.
+  - None means no artifact named the strategy: an entry with no stamp, a position opened before
+    PR3a-2 and settled after, or a probe or testnet order, which are not pool-routed. A record
+    written before PR3a-2 has no field. So None is not evidence of an unstamped entry.
   - The pre-order gate binds it (`INTENT_BOUND_FIELDS`, `pre_order_intent.v2`) and refuses an
     autonomous order whose lineage names none, and `verify_live_arm` requires the armed entry's
     artifact to be the one the plan was made from (`PRE_ORDER_RISK_SNAPSHOT_V0.1.md` §2-3).
+  - The live-trades board (`live_promotion`) prints it beside the rule hash.
   - Nothing keys on it yet: realized-performance ranking, the lifecycle and the allowances still
     group by candidate, rule and generation (3b).
 

@@ -462,7 +462,7 @@ def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
     ``for_send`` requires the current gate's checks. The verified read of the record also accepts
     a row the PR2b gate sealed, which names no decision time check (:data:`PR2B_GATE_CHECK_IDS`),
     an autonomous row sealed before its arming approval was verified (PR2c-2b), and one whose
-    lineage names no artifact (:data:`PRE_ARTIFACT_LINEAGE_FIELDS`, PR3a-2)."""
+    lineage does not name the artifact at all (:data:`PRE_ARTIFACT_LINEAGE_FIELDS`, PR3a-2)."""
     purpose = snapshot.get("purpose")
     if VENUE_FOR_PURPOSE.get(purpose) != snapshot.get("venue"):
         return f"a {purpose} order does not go to {snapshot.get('venue')}"
@@ -485,7 +485,9 @@ def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
     if len(names) <= len(gate_checks):
         return "no door check is recorded"
     lineage = snapshot.get("lineage") if isinstance(snapshot.get("lineage"), Mapping) else {}
-    wanted = LINEAGE_FIELDS[purpose] if for_send else PRE_ARTIFACT_LINEAGE_FIELDS[purpose]
+    # A row names the artifact or predates it: one that names it empty was never approved.
+    legacy = not for_send and "strategy_artifact_sha256" not in lineage
+    wanted = PRE_ARTIFACT_LINEAGE_FIELDS[purpose] if legacy else LINEAGE_FIELDS[purpose]
     missing = [field for field in wanted if _missing(lineage.get(field))]
     if missing:
         return f"the lineage is missing {', '.join(missing)}"

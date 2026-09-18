@@ -266,6 +266,18 @@ def test_a_trade_from_an_imported_strategy_says_it_cannot_be_traced(monkeypatch)
     assert "ec9e900ed9c3" in text, "the rule hash IS that fallback and must still be printed"
 
 
+def test_a_trade_names_the_artifact_it_was_approved_as(monkeypatch):
+    """PR3a-2: two installs of one candidate share its id, rule and generation, and the artifact
+    is what tells their trades apart. A row from before it rode on orders prints none."""
+    stamp = "sha256:05fa07fb5c77" + "0" * 52
+    rows = _trades(monkeypatch, [_outcome(candidate_id="cand_ab12", strategy_artifact_sha256=stamp),
+                                 _outcome(candidate_id="cand_ab12")])
+    assert [r["strategy_artifact_sha256"] for r in rows] == [stamp, None]
+    text = lp.render_live_trade_evidence_text(rows)
+    assert [line for line in text.splitlines() if "artifact 05fa07fb5c77" in line] != []
+    assert sum("  artifact " in line for line in text.splitlines()) == 1
+
+
 def test_a_trade_with_no_rule_hash_at_all_does_not_print_a_blank(monkeypatch):
     """The worst row: not even the fallback key. It must not render as an empty field that
     reads like a formatting bug."""

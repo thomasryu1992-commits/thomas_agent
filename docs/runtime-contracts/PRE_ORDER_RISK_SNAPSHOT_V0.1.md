@@ -230,10 +230,15 @@ The profile names records that already authorize trading. Nothing new is registe
         money; an entry that predates the artifact papers. A pool that loaded has already checked
         every stamp against its entry's content (decision 34, `CRYPTO_PIPELINE_V0.1.md`). Checked
         after the disarm trace, so a hand edit is what the operator reads.
+    - **Both reads must name the same approval.** When they do not, the strategy was armed again
+      (which is what a promotion through the door does) or disarmed between them: neither approval
+      is looked up, the arm is not verified, and the route reports `LIVE_ARM_ENTRY_CHANGED`. Before
+      the PR3a-2 review it refused with no reason code of its own.
     - **The fresh entry must arm the lineage the plan was made from** (`LIVE_ARM_ENTRY_CHANGED`):
-      the same candidate, rule and artifact (PR3a-2). An entry installed again between the two reads
-      as another artifact of the same candidate is another strategy, even under an approval pairing
-      its new artifact.
+      the same candidate, rule and artifact (PR3a-2). The door cannot produce an artifact mismatch
+      here, because it installs a new artifact only under a new approval, which the reads then
+      disagree on. The comparison guards a pool edited outside the door between the two reads: the
+      pair check below reads only the fresh entry, not the plan.
     - **The approval store must hold the record the entry names**, and
       `promotion.live_arm_problem` must accept it:
 

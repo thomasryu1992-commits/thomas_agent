@@ -1098,28 +1098,53 @@ def test_a_row_sealed_before_arms_were_verified_is_still_a_record_but_never_a_se
     assert "the arming approval was not verified" in str(refused.value)
 
 
-def _pre_artifact_row(snapshot):
-    """An autonomous row as the gate sealed it before PR3a-2: its lineage names no artifact."""
-    body = {k: v for k, v in snapshot.items() if k != "risk_snapshot_sha256"}
-    body["lineage"] = {k: v for k, v in body["lineage"].items() if k != "strategy_artifact_sha256"}
-    return _resealed(body)
+_V1_BOUND_FIELDS = tuple(f for f in g.INTENT_BOUND_FIELDS if f != "strategy_artifact_sha256")
 
 
-def test_a_row_sealed_before_the_artifact_rode_on_the_order_is_still_a_record_but_never_a_send(tmp_path):
-    """PR3a-2 added the artifact to the autonomous lineage. A row sealed before then is still the
-    record of its order, which the readiness board reads; it can never authorize one."""
-    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
-    old = _pre_artifact_row(snapshot)
-    assert "strategy_artifact_sha256" in snapshot["lineage"] and "strategy_artifact_sha256" not in old["lineage"]
+def _sealed_before_the_artifact(monkeypatch):
+    """An autonomous order and its row as the gate sealed them before PR3a-2: an intent with no
+    artifact, a v1 fingerprint over the fields bound then, and a lineage that does not name it."""
+    with monkeypatch.context() as m:
+        m.setattr(g, "INTENT_FINGERPRINT_VERSION", "pre_order_intent.v1")
+        m.setattr(g, "INTENT_BOUND_FIELDS", _V1_BOUND_FIELDS)
+        m.setattr(g, "LINEAGE_FIELDS", g.PRE_ARTIFACT_LINEAGE_FIELDS)
+        intent = {k: v for k, v in _intent().items() if k != "strategy_artifact_sha256"}
+        return approved_snapshot(intent, decided_at=DECIDED)
+
+
+def test_a_row_sealed_before_the_artifact_rode_on_the_order_is_still_a_record_but_never_a_send(
+        tmp_path, monkeypatch):
+    """PR3a-2 added the artifact to the bound fields and the autonomous lineage. A row sealed
+    before then is still the record of its order, which the readiness board reads: its v1
+    fingerprint is never recomputed. It can never authorize an order."""
+    intent, old = _sealed_before_the_artifact(monkeypatch)
+    assert "strategy_artifact_sha256" not in old["lineage"]
+    assert old["intent_fingerprint"] != g.intent_fingerprint(intent)     # v1, not what v2 computes
     path = g.snapshot_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
     assert g.read_snapshots(tmp_path) == [old]
     assert g.find_snapshot(old["risk_snapshot_sha256"], tmp_path) == old
     with pytest.raises(ToolError) as refused:
-        g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
+        g.verify_snapshot(intent, old, clock=DECIDED)
     assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
     assert "the lineage is missing strategy_artifact_sha256" in str(refused.value)
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_a_stored_row_that_names_the_artifact_empty_fails_the_verified_read(tmp_path, value):
+    """No gate ever approved such a row: the old one never wrote the key, and this one refuses an
+    empty one at `lineage_complete`. The read takes the older shape only when the key is absent."""
+    _, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    body = {k: v for k, v in snapshot.items() if k != "risk_snapshot_sha256"}
+    body["lineage"] = {**body["lineage"], "strategy_artifact_sha256": value}
+    forged = _resealed(body)
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forged, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(ToolError) as refused:
+        g.read_snapshots(tmp_path)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
 
 
 def test_an_autonomous_order_that_names_no_artifact_is_refused_at_the_gate():
