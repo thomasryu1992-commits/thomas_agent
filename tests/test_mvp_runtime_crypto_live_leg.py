@@ -1298,6 +1298,26 @@ def test_a_booked_position_hands_its_snapshot_to_the_exit_outcome():
     assert ledger.appended[0]["risk_snapshot_sha256"] == "sha256:" + "a" * 64
 
 
+def test_the_artifact_an_order_was_approved_as_rides_to_its_position_and_every_outcome():
+    """PR3a-2: the intent names the artifact its pool entry was installed as, and the pre-order
+    snapshot binds it. The booked position, a naked close, a runtime exit and a venue-closed settle
+    carry it with the rest of the lineage, so a live result names the strategy that produced it."""
+    stamp = "sha256:" + "d" * 64
+    intent, snapshot = _intent(strategy_artifact_sha256=stamp)
+    decision = {**DECISION, "intent": intent, "risk_snapshot": snapshot}
+    store = FakeStore()
+    assert _entry(decision=decision, position_store=store)["status"] == ll.ENTRY_OPENED
+    assert store.saved[0]["strategy_artifact_sha256"] == stamp
+    naked = _entry(decision=decision, adapter=FakeAdapter(missing={"TP"}))
+    assert naked["outcome"]["close_reason"] == ll.CLOSE_REASON_NAKED
+    assert naked["outcome"]["strategy_artifact_sha256"] == stamp
+    position = {**POSITION, "strategy_artifact_sha256": stamp}
+    for close in (_exit, _settle):
+        ledger = FakeLedger()
+        close(position=position, ledger=ledger)
+        assert ledger.appended[0]["strategy_artifact_sha256"] == stamp, close.__name__
+
+
 # --- PR2b review: the protective door places protective orders only -------------------------------
 
 @pytest.mark.parametrize("intent", [

@@ -158,6 +158,7 @@ def build_live_position(
     candidate_id: str | None = None,
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
+    strategy_artifact_sha256: str | None = None,
     cycle_id: str | None = None,
     timeframe: str | None = None,
     max_holding_bars: int | None = None,
@@ -213,6 +214,9 @@ def build_live_position(
         # the one the paper position has always carried. Without it the outcome's generation is
         # None however faithfully the other two travel.
         "strategy_generation_id": strategy_generation_id,
+        # The artifact the order was approved as (PR3a-2), from the intent the pre-order snapshot
+        # bound; it rides to the outcome with the other three.
+        "strategy_artifact_sha256": strategy_artifact_sha256,
         "cycle_id": cycle_id,
         # The pre-order snapshot the entry left under (PR2b); it rides to the outcome.
         "risk_snapshot_sha256": risk_snapshot_sha256,

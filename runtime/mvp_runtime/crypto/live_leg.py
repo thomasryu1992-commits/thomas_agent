@@ -935,6 +935,7 @@ def execute_live_entry(
         candidate_id=decision.get("sizing", {}).get("candidate_id") or intent.get("candidate_id"),
         strategy_rule_hash=intent.get("strategy_rule_hash"),
         strategy_generation_id=intent.get("strategy_generation_id"),
+        strategy_artifact_sha256=intent.get("strategy_artifact_sha256"),
         # From the decision, not from a spec re-read — see `exit_terms` in live_entry.
         timeframe=_exit_terms(decision).get("timeframe"),
         max_holding_bars=_exit_terms(decision).get("max_holding_bars"),
@@ -1067,6 +1068,7 @@ def _naked_close_identity(
         or intent.get("candidate_id"),
         "strategy_rule_hash": intent.get("strategy_rule_hash"),
         "strategy_generation_id": intent.get("strategy_generation_id"),
+        "strategy_artifact_sha256": intent.get("strategy_artifact_sha256"),
         "risk_snapshot_sha256": intent.get("risk_snapshot_sha256"),
         "entry_exchange_order_id": entry.get("exchange_order_id"),
         "entry_quote_usdt": _f((entry.get("fill") or {}).get("cum_quote")),
@@ -1247,6 +1249,7 @@ def _record_naked_outcome(
         candidate_id=identity.get("candidate_id"),
         strategy_rule_hash=identity.get("strategy_rule_hash"),
         strategy_generation_id=identity.get("strategy_generation_id"),
+        strategy_artifact_sha256=identity.get("strategy_artifact_sha256"),
         risk_snapshot_sha256=identity.get("risk_snapshot_sha256"),
         now=now,
     )
@@ -1455,6 +1458,7 @@ def execute_live_exit(
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),
         strategy_generation_id=position.get("strategy_generation_id"),
+        strategy_artifact_sha256=position.get("strategy_artifact_sha256"),
         risk_snapshot_sha256=position.get("risk_snapshot_sha256"),
         now=now,
     )
@@ -1818,6 +1822,7 @@ def settle_venue_closed_position(
         candidate_id=position.get("candidate_id"),
         strategy_rule_hash=position.get("strategy_rule_hash"),
         strategy_generation_id=position.get("strategy_generation_id"),
+        strategy_artifact_sha256=position.get("strategy_artifact_sha256"),
         risk_snapshot_sha256=position.get("risk_snapshot_sha256"),
         now=now,
     )

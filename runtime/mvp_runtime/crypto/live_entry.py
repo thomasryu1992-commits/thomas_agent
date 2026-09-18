@@ -1085,6 +1085,7 @@ def gate_live_entry(
     }
     lineage = {field: intent.get(field) for field in (
         "strategy_id", "candidate_id", "strategy_rule_hash", "strategy_generation_id",
+        "strategy_artifact_sha256",
         "timeframe", "candle_time", "order_intent_id", "idempotency_key", "client_order_id",
     )}
     return pre_order_gate.evaluate_pre_order_gate(

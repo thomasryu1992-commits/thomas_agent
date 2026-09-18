@@ -1062,7 +1062,8 @@ def _gate_profile(**authority):
 
 
 def _plan_with_lineage():
-    return {**PLAN, "strategy_rule_hash": "h1", "strategy_generation_id": "gen_1"}
+    return {**PLAN, "strategy_rule_hash": "h1", "strategy_generation_id": "gen_1",
+            "strategy_artifact_sha256": "sha256:" + "a" * 64}
 
 
 def test_the_gate_approves_the_order_the_facts_decide_and_names_every_check():

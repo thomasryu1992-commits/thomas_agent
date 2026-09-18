@@ -691,6 +691,10 @@ def _run_gated_live_leg(
             approval_id=first_approval if first_approval == fresh_approval else None,
             armed=fresh["live_arm_entries"],
         )
+        if first_approval != fresh_approval and live_arm["approval_problem"] is None:
+            # Armed again, or disarmed, between the reads: a promotion through the door names a
+            # new approval. The arm is not verified either way; this says why (review of PR3a-2).
+            live_arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
     except Exception as exc:  # noqa: BLE001 — before the venue: a hold, never an escape
         record["live_route_status"] = ROUTE_HELD
         record["live_reason_codes"].extend(
@@ -1397,7 +1401,11 @@ def verify_live_arm(
     - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule, it
       was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
       when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
-    - it must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`);
+    - it must arm the lineage the plan was made from: its candidate, its rule and, since PR3a-2,
+      its artifact (`LIVE_ARM_ENTRY_CHANGED`). The door cannot produce an artifact mismatch here:
+      it installs a new artifact only under a new approval, which the two reads then disagree on
+      (the route reports that with the same code). The comparison guards a pool edited outside
+      the door between the two reads;
     - the approval store must hold the record Thomas answered to arm it, pairing the entry's
       artifact with its candidate (`promotion.live_arm_problem`).
 
@@ -1415,7 +1423,8 @@ def verify_live_arm(
     lineage = plan if isinstance(plan, Mapping) else {}
     if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
             and entry.get("candidate_id") == lineage.get("candidate_id")
-            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")):
+            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")
+            and entry.get(pool.ARTIFACT_SHA256_FIELD) == lineage.get(pool.ARTIFACT_SHA256_FIELD)):
         arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
         return arm
     try:

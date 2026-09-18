@@ -24,6 +24,41 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The artifact rides on every record its signal writes** (crypto PR3a-2, 2026-09-18;
+  `crypto/paper.py`, `crypto/counterfactual.py`, `crypto/forward_book.py`, `crypto/live_order.py`,
+  `crypto/pre_order_gate.py`, `crypto/live_entry.py`, `crypto/live_route.py`,
+  `crypto/live_position.py`, `crypto/live_pnl.py`, `crypto/live_leg.py`, `crypto/live_promotion.py`).
+  - **The gap:** PR3a bound the pool entry, the approval and the arm to one hash, but a trade's
+    records still named only the rule. The same candidate re-scored and installed again wrote
+    records no reader could tell from the first install's, and the pre-order snapshot sealed an
+    order without naming which installed strategy it traded.
+  - **The carry:** `strategy_artifact_sha256` rides beside candidate, rule hash and generation
+    wherever they go: the router's match and primary, the plan, the paper position, its open event
+    and its outcome; the shadow bench, both sides of a conflict, the shadow position and its
+    outcome; the forward book; the live intent, the snapshot's lineage, the live position and every
+    live outcome, and the live-trades board prints it. None means no artifact named the strategy
+    (an unstamped entry, a position opened before this and settled after, a probe or testnet
+    order); a record from before has no field. Nothing keys on it yet (3b), and 3b must not read
+    None as "unstamped entry".
+  - **The seal:** the gate binds it (`INTENT_BOUND_FIELDS`, `pre_order_intent.v2`) and the
+    autonomous lineage requires it, so an order routed from an unstamped entry is refused at the
+    gate as well as at the arm check (decision 33). A row sealed before stays readable and never
+    sends (`PRE_ARTIFACT_LINEAGE_FIELDS`, the `PR2B_GATE_CHECK_IDS` precedent). The artifact is not
+    in the order's venue identity, so a pool re-stamped between two passes cannot mint a second
+    order for one bar.
+  - **The arm:** `verify_live_arm` requires the armed entry's artifact to be the plan's. The door
+    cannot produce a mismatch there: it installs a new artifact only under a new approval, and the
+    two reads then disagree. So this is defence in depth against a pool edited outside the door
+    between the reads, which the approval's pair check alone does not see, because it reads only
+    the entry.
+  - **Review:** the door's own re-install (or a disarm) between the reads refused with no reason
+    code of its own; the route now reports `LIVE_ARM_ENTRY_CHANGED`. The verified read takes the
+    older lineage only when the row does not name the artifact at all: no gate ever approved an
+    empty one.
+  - **Rollback:** each record gains one field, which the older image's readers ignore (every
+    self-hash covers the stored content, whatever it holds). A snapshot this code seals names one
+    more lineage field, which the older verified read also ignores.
+
 - **One hash for what a strategy is, from candidate to live** (crypto PR3a, Thomas decisions 31-34,
   2026-09-18; `crypto/strategy_artifact.py` (new), `crypto/pool.py`, `crypto/promotion.py`,
   `permission.py`, `crypto/live_route.py`, `scripts/promote_strategy_candidates.py`).

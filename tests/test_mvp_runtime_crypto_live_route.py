@@ -1222,6 +1222,13 @@ def _armed_entry():
 
 # The artifact the door installed the armed entry as (PR3a), which the approval pairs with its candidate.
 _ARMED_STAMP = stamped_pool_entry(_armed_entry())["strategy_artifact_sha256"]
+# The plan a route makes from that entry carries its artifact (PR3a-2), as every real plan does.
+_PLAN = {**_PLAN, "strategy_artifact_sha256": _ARMED_STAMP}
+# The same candidate installed again as another artifact (a re-scored row, say): not the plan's.
+_REINSTALLED_STAMP = stamped_pool_entry({**_armed_entry(), "champion_score": 0.9})["strategy_artifact_sha256"]
+# The approval such an install is armed under: the door installs a new artifact only under a new ask.
+_REINSTALL_ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
+                                   artifacts=(_REINSTALLED_STAMP,))
 _ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=(_ARMED_STAMP,))
 
 
@@ -2039,10 +2046,26 @@ def test_a_strategy_re_armed_under_another_approval_is_held(tmp_path, monkeypatc
                         lambda root=None: _armed_pool("approval_arm_other"))
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_pre_order_gate"]["failed_checks"] == ["approved_profile_complete"]
-    # The two reads name different approvals: neither is looked up.
+    # The two reads name different approvals: neither is looked up, and the operator reads why
+    # (review of PR3a-2) — a promotion through the door between the reads looks exactly like this.
     assert held["live_pre_order_reread"]["live_arm"] == {
         "approval_id": None, "approval_fingerprint": None, "approval_verified": False,
-        "approval_problem": None}
+        "approval_problem": live_route.LIVE_ARM_ENTRY_CHANGED}
+    assert held["live_reason_codes"][-1] == live_route.LIVE_ARM_ENTRY_CHANGED
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_strategy_disarmed_between_the_reads_is_held_and_says_why(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import pool as pool_store
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(live_route.pool, "load_active_pool", lambda root=None: _armed_pool(
+        **{pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_OBSERVATION}))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_pre_order_reread"]["live_arm"]["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+    assert held["live_pre_order_reread"]["live_arm"]["approval_verified"] is False
     assert _nothing_spent(venue, tmp_path)
 
 
@@ -2270,6 +2293,15 @@ _UNBACKED_ARMS = {
         live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
                           artifacts=("sha256:" + "e" * 64,)), {},
         "LIVE_ARM_APPROVAL_OTHER_ARTIFACT"),
+    # PR3a-2: a pool edited outside the door. Both reads name the approval pairing another
+    # artifact, and the plan was made from this one; the pair check alone reads only the entry.
+    "plan-from-another-artifact-than-the-arm": (
+        _REINSTALL_ARM, {"champion_score": 0.9, "strategy_artifact_sha256": _REINSTALLED_STAMP},
+        "LIVE_ARM_ENTRY_CHANGED"),
+    # The door's own re-install between the two reads names a new approval: the reads disagree.
+    "installed-again-through-the-door-between-the-reads": (
+        _ARM, {"champion_score": 0.9, "strategy_artifact_sha256": _REINSTALLED_STAMP,
+               "live_tier_approval_id": _REINSTALL_ARM["approval_id"]}, "LIVE_ARM_ENTRY_CHANGED"),
 }
 
 
@@ -2317,6 +2349,30 @@ def test_an_entry_that_names_another_approval_than_both_reads_is_not_verified(tm
     assert verify(other)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
     assert verify({})["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
     assert verify(None)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+
+
+def test_a_plan_made_from_another_artifact_than_the_armed_entry_is_not_verified(tmp_path):
+    """PR3a-2: the approval pairs the entry's artifact, so the pair check passes; the plan names the
+    artifact its route read, and a plan from another artifact of the same candidate and rule, or
+    from none, is not the order this arm was approved for. Only a pool edited outside the door
+    reaches this: the door installs a new artifact under a new approval, which the reads disagree on."""
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+
+    reinstalled = _REINSTALL_ARM
+    ApprovalStore.default(tmp_path).append([reinstalled])
+    armed = {"S001": {"approval_id": reinstalled["approval_id"], "candidate_id": _PLAN["candidate_id"],
+                      "strategy_rule_hash": _PLAN["strategy_rule_hash"],
+                      "spec_rule_hash": _PLAN["strategy_rule_hash"],
+                      "strategy_artifact_sha256": _REINSTALLED_STAMP, "promoted_at": _ARMED_AT,
+                      "disarmed_at": None}}
+    verify = lambda plan: live_route.verify_live_arm(  # noqa: E731
+        root=tmp_path, strategy_id="S001", plan=plan, approval_id=reinstalled["approval_id"], armed=armed)
+    assert verify({**_PLAN, "strategy_artifact_sha256": _REINSTALLED_STAMP})["approval_verified"] is True
+    no_artifact = {k: v for k, v in _PLAN.items() if k != "strategy_artifact_sha256"}
+    for plan in (_PLAN, no_artifact):
+        arm = verify(plan)
+        assert arm["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+        assert arm["approval_verified"] is False
 
 
 def test_an_arm_both_reads_do_not_agree_on_is_not_looked_up(tmp_path, monkeypatch):

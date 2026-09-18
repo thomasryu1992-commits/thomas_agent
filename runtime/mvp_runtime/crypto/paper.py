@@ -49,6 +49,7 @@ from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from . import cost as costs
 from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
+from .strategy_artifact import ARTIFACT_SHA256_FIELD
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
 PAPER_TOOL_VERSION = "0.1.0"
@@ -459,6 +460,7 @@ def _supporting_detail(match: Mapping[str, Any], shadow_reason: str) -> dict[str
         "candidate_id": match["candidate_id"],
         "strategy_rule_hash": match["strategy_rule_hash"],
         "strategy_generation_id": match["strategy_generation_id"],
+        ARTIFACT_SHA256_FIELD: match.get(ARTIFACT_SHA256_FIELD),
         "direction": match["direction"],
         "champion_score": match["champion_score"],
         "spec": match["spec"],
@@ -576,6 +578,11 @@ def route_entries(
                 "candidate_id": entry.get("candidate_id"),
                 "strategy_rule_hash": entry.get("strategy_rule_hash"),
                 "strategy_generation_id": entry.get("generation_id") or entry.get("strategy_spec", {}).get("generation_id"),
+                # The artifact the entry was installed as (PR3a); None for an entry that predates
+                # it. It rides beside the three lineage fields to every record the signal writes —
+                # plan, position, outcome, shadow, forward, the live order and its snapshot — so a
+                # result names the strategy that produced it whole, not only its rule (PR3a-2).
+                ARTIFACT_SHA256_FIELD: entry.get(ARTIFACT_SHA256_FIELD),
                 "direction": result.direction,
                 "champion_score": entry.get("champion_score"),
                 "spec": spec,
@@ -647,6 +654,7 @@ def route_entries(
         "primary_candidate_id": primary["candidate_id"],
         "primary_strategy_rule_hash": primary["strategy_rule_hash"],
         "primary_strategy_generation_id": primary["strategy_generation_id"],
+        "primary_strategy_artifact_sha256": primary.get(ARTIFACT_SHA256_FIELD),
         "primary_spec": primary["spec"],
         # Which key actually picked the primary, so a reader of the route can tell a
         # measured decision from the pre-evidence fallback without re-deriving it.
@@ -770,6 +778,7 @@ def build_entry_plan(route: Mapping[str, Any], feature_row: Mapping[str, Any], *
         "candidate_id": route.get("primary_candidate_id"),
         "strategy_rule_hash": route.get("primary_strategy_rule_hash"),
         "strategy_generation_id": route.get("primary_strategy_generation_id"),
+        ARTIFACT_SHA256_FIELD: route.get("primary_strategy_artifact_sha256"),
         "supporting_strategy_ids": list(route.get("supporting_strategy_ids") or []),
         "created_at_utc": now,
     }
@@ -903,6 +912,7 @@ def open_position(plan: Mapping[str, Any], *, now: str) -> dict[str, Any]:
         "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
         "strategy_generation_id": plan.get("strategy_generation_id"),
+        ARTIFACT_SHA256_FIELD: plan.get(ARTIFACT_SHA256_FIELD),
         "supporting_strategy_ids": list(plan.get("supporting_strategy_ids") or []),
     }
     # short_id seeds forbid floats (fingerprint rule) — the price rides as a string.
@@ -1217,6 +1227,7 @@ def build_outcome_record(
         "candidate_id": position.get("candidate_id"),
         "strategy_rule_hash": position.get("strategy_rule_hash"),
         "strategy_generation_id": position.get("strategy_generation_id"),
+        ARTIFACT_SHA256_FIELD: position.get(ARTIFACT_SHA256_FIELD),
         "supporting_strategy_ids": list(position.get("supporting_strategy_ids") or []),
         # How the exit price was decided: "unambiguous" (only one level touched),
         # "observed_fine_candles" (both touched, finer bars showed the order), or
@@ -1959,6 +1970,7 @@ def run_paper_update(
                     "primary_candidate_id": bench["candidate_id"],
                     "primary_strategy_rule_hash": bench["strategy_rule_hash"],
                     "primary_strategy_generation_id": bench["strategy_generation_id"],
+                    "primary_strategy_artifact_sha256": bench.get(ARTIFACT_SHA256_FIELD),
                 }, feature_row, now=now)
                 if shadow is None:
                     continue
@@ -2026,6 +2038,7 @@ def run_paper_update(
                             "take_profit": opened["take_profit"],
                             "strategy_id": opened.get("strategy_id"),
                             "strategy_rule_hash": opened.get("strategy_rule_hash"),
+                            ARTIFACT_SHA256_FIELD: opened.get(ARTIFACT_SHA256_FIELD),
                         }))
             # This candle has now been evaluated for a new entry (matched or not, capped
             # or not); record it so the same candle is not re-evaluated next tick. Only
