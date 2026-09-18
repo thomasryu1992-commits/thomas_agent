@@ -283,7 +283,8 @@ def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks
         daily_loss_breached=False,
         bracket_failures_consecutive=0,
         api_breaker_tripped=False,
-        optional_data={"bar_time": None, "degraded": [], "stale": [], "feeds": {}},
+        optional_data={"bar_time": ROW["timestamp"], "degraded": [], "stale": [], "missing": [],
+                       "feeds": {}},
         submitted_today=0,
         # A healthy book: the rehearsal walks the READY path, and since the unreadable-book
         # fail-open closed (2026-08-30) an absent reading is a refusal with its own tests.

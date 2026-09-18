@@ -2742,7 +2742,6 @@ def test_the_leg_judges_the_optional_data_it_was_handed_and_says_so(tmp_path, mo
                         lambda **kw: real(**{**kw, "optional_data": stale}))
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_STALE]
-    assert held["live_optional_data"] == {"bar_time": BAR_00, "degraded": [], "stale": ["funding"]}
     assert _nothing_spent(venue, tmp_path)
 
 
@@ -2756,5 +2755,4 @@ def test_a_caller_that_hands_no_optional_data_opens_nothing(tmp_path, monkeypatc
                         lambda **kw: real(**{k: v for k, v in kw.items() if k != "optional_data"}))
     held = run("2026-07-28T04:05:00Z", BAR_00)
     assert held["live_decision"]["reasons"] == [OPTIONAL_DATA_UNKNOWN]
-    assert held["live_optional_data"] is None
     assert _nothing_spent(venue, tmp_path)

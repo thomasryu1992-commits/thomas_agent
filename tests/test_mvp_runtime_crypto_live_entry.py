@@ -120,7 +120,8 @@ def _plan(**kw):
         daily_loss_breached=kw.pop("daily_loss_breached", False),
         bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
         api_breaker_tripped=kw.pop("api_breaker_tripped", False),
-        optional_data=kw.pop("optional_data", healthy_optional_data()),
+        # Of the bar the decision is on, as the cycle hands it (PR2d-2).
+        optional_data=kw.pop("optional_data", healthy_optional_data(kw.get("entry_bar_time", BAR))),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         # A healthy book by default, per this helper's own rule (every door open; each test
@@ -285,34 +286,53 @@ def test_only_an_explicit_false_clears_the_api_breaker_door(unknown):
 
 # --- the optional data (PR2d-2, Thomas decision 28) ------------------------------------------------
 
+def _healthy(**changes):
+    return {**healthy_optional_data(BAR), **changes}
+
+
 @pytest.mark.parametrize("optional_data", [
-    None, "healthy", {}, {"degraded": [], "stale": None}, {"degraded": "FUNDING_DEGRADED", "stale": []},
-], ids=["none", "text", "empty", "stale-missing", "degraded-not-a-list"])
+    None, "healthy", {}, _healthy(stale=None), _healthy(missing=None),
+    _healthy(degraded="FUNDING_DEGRADED"),
+], ids=["none", "text", "empty", "stale-not-a-list", "missing-not-a-list", "degraded-not-a-list"])
 def test_optional_data_nobody_can_read_refuses(optional_data):
     decision = _plan(optional_data=optional_data)
     assert decision["reasons"] == [le.OPTIONAL_DATA_UNKNOWN]
 
 
+@pytest.mark.parametrize("bar_time", [None, "2026-07-24T20:00:00Z"], ids=["no-bar", "another-bar"])
+def test_an_account_of_another_bar_is_no_account_of_this_one(bar_time):
+    """Review of #892: the door judges the bar it decides on, whatever the caller handed."""
+    decision = _plan(optional_data=healthy_optional_data(bar_time))
+    assert decision["reasons"] == [le.OPTIONAL_DATA_UNKNOWN]
+
+
 def test_a_degraded_leg_refuses_the_context_and_names_it():
-    decision = _plan(optional_data={**healthy_optional_data(), "degraded": ["FUNDING_DEGRADED", "HTF_DEGRADED"]})
+    decision = _plan(optional_data=_healthy(degraded=["FUNDING_DEGRADED", "HTF_DEGRADED"]))
     assert decision["reasons"] == [le.OPTIONAL_DATA_DEGRADED]
     assert decision["optional_data_degraded"] == ["FUNDING_DEGRADED", "HTF_DEGRADED"]
 
 
 def test_a_stale_feed_refuses_the_context_and_names_it():
-    decision = _plan(optional_data={**healthy_optional_data(), "stale": ["positioning"]})
+    decision = _plan(optional_data=_healthy(stale=["positioning"]))
     assert decision["reasons"] == [le.OPTIONAL_DATA_STALE]
     assert decision["optional_data_stale"] == ["positioning"]
 
 
-def test_degraded_and_stale_are_both_named():
-    decision = _plan(optional_data={**healthy_optional_data(), "degraded": ["REFERENCE_DEGRADED"],
-                                    "stale": ["funding"]})
-    assert decision["reasons"] == [le.OPTIONAL_DATA_DEGRADED, le.OPTIONAL_DATA_STALE]
+def test_a_leg_missing_from_the_bar_refuses_the_context_and_names_it():
+    decision = _plan(optional_data=_healthy(missing=["reference_candles"]))
+    assert decision["reasons"] == [le.OPTIONAL_DATA_MISSING]
+    assert decision["optional_data_missing"] == ["reference_candles"]
+
+
+def test_every_kind_is_named_at_once():
+    decision = _plan(optional_data=_healthy(degraded=["REFERENCE_DEGRADED"], stale=["funding"],
+                                            missing=["liquidations"]))
+    assert decision["reasons"] == [le.OPTIONAL_DATA_DEGRADED, le.OPTIONAL_DATA_STALE,
+                                   le.OPTIONAL_DATA_MISSING]
 
 
 def test_healthy_optional_data_lets_the_entry_through():
-    assert _plan(optional_data=healthy_optional_data())["status"] == le.STATUS_READY
+    assert _plan(optional_data=healthy_optional_data(BAR))["status"] == le.STATUS_READY
 
 
 def test_the_optional_data_has_no_default():
@@ -328,7 +348,7 @@ def test_the_gate_names_the_optional_data_door_and_seals_what_it_judged():
                                 profile=_gate_profile(), now=NOW)
     assert sealed["approved"] is True
     assert sealed["facts"]["optional_data"] == kwargs["optional_data"]
-    degraded = {**kwargs, "optional_data": {**healthy_optional_data(), "degraded": ["FUNDING_DEGRADED"]}}
+    degraded = {**kwargs, "optional_data": {**kwargs["optional_data"], "degraded": ["FUNDING_DEGRADED"]}}
     refused = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=degraded,
                                  profile=_gate_profile(), now=NOW)
     assert refused["approved"] is False and "optional_data_healthy" in refused["failed_checks"]

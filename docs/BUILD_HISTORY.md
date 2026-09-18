@@ -41,20 +41,40 @@ Append a new entry when a milestone ships, in the same PR.
     - on a feed whose reading at the bar is past its bound: funding 16 hours, the daily
       liquidation and open-interest series 48 hours, positioning 3 hours
       (`LIVE_ENTRY_OPTIONAL_DATA_STALE`);
-    - on no account of it (`LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN`).
+    - on a carried leg that put no reading on the bar (`LIVE_ENTRY_OPTIONAL_DATA_MISSING`);
+    - on no account of it, or one of another bar (`LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN`).
   - **The age is measured from the bar's open**, the instant the as-of join keys on. Measured
     from the wall clock, every 1d decision would have read stale, because the bar opens a day
     before it is decided on. Positioning is as fresh as its last paired reading, the one its
     columns are built from.
-  - **Sealed and recorded.** The gate seals the assessment in `facts.optional_data`, and the route
-    records it. Every cycle record carries the feeds' ages, so the bounds can be judged against
+  - **Sealed and recorded.** The gate seals the assessment in `facts.optional_data`. Every cycle
+    record whose bar could be read carries the feeds' ages, so the bounds can be judged against
     what the feeds really do.
   - **Unchanged:** paper, the counterfactual shadow, the probe and the testnet cycle. The verdict
     is not merged either; `breaker_watch` would announce every feed flutter.
   - **Measured before this** (the PR2d investigation): the optional legs degraded on 0.33% of
-    cycles and 1.1% of fires. Staleness was not measured; the cycle records now show it. The daily
-    series' bound sits at the edge of a sound reading, because the forming day is dropped and a
-    sound reading is 24 to 48 hours old.
+    cycles and 1.1% of fires. Staleness was not measured; the cycle records now show it.
+  - **What the independent review of #892 found, fixed in the same PR.**
+    - **A leg that answered empty passed.** An answer with no rows carries no degrade code, and
+      the columns were None all the same. So was a same-grid series (a cached reference or peer
+      read) that stops a bar short. The door now asks whether the bar carries each carried leg's
+      reading (`OPTIONAL_LEG_COLUMNS`).
+    - **Smaller fixes:**
+      - positioning pairs only readings with a numeric ratio, as the features do;
+      - the door checks the account is of the bar it decides on;
+      - the route's in-memory `live_optional_data` is gone, since it never reached the ledger;
+      - the cycle record's lists appear only when non-empty, and a cycle with no readable bar
+        records no judgement;
+      - the tunables text and the contract's statements were corrected.
+    - **Left to Thomas (decision 28 kept as decided):**
+      - positioning is judged although no strategy can read it until 1000 days of coverage, so
+        an accumulator fault holds every context after three hours;
+      - the cross-section refuses on one peer;
+      - a feed that is not carried is not judged, however it came to be absent.
+    - **Seen, out of scope:** the daily liquidation and open-interest events are stamped at the
+      day's start and carry the day's values (the liquidation totals, the closing open interest).
+      A replay over historical days therefore lets an intraday bar, 4h included, see its own day's
+      value, which live never does. That contradicts the look-ahead guard `features.py` claims.
 
 - **The venue refusing this machine's signed calls now shuts the entry door** (crypto PR2d-1,
   Thomas decisions 18 and 27, 2026-09-18; `crypto/live_order.py`, `crypto/live_route.py`,

@@ -652,11 +652,6 @@ def _run_gated_live_leg(
         clock=_entry_clock(),
     )
     decision = plan_live_entry(**decision_kwargs)
-    # What the optional-data door judged (PR2d-2), beside the decision, so a refusal names the feed.
-    record["live_optional_data"] = (
-        {key: optional_data.get(key) for key in ("bar_time", "degraded", "stale")}
-        if isinstance(optional_data, Mapping) else None
-    )
     record["live_decision"] = {
         "status": decision["status"],
         "ready": decision["ready"],

@@ -1780,11 +1780,19 @@ def _fresh_snapshot():
     }
 
 
+# The decision bar as a context whose carried legs all put a reading on it.
+_FULL_ROW = {"funding_rate": 0.0001, "mark_price": 60000.0, "index_price": 60001.0,
+             "premium_index": 0.0002, "long_liquidation": 1.0, "short_liquidation": 2.0,
+             "open_interest": 5.0, "htf_rsi": 55.0, "ref_roc_4": 0.01, "xs_rank_pct": 0.5,
+             "positioning_divergence": 0.1}
+
+
 def test_a_context_whose_feeds_answered_and_are_fresh_is_healthy():
     from runtime.mvp_runtime.crypto.cycle import optional_data_health
 
-    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=BAR)
-    assert (health["degraded"], health["stale"]) == ([], [])
+    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=BAR, row=_FULL_ROW)
+    assert (health["degraded"], health["stale"], health["missing"]) == ([], [], [])
+    assert health["bar_readable"] is True
     assert {feed: (s["state"], s["age_hours"]) for feed, s in health["feeds"].items()} == {
         "funding": ("ok", 4.0), "liquidations": ("ok", 32.0), "open_interest": ("ok", 32.0),
         "positioning": ("ok", 1.0)}
@@ -1827,13 +1835,50 @@ def test_a_reading_after_the_bar_does_not_make_it_fresh():
     assert health["stale"] == ["funding"] and health["feeds"]["funding"]["age_hours"] == 20.0
 
 
-def test_a_feed_not_carried_is_not_judged_and_an_empty_one_is_its_degrade_code():
+def test_a_feed_not_carried_is_not_judged_and_an_empty_answer_is_missing():
+    """Review of #892: an answer that came back empty carries no degrade code, and left the
+    columns None all the same."""
     from runtime.mvp_runtime.crypto.cycle import optional_data_health
 
-    health = optional_data_health({"funding": []}, codes=[], bar_time=BAR)
-    assert health["stale"] == []
+    health = optional_data_health({"funding": []}, codes=[], bar_time=BAR, row={"funding_rate": None})
+    assert health["stale"] == [] and health["missing"] == ["funding"]
     assert health["feeds"]["funding"]["state"] == "empty"
     assert {health["feeds"][f]["state"] for f in ("liquidations", "open_interest", "positioning")} == {"absent"}
+
+
+@pytest.mark.parametrize("leg", [
+    "funding", "mark_prices", "index_prices", "premium_index", "liquidations", "open_interest",
+    "htf_candles", "reference_candles", "peer_candles", "positioning",
+])
+def test_a_carried_leg_with_no_reading_on_the_bar_is_missing(leg):
+    """An empty answer, or a same-grid series that stops a bar short (a cached peer read from
+    before a bar boundary): the bar carries nothing from the leg."""
+    from runtime.mvp_runtime.crypto.cycle import OPTIONAL_LEG_COLUMNS, optional_data_health
+
+    snapshot = {leg: [{"timestamp": _at(1)}]}
+    blank = {**_FULL_ROW, **{column: None for column in OPTIONAL_LEG_COLUMNS[leg]}}
+    assert optional_data_health(snapshot, codes=[], bar_time=BAR, row=blank)["missing"] == [leg]
+    assert optional_data_health(snapshot, codes=[], bar_time=BAR, row=_FULL_ROW)["missing"] == []
+    assert optional_data_health({}, codes=[], bar_time=BAR, row=blank)["missing"] == []
+
+
+def test_the_reference_symbol_s_own_context_is_not_missing_its_reference():
+    """Relative strength against itself is undefined by design, not a leg that failed."""
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    snapshot = {"symbol": "BTCUSDT", "reference_symbol": "BTCUSDT", "reference_candles": [{}]}
+    health = optional_data_health(snapshot, codes=[], bar_time=BAR, row={**_FULL_ROW, "ref_roc_4": None})
+    assert health["missing"] == []
+
+
+def test_positioning_counts_only_a_reading_its_columns_would_use():
+    """Review of #892: the features drop a ratio that is not a number, so the door does too."""
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    rows = _positioning(_at(5)) + [
+        {"series": name, "timestamp": _at(1), "long_ratio": None} for name in ("top_position", "global_account")]
+    health = optional_data_health({"positioning": rows}, codes=[], bar_time=BAR, row=_FULL_ROW)
+    assert health["feeds"]["positioning"]["age_hours"] == 5.0 and health["stale"] == ["positioning"]
 
 
 @pytest.mark.parametrize("events", [
@@ -1859,8 +1904,9 @@ def test_positioning_is_as_fresh_as_its_last_pair():
 def test_a_bar_that_cannot_be_read_leaves_every_carried_feed_stale():
     from runtime.mvp_runtime.crypto.cycle import optional_data_health
 
-    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=None)
+    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=None, row=_FULL_ROW)
     assert health["stale"] == ["funding", "liquidations", "open_interest", "positioning"]
+    assert health["bar_readable"] is False
 
 
 class _FundingCollector(FakeExchangeCollector):
@@ -1899,12 +1945,48 @@ def test_the_cycle_hands_the_live_leg_what_its_optional_legs_did(tmp_path, monke
     record = _cycle(tmp_path, collector)
     handed = seen["optional_data"]
     assert (handed["degraded"], handed["stale"]) == (degraded, stale)
+    # A fetch that failed leaves the bar without a funding reading, beside its degrade code.
+    assert handed["missing"] == (["funding"] if degraded else [])
     assert handed["bar_time"] == seen["feature_row"]["timestamp"]
-    assert record["optional_data_stale"] == stale
+    # Set only when there is something to say (the clean-cycle rule); the ages on every cycle.
+    assert record.get("optional_data_stale") == (stale or None)
+    assert record.get("optional_data_missing") == (["funding"] if degraded else None)
     if degraded:
-        assert "funding" not in record["optional_data_ages"]
+        assert "funding" not in record.get("optional_data_ages", {})
     else:
         assert record["optional_data_ages"]["funding"] == (2.0 if not stale else 20.0)
+
+
+def test_stale_positioning_the_cycle_attached_reaches_the_live_door(tmp_path, monkeypatch):
+    """The positioning leg is attached after the others; the door judges it all the same."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    _install_pool(tmp_path, _always_spec())
+    last_open = timeutil.format_iso(NOW_DT - timedelta(hours=1) - timedelta(days=1))
+    old = timeutil.format_iso(timeutil.parse_iso(last_open) - timedelta(hours=6))
+    record = _cycle(tmp_path, FakeExchangeCollector(), positioning_rows=_positioning(old))
+    assert seen["optional_data"]["stale"] == ["positioning"]
+    assert record["optional_data_stale"] == ["positioning"] and record["optional_data_ages"]["positioning"] == 6.0
+
+
+def test_a_cycle_with_no_readable_bar_records_no_feed_judgement(tmp_path, monkeypatch):
+    """A degraded collection has no bar to judge the feeds against: they were refused, not
+    measured, and the ages would skew the statistic they exist for."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", lambda **kw: {
+        "live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+        "live_reason_codes": [], "halt": False})
+    record = _cycle(tmp_path, BrokenCollector(), positioning_rows=_positioning(_at(1)))
+    assert not {"optional_data_ages", "optional_data_stale", "optional_data_missing"} & set(record)
 
 
 @pytest.mark.parametrize("leg,code", [

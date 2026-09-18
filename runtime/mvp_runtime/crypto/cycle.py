@@ -154,6 +154,23 @@ OPTIONAL_FEED_MAX_AGE_HOURS = {
     "open_interest": DAILY_SERIES_MAX_AGE_HOURS,
     "positioning": POSITIONING_MAX_AGE_HOURS,
 }
+# The column each optional leg puts on a bar as its reading there — the one with the least warmup
+# of its own, so a healthy leg fills it. None at the decision bar means the bar carries nothing
+# from that leg: an answer that came back empty with no degrade code, or a same-grid series (a
+# cached reference or peer read) that stops a bar short. Either way a strategy reading the leg
+# can neither fire nor veto (review of #892).
+OPTIONAL_LEG_COLUMNS = {
+    "funding": ("funding_rate",),
+    "mark_prices": ("mark_price",),
+    "index_prices": ("index_price",),
+    "premium_index": ("premium_index",),
+    "liquidations": ("long_liquidation", "short_liquidation"),
+    "open_interest": ("open_interest",),
+    "htf_candles": ("htf_rsi",),
+    "reference_candles": ("ref_roc_4",),
+    "peer_candles": ("xs_rank_pct",),
+    "positioning": ("positioning_divergence",),
+}
 
 
 def _feed_readings(feed: str, events: Any) -> list[Any]:
@@ -166,28 +183,47 @@ def _feed_readings(feed: str, events: Any) -> list[Any]:
         return events
     times: dict[str, set[str]] = {}
     for row in events:
-        if isinstance(row, Mapping) and isinstance(row.get("series"), str) and isinstance(row.get("timestamp"), str):
-            times.setdefault(row["series"], set()).add(row["timestamp"])
+        if not (isinstance(row, Mapping) and isinstance(row.get("series"), str)
+                and isinstance(row.get("timestamp"), str)):
+            continue
+        # Only a reading the columns would use: a ratio that is a number (the features' rule).
+        value = row.get("long_ratio")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        times.setdefault(row["series"], set()).add(row["timestamp"])
     paired = (times.get("top_position") or set()) & (times.get("global_account") or set())
     return [{"timestamp": stamp} for stamp in paired]
 
 
 def optional_data_health(
-    snapshot: Mapping[str, Any], *, codes: Sequence[str], bar_time: Any,
+    snapshot: Mapping[str, Any], *, codes: Sequence[str], bar_time: Any, row: Any = None,
 ) -> dict[str, Any]:
     """What the live entry door judges a context's optional data on (PR2d-2). Pure.
 
-    ``degraded`` is this cycle's degrade codes from the optional legs. ``stale`` names each feed
-    whose reading at ``bar_time`` — the last event at or before the bar's open, the one the as-of
-    join gives the bar — is older than its bound, or that holds events and none readable at or
-    before the bar. A feed the snapshot does not carry (not configured, or nothing accumulated
-    yet) is not judged: its columns are None, as they always were. A feed present and empty
-    failed its fetch, and its degrade code already says so."""
+    - ``degraded``: this cycle's degrade codes from the optional legs.
+    - ``stale``: each feed whose reading at ``bar_time`` — the last event at or before the bar's
+      open, the one the as-of join gives the bar — is older than its bound, or that holds events
+      and none readable at or before the bar.
+    - ``missing``: each optional leg the snapshot carries that put no reading on the decision
+      bar (``row``, `OPTIONAL_LEG_COLUMNS`): an answer that came back empty without a degrade
+      code, or a same-grid series that stops a bar short.
+
+    A leg the snapshot does not carry is not judged: not configured, not applicable (the
+    reference symbol's own context, a timeframe with no higher one), or nothing to read (no
+    positioning rows for the symbol) — its columns are None, as they always were. ``bar_readable``
+    says whether ``bar_time`` could be read; when it could not, every carried feed is stale."""
     degraded = sorted({str(code) for code in codes if code in OPTIONAL_DATA_DEGRADED_CODES})
     try:
         bar = timeutil.parse_iso(str(bar_time))
     except (TypeError, ValueError, OverflowError):
         bar = None
+    values = row if isinstance(row, Mapping) else {}
+    own_proxy = str(snapshot.get("symbol") or "") == str(snapshot.get("reference_symbol") or "-")
+    missing = [
+        leg for leg, columns in OPTIONAL_LEG_COLUMNS.items()
+        if leg in snapshot and not (leg == "reference_candles" and own_proxy)
+        and all(values.get(column) is None for column in columns)
+    ]
     feeds: dict[str, dict[str, Any]] = {}
     stale: list[str] = []
     for feed, bound in OPTIONAL_FEED_MAX_AGE_HOURS.items():
@@ -215,10 +251,11 @@ def optional_data_health(
         age = (bar - last).total_seconds() / 3600.0
         fresh = age <= bound
         feeds[feed] = {**state, "state": "ok" if fresh else "stale",
-                       "last_event_at": timeutil.format_iso(last), "age_hours": round(age, 3)}
+                       "last_event_at": timeutil.format_iso(last), "age_hours": round(age, 2)}
         if not fresh:
             stale.append(feed)
-    return {"bar_time": bar_time, "degraded": degraded, "stale": stale, "feeds": feeds}
+    return {"bar_time": bar_time, "bar_readable": bar is not None, "degraded": degraded,
+            "stale": stale, "missing": missing, "feeds": feeds}
 
 
 def attach_feeds(
@@ -733,6 +770,7 @@ def run_crypto_cycle(
         snapshot,
         codes=[*feed_reasons, htf_reason, reference_reason, cross_section_reason],
         bar_time=feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None,
+        row=feature_row,
     )
 
     # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
@@ -1233,12 +1271,6 @@ def run_crypto_cycle(
         "live_halt": live["halt"],
         # What the leg saw of the execution stage (PR1a) — None when the gate was closed.
         "live_execution_stage": live.get("execution_stage"),
-        # The optional feeds' age at this bar, and the ones past their bound (PR2d-2) — on every
-        # cycle, open gate or not, so the bounds can be judged against what the feeds really do.
-        # The legs' degrade codes are in `reason_codes` already.
-        "optional_data_stale": list(optional_data["stale"]),
-        "optional_data_ages": {feed: state["age_hours"] for feed, state in optional_data["feeds"].items()
-                               if state["age_hours"] is not None},
         # The cooldown a live stop-out wrote this cycle (PR2a) — None on every other cycle. Paper's
         # refusal record carries its bound; this is where the live one becomes auditable.
         "live_stop_cooldown": live.get("live_stop_cooldown"),
@@ -1274,6 +1306,19 @@ def run_crypto_cycle(
     # stays readable by exactly the same consumers.
     if live_excluded_digest:
         record["live_outcomes_excluded"] = live_excluded_digest
+    # The optional feeds at this bar (PR2d-2): their ages on every cycle whose bar could be read,
+    # open gate or not — the measurement the bounds are to be judged against (~90 bytes a row) —
+    # and the feeds past their bound or missing from the bar only when there are any. A cycle with
+    # no readable bar (a degraded collection) records none: its feeds were not judged, only
+    # refused. The legs' degrade codes are in `reason_codes` already.
+    if optional_data["bar_readable"]:
+        ages = {feed: state["age_hours"] for feed, state in optional_data["feeds"].items()
+                if state["age_hours"] is not None}
+        if ages:
+            record["optional_data_ages"] = ages
+        for key in ("stale", "missing"):
+            if optional_data[key]:
+                record[f"optional_data_{key}"] = list(optional_data[key])
     record["cycle_id"] = integrity.short_id(
         "crypto_cycle", {"symbol": symbol, "timeframe": timeframe, "at": now}
     )

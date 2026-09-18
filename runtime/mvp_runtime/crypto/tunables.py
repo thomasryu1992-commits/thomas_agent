@@ -245,13 +245,15 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("DAILY_SERIES_MAX_AGE_HOURS", cycle.DAILY_SERIES_MAX_AGE_HOURS,
             "crypto/cycle.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): two days for the daily liquidation and open-interest "
-            "series, whose forming day is dropped, so a sound reading is 24-48 hours old at a bar",
+            "series, whose forming day is dropped, so a sound reading is up to about 48 hours old "
+            "at an intraday bar",
             "the vendor publishing the closed day late enough to refuse the first bars after "
             "midnight, or intraday series replacing the daily ones"),
     Tunable("POSITIONING_MAX_AGE_HOURS", cycle.POSITIONING_MAX_AGE_HOURS,
             "crypto/cycle.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): three hours for the positioning readings this runtime "
-            "accumulates hourly; two missed accumulations and the context holds",
+            "accumulates hourly; a sound pair is at most 2.5 hours old at a 15m bar, so one "
+            "missed accumulation late in the hour can hold a 15m context for a bar",
             "the accumulator's throttle moving, or positioning families that need a fresher pair"),
     Tunable("MAX_REFERENCE_DIVERGENCE_BPS", live_entry.MAX_REFERENCE_DIVERGENCE_BPS,
             "crypto/live_entry.py", OPERATOR,
