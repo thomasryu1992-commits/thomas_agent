@@ -311,6 +311,11 @@ def spend_lock(approval_store: Any, approval_id: str) -> Iterator[None]:
     ``ALREADY_CONSUMED`` — and the caller appends its CONSUMED record. Spend-first ordering
     stays the caller's job and its argument stays at the call site: a grant spent before the
     action runs fails to the safe direction (spent-but-unrun; ask Thomas again).
+
+    Anything a winning spend changes must be read inside the block, after this re-read. A
+    loser that reads it before the lock can see the winner's effects first and refuse under
+    another code: the memory-promotion spend looked its candidate up early and refused the
+    loser CANDIDATE_GONE (fixed 2026-09-18).
     """
     with locked(approval_store.root / ".consume.lock",
                 code="APPROVAL_WRITE_FAILED", label="the approval store"):
