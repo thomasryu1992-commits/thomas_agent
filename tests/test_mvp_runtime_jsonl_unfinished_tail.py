@@ -8,7 +8,7 @@ a writer appending ~2.6 KB lines without pause. Every such read used to be refus
 store (APPROVAL_READ_FAILED, WORKING_MEMORY_UNREADABLE, ...).
 
 These tests are deterministic. The other process is a stub whose bytes land when the reader
-sleeps, and the clock only moves when the reader sleeps, so nothing depends on real timing.
+sleeps, and time only passes when the reader sleeps, so nothing depends on real timing.
 """
 
 from __future__ import annotations
@@ -45,8 +45,6 @@ class _OtherWriter:
             with open(self.path, "ab") as fh:
                 fh.write(self.landings.pop(0))
 
-    def monotonic(self):
-        return self.now
 
 
 @pytest.fixture
@@ -54,7 +52,6 @@ def other_writer(monkeypatch):
     def install(path, *landings):
         writer = _OtherWriter(path, landings)
         monkeypatch.setattr(time, "sleep", writer.sleep)
-        monkeypatch.setattr(time, "monotonic", writer.monotonic)
         return writer
     return install
 
@@ -117,9 +114,29 @@ def test_a_last_line_that_is_never_finished_still_fails_closed_after_the_patienc
 
     assert exc.value.reason_code == "WORKING_MEMORY_UNREADABLE"
     assert "line 2" in str(exc.value) and "not finished" in str(exc.value)
-    assert writer.now - started >= jsonl._TAIL_PATIENCE_SECONDS
-    # Bounded: one look per poll, and no more.
-    assert writer.sleeps == pytest.approx(jsonl._TAIL_PATIENCE_SECONDS / jsonl._TAIL_POLL_SECONDS, abs=1)
+    # It waited the whole patience, one look per poll, and no more.
+    assert writer.sleeps == jsonl._TAIL_POLLS
+    assert writer.now - started == pytest.approx(jsonl._TAIL_PATIENCE_SECONDS)
+
+
+def test_a_frozen_clock_cannot_keep_a_reader_waiting(tmp_path, other_writer, monkeypatch):
+    """Tests freeze `time.monotonic`. A wait bounded by that clock would never end on a store a
+    crash cut off, so the wait is a count of looks and ends whatever the clock says. If it ever
+    stops ending, this fails rather than hangs."""
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b'{"i": 1, "half')
+    writer = other_writer(path)
+    monkeypatch.setattr(time, "monotonic", lambda: 42.0)
+
+    def bounded_sleep(seconds):
+        if writer.sleeps >= 10 * jsonl._TAIL_POLLS:
+            raise AssertionError("the reader kept waiting")
+        writer.sleep(seconds)
+    monkeypatch.setattr(time, "sleep", bounded_sleep)
+
+    with pytest.raises(PersistenceError):
+        jsonl.read_objects(path, read_code="R", label="s")
+    assert writer.sleeps == jsonl._TAIL_POLLS
 
 
 def test_a_cut_character_that_is_never_finished_raises_the_stores_code(tmp_path, other_writer):

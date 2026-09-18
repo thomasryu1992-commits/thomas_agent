@@ -19,9 +19,12 @@ from typing import Any, BinaryIO, Iterable, Iterator, Mapping
 from .errors import MvpRuntimeError, PersistenceError
 
 # How long a reader waits for an unterminated last line to be finished, and how often it looks.
-# See `_finished_tail` for why the wait exists and why it is this long.
+# See `_finished_tail` for why the wait exists and why it is this long. The wait is bounded by a
+# count of looks, not by a clock: a clock can be frozen (tests patch `time.monotonic`), and a
+# frozen clock would have turned a store cut off by a crash into a reader that never returns.
 _TAIL_PATIENCE_SECONDS = 1.0
 _TAIL_POLL_SECONDS = 0.01
+_TAIL_POLLS = round(_TAIL_PATIENCE_SECONDS / _TAIL_POLL_SECONDS)
 
 
 def append_lines(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code: str, label: str) -> None:
@@ -92,10 +95,11 @@ def _finished_tail(
     * **an append that died** — the writer was killed mid-write. That line is never finished. It
       is corruption, and the store must not read as though that append never happened.
 
-    Time tells them apart, so the reader waits. It reads the line again from its start until the
-    line ends in a newline, for at most ``_TAIL_PATIENCE_SECONDS``. A finished line is parsed like
-    any other, and if it still does not parse it is corruption. A line that is never finished
-    raises the caller's code, as it did before this wait existed. A second is two orders of
+    Time tells them apart, so the reader waits. It looks again every ``_TAIL_POLL_SECONDS``, up to
+    ``_TAIL_POLLS`` times (about ``_TAIL_PATIENCE_SECONDS``), and reads the line again from its
+    start whenever the file has grown, until the line ends in a newline. A finished line is
+    parsed like any other, and if it still does not parse it is corruption. A line that is never
+    finished raises the caller's code, as it did before this wait existed. A second is two orders of
     magnitude more than an append takes, and it is also the delay every read of a store whose
     last line really is cut off now pays before it fails closed — including reads that hold the
     appender's lock, which cannot be racing anything. A writer stalled for longer than that is
@@ -109,19 +113,20 @@ def _finished_tail(
     2026-09-18.
     """
     start = handle.tell() - len(line)
-    deadline = time.monotonic() + _TAIL_PATIENCE_SECONDS
-    while not line.endswith(b"\n"):
-        if time.monotonic() >= deadline:
-            raise exc_type(
-                read_code,
-                f"could not read {label}: line {lineno} is not valid JSON and was not finished "
-                f"within {_TAIL_PATIENCE_SECONDS:g}s (a write that died, or a writer stalled that long)",
-            )
+    for _ in range(_TAIL_POLLS):
         time.sleep(_TAIL_POLL_SECONDS)
         if os.fstat(handle.fileno()).st_size == start + len(line):
             continue  # nothing has landed since the last look
         handle.seek(start)
         line = handle.readline()
+        if line.endswith(b"\n"):
+            break
+    else:
+        raise exc_type(
+            read_code,
+            f"could not read {label}: line {lineno} is not valid JSON and was not finished "
+            f"within {_TAIL_PATIENCE_SECONDS:g}s (a write that died, or a writer stalled that long)",
+        )
     try:
         return json.loads(line.decode("utf-8"))
     except ValueError as exc:
