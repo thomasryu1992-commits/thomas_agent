@@ -118,6 +118,7 @@ def _plan(**kw):
         runtime_active=kw.pop("runtime_active", True),
         daily_loss_breached=kw.pop("daily_loss_breached", False),
         bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
+        api_breaker_tripped=kw.pop("api_breaker_tripped", False),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         # A healthy book by default, per this helper's own rule (every door open; each test
@@ -262,6 +263,30 @@ def test_the_bracket_breaker_allows_one_failure():
     decision = _plan(bracket_failures_consecutive=le.MAX_CONSECUTIVE_BRACKET_FAILURES - 1)
     assert le.BRACKET_BREAKER_REFUSED not in decision["reasons"]
     assert decision["status"] == le.STATUS_READY
+
+
+def test_the_api_breaker_refuses_once_tripped():
+    """PR2d-1: the venue refused or could not answer five signed calls of one class in a row."""
+    decision = _plan(api_breaker_tripped=True)
+    assert decision["status"] == le.STATUS_REFUSED
+    assert decision["reasons"] == [le.API_BREAKER_REFUSED]
+    assert decision["api_breaker_tripped"] is True
+    assert _plan(api_breaker_tripped=False)["status"] == le.STATUS_READY
+
+
+@pytest.mark.parametrize("unknown", [None, 0, "false"], ids=["none", "zero", "text"])
+def test_only_an_explicit_false_clears_the_api_breaker_door(unknown):
+    """Review of #889: the probe's gate already read it this way, and the leg's door now does."""
+    decision = _plan(api_breaker_tripped=unknown)
+    assert decision["reasons"] == [le.API_BREAKER_REFUSED]
+
+
+def test_the_api_breaker_fact_has_no_default():
+    """A door that forgets the breaker opens the one it closes."""
+    import inspect
+
+    parameter = inspect.signature(le.plan_live_entry).parameters["api_breaker_tripped"]
+    assert parameter.default is inspect.Parameter.empty
 
 
 def test_the_bracket_failure_count_has_no_default():
@@ -1221,7 +1246,8 @@ def _fresh(**overrides):
     fresh = dict(
         execution_stage=_stage(), runtime_active=True, limits=LIMITS, budget_registered=True,
         allowed_symbols=["BTCUSDT"], live_routable_strategy_ids={"S001"}, submitted_today=0,
-        daily_loss_breached=False, bracket_failures_consecutive=0, risk_limits_problem=None,
+        daily_loss_breached=False, bracket_failures_consecutive=0, api_breaker_tripped=False,
+        risk_limits_problem=None,
     )
     fresh.update(overrides)
     return fresh
@@ -1253,9 +1279,16 @@ def test_a_re_read_that_agrees_changes_nothing_the_gate_judges():
      {"bracket_failures_consecutive": 4}),
     ({"bracket_failures_consecutive": 5}, {"bracket_failures_consecutive": 1},
      {"bracket_failures_consecutive": 5}),
+    ({"api_breaker_tripped": True}, {}, {"api_breaker_tripped": True}),
+    ({}, {"api_breaker_tripped": True}, {"api_breaker_tripped": True}),
+    ({}, {}, {"api_breaker_tripped": False}),
+    ({"api_breaker_tripped": None}, {}, {"api_breaker_tripped": True}),
+    ({}, {"api_breaker_tripped": None}, {"api_breaker_tripped": True}),
 ], ids=["halted-since", "halted-before", "budget-gone", "budget-was-gone", "allowlist-shrank",
         "allowlist-emptied", "count-is-fresh", "disarmed", "tier-unreadable", "tier-was-unreadable",
-        "breaker-keeps-higher", "breaker-rose"])
+        "breaker-keeps-higher", "breaker-rose", "api-breaker-tripped-since",
+        "api-breaker-was-tripped", "api-breaker-clear-on-both", "api-breaker-fresh-unknown",
+        "api-breaker-first-unknown"])
 def test_each_re_read_fact_only_narrows(fresh, first, expected):
     kwargs = {**_decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage()), **first}
     narrowed = le.narrow_entry_facts(kwargs, _fresh(**fresh))
@@ -1298,7 +1331,8 @@ def test_the_guard_narrowing_changes_only_the_fields_it_names():
     moved = _fresh(execution_stage=_stage("PAPER"), runtime_active=False, budget_registered=False,
                    allowed_symbols=[], submitted_today=2, daily_loss_breached=True,
                    limits=LiveOrderLimits(**{**LIMITS.__dict__, "max_daily_order_count": 1}),
-                   live_routable_strategy_ids=set(), bracket_failures_consecutive=5)
+                   live_routable_strategy_ids=set(), bracket_failures_consecutive=5,
+                   api_breaker_tripped=True)
     guard_only = le.narrow_guard_facts(kwargs, moved)
     assert {key for key in kwargs if guard_only[key] != kwargs[key]} == set(le.GUARD_REREAD_FIELDS)
     entry = le.narrow_entry_facts(kwargs, moved)
@@ -1331,9 +1365,11 @@ def test_the_guard_narrowing_touches_only_the_guards_facts():
     ({"submitted_today": 2}, "daily_order_count_within_cap"),
     ({"daily_loss_breached": True}, "daily_loss_within_limit"),
     ({"bracket_failures_consecutive": 5}, "bracket_breaker_clear"),
+    ({"api_breaker_tripped": True}, "api_breaker_clear"),
     ({"execution_stage": _stage("PAPER")}, "execution_stage_admits"),
     ({"risk_limits_problem": "LIVE_ENTRY_RISK_LIMITS_CHANGED"}, "risk_verdict_allows"),
-], ids=["disarmed", "halted", "budget", "allowlist", "day-spent", "loss", "breaker", "demoted", "risk-limits"])
+], ids=["disarmed", "halted", "budget", "allowlist", "day-spent", "loss", "breaker", "api-breaker",
+        "demoted", "risk-limits"])
 def test_a_fact_that_moved_before_the_gate_refuses_it_and_names_the_door(fresh, door):
     kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
     decision = le.plan_live_entry(**kwargs)

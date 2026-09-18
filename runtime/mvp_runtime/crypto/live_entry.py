@@ -112,6 +112,8 @@ STATUS_READY = "READY"
 NO_PLAN = "LIVE_ENTRY_NO_PLAN"
 VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
 BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
+# The venue refused or could not answer five signed calls of one class in a row (PR2d-1).
+API_BREAKER_REFUSED = "LIVE_ENTRY_API_BREAKER_TRIPPED"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
@@ -370,6 +372,10 @@ def plan_live_entry(
     # A gate with a permissive default is a gate the caller that forgot it never meets, and the
     # caller that would forget this one is the autonomous leg.
     bracket_failures_consecutive: int,
+    # PR2d-1: whether the API error breaker has tripped (`live_order.api_breaker_status`). A
+    # required fact, like the bracket streak: a door that forgets it opens the one this closes.
+    # Only an explicit False is clear.
+    api_breaker_tripped: bool,
     # The machine's execution stage, resolved once by the leg and threaded to the guard (PR1b).
     # No default: a caller that does not state the stage must not be able to enter. The leg reads
     # it beside the budget, so the record it stamps and the rung the guard judged are one answer.
@@ -471,6 +477,16 @@ def plan_live_entry(
         reasons.append(BRACKET_BREAKER_REFUSED)
         detail["bracket_failures_consecutive"] = bracket_failures_consecutive
         detail["bracket_failure_limit"] = MAX_CONSECUTIVE_BRACKET_FAILURES
+
+    # 2c-2. The API error breaker (PR2d-1, Thomas decisions 18 and 27). Five signed calls of one
+    # class in a row that the venue refused, could not answer, or answered unreadably. What it
+    # bounds is the entry that leaves with an outcome nobody knows: the send fails, the symbol's
+    # claim holds for thirty minutes, and the next fire tries again up to the daily cap. It is
+    # latched — only `scripts/clear_api_breaker.py` opens it — because closes and reads keep
+    # answering while the door is shut, and any success would otherwise clear it.
+    if api_breaker_tripped is not False:
+        reasons.append(API_BREAKER_REFUSED)
+        detail["api_breaker_tripped"] = api_breaker_tripped
 
     # 2d. One entry per context per bar, and the post-stop-loss cooldown (PR2a) — paper's two
     # rules, which sit below the line where paper publishes the route this leg is handed. The
@@ -691,7 +707,8 @@ GUARD_REREAD_FIELDS = (
     "execution_stage", "runtime_active", "limits", "budget_registered", "allowed_symbols",
     "submitted_today", "daily_loss_breached",
 )
-REREAD_FIELDS = (*GUARD_REREAD_FIELDS, "live_routable_strategy_ids", "bracket_failures_consecutive")
+REREAD_FIELDS = (*GUARD_REREAD_FIELDS, "live_routable_strategy_ids", "bracket_failures_consecutive",
+                 "api_breaker_tripped")
 _RISK_LIMITS_IDENTITY = ("source", "limits_id", "record_sha256")
 # The caps a `LiveOrderLimits` carries; the stricter of two reads is the lower of each.
 _CAP_FIELDS = ("max_order_notional_usdt", "absolute_max_notional_usdt", "max_daily_order_count",
@@ -767,6 +784,10 @@ def narrow_entry_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> di
     )
     kw["bracket_failures_consecutive"] = max(
         int(first.get("bracket_failures_consecutive") or 0), int(fresh["bracket_failures_consecutive"]))
+    # Clear only if both reads say so (PR2d-1): a breaker that tripped since the first read shuts
+    # this entry too, and a read that says nothing is not a clear one.
+    kw["api_breaker_tripped"] = not (first.get("api_breaker_tripped") is False
+                                     and fresh.get("api_breaker_tripped") is False)
     problem = fresh.get("risk_limits_problem")
     if problem:
         verdict = dict(first["verdict"]) if isinstance(first.get("verdict"), Mapping) else {}
@@ -782,6 +803,7 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("strategy_armed_live", frozenset({NOT_LIVE_ROUTABLE, LIVE_TIER_UNKNOWN})),
     ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
     ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
+    ("api_breaker_clear", frozenset({API_BREAKER_REFUSED})),
     ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
     ("symbol_not_in_flight", frozenset({SYMBOL_IN_FLIGHT})),
     ("book_reconciled", frozenset({RECONCILE_REFUSED})),
@@ -872,6 +894,7 @@ def gate_live_entry(
         "gate_open": kw.get("gate_open"),
         "budget_registered": kw.get("budget_registered"),
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
+        "api_breaker_tripped": kw.get("api_breaker_tripped"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),
         "entry_bar_time": kw.get("entry_bar_time"),
         # The moment the decision was judged at (PR2c-1); the gate seals it as `decided_at`.
@@ -944,6 +967,7 @@ def entry_status_line(decision: Mapping[str, Any]) -> str:
 
 __all__ = [
     "ACCOUNT_STALE",
+    "API_BREAKER_REFUSED",
     "BAR_ALREADY_ENTERED",
     "BAR_UNKNOWN",
     "BRACKET_BREAKER_REFUSED",

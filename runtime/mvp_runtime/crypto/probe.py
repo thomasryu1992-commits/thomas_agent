@@ -157,6 +157,8 @@ PROBE_LIVE_TRADING_OFF = "PROBE_LIVE_TRADING_OFF"
 PROBE_ACCOUNT_UNREADABLE = "PROBE_ACCOUNT_UNREADABLE"
 PROBE_DAILY_LOSS_BREAKER = "PROBE_DAILY_LOSS_BREAKER"
 PROBE_BRACKET_BREAKER = "PROBE_BRACKET_BREAKER"
+# The API error breaker is tripped (PR2d-1): nothing is sent until an operator clears it.
+PROBE_API_BREAKER = "PROBE_API_BREAKER"
 PROBE_RISK_GUARD_BLOCKED = "PROBE_RISK_GUARD_BLOCKED"
 PROBE_GUARD_REFUSED = "PROBE_GUARD_REFUSED"
 PROBE_FILTERS_UNAVAILABLE = "PROBE_FILTERS_UNAVAILABLE"
@@ -684,6 +686,8 @@ def gate_probe_order(
     risk: Mapping[str, Any],
     breaker: Mapping[str, Any],
     risk_verdict: Mapping[str, Any],
+    # The API error breaker as both reads saw it (PR2d-1): tripped on either is tripped.
+    api_breaker: Mapping[str, Any],
     guard_kwargs: Mapping[str, Any],
     profile: Mapping[str, Any],
     now: str,
@@ -696,7 +700,7 @@ def gate_probe_order(
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
     account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
-    the symbol being free, the three breakers, the notional the approval priced, and the order
+    the symbol being free, the four breakers, the notional the approval priced, and the order
     itself — rebuilt from the plan's own stop width and judged by the live guard again in canary
     mode. The intent about to be sent must be the rebuilt one."""
     from .execution_stage import PURPOSE_PROBE
@@ -731,6 +735,8 @@ def gate_probe_order(
                                               "pnl_source", "history_error")}),
         check("bracket_breaker_clear", not breaker.get("tripped"),
               {key: breaker.get(key) for key in ("consecutive", "limit")}),
+        check("api_breaker_clear", api_breaker.get("tripped") is False,
+              {key: api_breaker.get(key) for key in ("consecutive", "limit", "tripped_class")}),
         check("risk_guard_allows", bool(risk_verdict.get("allow_new_position")),
               list(risk_verdict.get("problems") or [])),
     ]

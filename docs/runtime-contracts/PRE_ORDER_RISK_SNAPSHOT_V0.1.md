@@ -21,7 +21,7 @@ and their tests.
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
 | Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the decision's facts narrowed by the gate's re-read (below). This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
-| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the three breakers, the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
+| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the four breakers (the daily loss, the risk guard, the bracket breaker and, since PR2d-1, the API error breaker), the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
 The gate never judges reduce-only orders: closes, brackets and cancels. The venue enforces that
@@ -29,7 +29,7 @@ they cannot add exposure, and a gate that could refuse them could trap a positio
 
 **The re-read (PR2c-2a).** Between a door's first read and its gate, another writer can halt or
 disarm the runtime, re-register the budget or the risk limits, demote the stage or the live tier,
-spend the day's orders, or trip the bracket breaker. Both entry doors read those facts again right
+spend the day's orders, or trip a breaker. Both entry doors read those facts again right
 before the gate (`live_route.reread_entry_facts`; the probe does not read the pool, which authorizes
 none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_facts`,
 `narrow_entry_facts`):
@@ -45,6 +45,7 @@ none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_fa
 | live tier (autonomous) | what both reads share; the arming approval only if both reads name the same one, and then verified (§3) |
 | orders spent today | the fresh count |
 | bracket breaker | the higher streak, tripped if either read says so |
+| API error breaker (PR2d-1) | not clear unless both reads say clear, and not clear while the breaker cannot record the pass |
 | risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`; `LIVE_ENTRY_RISK_LIMITS_UNNAMED` for a verdict that names none, `LIVE_ENTRY_RISK_LIMITS_UNRESOLVED` when nothing resolves, or the resolver's own code) |
 
 - The account, the book, the filters and the market price are not re-read: they are what the order
@@ -349,9 +350,26 @@ audit event's `evidence_refs` (`risk_snapshot:<sha>`) and the testnet evidence r
 - **The order book's age.** The spread door judges the book the fire read for the symbol, memoized
   for the fire, so it can be as old as the fire (about a minute). No bound checks it.
 - **The checks the directive lists that no door runs yet (PR2d):**
-  - the API error breaker;
   - per-order slippage and fee evidence;
   - optional-data health as a gate.
+- **What the API error breaker does not count (PR2d-1, decision 27).**
+  - **Calls outside the doors' roster.** It counts the five signed calls both entry doors make
+    through the order adapter (`live_order.API_ADAPTER_CALLS`, pinned against the doors' own
+    code by a test), the account read, and the fill history a settlement falls back to
+    (`API_FEED_CALLS`). Not counted:
+    - the account's P&L-history read, the second call inside the account read. Its failure
+      narrows the snapshot, and the account read is counted once, as a success;
+    - the funds board's refresh (`account_store.refresh_snapshot`), the dashboard's and the
+      readiness board's reads, the fee measurement, and the operator's own tools
+      (`list_resting_orders`, `diagnose_bracket_leg` and its `validate_order`);
+    - public market data and the testnet cycle.
+  - **A venue code it does not know.** A refusal that came back 418, 429 or 5xx counts whatever
+    its code. Otherwise the venue's own code decides (`API_ERROR_VENUE_CODES`), and without one
+    the runtime's (`API_ERROR_REASON_CODES`). Any other refusal is read as a business rejection:
+    neither a failure nor a success.
+  - **A pass it could not record.** A door judges the breaker not clear while its record cannot be
+    written (checked by rewriting it before the decision) or a write of the pass already failed.
+    A failure after the last send of a pass that could not be written is missing from the count.
 - **Single use:** a snapshot can be re-bound within its 60 seconds (PR2c-1). A second send of the
   same order is prevented by the doors (the bar claim and the slot) and by the venue's
   duplicate-client-id rule.

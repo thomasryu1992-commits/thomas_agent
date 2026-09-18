@@ -197,6 +197,13 @@ TUNABLES: tuple[Tunable, ...] = (
             "-1111 tick-residue mode, which is deterministic and which a limit of 2 latched on "
             "before its own error_detail could be read",
             "naked round trips ceasing to be cheap, or a bracket failure this runtime has not seen"),
+    Tunable("MAX_CONSECUTIVE_API_ERRORS", live_order.MAX_CONSECUTIVE_API_ERRORS,
+            "crypto/live_order.py", OPERATOR,
+            "Thomas decisions 18 and 27 (2026-09-16/17): the bracket breaker's count and shape, per "
+            "class of signed call; in the seven weeks before it shipped no class ever failed twice "
+            "in a row, so the replayed history never trips it",
+            "a venue failure mode that trips it on an outage too short to matter, or one that "
+            "outlasts it without tripping"),
     Tunable("LIVE_ENTRY_CLAIM_TTL_MINUTES", live_order.LIVE_ENTRY_CLAIM_TTL_MINUTES,
             "crypto/live_order.py", OPERATOR,
             "Thomas decision 21 (2026-09-17): an entry's claim on its symbol expires after 30 "
