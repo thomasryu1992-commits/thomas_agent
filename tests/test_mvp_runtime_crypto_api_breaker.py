@@ -347,6 +347,10 @@ def test_the_inert_breaker_has_nothing_to_tell_and_nothing_to_check():
 
 # === a breaker that cannot count ======================================================
 
+# What writing over a directory raises: IsADirectoryError on POSIX, PermissionError on Windows.
+_WRITE_REFUSED = {"IsADirectoryError", "PermissionError"}
+
+
 def _unwritable(tmp_path):
     """The record stays readable; only its replacement cannot be written (a full disk, a file the
     service cannot write)."""
@@ -363,7 +367,7 @@ def test_an_unwritable_record_is_found_before_anything_is_sent(tmp_path):
     heard: list = []
     wrapped = ApiErrorRecordingAdapter(_Adapter(), breaker, on_unrecorded=heard.append)
     assert wrapped.breaker_unwritable() is True
-    assert heard == ["IsADirectoryError"] and wrapped.unrecorded == ["IsADirectoryError"]
+    assert len(heard) == 1 and heard[0] in _WRITE_REFUSED and wrapped.unrecorded == heard
 
 
 def test_a_writable_record_is_rewritten_as_it_is(tmp_path):

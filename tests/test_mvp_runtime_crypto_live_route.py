@@ -2655,7 +2655,10 @@ def test_an_unwritable_api_breaker_holds_every_entry_and_says_why(tmp_path, monk
         held = run(now, bar)
         assert held["live_decision"]["reasons"] == [API_BREAKER_REFUSED], now
         assert held["live_api_breaker"]["unwritable"] is True
-        assert {live_route.API_BREAKER_UNRECORDED, "IsADirectoryError"} <= set(held["live_reason_codes"])
+        codes = set(held["live_reason_codes"])
+        # What writing over a directory raises: IsADirectoryError on POSIX, PermissionError on Windows.
+        assert live_route.API_BREAKER_UNRECORDED in codes
+        assert codes & {"IsADirectoryError", "PermissionError"}
     assert _nothing_spent(venue, tmp_path)
 
 
