@@ -379,6 +379,10 @@ def build_live_order_intent(
         "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
         "strategy_generation_id": plan.get("strategy_generation_id"),
+        # The artifact the plan's pool entry was installed as (PR3a-2). Bound by the pre-order
+        # snapshot with the rest of the lineage, so the order names the strategy it was approved
+        # as, not only its rule; the leg carries it to the position and the outcome.
+        "strategy_artifact_sha256": plan.get("strategy_artifact_sha256"),
         "position_id": plan.get("position_id"),
         "candle_time": plan.get("candle_time"),
         # The context the bar belongs to (PR2a review); part of the identity when present.

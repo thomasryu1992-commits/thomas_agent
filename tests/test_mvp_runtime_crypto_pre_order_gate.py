@@ -40,6 +40,7 @@ def _intent(**plan):
     base = {"direction": "LONG", "entry_price": 60000.0, "stop_loss": 59000.0,
             "take_profit": 62000.0, "strategy_id": "S001", "candidate_id": "cand_1",
             "strategy_rule_hash": "h1", "strategy_generation_id": "gen_1",
+            "strategy_artifact_sha256": "sha256:" + "a" * 64,
             "timeframe": "4h", "candle_time": "2026-09-17T00:00:00Z"}
     base.update(plan)
     return build_live_order_intent(base, symbol="BTCUSDT", quantity=0.001, notional_usdt=60.0, now=NOW)
@@ -1095,6 +1096,51 @@ def test_a_row_sealed_before_arms_were_verified_is_still_a_record_but_never_a_se
         g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
     assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
     assert "the arming approval was not verified" in str(refused.value)
+
+
+def _pre_artifact_row(snapshot):
+    """An autonomous row as the gate sealed it before PR3a-2: its lineage names no artifact."""
+    body = {k: v for k, v in snapshot.items() if k != "risk_snapshot_sha256"}
+    body["lineage"] = {k: v for k, v in body["lineage"].items() if k != "strategy_artifact_sha256"}
+    return _resealed(body)
+
+
+def test_a_row_sealed_before_the_artifact_rode_on_the_order_is_still_a_record_but_never_a_send(tmp_path):
+    """PR3a-2 added the artifact to the autonomous lineage. A row sealed before then is still the
+    record of its order, which the readiness board reads; it can never authorize one."""
+    intent, snapshot = approved_snapshot(_intent(), decided_at=DECIDED)
+    old = _pre_artifact_row(snapshot)
+    assert "strategy_artifact_sha256" in snapshot["lineage"] and "strategy_artifact_sha256" not in old["lineage"]
+    path = g.snapshot_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, sort_keys=True) + "\n", encoding="ascii")
+    assert g.read_snapshots(tmp_path) == [old]
+    assert g.find_snapshot(old["risk_snapshot_sha256"], tmp_path) == old
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(g.bind_intent(intent, old), old, clock=DECIDED)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_UNSUPPORTED
+    assert "the lineage is missing strategy_artifact_sha256" in str(refused.value)
+
+
+def test_an_autonomous_order_that_names_no_artifact_is_refused_at_the_gate():
+    """Decision 33 at the gate itself (PR3a-2): an order routed from an entry that predates the
+    artifact names none, and the gate refuses it whatever the arm check before it said."""
+    snapshot = _gate(_intent(strategy_artifact_sha256=None))
+    assert snapshot["approved"] is False and snapshot["failed_checks"] == [g.CHECK_LINEAGE]
+    [lineage] = [c for c in snapshot["checks"] if c["check"] == g.CHECK_LINEAGE]
+    assert lineage["detail"] == "missing strategy_artifact_sha256"
+
+
+def test_a_snapshot_sealed_for_one_artifact_does_not_send_the_order_as_another():
+    """The artifact is bound (PR3a-2): the same order, named as another strategy after the gate, is
+    not the order the snapshot approved — though its venue identity is unchanged."""
+    intent, snapshot = approved_snapshot(_intent())
+    moved = {**intent, "strategy_artifact_sha256": "sha256:" + "e" * 64}
+    assert moved["client_order_id"] == intent["client_order_id"]
+    g.verify_snapshot(intent, snapshot)
+    with pytest.raises(ToolError) as refused:
+        g.verify_snapshot(moved, snapshot)
+    assert refused.value.reason_code == g.RISK_SNAPSHOT_INTENT_MISMATCH
 
 
 def test_a_stored_row_whose_arm_was_not_verified_fails_the_verified_read(tmp_path):

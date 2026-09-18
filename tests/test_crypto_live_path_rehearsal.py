@@ -32,7 +32,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from tests._helpers import gate_stage, make_gate_authorization
+from tests._helpers import gate_stage, make_gate_authorization, stamped_pool_entry
 
 from runtime.mvp_runtime import timeutil
 
@@ -97,7 +97,9 @@ _SPEC = {
 
 POOL = {
     "pool_version": "active_strategy_pool.v1",
-    "active_strategies": [{
+    # Installed as the promotion door installs an entry (PR3a): only a stamped entry may trade, and
+    # the gate refuses an autonomous order whose lineage names no artifact (PR3a-2).
+    "active_strategies": [stamped_pool_entry({
         "strategy_id": "S001",
         "status": "PAPER_ACTIVE",
         "champion_score": 0.6,
@@ -105,7 +107,7 @@ POOL = {
         "strategy_rule_hash": "deadbeef",
         "generation_id": "GEN-001",
         "strategy_spec": _SPEC,
-    }],
+    })],
 }
 
 # The ATR is deliberately not a multiple of the price tick: 1.5 * 333.33 = 499.995 puts the
@@ -517,8 +519,15 @@ def test_a_settled_live_trade_reaches_the_risk_guard_with_no_live_branch(tmp_pat
 
     # The whole lineage survives the crossing, not just the display id. `lifecycle` groups by
     # these, so a live loss can only demote the strategy that caused it if all three arrive —
-    # the factory restarts `strategy_id` at S001 every generation.
-    for field in ("candidate_id", "strategy_rule_hash", "strategy_generation_id"):
+    # the factory restarts `strategy_id` at S001 every generation. The artifact the entry was
+    # installed as rides beside them (PR3a-2): the snapshot the order left under names it, and so
+    # do the position and the outcome.
+    stamp = POOL["active_strategies"][0]["strategy_artifact_sha256"]
+    assert stamp.startswith("sha256:") and plan["strategy_artifact_sha256"] == stamp
+    assert decision["risk_snapshot"]["lineage"]["strategy_artifact_sha256"] == stamp
+    assert opened["position"]["strategy_artifact_sha256"] == stamp
+    assert closed["outcome"]["strategy_artifact_sha256"] == stamp
+    for field in ("candidate_id", "strategy_rule_hash", "strategy_generation_id", "strategy_artifact_sha256"):
         assert readable[0][field] == plan[field], field
 
     verdict = run_risk_guard(readable, now=NOW)

@@ -184,7 +184,9 @@ The gate adds these to the door's checks:
 - `intent_identity`: `idempotency_key`, `client_order_id` and `order_intent_id` must follow from the
   intent's own fields. The bar and its timeframe are in that identity (decision 16).
 - `lineage_complete`, by purpose:
-  - autonomous: strategy, candidate, rule hash, generation, timeframe, bar, intent id;
+  - autonomous: strategy, candidate, rule hash, generation, artifact, timeframe, bar, intent id.
+    The artifact (`strategy_artifact_sha256`, PR3a-2) is the one the plan's pool entry was installed
+    as, so an order routed from an entry that predates the artifact is refused here too (decision 33);
   - probe: strategy, batch, cell, intent id;
   - testnet: strategy, cycle, intent id.
 - `approved_profile_complete`: the profile must be whole and built for this purpose.
@@ -198,7 +200,10 @@ The gate adds these to the door's checks:
 
 **What the snapshot binds of the order** (`INTENT_BOUND_FIELDS`, hashed into `intent_fingerprint`):
 the order's identity, every field `live_execution.build_order_request` turns into the venue request,
-the prices and the lineage. A structural test keeps the request fields and the bound fields in step.
+the prices and the lineage, the artifact included (`pre_order_intent.v2`, PR3a-2). A structural test
+keeps the request fields and the bound fields in step. The artifact is not in the order's venue
+identity: the same bar under another artifact is the same order, so a pool re-stamped between two
+passes cannot mint a second order for one bar.
 
 ## 3. The approved profile (decision 17)
 
@@ -225,7 +230,10 @@ The profile names records that already authorize trading. Nothing new is registe
         money; an entry that predates the artifact papers. A pool that loaded has already checked
         every stamp against its entry's content (decision 34, `CRYPTO_PIPELINE_V0.1.md`). Checked
         after the disarm trace, so a hand edit is what the operator reads.
-    - **The fresh entry must arm the lineage the plan was made from** (`LIVE_ARM_ENTRY_CHANGED`).
+    - **The fresh entry must arm the lineage the plan was made from** (`LIVE_ARM_ENTRY_CHANGED`):
+      the same candidate, rule and artifact (PR3a-2). An entry installed again between the two reads
+      as another artifact of the same candidate is another strategy, even under an approval pairing
+      its new artifact.
     - **The approval store must hold the record the entry names**, and
       `promotion.live_arm_problem` must accept it:
 
@@ -297,6 +305,10 @@ The profile names records that already authorize trading. Nothing new is registe
 - **Rows the PR2b gate sealed stay readable.** They name six gate checks and no decision time
   (`PR2B_GATE_CHECK_IDS`). The verified read accepts them; a send never does. A row that names
   `decision_time_recorded` must carry every current check.
+- **Rows sealed before the artifact rode on the order stay readable** (PR3a-2). Their autonomous
+  lineage names no artifact (`PRE_ARTIFACT_LINEAGE_FIELDS`). The verified read accepts them; a send
+  never does. Their `intent_fingerprint` is v1 and is never recomputed: a stored row proves itself by
+  its seal.
 
 ## 5. The binding
 

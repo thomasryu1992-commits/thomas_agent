@@ -184,6 +184,7 @@ def build_live_outcome_record(
     candidate_id: str | None = None,
     strategy_rule_hash: str | None = None,
     strategy_generation_id: str | None = None,
+    strategy_artifact_sha256: str | None = None,
     exit_source: str | None = None,
     stop_price: float | None = None,
     risk_snapshot_sha256: str | None = None,
@@ -266,6 +267,9 @@ def build_live_outcome_record(
         "candidate_id": candidate_id,
         "strategy_rule_hash": strategy_rule_hash,
         "strategy_generation_id": strategy_generation_id,
+        # The artifact the entry was approved as (PR3a-2). None for a position opened before it
+        # rode on the order; absent on a row written before this field existed.
+        "strategy_artifact_sha256": strategy_artifact_sha256,
         "position_id": position_id,
         # The pre-order snapshot the entry left under (PR2b) — why this trade was allowed. None
         # for a position opened before the gate existed.
@@ -460,6 +464,7 @@ def live_outcomes_for_analysis(
             "candidate_id": record.get("candidate_id"),
             "strategy_rule_hash": record.get("strategy_rule_hash"),
             "strategy_generation_id": record.get("strategy_generation_id"),
+            "strategy_artifact_sha256": record.get("strategy_artifact_sha256"),
             "symbol": record.get("symbol"),
             "close_reason": record.get("close_reason"),
             "realized_pnl_usdt": record.get("realized_pnl_usdt"),

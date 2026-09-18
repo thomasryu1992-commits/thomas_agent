@@ -182,6 +182,18 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
   arm needs a re-promotion under a v5 approval; there is no migration tool.
 - **The win rate stays inside the artifact.** The lifecycle reads a top-level `backtest_win_rate`,
   and giving it a value would switch on the win-rate probation rule, a separate decision.
+- **The records name the artifact (PR3a-2).** `strategy_artifact_sha256` rides beside the three
+  lineage fields (candidate, rule hash, generation) wherever they go: the router's match and primary
+  (`primary_strategy_artifact_sha256`), the plan, the paper position, its open event and its
+  outcome; the shadow book's bench and conflict sides, the shadow position and its outcome; the
+  forward book's position and outcome; the live intent, the pre-order snapshot's lineage, the live
+  position and every live outcome (runtime exit, venue-closed settle, naked close).
+  - An entry with no stamp writes the field as None; a record written before PR3a-2 has no field.
+  - The pre-order gate binds it (`INTENT_BOUND_FIELDS`, `pre_order_intent.v2`) and refuses an
+    autonomous order whose lineage names none, and `verify_live_arm` requires the armed entry's
+    artifact to be the one the plan was made from (`PRE_ORDER_RISK_SNAPSHOT_V0.1.md` §2-3).
+  - Nothing keys on it yet: realized-performance ranking, the lifecycle and the allowances still
+    group by candidate, rule and generation (3b).
 
 **Deferred decision (explicit, Thomas-only):** R10 consumption is currently scoped to
 `SENSITIVE_MEMORY_GOVERNANCE`. Strategy promotion would be the **second consumption

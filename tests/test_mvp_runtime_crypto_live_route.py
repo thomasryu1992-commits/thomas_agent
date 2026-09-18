@@ -1222,6 +1222,10 @@ def _armed_entry():
 
 # The artifact the door installed the armed entry as (PR3a), which the approval pairs with its candidate.
 _ARMED_STAMP = stamped_pool_entry(_armed_entry())["strategy_artifact_sha256"]
+# The plan a route makes from that entry carries its artifact (PR3a-2), as every real plan does.
+_PLAN = {**_PLAN, "strategy_artifact_sha256": _ARMED_STAMP}
+# The same candidate installed again as another artifact (a re-scored row, say): not the plan's.
+_REINSTALLED_STAMP = stamped_pool_entry({**_armed_entry(), "champion_score": 0.9})["strategy_artifact_sha256"]
 _ARM = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],), artifacts=(_ARMED_STAMP,))
 
 
@@ -2270,6 +2274,12 @@ _UNBACKED_ARMS = {
         live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
                           artifacts=("sha256:" + "e" * 64,)), {},
         "LIVE_ARM_APPROVAL_OTHER_ARTIFACT"),
+    # PR3a-2: installed again as another artifact, under a real approval pairing that one — which
+    # is not the artifact the plan was made from.
+    "entry-installed-again-as-another-artifact": (
+        live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
+                          artifacts=(_REINSTALLED_STAMP,)),
+        {"champion_score": 0.9, "strategy_artifact_sha256": _REINSTALLED_STAMP}, "LIVE_ARM_ENTRY_CHANGED"),
 }
 
 
@@ -2317,6 +2327,30 @@ def test_an_entry_that_names_another_approval_than_both_reads_is_not_verified(tm
     assert verify(other)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
     assert verify({})["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
     assert verify(None)["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+
+
+def test_a_plan_made_from_another_artifact_than_the_armed_entry_is_not_verified(tmp_path):
+    """PR3a-2: the approval pairs the entry's artifact, so the pair check passes; the plan names the
+    artifact its route read, and a plan from another artifact of the same candidate and rule, or
+    from none, is not the order this arm was approved for."""
+    from runtime.mvp_runtime.approval_store import ApprovalStore
+
+    reinstalled = live_arm_approval((_PLAN["candidate_id"],), (_PLAN["strategy_rule_hash"],),
+                                    artifacts=(_REINSTALLED_STAMP,))
+    ApprovalStore.default(tmp_path).append([reinstalled])
+    armed = {"S001": {"approval_id": reinstalled["approval_id"], "candidate_id": _PLAN["candidate_id"],
+                      "strategy_rule_hash": _PLAN["strategy_rule_hash"],
+                      "spec_rule_hash": _PLAN["strategy_rule_hash"],
+                      "strategy_artifact_sha256": _REINSTALLED_STAMP, "promoted_at": _ARMED_AT,
+                      "disarmed_at": None}}
+    verify = lambda plan: live_route.verify_live_arm(  # noqa: E731
+        root=tmp_path, strategy_id="S001", plan=plan, approval_id=reinstalled["approval_id"], armed=armed)
+    assert verify({**_PLAN, "strategy_artifact_sha256": _REINSTALLED_STAMP})["approval_verified"] is True
+    no_artifact = {k: v for k, v in _PLAN.items() if k != "strategy_artifact_sha256"}
+    for plan in (_PLAN, no_artifact):
+        arm = verify(plan)
+        assert arm["approval_problem"] == live_route.LIVE_ARM_ENTRY_CHANGED
+        assert arm["approval_verified"] is False
 
 
 def test_an_arm_both_reads_do_not_agree_on_is_not_looked_up(tmp_path, monkeypatch):

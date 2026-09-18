@@ -75,6 +75,7 @@ from .paper import (
 )
 from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
+from .strategy_artifact import ARTIFACT_SHA256_FIELD
 from .lifecycle import outcome_attribution_key
 
 FORWARD_BOOK_VERSION = "forward_book.v1"
@@ -401,6 +402,7 @@ def replay_entry_bar(
         "primary_strategy_rule_hash": pool_entry.get("strategy_rule_hash"),
         "primary_strategy_generation_id": pool_entry.get("generation_id")
         or (pool_entry.get("strategy_spec") or {}).get("generation_id"),
+        "primary_strategy_artifact_sha256": pool_entry.get(ARTIFACT_SHA256_FIELD),
     }, feature_row, now=now)
     if plan is None:
         return settled_row

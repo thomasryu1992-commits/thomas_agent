@@ -32,6 +32,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
 from .paper import position_max_hold, settle_trade_plan, state_dir
+from .strategy_artifact import ARTIFACT_SHA256_FIELD
 
 COUNTERFACTUAL_TRACKER_VERSION = "counterfactual_tracker.v1"
 BOOK_FILENAME = "counterfactual_positions.json"
@@ -317,6 +318,7 @@ def build_shadow_plan(
         "candidate_id": entry_plan.get("candidate_id"),
         "strategy_rule_hash": entry_plan.get("strategy_rule_hash"),
         "strategy_generation_id": entry_plan.get("strategy_generation_id"),
+        ARTIFACT_SHA256_FIELD: entry_plan.get(ARTIFACT_SHA256_FIELD),
         "block_reasons": sorted({str(r) for r in block_reasons if str(r)}),
         **({"shadow_kind": shadow_kind} if shadow_kind else {}),
         "opened_at_utc": now,
@@ -355,6 +357,7 @@ def build_counterfactual_outcome_record(
         "candidate_id": plan.get("candidate_id"),
         "strategy_rule_hash": plan.get("strategy_rule_hash"),
         "strategy_generation_id": plan.get("strategy_generation_id"),
+        ARTIFACT_SHA256_FIELD: plan.get(ARTIFACT_SHA256_FIELD),
         "opened_at_utc": plan.get("opened_at_utc"),
         "created_at_utc": now,
         "provenance": NATIVE_PROVENANCE,

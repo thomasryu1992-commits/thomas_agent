@@ -54,7 +54,9 @@ GATE_ID = "pre_order_gate.v1"
 SNAPSHOT_VERSION = "pre_order_risk_snapshot.v0.1"
 SNAPSHOT_SCHEMA_FILE = "pre_order_risk_snapshot.v0.1.schema.json"
 SNAPSHOT_FILENAME = "pre_order_risk_snapshots.jsonl"
-INTENT_FINGERPRINT_VERSION = "pre_order_intent.v1"
+# v2 (PR3a-2): the strategy artifact is bound. A v1 fingerprint is never recomputed: the gate seals
+# and the binding verifies in one pass, and a stored row proves itself by its own seal.
+INTENT_FINGERPRINT_VERSION = "pre_order_intent.v2"
 
 RISK_SNAPSHOT_MISSING = "RISK_SNAPSHOT_MISSING"
 RISK_SNAPSHOT_NOT_APPROVED = "RISK_SNAPSHOT_NOT_APPROVED"
@@ -108,15 +110,27 @@ INTENT_BOUND_FIELDS = (
     "close_position", "stop_price", "working_type", "price", "time_in_force",
     "entry_price", "stop_loss", "take_profit",
     "strategy_id", "candidate_id", "strategy_rule_hash", "strategy_generation_id",
+    "strategy_artifact_sha256",
     "position_id", "candle_time", "timeframe",
 )
 
-# The identifiers each purpose's lineage must name before an order may leave.
+# The identifiers each purpose's lineage must name before an order may leave. An autonomous order
+# names the artifact its pool entry was installed as (PR3a-2): an entry that predates the artifact
+# may paper, never trade (Thomas decision 33).
 LINEAGE_FIELDS: dict[str, tuple[str, ...]] = {
     PURPOSE_AUTONOMOUS: ("strategy_id", "candidate_id", "strategy_rule_hash",
-                         "strategy_generation_id", "timeframe", "candle_time", "order_intent_id"),
+                         "strategy_generation_id", "strategy_artifact_sha256",
+                         "timeframe", "candle_time", "order_intent_id"),
     PURPOSE_PROBE: ("strategy_id", "batch_id", "cell_index", "order_intent_id"),
     PURPOSE_TESTNET: ("strategy_id", "cycle_id", "order_intent_id"),
+}
+# The lineage as the gate sealed it before the artifact was part of it (PR3a-2). A record written
+# then is still the record of its order, so the verified read accepts it; it can never authorize a
+# send, which needs every current field (the :data:`PR2B_GATE_CHECK_IDS` precedent).
+PRE_ARTIFACT_LINEAGE_FIELDS: dict[str, tuple[str, ...]] = {
+    **LINEAGE_FIELDS,
+    PURPOSE_AUTONOMOUS: ("strategy_id", "candidate_id", "strategy_rule_hash",
+                         "strategy_generation_id", "timeframe", "candle_time", "order_intent_id"),
 }
 
 # Which authority each purpose's profile names, beside the stage record (decision 17).
@@ -447,7 +461,8 @@ def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
 
     ``for_send`` requires the current gate's checks. The verified read of the record also accepts
     a row the PR2b gate sealed, which names no decision time check (:data:`PR2B_GATE_CHECK_IDS`),
-    and an autonomous row sealed before its arming approval was verified (PR2c-2b)."""
+    an autonomous row sealed before its arming approval was verified (PR2c-2b), and one whose
+    lineage names no artifact (:data:`PRE_ARTIFACT_LINEAGE_FIELDS`, PR3a-2)."""
     purpose = snapshot.get("purpose")
     if VENUE_FOR_PURPOSE.get(purpose) != snapshot.get("venue"):
         return f"a {purpose} order does not go to {snapshot.get('venue')}"
@@ -470,7 +485,8 @@ def _unsupported(snapshot: Mapping[str, Any], *, for_send: bool) -> str | None:
     if len(names) <= len(gate_checks):
         return "no door check is recorded"
     lineage = snapshot.get("lineage") if isinstance(snapshot.get("lineage"), Mapping) else {}
-    missing = [field for field in LINEAGE_FIELDS[purpose] if _missing(lineage.get(field))]
+    wanted = LINEAGE_FIELDS[purpose] if for_send else PRE_ARTIFACT_LINEAGE_FIELDS[purpose]
+    missing = [field for field in wanted if _missing(lineage.get(field))]
     if missing:
         return f"the lineage is missing {', '.join(missing)}"
     if lineage.get("order_intent_id") != snapshot.get("order_intent_id"):
@@ -753,6 +769,7 @@ __all__ = [
     "LIVE_ARM_VERIFIED_FIELD",
     "MAX_SNAPSHOT_AGE_SECONDS",
     "PR2B_GATE_CHECK_IDS",
+    "PRE_ARTIFACT_LINEAGE_FIELDS",
     "PreOrderSnapshotStore",
     "SNAPSHOT_FILENAME",
     "SNAPSHOT_REFERENCE_FIELDS",

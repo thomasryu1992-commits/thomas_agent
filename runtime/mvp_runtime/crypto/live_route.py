@@ -1397,7 +1397,9 @@ def verify_live_arm(
     - the entry must be sound (`pool.live_arm_unsound`: the spec it trades is its labelled rule, it
       was installed as an artifact (PR3a), and it was not put back in the tier by hand). Named even
       when no id was agreed, because an unsound entry is why `pool.live_arm_approvals` names none;
-    - it must arm the lineage the plan was made from (`LIVE_ARM_ENTRY_CHANGED`);
+    - it must arm the lineage the plan was made from, down to the artifact (PR3a-2): an entry
+      installed again between the two reads under the same candidate id is another strategy
+      (`LIVE_ARM_ENTRY_CHANGED`);
     - the approval store must hold the record Thomas answered to arm it, pairing the entry's
       artifact with its candidate (`promotion.live_arm_problem`).
 
@@ -1415,7 +1417,8 @@ def verify_live_arm(
     lineage = plan if isinstance(plan, Mapping) else {}
     if not (isinstance(entry, Mapping) and entry.get("approval_id") == approval_id
             and entry.get("candidate_id") == lineage.get("candidate_id")
-            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")):
+            and entry.get("strategy_rule_hash") == lineage.get("strategy_rule_hash")
+            and entry.get(pool.ARTIFACT_SHA256_FIELD) == lineage.get(pool.ARTIFACT_SHA256_FIELD)):
         arm["approval_problem"] = LIVE_ARM_ENTRY_CHANGED
         return arm
     try:
