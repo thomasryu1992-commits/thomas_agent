@@ -1,11 +1,13 @@
-"""PR3b-2 — a lifecycle decision moves only the lineage it judged (Thomas decision 36).
+"""PR3b-2 — a lifecycle decision moves only what it judged (Thomas decision 36).
 
 The lifecycle judges the pool the cycle read; the pool write happens later, under the lock, on the
 pool as it is then. A promotion in between can put another lineage under the same display id, and
 the write applied decisions by display id: A's demotion could land on B. Each decision now names
-the lineage it judged (candidate, generation, rule hash). The write skips a decision whose display
-id names another lineage by then, or that names none, reports it, and applies the rest: a
-demotion held back for one stale decision would be the less safe outcome.
+what it judged, the lineage (candidate, generation, rule hash) and the status. The cycle's write
+skips a decision whose display id names something else by then, reports it, and applies the rest:
+a demotion held back for one stale decision would be the less safe outcome. An operator
+retirement, approved as a set, is all or nothing, and writes the entries its approval was
+verified against.
 """
 
 from __future__ import annotations
@@ -112,7 +114,7 @@ def test_a_decision_that_names_no_lineage_is_not_applied(tmp_path):
     result = pool.apply_status_decisions([anonymous, _decision(other)], root=tmp_path)
     assert result["changed"] == 1
     [stale] = result["stale"]
-    assert stale["problem"] == "the decision does not name the lineage it judged"
+    assert stale["problem"] == "the decision does not name the lineage and status it judged"
     assert _entries(tmp_path)["S1"]["status"] == "PAPER_ACTIVE"
 
 
@@ -134,10 +136,51 @@ def test_a_decision_about_the_terminal_entry_itself_is_still_refused(tmp_path):
     assert refused.value.reason_code == "LIFECYCLE_TERMINAL_IMMUTABLE"
 
 
-def test_update_statuses_still_counts_what_changed(tmp_path):
+def test_a_decision_judged_on_another_status_is_stale(tmp_path):
+    """The same lineage, installed again fresh by the door (or moved by another writer) between the
+    read and the write: the decision was computed from a status the entry no longer has."""
+    judged = _entry("S1", "cand_A", status="PROBATION")
+    _install(tmp_path, _entry("S1", "cand_A"), _entry("S2", "cand_C"))     # re-installed PAPER_ACTIVE
+    result = pool.apply_status_decisions(
+        [_decision(judged, new_status="SUSPENDED", failures=2), _decision(_entry("S2", "cand_C"))], root=tmp_path)
+    assert result["changed"] == 1
+    [stale] = result["stale"]
+    assert stale["problem"] == "judged it PROBATION, it is PAPER_ACTIVE now"
+    assert _entries(tmp_path)["S1"]["status"] == "PAPER_ACTIVE"
+
+
+def test_an_id_the_pool_no_longer_holds_is_skipped_by_the_cycle_and_refused_all_or_nothing(tmp_path):
+    """A promotion that replaced the pool dropped "S1": the cycle's other demotions still apply."""
+    kept = _entry("S2", "cand_C")
+    _install(tmp_path, kept)
+    batch = [_decision(_entry("S1", "cand_A"), new_status="SUSPENDED", failures=3), _decision(kept)]
+    result = pool.apply_status_decisions(batch, root=tmp_path)
+    assert result["changed"] == 1 and result["stale"][0]["problem"] == "no pool entry for S1"
+    _install(tmp_path, kept)
+    with pytest.raises(ToolError) as refused:
+        pool.apply_status_decisions(batch, root=tmp_path, all_or_nothing=True)
+    assert refused.value.reason_code == "LIFECYCLE_UNKNOWN_STRATEGY"
+
+
+def test_update_statuses_is_all_or_nothing(tmp_path):
+    """The legacy entry point returns a count and so cannot report a skip: it refuses the batch and
+    writes nothing, rather than drop a decision silently."""
     judged_a, judged_c = _entry("S1", "cand_A"), _entry("S2", "cand_C")
     _install(tmp_path, _entry("S1", "cand_B"), judged_c)
-    assert pool.update_statuses([_decision(judged_a), _decision(judged_c)], root=tmp_path) == 1
+    before = pool.pool_path(tmp_path).read_bytes()
+    with pytest.raises(ToolError) as refused:
+        pool.update_statuses([_decision(judged_a), _decision(judged_c)], root=tmp_path)
+    assert refused.value.reason_code == pool.LIFECYCLE_DECISION_STALE
+    assert pool.pool_path(tmp_path).read_bytes() == before
+
+
+def test_nothing_is_written_when_every_decision_is_stale(tmp_path):
+    """The header says who last wrote the pool and when; a write that applied nothing is not one."""
+    _install(tmp_path, _entry("S1", "cand_B"))
+    before = pool.pool_path(tmp_path).read_bytes()
+    result = pool.apply_status_decisions([_decision(_entry("S1", "cand_A"))], root=tmp_path, updated_by="op")
+    assert result == {"changed": 0, "stale": result["stale"]} and len(result["stale"]) == 1
+    assert pool.pool_path(tmp_path).read_bytes() == before
 
 
 def test_the_cycle_reports_a_stale_decision_and_applies_the_rest(tmp_path, monkeypatch):
@@ -160,36 +203,80 @@ def test_the_cycle_reports_a_stale_decision_and_applies_the_rest(tmp_path, monke
     entries = _entries(tmp_path)
     assert entries["S1"]["status"] == "PAPER_ACTIVE" and entries["S2"]["status"] == "WARNING"
     lines = {line.split()[1]: line for line in record["report_text"].splitlines() if line.startswith("lifecycle: ")}
-    assert lines["S1"].endswith("(not applied: the pool now holds another lineage under this id)")
+    assert lines["S1"].endswith("(not applied: the pool changed since it was judged)")
     assert "not applied" not in lines["S2"]
 
 
-def test_a_retirement_does_not_retire_a_lineage_it_did_not_name(tmp_path, monkeypatch):
+def test_a_refused_write_marks_every_transition_not_applied(tmp_path, monkeypatch):
+    """A write that raises applies nothing, and the report must not read as if it had."""
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.crypto import cycle as cycle_module
+    from runtime.mvp_runtime.crypto.paper import RealPaperStore
+    from tests.test_mvp_runtime_crypto_cycle import _AUTH, FakeExchangeCollector
+
+    terminal = _entry("S1", "cand_A", status="SUSPENDED")
+    _install(tmp_path, terminal, _entry("S2", "cand_C"))
+    monkeypatch.setattr(cycle_module, "run_lifecycle", lambda active_pool, outcomes, now: [
+        _decision(terminal, new_status="PAPER_ACTIVE"), _decision(_entry("S2", "cand_C"))])
+    record = cycle_module.run_crypto_cycle(
+        collector=FakeExchangeCollector(), store=RealPaperStore(root=tmp_path, authorization=_AUTH),
+        now="2026-07-22T12:00:00Z", root=tmp_path, control_store=ControlStore(tmp_path), paper_outcomes=[])
+    assert "LIFECYCLE_TERMINAL_IMMUTABLE" in record["reason_codes"]
+    lines = [line for line in record["report_text"].splitlines() if line.startswith("lifecycle: ")]
+    assert len(lines) == 2 and all(line.endswith("(not applied: LIFECYCLE_TERMINAL_IMMUTABLE)") for line in lines)
+    assert _entries(tmp_path)["S2"]["status"] == "PAPER_ACTIVE"
+
+
+def test_a_retirement_writes_the_lineage_its_approval_was_verified_against(tmp_path):
+    """Review of PR3b-2: the approval is verified against one read of the pool and the write retires
+    exactly those entries. A promotion that puts lineage B under "S1" in between refuses the whole
+    retirement, which was approved as a set, and writes nothing."""
+    from runtime.mvp_runtime.crypto import retirement as retirement_mod
+    from runtime.mvp_runtime.errors import ApprovalBlocked
+
+    _install(tmp_path, _entry("S1", "cand_A"), _entry("S2", "cand_C"))
+    verified = retirement_mod.resolve_pool_entries(["S1", "S2"], tmp_path)
+    _install(tmp_path, _entry("S1", "cand_B"), _entry("S2", "cand_C"))       # the promotion lands
+    with pytest.raises(ApprovalBlocked) as refused:
+        retirement_mod.apply_retirement(["S1", "S2"], reason="duplicates", retired_by="Thomas",
+                                        root=tmp_path, now=NOW, entries=verified)
+    assert refused.value.reason_code == pool.LIFECYCLE_DECISION_STALE
+    entries = _entries(tmp_path)
+    assert entries["S1"]["status"] == "PAPER_ACTIVE" and entries["S2"]["status"] == "PAPER_ACTIVE"
+
+
+def test_the_retirement_door_verifies_and_writes_one_read(tmp_path, monkeypatch):
+    """Review of PR3b-2, through the script: Thomas approved retiring "S1" while it held lineage A,
+    and a promotion puts B there right after the door reads the pool. The door verifies the approval
+    against that read and writes those entries, so the retirement is refused; reading again for the
+    write would have retired B on A's approval."""
+    import scripts.retire_strategies as script
     from runtime.mvp_runtime.crypto import retirement as retirement_mod
 
-    _install(tmp_path, _entry("S1", "cand_B"), _entry("S2", "cand_C"))
-    # The operator named "S1" when it was lineage A; the pool holds B there by the write.
-    monkeypatch.setattr(retirement_mod, "resolve_pool_entries",
-                        lambda strategy_ids, root=None: [_entry("S1", "cand_A"), _entry("S2", "cand_C")])
-    summary = retirement_mod.apply_retirement(["S1", "S2"], reason="duplicates", retired_by="Thomas",
-                                              root=tmp_path, now=NOW)
-    assert summary["entries_changed"] == 1
-    assert [s["strategy_id"] for s in summary["entries_skipped"]] == ["S1"]
-    entries = _entries(tmp_path)
-    assert entries["S1"]["status"] == "PAPER_ACTIVE" and entries["S2"]["status"] == "SUSPENDED"
+    _install(tmp_path, _entry("S1", "cand_A"))
+    real = retirement_mod.resolve_pool_entries
+    approved = {"approval_id": "approval_test", "status": "APPROVED",
+                "validity": {"issued_at": NOW, "expires_at": "2999-01-01T00:00:00Z"},
+                "approved_action_snapshot": {
+                    "action_type": retirement_mod.RETIREMENT_ACTION_TYPE,
+                    "content_sha256": retirement_mod.retirement_content_sha256(real(["S1"], tmp_path))}}
 
+    class _Store:
+        def __init__(self, *args, **kwargs):
+            pass
 
-def test_the_retirement_script_names_what_it_did_not_retire(monkeypatch, capsys):
-    import scripts.retire_strategies as script
+        def get(self, approval_id):
+            return approved if approval_id == "approval_test" else None
 
-    monkeypatch.setattr(script, "assert_not_foreign_root_run", lambda: None)
-    monkeypatch.setattr(script, "run_retirement", lambda **kw: {
-        "entries_changed": 1, "strategy_ids": ["S1", "S2"], "previous_statuses": ["PAPER_ACTIVE", "PAPER_ACTIVE"],
-        "pool_size": 2, "approval_verified": True, "approval_id": "appr_1",
-        "entries_skipped": [{"strategy_id": "S1", "new_status": "SUSPENDED",
-                             "problem": "judged cand_A, the pool now holds cand_B"}]})
-    assert script.main(["--strategy-ids", "S1,S2", "--reason", "duplicates", "--retired-by", "Thomas",
-                        "--approval-id", "appr_1", "--confirm"]) == script.EXIT_OK
-    out = capsys.readouterr().out
-    assert "RETIRED 1 entry" in out
-    assert "NOT RETIRED: S1 — judged cand_A, the pool now holds cand_B" in out
+    def _read_then_promote(strategy_ids, root=None):
+        entries = real(strategy_ids, root)
+        _install(tmp_path, _entry("S1", "cand_B"))                          # lands right after the read
+        return entries
+
+    monkeypatch.setattr(script, "ApprovalStore", _Store)
+    monkeypatch.setattr(retirement_mod, "resolve_pool_entries", _read_then_promote)
+    with pytest.raises(SystemExit) as blocked:
+        script.run_retirement(strategy_ids=["S1"], retired_by="Thomas", reason="duplicate",
+                              root=tmp_path, now=NOW, approval_id="approval_test")
+    assert f"BLOCKED {pool.LIFECYCLE_DECISION_STALE}" in str(blocked.value)
+    assert _entries(tmp_path)["S1"]["status"] == "PAPER_ACTIVE"

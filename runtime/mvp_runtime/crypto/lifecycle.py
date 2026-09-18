@@ -28,8 +28,9 @@ asymmetry:
   Imported history with no lineage at all honestly feeds nothing.
 
 Effect discipline: :func:`evaluate_lifecycle` and the performance math are pure. The
-one effect — updating pool statuses — goes through ``pool.update_statuses`` (locked,
-transition-guarded) and is applied by the cycle ONLY when the paper store is the real
+one effect — updating pool statuses — goes through ``pool.apply_status_decisions`` (locked,
+transition-guarded, and applied only to the lineage and status each decision judged) and is
+applied by the cycle ONLY when the paper store is the real
 gated store; a dry-run cycle computes and records the decisions without persisting,
 exactly like every other paper effect.
 """
@@ -339,7 +340,7 @@ OPERATOR_RETIREMENT_REASON = "operator_retired"
 def operator_retirement_decision(
     entry: Mapping[str, Any], *, reason: str, retired_by: str, now: str,
 ) -> dict[str, Any]:
-    """One operator-originated SUSPEND, in the shape ``pool.update_statuses`` accepts.
+    """One operator-originated SUSPEND, in the shape ``pool.apply_status_decisions`` accepts.
 
     Deliberately not a second way to compute a status: the record carries the same
     fields ``evaluate_lifecycle`` produces, so the pool entry that results is
@@ -470,7 +471,7 @@ def is_noteworthy(decision: Mapping[str, Any]) -> bool:
 def split_for_record(decisions: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """Split evaluated decisions into ``(noteworthy_in_full, unchanged_strategy_ids)``.
 
-    The runtime keeps working with the FULL list — ``pool.update_statuses`` still receives
+    The runtime keeps working with the FULL list — ``pool.apply_status_decisions`` still receives
     every decision. This only governs what is persisted."""
     noteworthy = [dict(d) for d in decisions if is_noteworthy(d)]
     quiet = [str(d.get("strategy_id")) for d in decisions if not is_noteworthy(d)]

@@ -126,8 +126,9 @@ def test_the_lifecycle_ladder_cannot_arm_a_strategy():
     `lifecycle` recovers a WARNING strategy back to PAPER_ACTIVE. Had the observation tier been a
     status, that recovery would move a strategy the operator kept off the money path INTO it —
     an automatic promotion into real money, arriving through the one mechanism this system says
-    may only ever demote. `update_statuses` writes only `status`, so the ladder cannot reach the
-    tier at all. Asserted against the real function's contract rather than by inspection."""
+    may only ever demote. The status write writes only `status` and the `lifecycle_*` fields, so
+    the ladder cannot reach the tier at all. Asserted against the real functions' source here, and
+    by applying a recovery in the next test."""
     import inspect
 
     from runtime.mvp_runtime.crypto import lifecycle
@@ -138,8 +139,34 @@ def test_the_lifecycle_ladder_cannot_arm_a_strategy():
         "lifecycle now mentions the live tier — if it can write it, a demotion path can arm a "
         "strategy, which is the failure this split exists to make impossible"
     )
-    # And the writer it feeds says the same thing from the other side.
-    assert pool_store.LIVE_TIER_FIELD not in inspect.getsource(pool_store.update_statuses)
+    # And the writer it feeds says the same thing from the other side: the function that writes
+    # (PR3b-2 moved the body out of `update_statuses`, which a review found this check still read)
+    # and the wrapper.
+    for writer in (pool_store.apply_status_decisions, pool_store.update_statuses):
+        assert pool_store.LIVE_TIER_FIELD not in inspect.getsource(writer), writer.__name__
+
+
+def test_a_recovery_moves_the_status_and_never_the_tier(tmp_path):
+    """Behavioural: the ladder's recovery (WARNING -> PAPER_ACTIVE) applied through the real write to
+    an entry kept at OBSERVATION changes only the status and the `lifecycle_*` fields."""
+    from runtime.mvp_runtime.crypto.candidate_identity import lineage_of
+
+    entry = {**_traded(strategy_id="S1", candidate_id="cand_1", generation_id="GEN-1"),
+             "status": "WARNING", "champion_score": 0.5,
+             pool_store.LIVE_TIER_FIELD: pool_store.LIVE_TIER_OBSERVATION}
+    pool_store.install_active_pool({"active_strategies": [entry]}, root=tmp_path)
+    [before] = pool_store.load_active_pool(tmp_path)["active_strategies"]
+    recovery = {"strategy_id": "S1", "previous_status": "WARNING", "new_status": "PAPER_ACTIVE",
+                "status_changed": True, "consecutive_failures": 0, "reasons": ["recovered_to_active"],
+                "created_at_utc": "2026-09-18T12:00:00Z", "strategy_lifecycle_decision_id": "d1",
+                **lineage_of(entry)}
+    assert pool_store.apply_status_decisions([recovery], root=tmp_path)["changed"] == 1
+    [after] = pool_store.load_active_pool(tmp_path)["active_strategies"]
+    moved = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
+    assert moved <= {"status", "lifecycle_consecutive_failures", "lifecycle_updated_at",
+                     "lifecycle_decision_id", "lifecycle_reasons", "lifecycle_retired_by"}, moved
+    assert after["status"] == "PAPER_ACTIVE"
+    assert after[pool_store.LIVE_TIER_FIELD] == pool_store.LIVE_TIER_OBSERVATION
 
 
 def test_the_promotion_hash_separates_the_two_asks():

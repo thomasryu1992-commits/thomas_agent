@@ -44,7 +44,7 @@ artifact by the approval Thomas answered, and an edited or stripped entry is not
 
 **A later writer that touches any hashed field poisons the pool.** The pool's writers today are
 the promotion door (which stamps), the history import's ``--activate-pool`` (which installs
-unstamped entries), ``pool.update_statuses`` (status and the ``lifecycle_*`` fields) and
+unstamped entries), ``pool.apply_status_decisions`` (status and the ``lifecycle_*`` fields) and
 ``pool.disarm_live_tier`` (the ``live_tier*`` fields); none of those touches a hashed field, and
 tests pin that. **A change to this module's hash format is such a writer too**, for every stamp
 already on disk: each read recomputes with the code deployed then. So the v1 format depends only

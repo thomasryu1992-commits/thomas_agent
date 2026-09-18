@@ -42,10 +42,11 @@ def retirement_content_sha256(entries: list[Mapping[str, Any]]) -> str:
     """The material identity of one retirement: which pool slots, holding which
     lineages, running which exact rules.
 
-    All three, because ``update_statuses`` keys on the display ``strategy_id`` while
-    the thing being retired is a lineage. Binding the id alone would let an approval
+    All three, because the status write finds its entry by the display ``strategy_id``
+    while the thing being retired is a lineage. Binding the id alone would let an approval
     retire whatever holds that name at execute time; binding the lineage alone would
-    not name the slot the store actually mutates.
+    not name the slot the store actually mutates. Since PR3b-2 the write also refuses a
+    decision whose slot no longer holds the lineage it names.
     """
     return integrity.sha256_value({
         "hash_version": RETIREMENT_HASH_VERSION,
@@ -139,6 +140,7 @@ def verify_retirement_approval(
     strategy_ids: list[str],
     root: Path | None = None,
     now: str | None = None,
+    entries: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Verify an approval authorizes EXACTLY this retirement, or fail closed.
 
@@ -147,6 +149,10 @@ def verify_retirement_approval(
     action type — a promotion approval can never execute here — and its content hash
     matches the retirement re-derived from the CURRENT pool. A slot whose lineage or
     rules changed since Thomas answered mints a different hash and is refused.
+
+    ``entries`` are the pool entries to check it against (:func:`resolve_pool_entries` when not
+    given). The door hands the same ones to :func:`apply_retirement`, so what is written is the
+    lineage the approval was verified against (review of PR3b-2).
     """
     now = now or timeutil.utc_now_iso()
     if approval is None:
@@ -163,7 +169,8 @@ def verify_retirement_approval(
         raise ApprovalBlocked(
             "APPROVAL_WRONG_ACTION", f"approval snapshots {snapshot.get('action_type')!r}, not a retirement"
         )
-    if snapshot.get("content_sha256") != retirement_content_sha256(resolve_pool_entries(strategy_ids, root)):
+    checked = entries if entries is not None else resolve_pool_entries(strategy_ids, root)
+    if snapshot.get("content_sha256") != retirement_content_sha256(checked):
         raise ApprovalBlocked(
             "APPROVAL_CONTENT_MISMATCH",
             "the approval binds a different retirement (slots, lineages, or rules changed)",
@@ -178,25 +185,31 @@ def apply_retirement(
     retired_by: str,
     root: Path | None = None,
     now: str | None = None,
+    entries: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Move the named entries to SUSPENDED through ``pool.update_statuses``. Locked.
+    """Move the named entries to SUSPENDED through ``pool.apply_status_decisions``. Locked.
 
     The store's guards are the enforcement, not this function: unknown id refused,
-    terminal entry immutable, and — the property that makes this verb narrow —
-    ``update_statuses`` writes ``status`` and the failure counter on named entries
-    only. Membership, specs, hashes and scores are untouched by construction, so a
+    terminal entry immutable, and — the property that makes this verb narrow — the status
+    write changes ``status``, the failure counter and the ``lifecycle_*`` fields on named
+    entries only. Membership, specs, hashes and scores are untouched by construction, so a
     retirement cannot smuggle a promotion however it is called.
+
+    ``entries`` are the ones the approval was verified against (resolved from the pool when not
+    given). Each decision names the lineage and status it retires, and the write is all or nothing
+    (PR3b-2): if any slot holds something else by then, nothing is retired.
     """
     from .lifecycle import operator_retirement_decision  # local: keeps the import graph flat
 
     now = now or timeutil.utc_now_iso()
-    entries = resolve_pool_entries(strategy_ids, root)
+    entries = list(entries) if entries is not None else resolve_pool_entries(strategy_ids, root)
     decisions = [
         operator_retirement_decision(e, reason=reason, retired_by=retired_by, now=now)
         for e in entries
     ]
     try:
-        applied = pool_store.apply_status_decisions(decisions, root=root, updated_by=retired_by)
+        applied = pool_store.apply_status_decisions(decisions, root=root, updated_by=retired_by,
+                                                    all_or_nothing=True)
     except ToolError as exc:
         raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     return {
@@ -207,9 +220,6 @@ def apply_retirement(
         "previous_statuses": [str(e.get("status")) for e in entries],
         "new_status": "SUSPENDED",
         "entries_changed": applied["changed"],
-        # A slot whose display id named another lineage by the time of the locked write (PR3b-2):
-        # not retired, because what was named is no longer there.
-        "entries_skipped": applied["stale"],
         "decisions": decisions,
         "reason": reason,
         "retired_by": retired_by,

@@ -99,19 +99,26 @@ def run_retirement(
             "BLOCKED: retirement needs --approval-id (ask first with --request) or the "
             "explicit --without-approval escape"
         )
+    # One read of the named entries: the approval is verified against them and the write retires
+    # exactly them, so a slot another lineage takes in between refuses the retirement (PR3b-2).
+    try:
+        entries = retirement_mod.resolve_pool_entries(strategy_ids, root)
+    except MvpRuntimeError as exc:
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
     verified_approval = None
     if approval_id is not None:
         approval_store = ApprovalStore(root / APPROVAL_STORE_REL) if root is not None else ApprovalStore.default()
         try:
             verified_approval = retirement_mod.verify_retirement_approval(
                 approval_store.get(approval_id), strategy_ids=strategy_ids, root=root, now=now,
+                entries=entries,
             )
         except MvpRuntimeError as exc:
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     try:
         applied = retirement_mod.apply_retirement(
-            strategy_ids, reason=reason, retired_by=retired_by, root=root, now=now,
+            strategy_ids, reason=reason, retired_by=retired_by, root=root, now=now, entries=entries,
         )
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
@@ -194,8 +201,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  from       : {', '.join(summary['previous_statuses'])} -> SUSPENDED")
     print(f"  pool size  : {summary['pool_size']} (unchanged — membership is not touched)")
     print(f"  door       : {'approval ' + str(summary['approval_id']) if summary['approval_verified'] else 'WITHOUT-APPROVAL ESCAPE'}")
-    for skipped in summary.get("entries_skipped") or ():
-        print(f"  NOT RETIRED: {skipped['strategy_id']} — {skipped['problem']}")
     return EXIT_OK
 
 

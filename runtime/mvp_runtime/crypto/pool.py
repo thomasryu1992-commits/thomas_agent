@@ -820,7 +820,7 @@ def assert_no_silent_reactivation(
     "install these lineages" and cannot say "and un-suspend sixteen of them". The signature
     is honest about a smaller effect than the one it authorizes. And the lifecycle's own
     rule is that this direction is never automatic: `evaluate_lifecycle` degrades only, and
-    a terminal entry refuses at `update_statuses` precisely so reactivation stays deliberate.
+    a terminal entry refuses at the status write precisely so reactivation stays deliberate.
     Coming back through a membership operation is that rule being routed around.
 
     So the door fails closed and the operator has to name it, in the idiom the four evidence
@@ -1593,8 +1593,9 @@ def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
 # recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.py:292`). Had the observation
 # tier been a status, that recovery would move a strategy the operator deliberately kept off the
 # money path INTO it — an automatic promotion into real money, arriving through the one mechanism
-# this system says may only ever demote. `update_statuses` writes **only** `status`
-# (see its docstring), so a separate field cannot be reached by the ladder at all: the property
+# this system says may only ever demote. The status write (`apply_status_decisions`, which
+# `update_statuses` wraps) writes **only** `status` and the `lifecycle_*` fields (see its
+# docstring), so a separate field cannot be reached by the ladder at all: the property
 # is structural rather than guarded, and there is no rank ordering anybody has to get right.
 #
 # Absence means OBSERVATION. Every entry promoted before this existed therefore stops being
@@ -1828,20 +1829,24 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
     return len(specs)
 
 
-# A lifecycle decision the pool write skipped (PR3b-2, Thomas decision 36): it names a lineage the
-# display id no longer holds, or names none. The rest of the batch is applied.
+# A lifecycle decision the pool write did not apply (PR3b-2, Thomas decision 36): its display id no
+# longer names the lineage it judged, in the status it judged, or no longer names an entry at all.
 LIFECYCLE_DECISION_STALE = "LIFECYCLE_DECISION_STALE"
 
 
 def _stale_decision(decision: Mapping[str, Any], entry: Mapping[str, Any]) -> str | None:
-    """Why ``decision`` may not move ``entry``, or None. A decision is about the lineage it judged,
-    never the display id: the pool can change between the cycle's read and this locked write, and
-    the id may then name another lineage (a promotion installed one in its place)."""
-    if not all(field in decision for field in LINEAGE_FIELDS):
-        return "the decision does not name the lineage it judged"
+    """Why ``decision`` may not move ``entry``, or None. A decision is about what it judged — a
+    lineage, in a status — never the display id: the pool can change between the read the decision
+    was made on and this locked write. The id may then name another lineage (a promotion installed
+    one in its place), or the same lineage installed again fresh, or one another writer moved."""
+    if not all(field in decision for field in (*LINEAGE_FIELDS, "previous_status")):
+        return "the decision does not name the lineage and status it judged"
     judged, holding = lineage_of(decision), lineage_of(entry)
     if judged != holding:
         return f"judged {judged}, the pool now holds {holding}"
+    current = str(entry.get("status") or "PAPER_ACTIVE")
+    if str(decision.get("previous_status")) != current:
+        return f"judged it {decision.get('previous_status')}, it is {current} now"
     return None
 
 
@@ -1849,28 +1854,39 @@ def update_statuses(
     decisions: list[dict[str, Any]], *, root: Path | None = None,
     updated_by: str = "lifecycle_agent", now: str | None = None,
 ) -> int:
-    """:func:`apply_status_decisions`, returning only how many entries changed status."""
-    return apply_status_decisions(decisions, root=root, updated_by=updated_by, now=now)["changed"]
+    """:func:`apply_status_decisions`, all or nothing: returns how many entries changed status, and
+    refuses the whole batch rather than skip a decision silently."""
+    return apply_status_decisions(decisions, root=root, updated_by=updated_by, now=now,
+                                  all_or_nothing=True)["changed"]
 
 
 def apply_status_decisions(
     decisions: list[dict[str, Any]], *, root: Path | None = None,
-    updated_by: str = "lifecycle_agent", now: str | None = None,
+    updated_by: str = "lifecycle_agent", now: str | None = None, all_or_nothing: bool = False,
 ) -> dict[str, Any]:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
 
-    Returns ``{"changed": int, "stale": [...]}``. A decision is applied only to the lineage it
-    judged (PR3b-2, Thomas decision 36): one that names another lineage than the entry its display
-    id holds now, or names none, is skipped and reported in ``stale``, and the rest of the batch is
-    applied — a demotion held back for one stale decision would be the less safe outcome.
+    Returns ``{"changed": int, "stale": [...]}``. A decision is applied only to what it judged
+    (PR3b-2, Thomas decision 36): the lineage its display id names now, in the status it judged.
+    One whose id names another lineage or another status by now, or no entry at all, or that does
+    not say what it judged, is stale:
+
+    - by default (the cycle's lifecycle) it is skipped and reported in ``stale``, and the rest of
+      the batch is applied — a demotion held back for one stale decision would be the less safe
+      outcome, and the next cycle judges the entry again;
+    - ``all_or_nothing`` (an operator retirement, approved as a set) refuses the whole batch and
+      writes nothing: ``LIFECYCLE_UNKNOWN_STRATEGY`` for an id no entry holds,
+      :data:`LIFECYCLE_DECISION_STALE` for the rest.
+
+    Nothing is written when no decision was applied.
 
     The narrowest possible pool mutation: only ``status``, the running
     ``lifecycle_consecutive_failures``, and the ``lifecycle_*`` provenance of named
     strategies change — specs, hashes, scores and membership are untouched, so this can
-    never smuggle a promotion. Guards, each fail-closed: unknown strategy id refused; a
-    CURRENTLY terminal entry is immutable (reactivation is the approval door, never
-    this); and a transition record that isn't an evaluate_lifecycle decision shape is
-    refused. ``changed`` counts the entries whose status actually changed.
+    never smuggle a promotion. Guards, in order, each fail-closed: a transition record that isn't
+    an evaluate_lifecycle decision shape is refused; a stale decision (above); a CURRENTLY terminal
+    entry is immutable (reactivation is the approval door, never this). ``changed`` counts the
+    entries whose status actually changed.
 
     The provenance fields are written only on a status CHANGE, alongside
     ``lifecycle_updated_at`` and ``lifecycle_decision_id``, so they always describe the
@@ -1903,7 +1919,7 @@ def apply_status_decisions(
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
         pool = load_active_pool(root)
         entries = {e.get("strategy_id"): e for e in pool.get("active_strategies") or []}
-        changed = 0
+        changed = applied = 0
         stale: list[dict[str, Any]] = []
         for decision in decisions:
             strategy_id = decision.get("strategy_id")
@@ -1911,12 +1927,15 @@ def apply_status_decisions(
             if not (isinstance(strategy_id, str) and strategy_id and isinstance(new_status, str)):
                 raise ToolError("LIFECYCLE_DECISION_INVALID", "transition lacks strategy_id/new_status")
             entry = entries.get(strategy_id)
-            if entry is None:
-                raise ToolError("LIFECYCLE_UNKNOWN_STRATEGY", f"no pool entry for {strategy_id}")
-            problem = _stale_decision(decision, entry)
+            problem = (f"no pool entry for {strategy_id}" if entry is None
+                       else _stale_decision(decision, entry))
             if problem is not None:
-                # Before the terminal check: a decision about another lineage says nothing about
-                # the entry the id holds now, terminal or not.
+                if all_or_nothing and entry is None:
+                    raise ToolError("LIFECYCLE_UNKNOWN_STRATEGY", f"no pool entry for {strategy_id}")
+                if all_or_nothing:
+                    raise ToolError(LIFECYCLE_DECISION_STALE, f"{strategy_id}: {problem}")
+                # Before the terminal check: a decision about another lineage or status says
+                # nothing about the entry the id holds now, terminal or not.
                 stale.append({"strategy_id": strategy_id, "new_status": new_status, "problem": problem})
                 continue
             if str(entry.get("status")) in TERMINAL_STATUSES:
@@ -1924,6 +1943,7 @@ def apply_status_decisions(
                     "LIFECYCLE_TERMINAL_IMMUTABLE",
                     f"{strategy_id} is terminal; reactivation is the approval door, not a transition",
                 )
+            applied += 1
             entry["lifecycle_consecutive_failures"] = int(decision.get("consecutive_failures") or 0)
             if new_status != entry.get("status"):
                 entry["status"] = new_status
@@ -1949,6 +1969,9 @@ def apply_status_decisions(
                 if isinstance(retired_by, str) and retired_by:
                     entry["lifecycle_retired_by"] = retired_by
                 changed += 1
+        if not applied:
+            # Every decision was stale: the pool stands as read, header included.
+            return {"changed": 0, "stale": stale}
         pool["updated_by"] = updated_by
         # Never widen to `or ""`: an empty stamp would overwrite a true timestamp with a
         # blank, which is the one outcome worse than the stale one being fixed here.
