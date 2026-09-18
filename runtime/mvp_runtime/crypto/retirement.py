@@ -196,7 +196,7 @@ def apply_retirement(
         for e in entries
     ]
     try:
-        changed = pool_store.update_statuses(decisions, root=root, updated_by=retired_by)
+        applied = pool_store.apply_status_decisions(decisions, root=root, updated_by=retired_by)
     except ToolError as exc:
         raise ApprovalBlocked(exc.reason_code, str(exc)) from exc
     return {
@@ -206,7 +206,10 @@ def apply_retirement(
         "rule_hashes": [str(e.get("strategy_rule_hash") or "") for e in entries],
         "previous_statuses": [str(e.get("status")) for e in entries],
         "new_status": "SUSPENDED",
-        "entries_changed": changed,
+        "entries_changed": applied["changed"],
+        # A slot whose display id named another lineage by the time of the locked write (PR3b-2):
+        # not retired, because what was named is no longer there.
+        "entries_skipped": applied["stale"],
         "decisions": decisions,
         "reason": reason,
         "retired_by": retired_by,

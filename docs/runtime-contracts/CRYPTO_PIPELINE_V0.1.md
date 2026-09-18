@@ -224,6 +224,13 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
   unreachable from the cycle today, which hands the pool read its armed set came from. The allowance
   reads an entry's own key, not all three: live outcomes carry a candidate id since 2026-07-26, and
   only stamped entries can be armed.
+- **Lifecycle decisions** (decision 36, PR3b-2): each decision names the lineage it judged
+  (`candidate_identity.lineage_of`: candidate, generation, rule hash), and so does an operator
+  retirement. The locked pool write (`pool.apply_status_decisions`) skips a decision whose display
+  id names another lineage by then, or that names none, before its other guards, reports it
+  (`LIFECYCLE_DECISION_STALE` and `lifecycle_stale` on the cycle record; `entries_skipped` on a
+  retirement), and applies the rest: a demotion held back for one stale decision would be the less
+  safe outcome. The next cycle judges the entry again. An unknown display id still refuses the batch.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or

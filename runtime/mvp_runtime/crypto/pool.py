@@ -56,6 +56,7 @@ from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
+from .candidate_identity import LINEAGE_FIELDS, lineage_of
 from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
 # this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
 # moved to a leaf so `factory` no longer needs a module-level edge into this store.
@@ -1827,11 +1828,41 @@ def install_active_pool(pool: dict[str, Any], *, root: Path | None = None) -> in
     return len(specs)
 
 
+# A lifecycle decision the pool write skipped (PR3b-2, Thomas decision 36): it names a lineage the
+# display id no longer holds, or names none. The rest of the batch is applied.
+LIFECYCLE_DECISION_STALE = "LIFECYCLE_DECISION_STALE"
+
+
+def _stale_decision(decision: Mapping[str, Any], entry: Mapping[str, Any]) -> str | None:
+    """Why ``decision`` may not move ``entry``, or None. A decision is about the lineage it judged,
+    never the display id: the pool can change between the cycle's read and this locked write, and
+    the id may then name another lineage (a promotion installed one in its place)."""
+    if not all(field in decision for field in LINEAGE_FIELDS):
+        return "the decision does not name the lineage it judged"
+    judged, holding = lineage_of(decision), lineage_of(entry)
+    if judged != holding:
+        return f"judged {judged}, the pool now holds {holding}"
+    return None
+
+
 def update_statuses(
     decisions: list[dict[str, Any]], *, root: Path | None = None,
     updated_by: str = "lifecycle_agent", now: str | None = None,
 ) -> int:
+    """:func:`apply_status_decisions`, returning only how many entries changed status."""
+    return apply_status_decisions(decisions, root=root, updated_by=updated_by, now=now)["changed"]
+
+
+def apply_status_decisions(
+    decisions: list[dict[str, Any]], *, root: Path | None = None,
+    updated_by: str = "lifecycle_agent", now: str | None = None,
+) -> dict[str, Any]:
     """Apply lifecycle status transitions to the active pool (C10). Locked, guarded.
+
+    Returns ``{"changed": int, "stale": [...]}``. A decision is applied only to the lineage it
+    judged (PR3b-2, Thomas decision 36): one that names another lineage than the entry its display
+    id holds now, or names none, is skipped and reported in ``stale``, and the rest of the batch is
+    applied — a demotion held back for one stale decision would be the less safe outcome.
 
     The narrowest possible pool mutation: only ``status``, the running
     ``lifecycle_consecutive_failures``, and the ``lifecycle_*`` provenance of named
@@ -1839,7 +1870,7 @@ def update_statuses(
     never smuggle a promotion. Guards, each fail-closed: unknown strategy id refused; a
     CURRENTLY terminal entry is immutable (reactivation is the approval door, never
     this); and a transition record that isn't an evaluate_lifecycle decision shape is
-    refused. Returns the number of entries whose status actually changed.
+    refused. ``changed`` counts the entries whose status actually changed.
 
     The provenance fields are written only on a status CHANGE, alongside
     ``lifecycle_updated_at`` and ``lifecycle_decision_id``, so they always describe the
@@ -1867,12 +1898,13 @@ def update_statuses(
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
     if not decisions:
-        return 0
+        return {"changed": 0, "stale": []}
     path = pool_path(root)
     with locked(path.with_suffix(".lock"), code="STRATEGY_POOL_LOCKED", label="active strategy pool"):
         pool = load_active_pool(root)
         entries = {e.get("strategy_id"): e for e in pool.get("active_strategies") or []}
         changed = 0
+        stale: list[dict[str, Any]] = []
         for decision in decisions:
             strategy_id = decision.get("strategy_id")
             new_status = decision.get("new_status")
@@ -1881,6 +1913,12 @@ def update_statuses(
             entry = entries.get(strategy_id)
             if entry is None:
                 raise ToolError("LIFECYCLE_UNKNOWN_STRATEGY", f"no pool entry for {strategy_id}")
+            problem = _stale_decision(decision, entry)
+            if problem is not None:
+                # Before the terminal check: a decision about another lineage says nothing about
+                # the entry the id holds now, terminal or not.
+                stale.append({"strategy_id": strategy_id, "new_status": new_status, "problem": problem})
+                continue
             if str(entry.get("status")) in TERMINAL_STATUSES:
                 raise ToolError(
                     "LIFECYCLE_TERMINAL_IMMUTABLE",
@@ -1924,7 +1962,7 @@ def update_statuses(
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(path)
-        return changed
+        return {"changed": changed, "stale": stale}
 
 
 def as_pool_entry_for_replay(candidate: Mapping[str, Any]) -> dict[str, Any]:

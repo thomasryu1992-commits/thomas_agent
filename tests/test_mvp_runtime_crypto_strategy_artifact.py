@@ -456,8 +456,11 @@ def test_the_pool_s_other_writers_touch_no_hashed_field(tmp_path):
     touching a hashed field would refuse the pool on the next read (decision 34)."""
     installed = _stamped_pool(tmp_path)
     stamp = installed["active_strategies"][0][SHA]
+    from runtime.mvp_runtime.crypto.candidate_identity import lineage_of
+
     pool.update_statuses([{"strategy_id": "S1", "new_status": "WARNING", "consecutive_failures": 1,
-                           "created_at_utc": NOW, "reasons": ["metric_warning"]}], root=tmp_path)
+                           "created_at_utc": NOW, "reasons": ["metric_warning"],
+                           **lineage_of(installed["active_strategies"][0])}], root=tmp_path)
     reread = pool.load_active_pool(tmp_path)["active_strategies"][0]
     assert reread["status"] == "WARNING" and reread[SHA] == stamp
     # Armed by hand only to give the disarm door something to move.

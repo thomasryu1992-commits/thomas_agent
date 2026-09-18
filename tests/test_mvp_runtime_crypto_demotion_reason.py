@@ -63,9 +63,11 @@ def _read(root, strategy_id):
 
 
 def _metric_suspension(strategy_id):
-    """The shape `evaluate_lifecycle` emits when the metrics condemn a strategy."""
+    """The shape `run_lifecycle` emits when the metrics condemn a strategy: `evaluate_lifecycle`'s
+    decision and the lineage `_entry` names (PR3b-2)."""
     return {
         "strategy_id": strategy_id,
+        "candidate_id": None, "strategy_generation_id": "GEN-001", "strategy_rule_hash": f"hash-{strategy_id}",
         "previous_status": "PAPER_ACTIVE",
         "new_status": "SUSPENDED",
         "status_changed": True,

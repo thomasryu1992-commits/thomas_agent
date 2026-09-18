@@ -1189,6 +1189,9 @@ def run_crypto_cycle(
     # history skips evaluation (no honest windows to judge on).
     lifecycle_decisions: list[dict[str, Any]] = []
     lifecycle_applied = 0
+    # Decisions the pool write skipped: judged on a lineage the display id no longer names by the
+    # time of the locked write (PR3b-2, Thomas decision 36). The next cycle judges the entry again.
+    lifecycle_stale: list[dict[str, Any]] = []
     if outcomes is not None:
         lifecycle_decisions = run_lifecycle(active_pool, outcomes, now=now)
         changed = [d for d in lifecycle_decisions if d.get("status_changed")]
@@ -1196,14 +1199,20 @@ def run_crypto_cycle(
             reason_codes.append("LIFECYCLE_TRANSITION")
         if getattr(store, "filesystem_write", False) and lifecycle_decisions:
             try:
-                lifecycle_applied = pool.update_statuses(lifecycle_decisions, root=root)
+                applied = pool.apply_status_decisions(lifecycle_decisions, root=root)
+                lifecycle_applied, lifecycle_stale = applied["changed"], applied["stale"]
             except ToolError as exc:
                 reason_codes.append(exc.reason_code)
+        if lifecycle_stale:
+            reason_codes.append(pool.LIFECYCLE_DECISION_STALE)
+        skipped = {str(d.get("strategy_id")) for d in lifecycle_stale}
         for decision in changed:
             report_text += (
                 f"\nlifecycle: {decision['strategy_id']} "
                 f"{decision['previous_status']} -> {decision['new_status']}"
                 + (" (manual reactivation required)" if decision["requires_manual_reactivation"] else "")
+                + (" (not applied: the pool now holds another lineage under this id)"
+                   if str(decision["strategy_id"]) in skipped else "")
             )
 
     # The full list stays in play for the runtime (update_statuses above already used it);
@@ -1285,6 +1294,7 @@ def run_crypto_cycle(
         "live_allowance": live_allowance,
         "lifecycle_evaluated": len(lifecycle_decisions),
         "lifecycle_applied": lifecycle_applied,
+        "lifecycle_stale": lifecycle_stale,
         "counterfactual": counterfactual_summary,
         "forward_book": forward_summary,
         "report_status": report.get("status") if report else None,

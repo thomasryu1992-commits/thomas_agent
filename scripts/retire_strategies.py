@@ -194,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  from       : {', '.join(summary['previous_statuses'])} -> SUSPENDED")
     print(f"  pool size  : {summary['pool_size']} (unchanged — membership is not touched)")
     print(f"  door       : {'approval ' + str(summary['approval_id']) if summary['approval_verified'] else 'WITHOUT-APPROVAL ESCAPE'}")
+    for skipped in summary.get("entries_skipped") or ():
+        print(f"  NOT RETIRED: {skipped['strategy_id']} — {skipped['problem']}")
     return EXIT_OK
 
 

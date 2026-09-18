@@ -47,7 +47,7 @@ from . import feedback
 # Moved to the leaf (PR3b-1) so the router can key on a lineage without importing this module,
 # which imports `feedback`, which imports `paper`. Re-exported: its callers import it from here.
 from .candidate_identity import entry_attribution_keys as _entry_attribution_keys
-from .candidate_identity import outcome_attribution_key
+from .candidate_identity import lineage_of, outcome_attribution_key
 
 DEFAULT_WINDOWS = (20, 30, 50, 100)
 
@@ -367,8 +367,9 @@ def operator_retirement_decision(
         )
     decision: dict[str, Any] = {
         "strategy_id": strategy_id,
-        "candidate_id": entry.get("candidate_id"),
-        "strategy_rule_hash": entry.get("strategy_rule_hash"),
+        # The lineage retired, all three fields (the generation since PR3b-2): the pool write
+        # refuses the decision if the id names another lineage by then.
+        **lineage_of(entry),
         "previous_status": current,
         "new_status": "SUSPENDED",
         "status_changed": True,
@@ -401,8 +402,9 @@ def run_lifecycle(
     Attribution is by LINEAGE (:func:`outcome_attribution_key`), not by display name:
     a strategy is judged only on trades its own lineage made. Returns one decision per
     non-terminal strategy (terminal ones are left untouched without even an evaluation
-    — the source rule). The caller applies ``status_changed`` decisions through
-    ``pool.update_statuses``."""
+    — the source rule). Each decision names the lineage it judged, and the caller applies them
+    through ``pool.apply_status_decisions``, which skips one whose display id names another
+    lineage by then (PR3b-2)."""
     by_lineage: dict[str, list[Mapping[str, Any]]] = {}
     for outcome in outcomes:
         if outcome.get("outcome_closed") is not True:
@@ -424,11 +426,15 @@ def run_lifecycle(
         performance = compute_strategy_performance(
             strategy_id, attributed, backtest_win_rate=entry.get("backtest_win_rate"), now=now,
         )
-        decisions.append(evaluate_lifecycle(
+        decision = evaluate_lifecycle(
             status, performance,
             consecutive_failures=int(entry.get("lifecycle_consecutive_failures") or 0),
             thresholds=thresholds, now=now,
-        ))
+        )
+        # The lineage judged (PR3b-2, Thomas decision 36). The pool can change between this read
+        # and the locked write, and the display id may then name another lineage: the write
+        # refuses this one decision rather than demote a strategy on another's record.
+        decisions.append({**decision, **lineage_of(entry)})
     return decisions
 
 

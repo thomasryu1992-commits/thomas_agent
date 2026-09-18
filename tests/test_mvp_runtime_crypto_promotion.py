@@ -1038,9 +1038,14 @@ def test_an_empty_pool_is_an_empty_set_not_a_failure():
 # --- the effect the approval cannot name --------------------------------------
 
 def _suspend(tmp_path, strategy_id="S1"):
+    """The lifecycle suspending ``strategy_id``, as `run_lifecycle` names it: with its lineage."""
+    from runtime.mvp_runtime.crypto.candidate_identity import lineage_of
+
+    [entry] = [e for e in pool.load_active_pool(tmp_path)["active_strategies"]
+               if e.get("strategy_id") == strategy_id]
     pool.update_statuses(
         [{"strategy_id": strategy_id, "new_status": "SUSPENDED", "consecutive_failures": 3,
-          "created_at_utc": NOW, "reasons": ["metric_suspension"]}],
+          "created_at_utc": NOW, "reasons": ["metric_suspension"], **lineage_of(entry)}],
         root=tmp_path,
     )
 

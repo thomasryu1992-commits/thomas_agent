@@ -24,6 +24,23 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A lifecycle decision moves only the lineage it judged** (crypto PR3b-2, Thomas decision 36,
+  2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`, `crypto/pool.py`,
+  `crypto/cycle.py`, `crypto/retirement.py`, `scripts/retire_strategies.py`).
+  - **The gap:** the lifecycle judges the pool the cycle read, and the locked write applied its
+    decisions by display id to the pool as it was by then. A promotion in between could put another
+    lineage under that id, and A's demotion landed on B. The operator retirement's approval bound
+    the lineage, but its write had the same key.
+  - **The change:** `run_lifecycle` and `operator_retirement_decision` name the lineage they judged
+    (`lineage_of`: candidate, generation, rule hash). `pool.apply_status_decisions` skips a decision
+    whose display id names another lineage by then, or that names none, before its other guards; it
+    reports it (`LIFECYCLE_DECISION_STALE`, `lifecycle_stale` on the cycle record, `entries_skipped`
+    on a retirement and a `NOT RETIRED` line from the script) and applies the rest.
+    `update_statuses` stays, returning the changed count.
+  - **Why skip one and not refuse the batch:** a demotion held back for another decision's
+    staleness would be the less safe outcome, and the next cycle judges the entry again. An unknown
+    display id still refuses the batch, as before.
+
 - **The router, the shadow book and the live allowance key on the lineage** (crypto PR3b-1, Thomas
   decisions 35 and 38, 2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`,
   `crypto/feedback.py`, `crypto/cycle.py`, `crypto/paper.py`, `crypto/counterfactual.py`,
