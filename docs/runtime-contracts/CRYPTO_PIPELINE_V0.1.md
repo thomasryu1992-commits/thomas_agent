@@ -195,8 +195,30 @@ and the rule hash covers the spec's behavioural subset and nothing the router re
     autonomous order whose lineage names none, and `verify_live_arm` requires the armed entry's
     artifact to be the one the plan was made from (`PRE_ORDER_RISK_SNAPSHOT_V0.1.md` §2-3).
   - The live-trades board (`live_promotion`) prints it beside the rule hash.
-  - Nothing keys on it yet: realized-performance ranking, the lifecycle and the allowances still
-    group by candidate, rule and generation (3b).
+  - Nothing keys on it: the realized ranking, the lifecycle and the allowances group by the
+    lineage key (candidate, else generation and rule, else display id), below.
+
+### Runtime keys are lineages (PR3b, Thomas decisions 35-38)
+
+`strategy_id` is a display name: the factory restarts it every generation and the promotion door
+renames on a collision. A runtime key that is the display id lets a lineage that reuses the id
+inherit another's record, and a renamed lineage lose its own. The key is
+`candidate_identity.outcome_attribution_key`: `cand:<candidate_id>`, else
+`gen:<generation>:<rule hash>`, else `sid:<display id>` for imported history that recorded nothing
+else. A pool entry accepts all three (`entry_attribution_keys`), the one imprecise join confined to
+pre-lineage records.
+
+- **Realized ranking and direction conflicts** (decision 35, PR3b-1): the cycle summarizes its own
+  paper rows and the supporting-shadow settlements by lineage (`feedback.realized_by_lineage`, the
+  report's `by_strategy` arithmetic), and the router reads an entry's record under every key it
+  accepts. Ties go to the lineage key, then the display id. A resolved conflict's `basis` names the
+  lineage.
+- **Supporting shadows** (decision 38, PR3b-1): one open supporting shadow per context and lineage,
+  both when the cycle opens one and in the book's dedupe door.
+- **The live allowance** (decision 38, PR3b-1): an armed display id with no pool entry to name its
+  lineage is charged the losses keyed `sid:` to it; the fallback was `id:`, which no outcome key equals.
+- Measured 2026-09-18: no display id in this machine's outcomes names two lineages, so PR3b-1
+  changed no routing decision there.
 
 **Deferred decision (explicit, Thomas-only):** R10 consumption is currently scoped to
 `SENSITIVE_MEMORY_GOVERNANCE`. Strategy promotion would be the **second consumption

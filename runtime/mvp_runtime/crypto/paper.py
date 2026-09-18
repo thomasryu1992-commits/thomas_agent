@@ -48,6 +48,7 @@ from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from . import cost as costs
 from .distribution_gate import distribution_admits
+from .candidate_identity import entry_attribution_keys, outcome_attribution_key
 from .strategy import StrategySpec, evaluate_spec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
 
@@ -409,24 +410,37 @@ def directional_skew_admits(
 def _realized_evidence(
     match: Mapping[str, Any], realized_stats: Mapping[str, Mapping[str, Any]] | None,
 ) -> tuple[int, float] | None:
-    """``(closed_count, expectancy)`` for this match's strategy, or None below the floor.
+    """``(closed_count, expectancy)`` for this match's LINEAGE, or None below the floor.
+
+    ``realized_stats`` is keyed by lineage (`feedback.realized_by_lineage`, Thomas decision 35).
+    The match reads every key an outcome of its entry may carry across three eras of
+    record-keeping (`candidate_identity.entry_attribution_keys`), as the lifecycle does, and the
+    groups it finds are one record: an outcome carries exactly one key, so they never overlap.
+    Keyed by the display id, a lineage that reused another's id inherited its record, and one
+    renamed lost its own.
 
     None means "no adequate realized sample", which is a different fact from a measured
     zero — the ranking treats the two differently on purpose."""
     if not realized_stats:
         return None
-    stats = realized_stats.get(str(match.get("strategy_id") or ""))
-    if not isinstance(stats, Mapping):
+    groups: list[tuple[int, float]] = []
+    for key in sorted(entry_attribution_keys(match)):
+        stats = realized_stats.get(key)
+        if not isinstance(stats, Mapping):
+            continue
+        closed = stats.get("closed_count")
+        expectancy = stats.get("expectancy")
+        if not isinstance(closed, (int, float)) or isinstance(closed, bool) or closed <= 0:
+            continue
+        if not isinstance(expectancy, (int, float)) or isinstance(expectancy, bool):
+            continue
+        groups.append((int(closed), float(expectancy)))
+    closed_total = sum(closed for closed, _ in groups)
+    if closed_total < MIN_PRIORITY_SAMPLE_TRADES:
         return None
-    closed = stats.get("closed_count")
-    expectancy = stats.get("expectancy")
-    if not isinstance(closed, (int, float)) or isinstance(closed, bool):
-        return None
-    if not isinstance(expectancy, (int, float)) or isinstance(expectancy, bool):
-        return None
-    if closed < MIN_PRIORITY_SAMPLE_TRADES:
-        return None
-    return int(closed), float(expectancy)
+    if len(groups) == 1:
+        return groups[0]
+    return closed_total, sum(closed * expectancy for closed, expectancy in groups) / closed_total
 
 
 def _rank_matches(
@@ -440,16 +454,17 @@ def _rank_matches(
     sharing strictly negative under the flat cap). Tier 1 — no adequate realized sample:
     ``champion_score`` descending, the pre-evidence key, unchanged from the flat-cap router.
     Tier 2 — adequate sample, non-positive: a lineage that has PROVEN it has no edge here
-    ranks below an untested hypothesis on purpose. ``strategy_id`` breaks every tie so the
-    order never depends on store order."""
-    def key(m: dict[str, Any]) -> tuple[int, float, str]:
+    ranks below an untested hypothesis on purpose. The lineage breaks every tie, then the display
+    id, so the order never depends on store order and a rename never reorders it (decision 35)."""
+    def key(m: dict[str, Any]) -> tuple[int, float, str, str]:
         evidence = _realized_evidence(m, realized_stats)
         champion = m["champion_score"] if m["champion_score"] is not None else -math.inf
+        tie = (outcome_attribution_key(m), m["strategy_id"] or "")
         if evidence is not None and evidence[1] > 0:
-            return (0, -evidence[1], m["strategy_id"] or "")
+            return (0, -evidence[1], *tie)
         if evidence is None:
-            return (1, -champion, m["strategy_id"] or "")
-        return (2, -evidence[1], m["strategy_id"] or "")
+            return (1, -champion, *tie)
+        return (2, -evidence[1], *tie)
     return sorted(matches, key=key)
 
 
@@ -505,6 +520,7 @@ def _resolve_direction_conflict(
     best_match, best_expectancy, best_closed = ranked[0][1]
     basis = {
         "strategy_id": best_match["strategy_id"],
+        "lineage": outcome_attribution_key(best_match),
         "expectancy": best_expectancy,
         "closed_count": best_closed,
     }
@@ -524,8 +540,9 @@ def route_entries(
     strategy is never judged on a BTC hourly row (the source's ``feature_rows`` rule,
     single-snapshot form). The router only proposes.
 
-    ``realized_stats`` (strategy_id -> ``{"closed_count", "expectancy"}``, this runtime's
-    own paper rows plus the supporting-shadow settlements) is what lets a shared fast
+    ``realized_stats`` (lineage key -> ``{"closed_count", "expectancy"}``,
+    `feedback.realized_by_lineage` over this runtime's own paper rows plus the supporting-shadow
+    settlements) is what lets a shared fast
     context be ranked on measured evidence: with it, a same-direction tie goes to the
     proven edge before ``champion_score`` (``_rank_matches``) and a direction conflict can
     resolve toward a backed side instead of always failing closed

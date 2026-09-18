@@ -24,6 +24,26 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The router, the shadow book and the live allowance key on the lineage** (crypto PR3b-1, Thomas
+  decisions 35 and 38, 2026-09-18; `crypto/candidate_identity.py`, `crypto/lifecycle.py`,
+  `crypto/feedback.py`, `crypto/cycle.py`, `crypto/paper.py`, `crypto/counterfactual.py`,
+  `crypto/live_allowance.py`).
+  - **The gap:** the fast contexts' realized ranking and direction-conflict resolution read the
+    report's `by_strategy`, keyed by display id. The factory restarts that id every generation and
+    the door renames on a collision, so a lineage reusing an id inherited the record behind it (a
+    proven edge could take a slot, or resolve a conflict, it never earned) and a renamed lineage
+    lost its own (a proven loser ranked as a fresh hypothesis). The supporting-shadow dedupe had the
+    same key, and the live allowance's fallback key `id:` could equal no outcome key at all.
+  - **The change:** the cycle summarizes by lineage (`feedback.realized_by_lineage`, the same
+    arithmetic), and the router reads an entry's record under every key the lifecycle accepts for it
+    (`cand:`, `gen:`, `sid:`), combined. Ties go to the lineage key. The supporting-shadow dedupe,
+    when opening and in the book door, keys on the lineage; the allowance falls back to `sid:`.
+    `outcome_attribution_key` and `entry_attribution_keys` moved to the `candidate_identity` leaf
+    (the router cannot import `lifecycle`, which imports it through `feedback`); `lifecycle`
+    re-exports them.
+  - **Measured first:** no display id in this machine's paper or shadow outcomes names two lineages
+    (58 ids), so nothing routes differently today.
+
 - **The artifact rides on every record its signal writes** (crypto PR3a-2, 2026-09-18;
   `crypto/paper.py`, `crypto/counterfactual.py`, `crypto/forward_book.py`, `crypto/live_order.py`,
   `crypto/pre_order_gate.py`, `crypto/live_entry.py`, `crypto/live_route.py`,

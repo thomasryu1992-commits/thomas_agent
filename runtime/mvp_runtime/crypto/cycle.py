@@ -910,8 +910,9 @@ def run_crypto_cycle(
     # failure degrades the settlement to its pessimistic assumption, never blocks it.
     #
     # Same-bar routing priority (the fast-context cap, Thomas 2026-08-24): realized
-    # per-strategy evidence — this runtime's OWN paper rows plus the supporting-shadow
-    # settlements, summarized with the same `by_strategy` math the report uses. Computed only
+    # per-lineage evidence — this runtime's OWN paper rows plus the supporting-shadow
+    # settlements, summarized with the same math as the report's `by_strategy` but keyed by
+    # lineage, never display id (PR3b-1, Thomas decision 35). Computed only
     # when this context can hold more than one routable strategy, so a flat-cap context pays
     # nothing for it. Observational at this point: an unreadable store degrades the ranking
     # to champion_score (`realized_stats=None`, the pre-evidence behaviour) rather than
@@ -924,9 +925,7 @@ def run_crypto_cycle(
                 r for r in read_counterfactual_outcomes(root)
                 if set(r.get("block_reasons") or []) & SUPPORTING_SHADOW_REASONS
             ]
-            realized_stats = feedback.summarize_outcomes(
-                list(own_rows) + shadow_rows
-            )["by_strategy"]
+            realized_stats = feedback.realized_by_lineage(list(own_rows) + shadow_rows)
         except ToolError as exc:
             reason_codes.append(exc.reason_code)
             realized_stats = None
