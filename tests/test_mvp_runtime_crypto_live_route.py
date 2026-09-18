@@ -2682,3 +2682,42 @@ def test_a_dropped_send_counts_even_when_it_escapes_untyped(tmp_path, monkeypatc
     assert api_breaker_status(tmp_path)["write"]["last_reason_code"] == "RemoteDisconnected"
     held = run("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")
     assert API_BREAKER_REFUSED in held["live_decision"]["reasons"]
+
+
+@pytest.mark.parametrize("egress,told", [(False, False), (True, True)], ids=["inert-channel", "telegram"])
+def test_only_a_channel_that_reaches_someone_counts_as_told(tmp_path, monkeypatch, egress, told):
+    """The inert channel takes every message and tells nobody: sending through it is no notice, so
+    the latch stays untold and the next cycle tries again."""
+    from runtime.mvp_runtime import operator as operator_mod
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+
+    class _Channel:
+        network_egress = egress
+
+    handed: list[str] = []
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda now=None, root=None: _Channel())
+    monkeypatch.setattr(operator_mod, "notify_operator",
+                        lambda channel, text, repo_root=None: handed.append(text))
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (_Venue(), None))
+    monkeypatch.setattr(live_route, "_run_gated_live_leg", lambda record, **kw: record)
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
+    record = live_route.run_live_leg(
+        route=None, live_routable_strategy_ids=None, feature_row={}, verdict={}, symbol=SYMBOL,
+        collector=None, now=NOW, root=tmp_path)
+    assert len(handed) == 1
+    assert (api_breaker_status(tmp_path)["told_at"] is not None) is told
+    assert (live_route.API_BREAKER_TOLD in record["live_reason_codes"]) is told
+
+
+def test_a_breaker_that_cannot_count_by_the_gate_holds_the_entry(tmp_path, monkeypatch):
+    """Writable when the decision was made, not by the gate: the gate judges it again."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    reads = iter([False, True])
+    monkeypatch.setattr(live_route, "_api_breaker_unwritable", lambda adapter: next(reads))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True, "the decision saw a breaker that could count"
+    assert held["live_pre_order_reread"]["api_breaker_tripped"] is True
+    assert "api_breaker_clear" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)

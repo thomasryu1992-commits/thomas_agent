@@ -2712,3 +2712,15 @@ def test_the_fire_command_tells_the_chat_after_the_fire_however_it_ends(tmp_path
     code = cli.main(["--fire", "--symbol", "BTCUSDT", "--root", str(tmp_path)])
     assert code == (cli.EXIT_OK if ending == "returns" else cli.EXIT_BLOCKED)
     assert events == ["fire", "tell"]
+
+
+def test_a_breaker_that_cannot_count_by_the_probe_s_gate_refuses_it(tmp_path, monkeypatch):
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    reads = iter([False, True])
+    monkeypatch.setattr(cli.ApiErrorRecordingAdapter, "breaker_unwritable", lambda self: next(reads))
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "api_breaker_clear" in str(exc.value)
+    assert adapter.submitted == []

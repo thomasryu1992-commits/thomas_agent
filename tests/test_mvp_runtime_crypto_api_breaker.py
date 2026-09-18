@@ -149,6 +149,19 @@ def test_once_tripped_no_success_clears_it(tmp_path):
     assert status[API_CALL_WRITE]["consecutive"] == MAX_CONSECUTIVE_API_ERRORS
 
 
+def test_while_tripped_the_record_is_frozen_as_evidence(tmp_path):
+    """Once latched, a success of either class changes nothing — not even the class that did not
+    trip. What else was failing when it tripped is what the operator reads before clearing."""
+    breaker = _breaker(tmp_path)
+    for _ in range(2):
+        _fail(breaker, API_CALL_READ, call="open_orders")
+    for _ in range(MAX_CONSECUTIVE_API_ERRORS):
+        _fail(breaker, API_CALL_WRITE)
+    before = read_api_errors(tmp_path)
+    breaker.record_success(call_class=API_CALL_READ)
+    assert read_api_errors(tmp_path) == before
+
+
 def test_a_success_with_nothing_counted_writes_nothing(tmp_path):
     """The normal path — every signed call of every pass — costs a read of the record, never a
     write of it."""
@@ -419,7 +432,7 @@ def test_what_counts(error, counts):
 
 
 @pytest.mark.parametrize("data,counts", [
-    ({"venue_code": -1015, "http_status": 429}, True),     # too many new orders
+    ({"venue_code": -1015}, True),                          # too many new orders, by its code alone
     ({"venue_code": -1016}, True),                          # the service is going down
     ({"venue_code": -1002, "http_status": 401}, True),     # not authorized
     ({"venue_code": -1011}, True),                          # this IP may not
