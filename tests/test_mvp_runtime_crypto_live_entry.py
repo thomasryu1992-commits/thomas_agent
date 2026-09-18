@@ -29,6 +29,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 )
 from runtime.mvp_runtime.crypto.live_position import reconcile_positions
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
+from tests._helpers import healthy_optional_data
 
 NOW = "2026-07-25T12:00:00Z"
 
@@ -119,6 +120,7 @@ def _plan(**kw):
         daily_loss_breached=kw.pop("daily_loss_breached", False),
         bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
         api_breaker_tripped=kw.pop("api_breaker_tripped", False),
+        optional_data=kw.pop("optional_data", healthy_optional_data()),
         submitted_today=kw.pop("submitted_today", 0),
         equity_usdt=kw.pop("equity_usdt", 1000.0),
         # A healthy book by default, per this helper's own rule (every door open; each test
@@ -279,6 +281,57 @@ def test_only_an_explicit_false_clears_the_api_breaker_door(unknown):
     """Review of #889: the probe's gate already read it this way, and the leg's door now does."""
     decision = _plan(api_breaker_tripped=unknown)
     assert decision["reasons"] == [le.API_BREAKER_REFUSED]
+
+
+# --- the optional data (PR2d-2, Thomas decision 28) ------------------------------------------------
+
+@pytest.mark.parametrize("optional_data", [
+    None, "healthy", {}, {"degraded": [], "stale": None}, {"degraded": "FUNDING_DEGRADED", "stale": []},
+], ids=["none", "text", "empty", "stale-missing", "degraded-not-a-list"])
+def test_optional_data_nobody_can_read_refuses(optional_data):
+    decision = _plan(optional_data=optional_data)
+    assert decision["reasons"] == [le.OPTIONAL_DATA_UNKNOWN]
+
+
+def test_a_degraded_leg_refuses_the_context_and_names_it():
+    decision = _plan(optional_data={**healthy_optional_data(), "degraded": ["FUNDING_DEGRADED", "HTF_DEGRADED"]})
+    assert decision["reasons"] == [le.OPTIONAL_DATA_DEGRADED]
+    assert decision["optional_data_degraded"] == ["FUNDING_DEGRADED", "HTF_DEGRADED"]
+
+
+def test_a_stale_feed_refuses_the_context_and_names_it():
+    decision = _plan(optional_data={**healthy_optional_data(), "stale": ["positioning"]})
+    assert decision["reasons"] == [le.OPTIONAL_DATA_STALE]
+    assert decision["optional_data_stale"] == ["positioning"]
+
+
+def test_degraded_and_stale_are_both_named():
+    decision = _plan(optional_data={**healthy_optional_data(), "degraded": ["REFERENCE_DEGRADED"],
+                                    "stale": ["funding"]})
+    assert decision["reasons"] == [le.OPTIONAL_DATA_DEGRADED, le.OPTIONAL_DATA_STALE]
+
+
+def test_healthy_optional_data_lets_the_entry_through():
+    assert _plan(optional_data=healthy_optional_data())["status"] == le.STATUS_READY
+
+
+def test_the_optional_data_has_no_default():
+    parameter = inspect.signature(le.plan_live_entry).parameters["optional_data"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_the_gate_names_the_optional_data_door_and_seals_what_it_judged():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    assert decision["ready"] is True, decision["reasons"]
+    sealed = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                profile=_gate_profile(), now=NOW)
+    assert sealed["approved"] is True
+    assert sealed["facts"]["optional_data"] == kwargs["optional_data"]
+    degraded = {**kwargs, "optional_data": {**healthy_optional_data(), "degraded": ["FUNDING_DEGRADED"]}}
+    refused = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=degraded,
+                                 profile=_gate_profile(), now=NOW)
+    assert refused["approved"] is False and "optional_data_healthy" in refused["failed_checks"]
 
 
 def test_the_api_breaker_fact_has_no_default():

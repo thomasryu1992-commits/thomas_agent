@@ -25,10 +25,11 @@ opens no socket, and this cycle behaves exactly as it did before the wiring exis
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
+from .. import timeutil
 from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, oi_store, orderbook_store, pool, positioning_store
@@ -122,6 +123,102 @@ _FUNDING_RECORDS = DEFAULT_FUNDING_RECORDS
 # the oi_* families on the same depth, and two numbers for one fetch would let the gate and the
 # fetch drift apart silently.
 _LIQUIDATION_DAYS = DERIVATIVE_HISTORY_DAYS
+
+# --- the optional data an entry is judged on (PR2d-2, Thomas decision 28) ----------------------
+#
+# Every leg above degrades rather than blocks, which is right for paper and wrong for money in two
+# ways the investigation measured (`pr2d-missing-checks-investigation.md` §4). A feed that failed
+# leaves its columns None, so a strategy reading it cannot fire — but neither can it VETO: two
+# strategies on one context that would have disagreed become one that enters alone. And a feed
+# that stopped updating keeps its last value forever (`features._asof_align` carries it forward
+# with no age limit), so a condition can hold on a reading days old with no degrade code at all.
+#
+# So the live entry door refuses the context (decision 28): any degrade code below, or any feed
+# older than its bound. Paper, the counterfactual shadow and the probe are unaffected — they do
+# not read this.
+OPTIONAL_DATA_DEGRADED_CODES = frozenset({
+    FUNDING_DEGRADED, MARK_PRICE_DEGRADED, INDEX_PRICE_DEGRADED, PREMIUM_INDEX_DEGRADED,
+    LIQUIDATION_DEGRADED, OPEN_INTEREST_DEGRADED, HTF_DEGRADED, REFERENCE_DEGRADED,
+    CROSS_SECTION_DEGRADED,
+})
+# How old the reading a bar carries may be, per feed on its own cadence — two periods each (Thomas
+# decision 28). Measured against the BAR's open time, the instant the as-of join keys on: the
+# decision reads the value that bar carries, and a 1d bar opens a day before it is decided on.
+# The same-grid legs (mark, index, premium, the reference, the cohort) join exactly and need none.
+FUNDING_MAX_AGE_HOURS = 16.0          # settlements every 8 hours
+DAILY_SERIES_MAX_AGE_HOURS = 48.0     # liquidations and open interest; the forming day is dropped
+POSITIONING_MAX_AGE_HOURS = 3.0       # accumulated hourly by this runtime
+OPTIONAL_FEED_MAX_AGE_HOURS = {
+    "funding": FUNDING_MAX_AGE_HOURS,
+    "liquidations": DAILY_SERIES_MAX_AGE_HOURS,
+    "open_interest": DAILY_SERIES_MAX_AGE_HOURS,
+    "positioning": POSITIONING_MAX_AGE_HOURS,
+}
+
+
+def _feed_readings(feed: str, events: Any) -> list[Any]:
+    """The events a feed's columns are aligned from. Positioning pairs two of its series by time
+    (`features._positioning_columns`), so a time only one of them carries is no reading: the
+    columns stay on the last pair however fresh the other series is."""
+    if not isinstance(events, list):
+        return []
+    if feed != "positioning":
+        return events
+    times: dict[str, set[str]] = {}
+    for row in events:
+        if isinstance(row, Mapping) and isinstance(row.get("series"), str) and isinstance(row.get("timestamp"), str):
+            times.setdefault(row["series"], set()).add(row["timestamp"])
+    paired = (times.get("top_position") or set()) & (times.get("global_account") or set())
+    return [{"timestamp": stamp} for stamp in paired]
+
+
+def optional_data_health(
+    snapshot: Mapping[str, Any], *, codes: Sequence[str], bar_time: Any,
+) -> dict[str, Any]:
+    """What the live entry door judges a context's optional data on (PR2d-2). Pure.
+
+    ``degraded`` is this cycle's degrade codes from the optional legs. ``stale`` names each feed
+    whose reading at ``bar_time`` — the last event at or before the bar's open, the one the as-of
+    join gives the bar — is older than its bound, or that holds events and none readable at or
+    before the bar. A feed the snapshot does not carry (not configured, or nothing accumulated
+    yet) is not judged: its columns are None, as they always were. A feed present and empty
+    failed its fetch, and its degrade code already says so."""
+    degraded = sorted({str(code) for code in codes if code in OPTIONAL_DATA_DEGRADED_CODES})
+    try:
+        bar = timeutil.parse_iso(str(bar_time))
+    except (TypeError, ValueError, OverflowError):
+        bar = None
+    feeds: dict[str, dict[str, Any]] = {}
+    stale: list[str] = []
+    for feed, bound in OPTIONAL_FEED_MAX_AGE_HOURS.items():
+        state: dict[str, Any] = {"max_age_hours": bound, "last_event_at": None, "age_hours": None}
+        if feed not in snapshot:
+            feeds[feed] = {**state, "state": "absent"}
+            continue
+        events = snapshot.get(feed)
+        if not events:
+            feeds[feed] = {**state, "state": "empty"}
+            continue
+        last = None
+        for event in _feed_readings(feed, events):
+            stamp = event.get("timestamp") if isinstance(event, Mapping) else None
+            try:
+                moment = timeutil.parse_iso(str(stamp)) if isinstance(stamp, str) else None
+            except (TypeError, ValueError, OverflowError):
+                moment = None
+            if moment is not None and bar is not None and moment <= bar and (last is None or moment > last):
+                last = moment
+        if last is None:
+            feeds[feed] = {**state, "state": "unreadable"}
+            stale.append(feed)
+            continue
+        age = (bar - last).total_seconds() / 3600.0
+        fresh = age <= bound
+        feeds[feed] = {**state, "state": "ok" if fresh else "stale",
+                       "last_event_at": timeutil.format_iso(last), "age_hours": round(age, 3)}
+        if not fresh:
+            stale.append(feed)
+    return {"bar_time": bar_time, "degraded": degraded, "stale": stale, "feeds": feeds}
 
 
 def attach_feeds(
@@ -630,6 +727,13 @@ def run_crypto_cycle(
 
     # 2) research features (C3).
     feature_row = latest_feature_row(snapshot)
+    # The optional data the live entry door judges this context on (PR2d-2): computed here, where
+    # the legs' degrade codes and the series the row was built from are both in hand.
+    optional_data = optional_data_health(
+        snapshot,
+        codes=[*feed_reasons, htf_reason, reference_reason, cross_section_reason],
+        bar_time=feature_row.get("timestamp") if isinstance(feature_row, Mapping) else None,
+    )
 
     # 3) validation guards (C4) — stricter-wins; unreadable history fails closed.
     health = run_data_health_check(snapshot, now=now, timeframe_minutes=TIMEFRAMES[timeframe])
@@ -1038,6 +1142,7 @@ def run_crypto_cycle(
         root=root,
         control_store=control_store,
         live_arm_approvals=live_arm_approvals,
+        optional_data=optional_data,
     )
     reason_codes.extend(live["live_reason_codes"])
 
@@ -1128,6 +1233,12 @@ def run_crypto_cycle(
         "live_halt": live["halt"],
         # What the leg saw of the execution stage (PR1a) — None when the gate was closed.
         "live_execution_stage": live.get("execution_stage"),
+        # The optional feeds' age at this bar, and the ones past their bound (PR2d-2) — on every
+        # cycle, open gate or not, so the bounds can be judged against what the feeds really do.
+        # The legs' degrade codes are in `reason_codes` already.
+        "optional_data_stale": list(optional_data["stale"]),
+        "optional_data_ages": {feed: state["age_hours"] for feed, state in optional_data["feeds"].items()
+                               if state["age_hours"] is not None},
         # The cooldown a live stop-out wrote this cycle (PR2a) — None on every other cycle. Paper's
         # refusal record carries its bound; this is where the live one becomes auditable.
         "live_stop_cooldown": live.get("live_stop_cooldown"),

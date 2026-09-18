@@ -104,6 +104,12 @@ class FakeSnapshotStore:
         return snapshot["risk_snapshot_sha256"]
 
 
+def healthy_optional_data(bar_time=None):
+    """The optional data of a context whose legs all answered and whose feeds are fresh (PR2d-2):
+    what `cycle.optional_data_health` returns for it, and what the entry door lets through."""
+    return {"bar_time": bar_time, "degraded": [], "stale": [], "feeds": {}}
+
+
 def gate_stage():
     """A binding stage record at the live rung, with the approval the gate's profile requires."""
     from runtime.mvp_runtime.crypto.execution_stage import StageStatus

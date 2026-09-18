@@ -1756,3 +1756,175 @@ def test_the_live_leg_is_told_which_approval_armed_each_strategy(tmp_path, monke
         )
         _cycle(tmp_path, FakeExchangeCollector())
         assert seen["live_arm_approvals"] == {spec["strategy_id"]: named}
+
+
+# --- the optional data the live entry door judges (PR2d-2, Thomas decision 28) --------------------
+
+BAR = "2026-07-22T08:00:00Z"
+
+
+def _at(hours_before_bar: float) -> str:
+    return timeutil.format_iso(timeutil.parse_iso(BAR) - timedelta(hours=hours_before_bar))
+
+
+def _positioning(*stamps, series=("top_position", "global_account")):
+    return [{"series": name, "timestamp": stamp, "long_ratio": 0.5} for stamp in stamps for name in series]
+
+
+def _fresh_snapshot():
+    return {
+        "funding": [{"timestamp": _at(12)}, {"timestamp": _at(4)}],
+        "liquidations": [{"timestamp": _at(56)}, {"timestamp": _at(32)}],
+        "open_interest": [{"timestamp": _at(32)}],
+        "positioning": _positioning(_at(2), _at(1)),
+    }
+
+
+def test_a_context_whose_feeds_answered_and_are_fresh_is_healthy():
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=BAR)
+    assert (health["degraded"], health["stale"]) == ([], [])
+    assert {feed: (s["state"], s["age_hours"]) for feed, s in health["feeds"].items()} == {
+        "funding": ("ok", 4.0), "liquidations": ("ok", 32.0), "open_interest": ("ok", 32.0),
+        "positioning": ("ok", 1.0)}
+    assert health["feeds"]["funding"]["last_event_at"] == _at(4)
+
+
+def test_only_the_optional_legs_degrade_codes_count():
+    from runtime.mvp_runtime.crypto import cycle as c
+
+    health = c.optional_data_health(
+        {}, codes=[c.FUNDING_DEGRADED, None, c.MARKET_DATA_DEGRADED, c.HTF_DEGRADED, c.FUNDING_DEGRADED],
+        bar_time=BAR)
+    assert health["degraded"] == sorted([c.FUNDING_DEGRADED, c.HTF_DEGRADED])
+    assert c.OPTIONAL_DATA_DEGRADED_CODES == {
+        c.FUNDING_DEGRADED, c.MARK_PRICE_DEGRADED, c.INDEX_PRICE_DEGRADED, c.PREMIUM_INDEX_DEGRADED,
+        c.LIQUIDATION_DEGRADED, c.OPEN_INTEREST_DEGRADED, c.HTF_DEGRADED, c.REFERENCE_DEGRADED,
+        c.CROSS_SECTION_DEGRADED}
+
+
+@pytest.mark.parametrize("feed,bound", [
+    ("funding", 16.0), ("liquidations", 48.0), ("open_interest", 48.0), ("positioning", 3.0),
+])
+def test_each_feed_is_fresh_at_its_bound_and_stale_past_it(feed, bound):
+    from runtime.mvp_runtime.crypto.cycle import OPTIONAL_FEED_MAX_AGE_HOURS, optional_data_health
+
+    assert OPTIONAL_FEED_MAX_AGE_HOURS[feed] == bound
+    events = (lambda stamp: _positioning(stamp)) if feed == "positioning" else (lambda stamp: [{"timestamp": stamp}])
+    at_bound = optional_data_health({feed: events(_at(bound))}, codes=[], bar_time=BAR)
+    assert at_bound["stale"] == [] and at_bound["feeds"][feed]["state"] == "ok"
+    past = optional_data_health({feed: events(_at(bound + 1 / 3600))}, codes=[], bar_time=BAR)
+    assert past["stale"] == [feed] and past["feeds"][feed]["state"] == "stale"
+
+
+def test_a_reading_after_the_bar_does_not_make_it_fresh():
+    """The bar carries the last event at or before its open; one after it is not the bar's."""
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    health = optional_data_health({"funding": [{"timestamp": _at(20)}, {"timestamp": _at(-1)}]},
+                                  codes=[], bar_time=BAR)
+    assert health["stale"] == ["funding"] and health["feeds"]["funding"]["age_hours"] == 20.0
+
+
+def test_a_feed_not_carried_is_not_judged_and_an_empty_one_is_its_degrade_code():
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    health = optional_data_health({"funding": []}, codes=[], bar_time=BAR)
+    assert health["stale"] == []
+    assert health["feeds"]["funding"]["state"] == "empty"
+    assert {health["feeds"][f]["state"] for f in ("liquidations", "open_interest", "positioning")} == {"absent"}
+
+
+@pytest.mark.parametrize("events", [
+    [{"timestamp": "yesterday"}], [{"time": BAR}], ["not an event"], {"timestamp": BAR},
+], ids=["unparseable", "no-timestamp", "not-a-mapping", "not-a-list"])
+def test_a_feed_with_no_readable_reading_is_stale(events):
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    health = optional_data_health({"funding": events}, codes=[], bar_time=BAR)
+    assert health["stale"] == ["funding"] and health["feeds"]["funding"]["state"] == "unreadable"
+
+
+def test_positioning_is_as_fresh_as_its_last_pair():
+    """The columns pair two series by time; one series updating alone leaves them on the last
+    pair, so that is the age."""
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    rows = _positioning(_at(5)) + _positioning(_at(1), series=("top_position",))
+    health = optional_data_health({"positioning": rows}, codes=[], bar_time=BAR)
+    assert health["stale"] == ["positioning"] and health["feeds"]["positioning"]["age_hours"] == 5.0
+
+
+def test_a_bar_that_cannot_be_read_leaves_every_carried_feed_stale():
+    from runtime.mvp_runtime.crypto.cycle import optional_data_health
+
+    health = optional_data_health(_fresh_snapshot(), codes=[], bar_time=None)
+    assert health["stale"] == ["funding", "liquidations", "open_interest", "positioning"]
+
+
+class _FundingCollector(FakeExchangeCollector):
+    """The fake exchange with a funding feed: ``hours_old`` before the last bar's open, or down."""
+
+    def __init__(self, *, hours_old=None, down=False):
+        super().__init__()
+        self._hours_old, self._down = hours_old, down
+
+    def funding_history(self, symbol, *, records, timeout_seconds):
+        if self._down:
+            raise ToolError("TOOL_TRANSPORT", "funding unreachable")
+        last_open = NOW_DT - timedelta(hours=1) - timedelta(days=1)
+        return [{"timestamp": timeutil.format_iso(last_open - timedelta(hours=self._hours_old)),
+                 "funding_rate": 0.0001}]
+
+
+@pytest.mark.parametrize("collector,degraded,stale", [
+    (_FundingCollector(hours_old=2), [], []),
+    (_FundingCollector(hours_old=20), [], ["funding"]),
+    (_FundingCollector(down=True), ["FUNDING_DEGRADED"], []),
+], ids=["fresh", "stale", "down"])
+def test_the_cycle_hands_the_live_leg_what_its_optional_legs_did(tmp_path, monkeypatch, collector,
+                                                                  degraded, stale):
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, collector)
+    handed = seen["optional_data"]
+    assert (handed["degraded"], handed["stale"]) == (degraded, stale)
+    assert handed["bar_time"] == seen["feature_row"]["timestamp"]
+    assert record["optional_data_stale"] == stale
+    if degraded:
+        assert "funding" not in record["optional_data_ages"]
+    else:
+        assert record["optional_data_ages"]["funding"] == (2.0 if not stale else 20.0)
+
+
+@pytest.mark.parametrize("leg,code", [
+    ("attach_htf", "HTF_DEGRADED"),
+    ("attach_reference", "REFERENCE_DEGRADED"),
+    ("attach_cross_section", "CROSS_SECTION_DEGRADED"),
+], ids=["htf", "reference", "cross-section"])
+def test_every_optional_leg_s_degrade_reaches_the_live_door(tmp_path, monkeypatch, leg, code):
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    seen: dict[str, object] = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return {"live_route_status": "DISABLED", "live_opened": None, "live_settled": None,
+                "live_reason_codes": [], "halt": False}
+
+    monkeypatch.setattr(cycle_mod, "run_live_leg", _capture)
+    monkeypatch.setattr(cycle_mod, leg, lambda snapshot, **kw: code)
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert seen["optional_data"]["degraded"] == [code]
+    assert code in record["reason_codes"]

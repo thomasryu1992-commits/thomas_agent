@@ -114,6 +114,11 @@ VERDICT_REFUSED = "LIVE_ENTRY_VERDICT_REFUSED"
 BRACKET_BREAKER_REFUSED = "LIVE_ENTRY_BRACKET_BREAKER_TRIPPED"
 # The venue refused or could not answer five signed calls of one class in a row (PR2d-1).
 API_BREAKER_REFUSED = "LIVE_ENTRY_API_BREAKER_TRIPPED"
+# The optional data this context was judged on (PR2d-2, Thomas decision 28): a leg degraded this
+# cycle, a feed older than its bound, or no account of it at all.
+OPTIONAL_DATA_DEGRADED = "LIVE_ENTRY_OPTIONAL_DATA_DEGRADED"
+OPTIONAL_DATA_STALE = "LIVE_ENTRY_OPTIONAL_DATA_STALE"
+OPTIONAL_DATA_UNKNOWN = "LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN"
 RECONCILE_REFUSED = "LIVE_ENTRY_RECONCILE_REFUSED"
 CAPACITY_REFUSED = "LIVE_ENTRY_CAPACITY_REFUSED"
 NO_FILTERS = "LIVE_ENTRY_NO_VENUE_FILTERS"
@@ -376,6 +381,9 @@ def plan_live_entry(
     # required fact, like the bracket streak: a door that forgets it opens the one this closes.
     # Only an explicit False is clear.
     api_breaker_tripped: bool,
+    # PR2d-2: the optional data this context was judged on (`cycle.optional_data_health`): the
+    # legs' degrade codes this cycle and the feeds past their age. No default, and None refuses.
+    optional_data: Mapping[str, Any] | None,
     # The machine's execution stage, resolved once by the leg and threaded to the guard (PR1b).
     # No default: a caller that does not state the stage must not be able to enter. The leg reads
     # it beside the budget, so the record it stamps and the rung the guard judged are one answer.
@@ -487,6 +495,23 @@ def plan_live_entry(
     if api_breaker_tripped is not False:
         reasons.append(API_BREAKER_REFUSED)
         detail["api_breaker_tripped"] = api_breaker_tripped
+
+    # 2c-3. The optional data (PR2d-2, Thomas decision 28). A leg that failed this cycle leaves its
+    # columns None, so a strategy reading it can neither fire nor veto — two strategies on this
+    # context that would have disagreed become one that enters alone. A feed that stopped
+    # updating keeps its last reading forever, so a condition can hold on one days old with no
+    # degrade code at all. Either refuses the whole context, whatever the plan reads.
+    degraded = optional_data.get("degraded") if isinstance(optional_data, Mapping) else None
+    stale = optional_data.get("stale") if isinstance(optional_data, Mapping) else None
+    if not (isinstance(degraded, (list, tuple)) and isinstance(stale, (list, tuple))):
+        reasons.append(OPTIONAL_DATA_UNKNOWN)
+    else:
+        if degraded:
+            reasons.append(OPTIONAL_DATA_DEGRADED)
+            detail["optional_data_degraded"] = list(degraded)
+        if stale:
+            reasons.append(OPTIONAL_DATA_STALE)
+            detail["optional_data_stale"] = list(stale)
 
     # 2d. One entry per context per bar, and the post-stop-loss cooldown (PR2a) — paper's two
     # rules, which sit below the line where paper publishes the route this leg is handed. The
@@ -804,6 +829,7 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
     ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
     ("api_breaker_clear", frozenset({API_BREAKER_REFUSED})),
+    ("optional_data_healthy", frozenset({OPTIONAL_DATA_DEGRADED, OPTIONAL_DATA_STALE, OPTIONAL_DATA_UNKNOWN})),
     ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
     ("symbol_not_in_flight", frozenset({SYMBOL_IN_FLIGHT})),
     ("book_reconciled", frozenset({RECONCILE_REFUSED})),
@@ -895,6 +921,8 @@ def gate_live_entry(
         "budget_registered": kw.get("budget_registered"),
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "api_breaker_tripped": kw.get("api_breaker_tripped"),
+        # PR2d-2: the optional data the context was judged on, as the decision read it.
+        "optional_data": kw.get("optional_data"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),
         "entry_bar_time": kw.get("entry_bar_time"),
         # The moment the decision was judged at (PR2c-1); the gate seals it as `decided_at`.
@@ -982,6 +1010,9 @@ __all__ = [
     "MAX_REFERENCE_DIVERGENCE_BPS",
     "NO_FILTERS",
     "NO_PLAN",
+    "OPTIONAL_DATA_DEGRADED",
+    "OPTIONAL_DATA_STALE",
+    "OPTIONAL_DATA_UNKNOWN",
     "PRICE_BEYOND_BRACKET",
     "PRICE_DIVERGED",
     "RECONCILE_REFUSED",

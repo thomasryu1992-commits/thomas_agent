@@ -300,6 +300,10 @@ def run_live_leg(
     # of the approved profile the pre-order gate requires; None — the pool could not be read, or a
     # caller that does not say — leaves every entry's profile incomplete, which refuses it.
     live_arm_approvals: Mapping[str, str | None] | None = None,
+    # PR2d-2, decision 28: the optional data this context was judged on
+    # (`cycle.optional_data_health`). None — a caller that does not say — refuses every entry;
+    # closes are decided above the entry block and never read it.
+    optional_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One cycle's live leg: reconcile, settle, protect, maybe open. Returns a record.
 
@@ -359,6 +363,7 @@ def run_live_leg(
             root=root,
             control_store=control_store,
             timeout_seconds=timeout_seconds,
+            optional_data=optional_data,
         )
     except MvpRuntimeError as exc:
         # A typed refusal before or between venue calls (a foreign root run, an unreadable
@@ -399,6 +404,7 @@ def _run_gated_live_leg(
     control_store: ControlStore | None,
     timeout_seconds: int,
     live_arm_approvals: Mapping[str, str | None] | None = None,
+    optional_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The leg proper, once the gate is open. Split out so every exit path above is one
     ``except`` rather than a ``try`` wrapped around two hundred lines."""
@@ -632,6 +638,7 @@ def _run_gated_live_leg(
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
         bracket_failures_consecutive=breaker["consecutive"],
         api_breaker_tripped=bool(api_breaker_before["tripped"]) or api_unwritable,
+        optional_data=optional_data,
         submitted_today=count_today(root),
         # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
         # unreadable account cannot produce a position.
@@ -645,6 +652,11 @@ def _run_gated_live_leg(
         clock=_entry_clock(),
     )
     decision = plan_live_entry(**decision_kwargs)
+    # What the optional-data door judged (PR2d-2), beside the decision, so a refusal names the feed.
+    record["live_optional_data"] = (
+        {key: optional_data.get(key) for key in ("bar_time", "degraded", "stale")}
+        if isinstance(optional_data, Mapping) else None
+    )
     record["live_decision"] = {
         "status": decision["status"],
         "ready": decision["ready"],
