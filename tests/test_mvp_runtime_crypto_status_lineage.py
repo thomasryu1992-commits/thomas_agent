@@ -118,6 +118,15 @@ def test_a_decision_that_names_no_lineage_is_not_applied(tmp_path):
     assert _entries(tmp_path)["S1"]["status"] == "PAPER_ACTIVE"
 
 
+def test_a_decision_that_does_not_name_its_status_is_not_applied(tmp_path):
+    """The status judged is part of what a decision is about; one that does not say is not guessed at."""
+    entry = _entry("S1", "cand_A")
+    _install(tmp_path, entry)
+    silent = {k: v for k, v in _decision(entry).items() if k != "previous_status"}
+    [stale] = pool.apply_status_decisions([silent], root=tmp_path)["stale"]
+    assert stale["problem"] == "the decision does not name the lineage and status it judged"
+
+
 def test_a_stale_decision_about_a_now_terminal_entry_does_not_hold_back_the_batch(tmp_path):
     """The id now names another lineage that is terminal: the decision says nothing about it, so it
     is skipped, not refused as an attempt to move a terminal entry — which would drop the batch."""
