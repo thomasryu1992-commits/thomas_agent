@@ -56,7 +56,7 @@ from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
-from .candidate_identity import LINEAGE_FIELDS, lineage_of
+from .candidate_identity import LINEAGE_FIELDS, entry_attribution_keys, lineage_of
 from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
 # this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
 # moved to a leaf so `factory` no longer needs a module-level edge into this store.
@@ -1578,6 +1578,21 @@ def routable_strategy_ids(pool: Mapping[str, Any]) -> set[str]:
         if isinstance(entry, Mapping)
         and entry.get("status") in OCCUPYING_STATUSES
         and entry.get("strategy_id")
+    }
+
+
+def routable_lineage_keys(pool: Mapping[str, Any]) -> set[str]:
+    """Every lineage key an entry the pool can still route accepts
+    (`candidate_identity.entry_attribution_keys`): :func:`routable_strategy_ids` by lineage, the set
+    a lineage-sealed drawdown rebase is re-checked against (PR3b-3). The same membership, and the
+    same rule: "the pool could not be read" is the caller's to represent, never an empty set."""
+    return {
+        key
+        for entry in (pool.get("active_strategies") or [])
+        if isinstance(entry, Mapping)
+        and entry.get("status") in OCCUPYING_STATUSES
+        and entry.get("strategy_id")
+        for key in entry_attribution_keys(entry)
     }
 
 

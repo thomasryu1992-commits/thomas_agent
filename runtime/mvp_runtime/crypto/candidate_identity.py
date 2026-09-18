@@ -63,6 +63,17 @@ def outcome_attribution_key(record: Mapping[str, Any]) -> str:
     return f"sid:{strategy_id}" if isinstance(strategy_id, str) and strategy_id else ""
 
 
+# The forms `outcome_attribution_key` returns. A value with one of these prefixes names a lineage; a
+# bare value is a display id (PR3b-3: a drawdown rebase seals lineage keys, where it named ids).
+LINEAGE_KEY_PREFIXES = ("cand:", "gen:", "sid:")
+
+
+def is_lineage_key(value: Any) -> bool:
+    """Whether ``value`` is a lineage key (`outcome_attribution_key`'s form), not a display id."""
+    return isinstance(value, str) and any(
+        value.startswith(prefix) and len(value) > len(prefix) for prefix in LINEAGE_KEY_PREFIXES)
+
+
 def entry_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
     """Every key an outcome of THIS pool entry could carry, across three eras of
     record-keeping. An outcome is keyed at the best precision IT has, so the entry

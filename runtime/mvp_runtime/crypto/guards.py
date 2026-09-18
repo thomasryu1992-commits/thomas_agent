@@ -34,6 +34,7 @@ from typing import Any, Mapping, Sequence
 
 from .. import timeutil
 from . import feedback
+from .candidate_identity import is_lineage_key, outcome_attribution_key
 
 # data-health defaults (source config/settings.py; TIMEFRAME_MINUTES there is the
 # cycle timeframe — the caller passes the snapshot's own timeframe minutes instead).
@@ -114,9 +115,11 @@ class RiskLimits:
     record_sha256: str | None = None
     # The DRAWDOWN baseline's exclusion list, and only the drawdown's — daily, weekly and
     # consecutive-loss keep judging every closed outcome. Empty is today's behaviour exactly.
-    # These ids are a *claim the record makes*, never the decision: :func:`drawdown_baseline`
+    # These are a *claim the record makes*, never the decision: :func:`drawdown_baseline`
     # re-checks every one against the live pool, so a lineage that is routable again keeps its
-    # losses in the window no matter how this record was written.
+    # losses in the window no matter how this record was written. Lineage keys since PR3b-3
+    # (Thomas decisions 37 and 39, sealed at registration); a bare value is a display id, the form
+    # a record registered before then carries.
     drawdown_excluded_strategy_ids: tuple[str, ...] = ()
 
     def problems(self) -> list[str]:
@@ -393,6 +396,7 @@ def drawdown_baseline(
     *,
     excluded: Sequence[str] = (),
     routable: set[str] | None = None,
+    routable_lineages: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """``(rows the drawdown breaker measures, what was set aside and why)``. Pure.
 
@@ -400,8 +404,10 @@ def drawdown_baseline(
     came from a lineage that is not currently routable.** Three conditions, all required, and
     every one of them fails toward keeping the loss:
 
-    1. the row **names** a lineage (a non-empty ``strategy_id``) — absence of evidence is not
-       evidence of retirement, so an unattributable row never leaves;
+    1. the row **names** a lineage in the form the record names them — a lineage key
+       (`candidate_identity.outcome_attribution_key`), or for a record from before PR3b-3 a
+       non-empty ``strategy_id`` — absence of evidence is not evidence of retirement, so an
+       unattributable row never leaves;
     2. that lineage is **named in the record** — the operator retired it deliberately and said so;
     3. that lineage is **not routable right now** — re-checked here against the live pool rather
        than trusted from the record, which is what makes a re-promotion silently invalidate its
@@ -415,6 +421,19 @@ def drawdown_baseline(
     ``excluded`` empty — no record, or a record with no rebase block — returns every row and an
     ``applied: False`` summary, which is the pre-rebase behaviour exactly rather than an
     approximation of it.
+
+    **By lineage** (PR3b-3, Thomas decisions 37 and 39). A record registered since names lineage
+    keys, sealed from the pool when it was registered (`risk_limits.seal_drawdown_exclusion`). A
+    row leaves when its own key (`candidate_identity.outcome_attribution_key`) is named and no
+    entry the pool can route still accepts that key (``routable_lineages``,
+    `pool.routable_lineage_keys`). So a lineage that took a retired one's display id keeps its
+    losses, and a retired lineage installed again under another name gets its losses back —
+    for rows that carry a lineage. The seal names a lineage by its candidate and its generation
+    and rule hash, not its display id, so a row with no lineage fields (written before the lineage
+    reached the live leg, 2026-07-25) stays in the window unless its ``sid:`` key was named on
+    purpose. ``routable_lineages=None`` cannot verify a lineage key, and keeps its rows. A bare
+    value is a display id from an older record, judged by the row's display id against
+    ``routable``, as before.
 
     This is a **narrowing of one breaker's window, not a rewrite of history**: the ledger is
     untouched, `feedback` and Gate 0 keep reading the full record, and the daily, weekly and
@@ -431,27 +450,34 @@ def drawdown_baseline(
     }
     if not named:
         return outcomes, summary
-    if routable is None:
+    by_key = [s for s in named if is_lineage_key(s)]
+    by_id = [s for s in named if not is_lineage_key(s)]
+    if (by_key and routable_lineages is None) or (by_id and routable is None):
         # Named, but unverifiable. Reported as its own state rather than folded into "not
         # applied": an operator who registered a rebase and sees the full drawdown needs to know
         # the pool read failed, not conclude the record was rejected.
         summary["retained_because_pool_unreadable"] = True
         return outcomes, summary
 
-    leaving = {s for s in named if s not in routable}
+    leaving_keys = {s for s in by_key if s not in (routable_lineages or set())}
+    leaving_ids = {s for s in by_id if s not in (routable or set())}
     summary["applied"] = True
-    summary["excluded_lineages"] = sorted(leaving)
-    summary["retained_because_routable"] = sorted(s for s in named if s in routable)
+    summary["excluded_lineages"] = sorted(leaving_keys | leaving_ids)
+    summary["retained_because_routable"] = sorted(
+        [s for s in by_key if s in (routable_lineages or set())] + [s for s in by_id if s in (routable or set())])
 
     kept: list[dict[str, Any]] = []
     unattributable = 0
     for row in outcomes:
+        key = outcome_attribution_key(row) if isinstance(row, dict) else ""
         sid = str(row.get("strategy_id") or "") if isinstance(row, dict) else ""
-        if not sid:
+        # Attributable in the form the record names: a lineage key for sealed names, a display id
+        # for an older record's. A row that can be matched to neither never leaves.
+        if not ((by_key and key) or (by_id and sid)):
             unattributable += 1
             kept.append(row)
             continue
-        if sid in leaving:
+        if key in leaving_keys or (sid and sid in leaving_ids):
             continue
         kept.append(row)
     summary["retained_because_unattributable"] = unattributable
@@ -465,6 +491,7 @@ def run_risk_guard(
     now: str,
     limits: RiskLimits | None = None,
     routable_strategy_ids: set[str] | None = None,
+    routable_lineages: set[str] | None = None,
 ) -> dict[str, Any]:
     """Judge the closed-outcome history against the loss limits. Never raises.
 
@@ -499,6 +526,7 @@ def run_risk_guard(
         outcomes,
         excluded=limits.drawdown_excluded_strategy_ids,
         routable=routable_strategy_ids,
+        routable_lineages=routable_lineages,
     )
     max_drawdown_r, current_drawdown_r = _drawdowns_r(
         rows if not baseline["applied"] else _closed_rows(dd_outcomes)

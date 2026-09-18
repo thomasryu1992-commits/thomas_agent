@@ -793,6 +793,9 @@ def run_crypto_cycle(
     # say which: "no strategy is armed for live" is the expected state after this shipped,
     # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
+    # The lineage keys those entries accept (PR3b-3): the drawdown rebase's re-check, None beside
+    # a None set — an empty set would release every sealed lineage on a failed read.
+    routable_lineages: set[str] | None
     live_routable_ids: set[str] | None
     # Which approval armed each of them (PR2b) — None beside a None set, for the same reason.
     live_arm_approvals: dict[str, str | None] | None
@@ -803,11 +806,13 @@ def run_crypto_cycle(
     try:
         active_pool = pool.load_active_pool(root)
         routable_ids = pool.routable_strategy_ids(active_pool)
+        routable_lineages = pool.routable_lineage_keys(active_pool)
         live_routable_ids = pool.live_routable_strategy_ids(active_pool)
         live_arm_approvals = pool.live_arm_approvals(active_pool)
     except ToolError as exc:
         active_pool = {"active_strategies": []}
         routable_ids = None
+        routable_lineages = None
         live_routable_ids = None
         live_arm_approvals = None
         reason_codes.append(exc.reason_code)
@@ -887,7 +892,7 @@ def run_crypto_cycle(
                 live_excluded_digest = excluded_outcomes_digest(live_excluded)
             risk = run_risk_guard(
                 live_readable, now=now, limits=risk_limits,
-                routable_strategy_ids=routable_ids,
+                routable_strategy_ids=routable_ids, routable_lineages=routable_lineages,
             )
         except ToolError as exc:
             risk = risk_guard_unreadable(f"{exc.reason_code}: {exc}", now=now)

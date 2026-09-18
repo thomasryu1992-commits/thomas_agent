@@ -239,6 +239,24 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
   - An operator retirement is approved as a set and is all or nothing: it builds its decisions from
     the entries its approval was verified against, and a stale one refuses the whole retirement
     before anything is written. `update_statuses` is all or nothing too.
+- **The drawdown rebase** (decisions 37 and 39, PR3b-3): a risk-limits record's
+  `drawdown_baseline_rebase.excluded_strategy_ids` names lineage keys, sealed against the pool when
+  the record is built. `risk_limits.seal_drawdown_exclusion` replaces a display id with the keys that
+  name the lineage holding it, its candidate and its generation and rule hash (its display id only
+  if it names neither), and the builder refuses a bare display id.
+  - The guard lets a row leave the drawdown window when its own key is sealed and no entry the pool
+    can route still accepts it (`pool.routable_lineage_keys`, handed by the cycle and the breaker
+    watch; a caller that hands none, or `None` for an unreadable pool, releases nothing).
+  - For rows that carry a lineage: a lineage that took a retired one's display id keeps its losses,
+    and a retired lineage installed again under another name gets its losses back. A row with no
+    lineage fields (live rows before 2026-07-25) stays in the window unless its `sid:` key is named
+    on purpose; a named lineage key is not checked against anything.
+  - The field keeps its name, so the schema's check is unchanged. **After a rollback** an older
+    image reads the keys as display ids no row carries: it excludes nothing, and the drawdown
+    breaker may latch, while its verdict still reads `applied` with the keys listed and 0 rows
+    excluded. Re-register the rebase by display id for that image, or remove the record.
+  - A record from before names display ids, still judged by display id. On 2026-09-18 no record is
+    registered on the host, and no command registers a rebase: the block is built in code.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or

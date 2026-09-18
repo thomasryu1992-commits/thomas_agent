@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
@@ -56,6 +56,7 @@ from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
 from . import guards
+from .candidate_identity import entry_attribution_keys, is_lineage_key, outcome_attribution_key
 from .guards import RiskLimits
 from .live_pnl import state_dir
 
@@ -88,6 +89,40 @@ def _schema_path(repo_root: Path | None = None) -> Path:
 def limits_path(root: Path | None = None) -> Path:
     """The per-machine registered-limits file (gitignored, beside the live outcomes)."""
     return state_dir(root) / RISK_LIMITS_FILENAME
+
+
+def seal_drawdown_exclusion(names: Sequence[str], pool: Mapping[str, Any]) -> list[str]:
+    """The lineage keys a drawdown rebase excludes, resolved against ``pool`` now (PR3b-3, Thomas
+    decisions 37 and 39).
+
+    A display id is replaced by the keys that name the lineage holding it
+    (`candidate_identity.entry_attribution_keys`): its candidate and its generation and rule hash.
+    Not its display id (``sid:``), which would keep display-id matching alive for rows that carry
+    no lineage — another lineage's old rows under the same name would leave with it, and its own
+    old rows would stay out when it is installed again under another name (review of PR3b-3). An
+    entry that names neither is sealed by its display id, the one key it has. So a row with no
+    lineage fields stays in the window unless its ``sid:`` key is named on purpose.
+
+    A lineage key passes through unchecked, which is how a lineage no longer in the pool is named.
+    An id the pool does not hold is refused: its lineage cannot be sealed."""
+    by_id = {str(entry.get("strategy_id")): entry for entry in (pool.get("active_strategies") or [])
+             if isinstance(entry, Mapping) and entry.get("strategy_id")}
+    sealed: set[str] = set()
+    for name in names:
+        name = str(name).strip()
+        if is_lineage_key(name):
+            sealed.add(name)
+            continue
+        entry = by_id.get(name)
+        if entry is None:
+            raise ToolError(
+                LIMITS_INVALID,
+                f"{name!r} names no pool entry, so its lineage cannot be sealed; name it by a lineage "
+                "key (cand:<candidate id>, gen:<generation>:<rule hash>, sid:<display id>)",
+            )
+        keys = {key for key in entry_attribution_keys(entry) if not key.startswith("sid:")}
+        sealed.update(keys or {outcome_attribution_key(entry)})
+    return sorted(sealed)
 
 
 def build_risk_limits_record(
@@ -188,6 +223,17 @@ def build_risk_limits_record(
             raise ToolError(
                 LIMITS_INVALID,
                 "drawdown_baseline_rebase.excluded_strategy_ids contains duplicates",
+            )
+        # Sealed at registration (PR3b-3, Thomas decisions 37 and 39): a display id names whatever
+        # holds it when the guard reads the record, so the record names lineages. The field keeps
+        # its name, which keeps the schema's check unchanged; an older image reads the keys as ids
+        # no row carries, and so excludes nothing — the conservative direction on a rollback.
+        bare = [i for i in deduped if not is_lineage_key(i)]
+        if bare:
+            raise ToolError(
+                LIMITS_INVALID,
+                "drawdown_baseline_rebase names lineages, sealed against the pool when it is "
+                f"registered (seal_drawdown_exclusion); these are not lineage keys: {', '.join(bare)}",
             )
         body["drawdown_baseline_rebase"] = {
             "excluded_strategy_ids": deduped,
@@ -321,6 +367,17 @@ def resolve_risk_limits(root: Path | None = None, *, now: str) -> RiskLimits:
     return limits_from_record(record)
 
 
+def rebase_names(status: Mapping[str, Any]) -> str:
+    """What a status's rebase block names, for the board and ``--show``: lineage keys, and the
+    display ids a record from before PR3b-3 names, counted apart."""
+    total = int(status.get("drawdown_rebase_excluded_count") or 0)
+    ids = int(status.get("drawdown_rebase_display_id_count") or 0)
+    parts = [f"{total - ids} lineage key(s)"] if total - ids else []
+    if ids:
+        parts.append(f"{ids} display id(s)")
+    return " and ".join(parts)
+
+
 def limits_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     """Whether a usable limits record is registered right now — for the readiness board.
 
@@ -330,9 +387,11 @@ def limits_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     The same rule as :func:`resolve_risk_limits`, through the same checks, so the board,
     ``--show`` and the cycle cannot disagree: ``valid`` is whether that call returns, ``error``
     the code it raises. ``valid_from`` / ``valid_until`` come back as stored, ``None`` on a
-    windowless record. ``drawdown_rebase_excluded_count`` is how many strategy ids a
-    ``drawdown_baseline_rebase`` block sets aside, ``None`` when the record carries none — it
-    stands exactly as long as the numbers do, so the operator should see it beside them."""
+    windowless record. ``drawdown_rebase_excluded_count`` is how many names a
+    ``drawdown_baseline_rebase`` block sets aside (lineage keys since PR3b-3; display ids in a
+    record from before, counted apart in ``drawdown_rebase_display_id_count``), ``None`` when the
+    record carries none — it stands exactly as long as the numbers do, so the operator should see
+    it beside them."""
     try:
         record = read_registered_limits(root)
     except ToolError as exc:
@@ -360,6 +419,8 @@ def limits_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
         "registered_by": record["registered_by"],
         "registered_at": record["registered_at"],
         "drawdown_rebase_excluded_count": len(excluded) if excluded else None,
+        "drawdown_rebase_display_id_count": (
+            sum(1 for name in excluded if not is_lineage_key(name)) if excluded else None),
         "record_sha256": record["record_sha256"],
     }
 

@@ -242,13 +242,13 @@ def test_a_windowless_risk_limits_record_reads_no_expiry_and_names_its_rebase(tm
     from runtime.mvp_runtime.crypto import risk_limits
     record = risk_limits.build_risk_limits_record(
         limits=_RISK_LIMITS, registered_by="thomas", registered_at="2026-07-01T00:00:00Z",
-        drawdown_baseline_rebase={"excluded_strategy_ids": ["S3", "S9"], "reason": "retired"})
+        drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c3", "cand:c9"], "reason": "retired"})
     risk_limits.write_registered_limits(record, root=tmp_path)
     row = _risk_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
     assert row["ok"] is True and "consecutive 4" in row["detail"]
     assert f"registered {record['limits_id']}" in row["detail"]
     assert "registered_at 2026-07-01T00:00:00Z, no expiry" in row["detail"]
-    assert row["detail"].endswith("drawdown baseline rebase excludes 2 strategy id(s)")
+    assert row["detail"].endswith("drawdown baseline rebase excludes 2 lineage key(s)")
     assert "valid until" not in row["detail"]
 
 

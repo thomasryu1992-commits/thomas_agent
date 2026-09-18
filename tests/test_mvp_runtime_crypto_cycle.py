@@ -1131,6 +1131,7 @@ def test_an_unreadable_pool_leaves_the_drawdown_baseline_unverified(tmp_path, mo
     def _capture(outcomes, **kw):
         seen["called"] = True
         seen["routable"] = kw.get("routable_strategy_ids")
+        seen["lineages"] = kw.get("routable_lineages", "not handed")
         return real_guard(outcomes, **kw)
 
     def _explode(root=None):
@@ -1142,6 +1143,8 @@ def test_an_unreadable_pool_leaves_the_drawdown_baseline_unverified(tmp_path, mo
     record = _cycle(tmp_path, FakeExchangeCollector())
     assert seen["called"], "the guard never ran"
     assert seen["routable"] is None, "an unreadable pool must be UNKNOWN, never the empty set"
+    # The lineage-sealed form of the same fact (PR3b-3): handed, and None, never empty.
+    assert seen["lineages"] is None, "an unreadable pool must leave every sealed lineage unverified"
     assert "STRATEGY_POOL_INVALID" in record["reason_codes"]
 
 
