@@ -793,6 +793,9 @@ def run_crypto_cycle(
     # say which: "no strategy is armed for live" is the expected state after this shipped,
     # while "the pool could not be read" is a fault whose fix is somewhere else entirely.
     routable_ids: set[str] | None
+    # The lineage keys those entries accept (PR3b-3): the drawdown rebase's re-check, None beside
+    # a None set — an empty set would release every sealed lineage on a failed read.
+    routable_lineages: set[str] | None
     live_routable_ids: set[str] | None
     # Which approval armed each of them (PR2b) — None beside a None set, for the same reason.
     live_arm_approvals: dict[str, str | None] | None

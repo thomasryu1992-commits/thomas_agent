@@ -8,7 +8,9 @@ another name did not get its losses back. The record now names lineage keys
 (`risk_limits.seal_drawdown_exclusion`), in the same field (decision 39: the schema's check is
 unchanged, and an older image reads the keys as ids no row carries, so it excludes nothing). The
 guard re-checks them against the lineages the pool can still route (`pool.routable_lineage_keys`).
-No record is registered on the host (2026-09-18), so nothing migrates.
+Both guarantees hold for rows that carry a lineage; a row with no lineage fields stays in the
+window unless its display-id key is named on purpose. No record is registered on the host
+(2026-09-18), so nothing migrates.
 """
 
 from __future__ import annotations
@@ -42,10 +44,28 @@ def _limits(*excluded):
 
 # --- the seal ------------------------------------------------------------------------------------
 
-def test_a_display_id_is_sealed_as_every_key_its_lineage_carries():
+def test_a_display_id_is_sealed_as_the_keys_that_name_its_lineage():
+    """Its candidate and its generation and rule hash — not its display id, which would keep
+    display-id matching alive for rows with no lineage fields (review of PR3b-3)."""
     retired = _entry("S1", "cand_A", status="SUSPENDED")
-    assert rl.seal_drawdown_exclusion(["S1"], _pool(retired)) == [
-        "cand:cand_A", "gen:GEN-1:hash-cand_A", "sid:S1"]
+    assert rl.seal_drawdown_exclusion(["S1"], _pool(retired)) == ["cand:cand_A", "gen:GEN-1:hash-cand_A"]
+
+
+def test_an_entry_that_names_no_lineage_is_sealed_by_the_one_key_it_has():
+    imported = {"strategy_id": "S7", "status": "SUSPENDED"}
+    no_candidate = {"strategy_id": "S8", "status": "SUSPENDED", "generation_id": "GEN-9", "strategy_rule_hash": "h9"}
+    assert rl.seal_drawdown_exclusion(["S7", "S8"], _pool(imported, no_candidate)) == ["gen:GEN-9:h9", "sid:S7"]
+
+
+def test_a_display_id_key_named_on_purpose_passes_through():
+    assert rl.seal_drawdown_exclusion(["sid:S1"], _pool()) == ["sid:S1"]
+
+
+def test_a_lineage_key_needs_a_name_after_its_prefix():
+    from runtime.mvp_runtime.crypto.candidate_identity import is_lineage_key
+
+    assert [is_lineage_key(v) for v in ("cand:x", "gen:g:r", "sid:S1", "cand:", "S1", "", None)] == [
+        True, True, True, False, False, False, False]
 
 
 def test_a_lineage_key_passes_through_and_an_id_the_pool_does_not_hold_is_refused():
@@ -99,6 +119,49 @@ def test_a_retired_lineage_installed_again_under_another_name_gets_its_losses_ba
     kept, summary = guards.drawdown_baseline(rows, excluded=sealed, routable=pool.routable_strategy_ids(back),
                                              routable_lineages=pool.routable_lineage_keys(back))
     assert kept == rows and "cand:cand_A" in summary["retained_because_routable"]
+
+
+def test_a_row_with_no_lineage_fields_stays_in_the_window():
+    """Review of PR3b-3, both of its cases. Another lineage's old display-id-only row under the
+    retired name does not leave with the retired lineage; and the retired lineage, installed again
+    under another name, keeps its own old display-id-only row in the window (it never left)."""
+    sealed = rl.seal_drawdown_exclusion(["S1"], _pool(_entry("S1", "cand_A", status="SUSPENDED")))
+    bare = {"outcome_closed": True, "result_R": -1.0, "strategy_id": "S1", "created_at_utc": "2026-07-20T00:00:00Z"}
+    kept, _ = guards.drawdown_baseline([bare], excluded=sealed, routable=set(), routable_lineages=set())
+    assert kept == [bare]
+    back = _pool(_entry("S1-GEN-1", "cand_A"))
+    kept, _ = guards.drawdown_baseline([bare, _loss("S1", "cand_A")], excluded=sealed,
+                                       routable=pool.routable_strategy_ids(back),
+                                       routable_lineages=pool.routable_lineage_keys(back))
+    assert kept == [bare, _loss("S1", "cand_A")]
+
+
+def test_a_row_keyed_by_its_generation_leaves_with_its_lineage():
+    """A row written before the candidate id reached the leg, carrying the generation and rule
+    hash, is the same lineage and leaves with it."""
+    sealed = rl.seal_drawdown_exclusion(["S1"], _pool(_entry("S1", "cand_A", status="SUSPENDED")))
+    gen_row = {"outcome_closed": True, "result_R": -1.0, "strategy_id": "S1", "strategy_generation_id": "GEN-1",
+               "strategy_rule_hash": "hash-cand_A", "created_at_utc": "2026-07-24T00:00:00Z"}
+    kept, summary = guards.drawdown_baseline([gen_row], excluded=sealed, routable=set(), routable_lineages=set())
+    assert kept == [] and summary["rows_excluded"] == 1
+
+
+def test_a_row_is_attributable_in_the_form_the_record_names():
+    """A row with a candidate id and no display id names a lineage to a sealed record, and nothing
+    to an older record naming display ids, which counts it unattributable as it always did."""
+    no_name = {"outcome_closed": True, "result_R": -1.0, "candidate_id": "cand_A", "created_at_utc": "2026-09-10T00:00:00Z"}
+    kept, summary = guards.drawdown_baseline([no_name], excluded=["S1"], routable=set(), routable_lineages=set())
+    assert kept == [no_name] and summary["retained_because_unattributable"] == 1
+    kept, summary = guards.drawdown_baseline([no_name], excluded=["cand:cand_A"], routable=set(), routable_lineages=set())
+    assert kept == [] and summary["retained_because_unattributable"] == 0
+
+
+def test_the_board_names_lineage_keys_and_display_ids_apart():
+    names = rl.rebase_names
+    assert names({"drawdown_rebase_excluded_count": 2, "drawdown_rebase_display_id_count": 0}) == "2 lineage key(s)"
+    assert names({"drawdown_rebase_excluded_count": 2, "drawdown_rebase_display_id_count": 2}) == "2 display id(s)"
+    assert names({"drawdown_rebase_excluded_count": 3, "drawdown_rebase_display_id_count": 1}) == (
+        "2 lineage key(s) and 1 display id(s)")
 
 
 def test_an_unreadable_pool_releases_no_lineage():
@@ -175,3 +238,24 @@ def test_the_breaker_watch_hands_the_risk_guard_the_routable_lineages(tmp_path, 
     monkeypatch.setattr(breaker_watch.guards, "run_risk_guard", _spy)
     breaker_watch.run_breaker_watch(tmp_path, now=NOW, persist=False)
     assert seen["routable_lineages"] == {"cand:cand_A", "gen:GEN-1:hash-cand_A", "sid:S1"}
+
+
+def test_the_breaker_watch_hands_none_for_an_unreadable_pool(tmp_path, monkeypatch):
+    """An empty set would release every sealed lineage on a failed read (review of PR3b-3)."""
+    from runtime.mvp_runtime.crypto import breaker_watch
+
+    def _explode(root=None):
+        raise ToolError("STRATEGY_POOL_INVALID", "stubbed: unreadable pool")
+
+    seen = {}
+    real = guards.run_risk_guard
+
+    def _spy(*args, **kwargs):
+        seen["kwargs"] = kwargs
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(breaker_watch.pool, "load_active_pool", _explode)
+    monkeypatch.setattr(breaker_watch.guards, "run_risk_guard", _spy)
+    breaker_watch.run_breaker_watch(tmp_path, now=NOW, persist=False)
+    assert "routable_lineages" in seen["kwargs"] and seen["kwargs"]["routable_lineages"] is None
+    assert seen["kwargs"]["routable_strategy_ids"] is None

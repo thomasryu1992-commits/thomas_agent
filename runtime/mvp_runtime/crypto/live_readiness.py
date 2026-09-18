@@ -95,6 +95,7 @@ from .live_pnl import (
 )
 from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV, TIMEFRAMES
 from .risk_limits import limits_status as risk_limits_status
+from .risk_limits import rebase_names as risk_rebase_names
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
@@ -316,7 +317,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         )
         rebase_count = risk_status.get("drawdown_rebase_excluded_count")
         if rebase_count:
-            risk_detail += f", drawdown baseline rebase excludes {rebase_count} lineage key(s)"
+            risk_detail += f", drawdown baseline rebase excludes {risk_rebase_names(risk_status)}"
     else:
         risk_detail = (
             f"registered but unusable: {risk_status['error']} - the C4 guard REFUSES new "

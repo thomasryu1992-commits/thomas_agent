@@ -600,20 +600,24 @@ def test_a_rebase_without_a_reason_is_refused():
     """A rebase is a mechanism for forgetting losses. A record that cannot say whose and why
     leaves a ledger nobody can re-read."""
     with pytest.raises(ToolError) as exc:
-        _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["S1"], "reason": "  "})
-    assert exc.value.reason_code == rl.LIMITS_INVALID
+        _build(drawdown_baseline_rebase={"excluded_strategy_ids": ["cand:c1"], "reason": "  "})
+    assert exc.value.reason_code == rl.LIMITS_INVALID and "reason is required" in str(exc.value)
 
 
-@pytest.mark.parametrize("block", [
-    {"excluded_strategy_ids": [], "reason": "empty"},
-    {"excluded_strategy_ids": ["S1", "S1"], "reason": "duplicated"},
-    {"excluded_strategy_ids": ["", "S1"], "reason": "blank id"},
-    {"excluded_strategy_ids": "S1", "reason": "not a list"},
+# Each case names the check that refuses it: every one raises LIMITS_INVALID, and a later check
+# refusing in an earlier one's place would hide that one (review of PR3b-3 — the display-id
+# refusal did, while these cases named display ids).
+@pytest.mark.parametrize("block,message", [
+    ({"excluded_strategy_ids": [], "reason": "empty"}, "must be a non-empty list"),
+    ({"excluded_strategy_ids": ["cand:c1", "cand:c1"], "reason": "duplicated"}, "contains duplicates"),
+    ({"excluded_strategy_ids": ["", "cand:c1"], "reason": "blank id"}, "must be a non-empty list"),
+    ({"excluded_strategy_ids": "cand:c1", "reason": "not a list"}, "must be a non-empty list"),
+    ({"excluded_strategy_ids": ["S1"], "reason": "a display id"}, "these are not lineage keys: S1"),
 ])
-def test_a_malformed_rebase_block_is_refused(block):
+def test_a_malformed_rebase_block_is_refused(block, message):
     with pytest.raises(ToolError) as exc:
         _build(drawdown_baseline_rebase=block)
-    assert exc.value.reason_code == rl.LIMITS_INVALID
+    assert exc.value.reason_code == rl.LIMITS_INVALID and message in str(exc.value)
 
 
 def test_the_rebase_block_is_covered_by_the_records_self_hash(tmp_path):

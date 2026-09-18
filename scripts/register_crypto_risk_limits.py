@@ -95,7 +95,7 @@ def _show(root: Path) -> int:
         print(f"valid:       {status['valid']}{window}")
         rebase_count = status.get("drawdown_rebase_excluded_count")
         if rebase_count:
-            print(f"rebase:      the drawdown baseline excludes {rebase_count} lineage key(s); "
+            print(f"rebase:      the drawdown baseline excludes {risk_limits.rebase_names(status)}; "
                   "the exclusion stands as long as these numbers do")
         if status["error"]:
             print(f"error:       {status['error']}  <-- the guard REFUSES new positions in this state")

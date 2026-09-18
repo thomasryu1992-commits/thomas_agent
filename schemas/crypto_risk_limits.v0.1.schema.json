@@ -89,7 +89,7 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "drawdown_baseline_rebase": {
-      "description": "OPTIONAL. Narrows the population the DRAWDOWN breaker measures, and nothing else — daily, weekly and consecutive-loss still judge every closed outcome. Absent means today's behaviour exactly: the drawdown is measured over the whole own-paper record. The rule it encodes is closed in both directions and the guard, not this record, applies it: an outcome leaves the baseline only if it NAMES a lineage, that lineage is listed here, AND that lineage is not currently routable in the active pool. A row that cannot name its lineage never leaves; a lineage that is re-promoted silently invalidates its own exclusion and its outcomes return to the drawdown. This record supplies data; the predicate is re-evaluated every cycle against the live pool, so the failure direction is toward putting losses back.",
+      "description": "OPTIONAL. Narrows the population the DRAWDOWN breaker measures, and nothing else — daily, weekly and consecutive-loss still judge every closed outcome. Absent means today's behaviour exactly: the drawdown is measured over every closed outcome the breaker judges. The rule it encodes is closed in both directions and the guard, not this record, applies it: an outcome leaves the baseline only if it NAMES a lineage, that lineage is listed here, AND that lineage is not currently routable in the active pool. A row that cannot name its lineage never leaves; a lineage that is re-promoted silently invalidates its own exclusion and its outcomes return to the drawdown. This record supplies data; the predicate is re-evaluated every cycle against the live pool, so the failure direction is toward putting losses back.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -98,7 +98,7 @@
       ],
       "properties": {
         "excluded_strategy_ids": {
-          "description": "Lineage keys (cand:<candidate id>, gen:<generation>:<rule hash>, sid:<display id>) whose closed outcomes may leave the drawdown baseline, sealed against the pool when the record is registered (PR3b-3), subject to the guard's own re-check that no entry the pool can route still accepts them. A record registered before PR3b-3 names display ids here, which the guard still judges by display id; an older runtime reads lineage keys as ids no outcome carries, and excludes nothing.",
+          "description": "Lineage keys (cand:<candidate id>, gen:<generation>:<rule hash>; sid:<display id> only for an entry that names neither, or when named on purpose) whose closed outcomes may leave the drawdown baseline, sealed against the pool when the record is registered (PR3b-3), subject to the guard's own re-check that no entry the pool can route still accepts them. A row with no lineage fields stays in the baseline unless its sid: key is named. A record registered before PR3b-3 names display ids here, which the guard still judges by display id; an older runtime reads lineage keys as ids no outcome carries, and excludes nothing.",
           "type": "array",
           "items": {
             "type": "string",

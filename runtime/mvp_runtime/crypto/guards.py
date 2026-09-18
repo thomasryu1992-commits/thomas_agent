@@ -404,8 +404,10 @@ def drawdown_baseline(
     came from a lineage that is not currently routable.** Three conditions, all required, and
     every one of them fails toward keeping the loss:
 
-    1. the row **names** a lineage (a non-empty ``strategy_id``) — absence of evidence is not
-       evidence of retirement, so an unattributable row never leaves;
+    1. the row **names** a lineage in the form the record names them — a lineage key
+       (`candidate_identity.outcome_attribution_key`), or for a record from before PR3b-3 a
+       non-empty ``strategy_id`` — absence of evidence is not evidence of retirement, so an
+       unattributable row never leaves;
     2. that lineage is **named in the record** — the operator retired it deliberately and said so;
     3. that lineage is **not routable right now** — re-checked here against the live pool rather
        than trusted from the record, which is what makes a re-promotion silently invalidate its
@@ -425,10 +427,13 @@ def drawdown_baseline(
     row leaves when its own key (`candidate_identity.outcome_attribution_key`) is named and no
     entry the pool can route still accepts that key (``routable_lineages``,
     `pool.routable_lineage_keys`). So a lineage that took a retired one's display id keeps its
-    losses, and a retired lineage installed again under another name gets its losses back.
-    ``routable_lineages=None`` cannot verify a lineage key, and keeps its rows. A bare value is a
-    display id from an older record, judged by the row's display id against ``routable``, as
-    before.
+    losses, and a retired lineage installed again under another name gets its losses back —
+    for rows that carry a lineage. The seal names a lineage by its candidate and its generation
+    and rule hash, not its display id, so a row with no lineage fields (written before the lineage
+    reached the live leg, 2026-07-25) stays in the window unless its ``sid:`` key was named on
+    purpose. ``routable_lineages=None`` cannot verify a lineage key, and keeps its rows. A bare
+    value is a display id from an older record, judged by the row's display id against
+    ``routable``, as before.
 
     This is a **narrowing of one breaker's window, not a rewrite of history**: the ledger is
     untouched, `feedback` and Gate 0 keep reading the full record, and the daily, weekly and
@@ -466,7 +471,9 @@ def drawdown_baseline(
     for row in outcomes:
         key = outcome_attribution_key(row) if isinstance(row, dict) else ""
         sid = str(row.get("strategy_id") or "") if isinstance(row, dict) else ""
-        if not key:
+        # Attributable in the form the record names: a lineage key for sealed names, a display id
+        # for an older record's. A row that can be matched to neither never leaves.
+        if not ((by_key and key) or (by_id and sid)):
             unattributable += 1
             kept.append(row)
             continue

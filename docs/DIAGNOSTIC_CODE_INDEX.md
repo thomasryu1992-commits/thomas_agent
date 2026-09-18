@@ -274,25 +274,25 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `COUNTERFACTUAL_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 433 | `read_counterfactual_outcomes` | `settlement_id in seen_settlements` |
 | `COUNTERFACTUAL_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 426 | `read_counterfactual_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `COUNTERFACTUAL_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/counterfactual.py` | 414 | `read_counterfactual_outcomes` | `—` |
-| `CRYPTO_RISK_LIMITS_EXPIRED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 355 | `resolve_risk_limits` | `not _window_covers(record, now)` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 113 | `seal_drawdown_exclusion` | `entry is None` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 145 | `build_risk_limits_record` | `missing` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 152 | `build_risk_limits_record` | `—` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 156 | `build_risk_limits_record` | `numeric[key] != int(numeric[key])` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 167 | `build_risk_limits_record` | `problems` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 173 | `build_risk_limits_record` | `not (isinstance(registered_by, str) and registered_by.strip())` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 205 | `build_risk_limits_record` | `not isinstance(ids, (list, tuple)) or not ids or (not all((isinstance(i, str) and i.strip() for…` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 210 | `build_risk_limits_record` | `not (isinstance(reason, str) and reason.strip())` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 217 | `build_risk_limits_record` | `len(deduped) != len(ids)` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 227 | `build_risk_limits_record` | `bare` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 246 | `_validate` | `—` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 285 | `read_registered_limits` | `window != (None, None) and (not (isinstance(window[0], str) and isinstance(window[1], str) and …` |
-| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 318 | `limits_from_record` | `problems` |
-| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 273 | `read_registered_limits` | `—` |
-| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 275 | `read_registered_limits` | `not isinstance(stored, str) or recomputed != stored` |
-| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 418 | `write_registered_limits` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 262 | `read_registered_limits` | `—` |
-| `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 264 | `read_registered_limits` | `not isinstance(data, dict)` |
+| `CRYPTO_RISK_LIMITS_EXPIRED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 361 | `resolve_risk_limits` | `not _window_covers(record, now)` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 118 | `seal_drawdown_exclusion` | `entry is None` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 151 | `build_risk_limits_record` | `missing` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 158 | `build_risk_limits_record` | `—` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 162 | `build_risk_limits_record` | `numeric[key] != int(numeric[key])` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 173 | `build_risk_limits_record` | `problems` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 179 | `build_risk_limits_record` | `not (isinstance(registered_by, str) and registered_by.strip())` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 211 | `build_risk_limits_record` | `not isinstance(ids, (list, tuple)) or not ids or (not all((isinstance(i, str) and i.strip() for…` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 216 | `build_risk_limits_record` | `not (isinstance(reason, str) and reason.strip())` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 223 | `build_risk_limits_record` | `len(deduped) != len(ids)` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 233 | `build_risk_limits_record` | `bare` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 252 | `_validate` | `—` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 291 | `read_registered_limits` | `window != (None, None) and (not (isinstance(window[0], str) and isinstance(window[1], str) and …` |
+| `CRYPTO_RISK_LIMITS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 324 | `limits_from_record` | `problems` |
+| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 279 | `read_registered_limits` | `—` |
+| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 281 | `read_registered_limits` | `not isinstance(stored, str) or recomputed != stored` |
+| `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 439 | `write_registered_limits` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 268 | `read_registered_limits` | `—` |
+| `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 270 | `read_registered_limits` | `not isinstance(data, dict)` |
 | `CRYPTO_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/state.py` | 63 | `venue_state_dir` | `venue not in VENUES` |
 | `DECISION_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 184 | `build_approval_request` | `expires <= issued` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 91 | `build_program_definition` | `not isinstance(definition_input, Mapping)` |
