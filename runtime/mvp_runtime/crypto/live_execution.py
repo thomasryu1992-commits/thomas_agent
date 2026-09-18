@@ -677,8 +677,11 @@ class BinanceFuturesOrderAdapter:
             except Exception:  # noqa: BLE001 — an unreadable error body must not mask the failure
                 body, code = None, None
             if code is None:
+                # The venue's own code rides in `data` wherever there is one (PR2d-1): the API
+                # breaker reads it rather than parsing the message.
                 raise ToolError(
-                    ORDER_TRANSPORT, f"live order request rejected (HTTP {exc.code})"
+                    ORDER_TRANSPORT, f"live order request rejected (HTTP {exc.code})",
+                    data={"http_status": exc.code},
                 ) from None
             return body, code
         except (TimeoutError, urllib.error.URLError):
@@ -711,12 +714,15 @@ class BinanceFuturesOrderAdapter:
                     ORDER_REJECTED,
                     f"duplicate client order id ({code}) — the original order already landed; "
                     "reconcile decides the outcome",
+                    data={"venue_code": code},
                 )
             msg = body.get("msg") if isinstance(body, dict) else None
             if code in VENUE_UNKNOWN_OUTCOME_CODES:
                 raise ToolError(ORDER_OUTCOME_UNKNOWN,
-                                f"venue could not say whether the order was applied (code {code}): {msg}")
-            raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}")
+                                f"venue could not say whether the order was applied (code {code}): {msg}",
+                                data={"venue_code": code})
+            raise ToolError(ORDER_REJECTED, f"venue rejected the order (code {code}): {msg}",
+                            data={"venue_code": code})
         return body if isinstance(body, dict) else {}
 
     def validate_order(
@@ -790,7 +796,8 @@ class BinanceFuturesOrderAdapter:
             if code == VENUE_ORDER_DOES_NOT_EXIST:
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
-            raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}")
+            raise ToolError(ORDER_REJECTED, f"venue refused the order query (code {code}): {msg}",
+                            data={"venue_code": code})
         if not isinstance(body, dict):
             return None
         return normalize_algo_order(body) if algo else body
@@ -826,7 +833,8 @@ class BinanceFuturesOrderAdapter:
         if code is not None:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(
-                ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}"
+                ORDER_REJECTED, f"venue refused the open-orders query (code {code}): {msg}",
+                data={"venue_code": code},
             )
         return _order_rows(body, "open-orders")
 
@@ -850,7 +858,8 @@ class BinanceFuturesOrderAdapter:
         if code is not None:
             msg = body.get("msg") if isinstance(body, dict) else None
             raise ToolError(
-                ORDER_REJECTED, f"venue refused the algo open-orders query (code {code}): {msg}"
+                ORDER_REJECTED, f"venue refused the algo open-orders query (code {code}): {msg}",
+                data={"venue_code": code},
             )
         rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
         return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
@@ -890,7 +899,8 @@ class BinanceFuturesOrderAdapter:
             if code in (VENUE_UNKNOWN_ORDER, VENUE_ORDER_DOES_NOT_EXIST):
                 return None
             msg = body.get("msg") if isinstance(body, dict) else None
-            raise ToolError(ORDER_REJECTED, f"venue refused the cancel (code {code}): {msg}")
+            raise ToolError(ORDER_REJECTED, f"venue refused the cancel (code {code}): {msg}",
+                            data={"venue_code": code})
         return body if isinstance(body, dict) else None
 
 

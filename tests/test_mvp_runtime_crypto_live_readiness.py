@@ -90,7 +90,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
     assert {c["check"] for c in status["checks"]} == {
         "live_trading_opt_in", "confirmation_phrase", "registered_budget", "risk_limits_record",
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
-        "daily_loss_breaker", "bracket_breaker", "entry_marks", "pre_order_snapshots",
+        "daily_loss_breaker", "bracket_breaker", "api_breaker", "entry_marks", "pre_order_snapshots",
         "account_visibility", "market_data_visibility", "order_path_implemented",
         "autonomous_routing_wired", "execution_stage",
     }
@@ -1145,3 +1145,47 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
                     encoding="utf-8")
     edited = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"]: c for c in edited["checks"]}["pre_order_snapshots"]["ok"] is False
+
+
+# === the API error breaker row (PR2d-1) ============================================
+
+def _api_row(root):
+    return next(c for c in live_readiness.build_readiness(root=root, now=NOW)["checks"]
+                if c["check"] == "api_breaker")
+
+
+def test_the_api_breaker_row_counts_each_class_and_turns_red_once_tripped(tmp_path, clean_env):
+    from tests._helpers import make_gate_authorization
+    from runtime.mvp_runtime.crypto.live_order import LiveApiErrorBreaker, MAX_CONSECUTIVE_API_ERRORS
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+
+    limit = MAX_CONSECUTIVE_API_ERRORS
+    row = _api_row(tmp_path)
+    assert row["ok"] is True
+    assert row["detail"] == f"write 0/{limit}, read 0/{limit} consecutive signed-call failures"
+
+    breaker = LiveApiErrorBreaker(root=tmp_path, authorization=make_gate_authorization(
+        flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID))
+    breaker.record_failure(call_class="read", call="open_orders", at=NOW, reason_code="ORDER_TRANSPORT")
+    row = _api_row(tmp_path)
+    assert row["ok"] is True and f"read 1/{limit}" in row["detail"]
+
+    for _ in range(limit):
+        breaker.record_failure(call_class="write", call="submit", at=NOW, reason_code="ORDER_OUTCOME_UNKNOWN")
+    row = _api_row(tmp_path)
+    assert row["ok"] is False
+    assert row["detail"].startswith(f"TRIPPED at {NOW} - write calls failed {limit} times in a row")
+    assert "submit ORDER_OUTCOME_UNKNOWN" in row["detail"] and "scripts.clear_api_breaker" in row["detail"]
+    assert live_readiness.build_readiness(root=tmp_path, now=NOW)["ready"] is False
+
+
+def test_an_unreadable_api_breaker_turns_the_board_red(tmp_path, clean_env):
+    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{torn", encoding="utf-8")
+    row = _api_row(tmp_path)
+    assert row["ok"] is False
+    assert "UNREADABLE (LIVE_API_BREAKER_UNREADABLE)" in row["detail"]

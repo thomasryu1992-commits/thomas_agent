@@ -2353,3 +2353,225 @@ def test_a_stop_left_resting_on_the_symbol_holds_the_next_entry(tmp_path, monkey
     assert venue.entries() == [] and venue.cancelled == []
     assert read_live_entry_marks(tmp_path)["entered"] == {}
     assert read_live_entry_marks(tmp_path)["in_flight"] == {}, "the symbol was given back"
+
+
+# --- the API error breaker in the leg (PR2d-1, Thomas decisions 18 and 27) ------------------------
+
+def _api_breaker(tmp_path):
+    from runtime.mvp_runtime.crypto.live_order import LiveApiErrorBreaker
+    from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_FLAGS, LIVE_TRADING_PROVIDER_ID
+    from tests._helpers import make_gate_authorization
+
+    auth = make_gate_authorization(flags=LIVE_TRADING_FLAGS, provider_id=LIVE_TRADING_PROVIDER_ID)
+    return LiveApiErrorBreaker(root=tmp_path, authorization=auth)
+
+
+def _api_failures(tmp_path, count, call_class="write"):
+    """Earlier failures, on a call this pass does not make — so the record's last call names the
+    one this pass's own call latched."""
+    breaker = _api_breaker(tmp_path)
+    call = "cancel_order" if call_class == "write" else "open_orders"
+    for _ in range(count):
+        breaker.record_failure(call_class=call_class, call=call, at=NOW, reason_code="TOOL_RATE_LIMITED")
+    return breaker
+
+
+def _messages(monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(live_route, "_send_operator_text",
+                        lambda record, lines, **kw: sent.append("\n".join(lines)))
+    return sent
+
+
+def test_a_tripped_api_breaker_holds_the_entry_and_spends_nothing(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS)
+    sent = _messages(monkeypatch)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [API_BREAKER_REFUSED]
+    assert held["live_api_breaker"] == {"consecutive": MAX_CONSECUTIVE_API_ERRORS,
+                                        "limit": MAX_CONSECUTIVE_API_ERRORS, "tripped": True,
+                                        "tripped_class": "write"}
+    assert _nothing_spent(venue, tmp_path)
+    # Tripped before this pass: the operator was told when it latched, not again on every pass.
+    assert sent == [] and live_route.API_BREAKER_JUST_TRIPPED not in held["live_reason_codes"]
+
+
+class _SendFails(_Venue):
+    """The venue answers every read and cannot take a send."""
+
+    def submit(self, order_request, *, timeout_seconds: int = 10):
+        raise ToolError("ORDER_TRANSPORT", "live order request failed or timed out")
+
+
+def test_the_pass_whose_send_latches_the_breaker_tells_the_operator_once(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_entry import API_BREAKER_REFUSED
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS, api_breaker_status
+
+    venue = _SendFails()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS - 1)
+    sent = _messages(monkeypatch)
+
+    failed = run("2026-07-28T04:05:00Z", BAR_00)
+    assert live_route.API_BREAKER_JUST_TRIPPED in failed["live_reason_codes"]
+    status = api_breaker_status(tmp_path)
+    assert status["tripped"] is True and status["write"]["last_call"] == "submit"
+    [message] = sent
+    assert f"class    : write ({MAX_CONSECUTIVE_API_ERRORS}/{MAX_CONSECUTIVE_API_ERRORS} in a row)" in message
+    assert "last     : submit ORDER_TRANSPORT" in message
+    assert "scripts.clear_api_breaker" in message
+
+    # The next bar: the door is shut, and the operator is not told a second time.
+    held = run("2026-07-28T08:05:00Z", "2026-07-28T04:00:00Z")
+    assert API_BREAKER_REFUSED in held["live_decision"]["reasons"]
+    assert len(sent) == 1
+    assert live_route.API_BREAKER_JUST_TRIPPED not in held["live_reason_codes"]
+
+
+class _ReadsFail(_Venue):
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds: int = 10, algo: bool = False):
+        raise ToolError("ORDER_TRANSPORT", "live order request failed or timed out")
+
+
+@pytest.mark.parametrize("ending", ["returns", "refuses", "breaks"])
+def test_a_latch_reaches_the_operator_however_the_pass_ends(tmp_path, monkeypatch, ending):
+    """The latch can come from any signed call of the pass — a protect check, a settle, the
+    entry — and the pass can end any way after it. The operator hears it once either way: the
+    next pass reads the breaker as already tripped and would never say so."""
+    from runtime.mvp_runtime.crypto.live_order import MAX_CONSECUTIVE_API_ERRORS
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: (_ReadsFail(), None))
+    _api_failures(tmp_path, MAX_CONSECUTIVE_API_ERRORS - 1, "read")
+    sent = _messages(monkeypatch)
+
+    def _leg(record, *, adapter, **kw):
+        with pytest.raises(ToolError):
+            adapter.fetch_order(SYMBOL, "sl-1")   # a protect check: the read that latches it
+        if ending == "refuses":
+            raise ToolError("LIVE_POSITION_BOOK_LOCKED", "scripted")
+        if ending == "breaks":
+            raise RuntimeError("scripted")
+        return record
+
+    monkeypatch.setattr(live_route, "_run_gated_live_leg", _leg)
+    record = live_route.run_live_leg(
+        route=None, live_routable_strategy_ids=None, feature_row={}, verdict={}, symbol=SYMBOL,
+        collector=None, now=NOW, root=tmp_path)
+    assert live_route.API_BREAKER_JUST_TRIPPED in record["live_reason_codes"]
+    [message] = sent
+    assert "class    : read" in message and "last     : fetch_order ORDER_TRANSPORT" in message
+
+
+def test_an_unreadable_api_breaker_holds_entries_and_still_manages_positions(tmp_path, monkeypatch):
+    """Fail-closed like the bracket breaker's record: it is read after settle/protect, so it can
+    only hold entries — and the signed calls it could not count are named on the record."""
+    from runtime.mvp_runtime.crypto.live_order import API_BREAKER_FILENAME, LIVE_API_BREAKER_UNREADABLE
+    from runtime.mvp_runtime.crypto.state import venue_state_dir
+
+    path = venue_state_dir(tmp_path) / API_BREAKER_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{torn", encoding="utf-8")
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions",
+                        lambda root: [{"symbol": SYMBOL, "position_id": "p1", "status": "OPEN"}])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    managed: list[str] = []
+    monkeypatch.setattr(live_route, "_settle_or_protect",
+                        lambda record, position, **kw: managed.append(position["position_id"]))
+    monkeypatch.setattr(live_route, "plan_live_entry",
+                        lambda plan, **kw: pytest.fail("an unreadable breaker must refuse before the decision"))
+    record = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    assert managed == ["p1"]
+    assert record["live_route_status"] == live_route.ROUTE_BLOCKED
+    codes = record["live_reason_codes"]
+    at = codes.index(live_route.ROUTING_PRECONDITION)
+    assert codes[at + 1] == LIVE_API_BREAKER_UNREADABLE
+    # The account read went uncounted, and the record says so rather than reading as counted.
+    assert live_route.API_BREAKER_UNRECORDED in codes
+    assert path.read_text(encoding="utf-8") == "{torn"
+
+
+def test_an_api_breaker_that_trips_before_the_gate_holds_the_entry(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    reads = iter([False, True])
+
+    def _status(root=None):
+        return {**api_breaker_status(root), "tripped": next(reads), "tripped_class": "write"}
+
+    monkeypatch.setattr(live_route, "api_breaker_status", _status)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["ready"] is True, "the first read saw a clear breaker"
+    assert held["live_pre_order_reread"]["api_breaker_tripped"] is True
+    assert "api_breaker_clear" in held["live_pre_order_gate"]["failed_checks"]
+    assert _nothing_spent(venue, tmp_path)
+
+
+def test_a_failed_account_read_is_counted_by_the_feeds_own_code(tmp_path, monkeypatch):
+    """`read_account` sums every failure up as one word, ACCOUNT_DATA_DEGRADED; the breaker has
+    to read the feed's own code underneath it, or no account read would ever count."""
+    from runtime.mvp_runtime.crypto import account
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+
+    class _Down:
+        feed_id, feed_version, network_egress = "binance", "test", True
+
+        def account_snapshot(self, *, timeout_seconds):
+            raise ToolError("TOOL_TRANSPORT", "live account request failed or timed out")
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    monkeypatch.setattr(account, "select_account_feed", lambda **kw: _Down())
+    monkeypatch.setattr(live_route, "read_account", account.read_account)
+    record = run("2026-07-28T04:05:00Z", BAR_00)
+    assert record["account_degraded_reason_code"] == account.ACCOUNT_DATA_DEGRADED
+    read = api_breaker_status(tmp_path)["read"]
+    assert (read["consecutive"], read["last_call"], read["last_reason_code"]) == (1, "read_account", "TOOL_TRANSPORT")
+    assert venue.entries() == []
+
+    # And a readable account the pass after is the read class's success: the streak ends.
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    run("2026-07-28T04:20:00Z", BAR_00)
+    assert api_breaker_status(tmp_path)["read"]["consecutive"] == 0
+
+
+def test_the_fill_history_a_settlement_falls_back_to_is_counted_with_the_pass(tmp_path, monkeypatch):
+    """The settlement's fallback read goes through the account feed, not the adapter. It is a
+    signed read of the pass all the same, and counts in the read class (PR2d-1)."""
+    from runtime.mvp_runtime.crypto.live_order import api_breaker_status
+    from runtime.mvp_runtime.crypto.live_position import list_open_live_positions
+
+    class _HistoryDown(_History):
+        network_egress = True
+
+        def fill_history(self, symbol, *, start_ms, timeout_seconds):
+            raise ToolError("TOOL_TRANSPORT", "live account request failed or timed out")
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    [position] = list_open_live_positions(tmp_path)
+    monkeypatch.setattr(live_route, "select_account_feed", lambda **kw: _HistoryDown([]))
+    # The venue no longer holds the position, and neither leg says it filled.
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    run("2026-07-28T04:20:00Z", BAR_00)
+    read = api_breaker_status(tmp_path)["read"]
+    assert (read["last_call"], read["last_reason_code"]) == ("fill_history", "TOOL_TRANSPORT")
+    assert read["consecutive"] == 1
+    assert list_open_live_positions(tmp_path) == [position], "an unpriced close keeps the book"

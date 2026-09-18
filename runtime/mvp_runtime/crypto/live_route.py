@@ -91,7 +91,12 @@ from .market_data import ORDER_BOOK_LEVELS, PRICE_UNREADABLE, TIMEFRAMES, read_r
 from .orderbook_store import summarize_book
 from .execution_stage import resolve_execution_stage
 from .live_order import (
+    ApiErrorRecordingAdapter,
+    api_breaker_status,
+    api_breaker_trip_lines,
     bracket_breaker_status,
+    recorded_like,
+    select_live_api_breaker,
     count_today,
     read_live_entry_marks,
     resolve_live_order_limits,
@@ -145,6 +150,10 @@ AUDIT_NOT_RECORDED = "LIVE_ORDER_AUDIT_NOT_RECORDED"
 # then the order is at the venue, so this is reported and never raised — but it is the one
 # reason code meaning the count that bounds the naked-entry loop may now be short.
 BRACKET_BREAKER_UNRECORDED = "LIVE_BRACKET_BREAKER_UNRECORDED"
+# The API error breaker (PR2d-1): a signed call's outcome that could not be recorded (the call itself
+# stands), and the pass in which the breaker latched (the operator is told once).
+API_BREAKER_UNRECORDED = "LIVE_API_BREAKER_UNRECORDED"
+API_BREAKER_JUST_TRIPPED = "LIVE_API_BREAKER_JUST_TRIPPED"
 # A live stop-out whose cooldown could not be written (PR2a). The settlement itself stands; what
 # is missing is the hold that keeps the context out for the next bars, so the operator hears it.
 STOP_COOLDOWN_UNRECORDED = "LIVE_STOP_COOLDOWN_UNRECORDED"
@@ -323,10 +332,15 @@ def run_live_leg(
         record["live_reason_codes"].append(gate_reason or ROUTING_DISABLED)
         return record
 
+    recorder: ApiErrorRecordingAdapter | None = None
     try:
+        # Every signed call this leg makes is recorded against the API error breaker (PR2d-1).
+        # The wrapper forwards everything and adds no egress: it only counts what the venue
+        # answered.
+        recorder = ApiErrorRecordingAdapter(adapter, select_live_api_breaker(now=now, root=root))
         return _run_gated_live_leg(
             record,
-            adapter=adapter,
+            adapter=recorder,
             route=route,
             live_routable_strategy_ids=live_routable_strategy_ids,
             live_arm_approvals=live_arm_approvals,
@@ -356,6 +370,11 @@ def run_live_leg(
         record["live_reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
         record["halt"] = True
         return record
+    finally:
+        # However the pass ended — returned, refused or broke — what the breaker could not record
+        # is on the record, and a latch this pass caused reaches the operator once (PR2d-1).
+        if recorder is not None:
+            _close_api_breaker_pass(record, recorder, root=root, now=now)
 
 
 def _run_gated_live_leg(
@@ -410,6 +429,10 @@ def _run_gated_live_leg(
     if snapshot is None:
         record["live_reason_codes"].append(ACCOUNT_UNREADABLE)
         record["account_degraded_reason_code"] = account_use.get("degraded_reason_code")
+    # The account is a signed read; the breaker counts it with the adapter's own (PR2d-1). By
+    # the feed's own code: `degraded_reason_code` is one word for every way the read can fail.
+    adapter.record_account(readable=snapshot is not None,
+                           reason_code=account_use.get("error_reason_code"))
 
     local_positions = list_open_live_positions(root)
     reconciliation = reconcile_positions(local_positions, snapshot, now=now)
@@ -550,6 +573,15 @@ def _run_gated_live_leg(
         "limit": breaker["limit"],
         "tripped": breaker["tripped"],
     }
+    # And how many signed calls in a row the venue would not answer (PR2d-1), read beside it for
+    # the same reason: one state, read once, judged by the decision and shown on the board.
+    api_breaker_before = api_breaker_status(root)
+    record["live_api_breaker"] = {
+        "consecutive": api_breaker_before["consecutive"],
+        "limit": api_breaker_before["limit"],
+        "tripped": api_breaker_before["tripped"],
+        "tripped_class": api_breaker_before["tripped_class"],
+    }
 
     # Which bars this venue has already sent an entry on, and which contexts a stop-out still
     # holds (PR2a). Read here, after settle/protect, so a corrupt file can only hold entries: the
@@ -589,6 +621,7 @@ def _run_gated_live_leg(
         runtime_active=runtime_active,
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
         bracket_failures_consecutive=breaker["consecutive"],
+        api_breaker_tripped=api_breaker_before["tripped"],
         submitted_today=count_today(root),
         # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
         # unreadable account cannot produce a position.
@@ -653,6 +686,7 @@ def _run_gated_live_leg(
         "submitted_today": fresh["submitted_today"],
         "daily_loss_breached": fresh["daily_loss_breached"],
         "bracket_failures_consecutive": fresh["bracket_failures_consecutive"],
+        "api_breaker_tripped": fresh["api_breaker_tripped"],
         "risk_limits_problem": fresh["risk_limits_problem"],
         "live_arm": live_arm,
     }
@@ -772,7 +806,9 @@ def _settle_or_protect(
         # `LIVE_FILL_HISTORY_UNAVAILABLE`, the honest answer, rather than as a missing argument.
         settled = live_leg.settle_venue_closed_position(
             position, adapter=adapter, position_store=position_store, ledger=ledger,
-            account_feed=select_account_feed(now=now, root=root),
+            # The fill history is a signed read of this pass too: the API error breaker counts it
+            # with the adapter's own (PR2d-1).
+            account_feed=recorded_like(adapter, select_account_feed(now=now, root=root)),
             now=now, timeout_seconds=timeout_seconds,
         )
         record["live_settled"] = settled
@@ -1112,6 +1148,12 @@ def _notify_operator(record: dict[str, Any], *, now: str, root: Path | None) -> 
     if status == ROUTE_INCIDENT:
         lines.append("")
         lines.append("Check the venue. " + halt_advice())
+    _send_operator_text(record, lines, root=root, now=now)
+
+
+def _send_operator_text(record: dict[str, Any], lines: list[str], *, root: Path | None, now: str) -> None:
+    """Send one message to the registered operator chat. Best-effort: a failure is recorded on the
+    cycle record and never raised."""
     try:
         # Imported here, not at module scope: `operator` imports back into this package, and
         # the scheduler's crypto_report seam already takes this shape for the same reason.
@@ -1192,6 +1234,26 @@ def _record_bracket_outcome(
 _COOLDOWN_CLOSE_REASONS = STOP_EXIT_REASONS | {live_leg.CLOSE_REASON_VENUE_EXTERNAL}
 
 
+def _close_api_breaker_pass(
+    record: dict[str, Any], recorder: ApiErrorRecordingAdapter, *, root: Path | None, now: str,
+) -> None:
+    """What the API error breaker saw of this pass, on the record (PR2d-1). Never raises.
+
+    A signed call whose outcome could not be recorded is reported (the call itself stands). When
+    one of this pass's calls latched the breaker, the operator is told — once, on the transition
+    (decision 27): the door stays shut until someone clears it by hand, and a machine that has
+    stopped opening positions is exactly the state nobody discovers from a quiet channel."""
+    try:
+        if recorder.unrecorded:
+            record["live_reason_codes"].append(API_BREAKER_UNRECORDED)
+            record["live_reason_codes"].extend(sorted(set(recorder.unrecorded)))
+        if recorder.tripped is not None:
+            record["live_reason_codes"].append(API_BREAKER_JUST_TRIPPED)
+            _send_operator_text(record, api_breaker_trip_lines(recorder.tripped), root=root, now=now)
+    except Exception as exc:  # noqa: BLE001 — the leg's own outcome stands; report, never raise
+        record["live_reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
+
+
 def _settle_clock() -> str:
     """The wall clock when a settlement is recorded. Its own function so tests can set it."""
     return timeutil.utc_now_iso()
@@ -1235,6 +1297,8 @@ def reread_entry_facts(
         "live_arm_approvals": pool.live_arm_approvals(active_pool) if active_pool is not None else None,
         "live_arm_entries": pool.live_arm_entries(active_pool) if active_pool is not None else None,
         "submitted_today": count_today(root),
+        # PR2d-1: a breaker that latched since the first read shuts this entry too.
+        "api_breaker_tripped": bool(api_breaker_status(root)["tripped"]),
         "daily_loss_breached": bool(risk["daily_loss_limit_breached"]),
         "risk": risk,
         "bracket_failures_consecutive": int(breaker["consecutive"]),

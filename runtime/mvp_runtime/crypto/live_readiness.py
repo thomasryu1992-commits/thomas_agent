@@ -69,6 +69,7 @@ from .live_order import (
     CONFIRMATION_ENV,
     ENTRY_MARKS_FILENAME,
     MANUAL_KILL_SWITCH_ENV,
+    api_breaker_status,
     bracket_breaker_status,
     claim_expires_at,
     count_today,
@@ -514,6 +515,34 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     checks.append(
         _check("bracket_breaker", bracket is not None and not bracket["tripped"], bracket_detail)
     )
+
+    # 6b-2. The API error breaker (PR2d-1). Five signed calls of one class in a row that the venue
+    # refused or could not answer, and new live entries stay shut until an operator clears it —
+    # a state no other row would show, because every other fact can read fine meanwhile.
+    try:
+        api = api_breaker_status(root)
+    except MvpRuntimeError as exc:
+        api = None
+        api_detail = (
+            f"UNREADABLE ({getattr(exc, 'reason_code', 'UNKNOWN')}) - the entry path refuses on "
+            "this too, so live entries are blocked until the record is repaired or removed"
+        )
+    else:
+        if api["tripped"]:
+            counts = api.get(str(api["tripped_class"])) or {}
+            api_detail = (
+                f"TRIPPED at {api['tripped_at']} - {api['tripped_class']} calls failed "
+                f"{counts.get('consecutive')} times in a row (limit {api['limit']}), last "
+                f"{counts.get('last_call')} {counts.get('last_reason_code')}. New entries are "
+                "refused until an operator clears it: python -m scripts.clear_api_breaker "
+                "--cleared-by ... --reason ..."
+            )
+        else:
+            api_detail = (
+                f"write {api['write']['consecutive']}/{api['limit']}, "
+                f"read {api['read']['consecutive']}/{api['limit']} consecutive signed-call failures"
+            )
+    checks.append(_check("api_breaker", api is not None and not api["tripped"], api_detail))
 
     # 6c. The live entry marks (PR2a): the last bar each context sent an entry on, and the
     # contexts a live stop-out still holds. On the board for the bracket breaker's reason — an

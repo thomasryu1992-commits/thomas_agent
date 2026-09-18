@@ -24,6 +24,43 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The venue refusing this machine's signed calls now shuts the entry door** (crypto PR2d-1,
+  Thomas decisions 18 and 27, 2026-09-18; `crypto/live_order.py`, `crypto/live_route.py`,
+  `crypto/live_entry.py`, `crypto/probe.py`, `crypto/live_execution.py`, `crypto/account.py`,
+  `crypto/live_readiness.py`, `scripts/run_slippage_probe.py`, `scripts/clear_api_breaker.py`).
+  - **The gap:** nothing counted signed calls the venue refused or could not answer. Reads could
+    keep answering while sends did not. Each entry would then leave with an outcome nobody knew,
+    and the symbol's claim held it for thirty minutes. The next fire tried again, up to the daily
+    order cap, and nobody was told.
+  - **What counts (decision 27).** Each signed call counts once, in one of two classes. Writes are
+    sends and cancels. Reads are order queries, resting-order queries, the account read and the
+    fill history a settlement falls back to. The classes are counted apart, because every send is
+    preceded by reads.
+    - **Counted:** transport failures, answers that cannot be read, unknown outcomes, rate limits
+      and overload, and credential or clock refusals. The venue's own code now rides in the
+      error's `data`, so no message is parsed.
+    - **Not counted:** business rejections, duplicate ids and a normal "no such order". Public
+      market data and the testnet cycle are not counted either.
+    - **What ends a streak:** only a success of the same class. A refusal the venue answered is
+      neither a failure nor a success.
+  - **Latched at five.** Once tripped, no success clears it, because closes, settlement and the
+    account keep calling the venue while entries are shut. Only `scripts/clear_api_breaker.py`
+    clears it, with an operator name and a written reason. Run where the live switch is off, the
+    script says the reset went nowhere rather than printing "cleared".
+  - **Told once.** The write that latches it says so (`just_tripped`; the lock lets exactly one
+    write see the transition). The leg sends one Telegram message however its pass ends. A
+    trip from the probe's own call goes to its stderr and to the same chat.
+  - **Where it is judged:** as a door in `plan_live_entry` (`LIVE_ENTRY_API_BREAKER_TRIPPED`) and in
+    the gate's re-read, where tripped on either read is tripped. It is also a refusal and a gate
+    check in the probe (`PROBE_API_BREAKER`) and a readiness row. Closing, settling and protection
+    are never gated by it.
+  - **Found while wiring it:** `read_account` sums every failure up as `ACCOUNT_DATA_DEGRADED` and
+    keeps the feed's own code in `error_reason_code`. Counted by the first, no account read would
+    ever have counted. The account read now also tells a rate limit from a transport failure.
+  - **History:** in the seven weeks before this shipped, no class failed twice in a row (five
+    isolated account-read failures, four business rejections of protective legs). The replayed
+    history never trips it.
+
 - **Two entry doors cannot spend the same room, and nothing may rest where an entry goes**
   (crypto PR2c-3, Thomas decisions 25 and 26, 2026-09-17; `crypto/live_order.py`,
   `crypto/live_entry.py`, `crypto/live_leg.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`).

@@ -43,6 +43,7 @@ from ..cli_common import force_utf8_io
 from ..errors import ToolBlocked, ToolError
 from ..safety_gate import NETWORK_ACCESS, Authorization
 from ..coerce import as_float as _f
+from .market_data import classify_transport_error
 
 ACCOUNT_TOOL_ID = "crypto.account.readonly"
 ACCOUNT_TOOL_VERSION = "0.1.0"
@@ -340,10 +341,13 @@ class BinanceFuturesAccountFeed:
         try:
             with urllib.request.urlopen(request, timeout=int(timeout_seconds)) as response:
                 raw = response.read().decode("utf-8")
-        except (TimeoutError, urllib.error.URLError):
+        except (TimeoutError, urllib.error.URLError) as exc:
             # Deliberately generic: the URL carries the signature, so it must never reach
-            # a message, a log, or a record (the market-data transport posture).
-            raise ToolError("TOOL_TRANSPORT", "live account request failed or timed out") from None
+            # a message, a log, or a record (the market-data transport posture). The one thing
+            # read off it is a rate limit (PR2d-1): "come back later" and "could not reach the
+            # venue" are different facts, and the API breaker counts both but the operator reads
+            # them differently.
+            raise classify_transport_error(exc, "live account") from None
         try:
             return json.loads(raw)
         except ValueError:
