@@ -197,6 +197,10 @@ account snapshot. Two judgements are coarser than a door, and say so: a refusal 
 recorded per context counts when half or more of its contexts were refused (the pipeline's stall
 rule), and no fire within three of the pipeline schedule's intervals — or no enabled schedule — is
 false (`trading_cycle_recent`), because nothing runs to enter.
+The text board opens and closes with that answer (`LIVE ENTRY POSSIBLE: YES / NO / UNKNOWN`,
+PR5b) and prints this process's own verdict as `THIS PROCESS: READY / NOT READY`. Where the
+process cannot see the live-trading environment, its env rows read `n/a` rather than FAIL unless a
+fresh record of the trading process says the gate was closed.
 
 ## The venue contract sentinel (crypto PR4a/4b, Thomas decisions 43-46)
 
@@ -450,8 +454,10 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
 `docs/BUILD_HISTORY.md`.
 
 **Gate 4 — verify the gate before any autonomous run**
-- [ ] `python -m runtime.mvp_runtime.crypto.live_readiness` reports READY. A refusal names
-      exactly what is missing; fix it rather than working around it.
+- [ ] `docker exec thomas-scheduler python -m runtime.mvp_runtime.crypto.live_readiness` reports
+      `THIS PROCESS: READY` and ends `LIVE ENTRY POSSIBLE: YES`. Either refusal names exactly what
+      is missing (`blocked by` names the component and its reason); fix it rather than working
+      around it.
 
 **Gate 5 — first supervised cycles**
 - [ ] Watch the first entries and closes live. Confirm each entry reconciles and each position

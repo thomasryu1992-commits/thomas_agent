@@ -24,6 +24,27 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The readiness board opens and closes with whether a live entry can open**
+  (crypto PR5b, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
+  `integrations/hermes/mcp/read_bridge_mcp.py`).
+  - **The change:** the text board starts with `LIVE ENTRY POSSIBLE: YES / NO / UNKNOWN` and what
+    blocks it, what cannot be seen and what admits, and its last line repeats the answer with its
+    reasons. This process's own verdict is printed as `THIS PROCESS: READY / NOT READY`, which is
+    what the CLI's exit code follows. `--json` carries the state as `readiness`.
+  - **FC-10:** a process without the live-trading environment marks its env rows `n/a` unless a
+    fresh record of the trading process says the gate was closed. Until now only a fresh OPEN record
+    did, so a console whose record had gone stale printed "MVP_LIVE_TRADING is not 'real' (live
+    trading off)" from its own empty environment. A kill leaves exactly that state, because a killed
+    runtime writes no more cycles. That statement was right by accident, for the wrong reason, and
+    it is the sentence a summariser lifts (2026-08-10). The banner says which case it is: a fresh
+    OPEN record, an old record, or none.
+  - **Why the rows could stop carrying it:** the old rule was that absence of evidence is no
+    licence to soften a row. That was right while the rows were the board's conclusion. The
+    conclusion is now the readiness state; `ready` and `checks` are unchanged.
+  - **The breaker watch** said "CRYPTO LIVE ENTRY OPEN - real orders can now be placed" when only
+    its own door, the loss breakers, had opened. It now says the loss breakers no longer refuse
+    entries, and points at `LIVE ENTRY POSSIBLE`. The headline keeps its name, because runbooks and
+    the ops skill quote it.
 - **`live_entry_possible` is the readiness state's answer: every fact an entry needs, each true,
   false or unknown** (crypto PR5a, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
   `crypto/live_route.py`, `crypto/cycle.py`, `integrations/hermes/mcp/read_bridge_mcp.py`).

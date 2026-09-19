@@ -384,14 +384,20 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # branch became unreachable. Removed rather than left: an unreachable branch reads as a
     # state the system can be in, and the next person to touch this would have to prove it is
     # not. The two door lines below carry every transition the old four did.
+    #
+    # And the door is THIS watch's door: the loss breakers. "OPEN - real orders can now be placed"
+    # said more than the watch knows — the stage, the arm, the gate and the venue contract each
+    # refuse entries too, and on 2026-09-19 the machine this was sent from was at PAPER with nothing
+    # armed. The headline keeps its name (runbooks and the ops skill quote it) and says what moved;
+    # whether an entry can open is the readiness board's `LIVE ENTRY POSSIBLE` (crypto PR5b).
     was_open = bool(previous.get("live_entry_open")) if previous is not None else None
     now_open = bool(current.get("live_entry_open"))
     if previous is None:
         headline = "CRYPTO LIVE ENTRY - first report"
     elif now_open and not was_open:
-        headline = "CRYPTO LIVE ENTRY OPEN - real orders can now be placed"
+        headline = "CRYPTO LIVE ENTRY OPEN - the loss breakers no longer refuse live entries"
     elif was_open and not now_open:
-        headline = "CRYPTO LIVE ENTRY CLOSED - real orders refused again"
+        headline = "CRYPTO LIVE ENTRY CLOSED - the loss breakers refuse live entries again"
     else:
         headline = "CRYPTO LIVE ENTRY - reasons changed"
 
@@ -409,7 +415,10 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # The door, unconditionally. It used to print only when a Gate 0 reading existed, which was
     # right while the door had two locks and would now hide it whenever the one lock is the
     # whole answer.
-    lines.append(f"  DOOR     : live entries {'OPEN' if current.get('live_entry_open') else 'REFUSED'}")
+    lines.append(f"  DOOR     : live entries {'OPEN' if current.get('live_entry_open') else 'REFUSED'}"
+                 " at the loss breakers")
+    lines.append("  entry    : the stage, the arm, the gate and the venue decide too - whether one")
+    lines.append("             can open is LIVE ENTRY POSSIBLE on `crypto readiness`")
     own_closed, live_closed = current.get("own_closed"), current.get("live_closed")
     if own_closed is not None and live_closed is not None:
         # Both counts, and only one of them is the ruling. The breakers judge the LIVE rows; the

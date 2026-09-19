@@ -969,16 +969,25 @@ def test_a_blind_process_still_says_FAIL_for_a_failure_it_can_see(tmp_path, clea
     assert live_readiness.OUT_OF_SCOPE_DETAIL not in breaker
 
 
-def test_env_rows_read_FAIL_when_nothing_says_the_system_is_trading(tmp_path, clean_env):
-    """No record, no downgrade. Absence of evidence about the gate is not permission to soften
-    the rows — the ordinary machine with no live env must still read a plain FAIL."""
+def test_with_no_record_the_env_rows_still_describe_only_this_container(tmp_path, clean_env):
+    """No record, and still no "live trading off" (crypto PR5b, FC-10). This test pinned the
+    opposite until PR5b — "absence of evidence is not permission to soften the rows" — which was
+    right while the rows were the board's conclusion. The conclusion is the readiness state now,
+    at the top and in the last line, so the rows no longer carry it; what they did carry was the
+    one sentence a summariser lifts. A process without the environment says what it knows: it
+    cannot see the environment, and no record of the system's gate is readable here."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     text = live_readiness.render_readiness_text(status)
 
     opt_in = next(line for line in text.splitlines() if "live_trading_opt_in" in line)
-    assert opt_in.startswith("[FAIL]"), opt_in
-    assert live_readiness.OUT_OF_SCOPE_MARK not in text
-    assert "SCOPE  : dry-run" not in text
+    assert opt_in.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), opt_in
+    assert "live trading off" not in text and "MVP_LIVE_TRADING is not" not in text
+    assert "no record of the trading process's gate is readable here" in text
+    assert "no record of the system's own gate is readable here" in text
+    # Still not READY, and still no entry: this decides what the board says, never what it permits.
+    assert status["ready"] is False
+    assert text[text.rindex("LIVE ENTRY POSSIBLE:"):].startswith("LIVE ENTRY POSSIBLE: NO - blocked by ")
+    assert live_readiness.readiness_data(status)["env_out_of_scope"] is True
 
 
 def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
@@ -988,20 +997,38 @@ def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
 
     assert status["recorded_gate"]["open"] is False
     assert live_readiness.contradicts_recorded_gate(status) is False
+    # The one case the env rows speak for the system too: its own fresh record says closed.
+    assert live_readiness.env_out_of_scope(status) is False
     text = live_readiness.render_readiness_text(status)
     assert "THIS PROCESS CANNOT SEE" not in text
     assert "NOT READY - every FAIL above must clear first" in text
+    opt_in = next(line for line in text.splitlines() if line.startswith("[") and "live_trading_opt_in" in line)
+    assert opt_in.startswith("[FAIL]"), opt_in
+    assert "live_gate_open (GATE_DISABLED)" in text[text.rindex("LIVE ENTRY POSSIBLE:"):]
 
 
 def test_a_stale_record_is_not_evidence_about_now(tmp_path, clean_env):
     """An old open gate must not manufacture a warning: that trades one false claim for
-    another, in the more alarming direction."""
+    another, in the more alarming direction. Nor may the console's own empty environment speak
+    instead (FC-10): a kill writes no more cycles, so this is the state a kill leaves, and the
+    board used to print "live trading off" here off the console's env — right by accident, for the
+    wrong reason."""
     _write_cycle(tmp_path, status="HELD", created_at="2026-07-20T00:00:00Z")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
 
     assert status["recorded_gate"]["stale"] is True
     assert live_readiness.contradicts_recorded_gate(status) is False
-    assert "STALE" in live_readiness.render_readiness_text(status)
+    text = live_readiness.render_readiness_text(status)
+    assert "STALE" in text
+    # The gate row keeps its dated, STALE-marked reading; no banner or verdict claims it as now.
+    assert "   the trading process recorded the gate OPEN" not in text
+    assert "was recorded OPEN" not in text
+    assert "is over two hours old - not a statement about now" in text
+    assert "live trading off" not in text
+    for check in live_readiness.ENV_SCOPED_CHECKS:
+        row = next(line for line in text.splitlines() if line.startswith("[") and check in line)
+        assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), row
+    assert live_readiness.env_out_of_scope(status) is True
 
 
 def test_the_newest_cycle_decides(tmp_path, clean_env):

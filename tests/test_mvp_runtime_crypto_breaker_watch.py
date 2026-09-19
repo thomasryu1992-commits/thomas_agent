@@ -228,8 +228,16 @@ def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopp
         assert "new positions refused" not in text and "new positions allowed" not in text
     # The door now moves with the breaker, so the releasing cycle reports an OPEN door. That is
     # the sentence an operator acts on, and it is the one this file exists to keep honest.
-    assert "DOOR     : live entries OPEN" in opened
-    assert "DOOR     : live entries REFUSED" in closed
+    assert "DOOR     : live entries OPEN at the loss breakers" in opened
+    assert "DOOR     : live entries REFUSED at the loss breakers" in closed
+    # ...and it is this watch's door only (crypto PR5b). "Real orders can now be placed" was sent
+    # from a machine at PAPER with nothing armed; the answer to that is the readiness board's.
+    for text in (first, closed, changed, opened):
+        assert "real orders can now be placed" not in text
+        assert "LIVE ENTRY POSSIBLE on `crypto readiness`" in text
+        door = [line for line in text.splitlines() if line.startswith(("  DOOR", "  entry", "      "))]
+        assert door and all(len(line) <= 80 for line in door), door
+    assert opened.splitlines()[0] == "CRYPTO LIVE ENTRY OPEN - the loss breakers no longer refuse live entries"
 
 
 def test_the_render_separates_the_judged_rows_from_the_ones_that_are_not(tmp_path):
