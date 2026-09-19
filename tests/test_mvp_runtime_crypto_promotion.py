@@ -1230,9 +1230,9 @@ def test_a_suspension_between_the_ask_and_the_execution_invalidates_the_approval
 
 
 def test_the_ask_and_install_doors_consume_one_gate_roster():
-    roster = [g.escape_flag for g in PROMOTION_GATES]
+    roster = [g.escape_flag for g in PROMOTION_GATES if g.escape_flag]
     assert len(roster) == len(set(roster)), "an escape flag names exactly one gate"
-    escapable = {flag for flag in roster if flag}
+    escapable = set(roster)
     ask = {name for name in inspect.signature(request_promotion).parameters
            if name.startswith("allow_")}
     install = {name for name in inspect.signature(run_promotion).parameters
@@ -1242,14 +1242,15 @@ def test_the_ask_and_install_doors_consume_one_gate_roster():
 
 
 def test_the_execution_stage_gate_has_no_escape_and_cannot_grow_one():
-    """PR1c: every other gate on the roster is an operator call with a flag. This one is the
-    ladder, and the ladder is Thomas's — a flag here would be the escape PR1c retired, one door
-    over. The empty escape name matches no key in `escapes`, so the gate always runs."""
-    stage_gates = [g for g in PROMOTION_GATES if not g.escape_flag]
-    assert len(stage_gates) == 1
-    assert stage_gates[0].check.__name__ == "_gate_execution_stage"
+    """PR1c: every other gate on the roster is an operator call with a flag. The stage gate is
+    the ladder, and the ladder is Thomas's — a flag here would be the escape PR1c retired, one
+    door over. PR3c-2 adds the one other: a rule the pool routes is never installed twice (Thomas
+    decision 40). The empty escape name matches no key in `escapes`, so both always run."""
+    unescapable = sorted(g.check.__name__ for g in PROMOTION_GATES if not g.escape_flag)
+    assert unescapable == ["_gate_execution_stage", "_gate_rule_not_routed"]
     source = Path(promote_door.__file__).read_text(encoding="utf-8")
     assert "--allow-unstaged" not in source and "allow_execution_stage" not in source
+    assert "allow_routed" not in source and "allow_same_rule" not in source
 
 
 def test_every_roster_escape_is_reachable_from_the_operator_argv():

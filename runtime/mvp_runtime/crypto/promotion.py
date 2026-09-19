@@ -134,7 +134,8 @@ def content_sha256_of(
         [c["strategy_rule_hash"] for c in candidates],
         keep_active,
         live_tier,
-        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root),
+        pool_store.reactivated_candidate_ids(candidate_ids, keep_active=keep_active, root=root,
+                                             candidates=candidates),
         artifact_sha256s=candidate_artifacts(candidates),
     )
 
@@ -293,6 +294,12 @@ def _gate_pool_size_cap(g: _GateInput) -> None:
     pool_store.assert_pool_within_size_cap(g.entries)
 
 
+def _gate_rule_not_routed(g: _GateInput) -> None:
+    # One rule, one entry (PR3c-2, Thomas decision 40): a rule the pool routes is never installed
+    # again under another lineage, and one batch never carries a rule twice. No escape.
+    pool_store.assert_rule_not_routed(g.candidates, root=g.store_root)
+
+
 def _gate_silent_reactivation(g: _GateInput) -> None:
     # The one effect the approval's content hash names but cannot escape-gate: an install
     # returning terminal members to trading must be the operator's explicit act.
@@ -318,10 +325,14 @@ class PromotionGate:
 
 
 # Ordering is operator UX, not correctness — every gate below is absolute unless escaped.
-# Evidence gates lead because they are the ones an operator can act on by re-minting; the
-# two pool-shape gates run on the assembled entries and come last, with reactivation after
-# the size cap because it is the only gate about the entries an install leaves BEHIND.
+# The rule gate leads: which strategy a candidate IS decides whether any other refusal is worth
+# reading. Evidence gates follow because they are the ones an operator can act on by
+# re-minting; the two pool-shape gates run on the assembled entries and come last, with
+# reactivation after the size cap because it is the only gate about the entries an install
+# leaves BEHIND.
 PROMOTION_GATES: tuple[PromotionGate, ...] = (
+    # No escape flag: a routed rule is not an operator's to install twice (PR3c-2, decision 40).
+    PromotionGate("", _gate_rule_not_routed),
     PromotionGate("allow_stale_cost_basis", _gate_cost_basis),
     PromotionGate("allow_unrecorded_evidence_depth", _gate_evidence_depth),
     PromotionGate("allow_duplicates", _gate_semantic_duplicates),
@@ -396,12 +407,13 @@ def predicted_pool_entries(
     """The pool as the install door would assemble it, reduced to what the shape gates read.
 
     ``assert_pool_within_size_cap`` counts status plus spec; ``assert_no_silent_reactivation``
-    compares candidate_id plus status against the pool on disk. The install door's fuller
+    compares candidate_id, rule and status against the pool on disk. The install door's fuller
     entries (display-id collision handling, evidence columns) change neither answer, so the
     ask can judge the same two gates without duplicating that assembly. Add mode keeps the
-    incumbents exactly as they stand — a terminal member stays terminal, which is why add
-    mode can never reactivate; replace mode is the batch alone, every row ``PAPER_ACTIVE``,
-    which is exactly how replace mode can.
+    incumbents as they stand — a terminal member stays terminal, so add mode cannot re-list
+    one — except the retired entries holding a candidate's rule, which the install replaces
+    (PR3c-2, Thomas decision 40): that is how add mode returns a retired RULE. Replace mode is
+    the batch alone, every row ``PAPER_ACTIVE``, which is how it can do both.
     """
     predicted = [
         {
@@ -409,13 +421,36 @@ def predicted_pool_entries(
             "candidate_id": c.get("candidate_id"),
             "status": "PAPER_ACTIVE",
             pool_store.LIVE_TIER_FIELD: live_tier,
+            "strategy_rule_hash": c.get("strategy_rule_hash"),
             "strategy_spec": c.get("strategy_spec"),
         }
         for c in candidates
     ]
     if keep_active:
-        return [*(pool_store.load_active_pool(root).get("active_strategies") or []), *predicted]
+        # The retired entries a returning rule replaces leave, as they will at the install (PR3c-2).
+        incumbents = pool_store.load_active_pool(root).get("active_strategies") or []
+        replaced = {id(e) for c in candidates for e in pool_store.replaced_entries(c, incumbents)}
+        return [*(e for e in incumbents if id(e) not in replaced), *predicted]
     return predicted
+
+
+def _reactivation_notes(found: Sequence[Mapping[str, Any]]) -> list[str]:
+    """What an ask says returns, in words Thomas can check against the pool: display ids, candidate
+    ids, statuses and why each replaced entry had been retired (review of PR3c-2). Display only —
+    the content hash and the signed parameters carry the lineage keys."""
+    notes = []
+    for row in found:
+        note = f"{row['strategy_id']} [{row['candidate_id']}] from {row['from_status']}"
+        replaces = row.get("replaces") or []
+        if replaces:
+            note += ", replacing " + ", ".join(
+                f"{r['strategy_id']} [{r['candidate_id'] or r['lineage']}] {r['status']}"
+                + (f" ({', '.join(str(x) for x in r['lifecycle_reasons'])})"
+                   if isinstance(r.get("lifecycle_reasons"), list) and r["lifecycle_reasons"] else "")
+                for r in replaces
+            ) + " — the same rule, judged on their record"
+        notes.append(note)
+    return notes
 
 
 def request_promotion(
@@ -462,13 +497,12 @@ def request_promotion(
     # promotion the next step was always going to block. That argument was already written
     # beside eight of these gates while the size cap and the reactivation guard still ran
     # at the install alone; the roster is what makes it structural.
+    predicted = predicted_pool_entries(candidates, keep_active=keep_active, live_tier=live_tier, root=store_root)
     run_promotion_gates(
         candidates,
         keep_active=keep_active,
         live_tier=live_tier,
-        entries=predicted_pool_entries(
-            candidates, keep_active=keep_active, live_tier=live_tier, root=store_root,
-        ),
+        entries=predicted,
         store_root=store_root,
         # The stage as the machine reads it now. The install door resolves its own, so an ask
         # approved at a rung the machine has since left refuses there rather than installing.
@@ -493,7 +527,7 @@ def request_promotion(
     # exactly what the approval must bind. `store_root` is the candidates root, so the pool
     # comes from `root` — the same place the install door will read it from.
     reactivated = pool_store.reactivated_candidate_ids(
-        candidate_ids, keep_active=keep_active, root=root,
+        candidate_ids, keep_active=keep_active, root=root, candidates=candidates,
     )
     content = promotion_content_sha256(
         candidate_ids, rule_hashes, keep_active, live_tier, reactivated,
@@ -512,6 +546,8 @@ def request_promotion(
         strategy_ids=[str(c.get("strategy_id")) for c in candidates], rule_hashes=rule_hashes,
         artifact_sha256s=artifacts,
         keep_active=keep_active, live_tier=live_tier, content_sha256=content, now=now, repo_root=root,
+        reactivated=reactivated,
+        reactivation_notes=_reactivation_notes(pool_store.silent_reactivations(predicted, root=store_root)),
     )
     approval_request = approval_mod.build_approval_request(
         permission_decision, now=now, ttl_minutes=ttl_minutes, repo_root=root,

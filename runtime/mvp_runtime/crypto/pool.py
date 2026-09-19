@@ -58,7 +58,7 @@ from ..filelock import locked
 from . import market_data
 from .candidate_identity import (
     LINEAGE_FIELDS, PREDECESSOR_KEYS_FIELD, entry_attribution_keys, is_lineage_key, lineage_of,
-    own_attribution_keys,
+    outcome_attribution_key, own_attribution_keys,
 )
 from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
 # this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
@@ -699,11 +699,11 @@ def semantic_duplicate_groups(
             continue
         ids = frozenset(candidate_id(m) for m in members)
         # "The same strategy under a DIFFERENT rule hash" is the whole claim. Members
-        # sharing a hash are one lineage measured more than once — a re-scored row and
-        # its original are the obvious case, and the store is append-only precisely so
-        # both can exist. Duplicate LINEAGES are already refused by
-        # `assert_pool_identity_unique` and the promotion door's candidate_id check;
-        # this function exists only for what those cannot see.
+        # sharing a hash are one rule measured more than once — a re-scored row and its
+        # original are the obvious case, and the store is append-only precisely so both
+        # can exist. One rule under two candidate ids is the promotion door's to refuse
+        # or to replace (`assert_rule_not_routed`, `replaced_entries`, PR3c-2); this
+        # function exists only for what those cannot see.
         if len({str(m.get("strategy_rule_hash")) for m in members}) < 2:
             continue
         if len(ids) < 2 or ids in seen:
@@ -745,6 +745,7 @@ def assert_no_semantic_duplicates(
 
 def reactivated_candidate_ids(
     candidate_ids: Sequence[str], *, keep_active: bool, root: Path | None = None,
+    candidates: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
     """Lineages this promotion would return to trading, sorted. One pool read.
 
@@ -755,25 +756,32 @@ def reactivated_candidate_ids(
     Sorted, so the hash does not depend on selector order, for the same reason
     ``candidate_ids`` and ``rule_hashes`` are sorted beside it.
 
-    ``keep_active`` decides it entirely in one direction: in ADD mode the incumbents keep the
-    status they had and the door refuses a candidate already in the pool, so nothing can come
-    back — the answer is empty without reading anything. Only REPLACE rebuilds every entry,
-    and that is where a terminal member re-listed alongside the rest returns as PAPER_ACTIVE.
+    Two ways back, named apart:
+
+    - **A terminal member re-listed under its own candidate id**, named by that bare id. Only
+      REPLACE rebuilds every entry, and that is where a terminal member re-listed alongside the
+      rest returns as PAPER_ACTIVE; ADD mode keeps the incumbents' status and refuses a candidate
+      already in the pool.
+    - **A retired rule returned under another candidate id** (PR3c-2, Thomas decision 40), in
+      either mode: every terminal entry holding a candidate's rule (:func:`replaced_entries`),
+      which the install replaces. Named by its lineage key (`candidate_identity.
+      outcome_attribution_key`: ``cand:``, ``gen:`` or ``sid:``), so the approval says which
+      retired lineage the rule comes back from. Read off the candidate rows (``candidates``),
+      which carry the rule; the two doors pass them.
     """
-    if keep_active:
-        return []
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
-    current = {
-        str(e.get("candidate_id")): e
-        for e in load_active_pool(root).get("active_strategies") or []
-        if e.get("candidate_id")
-    }
-    wanted = {str(c) for c in candidate_ids if c}
-    return sorted(
-        cid for cid in wanted
-        if cid in current and str(current[cid].get("status")) in TERMINAL_STATUSES
-    )
+    entries = load_active_pool(root).get("active_strategies") or []
+    returned: set[str] = set()
+    if not keep_active:
+        current = {str(e.get("candidate_id")): e for e in entries if e.get("candidate_id")}
+        returned.update(
+            cid for cid in {str(c) for c in candidate_ids if c}
+            if cid in current and str(current[cid].get("status")) in TERMINAL_STATUSES
+        )
+    for candidate in candidates:
+        returned.update(outcome_attribution_key(entry) for entry in replaced_entries(candidate, entries))
+    return sorted(returned)
 
 
 def silent_reactivations(
@@ -783,25 +791,41 @@ def silent_reactivations(
 
     Pure-ish (one pool read), returns ``[{candidate_id, strategy_id, from_status}]`` oldest
     first. Empty is the ordinary answer; a non-empty list is the promotion door about to do
-    something its approval never named."""
+    something its approval never named.
+
+    Since PR3c-2 (Thomas decision 40) also a NEW entry whose rule only retired entries hold under
+    other lineages: the rule returns to trading, and the entry replaces them. Its row carries
+    ``replaces`` — each replaced entry's display id, candidate id, status and lineage key — and
+    ``from_status`` names their statuses."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
-    current = {
-        e.get("candidate_id"): e for e in load_active_pool(root).get("active_strategies") or []
-        if e.get("candidate_id")
-    }
+    on_disk = load_active_pool(root).get("active_strategies") or []
+    current = {e.get("candidate_id"): e for e in on_disk if e.get("candidate_id")}
     found = []
     for entry in entries:
-        was = current.get(entry.get("candidate_id"))
-        if was is None:
+        cid = entry.get("candidate_id")
+        if str(entry.get("status")) in TERMINAL_STATUSES or not cid:
             continue
-        if str(was.get("status")) in TERMINAL_STATUSES and \
-                str(entry.get("status")) not in TERMINAL_STATUSES:
-            found.append({
-                "candidate_id": str(entry.get("candidate_id")),
-                "strategy_id": str(entry.get("strategy_id")),
-                "from_status": str(was.get("status")),
-            })
+        was = current.get(cid)
+        if was is not None and str(was.get("status")) not in TERMINAL_STATUSES:
+            continue                                   # an incumbent that is trading: nothing returns
+        replaced = replaced_entries(entry, on_disk)
+        if was is None and not replaced:
+            continue                                   # a new lineage of a new rule
+        statuses = {str(r.get("status")) for r in replaced} | ({str(was.get("status"))} if was else set())
+        row: dict[str, Any] = {
+            "candidate_id": str(cid),
+            "strategy_id": str(entry.get("strategy_id")),
+            "from_status": "/".join(sorted(statuses)),
+        }
+        if replaced:
+            row["replaces"] = [
+                {"strategy_id": str(r.get("strategy_id")), "candidate_id": r.get("candidate_id"),
+                 "status": str(r.get("status")), "lineage": outcome_attribution_key(r),
+                 "lifecycle_reasons": r.get("lifecycle_reasons")}
+                for r in replaced
+            ]
+        found.append(row)
     return found
 
 
@@ -831,22 +855,126 @@ def assert_no_silent_reactivation(
     ``--allow-reactivation`` through — recorded on the ledger, because an escape that leaves
     no trace is indistinguishable later from a door that never refused.
 
-    This does not make the approval cover the reactivation; only the content hash could, and
-    changing what Thomas's signature binds is his decision, not this door's. It makes the
-    reactivation deliberate and legible, which is the half that can be fixed here.
+    The approval names the reactivation: its content hash carries the set
+    (:func:`reactivated_candidate_ids`, since #619), and since PR3c-2 the ask signs it and says so.
+    This guard makes performing it deliberate and leaves it on the ledger.
+
+    Since PR3c-2 a retired RULE returned under another candidate id is a reactivation too
+    (Thomas decision 40), refused here the same way.
 
     Raises ``POOL_SILENT_REACTIVATION``.
     """
     found = silent_reactivations(entries, root=root)
     if not found:
         return
-    listed = "; ".join(f"{f['strategy_id']} [{f['candidate_id']}] {f['from_status']}" for f in found)
+    listed = "; ".join(
+        f"{f['strategy_id']} [{f['candidate_id']}] {f['from_status']}"
+        + (" (replaces " + ", ".join(f"{r['strategy_id']} [{r['candidate_id'] or r['lineage']}]"
+                                     for r in f["replaces"]) + ")" if f.get("replaces") else "")
+        for f in found
+    )
     raise ToolError(
         "POOL_SILENT_REACTIVATION",
-        f"this install returns {len(found)} terminal member(s) to trading, which the "
-        f"promotion approval does not name: {listed}. Retire-then-promote, or pass the "
-        f"explicit --allow-reactivation escape.",
+        f"this install returns {len(found)} terminal member(s) to trading: {listed}. A return is an "
+        f"operator's explicit act: pass --allow-reactivation, at the ask and at the install (the "
+        f"approval names what returns).",
     )
+
+
+# --- the same rule is the same strategy (PR3c-2, Thomas decisions 40 and 42) -----------
+#
+# The candidate store re-scores a rule under a new candidate id (348 rule hashes carry two or
+# more, 2026-09-18), and every identity check above compares candidate ids. So a rule the pool
+# routes could be installed a second time, and a retired rule could return to trading under a
+# new id as a fresh hypothesis, the record it was retired on left with an id no entry holds.
+# Replayed 2026-09-19 on the running image: of the 70 rules the pool holds with another id in
+# the store, none could be installed that way that day, but only because another gate or a
+# display-id collision happened to refuse each one (on 2026-09-10 the collision alone did).
+#
+# Decision 40: a rule the pool routes is never installed again under another id. A rule only
+# retired entries hold comes back as a REACTIVATION — named in the approval, behind
+# `--allow-reactivation` — and the new entry replaces those entries and inherits their record
+# (decision 41, `candidate_identity.PREDECESSOR_KEYS_FIELD`). One rule, one entry, from then on.
+# The pool read does not enforce it: S008 and S008-GEN-696 hold one rule today, both retired, and
+# stay (decision 42); a promotion of their rule replaces both.
+
+# A promotion would route a rule the pool already routes, or one rule twice. No escape.
+POOL_RULE_ALREADY_ROUTED = "POOL_RULE_ALREADY_ROUTED"
+
+
+def rule_hashes_of(record: Mapping[str, Any]) -> set[str]:
+    """The rule hashes ``record`` (a candidate row or a pool entry) answers to: its label and the
+    hash of the spec it trades. They agree on every entry and row on the host (2026-09-19); both
+    are read, so a label that parts from its spec cannot hide a rule."""
+    return {value for value in (record.get("strategy_rule_hash"), _spec_rule_hash(record.get("strategy_spec")))
+            if isinstance(value, str) and value}
+
+
+def same_rule_entries(
+    record: Mapping[str, Any], entries: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """The entries holding ``record``'s rule under another lineage: another candidate id, or none."""
+    wanted = rule_hashes_of(record)
+    own = record.get("candidate_id")
+    return [
+        entry for entry in entries
+        if isinstance(entry, Mapping) and not (own and entry.get("candidate_id") == own)
+        and wanted & rule_hashes_of(entry)
+    ]
+
+
+def replaced_entries(
+    record: Mapping[str, Any], entries: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """The retired entries (SUSPENDED, ARCHIVED) a promotion of ``record`` replaces: every one
+    holding its rule under another lineage (decision 40), when the rule is RETURNING.
+
+    It is not when ``record``'s own entry is trading: a replace-mode restate of a routed entry
+    brings nothing back, and a retired twin beside it (a rule installed twice before PR3c-2) goes
+    the way replace mode has always taken what it does not re-list. Naming it would put a return
+    that is not happening in the approval, and in front of the ask's real-money warning, while the
+    reactivation guard rightly saw none (review of PR3c-2)."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    own = record.get("candidate_id")
+    if own and any(isinstance(entry, Mapping) and entry.get("candidate_id") == own
+                   and str(entry.get("status")) not in TERMINAL_STATUSES for entry in entries):
+        return []
+    return [entry for entry in same_rule_entries(record, entries)
+            if str(entry.get("status")) in TERMINAL_STATUSES]
+
+
+def assert_rule_not_routed(candidates: Sequence[Mapping[str, Any]], *, root: Path | None = None) -> None:
+    """Refuse a promotion that would put a rule the pool routes in again under another lineage,
+    or one rule in twice (decision 40). One pool read; no escape.
+
+    "Routes" is any status but a terminal one, so a status this code does not know refuses too.
+    Checked against the pool as it stands in both modes: a replace-mode batch that drops the
+    routed lineage and lists its twin is the same rule changing lineage without a retirement.
+
+    Raises :data:`POOL_RULE_ALREADY_ROUTED`."""
+    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+
+    entries = load_active_pool(root).get("active_strategies") or []
+    for index, candidate in enumerate(candidates):
+        for other in candidates[index + 1:]:
+            if rule_hashes_of(candidate) & rule_hashes_of(other):
+                raise ToolError(
+                    POOL_RULE_ALREADY_ROUTED,
+                    f"{candidate.get('strategy_id')} [{candidate.get('candidate_id')}] and "
+                    f"{other.get('strategy_id')} [{other.get('candidate_id')}] are one rule; promote one",
+                )
+        routed = [entry for entry in same_rule_entries(candidate, entries)
+                  if str(entry.get("status")) not in TERMINAL_STATUSES]
+        if routed:
+            listed = "; ".join(f"{e.get('strategy_id')} [{e.get('candidate_id') or '-'}] {e.get('status')}"
+                               for e in routed)
+            raise ToolError(
+                POOL_RULE_ALREADY_ROUTED,
+                f"{candidate.get('strategy_id')} [{candidate.get('candidate_id')}] is a rule the pool "
+                f"routes: {listed}. The same rule is the same strategy; to move it to this candidate, "
+                "retire it first and promote this one as a reactivation.",
+            )
 
 
 # --- pool sizing -------------------------------------------------------------------

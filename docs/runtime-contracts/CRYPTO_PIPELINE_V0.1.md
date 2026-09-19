@@ -280,13 +280,50 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
     a `cand:` or `gen:` key inherited by two entries or held by another entry as its own. Two
     entries' own keys are not compared: S008 and S008-GEN-696 share `gen:GEN-696:…` today, and
     stay (decision 42).
-  - The strategy artifact does not cover the field, a fact about the pool like `status`; the
-    promotion approval that writes it binds it (PR3c-2). No entry carries it until that door writes
-    one.
+  - The strategy artifact does not cover the field, a fact about the pool like `status`. The
+    promotion approval that writes it names each replaced entry by one lineage key (PR3c-2); the keys
+    the entry records follow from those entries, and a restate keeps what an entry already had.
   - **After a rollback** an older image ignores the field: the entry is judged as a fresh install,
     and a sealed predecessor's losses stay out of the drawdown window while its rule trades. An
     older door can also re-promote a replaced lineage beside the entry that inherited it; this code
     then refuses the pool on read (`STRATEGY_POOL_DUPLICATE`) until one of them is retired.
+- **One rule, one entry** (decisions 40 and 42, PR3c-2): the same rule is the same strategy, whatever
+  candidate id it was re-scored under. "Same rule" is the label or the spec's computed hash
+  (`pool.rule_hashes_of`).
+  - At the promotion door, a rule the pool routes (any status but SUSPENDED and ARCHIVED) is never
+    installed under another candidate, and a batch never carries one rule twice:
+    `POOL_RULE_ALREADY_ROUTED`, a roster gate with no escape, at the ask and at the install (where it
+    runs before display ids are assigned). The history import's `--activate-pool` installs a pool
+    wholesale and does not run it (pre-existing; OBSERVATION only, unstamped, so it cannot arm).
+  - A rule that only retired entries hold returns as a reactivation. It is named in the content hash
+    (`pool.reactivated_candidate_ids`, one lineage key per replaced entry, where a re-listed member
+    is named by its bare id), signed in the ask's parameters (`reactivated_lineages`) and told in its
+    risk reason by display id, status and retirement reason; it is refused without
+    `--allow-reactivation` (with `--without-approval`, OBSERVATION only, there is no approval to name
+    it, and the ledger records both escapes). The new entry replaces those entries, in either mode,
+    and their display ids leave with them; it records the keys that named them and what they had
+    inherited, and inherits their record (above). The promotion event keeps who they were and why
+    they had been retired (`replaced_entries`).
+  - A rule is returning only when its candidate's own entry is not trading: a replace-mode restate of
+    a routed entry brings nothing back, and a retired twin beside it goes as replace mode has always
+    taken what it does not re-list — nothing named, nothing inherited.
+  - The new entry carries the longest failure streak among its own entry (when re-listed) and the
+    entries it replaces, so neither a returning rule nor a restate starts the lifecycle over (a
+    restate used to reset every re-listed entry's streak). A replace-mode restate also keeps what an
+    entry had inherited: its candidate row carries none, and arming it LIVE goes through a restate.
+  - Rows that name only a display id follow a returning rule only if its new entry takes the same
+    display id: what a successor records names a lineage by its candidate and generation keys.
+  - The LIVE-arming forward confirmation still reads the candidate's own stream, as a fresh
+    install's does. The approval names the retired lineages the rule returns from, and Thomas reads
+    them there; refusing a LIVE arming on a replaced lineage's forward record would be a new gate
+    with no escape, and is not added.
+  - The pool read does not enforce it: S008 and S008-GEN-696 hold one rule, both retired, and stay
+    (decision 42); their rule's return replaces both.
+  - Replayed on the host on 2026-09-19: of the 70 rules the pool holds with another candidate id in
+    the store, none could have been installed that day, but only because another gate or a
+    display-id collision happened to refuse each. One (`cand_d3556f0f1a137ede74c9`, the retired
+    S005-GEN-626's rule) passed every gate and was stopped by the collision alone; it now needs
+    an approval that names the return and the escape.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or

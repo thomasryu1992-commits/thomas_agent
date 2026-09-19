@@ -60,6 +60,9 @@ from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod  # noqa: E402
+from runtime.mvp_runtime.crypto.candidate_identity import (  # noqa: E402
+    PREDECESSOR_KEYS_FIELD, precise_lineage_keys, predecessor_keys,
+)
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
@@ -223,6 +226,39 @@ def run_promotion(
             # A pool the read door refuses (an artifact that no longer holds, a spec that does not
             # parse) is not one to add to: refused as the other doors refuse, not as a traceback.
             raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    # One rule, one entry (PR3c-2, Thomas decision 40). Refused here, before display ids are
+    # assigned, so a routed rule reads as what it is and not as the display-id collision that
+    # happened to stop one on 2026-09-10; the roster below runs the same check at both doors.
+    try:
+        pool_store.assert_rule_not_routed(candidates, root=root)
+        on_disk = entries if keep_active else (pool_store.load_active_pool(root).get("active_strategies") or [])
+    except MvpRuntimeError as exc:
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
+    # The retired entries each candidate's rule returns from. They leave the pool — their display
+    # ids with them — and the new entry inherits their record (decision 41). A reactivation: the
+    # roster refuses it below unless --allow-reactivation, and the approval's hash names it.
+    replaced = {c["candidate_id"]: pool_store.replaced_entries(c, on_disk) for c in candidates}
+    leaving = {id(e) for found in replaced.values() for e in found}
+    entries = [e for e in entries if id(e) not in leaving]
+    # What each new entry inherits: the keys naming what it replaces, and what an entry re-listed in
+    # replace mode had already inherited — its candidate row carries none, and a restate (arming it
+    # LIVE goes through one) must not drop its record (review of PR3c-1).
+    on_disk_by_cid = {e.get("candidate_id"): e for e in on_disk if e.get("candidate_id")}
+    inherits = {
+        c["candidate_id"]: sorted(set(predecessor_keys(on_disk_by_cid.get(c["candidate_id"]) or {})).union(
+            *(precise_lineage_keys(e) for e in replaced[c["candidate_id"]])))
+        for c in candidates
+    }
+    # And the longest failure streak among its own entry (a re-listed one) and what it replaces, so
+    # neither a returning rule nor a restate starts the lifecycle over at nothing (reviews of PR3c-1
+    # and PR3c-2; a restate used to reset every re-listed entry's streak).
+    carried_failures = {
+        c["candidate_id"]: max(
+            (int(e.get("lifecycle_consecutive_failures") or 0)
+             for e in [*replaced[c["candidate_id"]], on_disk_by_cid.get(c["candidate_id"]) or {}]),
+            default=0)
+        for c in candidates
+    }
     existing_ids = {e.get("strategy_id") for e in entries}
     existing_cids = {e.get("candidate_id") for e in entries}
     display_ids: list[str] = []
@@ -293,6 +329,11 @@ def run_promotion(
             # read recomputes the hash from this entry and refuses the pool if they part (decision 34).
             artifact_mod.ARTIFACT_FIELD: artifact_mod.carried_parts(c),
             artifact_mod.ARTIFACT_SHA256_FIELD: artifacts[c["candidate_id"]],
+            # The lineages this entry replaced, whose record it is judged on with its own (PR3c,
+            # decision 41): what named each, and what each had inherited. Absent when none.
+            **({PREDECESSOR_KEYS_FIELD: inherits[c["candidate_id"]]} if inherits[c["candidate_id"]] else {}),
+            **({"lifecycle_consecutive_failures": carried_failures[c["candidate_id"]]}
+               if carried_failures[c["candidate_id"]] else {}),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
@@ -337,9 +378,9 @@ def run_promotion(
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
-    # Who this install returns from a terminal status — recorded on the summary whether or
-    # not the escape fired, because the reactivation is the part of the effect the approval's
-    # content hash cannot name, so the ledger is the only place it is written down at all.
+    # Who this install returns from a terminal status — recorded on the summary whether or not
+    # the escape fired, beside the approval that named it: the ledger is where an install's own
+    # account of it stays (an escaped install without approval has no other).
     reactivations = pool_store.silent_reactivations(entries, root=root)
 
     new_pool = {
@@ -349,7 +390,11 @@ def run_promotion(
         "updated_by": promoted_by,
         "updated_at": now,
     }
-    installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
+    try:
+        installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
+    except MvpRuntimeError as exc:
+        # Refused as the other doors refuse, not as a traceback (review of PR3c-2).
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     summary = {
         "promoted_candidate_ids": [c["candidate_id"] for c in candidates],
@@ -402,11 +447,19 @@ def run_promotion(
         "derivations": [c.get("derivation_type") for c in candidates],
         "quarantined_derivation_escape": bool(allow_quarantined_derivation),
         # Who came back from a terminal status, and from which. Recorded whether or not the
-        # escape fired, like the bases and depths above: the reactivation is the part of the
-        # effect the approval's content hash cannot name, so the ledger is the only place it
-        # is written down at all.
+        # escape fired, like the bases and depths above: the approval names it when there is one,
+        # and the ledger is the install's own account of it.
         "reactivation_escape": bool(allow_reactivation),
         "reactivated": reactivations,
+        # The retired entries this install replaced (PR3c-2). They are gone from the pool, so this is
+        # the one place left that says who they were and why they had been retired.
+        "replaced_entries": [
+            {"replaced_by": cid, "strategy_id": e.get("strategy_id"), "candidate_id": e.get("candidate_id"),
+             "status": e.get("status"), "lineage_keys": sorted(precise_lineage_keys(e)),
+             "lifecycle_reasons": e.get("lifecycle_reasons"),
+             "lifecycle_retired_by": e.get("lifecycle_retired_by")}
+            for cid, found in replaced.items() for e in found
+        ],
         # Every review this promotion did NOT get, in one field.
         #
         # Each escape above is already recorded on its own, and individually each is a
@@ -502,8 +555,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: let this install return terminally SUSPENDED / "
                              "ARCHIVED members to trading (recorded, with who and from what). "
                              "Replace mode rebuilds every entry as PAPER_ACTIVE, so re-listing "
-                             "the incumbents to drop one reactivates the rest; the approval's "
-                             "content hash cannot name that, which is why the operator must.")
+                             "the incumbents to drop one reactivates the rest. A candidate whose "
+                             "RULE only retired entries hold returns it too, in either mode, and "
+                             "replaces those entries (PR3c-2). The approval names what returns.")
     parser.add_argument("--confirm", action="store_true", help="actually install; refused without it")
     args = parser.parse_args(argv)
 
@@ -789,7 +843,10 @@ def main(argv: list[str] | None = None) -> int:
     # because the operator holding the argv is the last reader who can still stop.
     if summary["reactivated"]:
         print(f"NOTE: returned {len(summary['reactivated'])} terminal member(s) to trading — "
-              + ", ".join(f"{r['strategy_id']} (was {r['from_status']})"
+              + ", ".join(f"{r['strategy_id']} (was {r['from_status']}"
+                          + ("; replaced " + ", ".join(f"{x['strategy_id']} [{x['candidate_id'] or x['lineage']}]"
+                                                       for x in r["replaces"]) if r.get("replaces") else "")
+                          + ")"
                           for r in summary["reactivated"]))
     if summary["reviews_skipped"]:
         print(f"NOTE: this promotion skipped {len(summary['reviews_skipped'])} review(s): "

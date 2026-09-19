@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import yaml
 
@@ -1578,6 +1578,13 @@ def build_strategy_promotion_permission_decision(
     ttl_minutes: int = MVP_TTL_MINUTES,
     repo_root: Path | None = None,
     approval_id: str | None = None,
+    # The lineages this promotion returns to trading from a terminal status
+    # (`pool.reactivated_candidate_ids`, already in ``content_sha256``). Shown and signed so the
+    # ask SAYS it (PR3c-2): a retired rule returning under a new candidate replaces its entries.
+    reactivated: Sequence[str] = (),
+    # The same returns in words (display ids, statuses, why each was retired), for the risk reason
+    # only: what Thomas reads, never what is signed.
+    reactivation_notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to promote
     strategy candidates into the active pool (Crypto Pipeline C8b).
@@ -1603,6 +1610,13 @@ def build_strategy_promotion_permission_decision(
     if live_tier not in (STRATEGY_POOL_TIER_OBSERVATION, STRATEGY_POOL_TIER_LIVE):
         raise PlannerBlocked("INVALID_PROMOTION", f"unknown live tier {live_tier!r}")
     arms_live = live_tier == STRATEGY_POOL_TIER_LIVE
+    returning = (
+        "RETURNS RETIRED STRATEGIES TO TRADING: "
+        + ("; ".join(str(n) for n in reactivation_notes) if reactivation_notes
+           else ", ".join(sorted(str(r) for r in reactivated)))
+        + ". "
+        if reactivated else ""
+    )
 
     action = _ActionSpec(
         action_type="crypto.strategy_pool.promotion",
@@ -1621,8 +1635,10 @@ def build_strategy_promotion_permission_decision(
             # In the signed content, not only in the hash the door recomputes: the tier is the
             # difference between a paper change and arming real money.
             "live_tier": live_tier,
+            # Only when something returns, so an ordinary ask signs what it always signed.
+            **({"reactivated_lineages": sorted(str(r) for r in reactivated)} if reactivated else {}),
         },
-        risk_reason=(
+        risk_reason=returning + (
             "ARMS THESE STRATEGIES FOR REAL MONEY: at the LIVE tier they may open real positions "
             "on the venue, sized by the registered budget. What still has to hold for an order to "
             "go out is unchanged (the execution stage at LIVE_AUTONOMOUS, the live-trading opt-in "
