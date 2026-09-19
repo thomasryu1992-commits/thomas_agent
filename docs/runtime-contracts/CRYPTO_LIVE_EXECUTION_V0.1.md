@@ -493,6 +493,15 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`, a disarm nobody
   named. The policy's comment on the grant still describes the soft halt alone: it is a byte of the
   fingerprinted policy, so it changes with the next policy bump Thomas applies.
+  **Where each level acts (PR6b):** SOFT refuses the entry where it is decided
+  (`ControlState.trading_allowed`, read by the leg and the probe). HARD also refuses at the order
+  adapter itself — mainnet and the signed testnet alike — every order that is neither `reduceOnly`
+  nor `closePosition`, whoever sends it (`live_execution.control_refusal`, code `ORDER_HALTED`). A
+  PAUSED or KILLED runtime refuses the same orders there, and so does a control state that cannot
+  be read. Exits and protection are never refused at the adapter, and it does not even read the
+  control state for one. `/order/test` validation and cancels are not refused. The refusal sends
+  nothing, the API error breaker does not count it, and the entry leg gives back the symbol it
+  reserved. The signed testnet rehearsal runs under SOFT, as before, and stops under HARD.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries

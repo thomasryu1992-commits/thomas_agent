@@ -918,7 +918,8 @@ def run_fire(
             risk_snapshot=snapshot_record, snapshot_store=snapshot_store,
         )
     except live_execution.SubmitRefused as exc:
-        # Raised only before the adapter was called: nothing left, so the cell and the symbol go back.
+        # Raised only before anything was sent (PR6b: the adapter's own refusal included): nothing
+        # left, so the cell and the symbol go back.
         unwritten = None
         try:
             probe.write_plan(

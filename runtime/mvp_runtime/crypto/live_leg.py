@@ -82,6 +82,7 @@ from .live_execution import (
     TIME_IN_FORCE_GTC,
     SubmitRefused,
     fill_facts,
+    is_protective_request,
     submit_and_reconcile,
     submit_may_have_landed,
     submit_refused_outright,
@@ -533,7 +534,7 @@ def place_bracket_leg(
     }
     try:
         request = build_order_request(intent)
-        if not (request.get("reduceOnly") is True or request.get("closePosition") == "true"):
+        if not is_protective_request(request):
             # Nothing was sent, so nothing can be resting: `placed` stays False and the caller
             # closes the position this leg was meant to protect.
             result["status"] = BRACKET_LEG_NOT_PROTECTIVE
@@ -816,7 +817,8 @@ def execute_live_entry(
             risk_snapshot=risk_snapshot, snapshot_store=snapshot_store,
         )
     except SubmitRefused as exc:
-        # Raised only before the adapter is called: nothing left.
+        # Raised only before anything is sent (a refusal before the adapter, or the adapter's own
+        # refusal before its send, PR6b): nothing left.
         result["reason_codes"] = [exc.reason_code]
         _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result

@@ -48,6 +48,7 @@ from ..safety_gate import FILESYSTEM_WRITE, NETWORK_ACCESS, Authorization
 from .live_execution import (
     ALGO_ORDER_PATH,
     NO_ORDER_API_KEY,
+    ORDER_HALTED,
     ORDER_MALFORMED_RESULT,
     ORDER_OUTCOME_UNKNOWN,
     ORDER_PATH,
@@ -58,6 +59,7 @@ from .live_execution import (
     VENUE_ORDER_DOES_NOT_EXIST,
     VENUE_UNKNOWN_ORDER,
     VENUE_UNKNOWN_OUTCOME_CODES,
+    control_refusal,
     is_algo_request,
     normalize_algo_order,
 )
@@ -162,7 +164,8 @@ class BinanceTestnetOrderAdapter:
     # return this class.
     network_egress = True
 
-    def __init__(self, *, base_url: str = TESTNET_BASE_URL, authorization: Authorization | None = None):
+    def __init__(self, *, base_url: str = TESTNET_BASE_URL, authorization: Authorization | None = None,
+                 root: Any = None):
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in ALLOWED_TESTNET_HOSTS:
             # A URL typo must fail loudly rather than sign a request to an unexpected host — and
@@ -170,6 +173,8 @@ class BinanceTestnetOrderAdapter:
             raise ToolError(TESTNET_HOST_NOT_ALLOWED, "testnet base URL is not an allowed testnet host")
         self._base_url = base_url.rstrip("/")
         self._authorization = authorization
+        # Where the control state is read at every submit (`control_refusal`); None is this checkout.
+        self._root = root
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -228,6 +233,11 @@ class BinanceTestnetOrderAdapter:
             raise ToolError(ORDER_MALFORMED_RESULT, "testnet order endpoint returned an unparseable response") from None
 
     def submit(self, order_request: Mapping[str, Any], *, timeout_seconds: int = 10) -> dict[str, Any]:
+        # A HARD halt, or a stopped runtime, refuses an order that could add exposure here too
+        # (PR6b); a SOFT halt keeps the rehearsal running. Exits are never refused.
+        refusal = control_refusal(order_request, root=self._root)
+        if refusal is not None:
+            raise ToolError(ORDER_HALTED, f"testnet order not sent: {refusal}")
         body, code = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
@@ -310,7 +320,7 @@ def select_testnet_order_adapter(*, now: str | None = None, root: Any = None):
         flags=TESTNET_TRADING_FLAGS,
         provider_id=TESTNET_PROVIDER_ID,
         default_factory=DryRunTestnetOrderAdapter,
-        gated_factory=lambda authorization: BinanceTestnetOrderAdapter(authorization=authorization),
+        gated_factory=lambda authorization: BinanceTestnetOrderAdapter(authorization=authorization, root=root),
     )
 
 
@@ -356,6 +366,7 @@ def evaluate_testnet_order_guard(
     execution_stage: Any,
     max_notional_usdt: float = TESTNET_MAX_ORDER_NOTIONAL_USDT,
     max_daily_orders: int = TESTNET_MAX_DAILY_ORDERS,
+    hard_halt: bool = False,
 ) -> dict[str, Any]:
     """The last gate before a testnet order. Pure: reads no file and opens no socket.
 
@@ -390,6 +401,11 @@ def evaluate_testnet_order_guard(
         block("manual_kill_switch_off", "manual kill switch is engaged")
     if not runtime_active:
         block("runtime_active", "runtime is not ACTIVE; kill_blocks external_execution forbids an order")
+    # The HARD halt (PR6b) under the same check: the control state is what it reads. A SOFT halt
+    # keeps the rehearsal running, as before; the adapter refuses the same order at its egress.
+    if hard_halt and not (intent.get("reduce_only") or intent.get("close_position")):
+        block("runtime_active", "a HARD halt is in effect; it refuses every order that could add "
+                                "exposure, testnet included")
     # 4. The bound this path carries in code, because no record declares one for a venue that
     #    trades no money. Both are the testnet venue's own counter (PR1d-0).
     notional = 0.0
@@ -499,7 +515,7 @@ def gate_testnet_order(
         "client_order_id": intent.get("client_order_id"),
     }
     facts = {key: guard_kwargs.get(key) for key in (
-        "gate_open", "runtime_active", "manual_kill_switch", "submitted_today",
+        "gate_open", "runtime_active", "manual_kill_switch", "submitted_today", "hard_halt",
     )}
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_TESTNET, venue=VENUE_TESTNET, checks=checks,

@@ -24,6 +24,31 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The HARD halt refuses at the order adapter** (crypto PR6b, 2026-09-19;
+  `crypto/live_execution.py`, `crypto/testnet_execution.py`, `scripts/run_signed_testnet_cycle.py`).
+  - **The change:** both order adapters — mainnet `BinanceFuturesOrderAdapter` and the signed testnet
+    one — ask the control state at every `submit`, before anything is signed, whether an order that
+    is neither `reduceOnly` nor `closePosition` may leave (`control_refusal`). Under a HARD halt, a
+    PAUSED or KILLED runtime, or a control state that cannot be read, it may not: `ORDER_HALTED`,
+    nothing sent. It is the one chokepoint every sender shares; the entry leg and the probe already
+    refuse an entry under any halt before they get there, so what this adds is the backstop for a
+    halt that lands between their read and the send, and for a sender that does not read.
+  - **Exits are never refused, and never read the state:** a halt that traps an open position is
+    worse than what the halt prevents, and a store that cannot be read must not strand one. The
+    reduce-only close under a corrupt store is the first test. `/order/test` and cancels are not
+    refused either. One spelling of the protective shape, `is_protective_request`, serves this and
+    the bracket leg's own check.
+  - **Nothing sent, and said so:** `ORDER_HALTED` is in `NOTHING_SENT_ERRORS`, carries no venue code
+    (the API error breaker does not count it), and `submit_and_reconcile` turns it into a
+    `SubmitRefused` without asking the venue about an order that never left, so the entry leg gives
+    the symbol back as for any refusal before the venue.
+  - **SOFT is not refused at the adapter:** it stops entries where they are decided, and the signed
+    testnet rehearsal keeps running under it (arming real trading to earn the evidence for arming it
+    is the loop the testnet door exists to avoid). HARD stops the rehearsal too; its guard says so
+    before the cycle starts, under the existing `runtime_active` check.
+  - **Read at every submit:** the adapter takes the machine's root from its selector and reads the
+    state per order, so one built before a halt sees it.
+
 - **The trading halt has two levels, SOFT and HARD** (crypto PR6a, 2026-09-19; `control.py`,
   `switch_bridge.py`, `console_cli.py`, `crypto/live_readiness.py`).
   - **The change:** `halt_trading` takes a level. Alone, or with `soft`, it is the halt it always
@@ -31,8 +56,8 @@ Append a new entry when a milestone ships, in the same PR.
     HARD halt. Both keep the runtime ACTIVE, so settlement, protection, the time exit and
     reconciliation keep running, and both refuse new entries. Tightening needs nothing; loosening
     HARD to SOFT is a release, the authenticated operator's alone, like releasing a pause or kill
-    through the same verb; `/resume` clears either. What HARD adds at the order adapter, and the
-    EMERGENCY_CLOSE it gates, are the next PRs (decisions 47 and 49).
+    through the same verb; `/resume` clears either. What HARD adds at the order adapter is the entry
+    above (PR6b); the EMERGENCY_CLOSE it gates is next (decision 49).
   - **Representation:** a `halt_level` field beside `mode`, not a fourth mode. An older image reads
     an unknown mode as corrupt, i.e. KILLED, which stops position management on a rollback; it ignores
     an unknown field and reads either level as the soft halt. That makes a rollback read-safe, not
