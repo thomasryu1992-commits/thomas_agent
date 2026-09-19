@@ -724,6 +724,20 @@ def test_every_halt_mode_names_its_level_and_the_stops_name_none():
         assert (mode in switch_bridge._DISABLE_HALT_LEVELS) is (command == control.CMD_HALT_TRADING)
 
 
+def test_the_stop_ref_tells_the_halt_levels_apart_and_keeps_the_old_id_without_one():
+    """A grant minted against a soft halt must not spend against a hard one placed in the same second
+    by the same actor with the same words; a state with no halt keeps its pre-PR6 id."""
+    from runtime.read_only_kernel import integrity
+
+    base = dict(mode=ACTIVE, updated_by="assistant", updated_at=NOW, reason="r", trading_armed=False)
+    soft = switch_bridge.stop_ref(control.ControlState(**base, halt_level=control.HALT_SOFT))
+    hard = switch_bridge.stop_ref(control.ControlState(**base, halt_level=control.HALT_HARD))
+    bare = switch_bridge.stop_ref(control.ControlState(**base))
+    assert len({soft, hard, bare}) == 3
+    assert bare == integrity.short_id("stop", {"mode": ACTIVE, "updated_at": NOW, "updated_by": "assistant",
+                                               "reason": "r", "fail_closed": False})
+
+
 def test_an_ask_against_a_hard_halt_names_it(tmp_path):
     state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",
                                  trading_armed=False, halt_level=control.HALT_HARD)

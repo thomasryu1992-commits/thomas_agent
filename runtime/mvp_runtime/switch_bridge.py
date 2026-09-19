@@ -225,16 +225,20 @@ def stop_ref(state: control.ControlState) -> str:
     grant. That costs a re-ask. It is the direction to be wrong in — the other one clears a stop
     nobody approved — and this door's whole asymmetry is that starting is the expensive verb.
     """
-    return integrity.short_id(
-        "stop",
-        {
-            "mode": state.mode,
-            "updated_at": state.updated_at,
-            "updated_by": state.updated_by,
-            "reason": state.reason,
-            "fail_closed": bool(state.fail_closed),
-        },
-    )
+    seed = {
+        "mode": state.mode,
+        "updated_at": state.updated_at,
+        "updated_by": state.updated_by,
+        "reason": state.reason,
+        "fail_closed": bool(state.fail_closed),
+    }
+    # The halt level too (PR6), but only when one is placed: a grant minted against a soft halt must
+    # not spend against a hard one placed in the same second by the same actor with the same words,
+    # and a state with no halt keeps the id it had before levels existed, so no pending grant lapses
+    # on the deploy.
+    if state.halt_level is not None:
+        seed["halt_level"] = state.halt_level
+    return integrity.short_id("stop", seed)
 
 
 def stop_summary(state: control.ControlState) -> str:
