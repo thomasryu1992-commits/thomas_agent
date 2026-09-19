@@ -80,9 +80,11 @@ def granted(monkeypatch):
 REQUEST = {"command": "emergency_close", "reason": "거래소 장애, 전부 정리", "domain": "crypto"}
 
 
-def test_the_verb_refuses_by_name_while_the_committed_policy_does_not_list_it(machine):
-    """Policy 1.5.1 lists status, disable and enable. Until Thomas applies 1.5.2 the verb is dormant."""
-    assert "emergency_close" not in control.granted_switch_verbs()
+def test_the_verb_refuses_by_name_while_the_policy_does_not_list_it(machine, monkeypatch):
+    """Policy 1.5.1 lists status, disable and enable (stubbed here, so this holds after 1.5.2 too; the
+    bump's own tests read the committed policy). Until the policy lists it the verb is dormant."""
+    monkeypatch.setattr(control, "granted_switch_verbs",
+                        lambda root=None: frozenset({"status", "disable", "enable"}))
     with pytest.raises(ControlBlocked) as exc:
         machine.ask(dict(REQUEST))
     assert exc.value.reason_code == control.VERB_NOT_GRANTED
