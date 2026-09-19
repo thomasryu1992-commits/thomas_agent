@@ -745,14 +745,25 @@ def find_snapshot(sha: str, root: Path | None = None, *, venue: str = VENUE_MAIN
 
 def snapshots_status(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
     """The board's view: how many orders left under a recorded snapshot, and whether the record
-    still proves itself. Never raises."""
+    still proves itself. Never raises.
+
+    ``appendable`` is whether the store would take another row, which is what an entry needs: the
+    append refuses on a line it cannot parse (:func:`_read_rows`), and not on a row that fails its seal
+    or the schema, which only a verified read refuses (review of #906)."""
+    try:
+        _read_rows(snapshot_path(root, venue=venue))
+        appendable = True
+    except Exception:  # noqa: BLE001 — the board reports, it never fails
+        appendable = False
     try:
         rows = read_snapshots(root, venue=venue)
     except Exception as exc:  # noqa: BLE001 — the board reports, it never fails
-        return {"readable": False, "error": getattr(exc, "reason_code", type(exc).__name__),
+        return {"readable": False, "appendable": appendable,
+                "error": getattr(exc, "reason_code", type(exc).__name__),
                 "count": None, "last_created_at": None}
     return {
         "readable": True,
+        "appendable": True,
         "error": None,
         "count": len(rows),
         "last_created_at": rows[-1].get("created_at") if rows else None,

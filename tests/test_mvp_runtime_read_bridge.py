@@ -444,10 +444,13 @@ def test_approval_status_data_keys_are_exactly_the_named_fields(tmp_path):
 
 def test_the_readiness_read_carries_the_view_a_summariser_needs(tmp_path):
     """`data` for the crypto reads used to be `{action}`; the view is what lets a v2 client
-    say `infrastructure_ready` and `live_entry_possible` are different facts."""
+    say `infrastructure_ready` and `live_entry_possible` are different facts — and, since the
+    readiness state (PR5a), name what refuses an entry in `readiness.blocking`."""
     out = _apply({"command": "crypto_readiness"}, ControlStore(tmp_path), repo_root=tmp_path)
     data = out["data"]
     assert {"as_of", "infrastructure_ready", "live_armed_strategies", "recorded_gate",
-            "live_entry_possible", "checks"} <= set(data)
-    assert data["infrastructure_ready"] is False and data["live_entry_possible"] is None
+            "live_entry_possible", "readiness", "checks"} <= set(data)
+    # A fresh machine: READ_ONLY and disarmed, so no entry can open on it.
+    assert data["infrastructure_ready"] is False and data["live_entry_possible"] is False
+    assert data["readiness"]["blocking"]
     assert "reply" not in data and out["reply"].startswith("=== live trading readiness ===")

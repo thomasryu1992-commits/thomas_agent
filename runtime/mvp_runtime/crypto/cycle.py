@@ -1291,6 +1291,8 @@ def run_crypto_cycle(
         "live_halt": live["halt"],
         # What the leg saw of the execution stage (PR1a) — None when the gate was closed.
         "live_execution_stage": live.get("execution_stage"),
+        # And of the gate's operator switches (PR5a): what the readiness board on a console reads.
+        "live_gate": live.get("live_gate"),
         # The cooldown a live stop-out wrote this cycle (PR2a) — None on every other cycle. Paper's
         # refusal record carries its bound; this is where the live one becomes auditable.
         "live_stop_cooldown": live.get("live_stop_cooldown"),

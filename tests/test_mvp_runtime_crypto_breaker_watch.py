@@ -95,6 +95,21 @@ def test_it_reports_the_same_verdict_the_live_leg_would_act_on(tmp_path):
     assert state["problems"] == direct["problems"] == ["daily_loss_limit_breached"]
 
 
+def test_the_verdict_a_second_reader_gets_is_the_watchs_own(tmp_path):
+    """PR5a: the readiness board judges C4 through `live_risk_verdict`, the composition `evaluate`
+    reports — one composition, so the board and the watch cannot describe different doors."""
+    _seed(tmp_path, _outcome(0.5))
+    assert breaker_watch.live_risk_verdict(tmp_path, now=NOW)["allow_new_position"] is True
+    _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))          # -2.4R today, daily limit -2.0
+    verdict = breaker_watch.live_risk_verdict(tmp_path, now=NOW)
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert verdict["allow_new_position"] is state["live_entry_open"] is False
+    assert verdict["problems"] == state["problems"] == ["daily_loss_limit_breached"]
+    risk_limits.limits_path(tmp_path).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ToolError):
+        breaker_watch.live_risk_verdict(tmp_path, now=NOW)
+
+
 def test_an_unusable_limits_record_propagates_rather_than_reading_as_normal(tmp_path):
     """The cycle refuses entries in this state; a watch must not report it as merely clear."""
     _seed(tmp_path, _outcome(0.5))

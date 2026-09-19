@@ -331,6 +331,10 @@ def run_live_leg(
         # The machine's execution stage as this leg read it, and judged its entry against (PR1b).
         # None when the gate never opened — this leg then read nothing, the stage included.
         "execution_stage": None,
+        # The gate's two operator switches as this leg read them (PR5a). None when the gate never
+        # opened, like the stage — and when the leg stopped before it read its limits (a foreign
+        # root run, an unreadable budget: BLOCKED).
+        "live_gate": None,
     }
 
     adapter, gate_reason = select_live_gate(now=now, root=root)
@@ -417,6 +421,14 @@ def _run_gated_live_leg(
     #    sizing and the record cannot disagree about what was true this cycle. The gate reads the
     #    ones another writer can move again (step 3a, PR2c-2a), only to narrow.
     limits, budget = resolve_live_order_limits(root, now=now)
+    # The confirmation phrase and the manual kill switch, from the same `limits` the guard judges
+    # (PR5a). Both are this process's environment, which the console and the assistant's read door
+    # are built without; stamped so the readiness board there reads the trading process's own
+    # switches instead of guessing from rows computed in a container that cannot see them.
+    record["live_gate"] = {
+        "confirmation_present": limits.confirmation_present(),
+        "manual_kill_switch": bool(limits.manual_kill_switch),
+    }
     # The execution stage, read once beside the budget (PR1a) and enforced at the entry guard
     # since PR1b. Stamped on the record so the ledger shows the rung the trading process itself
     # saw, and passed to `plan_live_entry` below so the stamp and the judgement are one read.
