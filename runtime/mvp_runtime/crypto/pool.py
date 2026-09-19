@@ -1539,8 +1539,7 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
     holders: dict[str, set[str]] = {}
     for entry in entries:
         for key in own_attribution_keys(entry):
-            if not key.startswith("sid:"):
-                holders.setdefault(key, set()).add(str(entry.get("strategy_id")))
+            holders.setdefault(key, set()).add(str(entry.get("strategy_id")))
     inherited_by: dict[str, str] = {}
     for entry in entries:
         keys = entry.get(PREDECESSOR_KEYS_FIELD)
