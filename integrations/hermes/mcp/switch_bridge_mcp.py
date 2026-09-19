@@ -52,25 +52,46 @@ _STOP_NOTE = (
 )
 # The modes `halt_trading` sends. A halt stops entries only and never stops the runtime.
 _HALT_MODES = frozenset({"soft", "hard"})
+# What a stopped runtime does not do, said wherever a disable leaves one in effect.
+_STOPPED = ("While stopped the crypto cycle does not run, so open positions are NOT being settled or "
+            "protected by the runtime (only whatever protective order already rests at the venue).")
 
 
-def _halt_note(src: dict) -> str:
-    """What a halt left behind (shim 2.13). The stop note above is false for it: a halt leaves the runtime
-    ACTIVE, so positions keep being managed, and on a stopped runtime this door cannot release the stop —
-    the halt is recorded under it (PR6d). Only a halt that changed something is described as one."""
-    if not src.get("changed"):
-        return (" Nothing changed. The reply above says why and what is in effect; call "
-                "trading_switch_status before saying whether live entries are halted.")
+def _halt_note(src: dict, *, level: str) -> str:
+    """What a halt that changed the state left behind (shim 2.13). The stop note above is false for it:
+    on an ACTIVE runtime a halt leaves it ACTIVE, so positions keep being managed; on a stopped runtime
+    this door cannot release the stop, and the halt is recorded under it (PR6d). ``level`` is the one
+    sent, which is the one applied when the state changed."""
     if src.get("mode") == "ACTIVE":
-        return (" New live entries are refused and the runtime stays ACTIVE, so open positions keep being "
-                "settled, protected, time-exited and reconciled — say that; do not say trading or position "
-                "management stopped. A HARD halt also has the order adapter refuse every order that could add "
-                "exposure; closes and protective orders still go out. The halt is sticky: resume_runtime_only "
-                "keeps it, and lifting it needs Thomas's start_trading approval.")
-    return (f" The runtime is still {src.get('mode')} — this tool cannot release a stop. While stopped the "
-            "crypto cycle does not run, so open positions are NOT being settled or protected by the runtime "
-            "(only whatever protective order already rests at the venue). The halt is recorded under the "
-            "stop, so resume_runtime_only comes back to the halt, not to live entries.")
+        return (f" New live entries are refused under the {level} halt and the runtime stays ACTIVE, so open "
+                "positions keep being settled, protected, time-exited and reconciled — say that; do not say "
+                "trading or position management stopped."
+                + (" At HARD the order adapter also refuses every order that could add exposure; closes and "
+                   "protective orders still go out." if level == "HARD" else "")
+                + " The halt is sticky: resume_runtime_only keeps it, and lifting it needs Thomas's "
+                "start_trading approval.")
+    return (f" The runtime is still {src.get('mode')} — this tool cannot release a stop. {_STOPPED} The "
+            f"{level} halt is recorded under the stop, so resume_runtime_only comes back to that halt, not "
+            "to live entries.")
+
+
+def _disable_text(src: dict, *, payload: dict, reply: str) -> str:
+    """A stop's or a halt's answer (review of #915). A disable spends no grant, so the enable path's
+    grant-scope line and trailer are not about it; and one that changed nothing must not open with
+    "applied". The runtime's own reply comes last, after what the model must say."""
+    mode = src.get("mode")
+    if src.get("changed"):
+        head = (f"DONE: {src.get('action')} applied to {src.get('domain')}. Runtime mode is now {mode} "
+                f"(changed=True, actor={src.get('actor')}).")
+        note = (_halt_note(src, level=str(payload.get("mode")).upper()) if payload.get("mode") in _HALT_MODES
+                else _STOP_NOTE)
+    else:
+        head = (f"NOT CHANGED: {src.get('action')} left {src.get('domain')} as it was. Runtime mode is "
+                f"{mode} (changed=False, actor={src.get('actor')}).")
+        note = (" Nothing changed. The runtime's reply below says why and what is in effect; call "
+                "trading_switch_status before saying whether live entries are halted."
+                + (f" The runtime is {mode}: a stop is in effect. {_STOPPED}" if mode != "ACTIVE" else ""))
+    return f"{head}{note}\nRuntime reply: {reply}"
 
 
 def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: str | None) -> str:
@@ -99,6 +120,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
                 "Check approval_status(<id>) first: if it reads EXPIRED, the id is dead — call "
                 f"{retry_tool} again with a NEW request_id to mint a fresh ask."
             )
+        if payload.get("command") == "disable" and not answer.replayed:
+            return _disable_text(src, payload=payload, reply=answer.reply)
         armed = src.get("trading_armed")
         spent_scope = src.get("scope")
         armed_note = ""
@@ -121,8 +144,6 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
                 "positions still close on their own. Say this plainly; do not report that "
                 "trading is running."
             )
-        if payload.get("command") == "disable":
-            armed_note = _halt_note(src) if payload.get("mode") in _HALT_MODES else _STOP_NOTE
         replay_note = (
             " (REPLAYED: this request_id was already applied earlier — the door did not apply "
             "it again; what follows is the state from that first application.)"
@@ -218,13 +239,17 @@ def pause_trading(reason: str, domain: str = "crypto") -> str:
 
 @mcp.tool()
 def halt_trading(reason: str, hard: bool = False, domain: str = "crypto") -> str:
-    """Halt NEW live entries and keep managing open positions: the runtime stays ACTIVE, so they keep
-    being settled, protected, time-exited and reconciled. Prefer it to stop_trading when the point is
-    to stop opening positions. Same rules as stop_trading: no approval, applied at once. hard=True is
-    the tighter level — the order adapter also refuses every order that could add exposure; closes and
-    protective orders still go out. From here it only tightens: a soft halt never loosens a hard one,
-    and on a stopped runtime it cannot release the stop, only record the halt under it. Lifting a halt
-    needs Thomas's start_trading approval; resume_runtime_only keeps it."""
+    """Halt NEW live entries and keep managing open positions. On an ACTIVE runtime it stays ACTIVE, so
+    open positions keep being settled, protected, time-exited and reconciled; prefer it to stop_trading
+    when the point is to stop opening positions. No approval, applied at once: grade B in SOUL, like
+    the stops (on evidence that a loss is in progress, or when Thomas asks), and say at once why you
+    pressed it. Soft is the default. hard=True also has the order adapter refuse every order that could
+    add exposure, the signed testnet rehearsal included; closes and protective orders still go out.
+    From here it only tightens: a soft halt never loosens a hard one, and on a stopped runtime
+    (KILLED/PAUSED) it cannot release the stop. At most it records the halt under the stop (not under a
+    stop derived by failing closed, nor under one that already has the same or a tighter halt). Lifting
+    a halt needs Thomas's start_trading approval; resume_runtime_only keeps it. Like any control change,
+    it voids a pending start_trading/resume ask (STOP_CHANGED)."""
     return _ask({"command": "disable", "mode": "hard" if hard else "soft", "reason": reason, "domain": domain})
 
 

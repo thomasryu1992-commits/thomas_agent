@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import thomas_door_client as door
 import read_bridge_mcp as read_shim
 import dispatch_bridge_mcp as dispatch_shim
@@ -189,6 +191,32 @@ def test_kill_and_pause_keep_the_stop_note():
     for mode in ("kill", "pause"):
         text = _disable(mode, {"mode": "KILLED" if mode == "kill" else "PAUSED", "changed": True})
         assert "dropped the scheduler's due cycles" in text and "runtime stays ACTIVE" not in text
+
+
+def test_the_halt_notes_carry_the_sentences_the_model_must_repeat():
+    """Review of #915: the branch was pinned, the sentences were not. Each one below is a claim the model
+    relays to Thomas, and each is true only in its own branch."""
+    hard = _disable("hard", {"mode": "ACTIVE", "changed": True})
+    soft = _disable("soft", {"mode": "ACTIVE", "changed": True})
+    assert "under the HARD halt" in hard and "At HARD the order adapter also refuses every order" in hard
+    assert "under the SOFT halt" in soft and "At HARD" not in soft
+    for text in (hard, soft):
+        assert "resume_runtime_only keeps it" in text and "needs Thomas's start_trading approval" in text
+    under = _disable("hard", {"mode": "PAUSED", "changed": True})
+    assert "resume_runtime_only comes back to that halt, not to live entries" in under
+    assert "The HARD halt is recorded under the stop" in under and "keeps it" not in under
+
+
+@pytest.mark.parametrize("runtime_mode", ["ACTIVE", "KILLED", "PAUSED"])
+def test_a_disable_that_changed_nothing_opens_with_not_changed_and_warns_under_a_stop(runtime_mode):
+    """Review of #915: a no-op opened with "DONE: halt_trading applied", and on a stopped runtime said
+    nothing about positions going unmanaged."""
+    for mode in ("soft", "hard", "pause"):
+        text = _disable(mode, {"mode": runtime_mode, "changed": False})
+        assert text.startswith("NOT CHANGED: halt_trading left crypto as it was") and "applied" not in text
+        assert "positions keep being settled" not in text and "recorded under the stop" not in text
+        assert ("NOT being settled" in text) is (runtime_mode != "ACTIVE")
+        assert text.endswith("Runtime reply: runtime says")
 
 
 # --- knowledge ----------------------------------------------------------------------------

@@ -25,13 +25,19 @@ Append a new entry when a milestone ships, in the same PR.
 ## Delivered
 
 - **The assistant can halt entries** (crypto PR6e-1, 2026-09-19; Hermes shim 2.13, `SOUL.md`).
-  - **The tool:** `halt_trading(reason, hard=False)` sends the switch door's `disable mode=soft|hard`,
-    which the runtime has carried since PR6a (policy 1.5.1). No shim tool sent it before, so the
-    assistant's only stops also stopped position management.
+  - **The tool:** `halt_trading(reason, hard=False)` sends the switch door's `disable mode=soft|hard`.
+    The door has carried `soft` since policy 1.5.1 and `hard` since PR6a. No shim tool sent either, so
+    the assistant's only stops also stopped position management.
+  - **Its authority is written out:** grade B in SOUL, like the stops (on evidence that a loss is in
+    progress, or when Thomas asks). The stop tools' docstrings say "never on your own judgement" and
+    SOUL's closing list says the same, against its grade B; that contradiction predates this PR and is
+    Thomas's to settle.
   - **The note (F11 from the review of PR6a):** every `disable` was rendered with the stop's note,
     "dropped the scheduler's due cycles ... NOT being settled". That is false for a halt, which leaves
-    the runtime ACTIVE. A halt now says positions are still managed; one on a stopped runtime says
-    the stop stays and the halt is recorded under it; one that changed nothing claims nothing.
+    the runtime ACTIVE. A halt now says positions are still managed, and names its level; one on a
+    stopped runtime says the stop stays and the halt is recorded under it. A disable that changed
+    nothing opens with NOT CHANGED instead of "applied", and warns when a stop is in effect (review of
+    #915). A contract test renders the door's real frames.
   - **What it cannot do:** loosen HARD to SOFT, or release a stop. Lifting a halt needs Thomas's
     `start_trading` approval, and `resume_runtime_only` keeps it, as for a stop.
   - **Not in this PR:** the skill's wording (§5 lists the stops). It rides the next skill version,
