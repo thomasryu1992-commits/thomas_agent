@@ -685,28 +685,30 @@ def check_position_mode(hedge: Any, *, failure: Mapping[str, Any] | None = None)
     return _check(CHECK_POSITION_MODE, STATUS_PASS, expected=expected, observed={"dual_side_position": False})
 
 
-def check_entry_left_no_order(found: Any, *, sent: bool, failure: Mapping[str, Any] | None = None
-                              ) -> dict[str, Any]:
+def check_entry_left_no_order(found: Any, *, sent: bool, failure: Mapping[str, Any] | None = None,
+                              symbol: str | None = None) -> dict[str, Any]:
     """The entry test's own id, asked of the order API afterwards, names no order.
 
     The entry test is the runtime's executable MARKET BUY in all but its path; an order found under
     its id means the validator created one — a path that no longer points at ``/order/test`` — and a
     filled order leaves nothing resting for :func:`check_nothing_resting` to see. Not sent (no price,
     no filters, no budget) is a PASS with nothing to find: no id, no order. A query that could not be
-    answered, or answered with a code the reader does not take as "not found", is UNVERIFIED."""
+    answered, or answered with a code the reader does not take as "not found", is UNVERIFIED.
+    ``symbol`` names whose id was asked for (PR4b-2)."""
     expected = "no order under the entry test's own id"
+    asked = {"symbol": symbol} if symbol is not None else {}
     if not sent:
         return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected, observed={"sent": False},
                       detail="no entry test was sent, so none can have left an order")
     if failure is not None:
-        return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_UNVERIFIED, expected=expected, observed=dict(failure),
-                      detail="the order could not be asked for")
+        return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_UNVERIFIED, expected=expected,
+                      observed={**asked, **failure}, detail="the order could not be asked for")
     if found is None:
         return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected,
-                      observed={"sent": True, "answer": "not_found"})
+                      observed={"sent": True, **asked, "answer": "not_found"})
     status = found.get("status") if isinstance(found, Mapping) else None
     return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_FAIL, expected=expected,
-                  observed={"sent": True, "answer": "found", "status": status},
+                  observed={"sent": True, **asked, "answer": "found", "status": status},
                   detail="the validator's entry test left an ORDER at the venue: its path is not the "
                          "order API's validator")
 
@@ -922,14 +924,16 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
                             failure if failure is not None else {"answer": "not_found" if found is None else "found"}))
 
     # 8-9. The last three judged reads, on the budget kept for them: the entry test's own id (a filled
-    # order rests nowhere), then everything resting.
-    sent = bool((entries.get(first) or {}).get("sent"))
-    entry_id = _sentinel_id("E", now, first)
-    if sent:
-        found, failure = ask(lambda t: adapter.fetch_order(first, entry_id, timeout_seconds=t), reserve=0.0)
+    # order rests nowhere), then everything resting. The id is the first symbol's the entry test was
+    # actually sent for: a first symbol skipped for want of a price left nothing to find under its id,
+    # while the next one's request went out (PR4b-2).
+    sent_for = next((s for s in symbols if (entries.get(s) or {}).get("sent")), None)
+    if sent_for is not None:
+        entry_id = _sentinel_id("E", now, sent_for)
+        found, failure = ask(lambda t: adapter.fetch_order(sent_for, entry_id, timeout_seconds=t), reserve=0.0)
     else:
         found, failure = None, None
-    checks.append(check_entry_left_no_order(found, sent=sent, failure=failure))
+    checks.append(check_entry_left_no_order(found, sent=sent_for is not None, failure=failure, symbol=sent_for))
     plain, plain_failure = ask(lambda t: adapter.open_orders(None, timeout_seconds=t), reserve=0.0)
     algo_rows, algo_failure = ask(lambda t: adapter.algo_open_orders(None, timeout_seconds=t), reserve=0.0)
     failures = {**({"plain": plain_failure} if plain_failure else {}), **({"algo": algo_failure} if algo_failure else {})}
@@ -1026,14 +1030,115 @@ def status_line(mark: Mapping[str, Any]) -> str:
     return f"venue contract: not verified ({outcome})"
 
 
+
+# --- the operator notice (PR4b-2) --------------------------------------------------------------
+#
+# The doors refuse on the record quietly: a FAIL, a stale or a damaged record shows on the board and
+# in each refused decision, and nowhere an operator is told. The pipeline fire says so once, on the
+# edge — when what the doors would answer about the record changes — and nothing while it holds. The
+# mark moves only once the channel has taken the message, so an edge that could not be delivered is
+# sent again at the next fire rather than lost (the breaker watch's posture).
+
+NOTICE_FILENAME = "venue_contract_notice.json"
+READING_USABLE = "USABLE"
+
+_READING_TEXT = {
+    READING_USABLE: "usable - mainnet entries are backed (the stage and every other door still apply)",
+    ENTRY_CONTRACT_MISSING: "none recorded - every mainnet entry is refused",
+    ENTRY_CONTRACT_UNREADABLE: "UNREADABLE - every mainnet entry is refused; find out who changed the record",
+    ENTRY_CONTRACT_VERSION: ("verified under another contract version - every mainnet entry is refused until "
+                             "the next fire verifies under this one"),
+    ENTRY_CONTRACT_NOT_PASS: ("FAIL - the venue contradicted what the runtime assumes; every mainnet entry is "
+                              "refused, and the next fire asks again"),
+    ENTRY_CONTRACT_STALE: "STALE - no PASS for six hours; every mainnet entry is refused",
+}
+
+
+def notice_mark_path(root: Path | None = None) -> Path:
+    return venue_state_dir(root, venue=VENUE_MAINNET) / NOTICE_FILENAME
+
+
+def read_notice_mark(root: Path | None = None) -> dict[str, Any] | None:
+    """The reading the operator was last told, or None for absent AND for damaged: a mark nobody can
+    read is a reading nobody can say was told, so the next notice is a first report. Never raises."""
+    path = notice_mark_path(root)
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def entry_reading(root: Path | None = None, *, now: str) -> dict[str, Any]:
+    """What the doors would answer about the decided record at ``now``, for a symbol it covers:
+    :data:`READING_USABLE` or the refusal's code, with the facts a notice names. Never raises."""
+    fact = entry_fact(root)
+    refusal = entry_refusal(fact, symbol=None, at=now)
+    failed = fact.get("failed_checks")
+    return {
+        "reading": refusal["reason_code"] if refusal is not None else READING_USABLE,
+        "status": fact.get("status"),
+        "verified_at": fact.get("verified_at"),
+        "contract_version": fact.get("contract_version"),
+        "failed_checks": [str(c) for c in failed] if isinstance(failed, list) else [],
+        "error": fact.get("error"),
+    }
+
+
+def render_notice(current: Mapping[str, Any], previous: Mapping[str, Any] | None) -> str:
+    """The operator-facing message. ASCII only, like every other channel render."""
+    reading = current.get("reading")
+    if previous is None:
+        headline = "CRYPTO VENUE CONTRACT - first report"
+    elif reading == READING_USABLE:
+        headline = "CRYPTO VENUE CONTRACT USABLE - mainnet entries are backed again"
+    elif previous.get("reading") == READING_USABLE:
+        headline = "CRYPTO VENUE CONTRACT NOT USABLE - mainnet entries refused"
+    else:
+        headline = "CRYPTO VENUE CONTRACT - still not usable, for another reason"
+    lines = [headline, f"  now      : {_READING_TEXT.get(str(reading), reading)}"]
+    if previous is not None:
+        lines.append(f"  was      : {previous.get('reading')} (told at {previous.get('announced_at')})")
+    if current.get("error"):
+        lines.append(f"  record   : unreadable ({current['error']})")
+    elif current.get("status") is not None:
+        failed = current.get("failed_checks") or []
+        lines.append(f"  record   : {current['status']} at {current.get('verified_at')} "
+                     f"({current.get('contract_version')})" + (f", failed: {', '.join(failed)}" if failed else ""))
+    lines.append("  scope    : mainnet autonomous entries and the probe; closing, protecting and settling "
+                 "never read it")
+    lines.append("  see      : docker exec thomas-scheduler python -m scripts.venue_contract --show")
+    return "\n".join(lines)
+
+
+def notice(root: Path | None = None, *, now: str) -> dict[str, Any]:
+    """Whether the doors' reading moved since the operator was last told (``changed``), the message
+    (``text``) and the mark to write once it is delivered (``state``). Never raises."""
+    current = entry_reading(root, now=now)
+    previous = read_notice_mark(root)
+    changed = previous is None or previous.get("reading") != current["reading"]
+    return {"changed": changed, "text": render_notice(current, previous) if changed else "",
+            "state": {**current, "announced_at": now}}
+
+
+def write_notice_mark(state: Mapping[str, Any], *, root: Path | None = None) -> None:
+    _write_json(notice_mark_path(root), state, code="VENUE_CONTRACT_NOTICE_LOCKED",
+                label="venue contract notice mark")
+
+
 __all__ = [
     "CHECK_IDS", "CONTRACT_VERSION", "ENTRY_CONTRACT_CODES", "ENTRY_CONTRACT_MISSING", "ENTRY_CONTRACT_NOT_PASS",
     "ENTRY_CONTRACT_STALE", "ENTRY_CONTRACT_SYMBOL", "ENTRY_CONTRACT_UNREADABLE", "ENTRY_CONTRACT_VERSION",
     "ENTRY_FACT_FIELDS", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED",
-    "OBSERVED_CHECKS", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS", "SENTINEL_ID_PREFIX",
+    "NOTICE_FILENAME", "OBSERVED_CHECKS", "READING_USABLE", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS",
+    "SENTINEL_ID_PREFIX",
     "STATUS_FAIL", "STATUS_PASS", "STATUS_UNVERIFIED", "VENUE_CONTRACT_INVALID", "VENUE_CONTRACT_TAMPERED",
     "VENUE_CONTRACT_UNREADABLE", "build_record", "check_conditional_refused", "check_entry_left_no_order",
     "check_exchange_info", "check_leverage", "check_nothing_resting", "check_position_mode", "covers",
-    "entry_fact", "entry_refusal", "is_due", "judge", "legacy_conditional_probe", "read_refresh_mark",
-    "read_verification", "refresh_due", "refresh_verification", "run_checks", "status_line", "verification_status",
+    "entry_fact", "entry_reading", "entry_refusal", "is_due", "judge", "legacy_conditional_probe", "notice",
+    "notice_mark_path", "read_notice_mark", "read_refresh_mark", "read_verification", "refresh_due",
+    "refresh_verification", "render_notice", "run_checks", "status_line", "verification_status",
+    "write_notice_mark",
 ]

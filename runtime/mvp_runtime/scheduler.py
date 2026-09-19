@@ -1467,6 +1467,32 @@ def _execute(
                 return line
             return f"{line} {venue_contract.refresh_verification(collector=collector, now=now, root=repo_root)}"
 
+        # The venue contract notice (PR4b-2): the doors refuse on the record quietly, so the fire tells
+        # the operator once, on the edge — after this fire's own ask, so what it says is what the next
+        # fire's doors will read. The breaker watch's posture: channel selected at fire time, a transport
+        # failure reported and never raised, and the mark moved only once the message is delivered, so
+        # an edge that could not be sent is sent again at the next fire instead of lost.
+        def _announce_venue_contract(line: str) -> str:
+            from . import operator as operator_mod
+            from .crypto import venue_contract
+
+            try:
+                result = venue_contract.notice(repo_root, now=now)
+                if not result["changed"]:
+                    return line
+                channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+                operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+            except MvpRuntimeError as exc:
+                return f"{line} venue contract notice not sent ({exc.reason_code})"
+            except Exception as exc:  # noqa: BLE001 — a notice must not stop the fire
+                return f"{line} venue contract notice not sent ({type(exc).__name__})"
+            reading = result["state"]["reading"]
+            try:
+                venue_contract.write_notice_mark(result["state"], root=repo_root)
+            except Exception as exc:  # noqa: BLE001 — sent; the next fire may send it again
+                return f"{line} venue contract notice sent ({reading}), mark not written ({type(exc).__name__})"
+            return f"{line} venue contract notice sent ({reading})"
+
         from .crypto.cycle import (
             PIPELINE_STALLED,
             cycle_is_stalled,
@@ -1511,7 +1537,7 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            status = _refresh_venue_contract(_refresh_funds(cycle_status_line(record)))
+            status = _announce_venue_contract(_refresh_venue_contract(_refresh_funds(cycle_status_line(record))))
             if cycle_is_stalled(record, schedule.last_status):
                 raise SchedulerBlocked(PIPELINE_STALLED, (
                     f"crypto pipeline has degraded for two consecutive fires; "
@@ -1528,7 +1554,7 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        status = _refresh_venue_contract(_refresh_funds(pool_cycle_status_line(summary)))
+        status = _announce_venue_contract(_refresh_venue_contract(_refresh_funds(pool_cycle_status_line(summary))))
         if pool_cycle_is_stalled(summary, schedule.last_status):
             raise SchedulerBlocked(PIPELINE_STALLED, (
                 f"crypto pipeline has degraded across all contexts for two consecutive fires; "

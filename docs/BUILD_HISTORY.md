@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The operator is told when the venue contract stops or starts backing entries**
+  (crypto PR4b-2, 2026-09-19; `crypto/venue_contract.py`, `scheduler.py`).
+  - **The change:** after the sentinel's own ask, the pipeline fire compares what the doors would
+    answer about the decided record (usable, or the refusal's code) with what the operator was last
+    told, and sends one message when it moved (`venue_contract.notice`, mark
+    `venue_contract_notice.json`). The sentinel's entry-id query asks for the first symbol the entry
+    test was actually sent for.
+  - **Why on the edge, in the pipeline fire:** PR4b made a FAIL, a stale or a damaged record refuse
+    every mainnet entry, and nothing told an operator — the board showed it, each refused decision
+    recorded it. The fire that asks the venue is the one that knows first, and a notice after its
+    ask says what the next fire's doors will read. A new schedule kind would have needed a
+    registration on the host before it said anything.
+  - **Why the mark moves only after delivery:** the breaker watch's posture. An edge the channel did
+    not take is sent again at the next fire instead of lost; one that was sent and could not be
+    marked may be sent twice, which is the cheaper error.
+  - **Why the first sent symbol:** the entry-id query asked for the first budget symbol's id even
+    when that symbol's entry test had been skipped for want of a price, and read "nothing sent" as a
+    PASS while the next symbol's request had gone out.
+  - **Not done, on the record:** recording the algo query's raw venue code. `fetch_order` reads both
+    -2013 and a body that is not an object as "not found", and so does the money path that relies on
+    the answer; the observed check asks exactly that question. Making `fetch_order` raise on a
+    non-object body was withdrawn: in `read_bracket_legs` it would turn NOT_FOUND → close into
+    PROTECTION_UNKNOWN → hold.
 - **A mainnet entry is decided on the venue contract: no usable PASS, no entry**
   (crypto PR4b, Thomas decision 46, 2026-09-19; `crypto/venue_contract.py`, `crypto/live_entry.py`,
   `crypto/live_route.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`,

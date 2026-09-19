@@ -214,7 +214,9 @@ venue itself.
   - configured leverage at most the backtests' 5x (decision 45), read from the account snapshot this
     lane refreshes every 15 minutes, and judged only on a snapshot at most 45 minutes old;
   - the entry test left no order: the entry test's own id, asked of the order API afterwards, names
-    nothing (a filled order rests nowhere, so only its id can find it);
+    nothing (a filled order rests nowhere, so only its id can find it). The id asked for is the first
+    symbol's the entry test was actually sent for (PR4b-2): a first symbol skipped for want of a
+    price leaves nothing under its id;
   - nothing the sentinel sent is resting.
 - **Observed checks** are recorded and never judged until the host's answers are known: the
   runtime's MARKET entry and a reduce-only take-profit LIMIT twice the `PERCENT_PRICE` band away
@@ -258,6 +260,14 @@ venue itself.
   every symbol; narrowing that to the symbols a FAIL names is a relaxation for Thomas to decide, not a
   default. **Closing, protecting and settling never read it**, and neither does the testnet door: the
   signed testnet cycle is itself a venue answer, with real orders.
+- **The operator is told on the edge (PR4b-2).** The doors refuse on the record quietly, so after
+  its own ask the pipeline fire compares what the doors would answer about the record (usable, or
+  the refusal's code) with what the operator was last told, and sends one message when it moved:
+  a PASS turning FAIL (with the failed checks), a PASS going stale, a damaged record, a FAIL
+  recovering, a first report after the mark is new. Nothing while it holds. The mark
+  (`venue_contract_notice.json`) moves only once the operator channel took the message, so an edge
+  that could not be delivered is sent again at the next fire (the breaker watch's posture). A
+  transport failure is on the fire's status line and never stops the fire.
 - **Not stopped by** the PAPER stage or the manual kill switch env — it places nothing; the scheduler's
   own kill/pause stops the fire it rides. Revoking it is unsetting `MVP_LIVE_TRADING` and restarting.
 

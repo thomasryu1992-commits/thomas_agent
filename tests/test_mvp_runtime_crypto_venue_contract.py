@@ -860,6 +860,8 @@ def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector
 
     monkeypatch.setattr(account_store, "refresh_snapshot", account_refresh)
     monkeypatch.setattr(vc, "refresh_verification", venue_refresh)
+    # The cadence is what is under test here; the notice that follows has its own (PR4b-2).
+    monkeypatch.setattr(vc, "notice", lambda root=None, *, now: {"changed": False, "text": "", "state": {}})
     store = ScheduleStore(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900, created_by="op",
@@ -1002,3 +1004,144 @@ def test_coverage_is_one_rule_that_ignores_case_and_space_and_covers_no_empty_sy
     assert not vc.covers(["", "BTCUSDT"], "") and not vc.covers([" "], "  ")
     assert not vc.covers("BTCUSDT", "BTCUSDT") and not vc.covers(None, "BTCUSDT")
     assert not vc.covers({"BTCUSDT": 1}, "BTCUSDT") and not vc.covers(["BTCUSDT"], None)
+
+
+def test_the_entry_id_asked_for_is_the_first_symbol_the_entry_test_was_sent_for(monkeypatch):
+    """PR4b-2: a first symbol skipped for want of a price left nothing under its id; the next one's
+    request went out, so its id is the one asked for — and an order found there fails the run."""
+    monkeypatch.setattr(market_data, "read_reference_quote", lambda symbol, **_: {
+        "price": None if symbol == "BTCUSDT" else PRICES[symbol], "reason": None})
+    adapter = _Adapter()
+    checks = _run(adapter)
+    entries = _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]
+    assert "skipped" in entries["BTCUSDT"] and entries["ETHUSDT"]["sent"] is True
+    eth_id = next(c[1]["newClientOrderId"] for c in adapter.calls if c[0] == "validate_order"
+                  and c[1].get("type") == "MARKET" and c[1].get("symbol") == "ETHUSDT")
+    assert [c[1] for c in adapter.calls if c[0] == "fetch_order" and c[2] is False] == [eth_id]
+    check = _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]
+    assert check["result"] == "PASS"
+    assert check["observed"] == {"sent": True, "symbol": "ETHUSDT", "answer": "not_found"}
+    left = _run(_Adapter(found={eth_id: {"status": "FILLED", "clientOrderId": eth_id}}))
+    assert _by_id(left)[vc.CHECK_ENTRY_LEFT_NO_ORDER]["result"] == "FAIL"
+
+
+# --- the operator notice (PR4b-2) ----------------------------------------------------------------
+
+def _told(root, now):
+    """One notice as the fire delivers it: the mark moves only when something was said."""
+    result = vc.notice(root, now=now)
+    if result["changed"]:
+        vc.write_notice_mark(result["state"], root=root)
+    return result
+
+
+def test_the_first_notice_is_a_first_report_and_a_reading_that_holds_is_quiet(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    first = _told(tmp_path, NOW)
+    assert first["changed"] is True and first["state"]["reading"] == vc.READING_USABLE
+    assert first["text"].startswith("CRYPTO VENUE CONTRACT - first report")
+    assert "the stage and every other door still apply" in first["text"]
+    # The next hour's PASS: the doors answer the same, so the operator hears nothing.
+    record_venue_contract(tmp_path, SYMBOLS, verified_at="2026-09-19T08:10:00Z")
+    quiet = vc.notice(tmp_path, now="2026-09-19T08:11:00Z")
+    assert (quiet["changed"], quiet["text"]) == (False, "")
+
+
+def test_a_pass_that_turns_fail_is_told_with_what_failed_and_so_is_the_recovery(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    _told(tmp_path, NOW)
+    record_venue_contract(tmp_path, SYMBOLS, verified_at="2026-09-19T07:25:00Z", failed=("position_mode",))
+    fail = _told(tmp_path, "2026-09-19T07:26:00Z")
+    assert fail["changed"] is True and fail["state"]["reading"] == vc.ENTRY_CONTRACT_NOT_PASS
+    assert fail["text"].startswith("CRYPTO VENUE CONTRACT NOT USABLE - mainnet entries refused")
+    assert "failed: position_mode" in fail["text"] and f"was      : USABLE (told at {NOW})" in fail["text"]
+    assert vc.notice(tmp_path, now="2026-09-19T07:41:00Z")["changed"] is False     # still FAIL: quiet
+    record_venue_contract(tmp_path, SYMBOLS, verified_at="2026-09-19T07:55:00Z")
+    back = _told(tmp_path, "2026-09-19T07:56:00Z")
+    assert back["text"].startswith("CRYPTO VENUE CONTRACT USABLE - mainnet entries are backed again")
+
+
+def test_a_pass_that_goes_stale_is_told_without_any_new_record(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    _told(tmp_path, NOW)
+    assert vc.notice(tmp_path, now="2026-09-19T13:10:00Z")["changed"] is False       # six hours: still usable
+    stale = vc.notice(tmp_path, now="2026-09-19T13:10:01Z")
+    assert stale["changed"] is True and stale["state"]["reading"] == vc.ENTRY_CONTRACT_STALE
+    assert "STALE - no PASS for six hours" in stale["text"]
+
+
+def test_a_reason_that_changes_while_refusing_is_told_and_a_damaged_record_is_named(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW, failed=("position_mode",))
+    _told(tmp_path, NOW)
+    vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    damaged = vc.notice(tmp_path, now=NOW)
+    assert damaged["changed"] is True and damaged["state"]["reading"] == vc.ENTRY_CONTRACT_UNREADABLE
+    assert damaged["text"].startswith("CRYPTO VENUE CONTRACT - still not usable, for another reason")
+    assert "record   : unreadable (VENUE_CONTRACT_UNREADABLE)" in damaged["text"]
+
+
+def test_a_mark_nobody_can_read_makes_the_next_notice_a_first_report(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    _told(tmp_path, NOW)
+    vc.notice_mark_path(tmp_path).write_text("not json", encoding="utf-8")
+    again = vc.notice(tmp_path, now=NOW)
+    assert again["changed"] is True and again["text"].startswith("CRYPTO VENUE CONTRACT - first report")
+
+
+def test_every_notice_is_ascii():
+    readings = [vc.READING_USABLE, *sorted(vc.ENTRY_CONTRACT_CODES)]
+    for reading in readings:
+        current = {"reading": reading, "status": "FAIL", "verified_at": NOW, "contract_version": vc.CONTRACT_VERSION,
+                   "failed_checks": ["position_mode"], "error": None}
+        for previous in (None, {"reading": vc.READING_USABLE, "announced_at": NOW},
+                         {"reading": vc.ENTRY_CONTRACT_STALE, "announced_at": NOW}):
+            assert vc.render_notice(current, previous).isascii(), (reading, previous)
+
+
+def test_the_pipeline_fire_tells_the_operator_once_on_the_edge_and_again_after_a_failed_send(tmp_path, monkeypatch):
+    """After its own ask, the fire says what the next fire's doors will read — once. An undelivered
+    notice leaves the mark where it was, so the next fire sends it (the breaker watch's posture)."""
+    from runtime.mvp_runtime import operator as operator_mod
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
+    from tests._helpers import record_venue_contract
+
+    sent: list[str] = []
+    down = {"transport": True}
+
+    def notify(channel, text, *, repo_root=None):
+        if down["transport"]:
+            raise RuntimeError("scripted transport failure")
+        sent.append(text)
+
+    monkeypatch.setattr(account_store, "refresh_snapshot", lambda **_: "account snapshot: stub")
+    monkeypatch.setattr(vc, "refresh_verification", lambda **_: "venue contract: PASS")
+    monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_: "channel")
+    monkeypatch.setattr(operator_mod, "notify_operator", notify)
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-22T12:59:00Z")
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900, created_by="op",
+                             now="2026-07-22T11:00:00Z"))
+
+    def fire(now):
+        summary = run_due(store, now=now, control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path)
+        return summary["results"][0]["status"]
+
+    assert fire("2026-07-22T13:00:00Z").endswith(
+        "venue contract: PASS venue contract notice not sent (RuntimeError)")
+    assert vc.read_notice_mark(tmp_path) is None and sent == []
+    down["transport"] = False
+    assert fire("2026-07-22T13:15:00Z").endswith("venue contract: PASS venue contract notice sent (USABLE)")
+    assert len(sent) == 1 and sent[0].startswith("CRYPTO VENUE CONTRACT - first report")
+    assert "venue contract notice" not in fire("2026-07-22T13:30:00Z") and len(sent) == 1
