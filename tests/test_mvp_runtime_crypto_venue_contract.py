@@ -462,6 +462,26 @@ def test_the_symbols_are_the_valid_budgets_allowlist(tmp_path):
     assert vc._registered_symbols(tmp_path, NOW) == ["BTCUSDT", "ETHUSDT"]
 
 
+def test_a_budget_past_its_window_names_no_symbols(tmp_path):
+    """Only a VALID budget authorizes a live order, so only a valid one names what to verify."""
+    from runtime.read_only_kernel import integrity
+    from runtime.mvp_runtime.crypto import live_budget
+
+    body = {
+        "schema_version": "live_trading_budget.v0.1", "budget_id": "budget_0123456789abcdef0123",
+        "venue": "binance_futures", "symbol_allowlist": ["BTCUSDT"],
+        "caps": {"max_order_notional_usdt": 60.0, "absolute_max_notional_usdt": 200.0,
+                 "max_daily_order_count": 2, "max_open_notional_usdt": 120.0, "daily_loss_limit_usdt": 20.0},
+        "valid_from": "2026-07-25T00:00:00Z", "valid_until": "2026-08-25T00:00:00Z",
+        "registered_by": "thomas", "registered_at": "2026-07-25T00:00:00Z",
+    }
+    body["record_sha256"] = integrity.sha256_record(body)
+    path = live_budget.budget_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body), encoding="utf-8")
+    assert vc._registered_symbols(tmp_path, NOW) == []
+
+
 def test_the_refresh_never_raises(tmp_path, monkeypatch, _scope):
     def boom(**_):
         raise RuntimeError("anything at all")
@@ -572,6 +592,14 @@ def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_pa
     assert "UNREADABLE - VENUE_CONTRACT_UNREADABLE" in live_readiness._venue_contract_line(
         {"venue_contract": live_readiness._venue_contract(tmp_path, now=NOW)})
     assert "none recorded" in live_readiness._venue_contract_line({})
+
+
+def test_the_rendered_board_carries_the_line(tmp_path):
+    from runtime.mvp_runtime.crypto import live_readiness
+
+    text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    line = next(row for row in text.splitlines() if "venue_contract" in row)
+    assert "none recorded" in line
 
 
 def test_the_pipeline_fire_asks_after_its_cycles_and_only_when_due(tmp_path, monkeypatch):
