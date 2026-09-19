@@ -658,11 +658,13 @@ def test_the_soft_stop_halts_entries_and_leaves_the_runtime_active(tmp_path, hal
 
 
 def test_the_soft_stop_never_releases_a_stop_from_this_door(tmp_path, halt_granted):
+    """It records the soft halt under the kill (PR6d) and never lifts the kill."""
     store = _armed_store(tmp_path)
     control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    _apply({"command": "disable", "mode": "soft", "reason": "r"}, store)
+    assert (store.load().mode, store.load().halt_level) == (KILLED, control.HALT_SOFT)
     out = _apply({"command": "disable", "mode": "soft", "reason": "r"}, store)
     assert out["changed"] is False
-    assert store.load().mode == KILLED
 
 
 def test_the_soft_stop_refuses_by_name_until_the_policy_grants_it(tmp_path, monkeypatch):
@@ -704,11 +706,18 @@ def test_the_soft_stop_never_loosens_a_hard_halt(tmp_path, halt_granted):
 
 @pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
 def test_the_hard_stop_never_releases_a_stop_from_this_door(tmp_path, halt_granted, stop):
+    """It records the HARD halt under the stop (PR6d) and never lifts the stop, which keeps who placed
+    it and when: that is what the next resume ask names (review of PR6d)."""
     store = _armed_store(tmp_path)
     control.apply_command(store, stop, actor="op", now=NOW)
     before = store.load()
+    _apply({"command": "disable", "mode": "hard", "reason": "r"}, store)
+    after = store.load()
+    assert (after.mode, after.halt_level, after.execution_allowed) == (before.mode, control.HALT_HARD, False)
+    assert (after.updated_by, after.updated_at) == ("op", NOW)
+    assert switch_bridge.stop_summary(after).startswith(f"the {before.mode} placed by op at {NOW}")
     out = _apply({"command": "disable", "mode": "hard", "reason": "r"}, store)
-    assert out["changed"] is False and store.load() == before
+    assert out["changed"] is False and store.load() == after
 
 
 def test_the_hard_stop_refuses_by_name_until_the_policy_grants_it(tmp_path, monkeypatch):

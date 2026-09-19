@@ -17,6 +17,8 @@ from runtime.mvp_runtime.operator import InboundMessage, OperatorIdentity, handl
 from runtime.mvp_runtime.store import LedgerStore
 
 NOW = "2026-07-16T09:00:00Z"
+LATER = "2026-07-16T09:05:00Z"
+LATEST = "2026-07-16T09:10:00Z"
 REG = OperatorIdentity(operator_id="tg-12345", chat_id="chat-777")
 
 
@@ -673,13 +675,92 @@ def test_the_authenticated_operator_moves_a_stop_to_the_soft_halt_in_one_step(tm
 @pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
 def test_a_caller_that_may_not_release_a_stop_leaves_it(tmp_path, halt_granted, stop):
     """The default — what the assistant's switch door gets. Halting entries is always allowed;
-    releasing a stop through this verb is the authenticated operator's alone."""
+    releasing a stop through this verb is the authenticated operator's alone. What it may do is
+    record the halt under the stop (PR6d): the stop, its reason, and who placed it when, stay."""
     store = _armed(tmp_path)
-    control.apply_command(store, stop, actor="op", now=NOW)
+    control.apply_command(store, stop, actor="op", now=NOW, arg="점검")
     before = store.load()
-    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW)
-    assert out["changed"] is False
-    assert store.load() == before
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=LATER)
+    after = store.load()
+    assert out["changed"] is True and out["mode"] == before.mode
+    assert (after.mode, after.execution_allowed, after.trading_armed) == (before.mode, False, False)
+    assert after.halt_level == control.HALT_SOFT and after.reason.startswith(before.reason)
+    assert (after.updated_by, after.updated_at) == ("op", NOW)
+    assert f"SOFT halt recorded by assistant at {LATER}" in after.reason
+    again = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=LATER)
+    assert again["changed"] is False and store.load() == after
+
+
+def test_a_halt_under_a_stop_keeps_the_stops_placer_for_the_ask_and_names_its_own_on_the_event(
+        tmp_path, halt_granted):
+    """Review of PR6d: the write re-stamped the stop with the halt's actor and time, so the next
+    resume ask Thomas signs read "the KILLED placed by assistant_bridge". The stop keeps its placer;
+    the event and the reason name who recorded the halt. A tighter halt replaces the looser note."""
+    from runtime.mvp_runtime import switch_bridge
+
+    store, ledger = _armed(tmp_path), FakeLedger()
+    control.apply_command(store, control.CMD_KILL, actor="tg-12345", now=NOW, arg="급변", ledger=ledger)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant_bridge", now=LATER,
+                          arg="soft 먼저", ledger=ledger)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant_bridge", now=LATEST,
+                          arg="hard 변동성", ledger=ledger)
+    state = store.load()
+    assert (state.mode, state.halt_level, state.updated_by, state.updated_at) == (
+        KILLED, control.HALT_HARD, "tg-12345", NOW)
+    assert state.reason == f"급변 [under the stop: HARD halt recorded by assistant_bridge at {LATEST}: 변동성]"
+    summary = switch_bridge.stop_summary(state)
+    assert f"the KILLED placed by tg-12345 at {NOW}" in summary and "assistant_bridge" in summary
+    assert [(e["actor"], e["created_at"], e["resulting_halt_level"]) for e in ledger.control] == [
+        ("tg-12345", NOW, None), ("assistant_bridge", LATER, control.HALT_SOFT),
+        ("assistant_bridge", LATEST, control.HALT_HARD)]
+
+
+def test_no_halt_is_recorded_under_a_stop_derived_by_failing_closed(tmp_path, halt_granted):
+    """A derived stop has no placer to keep, and its reason describes a missing or unreadable file
+    that the write would create: it is left alone, as before PR6d."""
+    store = _armed(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, ledger=ledger)
+    store.path.unlink()
+    derived = store.load()
+    assert (derived.mode, derived.fail_closed, derived.halt_level) == (KILLED, True, None)
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=LATER, arg="hard",
+                                ledger=ledger)
+    assert out["changed"] is False and "derived by failing closed" in out["reply"]
+    assert not store.path.exists() and store.load() == derived
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_a_hard_halt_recorded_under_a_stop_comes_back_on_a_resume_that_does_not_re_arm(
+        tmp_path, halt_granted, stop):
+    """Review of PR6a (F12): `disable mode=hard` on a stopped runtime left nothing behind, so the
+    approved runtime-only resume came back as a bare disarm, without the adapter's HARD refusal."""
+    store = _armed(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, stop, actor="op", now=NOW, ledger=ledger)
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW, arg="hard",
+                                ledger=ledger)
+    assert "recorded under it" in out["reply"] and store.load().halt_level == control.HALT_HARD
+    stopped = KILLED if stop == control.CMD_KILL else PAUSED
+    control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW, resume_arms=False)
+    state = store.load()
+    assert (state.mode, state.halt_level, state.trading_allowed) == (ACTIVE, control.HALT_HARD, False)
+    # Recorded on the ledger too: had the state file been lost under the stop, the level comes back.
+    control.apply_command(store, stop, actor="op", now=NOW, ledger=ledger)
+    store.path.unlink()
+    assert (store.load().mode, store.load().halt_level) == (stopped, control.HALT_HARD)
+
+
+def test_a_halt_under_a_stop_only_tightens(tmp_path, halt_granted):
+    """A door that may not loosen cannot turn a HARD halt under a stop into SOFT, nor into none."""
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW, arg="hard")
+    before = store.load()
+    for arg in ("soft", None, "hard"):
+        out = control.apply_command(store, control.CMD_HALT_TRADING, actor="assistant", now=NOW, arg=arg)
+        assert out["changed"] is False and store.load() == before
+        assert "with a HARD halt under it" in out["reply"]
 
 
 def test_resume_re_arms_after_a_soft_halt(tmp_path, halt_granted):

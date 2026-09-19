@@ -159,9 +159,9 @@ _ENABLE_DOOR = "switch.enable"
 # entries off, positions still managed — and `hard` the same verb's tighter level (decision 47,
 # 2026-09-19). Both refuse by name until the policy grants `halt_trading`
 # (control.POLICY_GATED_COMMANDS). This door never passes `halt_may_release_stop`: `soft` or `hard`
-# on a PAUSED or KILLED runtime leaves the stop in place, and `soft` under a hard halt leaves it
-# hard — halting is this door's to do without an approval, loosening is not. Built from control's
-# own constants so a rename there cannot silently widen this.
+# on a PAUSED or KILLED runtime leaves the stop in place and records the halt under it (PR6d), and
+# `soft` under a hard halt leaves it hard — halting is this door's to do without an approval,
+# loosening is not. Built from control's own constants so a rename there cannot silently widen this.
 _DISABLE_MODES: dict[str, str] = {
     "kill": control.CMD_KILL, "pause": control.CMD_PAUSE, "soft": control.CMD_HALT_TRADING,
     "hard": control.CMD_HALT_TRADING,

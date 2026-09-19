@@ -24,6 +24,33 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The console board stops guessing the manual kill switch, and a halt under a stop is recorded**
+  (crypto PR6d, 2026-09-19; `crypto/live_readiness.py`, `control.py`, `operator.py`).
+  - **The manual kill switch row** (decision 50). A board without the live-trading environment
+    printed `[PASS] manual_kill_switch clear` off its own empty environment. It now shows the
+    trading process's last record of the switch, the same record `live_gate_open` decides on, or n/a.
+    Every board says the switch is secondary: entries only, read at restart, with the control store
+    as the primary control. This changes rendering only; `checks` and `ready` are untouched.
+  - **A halt under a stop** (review of PR6a, F12). The assistant's `disable mode=soft|hard` cannot
+    release a stop, and on a stopped runtime it used to leave nothing behind, so an approved resume
+    that did not re-arm came back as a bare disarm. It now records the halt under the stop;
+    tightening needs nothing (decision 47), and SOFT never replaces HARD there. The stop keeps who
+    placed it and when, because the next resume ask Thomas signs names that stop. Who recorded the
+    halt, and when, is noted in the reason (one note, which a tighter halt replaces) and on the
+    event. A stop derived by failing closed is left as it is.
+  - **The mid-run peek keeps the channel's slash rule.** It applied a bare `kill` that the channel
+    refuses as conversation (SLASH_REQUIRED), so "kill 스위치가 뭐야?" asked during an analysis killed
+    the runtime while the reply said nothing had happened.
+  - **Withdrawn after review: `/halt_trading` in the peek.** This PR first let the peek apply the
+    halt, as a tightening, and read the whole batch. Its review (#914) found that the next poll
+    replays the same text with release rights against a state that later messages have already
+    moved. That wrote a halt's event twice or out of order, lost a pause's event, left a HARD halt
+    without one when the peek's ledger write failed, and could loosen HARD to SOFT for one send. So
+    the peek is back to `/kill` and `/pause`, first match, state only. Doing it properly needs the peek
+    to know which messages it applied (Telegram's update id), which `InboundMessage` does not carry;
+    that is its own PR if Thomas wants it. Until then a Telegram halt waits for the analysis to
+    finish, and `/kill` or `/pause` still land during one.
+
 - **The emergency close** (crypto PR6c, 2026-09-19, Thomas decision 49; `scripts/emergency_close.py`,
   `crypto/live_route.py`, `permission.py`).
   - **The change:** the operator can close every booked live position at market, reduceOnly, under

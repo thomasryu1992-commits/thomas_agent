@@ -159,7 +159,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `ARCHIVE_SYMBOL_MISSING` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 291 | `append_candles` | `not str(symbol).strip()` |
 | `ARCHIVE_TIMEFRAME_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/candle_archive.py` | 143 | `_require_timeframe` | `timeframe not in TIMEFRAMES` |
 | `ARCHIVE_UNIVERSE_UNREADABLE` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1899 | `_execute` | `summary['blocked']` |
-| `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 779 | `apply_command` | `expected_state is not None and command != CMD_RESUME` |
+| `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 791 | `apply_command` | `expected_state is not None and command != CMD_RESUME` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 249 | `apply_dispatch` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 439 | `apply_workflow_command` | `unexpected` |
 | `ARGUMENT_NOT_ACCEPTED` | `ControlBlocked` | `runtime/mvp_runtime/knowledge_bridge.py` | 128 | `apply_knowledge` | `unexpected` |
@@ -251,9 +251,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CONTENT_CHANGED` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 410 | `run_trial` | `trial_content_sha256(role, trial_request) != snapshot.get('content_sha256')` |
 | `CONTENT_TOO_LARGE` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 216 | `_require_content` | `size > MAX_CONTENT_BYTES` |
 | `CONTROL_CHARS` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 76 | `_reject_control_chars` | `code < 32 and ch not in _ALLOWED_CONTROL_CHARS or code == 127` |
-| `CONTROL_STATE_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 1030 | `apply_command` | `latest != baseline` |
-| `CONTROL_VERB_NOT_GRANTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 784 | `apply_command` | `command in POLICY_GATED_COMMANDS and command not in granted_emergency_controls()` |
-| `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 640 | `save` | `—` |
+| `CONTROL_STATE_CHANGED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 1070 | `apply_command` | `latest != baseline` |
+| `CONTROL_VERB_NOT_GRANTED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 796 | `apply_command` | `command in POLICY_GATED_COMMANDS and command not in granted_emergency_controls()` |
+| `CONTROL_WRITE_FAILED` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 646 | `save` | `—` |
 | `CORE_CANDIDATE_ALREADY_DECIDED` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 483 | `decide_core_candidate` | `candidate.get('status') != CORE_CANDIDATE_STATUS` |
 | `CORE_NOT_ACTIVATED` | `PlannerBlocked` | `runtime/mvp_runtime/binding.py` | 46 | `bind_task_to_core` | `not pointer.is_file()` |
 | `CORRECTION_AMBIGUOUS` | `ToolError` | `runtime/mvp_runtime/crypto/live_correction.py` | 347 | `apply_corrections` | `target_id in targets` |
@@ -514,7 +514,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `LEDGER_UNAVAILABLE` | `ApprovalBlocked` | `runtime/mvp_runtime/trial.py` | 434 | `run_trial` | `—` |
 | `LEDGER_UNKNOWN_FILE` | `PersistenceError` | `runtime/mvp_runtime/retention.py` | 184 | `rotate_file` | `filename not in ROTATABLE_FILES` |
 | `LEDGER_UNKNOWN_RECORD_KIND` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 217 | `append_records` | `unknown` |
-| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/control.py` | 607 | `_mode_from_ledger` | `—` |
+| `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/control.py` | 613 | `_mode_from_ledger` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 304 | `_tip` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 313 | `_tip` | `—` |
 | `LEDGER_UNREADABLE` | `PersistenceError` | `runtime/mvp_runtime/store.py` | 321 | `read_blocks` | `—` |
@@ -751,7 +751,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `MISSING_REQUEST_ID` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 310 | `submit` | `not (isinstance(request_id, str) and request_id.strip())` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_order.py` | 342 | `build_live_order_intent` | `not symbol` |
 | `MISSING_SYMBOL` | `ToolError` | `runtime/mvp_runtime/crypto/live_position.py` | 181 | `build_live_position` | `not symbol` |
-| `MISSING_TASK_ID` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 820 | `apply_command` | `not (isinstance(arg, str) and arg.strip())` |
+| `MISSING_TASK_ID` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 832 | `apply_command` | `not (isinstance(arg, str) and arg.strip())` |
 | `MODE_NOT_PERMITTED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 667 | `apply_switch` | `mode not in _DISABLE_MODES` |
 | `NOT_ALLOWED` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 566 | `build_permission_decision` | `disposition not in _BUILDABLE_DISPOSITIONS` |
 | `NOT_ALLOWED` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 573 | `build_permission_decision` | `disposition == EXECUTE_AND_REPORT and permission_scope not in _EXECUTE_AND_REPORT_SCOPES` |
@@ -1175,14 +1175,14 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_CANDIDATE` | `MvpRuntimeError` | `runtime/mvp_runtime/approval_cli.py` | 59 | `_find_candidate` | `entry is None` |
 | `UNKNOWN_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1612 | `resolve_candidates` | `missing` |
 | `UNKNOWN_COMMAND` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 734 | `apply_command` | `verb not in COMMANDS` |
-| `UNKNOWN_COMMAND` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 772 | `apply_command` | `command not in COMMANDS` |
+| `UNKNOWN_COMMAND` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 784 | `apply_command` | `command not in COMMANDS` |
 | `UNKNOWN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/registry_console.py` | 376 | `apply_registry_command` | `—` |
 | `UNKNOWN_CORE_CANDIDATE_DECISION` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 491 | `decide_core_candidate` | `decision not in CORE_CANDIDATE_DECISIONS` |
 | `UNKNOWN_CORE_CANDIDATE_TYPE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 413 | `build_core_candidate` | `candidate_type not in CORE_CANDIDATE_TYPES` |
 | `UNKNOWN_DOMAIN_COMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 201 | `apply_domain_command` | `verb not in _SUBCOMMANDS` |
 | `UNKNOWN_DOMAIN_SUBCOMMAND` | `OperatorBlocked` | `runtime/mvp_runtime/domain_console.py` | 208 | `apply_domain_command` | `handler is None` |
 | `UNKNOWN_FLAG` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 283 | `build_entry` | `unknown` |
-| `UNKNOWN_HALT_LEVEL` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 775 | `apply_command` | `halt_level is not None and (command != CMD_HALT_TRADING or not isinstance(halt_level, str) or h…` |
+| `UNKNOWN_HALT_LEVEL` | `ControlBlocked` | `runtime/mvp_runtime/control.py` | 787 | `apply_command` | `halt_level is not None and (command != CMD_HALT_TRADING or not isinstance(halt_level, str) or h…` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/schedule_delegation.py` | 272 | `apply_change` | `change.action == 'create' and kind not in scheduler.KINDS` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 506 | `build_schedule` | `kind not in KINDS` |
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1962 | `_execute` | `schedule.kind != KIND_TASK` |

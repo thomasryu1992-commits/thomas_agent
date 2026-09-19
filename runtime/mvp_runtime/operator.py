@@ -1592,8 +1592,13 @@ class ProgressNotice:
 # the next poll sends again is noise the peek has no reason to create. `halt_trading` is absent for
 # `resume`'s reason (from a stop it releases one), and for a second one: the peek returns at the
 # first match without claiming, so a /halt_trading queued ahead of a /kill would be re-applied on
-# every peek and hide the kill for the whole analysis (review of H2). During a long analysis the
-# entries-only halt that lands at once is `console_cli halt_trading`; over Telegram, /kill.
+# every peek and hide the kill for the whole analysis (review of H2). PR6d let it in as a door that
+# only tightens, reading the whole batch, and its review found a third reason: the next poll replays
+# the same text WITH release rights against a state later messages have already moved, which
+# writes a halt's event twice or out of order and can loosen HARD to SOFT for one send. Doing it
+# properly needs the peek to know which messages it applied (Telegram's update id), which
+# `InboundMessage` does not carry. During a long analysis the entries-only halt that lands at once
+# is `console_cli halt_trading`; over Telegram, /kill.
 PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 
 
@@ -1650,6 +1655,11 @@ def peek_for_halt(
                 verify_control_channel(message, registration)
             except OperatorBlocked:
                 continue          # not the registered operator; the normal path drops it too
+            # The channel's slash rule (`handle_operator_message`, SLASH_REQUIRED), and every
+            # peekable verb changes state. Without it the peek killed the runtime on "kill 스위치가
+            # 뭐야?", which the normal handling then refused as conversation (review of PR6d).
+            if not (isinstance(message.text, str) and message.text.strip().startswith("/")):
+                continue
             command = control.parse_command(message.text)
             if command is None or command[0] not in PEEKABLE_HALT_VERBS:
                 continue
