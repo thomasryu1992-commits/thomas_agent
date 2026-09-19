@@ -184,8 +184,14 @@ def _report_lines(report: dict) -> list[str]:
         if row.get("reason_codes"):
             line += f" [{', '.join(row['reason_codes'])}]"
         lines.append(line)
+    for held in report.get("untracked_at_venue") or ():
+        lines.append(f"{'NOT BOOKED, NOT TOUCHED':<24}{held['symbol']} {held.get('side')} {held.get('venue_quantity')} "
+                     "- the venue holds it and the book does not; close it at the venue if it must go")
     closed = sum(1 for row in report["positions"] if row["status"] == live_route.EMERGENCY_CLOSED)
-    lines.append(f"{report['status']}: {closed} of {len(report['positions'])} closed; the approval is spent"
+    gone = sum(1 for row in report["positions"]
+               if row["status"] in (live_route.EMERGENCY_SKIPPED_NOT_BOOKED, live_route.EMERGENCY_SKIPPED_CLOSED_AT_VENUE))
+    lines.append(f"{report['status']}: {closed} of {len(report['positions'])} closed"
+                 + (f", {gone} already gone" if gone else "") + "; the approval is spent"
                  + (f" [{', '.join(report['live_reason_codes'])}]" if report["live_reason_codes"] else ""))
     return lines
 
@@ -234,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     else:
         sys.stdout.write("\n".join(_report_lines(report)) + "\n")
+    # BLOCKED means an approved position is still open as far as the runtime knows.
     return EXIT_OK if report["status"] == "COMPLETE" else EXIT_BLOCKED
 
 

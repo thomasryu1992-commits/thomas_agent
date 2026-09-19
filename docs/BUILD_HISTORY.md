@@ -38,7 +38,8 @@ Append a new entry when a milestone ships, in the same PR.
     halt, a closed gate (a dry-run adapter would spend the grant and close nothing), no confirmation
     phrase (the close guard would refuse every close), nothing still booked, and an unreadable
     account. The halt is checked again inside the spend lock. After the spend, each position is
-    judged again just before its close and skipped, never resized, when anything moved.
+    judged again just before its close and skipped, never resized, when anything moved. A venue
+    position the book does not hold is never closed, but the report names it.
   - **Why the grant binds the halt's `stop_ref`:** any control write moves it. A kill, a resume, a
     loosening or a re-placed halt after the ask refuses the spend, so Thomas's approval never closes
     positions under a state he did not see.

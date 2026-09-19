@@ -111,6 +111,7 @@ from .live_position import (
     DRIFT_MISSING_AT_VENUE,
     DRIFT_QUANTITY_MISMATCH,
     DRIFT_SIDE_MISMATCH,
+    DRIFT_UNTRACKED_AT_VENUE,
     LIVE_POSITION_SLOT_TAKEN,
     RECONCILED,
     list_open_live_positions,
@@ -1577,6 +1578,10 @@ EMERGENCY_SKIPPED_CLOSED_AT_VENUE = "SKIPPED_CLOSED_AT_VENUE"
 EMERGENCY_SKIPPED_VENUE_MISMATCH = "SKIPPED_VENUE_MISMATCH"
 EMERGENCY_NOT_ATTEMPTED = "NOT_ATTEMPTED"
 _EMERGENCY_ROW_KEYS = ("position_id", "symbol", "direction", "quantity")
+# The results that leave no exposure the runtime knows of: closed here, or already gone (the book no
+# longer holds it, or the venue holds nothing on its symbol). Every other result leaves some, and the
+# close is INCOMPLETE.
+_EMERGENCY_SETTLED = frozenset({EMERGENCY_CLOSED, EMERGENCY_SKIPPED_NOT_BOOKED, EMERGENCY_SKIPPED_CLOSED_AT_VENUE})
 
 
 def emergency_quantity_text(value: Any) -> str:
@@ -1661,6 +1666,11 @@ def run_emergency_close(
     flat position (NOT_CONFIRMED). Nothing can be opened either way; the adapter refuses anything
     that is not reduceOnly under the HARD halt (PR6b).
 
+    The report's ``status`` is COMPLETE when no approved position is left open as far as the runtime
+    knows (each closed here or already gone), else INCOMPLETE. ``untracked_at_venue`` names what the
+    venue holds that the book does not: never closed here, but the operator flattening in an emergency
+    must know it is there.
+
     Returns the report. Raises only before the spend, or when the spend itself refuses."""
     assert_not_foreign_root_run(root)
     control = control_store if control_store is not None else ControlStore.default(root)
@@ -1686,6 +1696,7 @@ def run_emergency_close(
         "status": None,
         "halt_ref": halt_ref,
         "positions": [],
+        "untracked_at_venue": [],
         "live_reason_codes": [],
         "created_at": now,
     }
@@ -1700,6 +1711,7 @@ def run_emergency_close(
             raise ToolError(EMERGENCY_CLOSE_ACCOUNT_UNREADABLE,
                             f"the account could not be read ({account_use.get('degraded_reason_code')}), so "
                             "no position can be checked against the venue; nothing was spent")
+        record["untracked_at_venue"] = _untracked_at_venue(list_open_live_positions(root), snapshot, now=now)
         spend()
         _close_emergency_positions(
             record, approved, adapter=recorder, snapshot=snapshot, limits=limits, control=control,
@@ -1707,9 +1719,19 @@ def run_emergency_close(
         )
     finally:
         _close_api_breaker_pass(record, recorder, root=root, now=now)
-    closed = sum(1 for row in record["positions"] if row["status"] == EMERGENCY_CLOSED)
-    record["status"] = "COMPLETE" if closed == len(record["positions"]) else "INCOMPLETE"
+    settled = sum(1 for row in record["positions"] if row["status"] in _EMERGENCY_SETTLED)
+    record["status"] = "COMPLETE" if settled == len(record["positions"]) else "INCOMPLETE"
     return record
+
+
+def _untracked_at_venue(booked: Sequence[Mapping[str, Any]], snapshot: Any, *, now: str) -> list[dict[str, Any]]:
+    """What the venue holds on a symbol the book does not, read before the spend (after it, the closes
+    would read as untracked too). Reported, never closed: decision 49 closes booked positions only."""
+    books = reconcile_positions(list(booked), snapshot, now=now).get("books") or {}
+    sides = {p.symbol: p.side for p in getattr(snapshot, "positions", ()) if getattr(p, "symbol", None)}
+    return [{"symbol": symbol, "side": sides.get(symbol), "venue_quantity": book.get("venue_quantity")}
+            for symbol, book in sorted(books.items())
+            if DRIFT_UNTRACKED_AT_VENUE in (book.get("reasons") or ())]
 
 
 def _close_emergency_positions(

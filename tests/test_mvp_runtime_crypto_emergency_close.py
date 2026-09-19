@@ -421,6 +421,8 @@ def test_a_position_the_venue_already_closed_is_left_to_the_scheduler(tmp_path, 
     report = door.run_confirm(root=tmp_path, now=NOW, approval_id=_granted(wired))["report"]
     assert _rows(report)["live-eth"]["status"] == live_route.EMERGENCY_SKIPPED_CLOSED_AT_VENUE
     assert [r["symbol"] for r in wired.venue.submitted] == ["BTCUSDT"]
+    # Already gone leaves no exposure the runtime knows of: the close is complete.
+    assert report["status"] == "COMPLETE"
 
 
 @requires_local_core
@@ -431,6 +433,9 @@ def test_a_venue_position_the_book_does_not_hold_is_never_touched(tmp_path, monk
     report = door.run_confirm(root=tmp_path, now=NOW, approval_id=_granted(wired))["report"]
     assert report["status"] == "COMPLETE" and sorted(_rows(report)) == ["live-btc", "live-eth"]
     assert "SOLUSDT" not in {r["symbol"] for r in wired.venue.submitted}
+    # Not touched, but named: the operator flattening in an emergency must know it is there.
+    assert report["untracked_at_venue"] == [{"symbol": "SOLUSDT", "side": "LONG", "venue_quantity": 1.0}]
+    assert "NOT BOOKED, NOT TOUCHED SOLUSDT LONG 1.0" in "\n".join(door._report_lines(report))
 
 
 @requires_local_core
@@ -454,6 +459,8 @@ def test_a_position_closed_since_the_ask_is_skipped(tmp_path, monkeypatch):
     report = door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id)["report"]
     assert _rows(report)["live-eth"]["status"] == live_route.EMERGENCY_SKIPPED_NOT_BOOKED
     assert _rows(report)["live-btc"]["status"] == live_route.EMERGENCY_CLOSED
+    assert report["status"] == "COMPLETE" and report["untracked_at_venue"] == []
+    assert "COMPLETE: 1 of 2 closed, 1 already gone" in "\n".join(door._report_lines(report))
 
 
 @requires_local_core
@@ -543,7 +550,7 @@ def test_a_complete_close_exits_ok_and_prints_each_position(tmp_path, monkeypatc
 
 @requires_local_core
 def test_an_incomplete_close_exits_blocked(tmp_path, monkeypatch, capsys):
-    wired = _wire(tmp_path, monkeypatch, held=(_held(_BTC),))
+    wired = _wire(tmp_path, monkeypatch, held=(_held(_BTC), _held(_ETH, quantity=0.04)))
     approval_id = _granted(wired)
     monkeypatch.setattr(door.timeutil, "utc_now_iso", lambda: NOW)
     assert door.main(["--confirm", "--approval-id", approval_id, "--root", str(tmp_path)]) == door.EXIT_BLOCKED

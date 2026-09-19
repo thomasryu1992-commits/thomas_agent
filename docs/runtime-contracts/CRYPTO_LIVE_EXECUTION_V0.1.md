@@ -516,7 +516,9 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   4. Each position is then judged again just before its close. It is skipped, never resized, when
      the halt moved (the rest are not attempted), when the book no longer holds it or holds another
      side or quantity, or when the venue closed it or disagrees with the book. A venue position the
-     book does not hold is never touched.
+     book does not hold is never touched; the report names it, so the operator knows it is there.
+  5. The report is COMPLETE when no approved position is left open as far as the runtime knows:
+     each was closed, or was already gone. Otherwise it is INCOMPLETE and the command exits BLOCKED.
 
   The close is `live_leg.execute_live_exit` with close reason `emergency_close`, the leg every
   runtime exit uses: brackets are withdrawn only after a confirmed close, the outcome is recorded,

@@ -313,13 +313,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `DUPLICATE_CORE_RULES` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 192 | `build_task` | `len(set(rule_ids)) != len(rule_ids)` |
 | `DUPLICATE_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 328 | `select_env_gated_chain` | `len(set(names)) != len(names)` |
 | `DUPLICATE_SELECTOR` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1621 | `resolve_candidates` | `record['candidate_id'] in seen` |
-| `EMERGENCY_CLOSE_ACCOUNT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1700 | `run_emergency_close` | `snapshot is None` |
-| `EMERGENCY_CLOSE_GATE_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1672 | `run_emergency_close` | `adapter is None` |
-| `EMERGENCY_CLOSE_HALT_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1669 | `run_emergency_close` | `problem is not None` |
-| `EMERGENCY_CLOSE_NEEDS_HARD_HALT` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1628 | `emergency_close_content` | `problem is not None` |
-| `EMERGENCY_CLOSE_NOTHING_BOOKED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1631 | `emergency_close_content` | `not rows` |
-| `EMERGENCY_CLOSE_NOTHING_BOOKED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1682 | `run_emergency_close` | `not any((str(p.get('position_id')) in wanted for p in list_open_live_positions(root)))` |
-| `EMERGENCY_CLOSE_NO_CONFIRMATION` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1677 | `run_emergency_close` | `not limits.confirmation_present()` |
+| `EMERGENCY_CLOSE_ACCOUNT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1711 | `run_emergency_close` | `snapshot is None` |
+| `EMERGENCY_CLOSE_GATE_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1682 | `run_emergency_close` | `adapter is None` |
+| `EMERGENCY_CLOSE_HALT_CHANGED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1679 | `run_emergency_close` | `problem is not None` |
+| `EMERGENCY_CLOSE_NEEDS_HARD_HALT` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1633 | `emergency_close_content` | `problem is not None` |
+| `EMERGENCY_CLOSE_NOTHING_BOOKED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1636 | `emergency_close_content` | `not rows` |
+| `EMERGENCY_CLOSE_NOTHING_BOOKED` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1692 | `run_emergency_close` | `not any((str(p.get('position_id')) in wanted for p in list_open_live_positions(root)))` |
+| `EMERGENCY_CLOSE_NO_CONFIRMATION` | `ToolError` | `runtime/mvp_runtime/crypto/live_route.py` | 1687 | `run_emergency_close` | `not limits.confirmation_present()` |
 | `EMPTY_CONTENT` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 213 | `_require_content` | `not content` |
 | `EMPTY_FEEDBACK` | `OperatorBlocked` | `runtime/mvp_runtime/operator_feedback.py` | 232 | `apply_feedback` | `not payload` |
 | `EMPTY_PATH` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 162 | `resolve_target` | `not isinstance(relative_path, str) or not relative_path.strip()` |
