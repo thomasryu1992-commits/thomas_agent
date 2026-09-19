@@ -1589,17 +1589,17 @@ class ProgressNotice:
 # resume would be a halt undone by a message the operator sent *before* the halt, re-read out of
 # order. `approve` is absent because consuming an approval twice is exactly what
 # `one_time_use_required` forbids. `status`/`audit` are absent because they reply, and a reply
-# the next poll sends again is noise the peek has no reason to create.
-#
-# `halt_trading` joined in PR6d (the default recorded with decisions 47-50: a halt lands during an
-# analysis too), on two conditions that answer why it was absent (review of H2):
-# - **the peek only tightens with it.** It applies the halt as a door that may not release a stop
-#   or loosen a level (`halt_may_release_stop=False`): from a stop it records the halt under it
-#   and lifts nothing, and `soft` never loosens HARD here. The loop's normal handling, which
-#   claims the message, is still what releases or loosens, once.
-# - **the peek reads the whole batch in order,** rather than returning at the first match, so a
-#   /halt_trading queued ahead of a /kill can no longer hide the kill for the whole analysis.
-PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE, control.CMD_HALT_TRADING})
+# the next poll sends again is noise the peek has no reason to create. `halt_trading` is absent for
+# `resume`'s reason (from a stop it releases one), and for a second one: the peek returns at the
+# first match without claiming, so a /halt_trading queued ahead of a /kill would be re-applied on
+# every peek and hide the kill for the whole analysis (review of H2). PR6d let it in as a door that
+# only tightens, reading the whole batch, and its review found a third reason: the next poll replays
+# the same text WITH release rights against a state later messages have already moved, which
+# writes a halt's event twice or out of order and can loosen HARD to SOFT for one send. Doing it
+# properly needs the peek to know which messages it applied (Telegram's update id), which
+# `InboundMessage` does not carry. During a long analysis the entries-only halt that lands at once
+# is `console_cli halt_trading`; over Telegram, /kill.
+PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 
 
 def peek_for_halt(
@@ -1608,11 +1608,10 @@ def peek_for_halt(
     registration: OperatorIdentity,
     control_store: ControlStore | None,
     now: str | None = None,
-    ledger: Any | None = None,
 ) -> str | None:
-    """Look for halt commands the loop has not reached yet, and make them real.
+    """Look for a halt command the loop has not reached yet, and make it real if there is one.
 
-    Returns the last verb applied, or None. **Never raises** — see the failure direction below.
+    Returns the verb applied, or None. **Never raises** — see the failure direction below.
 
     The gap this closes is not "a long analysis cannot be interrupted"; it is that while one
     runs, `/kill` exists **nowhere in the runtime**. The operator loop is the only process that
@@ -1621,14 +1620,11 @@ def peek_for_halt(
     change for the length of an analysis. That made this loop's responsiveness a dependency of
     the money path in another container.
 
-    So this writes **state** and no reply: the reply belongs to the normal handling that follows,
-    because the peek does not claim what it reads (see `TelegramChannel.peek`) and the next poll
-    will deliver the same message again. Every transition goes through the same
-    `control.apply_command`, which keeps one owner for what a halt *means*. The durable audit
-    happens exactly once: a kill or a pause is written again, event included, by the normal
-    handling (`ledger=None` here). A halt the peek applied leaves the normal handling nothing to
-    change, and a no-op writes no event, so the peek hands a halt the ``ledger`` and its event is
-    written by whichever application changes the state.
+    So this writes **state** and nothing else: no ledger event, no reply. Both belong to the
+    normal handling that follows, because the peek does not claim what it reads (see
+    `TelegramChannel.peek`) and the next poll will deliver the same message again. Applying the
+    transition through the same `control.apply_command` with `ledger=None` keeps one owner for
+    what a halt *means* while leaving the durable audit to happen exactly once.
 
     What this deliberately does NOT do: stop the analysis that is running. That needs an abort
     path and a registry terminal for an interrupted RUNNING entry — decision K4 in
@@ -1653,33 +1649,30 @@ def peek_for_halt(
     # principle (a safety net must not destroy what it protects) failing to reach inside the batch.
     # Nothing is claimed either way, so the next poll would still have handled it; the halt would
     # just have waited for the thing it exists not to wait for.
-    applied: str | None = None
-    # The whole batch, in order: returning at the first match let a halt queued ahead of a /kill
-    # hide the kill for the rest of the analysis (review of H2).
     for message in batch:
         try:
             try:
                 verify_control_channel(message, registration)
             except OperatorBlocked:
                 continue          # not the registered operator; the normal path drops it too
+            # The channel's slash rule (`handle_operator_message`, SLASH_REQUIRED), and every
+            # peekable verb changes state. Without it the peek killed the runtime on "kill 스위치가
+            # 뭐야?", which the normal handling then refused as conversation (review of PR6d).
+            if not (isinstance(message.text, str) and message.text.strip().startswith("/")):
+                continue
             command = control.parse_command(message.text)
             if command is None or command[0] not in PEEKABLE_HALT_VERBS:
                 continue
             verb, arg = command
-            halt = verb == control.CMD_HALT_TRADING
             control.apply_command(
                 control_store, verb, actor=registration.operator_id,
                 now=now or timeutil.utc_now_iso(), arg=arg,
-                # A kill or a pause is written again, with its event, by the normal handling; a halt
-                # the peek applied is a no-op there, so its event is written here (see the docstring).
-                ledger=ledger if halt else None,
-                # Tightening only: the normal handling releases a stop or loosens a level, once.
-                halt_may_release_stop=False,
+                ledger=None,      # the audit belongs to the normal handling, once
             )
-            applied = verb
+            return verb
         except Exception:      # noqa: BLE001 — deliberate: see the docstring
             continue
-    return applied
+    return None
 
 
 def run_queued_task(
@@ -1742,7 +1735,7 @@ def run_queued_task(
         # is the operator's record of when they halted the runtime, on the state that gates the
         # money path, and "when did the kill land" is the question it exists to answer afterwards.
         # `peek_for_halt` stamps at the moment it acts.
-        peek_for_halt(channel, registration=registration, control_store=control_store, ledger=store)
+        peek_for_halt(channel, registration=registration, control_store=control_store)
 
     reply = render_result_reply(run_task(
         entry.request_text,

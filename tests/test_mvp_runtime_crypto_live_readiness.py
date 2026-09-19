@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import execution_stage as es
-from runtime.mvp_runtime.crypto import live_promotion, live_readiness
+from runtime.mvp_runtime.crypto import live_promotion, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
@@ -1475,7 +1475,19 @@ def test_a_console_without_a_usable_record_says_it_cannot_see_the_switch(tmp_pat
     _write_cycle(tmp_path, status="HELD", created_at=created_at, live_gate=live_gate)
     row = _kill_row(live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW)))
     assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and live_readiness.OUT_OF_SCOPE_DETAIL in row
-    assert "clear" not in row
+    assert "clear" not in row and live_readiness.MANUAL_KILL_SECONDARY in row
+
+
+def test_a_console_whose_trading_process_recorded_a_closed_gate_points_at_no_missing_banner(tmp_path,
+                                                                                         clean_env):
+    """Review of PR6d: a fresh record of a CLOSED gate takes the banner down, and a gate that never
+    opened stamped no switches, so the n/a row pointed at a banner that was not there."""
+    _write_cycle(tmp_path, status=live_route.ROUTE_DISABLED, created_at="2026-07-23T11:55:00Z")
+    text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    row = _kill_row(text)
+    assert "CANNOT SEE THE LIVE-TRADING ENVIRONMENT" not in text
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and "banner" not in row
+    assert "recorded its gate closed" in row and live_readiness.MANUAL_KILL_SECONDARY in row
 
 
 def test_the_trading_process_shows_its_own_switch_as_the_secondary_control():

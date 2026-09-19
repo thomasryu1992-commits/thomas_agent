@@ -482,12 +482,14 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   resume) comes back to the halt that was in effect. The level is a field beside `mode`
   (`halt_level`), recorded on every control event (`resulting_halt_level`) and recovered from the
   ledger when the state file is lost; a corrupt file still reads KILLED (decision 48), with a HARD
-  halt under it. **A halt lands during an analysis too (PR6d):** Telegram's mid-run peek applies
-  `/halt_trading` as it applies `/kill`, but only as a tightening. It never releases a stop or
-  loosens HARD, and it reads the whole unclaimed batch in order, so a halt queued ahead of a `/kill`
-  cannot hide the kill. From a stop, a door that cannot release one (the peek, and the assistant's
-  `disable mode=soft|hard`) records the halt under the stop instead. A resume that does not re-arm
-  then comes back to that halt, not to a bare disarm. A halt that names no level (`/halt_trading <reason>`, or the console command in the
+  halt under it. **Under an operator's stop, the assistant's `disable mode=soft|hard` records the
+  halt (PR6d)**, since that door cannot release a stop: a resume that does not re-arm then comes
+  back to the halt, not to a bare disarm. It only tightens, and the stop keeps who placed it and
+  when, which the next resume ask names; who recorded the halt is noted in the reason and on the
+  event. A stop derived by failing closed is left as it is. Over Telegram a halt waits for a
+  running analysis to finish: the mid-run peek acts on `/kill` and `/pause` only (PR6d tried the
+  halt, and its review found the next poll replays it with release rights against a state later
+  messages have moved). A halt that names no level (`/halt_trading <reason>`, or the console command in the
   incident notices) keeps the level in effect, so only an explicit `soft` loosens HARD. The level
   is the argument's first word, so a Telegram reason that itself begins with `soft` or `hard` is
   read as the level; the reply names every change of level. **Rollback is

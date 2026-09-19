@@ -1775,7 +1775,7 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
 # Decision 50 (2026-09-19): the manual kill switch is the secondary control — it refuses new entries
 # only, and the process reads it at restart. The primary control is the control store, which the
 # runtime_active and trading_armed rows read (halt_trading, kill, pause, resume). Said on the row.
-MANUAL_KILL_SECONDARY = "secondary, entries only; the control store is primary"
+MANUAL_KILL_SECONDARY = "secondary: entries only, read at restart; the control store is primary"
 
 
 def _manual_kill_row(check: Mapping[str, Any], status: Mapping[str, Any]) -> tuple[str, str]:
@@ -1798,7 +1798,13 @@ def _manual_kill_row(check: Mapping[str, Any], status: Mapping[str, Any]) -> tup
         if switches.get("manual_kill_switch"):
             return "FAIL", f"{MANUAL_KILL_SWITCH_ENV} is engaged, {seen} ({MANUAL_KILL_SECONDARY})"
         return "PASS", f"clear, {seen} ({MANUAL_KILL_SECONDARY})"
-    return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+    # No usable record of the switch. The banner is pointed at only while it is up: a fresh record of a
+    # CLOSED gate takes it down (`env_out_of_scope`), and a gate that never opened stamped no switches
+    # (review of PR6d).
+    if env_out_of_scope(status):
+        return OUT_OF_SCOPE_MARK, f"{OUT_OF_SCOPE_DETAIL} ({MANUAL_KILL_SECONDARY})"
+    return OUT_OF_SCOPE_MARK, ("not observable from this container - the trading process last recorded its "
+                               f"gate closed, which records no switch ({MANUAL_KILL_SECONDARY})")
 
 
 def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
