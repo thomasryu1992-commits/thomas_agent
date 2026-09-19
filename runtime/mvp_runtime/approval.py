@@ -542,10 +542,11 @@ def format_request(approval: Mapping[str, Any]) -> str:
     elif emergency_close:
         lines += [
             "승인 후 운영자가 scheduler 컨테이너에서 `scripts/emergency_close.py --confirm --approval-id <id>`로",
-            "1회 소비해야 청산 주문이 나갑니다. 요청 이후 HARD 정지 상태가 바뀌면(해제·완화·kill 포함)",
-            "EMERGENCY_CLOSE_HALT_CHANGED로 거부되고 새 요청이 필요합니다. 포지션마다 장부와 거래소를 다시",
-            "확인해, 장부에서 사라졌거나 수량·방향이 목록과 다르면 그 포지션은 건너뛰고 보고합니다(크기를",
-            "바꿔 보내지 않음). 장부에 없는 거래소 포지션은 건드리지 않습니다.",
+            "1회 소비해야 청산 주문이 나갑니다. 요청 이후 HARD 정지 상태가 바뀌면(해제·완화·다시 걸기)",
+            "EMERGENCY_CLOSE_HALT_CHANGED로, kill·pause 중이면 그 정지 코드로 거부되고 새 요청이 필요합니다.",
+            "거래소 계좌는 소모 직전에 한 번 읽고, 포지션마다 정지 상태와 장부를 다시 확인합니다. 장부에서",
+            "사라졌거나 수량·방향이 목록과 다르거나 거래소와 어긋나면 그 포지션은 건너뛰고 보고합니다(크기를",
+            "바꿔 보내지 않음). 장부에 없는 거래소 포지션은 건드리지 않고 보고서에 이름만 적습니다.",
         ]
     elif execution_stage:
         lines += [

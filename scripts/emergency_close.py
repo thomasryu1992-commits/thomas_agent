@@ -30,9 +30,10 @@ APPROVED and sends nothing:
 - an approved position is still booked;
 - the account can be read.
 
-After the spend, each position is judged again just before its close. It is skipped when the halt,
-the book or the venue moved, and the report says which. The skip rules are in
-``live_route.run_emergency_close``.
+The account is read once, just before the spend. After the spend, each position is judged again just
+before its close, against that read and a fresh read of the halt and the book. It is skipped when the
+halt, the book or the venue moved, and the report says which. The report is also kept on the record
+ledger under the approval id. The skip rules are in ``live_route.run_emergency_close``.
 """
 
 from __future__ import annotations
@@ -80,12 +81,15 @@ def _listing(rows: list[dict]) -> str:
 def run_show(*, root: Path | None, as_json: bool) -> int:
     """What a close would bind now, or why none can be asked for. Reads; writes nothing."""
     state = _control(root).load()
-    problem = live_route.emergency_halt_problem(state, None)
     try:
         rows = live_route.emergency_close_rows(live_route.list_open_live_positions(root))
         book_error = None
     except MvpRuntimeError as exc:
         rows, book_error = [], exc.reason_code
+    # The same refusals the ask makes, in its order, so --show never says an ask can be made that
+    # --request would refuse (review of #913).
+    problem = live_route.emergency_halt_problem(state, None) or (
+        live_route.emergency_book_problem(rows) if rows else None)
     if as_json:
         sys.stdout.write(json.dumps({"mode": state.mode, "halt_level": state.halt_level,
                                      "askable": problem is None and bool(rows), "problem": problem,
@@ -135,9 +139,12 @@ def run_request(*, root: Path | None, now: str, requested_by: str, reason: str) 
             "content": content, "warnings": warnings}
 
 
-def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
-    """Spend the APPROVED emergency-close grant once and close what it names."""
-    approvals, _ledger = _stores(root)
+def run_confirm(*, root: Path | None, now: str, approval_id: str, clock=None) -> dict:
+    """Spend the APPROVED emergency-close grant once and close what it names.
+
+    ``clock`` reads the time again at the spend: two signed account reads can sit between the check
+    above and the spend, and an approval must not be spent after it expired (review of #913)."""
+    approvals, ledger = _stores(root)
     assert_not_foreign_root_run(root)
     control = _control(root)
     approval, decision, snapshot = approval_mod.validate_spendable_approval(
@@ -156,21 +163,36 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
                               f"{approval_id} does not name the halt and the positions it closes; ask again")
 
     def spend() -> None:
-        # One exclusion for the compare-and-set: the approval re-read APPROVED, the halt Thomas approved
-        # still the one in effect, then CONSUMED. Spent before anything is sent, so a failure after it
-        # is spent-but-unrun, the safe direction (ask again).
+        # One exclusion for the compare-and-set: the approval re-read APPROVED and unexpired, the halt
+        # Thomas approved still the one in effect, then CONSUMED. Spent before anything is sent, so a
+        # failure after it is spent-but-unrun, the safe direction (ask again).
         with approval_mod.spend_lock(approvals, approval_id):
+            spent_at = clock() if clock is not None else now
+            fresh = approvals.get(approval_id)
+            if approval_mod.is_expired(fresh, now=spent_at):
+                raise ApprovalBlocked("APPROVAL_EXPIRED",
+                                      f"approval expired at {fresh['validity']['expires_at']} before it could "
+                                      "be spent; nothing was spent")
             problem = live_route.emergency_halt_problem(control.load(), halt_ref)
             if problem is not None:
                 raise ToolError(live_route.EMERGENCY_CLOSE_HALT_CHANGED, f"{problem}; nothing was spent")
             consumed = approval_mod.build_consumed_record(
-                approvals.get(approval_id), decision, consumed_at=now, consumption_ref=target_ref,
+                fresh, decision, consumed_at=spent_at, consumption_ref=target_ref,
             )
             approvals.append([consumed])
 
     report = live_route.run_emergency_close(positions, halt_ref=halt_ref, spend=spend, now=now, root=root,
                                             control_store=control)
-    return {"approval_id": approval["approval_id"], "report": report}
+    report = {**report, "approval_id": approval["approval_id"], "target_ref": target_ref}
+    # The report is kept, not only printed (review of #913): one row per spent grant beside the audit
+    # events and the outcomes, naming every order it sent. The closes stand whether or not it lands.
+    warnings = []
+    try:
+        ledger.append_records(approval["approval_id"], {"crypto_emergency_close": report})
+    except (MvpRuntimeError, OSError) as exc:
+        warnings.append(f"the report was not recorded ({getattr(exc, 'reason_code', type(exc).__name__)}); "
+                        "the closes above stand, and their audit events and outcomes are on record")
+    return {"approval_id": approval["approval_id"], "report": report, "warnings": warnings}
 
 
 def _report_lines(report: dict) -> list[str]:
@@ -184,6 +206,16 @@ def _report_lines(report: dict) -> list[str]:
         if row.get("reason_codes"):
             line += f" [{', '.join(row['reason_codes'])}]"
         lines.append(line)
+        order = row.get("order")
+        if order and row["status"] != live_route.EMERGENCY_CLOSED:
+            # Sent, and not confirmed closed: what went out and what the venue said, so the operator can
+            # find it at the venue.
+            lines.append(f"{'':<24}order {order.get('client_order_id')} (venue {order.get('exchange_order_id')}): "
+                         f"{order.get('reconcile_status')}, filled {order.get('executed_qty')}"
+                         + (f"; {'; '.join(order['mismatches'])}" if order.get("mismatches") else ""))
+    for held in report.get("booked_not_in_grant") or ():
+        lines.append(f"{'BOOKED, NOT IN GRANT':<24}{held['symbol']} {held['direction']} {held['quantity']} "
+                     f"({held['position_id']}) - booked after the ask; ask again to close it")
     for held in report.get("untracked_at_venue") or ():
         lines.append(f"{'NOT BOOKED, NOT TOUCHED':<24}{held['symbol']} {held.get('side')} {held.get('venue_quantity')} "
                      "- the venue holds it and the book does not; close it at the venue if it must go")
@@ -231,10 +263,12 @@ def main(argv: list[str] | None = None) -> int:
         if not args.approval_id:
             sys.stderr.write("USAGE: --confirm needs --approval-id\n")
             return EXIT_USAGE
-        out = run_confirm(root=args.root, now=now, approval_id=args.approval_id)
+        out = run_confirm(root=args.root, now=now, approval_id=args.approval_id, clock=timeutil.utc_now_iso)
     except MvpRuntimeError as exc:
         sys.stderr.write(f"BLOCKED {exc.reason_code}: {exc}\n")
         return EXIT_BLOCKED
+    for warning in out["warnings"]:
+        sys.stderr.write(f"WARNING: {warning}\n")
     report = out["report"]
     if args.json:
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

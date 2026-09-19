@@ -1274,8 +1274,9 @@ def test_an_emergency_close_ask_is_announced_on_the_control_channel_and_never_mi
     _register(tmp_path, chat_id="chat-registered")
     store = ApprovalStore(tmp_path)
     announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
-    content = {"halt_ref": "stop_x", "requested_by": "thomas", "reason": "venue incident", "positions": [
-        {"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
+    content = {"halt_ref": "stop_x", "halt_summary": "the HARD halt placed by tg-1 at T, stated reason: r",
+               "requested_by": "thomas", "reason": "venue incident", "positions": [
+                   {"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
     task = build_task("긴급 청산 검토", now=_ANN_NOW, channel="manual", requester_id="Thomas")
     _, bound = bind_task_to_core(task, now=_ANN_NOW)
     permdec = _permission.build_emergency_close_permission_decision(bound, content=content, now=_ANN_NOW)

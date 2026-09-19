@@ -49,6 +49,20 @@ Append a new entry when a milestone ships, in the same PR.
   - **Not in this PR:** the assistant asking for one. The switch door's verbs are closed in the
     policy (`control_channel.assistant_switch.verbs`), so a door verb is a policy change Thomas
     applies.
+  - **Review of #913.** Nothing could open or add exposure, and the single use and the halt binding
+    held. The fixes:
+    - (MEDIUM) A close that reached the venue but was not confirmed, such as a partial fill or an
+      unanswered status query, left no trace but a printed line. Every sent order is now audited with
+      what the venue answered. The report names each order and is kept on the record ledger under the
+      approval id.
+    - An audit failure no longer stops the closes behind it.
+    - A grant whose every position would be skipped is refused before the spend.
+    - The expiry is re-checked at the spend on a fresh clock.
+    - A position booked after the ask, and an incomplete book record, are named rather than silently
+      skipped or generically refused.
+    - The docs now say the account is read once, before the spend. They also describe both
+      directions of the race with the scheduler and the halt binding's one limit (a HARD halt
+      recovered from the ledger).
 
 - **The HARD halt refuses at the order adapter** (crypto PR6b, 2026-09-19;
   `crypto/live_execution.py`, `crypto/testnet_execution.py`, `scripts/run_signed_testnet_cycle.py`).

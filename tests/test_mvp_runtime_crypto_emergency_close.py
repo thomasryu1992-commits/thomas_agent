@@ -50,12 +50,13 @@ class _Venue:
     tool_id, tool_version = "fake", "0"
     network_egress = True
 
-    def __init__(self, *, on_submit=None, submit_raises=None):
+    def __init__(self, *, on_submit=None, submit_raises=None, fill_fraction=1.0):
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
         self.requests: dict[str, dict[str, Any]] = {}
         self.on_submit = on_submit
         self.submit_raises = submit_raises
+        self.fill_fraction = fill_fraction
 
     def submit(self, order_request, *, timeout_seconds: int = 10):
         if self.submit_raises is not None:
@@ -70,8 +71,9 @@ class _Venue:
         request = self.requests.get(str(client_order_id))
         if request is None:
             return None
-        qty = float(request.get("quantity") or 0.0)
-        return {"symbol": symbol, "side": request["side"], "status": "FILLED", "executedQty": qty,
+        qty = round(float(request.get("quantity") or 0.0) * self.fill_fraction, 8)
+        status = "FILLED" if self.fill_fraction == 1.0 else "EXPIRED"
+        return {"symbol": symbol, "side": request["side"], "status": status, "executedQty": qty,
                 "reduceOnly": bool(request.get("reduceOnly")), "avgPrice": "61000.0",
                 "cumQuote": str(round(qty * 61000.0, 8)), "orderId": "oid"}
 
@@ -197,6 +199,7 @@ def test_the_ask_binds_the_hard_halt_and_every_booked_position(tmp_path, monkeyp
     assert snapshot["target_ref"].startswith(permission.EMERGENCY_CLOSE_TARGET_PREFIX)
     assert snapshot["normalized_parameters"] == {
         "halt_ref": stop_ref(wired.control.load()),
+        "halt_summary": "the HARD halt placed by op at 2026-09-19T12:00:00Z, stated reason: only exits",
         "positions": [
             {"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"},
             {"position_id": "live-eth", "symbol": "ETHUSDT", "direction": "SHORT", "quantity": "0.05"},
@@ -238,12 +241,12 @@ def test_the_builder_refuses_an_ask_that_does_not_name_what_it_closes():
     from runtime.mvp_runtime.intake import build_task
 
     _, bound = bind_task_to_core(build_task("긴급 청산 검토", now=NOW, channel="manual", requester_id="Thomas"), now=NOW)
-    good = {"halt_ref": "stop_x", "positions": [
+    good = {"halt_ref": "stop_x", "halt_summary": "the HARD halt placed by op at T, stated reason: r", "positions": [
         {"position_id": "p", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}],
         "requested_by": "thomas", "reason": "r"}
     for bad in ({**good, "halt_ref": ""}, {**good, "positions": []},
                 {**good, "positions": [{**good["positions"][0], "quantity": 0.002}]},
-                {**good, "reason": " "}):
+                {**good, "reason": " "}, {**good, "halt_summary": ""}):
         with pytest.raises(PlannerBlocked) as exc:
             permission.build_emergency_close_permission_decision(bound, content=bad, now=NOW)
         assert exc.value.reason_code == "INVALID_EMERGENCY_CLOSE"
@@ -568,3 +571,120 @@ def test_the_ask_only_asks(tmp_path, monkeypatch, capsys):
     assert out.startswith("ASKED: close 2 booked position(s)") and "Nothing has been sent." in out
     (ask,) = ApprovalStore.default(tmp_path).pending()
     assert ask["status"] == "PENDING"
+
+
+
+# --- review of #913 -------------------------------------------------------------------------------
+
+def _records(root, kind="crypto_emergency_close"):
+    import json
+
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    path = root / LEDGER_REL / RECORDS_FILE
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+    return [row for row in rows if row.get("kind") == kind]
+
+
+@requires_local_core
+def test_a_close_that_reached_the_venue_unconfirmed_is_audited_named_and_kept(tmp_path, monkeypatch):
+    """MEDIUM: a partial fill reached the venue and left no trace but a printed line. Every sent order
+    is now audited with what the venue answered, the report names the order, and the report is kept."""
+    wired = _wire(tmp_path, monkeypatch, booked=(_BTC,), venue=_Venue(fill_fraction=0.5))
+    approval_id = _granted(wired)
+    out = door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id)
+    row = _rows(out["report"])["live-btc"]
+    assert row["status"] == live_route.EMERGENCY_NOT_CONFIRMED
+    assert row["order"]["reconcile_status"] == "MISMATCH" and row["order"]["executed_qty"] == 0.001
+    assert row["order"]["client_order_id"] == wired.venue.submitted[0]["newClientOrderId"]
+    assert [r["submit"]["reconcile_status"] for r in wired.reports] == ["MISMATCH"]
+    assert wired.purposes == [live_governance.PURPOSE_EMERGENCY_CLOSE]
+    (kept,) = _records(tmp_path)
+    assert kept["trace_id"] == approval_id and kept["record"]["approval_id"] == approval_id
+    assert kept["record"]["positions"][0]["order"]["reconcile_status"] == "MISMATCH"
+    text = "\n".join(door._report_lines(out["report"]))
+    assert "order " + row["order"]["client_order_id"] in text and "MISMATCH, filled 0.001" in text
+    # The book keeps the position (the close is not confirmed) and its legs rest.
+    assert [p["position_id"] for p in list_open_live_positions(tmp_path)] == ["live-btc"]
+
+
+@requires_local_core
+def test_a_complete_close_is_kept_on_the_record_ledger(tmp_path, monkeypatch):
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+    out = door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id)
+    (kept,) = _records(tmp_path)
+    assert kept["record"]["status"] == "COMPLETE" and out["warnings"] == []
+    assert kept["record"]["target_ref"].startswith(permission.EMERGENCY_CLOSE_TARGET_PREFIX)
+
+
+@requires_local_core
+def test_an_audit_that_cannot_be_prepared_never_stops_a_close(tmp_path, monkeypatch):
+    """LOW (R1): an OSError from the Core binding escaped into the loop, relabelled a closed position
+    INCIDENT and left the rest NOT_ATTEMPTED."""
+    wired = _wire(tmp_path, monkeypatch)
+
+    def _unbindable(intent, **kw):
+        raise OSError("core pointer unreadable")
+
+    monkeypatch.setattr(live_governance, "prepare_live_order_governance", _unbindable)
+    report = door.run_confirm(root=tmp_path, now=NOW, approval_id=_granted(wired))["report"]
+    assert {row["status"] for row in report["positions"]} == {live_route.EMERGENCY_CLOSED}
+    assert live_route.AUDIT_NOT_RECORDED in report["live_reason_codes"]
+    assert report["status"] == "COMPLETE"
+
+
+@requires_local_core
+def test_a_grant_that_would_close_nothing_is_not_spent(tmp_path, monkeypatch):
+    """LOW (R3): every approved position disagrees with the venue — spending would close nothing."""
+    wired = _wire(tmp_path, monkeypatch, held=(_held(_BTC, quantity=0.001), _held(_ETH, side="LONG")))
+    error = _refused(wired, _granted(wired), live_route.EMERGENCY_CLOSE_NOTHING_CLOSABLE)
+    assert "BTCUSDT SKIPPED_VENUE_MISMATCH" in str(error) and "nothing was spent" in str(error)
+
+
+@requires_local_core
+def test_a_position_booked_after_the_ask_is_named_not_closed(tmp_path, monkeypatch):
+    """NIT (R6): an entry that landed after the ask is not in the grant; the report says it is there."""
+    sol = _position(symbol="SOLUSDT", position_id="live-sol", quantity=1.0)
+    wired = _wire(tmp_path, monkeypatch, held=(_held(_BTC), _held(_ETH), _held(sol)))
+    approval_id = _granted(wired)
+    live_route.select_live_position_store(now=NOW, root=tmp_path).save_position(sol)
+    report = door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id)["report"]
+    assert [row["position_id"] for row in report["booked_not_in_grant"]] == ["live-sol"]
+    assert "SOLUSDT" not in {r["symbol"] for r in wired.venue.submitted}
+    assert "BOOKED, NOT IN GRANT    SOLUSDT LONG 1.0 (live-sol)" in "\n".join(door._report_lines(report))
+
+
+def test_a_book_record_without_a_quantity_refuses_the_ask_by_name(tmp_path, monkeypatch, capsys):
+    """NIT (R8): one incomplete record surfaced as the builder's generic refusal while --show said an
+    ask could be made."""
+    _wire(tmp_path, monkeypatch, booked=(_BTC, {**_ETH, "quantity": None}), held=(_held(_BTC), _held(_ETH)))
+    with pytest.raises(ToolError) as exc:
+        door.run_request(root=tmp_path, now=NOW, requested_by="thomas", reason="r")
+    assert exc.value.reason_code == live_route.EMERGENCY_CLOSE_BOOK_INCOMPLETE and "live-eth" in str(exc.value)
+    assert door.main(["--show", "--root", str(tmp_path)]) == door.EXIT_OK
+    assert "cannot be made - the book holds a record with no id, side or quantity (live-eth)" in capsys.readouterr().out
+
+
+@requires_local_core
+def test_an_approval_that_expires_before_the_spend_is_not_spent(tmp_path, monkeypatch):
+    """LOW: the clock is read again at the spend, after the two signed reads."""
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id, clock=lambda: "2026-09-19T12:16:00Z")
+    assert exc.value.reason_code == "APPROVAL_EXPIRED"
+    assert _status(tmp_path, approval_id) == "APPROVED" and wired.venue.submitted == []
+    spent_at = "2026-09-19T12:03:00Z"
+    door.run_confirm(root=tmp_path, now=NOW, approval_id=approval_id, clock=lambda: spent_at)
+    assert ApprovalStore.default(tmp_path).get(approval_id)["consumption"]["consumed_at"] == spent_at
+
+
+@requires_local_core
+@pytest.mark.parametrize("mode,code", [(KILLED, "RUNTIME_KILLED"), (PAUSED, "RUNTIME_PAUSED")])
+def test_a_stop_at_the_spend_is_refused_by_its_own_code(tmp_path, monkeypatch, mode, code):
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+    wired.control.save(ControlState(mode=mode, updated_by="op", updated_at=NOW, reason="stop",
+                                    trading_armed=False, halt_level=HALT_HARD))
+    _refused(wired, approval_id, code)

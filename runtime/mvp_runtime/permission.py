@@ -1272,11 +1272,12 @@ def build_emergency_close_permission_decision(
             for p in positions)):
         raise PlannerBlocked("INVALID_EMERGENCY_CLOSE",
                              "an emergency-close ask names every position it closes by id, symbol, side and quantity")
-    for key in ("requested_by", "reason"):
+    for key in ("halt_summary", "requested_by", "reason"):
         if not (isinstance(content.get(key), str) and content[key].strip()):
             raise PlannerBlocked("INVALID_EMERGENCY_CLOSE", f"an emergency-close ask carries {key}")
     normalized = {
         "halt_ref": halt_ref,
+        "halt_summary": content["halt_summary"].strip(),
         "positions": [{k: str(p[k]) for k in _EMERGENCY_CLOSE_POSITION_KEYS} for p in positions],
         "requested_by": content["requested_by"].strip(),
         "reason": content["reason"].strip(),
@@ -1291,7 +1292,8 @@ def build_emergency_close_permission_decision(
         risk_reason=(
             f"Closes {len(normalized['positions'])} booked live position(s) at market, reduceOnly: {listing}. "
             "Each close realizes that position's result and pays taker fees and slippage, and cannot be "
-            f"undone. Bound to the HARD halt {halt_ref}: a changed halt refuses the spend. A position no "
+            f"undone. Bound to {normalized['halt_summary']} ({halt_ref}): a changed halt refuses the "
+            "spend. A position no "
             "longer booked, or whose book or venue side or quantity differs from this list, is skipped "
             "and reported, never resized. A position the venue holds that this runtime did not book is "
             "not touched."
