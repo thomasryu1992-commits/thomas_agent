@@ -1536,34 +1536,38 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
                 raise ToolError("STRATEGY_POOL_DUPLICATE", f"duplicate candidate_id in the pool: {candidate_id}")
             seen_candidate.add(candidate_id)
 
-    holders: dict[str, set[str]] = {}
-    for entry in entries:
+    # Entries are told apart by position, not display id: an entry need not carry one, and two that
+    # do not must not read as one owner (review of PR3c-1).
+    def named(index: int) -> str:
+        return str(entries[index].get("strategy_id") or f"entry #{index}")
+
+    holders: dict[str, set[int]] = {}
+    for index, entry in enumerate(entries):
         for key in own_attribution_keys(entry):
-            holders.setdefault(key, set()).add(str(entry.get("strategy_id")))
-    inherited_by: dict[str, str] = {}
-    for entry in entries:
+            holders.setdefault(key, set()).add(index)
+    inherited_by: dict[str, int] = {}
+    for index, entry in enumerate(entries):
         keys = entry.get(PREDECESSOR_KEYS_FIELD)
         if keys is None:
             continue
-        strategy_id = str(entry.get("strategy_id"))
         if not isinstance(keys, list) or not all(is_lineage_key(key) for key in keys):
             raise ToolError(
                 "STRATEGY_POOL_INVALID",
-                f"{strategy_id}: {PREDECESSOR_KEYS_FIELD} is not a list of lineage keys",
+                f"{named(index)}: {PREDECESSOR_KEYS_FIELD} is not a list of lineage keys",
             )
         for key in keys:
             if key.startswith("sid:"):
                 continue
-            others = sorted(holders.get(key, set()) - {strategy_id})
+            others = sorted(holders.get(key, set()) - {index})
             if others:
                 raise ToolError(
                     "STRATEGY_POOL_DUPLICATE",
-                    f"{strategy_id} inherits {key}, the lineage {others[0]} holds as its own",
+                    f"{named(index)} inherits {key}, the lineage {named(others[0])} holds as its own",
                 )
-            if inherited_by.setdefault(key, strategy_id) != strategy_id:
+            if inherited_by.setdefault(key, index) != index:
                 raise ToolError(
                     "STRATEGY_POOL_DUPLICATE",
-                    f"{key} is inherited by both {inherited_by[key]} and {strategy_id}",
+                    f"{key} is inherited by both {named(inherited_by[key])} and {named(index)}",
                 )
 
 

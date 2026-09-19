@@ -5,9 +5,12 @@ The same rule is the same strategy. When the promotion door returns a retired ru
 a new candidate (decision 40, PR3c-2), the new entry replaces the retired entries that held the rule
 and records the lineage keys that named them (`candidate_identity.PREDECESSOR_KEYS_FIELD`, the
 3b-3 seal rule: candidate and generation keys, the display-id key only when an entry has neither).
-Every reader of an entry's record reads them with its own: the lifecycle, the router's realized
-ranking, the live allowance, and the drawdown guard's routable set. Keys, not candidate ids: 41 of
-the pool's 121 entries (2026-09-19) have no candidate id, and their record keys on `gen:`.
+The lifecycle, the router's realized ranking, the live allowance, the drawdown guard's routable set
+and the rebase seal read them with the entry's own. What an entry inherits tightens a control and
+never loosens it (review of PR3c-1): the lifecycle and the allowance take the stricter of the entry's
+own record and the record with what it inherited, and the router reads one row per trade of a rule.
+Keys, not candidate ids: 41 of the pool's 121 entries (2026-09-19) have no candidate id, and their
+record keys on `gen:`.
 
 This half lands first and is inert: no entry carries the field until the door writes one.
 """
@@ -26,7 +29,9 @@ from runtime.mvp_runtime.crypto.candidate_identity import (
     predecessor_keys,
 )
 from runtime.mvp_runtime.crypto.lifecycle import run_lifecycle
-from runtime.mvp_runtime.crypto.live_allowance import BREACH_CONSECUTIVE, evaluate_live_allowance
+from runtime.mvp_runtime.crypto.live_allowance import (
+    BREACH_CONSECUTIVE, BREACH_CUMULATIVE_R, evaluate_live_allowance,
+)
 from runtime.mvp_runtime.crypto.paper import route_entries
 from runtime.mvp_runtime.errors import ToolError
 
@@ -117,6 +122,22 @@ def test_the_lifecycle_judges_a_successor_on_its_predecessors_record():
     assert fresh["status_changed"] is False and fresh["reasons"] == []
 
 
+def test_an_inherited_record_never_holds_off_a_demotion():
+    """Review of PR3c-1: the predecessor's position closed at wins after the successor had lost
+    thirty times. The rolling windows over the combined record are all wins; the successor's own
+    record condemns it, and the stricter judgement stands."""
+    own_losses = _losses("cand_B")                                           # 2026-09-01 .. 17
+    late_wins = [{**row, "result_R": 1.0, "candidate_id": "cand_A", "created_at_utc": "2026-09-18T00:00:00Z"}
+                 for row in _losses("cand_A")]
+    record = own_losses + late_wins
+    [own_only] = run_lifecycle(_pool(_entry("S_B", "cand_B")), record, now=NOW)
+    assert own_only["status_changed"] is True
+    [successor] = run_lifecycle(_pool(_entry("S_B", "cand_B", inherits=A_KEYS)), record, now=NOW)
+    assert _judged(successor) == _judged(own_only)
+    assert successor["inherited_lineage_keys"] == sorted(A_KEYS)
+    assert "inherited_lineage_keys" not in own_only
+
+
 def _closed(cand, r, n):
     return [{"outcome_closed": True, "result_R": r, "strategy_id": "S_old", "candidate_id": cand,
              "provenance": "mvp_paper_kernel"} for _ in range(n)]
@@ -153,18 +174,38 @@ def test_the_live_allowance_charges_a_successor_its_predecessors_losses():
                                      live_routable_strategy_ids={"S_B"}, pool=_pool(armed))
     [breach] = result["breached"]
     assert breach["strategy_id"] == "S_B" and breach["lineage"] == "cand:cand_B"
-    assert BREACH_CONSECUTIVE in breach["reasons"]
+    assert breach["reasons"] == [BREACH_CONSECUTIVE, BREACH_CUMULATIVE_R]
     fresh = {k: v for k, v in armed.items() if k != PREDECESSOR_KEYS_FIELD}
     assert evaluate_live_allowance([_live(-1.0, "cand_A"), _live(-1.0, "cand_A")],
                                    live_routable_strategy_ids={"S_B"}, pool=_pool(fresh))["breached"] == []
 
 
 def test_the_allowance_reads_a_successor_s_rows_in_the_order_they_closed():
-    """A streak is a sequence. The predecessor's win came between the successor's two losses, so the
-    streak is one loss long — read key by key, the two losses would be adjacent and read as two."""
+    """A streak is a sequence. The predecessor's position closed at a loss between the successor's
+    win and its loss, so the rule has lost twice running. Read key by key, the successor's win would
+    sit between the two losses and the streak would read as one."""
     armed = _entry("S_B", "cand_B", inherits=A_KEYS, live_tier=pool.LIVE_TIER_LIVE)
-    rows = [_live(-1.0, "cand_B"), _live(0.5, "cand_A"), _live(-1.0, "cand_B")]
-    assert evaluate_live_allowance(rows, live_routable_strategy_ids={"S_B"}, pool=_pool(armed))["breached"] == []
+    rows = [_live(0.5, "cand_B"), _live(-1.0, "cand_A"), _live(-1.0, "cand_B")]
+    [breach] = evaluate_live_allowance(rows, live_routable_strategy_ids={"S_B"}, pool=_pool(armed))["breached"]
+    assert BREACH_CONSECUTIVE in breach["reasons"] and breach["consecutive"] == 2
+
+
+@pytest.mark.parametrize("rows,reason", [
+    # The predecessor's +3.0R would offset the successor's own -2.4R.
+    ([_live(3.0, "cand_A"), _live(-1.5, "cand_B"), _live(0.1, "cand_B"), _live(-1.0, "cand_B")],
+     BREACH_CUMULATIVE_R),
+    # The retired entry's last position closes at a win after the successor's two losses.
+    ([_live(-0.8, "cand_B"), _live(-0.8, "cand_B"), _live(0.5, "cand_A")], BREACH_CONSECUTIVE),
+], ids=["wins-offsetting-losses", "a-late-win-breaking-the-streak"])
+def test_an_inherited_record_never_loosens_the_allowance(rows, reason):
+    """Review of PR3c-1: what the entry inherits may charge it, never credit it. Each limit reads the
+    stricter of its own rows and its rows with the inherited ones: never looser than a fresh install."""
+    armed = _entry("S_B", "cand_B", inherits=A_KEYS, live_tier=pool.LIVE_TIER_LIVE)
+    fresh = {k: v for k, v in armed.items() if k != PREDECESSOR_KEYS_FIELD}
+    [as_fresh] = evaluate_live_allowance(rows, live_routable_strategy_ids={"S_B"}, pool=_pool(fresh))["breached"]
+    [breach] = evaluate_live_allowance(rows, live_routable_strategy_ids={"S_B"}, pool=_pool(armed))["breached"]
+    assert reason in as_fresh["reasons"] and reason in breach["reasons"]
+    assert breach["inherited_lineages"] == sorted(A_KEYS) and "inherited_lineages" not in as_fresh
 
 
 def _loss(cand, sid="S_A"):
@@ -187,6 +228,13 @@ def test_a_sealed_predecessor_s_losses_return_when_its_successor_routes():
     kept, summary = guards.drawdown_baseline(rows, excluded=sealed, routable=pool.routable_strategy_ids(back),
                                              routable_lineages=pool.routable_lineage_keys(back))
     assert kept == rows and summary["rows_excluded"] == 0
+
+
+def test_an_entry_named_by_its_display_id_alone_is_sealed_with_what_it_inherited():
+    """An entry with neither a candidate nor a generation is named by its display id; what it
+    inherited does not take that name's place."""
+    retired = {"strategy_id": "S7", "status": "SUSPENDED", PREDECESSOR_KEYS_FIELD: A_KEYS}
+    assert rl.seal_drawdown_exclusion(["S7"], _pool(retired)) == sorted([*A_KEYS, "sid:S7"])
 
 
 def test_sealing_a_successor_seals_what_it_inherited():
@@ -219,6 +267,19 @@ def test_an_inheritance_that_is_not_a_list_of_lineage_keys_is_refused(tmp_path, 
     with pytest.raises(ToolError) as refused:
         _install(tmp_path, {**_entry("S_B", "cand_B"), PREDECESSOR_KEYS_FIELD: value})
     assert refused.value.reason_code == "STRATEGY_POOL_INVALID"
+
+
+@pytest.mark.parametrize("entries", [
+    [_entry("S_A", "cand_A", status="SUSPENDED", generation="GEN-1"), _entry("S_B", "cand_B", inherits=A_KEYS)],
+    [_entry("S_B", "cand_B", inherits=A_KEYS), _entry("S_C", "cand_C", inherits=["cand:cand_A"])],
+], ids=["held-as-its-own", "inherited-twice"])
+def test_entries_without_a_display_id_are_not_one_owner(tmp_path, entries):
+    """Review of PR3c-1: owners were told apart by display id, and every entry without one read as
+    the same owner, so neither refusal fired."""
+    entries = [{k: v for k, v in entry.items() if k != "strategy_id"} for entry in entries]
+    with pytest.raises(ToolError) as refused:
+        _install(tmp_path, *entries)
+    assert refused.value.reason_code == "STRATEGY_POOL_DUPLICATE" and "entry #" in str(refused.value)
 
 
 def test_the_read_door_refuses_what_the_install_door_would(tmp_path):
@@ -256,3 +317,60 @@ def test_the_pool_as_it_stands_still_loads(tmp_path):
             for sid, cand in (("S008", "cand_1c52"), ("S008-GEN-696", "cand_07b1"))]
     assert _install(tmp_path, *pair) == 2
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 2
+
+
+# --- one row per trade of a rule -----------------------------------------------------------------
+
+def _trade(cand, *, rule="hash-X", opened="2026-09-10T00:00:00Z", r=0.4, **extra):
+    return {"outcome_closed": True, "result_R": r, "candidate_id": cand, "strategy_rule_hash": rule,
+            "symbol": "BTCUSDT", "timeframe": "1d", "opened_at_utc": opened, "direction": "LONG", **extra}
+
+
+def test_a_trade_recorded_twice_by_one_rule_counts_once():
+    """Review of PR3c-1: a rule installed twice records each trade as one entry's own paper row and
+    the other's benched shadow. The row that came first (the cycle passes its own rows first) stays."""
+    own, shadow = _trade("cand_T1", provenance="mvp_paper_kernel"), _trade("cand_T2", block_reasons=["x"])
+    assert feedback.distinct_trades([own, shadow]) == [own]
+    other_bar = _trade("cand_T2", opened="2026-09-11T00:00:00Z")
+    other_rule = _trade("cand_T2", rule="hash-Y")
+    unmatched = [{**_trade(cand), "opened_at_utc": None} for cand in ("cand_T2", "cand_T3")]
+    assert feedback.distinct_trades([own, other_bar, other_rule, *unmatched]) == [own, other_bar, other_rule,
+                                                                                  *unmatched]
+
+
+def test_twins_replaced_by_one_entry_read_each_trade_once():
+    """End to end: five trades, each recorded by both twins, are five trades to their successor —
+    below the router's sample floor, where ten rows would have cleared it."""
+    rows = [_trade("cand_T1", opened=f"2026-09-{d:02d}T00:00:00Z") for d in range(1, 6)]
+    rows += [_trade("cand_T2", opened=f"2026-09-{d:02d}T00:00:00Z") for d in range(1, 6)]
+    successor = _entry("S_B", "cand_B", score=0.1, inherits=["cand:cand_T1", "cand:cand_T2"])
+    import runtime.mvp_runtime.crypto.paper as paper_mod
+
+    assert paper_mod._realized_evidence(successor, feedback.realized_by_lineage(rows)) == (10, 0.4)
+    assert paper_mod._realized_evidence(
+        successor, feedback.realized_by_lineage(feedback.distinct_trades(rows))) is None
+
+
+def test_the_cycle_hands_the_router_one_row_per_trade(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.crypto import cycle as cycle_module
+    from runtime.mvp_runtime.crypto.paper import DryRunPaperStore
+    from tests.test_mvp_runtime_crypto_cycle import FakeExchangeCollector, _always_spec
+
+    pool.install_active_pool({"active_strategies": [
+        {"strategy_id": "S_NEW", "candidate_id": "cand_A", "status": "PAPER_ACTIVE", "champion_score": 0.5,
+         "strategy_spec": _always_spec("S_NEW")},
+    ]}, root=tmp_path)
+    seen = {}
+    real = cycle_module.run_paper_update
+
+    def _spy(*args, **kwargs):
+        seen["realized_stats"] = kwargs.get("realized_stats")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cycle_module, "run_paper_update", _spy)
+    rows = [_trade("cand_A", provenance="mvp_paper_kernel"), _trade("cand_T", provenance="mvp_paper_kernel")]
+    cycle_module.run_crypto_cycle(
+        collector=FakeExchangeCollector(), store=DryRunPaperStore(), now="2026-07-22T12:00:00Z",
+        root=tmp_path, control_store=ControlStore(tmp_path), paper_outcomes=rows)
+    assert sorted(seen["realized_stats"]) == ["cand:cand_A"]

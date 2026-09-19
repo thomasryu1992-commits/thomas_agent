@@ -260,10 +260,20 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
 - **Inherited records** (decision 41, PR3c-1): an entry the promotion door installs in a retired
   rule's place accepts the keys of the entries it replaced (`candidate_identity.PREDECESSOR_KEYS_FIELD`:
   their candidate and generation keys, a display-id key only for an entry with neither, and what they
-  had inherited), so the rule keeps one record. The lifecycle judges it on that record, the router
-  ranks it by it, the live allowance charges it (its own key and what it inherited, read in the
-  order the rows closed), and the drawdown guard counts those keys as routable (a sealed
-  predecessor's losses come back while its successor routes).
+  had inherited), so the rule keeps one record.
+  - **An inherited record tightens, never loosens.** The lifecycle and the live allowance judge the
+    entry's own record and the record with what it inherited, and take the stricter: a
+    predecessor's wins, or its position closing after the replacement, cannot hold off a demotion
+    or a disarm that a fresh install would get. The allowance reads the rows in the order they
+    closed. The drawdown guard only gets stricter: it counts the inherited keys as routable, so a
+    sealed predecessor's losses come back while its successor routes. The rebase seal names them.
+  - The router ranks the entry on the record with what it inherited, one row per trade of a rule
+    (`feedback.distinct_trades`): a rule installed twice records each trade as one entry's own row
+    and the other's benched shadow.
+  - Not read: the LIVE-arming forward confirmation and the forward book read the candidate's own
+    lineage, so a successor's forward stream starts fresh.
+  - The lifecycle decision and the allowance breach name what they read beyond the entry's own
+    lineage (`inherited_lineage_keys`, `inherited_lineages`).
   - Keys, not candidate ids: 41 of the pool's 121 entries (2026-09-19) have none, and their record
     keys on `gen:`.
   - The pool refuses, at install and on read, an inheritance that is not a list of lineage keys, and
@@ -273,6 +283,10 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
   - The strategy artifact does not cover the field, a fact about the pool like `status`; the
     promotion approval that writes it binds it (PR3c-2). No entry carries it until that door writes
     one.
+  - **After a rollback** an older image ignores the field: the entry is judged as a fresh install,
+    and a sealed predecessor's losses stay out of the drawdown window while its rule trades. An
+    older door can also re-promote a replaced lineage beside the entry that inherited it; this code
+    then refuses the pool on read (`STRATEGY_POOL_DUPLICATE`) until one of them is retired.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or

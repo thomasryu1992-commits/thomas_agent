@@ -33,10 +33,16 @@ Append a new entry when a milestone ships, in the same PR.
     with an id no entry held. Decision 40 makes that return a reactivation that replaces the retired
     entries (PR3c-2); this half is what the replacement inherits.
   - **The change:** an entry accepts the keys of the entries it replaced
-    (`candidate_identity.PREDECESSOR_KEYS_FIELD`), and every reader of an entry's record reads them
-    with its own: the lifecycle, the router's realized ranking, the live allowance, the drawdown
-    guard's routable set and the rebase seal. `precise_lineage_keys` is the one rule for what names
-    a lineage (the 3b-3 seal rule), used by the seal and by what a successor records.
+    (`candidate_identity.PREDECESSOR_KEYS_FIELD`), and these read them with its own: the lifecycle,
+    the router's realized ranking, the live allowance, the drawdown guard's routable set and the
+    rebase seal. The LIVE-arming forward confirmation and the forward book do not. `precise_lineage_keys`
+    is the one rule for what names a lineage (the 3b-3 seal rule), used by the seal and by what a
+    successor records.
+  - **Tightens, never loosens (review):** inherited wins would have offset a successor's own losses
+    in the allowance and a late-closing predecessor win could hold off a demotion, so the lifecycle
+    and the allowance take the stricter of the entry's own record and the one with what it
+    inherited. The router reads one row per trade of a rule (`feedback.distinct_trades`), because a
+    rule installed twice records each trade as one entry's row and the other's benched shadow.
   - **Keys, not candidate ids:** 41 of the pool's 121 entries have no candidate id; their record
     keys on `gen:`. A display-id key only for an entry with neither: a later entry may take the name.
   - **The pool check compares inherited keys only.** S008 and S008-GEN-696 share
@@ -44,6 +50,8 @@ Append a new entry when a milestone ships, in the same PR.
     two entries accept one key would refuse the pool on the next read.
   - **The allowance reads rows in the order they closed:** a streak is a sequence, and a successor's
     rows sit under several keys.
+  - **The pool check tells entries apart by position:** entries without a display id must not read
+    as one owner.
   - Inert until PR3c-2's door writes the field.
 
 - **A drawdown rebase names lineages, sealed when it is registered** (crypto PR3b-3, Thomas

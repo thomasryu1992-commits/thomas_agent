@@ -97,7 +97,8 @@ def evaluate_live_allowance(
     reported separately: misattributing a live loss is worse than not attributing it. An entry the
     promotion door installed in a retired rule's place is the same strategy, and is charged the
     losses of the lineages it replaced too (`candidate_identity.predecessor_keys`, PR3c, Thomas
-    decision 41).
+    decision 41) — never credited with their wins: each limit reads the stricter of its own rows
+    and its rows with the inherited ones, so it is never looser than a fresh install.
     """
     armed = set(live_routable_strategy_ids or set())
     result: dict[str, Any] = {
@@ -154,12 +155,17 @@ def evaluate_live_allowance(
         # which hands the pool read its armed set came from (every armed id has an entry); it
         # charges only rows that carry no lineage fields at all.
         lineage = lineage_of.get(sid, f"sid:{sid}")
-        keys = {lineage} | inherited.get(sid, set())
-        rows = [outcome for key, outcome in closed if key in keys]
+        predecessors = inherited.get(sid, set())
+        rows = [outcome for key, outcome in closed if key == lineage or key in predecessors]
         if not rows:
             continue
-        consecutive = _consecutive_losses(rows)
-        cumulative = sum(_f(r.get("result_R")) or 0.0 for r in rows)
+        # An inherited record tightens the allowance, never loosens it (review of PR3c-1): the
+        # predecessors' wins must not offset the entry's own losses or break its own streak, so
+        # each limit reads the stricter of the entry's own rows and the rows it inherited with them.
+        own = [outcome for key, outcome in closed if key == lineage] if predecessors else rows
+        consecutive = max(_consecutive_losses(own), _consecutive_losses(rows))
+        cumulative = min(sum(_f(r.get("result_R")) or 0.0 for r in own),
+                         sum(_f(r.get("result_R")) or 0.0 for r in rows))
         reasons = []
         if consecutive >= max_consecutive:
             reasons.append(BREACH_CONSECUTIVE)
@@ -172,6 +178,8 @@ def evaluate_live_allowance(
                 "reasons": reasons,
                 "consecutive": consecutive,
                 "cumulative_r": round(cumulative, 6),
+                # What else this judgement read (PR3c): a breach the inherited rows caused names them.
+                **({"inherited_lineages": sorted(predecessors)} if predecessors else {}),
             })
     return result
 

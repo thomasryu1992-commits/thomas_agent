@@ -416,7 +416,8 @@ def _realized_evidence(
     The match reads every key an outcome of its entry may carry across three eras of
     record-keeping, and those of the entries it replaced (PR3c, Thomas decision 41)
     (`candidate_identity.entry_attribution_keys`), as the lifecycle does, and the groups it finds
-    are one record: an outcome carries exactly one key, so they never overlap.
+    are one record: an outcome carries exactly one key, and the cycle hands one row per trade of a
+    rule (`feedback.distinct_trades`), so they never overlap.
     Keyed by the display id, a lineage that reused another's id inherited its record, and one
     renamed lost its own.
 

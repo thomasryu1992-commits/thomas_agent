@@ -930,7 +930,10 @@ def run_crypto_cycle(
                 r for r in read_counterfactual_outcomes(root)
                 if set(r.get("block_reasons") or []) & SUPPORTING_SHADOW_REASONS
             ]
-            realized_stats = feedback.realized_by_lineage(list(own_rows) + shadow_rows)
+            # One row per trade of a rule (review of PR3c-1): a rule installed twice records each
+            # trade as one entry's own row and the other's benched shadow.
+            realized_stats = feedback.realized_by_lineage(
+                feedback.distinct_trades(list(own_rows) + shadow_rows))
         except ToolError as exc:
             reason_codes.append(exc.reason_code)
             realized_stats = None
