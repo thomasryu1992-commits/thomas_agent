@@ -51,9 +51,15 @@ from .filelock import locked
 from .paths import repo_root as _repo_root
 from .permission import (
     EXECUTION_STAGE_TARGET_PREFIX,
+    LIVE_OUTCOME_CORRECTION_ACTION_TYPE,
+    MEMORY_PROMOTION_ACTION_TYPE,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
+    REGISTRATION_ACTION_TYPE,
+    SLIPPAGE_PROBE_ACTION_TYPE,
     STRATEGY_POOL_LIVE_TARGET_REF,
     STRATEGY_POOL_PAPER_TARGET_REF,
+    STRATEGY_PROMOTION_ACTION_TYPE,
+    STRATEGY_RETIREMENT_ACTION_TYPE,
     TRADING_SWITCH_TARGET_PREFIX,
     TRIAL_PERMISSION_SCOPE,
     WORKFLOW_STEP_TARGET_PREFIX,
@@ -470,7 +476,18 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # Arming real money: the assistant's trading switch, or a promotion that installs strategies
     # at the pool's LIVE tier (both make a real order possible that was not before).
     arms_pool_live = target_ref == STRATEGY_POOL_LIVE_TARGET_REF
-    pool_promotion = arms_pool_live or target_ref == STRATEGY_POOL_PAPER_TARGET_REF
+    # The other RUNTIME_GOVERNANCE asks (and the two ask kinds outside that scope) are told apart by
+    # action type, because the target cannot do it: a retirement names the same
+    # `active_strategy_pool:paper` a paper promotion does, and keyed on that alone its ask rendered
+    # the promotion door's install step. Constants from `permission`, like the prefixes.
+    action_type = snapshot.get("action_type")
+    pool_promotion = arms_pool_live or (action_type == STRATEGY_PROMOTION_ACTION_TYPE
+                                        and target_ref == STRATEGY_POOL_PAPER_TARGET_REF)
+    retirement = action_type == STRATEGY_RETIREMENT_ACTION_TYPE
+    correction = action_type == LIVE_OUTCOME_CORRECTION_ACTION_TYPE
+    probe = action_type == SLIPPAGE_PROBE_ACTION_TYPE
+    registration = action_type == REGISTRATION_ACTION_TYPE
+    memory_promotion = action_type == MEMORY_PROMOTION_ACTION_TYPE
     arms_live = target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX) or arms_pool_live
     switch = (target_ref.startswith(TRADING_SWITCH_TARGET_PREFIX)
               or target_ref.startswith(NONFINANCIAL_RESUME_TARGET_PREFIX))
@@ -482,6 +499,53 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # runtime; a demotion is the reversible direction and needs no ask at all.
     execution_stage = target_ref.startswith(EXECUTION_STAGE_TARGET_PREFIX)
     live_stage = execution_stage and target_ref.split(":")[-1].startswith("LIVE_")
+    # What undoes this decision, named per kind. Until 2026-09-19 the memory promotion's answer was
+    # the fall-through, so every ask not named before it rendered as permanent because "validated
+    # memory는 지속됩니다": the paper-tier pool promotion, probe batch and registration asks their
+    # scripts print for Thomas, and the retirement and P&L correction asks no door renders yet. A
+    # kind not named here says it has no answer rather than borrowing another kind's.
+    if trial:
+        reversibility = "되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
+    elif switch:
+        # Stopping needs no approval and applies at once, which is this door's whole
+        # asymmetry — so a switch grant is the reversible kind, and saying otherwise
+        # (as this line did for three weeks) misprices the decision in the wrong direction.
+        reversibility = "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다"
+    elif workflow_step:
+        reversibility = ("되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 "
+                         "P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다")
+    elif execution_stage:
+        reversibility = ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
+                         "청산은 어느 단계에서도 막히지 않습니다")
+    elif arms_pool_live:
+        reversibility = ("되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 "
+                         "적용되고, 이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다")
+    elif pool_promotion:
+        # OBSERVATION papers, so the undo is another pool change — and unlike the LIVE tier's
+        # disarm, each of those is its own ask.
+        reversibility = ("되돌릴 수 있는가: 예 — 이후의 승격(교체)이나 은퇴(scripts/retire_strategies.py)로 "
+                         "되돌리며, 어느 쪽이든 새 승인 요청을 거칩니다")
+    elif retirement:
+        # SUSPENDED is terminal to the lifecycle; since PR3c-2 a retired rule comes back only as a
+        # reactivation that a promotion ask names and signs.
+        reversibility = ("되돌릴 수 있는가: 예 — 은퇴한 규칙은 재활성화 승격(scripts/promote_strategy_candidates.py "
+                         "--allow-reactivation)으로만 돌아오며, 그 승격도 새 승인 요청을 거칩니다")
+    elif correction:
+        # Append-only and chained, and rule 3 refuses a second correction for the same row: there
+        # is no correcting a correction, only a live history that stops reading.
+        reversibility = ("되돌릴 수 있는가: 아니오 — 정정은 추가 전용 기록이라 거두는 문이 없고, 같은 행에 정정을 "
+                         "하나 더 붙이면 CORRECTION_AMBIGUOUS로 라이브 이력 전체가 읽히지 않습니다")
+    elif probe:
+        reversibility = ("되돌릴 수 있는가: 발주 전까지는 예(scripts/run_slippage_probe.py --abandon, 승인 불필요) — "
+                         "이미 나간 프로브 주문은 실주문이라 그 손익은 되돌릴 수 없습니다")
+    elif registration:
+        reversibility = ("되돌릴 수 있는가: 예 — 작업 트리에 후보 항목(enabled false)만 쓰고 반영은 Thomas의 "
+                         "PR이므로, 그 PR을 머지하지 않거나 되돌리면 됩니다")
+    elif memory_promotion:
+        reversibility = "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"
+    else:
+        reversibility = ("되돌릴 수 있는가: 확인되지 않음 — 이 요청 종류에는 등록된 답이 없습니다"
+                         "(되돌릴 수 없다고 보고 판단해 주세요)")
     lines = [
         "Approval Request",
         "",
@@ -499,21 +563,7 @@ def format_request(approval: Mapping[str, Any]) -> str:
          if arms_live else
          "예상 비용: 이 단계에서 진입 문이 실주문을 낼 수 있게 되므로(PR1b부터 강제) 그 이후의 손익이 곧 비용입니다"
          if live_stage else "예상 비용: 없음"),
-        ("되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
-         if trial else
-         # Stopping needs no approval and applies at once, which is this door's whole
-         # asymmetry — so a switch grant is the reversible kind, and saying otherwise
-         # (as this line did for three weeks) misprices the decision in the wrong direction.
-         "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다"
-         if switch else
-         "되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"
-         if workflow_step else
-         "되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), 청산은 어느 단계에서도 막히지 않습니다"
-         if execution_stage else
-         "되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 적용되고, "
-         "이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다"
-         if arms_pool_live else
-         "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"),
+        reversibility,
         f"유효 시각: {approval['validity']['expires_at']} (UTC)",
         f"Action Fingerprint: {approval['action_fingerprint']}",
         "",
@@ -562,11 +612,39 @@ def format_request(approval: Mapping[str, Any]) -> str:
             "설치합니다. 이 승인은 소비되지 않고 내용 해시로 검증되며, 후보·모드·tier가 다르면",
             "APPROVAL_CONTENT_MISMATCH로 거부됩니다.",
         ]
-    else:
+    # The next four doors verify their approval against its content hash and never spend it, like
+    # the promotion door above. Until 2026-09-19 a retirement ask rendered that door's install step
+    # and the other three the memory promotion's consume step.
+    elif retirement:
+        lines += [
+            "승인 후 운영자가 `scripts/retire_strategies.py --confirm --approval-id <id>`로 적용합니다.",
+            "이 승인은 소비되지 않고 내용 해시로 검증되며, 요청 이후 대상 항목의 계보나 규칙이 바뀌면",
+            "APPROVAL_CONTENT_MISMATCH로 거부됩니다.",
+        ]
+    elif correction:
+        lines += [
+            "승인 후 운영자가 `scripts/correct_live_outcome.py --confirm --approval-id <id>`로 정정 기록을",
+            "추가합니다. 이 승인은 소비되지 않고 내용 해시로 검증되며, 대상 행이나 처분이 요청과 다르면",
+            "CORRECTION_UNAPPROVED로 거부됩니다.",
+        ]
+    elif probe:
+        lines += [
+            "승인 후 운영자가 `scripts/run_slippage_probe.py --confirm --approval-id <id>`로 배치 계획만",
+            "씁니다(주문 없음). 이 승인은 소비되지 않고 내용 해시로 검증되며, 주문은 운영자가 `--fire`로",
+            "한 번에 하나씩 냅니다.",
+        ]
+    elif registration:
+        lines += [
+            "승인 후 운영자가 `scripts/register_program_candidate.py --confirm --approval-id <id>`로",
+            "작업 트리에 씁니다. 이 승인은 소비되지 않고 내용 해시로 검증되며, 활성화는 별도의 승인입니다.",
+        ]
+    elif memory_promotion:
         lines += [
             "승인 후 소비(consume)는 별도의 운영자 단계이며, approval_consumption 세이프티",
             "플래그가 켜진 기기에서만 이 승인 하나에 묶인 승격을 1회 수행합니다.",
         ]
+    # A kind not named above gets no closing paragraph: "승인만으로 런타임이 자동 실행하지 않습니다"
+    # already holds for it, and a door this renderer cannot name is not one to guess at.
     return "\n".join(lines)
 
 
