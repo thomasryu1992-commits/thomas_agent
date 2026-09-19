@@ -482,8 +482,12 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   resume) comes back to the halt that was in effect. The level is a field beside `mode`
   (`halt_level`), recorded on every control event (`resulting_halt_level`) and recovered from the
   ledger when the state file is lost; a corrupt file still reads KILLED (decision 48), with a HARD
-  halt under it. An image from before halt levels ignores the field and reads either level as the
-  soft halt. `/status` shows a `halt:` line, and the readiness board names the component
+  halt under it. A halt that names no level (`/halt_trading <reason>`, or the console command in the
+  incident notices) keeps the level in effect, so only an explicit `soft` loosens HARD. **Rollback is
+  read-safe, not write-safe:** an image from before halt levels ignores the field and reads either
+  level as the soft halt, but its next control write (a `/stop`, a kill, a resume) drops the level,
+  so after rolling forward again check the `halt:` line in `/status` and place HARD again if it was
+  in effect. `/status` shows a `halt:` line, and the readiness board names the component
   `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`, a disarm nobody
   named. The policy's comment on the grant still describes the soft halt alone: it is a byte of the
   fingerprinted policy, so it changes with the next policy bump Thomas applies.

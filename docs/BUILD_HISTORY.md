@@ -35,8 +35,11 @@ Append a new entry when a milestone ships, in the same PR.
     EMERGENCY_CLOSE it gates, are the next PRs (decisions 47 and 49).
   - **Representation:** a `halt_level` field beside `mode`, not a fourth mode. An older image reads
     an unknown mode as corrupt, i.e. KILLED, which stops position management on a rollback; it ignores
-    an unknown field and reads either level as the soft halt. Absent is no halt (a file from before
-    levels); present and unreadable is HARD. `trading_allowed` refuses on any halt, whatever the arm.
+    an unknown field and reads either level as the soft halt. That makes a rollback read-safe, not
+    write-safe: the old image's next control write drops the level (DEPLOYMENT.md says what to check
+    after rolling forward). Absent is no halt (a file from before levels); present and unreadable is
+    HARD. `trading_allowed` refuses on any halt, whatever the arm, and the record never holds a halt
+    with the arm up (the field an older image reads).
   - **Carried, never lost:** `/kill`, `/pause` and `/stop` carry the level, and a resume that does not
     re-arm keeps it, so the assistant's runtime-only resume cannot come back looser. Every control
     event records `resulting_halt_level`, and a lost state file recovers it from the ledger (until now
@@ -47,6 +50,22 @@ Append a new entry when a milestone ships, in the same PR.
   - **Found on the way:** a state file whose `mode` was a list raised `TypeError` out of
     `ControlStore.load` instead of reading KILLED, because `in` on a frozenset hashes; the ledger
     recovery had the same fault. Both check the type first now.
+  - **Review of #911** — four ways a HARD halt could come back looser without anyone loosening it:
+    - A halt that named no level was SOFT, so `/halt_trading <reason>` — and the console command the
+      incident notices print — turned HARD into SOFT from the operator's own doors. A halt that names
+      no level now keeps the one in effect (under a stop too); only an explicit `soft` loosens HARD.
+      The level word is read before any whitespace, a newline included.
+    - `pause`, `kill` and `stop` carried the level they read before a concurrent HARD landed, and
+      erased it. Each now re-reads just before it writes and builds on that — a stop still always
+      goes through. `/stop <id>` had the older form of the same race: it kept the mode it had read,
+      so it could write ACTIVE over a kill that landed in between.
+    - A resume judged on a state that moved wrote anyway. It now compares before it writes and refuses
+      (`CONTROL_STATE_CHANGED`); the switch door's spend passes the state it checked `stop_ref`
+      against, so a HARD placed during the spend is never re-armed away and nothing is spent.
+    - The record could hold a halt with the arm up, which `load` clamped and an older image would read
+      as armed; `as_record` now writes the arm down under any halt.
+    - Also: a HARD kept from a fail-closed state says so on the state a runtime-only resume writes,
+      and `/recovery` names a halt no operator wrote; an unhashable `halt_level=` is a typed refusal.
   - **Not in this PR:** the policy comment on the grant still describes the soft halt; it is a byte
     of the fingerprinted policy and changes with the next bump Thomas applies. The Hermes shim has no
     halt tool yet, and Telegram's `/halt_trading` still waits for a running analysis to finish (the

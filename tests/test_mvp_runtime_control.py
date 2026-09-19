@@ -1107,3 +1107,193 @@ def test_a_hard_halt_that_lands_while_a_soft_halt_is_applied_is_never_loosened(t
                                 halt_level=control.HALT_SOFT, reason="soft")
     assert out["changed"] is False
     assert ControlStore(tmp_path).load().halt_level == control.HALT_HARD
+
+
+# --- review of PR6a: a HARD halt is never loosened by accident -------------------------------------
+#
+# Four ways it could be: a halt that names no level, a stop that carried a level it read before a
+# HARD landed, a resume judged on a state that moved, and a record written with the arm up.
+
+def _hard(tmp_path, *, ledger=None):
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg="hard", ledger=ledger)
+    assert store.load().halt_level == control.HALT_HARD
+    return store
+
+
+@pytest.mark.parametrize("arg", [None, "변동성 급등", "entries off, keep managing"])
+def test_a_halt_that_names_no_level_never_loosens_hard(tmp_path, halt_granted, arg):
+    """`/halt_trading <reason>`, a bare `/halt_trading` and the runbook's own console command, from
+    the authenticated operator: HARD stays HARD. Only an explicit `soft` loosens it."""
+    store = _hard(tmp_path)
+    before = store.path.read_text(encoding="utf-8")
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg=arg,
+                                halt_may_release_stop=True)
+    assert out["changed"] is False and "already halted (HARD halt)" in out["reply"]
+    assert "/halt_trading soft" in out["reply"]
+    assert store.path.read_text(encoding="utf-8") == before
+
+
+def test_the_console_runbook_halt_never_loosens_hard(tmp_path, halt_granted, capsys):
+    from runtime.mvp_runtime import console_cli
+
+    store = _hard(tmp_path)
+    rc = console_cli.main(["halt_trading", "--reason", "entries off, keep managing"], control_store=store,
+                          ledger=FakeLedger(), now=NOW)
+    assert rc == 0 and store.load().halt_level == control.HALT_HARD
+
+
+def test_the_telegram_halt_without_a_level_never_loosens_hard(tmp_path, halt_granted):
+    store, ledger = _hard(tmp_path), LedgerStore(tmp_path / "ledger")
+    handle_operator_message(_task_msg(text="/halt_trading 변동성 급등"), registration=REG,
+                            control_store=store, store=ledger, now=NOW)
+    assert store.load().halt_level == control.HALT_HARD
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_releasing_a_stop_without_a_level_keeps_the_hard_halt_under_it(tmp_path, halt_granted, stop):
+    store = _hard(tmp_path)
+    control.apply_command(store, stop, actor="op", now=NOW)
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg="포지션 관리 재개",
+                                halt_may_release_stop=True)
+    state = store.load()
+    assert out["changed"] is True and "-> hard halt" in out["reply"]
+    assert (state.mode, state.halt_level, state.reason) == (ACTIVE, control.HALT_HARD, "포지션 관리 재개")
+
+
+@pytest.mark.parametrize("sep", ["\n", "\t", " ", "　", "  "])
+def test_the_level_word_is_read_before_any_whitespace(tmp_path, halt_granted, sep):
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg=f"hard{sep}청산만 허용")
+    assert (store.load().halt_level, store.load().reason) == (control.HALT_HARD, "청산만 허용")
+
+
+def _inject_after_first_load(store, action):
+    real_load = store.load
+    calls = {"n": 0}
+
+    def load():
+        calls["n"] += 1
+        state = real_load()
+        if calls["n"] == 1:
+            action()
+        return state
+
+    store.load = load   # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_a_stop_racing_a_hard_halt_carries_it(tmp_path, halt_granted, stop):
+    """A stop builds on a re-read made just before it writes: the HARD that landed after its first
+    read is carried, and the stop still goes through."""
+    store = _armed(tmp_path)
+    _inject_after_first_load(store, lambda: control.apply_command(
+        ControlStore(tmp_path), control.CMD_HALT_TRADING, actor="thomas", now=NOW, arg="hard"))
+    control.apply_command(store, stop, actor="assistant", now=NOW)
+    state = ControlStore(tmp_path).load()
+    assert state.mode in (KILLED, PAUSED) and state.halt_level == control.HALT_HARD
+
+
+def test_a_stop_request_racing_a_kill_neither_releases_it_nor_drops_the_level(tmp_path, halt_granted):
+    """`/stop <id>` keeps the mode it finds. It used to keep the mode it had read before a kill
+    landed, and so wrote ACTIVE over the kill."""
+    store = _hard(tmp_path)
+    _inject_after_first_load(store, lambda: control.apply_command(
+        ControlStore(tmp_path), control.CMD_KILL, actor="thomas", now=NOW))
+    control.apply_command(store, control.CMD_STOP, actor="op", now=NOW, arg="treg_a1")
+    state = ControlStore(tmp_path).load()
+    assert (state.mode, state.halt_level, state.stop_requested_task_ids) == (KILLED, control.HALT_HARD,
+                                                                             ("treg_a1",))
+
+
+@pytest.mark.parametrize("arms", [True, False])
+def test_a_resume_judged_on_a_state_that_moved_writes_nothing(tmp_path, halt_granted, arms):
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_PAUSE, actor="op", now=NOW)
+    _inject_after_first_load(store, lambda: control.apply_command(
+        ControlStore(tmp_path), control.CMD_KILL, actor="thomas", now=NOW, arg="again"))
+    with pytest.raises(ControlBlocked) as exc:
+        control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW, resume_arms=arms)
+    assert exc.value.reason_code == "CONTROL_STATE_CHANGED"
+    assert ControlStore(tmp_path).load().mode == KILLED
+
+
+def test_a_resume_refuses_unless_the_state_is_the_one_its_caller_checked(tmp_path, halt_granted):
+    store = _armed(tmp_path)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW)
+    checked = store.load()
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="thomas", now=NOW, arg="hard")
+    with pytest.raises(ControlBlocked) as exc:
+        control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW, expected_state=checked)
+    assert exc.value.reason_code == "CONTROL_STATE_CHANGED"
+    assert store.load().halt_level == control.HALT_HARD
+    out = control.apply_command(store, control.CMD_RESUME, actor="op", now=NOW, expected_state=store.load())
+    assert out["changed"] is True and store.load().trading_allowed is True
+
+
+def test_expected_state_is_taken_by_resume_alone(tmp_path, halt_granted):
+    store = _armed(tmp_path)
+    with pytest.raises(ControlBlocked) as exc:
+        control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, expected_state=store.load())
+    assert exc.value.reason_code == "ARGUMENT_NOT_ACCEPTED"
+
+
+def test_an_unhashable_level_is_a_typed_refusal(tmp_path, halt_granted):
+    with pytest.raises(ControlBlocked) as exc:
+        control.apply_command(_armed(tmp_path), control.CMD_HALT_TRADING, actor="op", now=NOW,
+                              halt_level=["HARD"])
+    assert exc.value.reason_code == "UNKNOWN_HALT_LEVEL"
+
+
+def test_the_record_never_holds_a_halt_with_the_arm_up():
+    """An image from before halt levels reads only `trading_armed`: a record that held a halt with the
+    arm up would read to it as ARMED."""
+    for level in control.HALT_LEVELS:
+        record = ControlState(mode=ACTIVE, trading_armed=True, halt_level=level).as_record()
+        assert (record["trading_armed"], record["halt_level"]) == (False, level)
+    assert ControlState(mode=ACTIVE, trading_armed=True).as_record()["trading_armed"] is True
+
+
+def _raw(store):
+    return json.loads(store.path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("step", ["release", "kill", "pause", "stop", "resume_no_arm"])
+def test_every_write_under_a_halt_leaves_the_arm_down_on_disk(tmp_path, halt_granted, step):
+    store = _hard(tmp_path)
+    if step == "release":
+        control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+        control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, halt_may_release_stop=True)
+    elif step == "stop":
+        control.apply_command(store, control.CMD_STOP, actor="op", now=NOW, arg="treg_a1")
+    elif step == "resume_no_arm":
+        control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+        control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW, resume_arms=False)
+    else:
+        control.apply_command(store, step, actor="op", now=NOW)
+    raw = _raw(store)
+    assert (raw["trading_armed"], raw["halt_level"]) == (False, control.HALT_HARD)
+
+
+def test_a_hard_halt_kept_from_a_corrupt_file_says_no_operator_placed_it(tmp_path, halt_granted):
+    store = ControlStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text("{damaged", encoding="utf-8")
+    out = control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW,
+                                reason="resume runtime [approval apv_x]", resume_arms=False)
+    state = store.load()
+    assert (state.mode, state.halt_level) == (ACTIVE, control.HALT_HARD)
+    assert "fail-closed control state; no operator placed it" in state.reason
+    assert "no operator placed it" in out["reply"]
+
+
+def test_recovery_names_a_halt_nobody_wrote(tmp_path, halt_granted):
+    store = _armed(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg="hard", ledger=ledger)
+    store.path.unlink()
+    text = control.recovery_lines(store.load(), None)
+    assert "halt: HARD" in text and "no operator wrote this halt" in text
+    placed = control.recovery_lines(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="r",
+                                                 trading_armed=False, halt_level=control.HALT_HARD), None)
+    assert "halt: HARD" in placed and "no operator wrote this halt" not in placed

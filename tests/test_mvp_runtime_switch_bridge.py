@@ -738,6 +738,35 @@ def test_the_stop_ref_tells_the_halt_levels_apart_and_keeps_the_old_id_without_o
                                                "reason": "r", "fail_closed": False})
 
 
+def test_a_grant_signed_against_soft_is_never_spent_against_a_hard_that_lands_during_the_spend(
+        tmp_path, approved, halt_granted):
+    """Review of PR6a (F9): the spend checked `stop_ref` on one read and resumed on another. A HARD
+    placed by Thomas between the two was re-armed away by a grant signed against the SOFT halt. The
+    resume now refuses unless the state is still the one the spend checked, and nothing is spent."""
+    store = _armed_store(tmp_path)
+    _apply({"command": "disable", "mode": "soft", "reason": "변동성"}, store)
+    _arm(approved, store)
+    real_load = store.load
+    calls = {"n": 0}
+
+    def load():
+        calls["n"] += 1
+        state = real_load()
+        if calls["n"] == 1:          # the spend's stop_ref check has its state
+            control.apply_command(ControlStore(tmp_path), control.CMD_HALT_TRADING, actor="tg-12345",
+                                  now=NOW, arg="hard 다시 급등", halt_may_release_stop=True)
+        return state
+
+    store.load = load  # type: ignore[method-assign]
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "enable", "reason": "Thomas approved", "approval_id": "approval_test"},
+               store, approvals=approved, now=LATER)
+    assert exc.value.reason_code == "CONTROL_STATE_CHANGED"
+    state = ControlStore(tmp_path).load()
+    assert (state.halt_level, state.trading_armed) == (control.HALT_HARD, False)
+    assert approved.records["approval_test"]["status"] == approval_mod.STATUS_APPROVED, "nothing spent"
+
+
 def test_an_ask_against_a_hard_halt_names_it(tmp_path):
     state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",
                                  trading_armed=False, halt_level=control.HALT_HARD)

@@ -233,9 +233,10 @@ def stop_ref(state: control.ControlState) -> str:
         "fail_closed": bool(state.fail_closed),
     }
     # The halt level too (PR6), but only when one is placed: a grant minted against a soft halt must
-    # not spend against a hard one placed in the same second by the same actor with the same words,
-    # and a state with no halt keeps the id it had before levels existed, so no pending grant lapses
-    # on the deploy.
+    # not spend against a hard one placed in the same second by the same actor with the same words.
+    # A state with no halt keeps the id it had before levels existed. The fail-closed states now carry
+    # a HARD halt, so a grant minted against one of those before the deploy lapses (STOP_CHANGED; the
+    # safe direction, and a re-ask).
     if state.halt_level is not None:
         seed["halt_level"] = state.halt_level
     return integrity.short_id("stop", seed)
@@ -570,6 +571,10 @@ def _spend(
             control_store, control.CMD_RESUME, actor=ASSISTANT_ACTOR, now=now,
             reason=f"{reason} [approval {approval_id}]", ledger=ledger,
             resume_arms=resume_arms,
+            # The state `stop_ref` was just checked against. Operator writes do not take this lock,
+            # so the resume refuses (CONTROL_STATE_CHANGED, nothing spent) unless the state is still
+            # exactly this one when it writes — a hard halt landing now must not be re-armed away.
+            expected_state=current,
         )
         consumed = approval_mod.build_consumed_record(
             fresh, decision, consumed_at=now,
