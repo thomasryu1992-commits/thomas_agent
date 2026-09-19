@@ -24,6 +24,35 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A mainnet entry is decided on the venue contract: no usable PASS, no entry**
+  (crypto PR4b, Thomas decision 46, 2026-09-19; `crypto/venue_contract.py`, `crypto/live_entry.py`,
+  `crypto/live_route.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`,
+  `crypto/live_readiness.py`).
+  - **The change:** the autonomous decision takes the sentinel's last decided verification as a
+    required fact with no default (`venue_contract`), and refuses without a PASS under this code's
+    contract version, at most six hours old at the decision, naming the symbol — door
+    `venue_contract_verified`, six codes, one per thing an operator does about it. The probe refuses
+    on the same rule before its gate (`PROBE_VENUE_CONTRACT`) and at it. The board's informational
+    line became a `venue_contract` check row, and `live_entry_possible` needs it.
+  - **Why one judge:** `venue_contract.entry_refusal` is pure and is what the door, the probe gate,
+    the board and `verification_status` all call, so none of them can disagree about "usable".
+  - **Why it is judged at `clock` and read twice:** every freshness door here is judged at the moment
+    of the decision, not the fire's start, and the gate's re-read exists because another writer (the
+    fire, `--run`) can replace the record in between. The gate judges the re-read unless the first
+    read already refused, so an entry needs both.
+  - **Why a FAIL blocks every symbol:** the conservative reading of decision 46. The record says which
+    symbol a listing or leverage FAIL was about (`symbol_failures`), so narrowing it is possible — but
+    it is a relaxation, and Thomas's to decide.
+  - **Why closing never reads it:** a venue that changed is a reason to stop opening positions, never
+    to strand the open ones. Settle and protect run before the read; the testnet door is exempt, its
+    cycle being a venue answer with real orders.
+  - **What the host showed first** (candidate-902, 2026-09-19 08:43Z): PASS — -4120 with HTTP 400,
+    one-way, 5x on all five symbols, the MARKET entry accepted at `/order/test` for all five, nothing
+    left. Both take-profit LIMITs twice the band away were **accepted** while flat: the -2022
+    hypothesis was wrong (`/order/test` does not judge account state), and whether the band binds a
+    favourable-side LIMIT at all stays open. The observed checks stay observed; the algo query's
+    answer was recorded without its raw code, so it cannot become FAIL-capable yet.
+
 - **The venue contract sentinel: the exchange is asked what the runtime assumes about it**
   (crypto PR4a, Thomas decisions 43-46, 2026-09-19; `crypto/venue_contract.py`,
   `scripts/venue_contract.py`, `schemas/venue_contract_verification.v0.1.schema.json`).
@@ -54,7 +83,7 @@ Append a new entry when a milestone ships, in the same PR.
     leaves the last PASS standing rather than shutting entries. What can still shut them is an answer
     the venue gives: a symbol that is not TRADING fails its listing (recorded per symbol, for 4b to
     scope), and is re-asked on every fire until it clears.
-  - **Not yet enforced** (PR4b: the mainnet autonomous entry and the probe, decision 46), not stage
+  - **Enforced since PR4b** (the mainnet autonomous entry and the probe, decision 46; above), not stage
     evidence (decision 3), and not counted by the API breaker (decision 27's scope).
 
 - **One rule, one entry: a retired rule returns only as an approved reactivation** (crypto PR3c-2,

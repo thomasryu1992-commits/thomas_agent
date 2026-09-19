@@ -29,7 +29,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 )
 from runtime.mvp_runtime.crypto.live_position import reconcile_positions
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
-from tests._helpers import deep_order_book, healthy_optional_data
+from tests._helpers import deep_order_book, healthy_optional_data, usable_venue_contract
 
 NOW = "2026-07-25T12:00:00Z"
 
@@ -105,10 +105,11 @@ def _plan(**kw):
     """
     plan = kw.pop("plan", PLAN)
     clock = kw.pop("clock", NOW)
+    symbol = kw.pop("symbol", "BTCUSDT")
     args = dict(
         verdict=kw.pop("verdict", ALLOWING_VERDICT),
         plan=plan,
-        symbol=kw.pop("symbol", "BTCUSDT"),
+        symbol=symbol,
         reconciliation=kw.pop("reconciliation", reconcile_positions([], FLAT, now=NOW)),
         local_positions=kw.pop("local_positions", []),
         snapshot=kw.pop("snapshot", FLAT),
@@ -121,6 +122,8 @@ def _plan(**kw):
         daily_loss_breached=kw.pop("daily_loss_breached", False),
         bracket_failures_consecutive=kw.pop("bracket_failures_consecutive", 0),
         api_breaker_tripped=kw.pop("api_breaker_tripped", False),
+        # PR4b: a PASS verified at the decision's own moment, covering the decision's symbol.
+        venue_contract=kw.pop("venue_contract", usable_venue_contract([symbol], verified_at=clock)),
         # Of the bar the decision is on, as the cycle hands it (PR2d-2).
         optional_data=kw.pop("optional_data", healthy_optional_data(kw.get("entry_bar_time", BAR))),
         submitted_today=kw.pop("submitted_today", 0),
@@ -1482,7 +1485,7 @@ def _fresh(**overrides):
         execution_stage=_stage(), runtime_active=True, limits=LIMITS, budget_registered=True,
         allowed_symbols=["BTCUSDT"], live_routable_strategy_ids={"S001"}, submitted_today=0,
         daily_loss_breached=False, bracket_failures_consecutive=0, api_breaker_tripped=False,
-        risk_limits_problem=None,
+        risk_limits_problem=None, venue_contract=usable_venue_contract(["BTCUSDT"], verified_at=NOW),
     )
     fresh.update(overrides)
     return fresh
@@ -1567,7 +1570,8 @@ def test_the_guard_narrowing_changes_only_the_fields_it_names():
                    allowed_symbols=[], submitted_today=2, daily_loss_breached=True,
                    limits=LiveOrderLimits(**{**LIMITS.__dict__, "max_daily_order_count": 1}),
                    live_routable_strategy_ids=set(), bracket_failures_consecutive=5,
-                   api_breaker_tripped=True)
+                   api_breaker_tripped=True,
+                   venue_contract=usable_venue_contract(["BTCUSDT"], verified_at="2026-07-25T11:00:00Z"))
     guard_only = le.narrow_guard_facts(kwargs, moved)
     assert {key for key in kwargs if guard_only[key] != kwargs[key]} == set(le.GUARD_REREAD_FIELDS)
     entry = le.narrow_entry_facts(kwargs, moved)
@@ -1668,3 +1672,114 @@ def test_a_decision_refused_before_its_guard_carries_no_exposure_to_claim_with()
     """An unreadable account refuses before the guard, so no claim is ever made on its behalf."""
     decision = _plan(snapshot=None)
     assert decision["ready"] is False and "exposure_seen" not in decision
+
+
+# --- the venue contract door (PR4b, Thomas decision 46) -------------------------------------------
+
+from runtime.mvp_runtime.crypto import venue_contract as vc  # noqa: E402
+
+
+def _contract(**changes):
+    """A PASS verified at the decision's moment for BTCUSDT, with ``changes``."""
+    return {**usable_venue_contract(["BTCUSDT"], verified_at=NOW), **changes}
+
+
+def test_the_venue_contract_is_a_required_fact_with_no_default():
+    parameter = inspect.signature(le.plan_live_entry).parameters["venue_contract"]
+    assert parameter.default is inspect.Parameter.empty
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize("fact,code", [
+    (None, vc.ENTRY_CONTRACT_MISSING),
+    ("PASS", vc.ENTRY_CONTRACT_MISSING),
+    ({"recorded": False}, vc.ENTRY_CONTRACT_MISSING),
+    ({"recorded": True, "error": "VENUE_CONTRACT_TAMPERED"}, vc.ENTRY_CONTRACT_UNREADABLE),
+    (_contract(contract_version="binance_futures_contract.v0"), vc.ENTRY_CONTRACT_VERSION),
+    (_contract(status="FAIL", failed_checks=["position_mode"]), vc.ENTRY_CONTRACT_NOT_PASS),
+    (_contract(status="UNVERIFIED"), vc.ENTRY_CONTRACT_NOT_PASS),
+    (_contract(verified_at="2026-07-25T05:59:59Z"), vc.ENTRY_CONTRACT_STALE),
+    (_contract(verified_at="2026-07-25T12:05:01Z"), vc.ENTRY_CONTRACT_STALE),
+    (_contract(verified_at=None), vc.ENTRY_CONTRACT_STALE),
+    (_contract(verified_at="yesterday"), vc.ENTRY_CONTRACT_STALE),
+    (_contract(symbols=["ETHUSDT"]), vc.ENTRY_CONTRACT_SYMBOL),
+    (_contract(symbols=None), vc.ENTRY_CONTRACT_SYMBOL),
+    (_contract(symbols="BTCUSDT"), vc.ENTRY_CONTRACT_SYMBOL),
+], ids=["none", "not-a-mapping", "never-recorded", "damaged", "other-version", "fail", "unverified",
+        "six-hours-and-a-second", "past-the-skew", "undated", "unparseable", "other-symbol", "no-symbols",
+        "symbols-not-a-list"])
+def test_each_venue_contract_refusal_refuses_with_its_own_code(fact, code):
+    decision = _plan(venue_contract=fact)
+    assert decision["status"] == le.STATUS_REFUSED and decision["ready"] is False
+    assert decision["reasons"] == [code]
+    assert decision["venue_contract"]["reason_code"] == code
+
+
+def test_a_pass_stands_six_hours_to_the_second_and_tolerates_the_skew():
+    assert _plan(venue_contract=_contract(verified_at="2026-07-25T06:00:00Z"))["ready"] is True
+    assert _plan(venue_contract=_contract(verified_at="2026-07-25T12:05:00Z"))["ready"] is True
+
+
+def test_the_contract_is_judged_at_the_decision_s_clock_not_the_fire_s_start():
+    """Usable at the fire's ``now``, six hours old by the moment the decision judges: refused, as
+    every freshness door here is judged at ``clock``."""
+    decision = _plan(now="2026-07-25T11:59:30Z", clock=NOW,
+                     venue_contract=_contract(verified_at="2026-07-25T05:59:45Z"))
+    assert decision["reasons"] == [vc.ENTRY_CONTRACT_STALE]
+
+
+def test_the_symbol_is_matched_as_the_budget_matches_it():
+    assert _plan(venue_contract=_contract(symbols=[" btcusdt ", "ETHUSDT"]))["ready"] is True
+
+
+def test_the_contract_door_accumulates_with_the_other_cheap_doors():
+    decision = _plan(venue_contract=None, api_breaker_tripped=True)
+    assert set(decision["reasons"]) == {le.API_BREAKER_REFUSED, vc.ENTRY_CONTRACT_MISSING}
+
+
+def test_the_venue_contract_door_names_every_code_the_judge_emits():
+    assert dict(le.ENTRY_DOORS)["venue_contract_verified"] == vc.ENTRY_CONTRACT_CODES
+    assert len(vc.ENTRY_CONTRACT_CODES) == 6
+
+
+def test_the_gate_names_the_contract_door_and_seals_which_verification_backed_the_order():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=kwargs,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert "venue_contract_verified" in {c["check"] for c in snapshot["checks"]}
+    sealed = snapshot["facts"]["venue_contract"]
+    assert (sealed["status"], sealed["verified_at"], sealed["symbols"], sealed["record_sha256"]) == (
+        "PASS", NOW, ["BTCUSDT"], "sha256:" + "c" * 64)
+
+
+@pytest.mark.parametrize("fresh_fact", [
+    _contract(status="FAIL", failed_checks=["exchange_info"]),
+    {"recorded": True, "error": "VENUE_CONTRACT_TAMPERED"},
+    {"recorded": False},
+    _contract(symbols=["ETHUSDT"]),
+    None,
+], ids=["failed-since", "damaged-since", "gone-since", "no-longer-covers", "unread"])
+def test_a_contract_that_stopped_backing_the_entry_since_the_first_read_fails_the_gate(fresh_fact):
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    decision = le.plan_live_entry(**kwargs)
+    assert decision["ready"] is True
+    narrowed = le.narrow_entry_facts(kwargs, _fresh(venue_contract=fresh_fact))
+    snapshot = le.gate_live_entry(decision["intent"], bracket=decision["bracket"], decision_kwargs=narrowed,
+                                  profile=_gate_profile(), now=NOW)
+    assert snapshot["approved"] is False
+    assert "venue_contract_verified" in snapshot["failed_checks"]
+
+
+def test_a_first_read_that_refused_is_kept_whatever_the_re_read_says():
+    kwargs = {**_decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage()),
+              "venue_contract": _contract(symbols=["ETHUSDT"])}
+    assert le.narrow_entry_facts(kwargs, _fresh())["venue_contract"] == _contract(symbols=["ETHUSDT"])
+
+
+def test_a_re_read_that_carries_no_contract_narrows_to_a_refusal():
+    kwargs = _decision_kwargs(plan=_plan_with_lineage(), execution_stage=_stage())
+    fresh = _fresh()
+    del fresh["venue_contract"]
+    assert le.narrow_entry_facts(kwargs, fresh)["venue_contract"] is None

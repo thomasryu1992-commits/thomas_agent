@@ -73,6 +73,10 @@ from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
 from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE, narrow_guard_facts  # noqa: E402
 from runtime.mvp_runtime.crypto.live_route import reread_entry_facts  # noqa: E402
+from runtime.mvp_runtime.crypto.venue_contract import (  # noqa: E402
+    entry_fact as read_venue_contract,
+    entry_refusal as venue_contract_refusal,
+)
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
@@ -674,6 +678,16 @@ def run_fire(
             f"the API error breaker cannot record this fire ({', '.join(adapter.unrecorded)}); "
             "nothing was sent",
         )
+    # PR4b (Thomas decision 46): a probe is a mainnet entry, decided on the venue contract sentinel's
+    # usable PASS like an autonomous one. Refused here, beside the breakers, so the refusal names it;
+    # the gate below judges the re-read again at its own clock.
+    contract_refusal = venue_contract_refusal(read_venue_contract(root), symbol=symbol, at=now)
+    if contract_refusal is not None:
+        raise _Refusal(
+            probe.PROBE_VENUE_CONTRACT,
+            f"the venue contract does not back a probe on {symbol} ({contract_refusal['reason_code']}); "
+            "see: python -m scripts.venue_contract --show",
+        )
     readable, _excluded = live_outcomes_for_analysis(read_live_outcomes(root))
     risk_limits = resolve_risk_limits(root, now=now)
     guard_verdict = run_risk_guard(readable, now=now, limits=risk_limits)
@@ -785,6 +799,8 @@ def run_fire(
         # must leave within a minute of this judgment.
         account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
         order_book=order_book,
+        # PR4b: the verification the re-read found, judged at the gate's clock.
+        venue_contract=fresh["venue_contract"],
     )
     if not snapshot_record["approved"]:
         raise _Refusal(

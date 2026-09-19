@@ -33,7 +33,8 @@ from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_order import LIVE_CONFIRMATION_PHRASE, LiveOrderLimits
 from runtime.mvp_runtime.errors import ToolError
 from tests._helpers import (
-    deep_order_book, gate_stage, healthy_optional_data, live_arm_approval, stamped_pool_entry,
+    deep_order_book, gate_stage, healthy_optional_data, live_arm_approval, record_venue_contract,
+    stamped_pool_entry, usable_venue_contract,
 )
 
 NOW = "2026-07-28T00:00:00Z"
@@ -1295,6 +1296,10 @@ def _wire_whole_leg(tmp_path, monkeypatch, venue, *, approval=_ARM, armed_entry=
         "valid": True, "symbol_allowlist": [SYMBOL],
         "budget_id": "budget_pr2a", "record_sha256": "sha256:" + "b" * 64}))
     monkeypatch.setattr(live_route, "resolve_execution_stage", lambda root=None, **kw: gate_stage())
+    # The venue contract both reads find (PR4b): a PASS verified at the pass's own clock. The tests
+    # that read a real record put one in the root and undo this.
+    monkeypatch.setattr(live_route, "read_venue_contract",
+                        lambda root=None: usable_venue_contract([SYMBOL], verified_at=clock["now"]))
     monkeypatch.setattr(live_route, "build_entry_plan",
                         lambda route, row, now: {**_PLAN, "created_at_utc": now})
     filters = SymbolFilters(step_size=0.001, min_qty=0.001, min_notional=5.0, tick_size=0.1)
@@ -2933,3 +2938,87 @@ def test_through_the_fire_memo_a_book_read_early_in_the_fire_is_read_again(tmp_p
     opened = run("2026-07-28T04:05:00Z", BAR_00)
     assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
     assert reads == [SYMBOL, SYMBOL]
+
+
+# --- the venue contract (PR4b, Thomas decision 46) ------------------------------------------------
+
+def _real_contract_reader(monkeypatch):
+    """Undo the wiring's stub: both reads go through the doors' own reader to the record in the root."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    monkeypatch.setattr(live_route, "read_venue_contract", vc.entry_fact)
+
+
+def test_a_recorded_venue_contract_fail_holds_the_entry_and_sends_nothing(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _real_contract_reader(monkeypatch)
+    record_venue_contract(tmp_path, [SYMBOL], verified_at="2026-07-28T04:00:00Z", failed=("position_mode",))
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert held["live_decision"]["reasons"] == [vc.ENTRY_CONTRACT_NOT_PASS]
+    assert vc.ENTRY_CONTRACT_NOT_PASS in held["live_reason_codes"]
+    assert held["live_venue_contract"]["status"] == "FAIL"
+    assert venue.entries() == []
+
+
+def test_no_recorded_contract_holds_the_entry(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _real_contract_reader(monkeypatch)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_decision"]["reasons"] == [vc.ENTRY_CONTRACT_MISSING]
+    assert held["live_venue_contract"] == {"recorded": False, "error": None, "status": None,
+                                           "verified_at": None, "contract_version": None}
+    assert venue.entries() == []
+
+
+def test_a_recorded_pass_lets_the_same_entry_through_and_the_gate_reads_it_again(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _real_contract_reader(monkeypatch)
+    record_venue_contract(tmp_path, [SYMBOL], verified_at="2026-07-28T04:00:00Z")
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    assert opened["live_venue_contract"]["status"] == "PASS"
+    assert opened["live_pre_order_reread"]["venue_contract"]["verified_at"] == "2026-07-28T04:00:00Z"
+    assert len(venue.entries()) == 1
+
+
+def test_a_contract_that_failed_between_the_reads_is_refused_by_the_gate(tmp_path, monkeypatch):
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    reads: list = []
+
+    def _read(root=None):
+        reads.append(root)
+        fact = usable_venue_contract([SYMBOL], verified_at="2026-07-28T04:00:00Z")
+        return fact if len(reads) == 1 else {**fact, "status": "FAIL", "failed_checks": ["exchange_info"]}
+
+    monkeypatch.setattr(live_route, "read_venue_contract", _read)
+    held = run("2026-07-28T04:05:00Z", BAR_00)
+    assert held["live_route_status"] == live_route.ROUTE_HELD
+    assert live_route.PRE_ORDER_GATE_REFUSED in held["live_reason_codes"]
+    assert "venue_contract_verified" in held["live_pre_order_gate"]["failed_checks"]
+    assert held["live_pre_order_reread"]["venue_contract"]["status"] == "FAIL"
+    assert venue.entries() == [] and len(reads) == 2
+
+
+def test_a_failed_contract_never_keeps_an_open_position_from_settling(tmp_path, monkeypatch):
+    """Decision 46 gates opening only: the position a PASS let open settles after a FAIL."""
+    venue = _Venue()
+    run = _wire_whole_leg(tmp_path, monkeypatch, venue)
+    _real_contract_reader(monkeypatch)
+    record_venue_contract(tmp_path, [SYMBOL], verified_at="2026-07-28T04:00:00Z")
+    opened = run("2026-07-28T04:05:00Z", BAR_00)
+    assert opened["live_route_status"] == live_route.ROUTE_OPENED, opened["live_reason_codes"]
+    record_venue_contract(tmp_path, [SYMBOL], verified_at="2026-07-28T04:15:00Z",
+                          failed=("conditional_type_refused_on_order_api",))
+    _stop_fills(venue, tmp_path)
+    settled = run("2026-07-28T04:20:00Z", BAR_00)
+    assert settled["live_route_status"] == live_route.ROUTE_SETTLED
+    assert settled["live_settled"]["outcome"]["close_reason"] == "stop_loss"

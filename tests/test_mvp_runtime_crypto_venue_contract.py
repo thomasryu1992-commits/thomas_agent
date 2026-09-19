@@ -750,23 +750,25 @@ def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_pa
     _write_snapshot(tmp_path)
     _refresh(tmp_path, _Adapter(hedge=True))
     board = live_readiness._venue_contract(tmp_path, now="2026-09-19T07:20:00Z")
-    line = live_readiness._venue_contract_line({"venue_contract": board})
-    assert "FAIL (failed: position_mode)" in line and "not usable" in line and "last attempt" in line
+    detail = live_readiness._venue_contract_detail(board, uncovered=[])
+    assert "FAIL (failed: position_mode)" in detail and "not usable" in detail and "last attempt" in detail
+    assert "every mainnet entry is refused" in detail
     data = live_readiness.readiness_data({"venue_contract": board})["venue_contract"]
     assert (data["usable"], data["status"], data["failed_checks"], data["symbols"]) == (
         False, "FAIL", ["position_mode"], SYMBOLS)
     vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
-    assert "UNREADABLE - VENUE_CONTRACT_UNREADABLE" in live_readiness._venue_contract_line(
-        {"venue_contract": live_readiness._venue_contract(tmp_path, now=NOW)})
-    assert "none recorded" in live_readiness._venue_contract_line({})
+    assert "UNREADABLE (VENUE_CONTRACT_UNREADABLE)" in live_readiness._venue_contract_detail(
+        live_readiness._venue_contract(tmp_path, now=NOW), uncovered=[])
+    assert "none recorded" in live_readiness._venue_contract_detail({}, uncovered=[])
 
 
-def test_the_rendered_board_carries_the_line(tmp_path):
+def test_the_rendered_board_carries_the_row(tmp_path):
+    """PR4b: a check row, and a failing one while nothing is recorded — the doors refuse on it."""
     from runtime.mvp_runtime.crypto import live_readiness
 
     text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
     line = next(row for row in text.splitlines() if "venue_contract" in row)
-    assert "none recorded" in line
+    assert line.startswith("[FAIL] venue_contract") and "none recorded" in line
 
 
 def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector_about_hourly(tmp_path, monkeypatch):
@@ -837,3 +839,61 @@ def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys,
 
     monkeypatch.setattr(cli, "assert_not_foreign_root_run", refuse)
     assert cli.main(["--run", "--root", str(tmp_path)]) == 2
+
+
+# --- the entry doors' reading (PR4b, Thomas decision 46) ----------------------------------------
+
+def test_entry_fact_carries_the_judged_fields_and_never_raises(tmp_path, monkeypatch):
+    from tests._helpers import record_venue_contract
+
+    assert vc.entry_fact(tmp_path) == {"recorded": False}
+    record = record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    assert vc.entry_fact(tmp_path) == {"recorded": True, **{f: record[f] for f in vc.ENTRY_FACT_FIELDS}}
+    vc.contract_path(tmp_path).write_text(json.dumps({**record, "symbols": ["DOGEUSDT"]}), encoding="utf-8")
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": vc.VENUE_CONTRACT_TAMPERED}
+    vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": vc.VENUE_CONTRACT_UNREADABLE}
+
+    def _broken(root=None):
+        raise RuntimeError("scripted")
+
+    monkeypatch.setattr(vc, "read_verification", _broken)
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": "RuntimeError"}
+
+
+def test_entry_refusal_names_the_first_reason_in_a_fixed_order():
+    fact = {"recorded": True, "status": "FAIL", "contract_version": "binance_futures_contract.v0",
+            "verified_at": None, "symbols": [], "failed_checks": ["exchange_info"]}
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_VERSION
+    fact["contract_version"] = vc.CONTRACT_VERSION
+    refusal = vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)
+    assert (refusal["reason_code"], refusal["failed_checks"]) == (vc.ENTRY_CONTRACT_NOT_PASS, ["exchange_info"])
+    fact["status"] = vc.STATUS_PASS
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_STALE
+    fact["verified_at"] = NOW
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_SYMBOL
+    assert vc.entry_refusal(fact, symbol=None, at=NOW) is None, "the board judges the record alone"
+    fact["symbols"] = ["BTCUSDT"]
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW) is None
+    assert vc.entry_refusal(fact, symbol="", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_SYMBOL
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=None)["reason_code"] == vc.ENTRY_CONTRACT_STALE
+
+
+@pytest.mark.parametrize("failed,at,usable", [
+    ((), NOW, True),
+    (("position_mode",), NOW, False),
+    ((), "2026-09-19T13:10:00Z", True),
+    ((), "2026-09-19T13:10:01Z", False),
+    ((), "2026-09-19T07:04:59Z", False),
+], ids=["pass", "fail", "six-hours", "six-hours-and-a-second", "dated-past-the-skew"])
+def test_the_board_and_the_doors_judge_with_one_function(tmp_path, failed, at, usable):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW, failed=failed)
+    assert vc.verification_status(tmp_path, now=at)["usable"] is usable
+    assert (vc.entry_refusal(vc.entry_fact(tmp_path), symbol=None, at=at) is None) is usable
+
+
+def test_an_age_is_never_an_exception():
+    for stamp, now in ((NOW, None), (None, NOW), ("yesterday", NOW), (NOW, "tomorrow"), (NOW, 7)):
+        assert vc._age_seconds(stamp, now) is None

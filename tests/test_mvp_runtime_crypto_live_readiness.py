@@ -92,7 +92,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "api_breaker", "entry_marks", "pre_order_snapshots",
         "account_visibility", "market_data_visibility", "order_path_implemented",
-        "autonomous_routing_wired", "execution_stage",
+        "autonomous_routing_wired", "execution_stage", "venue_contract",
     }
 
 
@@ -1036,7 +1036,7 @@ def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_en
 # the four facts apart as fields, so a consumer never derives one from the prose of another.
 
 def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, gate_open=True,
-                     gate_stale=False, stage_admits=True):
+                     gate_stale=False, stage_admits=True, contract_usable=True):
     return {
         "created_at": NOW,
         "ready": ready,
@@ -1058,6 +1058,8 @@ def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, 
         "execution_stage": {"stage": "LIVE_AUTONOMOUS" if stage_admits else "READ_ONLY",
                             "valid": stage_admits, "reason_code": None if stage_admits else "X",
                             "enforced": True, "admits_entry": stage_admits},
+        "venue_contract": {"error": None, "recorded": True, "status": "PASS" if contract_usable else "FAIL",
+                           "usable": contract_usable, "symbols": ["BTCUSDT"]},
     }
 
 
@@ -1079,6 +1081,13 @@ def test_a_stage_below_the_rung_the_doors_admit_means_no_entry(tmp_path):
     data = live_readiness.readiness_data(_status_for_view(armed=1, stage_admits=False))
     assert data["live_entry_possible"] is False
     assert data["execution_stage"]["admits_entry"] is False
+
+
+def test_a_venue_contract_the_doors_refuse_on_means_no_entry():
+    """PR4b: however armed, open and staged, an entry is decided on a usable venue contract PASS."""
+    data = live_readiness.readiness_data(_status_for_view(armed=1, contract_usable=False))
+    assert data["live_entry_possible"] is False
+    assert data["venue_contract"]["usable"] is False and data["venue_contract"]["status"] == "FAIL"
 
 
 def test_a_stale_or_closed_recorded_gate_means_no_entry_and_says_which():
@@ -1227,3 +1236,52 @@ def test_an_unreadable_api_breaker_turns_the_board_red(tmp_path, clean_env):
     row = _api_row(tmp_path)
     assert row["ok"] is False
     assert "UNREADABLE (LIVE_API_BREAKER_UNREADABLE)" in row["detail"]
+
+
+# --- the venue contract row (PR4b, Thomas decision 46) -------------------------------------------
+
+def _contract_row(root):
+    status = live_readiness.build_readiness(root=root, now=NOW)
+    return next(c for c in status["checks"] if c["check"] == "venue_contract"), status
+
+
+def test_a_usable_pass_covering_the_budget_passes_the_row(tmp_path, clean_env):
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT", "ETHUSDT"))
+    record_venue_contract(tmp_path, ["BTCUSDT", "ETHUSDT"], verified_at=NOW)
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is True and "PASS at 2026-07-23T12:00:00Z, 0m old - usable" in row["detail"]
+    assert status["venue_contract"]["usable"] is True
+
+
+def test_a_budget_symbol_the_pass_did_not_cover_fails_the_row_and_names_it(tmp_path, clean_env):
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT", "ETHUSDT"))
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is False and "but not for ETHUSDT" in row["detail"]
+
+
+@pytest.mark.parametrize("state,text", [
+    ("fail", "FAIL (failed: position_mode)"),
+    ("stale", "STALE"),
+    ("damaged", "UNREADABLE (VENUE_CONTRACT_UNREADABLE)"),
+    ("missing", "none recorded"),
+], ids=["fail", "stale", "damaged", "missing"])
+def test_a_contract_the_doors_refuse_on_fails_the_row_and_says_entries_are_refused(tmp_path, clean_env, state, text):
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path)
+    if state == "fail":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW, failed=("position_mode",))
+    elif state == "stale":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-23T05:59:59Z")
+    elif state == "damaged":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+        vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is False and status["ready"] is False
+    assert text in row["detail"] and "every mainnet entry is refused" in row["detail"]

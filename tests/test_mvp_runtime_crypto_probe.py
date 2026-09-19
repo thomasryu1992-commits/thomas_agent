@@ -35,7 +35,7 @@ from runtime.mvp_runtime.crypto.live_order import (
 from runtime.mvp_runtime.crypto.live_pnl import build_live_outcome_record
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError, ToolError
-from tests._helpers import FakeSnapshotStore, deep_order_book, requires_local_core
+from tests._helpers import FakeSnapshotStore, deep_order_book, requires_local_core, usable_venue_contract
 
 NOW = timeutil.utc_now_iso()
 
@@ -627,6 +627,10 @@ def _arm_limits(monkeypatch, *, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
         **(_STAGE_IDS if stage_valid else {}))
     _stub_both(monkeypatch, "resolve_live_order_limits", budget)
     _stub_both(monkeypatch, "resolve_execution_stage", stage_status)
+    # The venue contract both reads find (PR4b): a PASS verified at the moment it is read, for the
+    # budget's symbols. Its own refusals have their tests below.
+    _stub_both(monkeypatch, "read_venue_contract",
+               lambda root=None: usable_venue_contract(symbols, verified_at=timeutil.utc_now_iso()))
     return limits
 
 
@@ -976,6 +980,8 @@ def test_fire_returns_the_cell_when_the_stop_will_not_rest(tmp_path, monkeypatch
     _stub_both(monkeypatch, "resolve_execution_stage", lambda root=None, **kw: es.StageStatus(
         stage="LIVE_AUTONOMOUS", valid=True, reason_code=None, recorded_stage="LIVE_AUTONOMOUS",
         **_STAGE_IDS))
+    _stub_both(monkeypatch, "read_venue_contract", lambda root=None: usable_venue_contract(
+        ["BTCUSDT", "ETHUSDT", "SOLUSDT"], verified_at=timeutil.utc_now_iso()))
     monkeypatch.setattr(cli, "read_account", lambda **k: (_snapshot(), {}))
     _stub_both(monkeypatch, "live_risk_snapshot", lambda **k: {
         "daily_loss_limit_breached": False, "daily_realized_pnl_usdt": 0.0,
@@ -1353,6 +1359,8 @@ def _gate_facts(plan, **overrides):
         account_collected_at=NOW, clock=NOW,
         # PR2d-3: a deep book read at NOW.
         order_book=deep_order_book(price, received_at=NOW),
+        # PR4b: a PASS verified at NOW for the probe's symbol.
+        venue_contract=usable_venue_contract(["BTCUSDT"], verified_at=NOW),
     )
     facts.update(overrides)
     return intent, facts
@@ -1387,8 +1395,17 @@ def test_the_probe_gate_approves_the_probe_the_facts_price(tmp_path):
     ({"cell_index": 7}, "probe_cell_open_for_this_order"),
     ({"cell_index": 99}, "probe_cell_open_for_this_order"),
     ({"price": 90000.0}, "intent_matches_decision"),
+    # PR4b: the venue contract as the re-read found it, judged at the gate's clock for the symbol.
+    ({"venue_contract": None}, "venue_contract_verified"),
+    ({"venue_contract": {"recorded": False}}, "venue_contract_verified"),
+    ({"venue_contract": {**usable_venue_contract(["BTCUSDT"], verified_at=NOW), "status": "FAIL",
+                         "failed_checks": ["position_mode"]}}, "venue_contract_verified"),
+    ({"venue_contract": usable_venue_contract(["BTCUSDT"], verified_at="2026-07-25T05:59:59Z")},
+     "venue_contract_verified"),
+    ({"venue_contract": usable_venue_contract(["ETHUSDT"], verified_at=NOW)}, "venue_contract_verified"),
 ], ids=["loss", "breaker", "api-breaker", "api-breaker-unknown", "risk-guard", "ceiling", "account",
-        "symbol", "other-cell", "no-cell", "repriced"])
+        "symbol", "other-cell", "no-cell", "repriced", "contract-unread", "contract-missing",
+        "contract-fail", "contract-stale", "contract-other-symbol"])
 def test_the_probe_gate_re_derives_every_refusal(tmp_path, overrides, check_id):
     plan = _active_plan(tmp_path)
     intent, facts = _gate_facts(plan, **overrides)
@@ -2817,3 +2834,83 @@ def test_a_book_the_fire_cannot_read_is_none_and_says_so(monkeypatch, capsys):
     monkeypatch.setattr(cli, "select_market_data_collector", lambda now=None, root=None: collector)
     assert cli._read_book("BTCUSDT", now=NOW, root=None, timeout_seconds=3) is None
     assert "BOOK      : unreadable (RuntimeError)" in capsys.readouterr().err
+
+
+# === the venue contract (PR4b, Thomas decision 46) =====================================
+
+def test_the_probe_gate_takes_the_venue_contract_with_no_default():
+    import inspect
+
+    assert inspect.signature(probe.gate_probe_order).parameters["venue_contract"].default is inspect.Parameter.empty
+
+
+def test_the_probe_gate_seals_which_verification_backed_it(tmp_path):
+    plan = _active_plan(tmp_path)
+    intent, facts = _gate_facts(plan)
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is True, snapshot["failed_checks"]
+    assert "venue_contract_verified" in {c["check"] for c in snapshot["checks"]}
+    sealed = snapshot["facts"]["venue_contract"]
+    assert (sealed["status"], sealed["verified_at"], sealed["symbols"]) == ("PASS", NOW, ["BTCUSDT"])
+
+
+@pytest.mark.parametrize("fact,code", [
+    ({"recorded": False}, "LIVE_ENTRY_VENUE_CONTRACT_MISSING"),
+    ({"recorded": True, "error": "VENUE_CONTRACT_TAMPERED"}, "LIVE_ENTRY_VENUE_CONTRACT_UNREADABLE"),
+    ({"recorded": True, "status": "FAIL", "contract_version": "binance_futures_contract.v1",
+      "verified_at": "2026-07-25T12:00:00Z", "symbols": ["BTCUSDT"], "failed_checks": ["exchange_info"]},
+     "LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS"),
+], ids=["missing", "damaged", "fail"])
+def test_fire_refuses_without_a_usable_venue_contract_and_touches_nothing(tmp_path, monkeypatch, fact, code):
+    """A probe is a mainnet entry (decision 46): refused beside the breakers, before any venue call."""
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
+    _stub_both(monkeypatch, "read_venue_contract", lambda root=None: fact)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_VENUE_CONTRACT
+    assert code in str(exc.value) and "scripts.venue_contract --show" in str(exc.value)
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_fire_refuses_a_contract_that_did_not_cover_its_symbol(tmp_path, monkeypatch):
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
+    _stub_both(monkeypatch, "read_venue_contract",
+               lambda root=None: usable_venue_contract(["ETHUSDT"], verified_at=timeutil.utc_now_iso()))
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_VENUE_CONTRACT
+    assert "LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED" in str(exc.value)
+
+
+def test_a_contract_that_fails_before_the_gate_refuses_the_probe(tmp_path, monkeypatch):
+    """The gate judges its re-read: a FAIL recorded after the fire's own read refuses there, and
+    nothing is sent."""
+    adapter = _HappyPathAdapter()
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, adapter)
+    reads: list = []
+
+    def _read(root=None):
+        reads.append(root)
+        fact = usable_venue_contract(["BTCUSDT", "ETHUSDT", "SOLUSDT"], verified_at=timeutil.utc_now_iso())
+        return fact if len(reads) == 1 else {**fact, "status": "FAIL", "failed_checks": ["position_mode"]}
+
+    _stub_both(monkeypatch, "read_venue_contract", _read)
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_PRE_ORDER_GATE_REFUSED
+    assert "venue_contract_verified" in str(exc.value)
+    assert adapter.submitted == [] and len(reads) == 2
+
+
+def test_the_fire_reads_a_real_record_through_the_door_s_own_reader(tmp_path, monkeypatch):
+    """Not a stub: the record the sentinel writes, read by `venue_contract.entry_fact` at both reads."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
+    _stub_both(monkeypatch, "read_venue_contract", vc.entry_fact)
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=timeutil.utc_now_iso(), failed=("position_mode",))
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_VENUE_CONTRACT
+    assert "LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS" in str(exc.value)

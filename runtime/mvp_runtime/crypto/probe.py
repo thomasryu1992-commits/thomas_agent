@@ -159,6 +159,9 @@ PROBE_DAILY_LOSS_BREAKER = "PROBE_DAILY_LOSS_BREAKER"
 PROBE_BRACKET_BREAKER = "PROBE_BRACKET_BREAKER"
 # The API error breaker is tripped (PR2d-1): nothing is sent until an operator clears it.
 PROBE_API_BREAKER = "PROBE_API_BREAKER"
+# The venue contract sentinel's last decided verification does not back this probe (PR4b, Thomas
+# decision 46): none, damaged, another contract version, a FAIL, stale, or silent on the symbol.
+PROBE_VENUE_CONTRACT = "PROBE_VENUE_CONTRACT"
 PROBE_RISK_GUARD_BLOCKED = "PROBE_RISK_GUARD_BLOCKED"
 PROBE_GUARD_REFUSED = "PROBE_GUARD_REFUSED"
 PROBE_FILTERS_UNAVAILABLE = "PROBE_FILTERS_UNAVAILABLE"
@@ -698,6 +701,9 @@ def gate_probe_order(
     # The order book the probe read just before this gate (PR2d-3, decision 29), or None when the
     # read failed. No default: the probe crosses the book like any entry.
     order_book: Mapping[str, Any] | None,
+    # The venue contract as the gate's re-read found it (PR4b, decision 46; `venue_contract.entry_fact`).
+    # No default, and None refuses: a probe is a mainnet entry and is decided on the autonomous rule.
+    venue_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
@@ -707,7 +713,8 @@ def gate_probe_order(
     dislocation bound, deep enough to fill the order at no more than the cost model's slippage,
     PR2d-3), the notional the approval priced, and the order
     itself — rebuilt from the plan's own stop width and judged by the live guard again in canary
-    mode. The intent about to be sent must be the rebuilt one."""
+    mode, and the venue contract sentinel's PASS, as an autonomous entry needs it (PR4b). The intent
+    about to be sent must be the rebuilt one."""
     from .execution_stage import PURPOSE_PROBE
     from .live_entry import (
         MAX_ENTRY_SLIPPAGE_BPS, MAX_ENTRY_SPREAD_BPS, MAX_ORDER_BOOK_AGE_SECONDS, order_book_fresh,
@@ -720,11 +727,13 @@ def gate_probe_order(
     from .live_position import entry_allowed
     from .pre_order_gate import check, evaluate_pre_order_gate, intent_fingerprint
     from .state import VENUE_MAINNET
+    from .venue_contract import ENTRY_FACT_FIELDS, entry_refusal as venue_contract_refusal
 
     params = plan.get("params") if isinstance(plan.get("params"), Mapping) else {}
     cells = plan.get("cells") if isinstance(plan.get("cells"), list) else []
     cell = cells[cell_index] if isinstance(cell_index, int) and 0 <= cell_index < len(cells) else None
     symbol = str(intent.get("symbol") or "")
+    contract_refusal = venue_contract_refusal(venue_contract, symbol=symbol, at=clock)
     checks = [
         check("probe_plan_active", plan.get("status") == PLAN_ACTIVE, plan.get("status")),
         check("probe_cell_open_for_this_order",
@@ -746,6 +755,8 @@ def gate_probe_order(
               {key: breaker.get(key) for key in ("consecutive", "limit")}),
         check("api_breaker_clear", api_breaker.get("tripped") is False,
               {key: api_breaker.get(key) for key in ("consecutive", "limit", "tripped_class")}),
+        # Judged at this gate's clock, for this symbol: the autonomous door's rule (PR4b).
+        check("venue_contract_verified", contract_refusal is None, contract_refusal),
         check("risk_guard_allows", bool(risk_verdict.get("allow_new_position")),
               list(risk_verdict.get("problems") or [])),
     ]
@@ -807,6 +818,9 @@ def gate_probe_order(
         "runtime_active": guard_kwargs.get("runtime_active"),
         "account_collected_at": account_collected_at,
         "clock": clock,
+        # Which verification backed the probe (PR4b); the record keeps the checks.
+        "venue_contract": ({field: venue_contract.get(field) for field in ("recorded", "error", *ENTRY_FACT_FIELDS)}
+                           if isinstance(venue_contract, Mapping) else None),
     }
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_PROBE, venue=VENUE_MAINNET, checks=checks,
