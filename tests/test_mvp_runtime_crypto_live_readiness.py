@@ -10,6 +10,7 @@ verified reader of the frozen registry is tested in `test_mvp_runtime_canary_evi
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -1103,6 +1104,28 @@ def test_an_unknown_fact_answers_none_never_a_guess():
     assert pool_unreadable["live_armed_strategies"]["error"] == "POOL_UNREADABLE"
     no_cycle = live_readiness.readiness_data(_status_for_view(armed=1, gate_known=False))
     assert no_cycle["live_entry_possible"] is None and no_cycle["recorded_gate"]["known"] is False
+
+
+def test_live_entry_possible_is_the_four_fields_the_read_shim_names():
+    """The assistant is told `live_entry_possible` is four `[data]` fields and nothing else
+    (`trading_readiness` in integrations/hermes/mcp/read_bridge_mcp.py). It was told two while the
+    stage (PR1b) and the venue contract (PR4b) joined the value, and explained a `false` without
+    either (shims 2.11). A status carrying only those four must read True, so a fifth condition
+    fails here, and its author updates the description in the same change."""
+    four = {
+        "live_armed_strategies": {"known": True, "armed": 1},
+        "recorded_gate": {"known": True, "open": True, "stale": False},
+        "execution_stage": {"admits_entry": True},
+        "venue_contract": {"usable": True},
+    }
+    assert live_readiness.readiness_data(four)["live_entry_possible"] is True
+    shim = Path(__file__).resolve().parents[1] / "integrations" / "hermes" / "mcp" / "read_bridge_mcp.py"
+    tool = next(node for node in ast.parse(shim.read_text(encoding="utf-8")).body
+                if isinstance(node, ast.FunctionDef) and node.name == "trading_readiness")
+    description = ast.get_docstring(tool) or ""
+    for field in ("live_armed_strategies.armed", "recorded_gate", "execution_stage.admits_entry",
+                  "venue_contract.usable"):
+        assert f"`{field}`" in description, field
 
 
 def test_the_view_carries_the_boards_instant_and_is_json_safe():

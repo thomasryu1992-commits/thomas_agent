@@ -28,6 +28,14 @@ v2.3 (2026-09-14, sequence 2 P02): the reads whose numbers must not travel witho
 the reply's structured `data` as one `[data]` line after the board. Until now the shim dropped
 `data` on the floor and the model re-parsed prose (the 2026-09-13 review: `ready` read as
 "live trading is on" with zero armed strategies). Capped, so a large view cannot crowd the reply.
+
+v2.11 (2026-09-19): `trading_readiness` defined `live_entry_possible` as armed > 0 AND gate open
+AND not stale, and `readiness_data` had since added the execution stage (crypto PR1b) and the
+venue contract (PR4b), so a `false` was explained without either. The description now names the
+four `[data]` fields the value is computed from, not `checks` rows: the `venue_contract` row also
+fails on a budget symbol the PASS does not cover, and rows such as `trading_armed` refuse entries
+without being part of the value. A list can go stale again, so a runtime test
+(`test_live_entry_possible_is_the_four_fields_the_read_shim_names`) fails when a fifth joins.
 """
 
 from __future__ import annotations
@@ -67,12 +75,14 @@ def trading_status() -> str:
 def trading_readiness() -> str:
     """Live-trading readiness board — call it fresh every time. Every gate between this machine
     and a live order, today's realized P&L against the limit. Rendered in YOUR container: env
-    rows always FAIL here; read the conclusion from `live_gate_recorded` and
-    `live_armed_strategies`, and never say live trading is disabled because of an env row.
+    rows always FAIL here, so never say live trading is disabled because of one; the trading
+    process's own gate is `live_gate_recorded`.
     The `[data]` line keeps four things apart — say which one you mean: `infrastructure_ready`
     (this process's checks), `live_armed_strategies.armed`, `recorded_gate` (with `stale`), and
-    `live_entry_possible` (armed > 0 AND gate open AND not stale; `null` = unknown). `ready`
-    alone never means "live trading is on"."""
+    `live_entry_possible` (`live_armed_strategies.armed` > 0, `recorded_gate` open and not
+    stale, `execution_stage.admits_entry` and `venue_contract.usable` — these four and nothing
+    else; `null` = armed count or gate unknown). If it is `false`, quote each one that fails.
+    `ready` alone never means "live trading is on"."""
     return _ask("crypto_readiness", with_data=True)
 
 
