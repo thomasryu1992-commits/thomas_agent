@@ -1275,25 +1275,86 @@ def test_every_write_under_a_halt_leaves_the_arm_down_on_disk(tmp_path, halt_gra
     assert (raw["trading_armed"], raw["halt_level"]) == (False, control.HALT_HARD)
 
 
-def test_a_hard_halt_kept_from_a_corrupt_file_says_no_operator_placed_it(tmp_path, halt_granted):
+_KEPT_NOTE = "halt kept from a control state recovered after its file was lost or unreadable"
+
+
+def _corrupt(tmp_path):
     store = ControlStore(tmp_path)
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text("{damaged", encoding="utf-8")
+    return store
+
+
+def test_a_hard_halt_kept_from_a_corrupt_file_says_where_it_came_from(tmp_path, halt_granted):
+    store = _corrupt(tmp_path)
     out = control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW,
                                 reason="resume runtime [approval apv_x]", resume_arms=False)
     state = store.load()
     assert (state.mode, state.halt_level) == (ACTIVE, control.HALT_HARD)
-    assert "fail-closed control state; no operator placed it" in state.reason
-    assert "no operator placed it" in out["reply"]
+    assert f"[HARD {_KEPT_NOTE}]" in state.reason
+    assert "The HARD halt was kept from a control state recovered" in out["reply"]
 
 
-def test_recovery_names_a_halt_nobody_wrote(tmp_path, halt_granted):
+def test_a_hard_halt_an_operator_placed_is_kept_without_the_recovered_note(tmp_path, halt_granted):
+    """The note is for a state that failed closed only: a runtime-only resume that keeps an operator's
+    own HARD says nothing about a recovered state (review of PR6a)."""
+    store = _hard(tmp_path)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW)
+    out = control.apply_command(store, control.CMD_RESUME, actor="assistant", now=NOW,
+                                reason="resume runtime [approval apv_x]", resume_arms=False)
+    state = store.load()
+    assert (state.mode, state.halt_level) == (ACTIVE, control.HALT_HARD)
+    assert "HARD halt kept" in out["reply"]
+    assert "recovered" not in state.reason and "recovered" not in out["reply"]
+
+
+def test_recovery_never_claims_who_placed_a_halt_it_did_not_read(tmp_path, halt_granted):
+    """A lost file's halt is the ledger's last event, an operator's: `/recovery` says the halt was not
+    read from a state file and names both sources, never "no operator wrote it" (review of PR6a)."""
     store = _armed(tmp_path)
     ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
-    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, arg="hard", ledger=ledger)
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="tg-12345", now=NOW, arg="hard", ledger=ledger)
+    control.apply_command(store, control.CMD_KILL, actor="tg-12345", now=NOW, ledger=ledger)
     store.path.unlink()
     text = control.recovery_lines(store.load(), None)
-    assert "halt: HARD" in text and "no operator wrote this halt" in text
+    assert "halt: HARD, kept under KILLED" in text
+    assert "not read from a state file" in text and "an operator's halt" in text
+    assert "no operator" not in text
     placed = control.recovery_lines(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="r",
                                                  trading_armed=False, halt_level=control.HALT_HARD), None)
-    assert "halt: HARD" in placed and "no operator wrote this halt" not in placed
+    assert "halt: HARD" in placed and "not read from a state file" not in placed
+
+
+def test_a_halt_that_releases_a_corrupt_kill_marks_the_level_it_kept(tmp_path, halt_granted):
+    """Releasing a corrupt-file KILLED with a halt that names no level keeps the derived HARD, and says
+    so rather than writing it as this operator's own (review of PR6a); naming the level is the
+    operator's own halt and carries no note."""
+    store = _corrupt(tmp_path)
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="tg-12345", now=NOW,
+                                arg="포지션 관리 재개", halt_may_release_stop=True)
+    state = store.load()
+    assert (state.mode, state.halt_level) == (ACTIVE, control.HALT_HARD)
+    assert state.reason == f"포지션 관리 재개 [HARD {_KEPT_NOTE}]"
+    assert "`/halt_trading soft` loosens it" in out["reply"]
+
+    named = _corrupt(tmp_path / "named")
+    out = control.apply_command(named, control.CMD_HALT_TRADING, actor="tg-12345", now=NOW,
+                                arg="hard 포지션 관리 재개", halt_may_release_stop=True)
+    state = named.load()
+    assert (state.halt_level, state.reason) == (control.HALT_HARD, "포지션 관리 재개")
+    assert "recovered" not in out["reply"]
+
+
+def test_a_soft_level_recovered_under_a_stop_is_marked_without_the_loosening_hint(tmp_path, halt_granted):
+    store = _armed(tmp_path)
+    ledger = LedgerStore(tmp_path / ".runtime_governance_state" / "runtime_ledger")
+    control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW, ledger=ledger)
+    control.apply_command(store, control.CMD_KILL, actor="op", now=NOW, ledger=ledger)
+    store.path.unlink()
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="op", now=NOW,
+                                halt_may_release_stop=True)
+    state = store.load()
+    assert (state.mode, state.halt_level) == (ACTIVE, control.HALT_SOFT)
+    assert state.reason.endswith(f"[SOFT {_KEPT_NOTE}]")
+    assert "The SOFT halt was kept from a control state recovered" in out["reply"]
+    assert "loosens" not in out["reply"]

@@ -65,7 +65,13 @@ Append a new entry when a milestone ships, in the same PR.
     - The record could hold a halt with the arm up, which `load` clamped and an older image would read
       as armed; `as_record` now writes the arm down under any halt.
     - Also: a HARD kept from a fail-closed state says so on the state a runtime-only resume writes,
-      and `/recovery` names a halt no operator wrote; an unhashable `halt_level=` is a typed refusal.
+      and `/recovery` says when a halt was not read from a state file; an unhashable `halt_level=` is
+      a typed refusal.
+    - The second round found nothing that loosens HARD. It corrected the provenance note: a lost
+      file's halt is the ledger's last event, an operator's, so "no operator placed it" was false
+      there. The note now names both sources, and releasing a corrupt-file kill with a halt that
+      names no level carries the same note. A reason that begins with `soft` is read as the level;
+      that is documented, and the reply names the change.
   - **Not in this PR:** the policy comment on the grant still describes the soft halt; it is a byte
     of the fingerprinted policy and changes with the next bump Thomas applies. The Hermes shim has no
     halt tool yet, and Telegram's `/halt_trading` still waits for a running analysis to finish (the

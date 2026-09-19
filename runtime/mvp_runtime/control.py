@@ -294,6 +294,12 @@ def _stated_reason(reason: str, arg: Any) -> str:
     return " ".join(stated.split())[:MAX_REASON_CHARS]
 
 
+# Where a halt kept from a state that failed closed came from. Neither "placed by an operator" nor
+# "placed by nobody" holds for every case: a lost file's halt is the ledger's last event, an operator's,
+# while a corrupt file or an unreadable ledger sets HARD by failing closed (review of PR6a).
+_RECOVERED_STATE = "a control state recovered after its file was lost or unreadable"
+
+
 def _halt_level_and_reason(level: str | None, arg: Any) -> tuple[str | None, Any]:
     """``(the level asked for, what is left of arg)`` for a ``halt_trading``. An explicit level wins;
     otherwise a first word of exactly ``soft`` or ``hard``, followed by any whitespace (a newline in a
@@ -432,11 +438,13 @@ def recovery_lines(state: ControlState, ledger: Any | None) -> str:
     if state.halt_level is not None:
         lines.append(f"  halt: {state.halt_level}" + ("" if state.execution_allowed else f", kept under {state.mode}"))
         # No operator writes a state without a time: this one was derived from a missing or unreadable
-        # file (review of PR6a), and the halt in it was kept rather than placed.
+        # file (review of PR6a), and the halt in it was kept rather than read from a record. Where it
+        # came from differs by case, so the note names both rather than claiming either.
         if state.updated_by == "system" and not state.updated_at:
-            lines.append("  -> no operator wrote this halt: the state file is missing or unreadable, and the")
-            lines.append("     halt was kept from what the ledger or the failure says. `resume` clears it; a")
-            lines.append("     resume that does not re-arm keeps it.")
+            lines.append("  -> this halt was not read from a state file: the file is missing or unreadable, so")
+            lines.append("     the halt was kept from the control ledger's last event (an operator's halt) or,")
+            lines.append("     when the file or the ledger cannot be read, set HARD by failing closed. `resume`")
+            lines.append("     clears it; a resume that does not re-arm keeps it.")
 
     lines.append("")
     if ledger is None:
@@ -915,10 +923,14 @@ def apply_command(
             }
         else:
             released = current.mode
+            # A level carried from a state that failed closed was kept, not asked for: say so on the
+            # state it now writes, as the resume does, or it reads as this actor's own halt.
+            derived = (f" [{level} halt kept from {_RECOVERED_STATE}]"
+                       if asked is None and current.fail_closed and current.halt_level is not None else "")
             new_state = ControlState(
                 mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                reason=stated or (f"{level.lower()} halt (released {released}): entries halted, "
-                                  "management resumed"),
+                reason=(stated or (f"{level.lower()} halt (released {released}): entries halted, "
+                                   "management resumed")) + derived,
                 stop_requested_task_ids=current.stop_requested_task_ids,
                 trading_armed=False,
                 halt_level=level,
@@ -926,7 +938,11 @@ def apply_command(
             verb_reply = (
                 f"{released} -> {level.lower()} halt. The runtime is ACTIVE again, so open positions "
                 "are managed (settle, protect, time exit, reconcile) and queued work resumes; new "
-                "live entries stay refused until /resume." + reason_note
+                "live entries stay refused until /resume."
+                + (f"\nThe {level} halt was kept from {_RECOVERED_STATE}"
+                   + ("; `/halt_trading soft` loosens it." if level == HALT_HARD else ".")
+                   if derived else "")
+                + reason_note
             )
         # Compare before writing (review of H2). This verb can write ACTIVE, and a stop that landed
         # after `current` was read must not be overwritten by it: the assistant's door would have
@@ -987,9 +1003,9 @@ def apply_command(
         # runtime-only resume never comes back looser than the halt it resumed under.
         armed = True if resume_arms else baseline.trading_armed
         kept = None if resume_arms else baseline.halt_level
-        # A halt kept from a state that failed closed was derived, not placed: say so on the state
-        # it now writes, or it reads as this actor's own halt (review of PR6a).
-        derived = (f" [{kept} halt kept from a fail-closed control state; no operator placed it]"
+        # A halt kept from a state that failed closed was kept, not placed by this actor: say so on
+        # the state it now writes, or it reads as this actor's own halt (review of PR6a).
+        derived = (f" [{kept} halt kept from {_RECOVERED_STATE}]"
                    if kept and baseline.fail_closed else "")
         new_state = ControlState(mode=ACTIVE, updated_by=actor, updated_at=stamp,
                                  reason=(stated or "resumed by operator") + derived,
@@ -1001,8 +1017,7 @@ def apply_command(
                          + (f" ({kept} halt kept)" if kept else "")
                          + " - this resume did not re-arm trading. "
                          "Open positions still close; paper is unaffected.")
-                      + (f"\nThe {kept} halt was kept from a fail-closed control state; no "
-                         "operator placed it." if derived else "")
+                      + (f"\nThe {kept} halt was kept from {_RECOVERED_STATE}." if derived else "")
                       + reason_note)
         # Compare before writing: a resume starts things, so a stop or a halt that landed after the
         # state it was judged against must not be overwritten by it (review of PR6a — the check the

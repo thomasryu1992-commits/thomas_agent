@@ -504,7 +504,7 @@ def handle_operator_message(
         # without its store wired) silently becoming a full pipeline run — model call
         # included — is the fail-open direction.
         return OperatorReply(
-            text=("Unknown command. Available: /status /pause /kill /resume /halt_trading [hard] /stop <task_id> "
+            text=("Unknown command. Available: /status /pause /kill /resume /halt_trading [soft|hard] /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
                   "/feedback <good|bad|한줄평> /memory /promote <id> <사유> "
                   "/tasks /history [n] /result <id> /cancel <id> "

@@ -130,7 +130,9 @@ docker compose -p thomas_agent --env-file /root/thomas_agent/.env \
   -f /root/thomas-deploy-<PR#>/docker-compose.yml up -d
 ```
 
-The mounted state volume is untouched, so no history is lost. If a name conflict is reported, an out-of-band container exists —
+The mounted state volume is untouched, so no history is lost. A rollback across PR6 is read-safe but
+not write-safe for a HARD halt: "Emergency controls on a running service" below says what to check
+after rolling forward. If a name conflict is reported, an out-of-band container exists —
 `docker rm -f thomas-operator thomas-scheduler thomas-scheduler-maint` and re-run compose (their state is on the
 bind mount, not in the container). Confirm the commit you are on is a superset of whatever
 the running image carried before removing anything.
@@ -416,7 +418,7 @@ docker exec thomas-operator python -m runtime.mvp_runtime.console_cli kill --rea
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli status
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
-# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading [hard], /stop <id>.
+# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading [soft|hard], /stop <id>.
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
