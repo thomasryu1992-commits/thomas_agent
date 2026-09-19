@@ -602,6 +602,20 @@ def run_fire(
     print(f"cell      : {cell_index} ({cell['symbol']} {cell['regime']} #{cell['repeat']}), "
           f"measured {probe.REGIME_FEATURE}@{probe.REGIME_TIMEFRAME} regime = {regime}")
 
+    # PR4b (Thomas decision 46): a probe is a mainnet entry, decided on the venue contract sentinel's
+    # usable PASS like an autonomous one. A record on this machine, so refused before the account is
+    # read over a signed call or the API breaker counts anything (review of #903); after the cell is
+    # chosen, so a probe still in flight is what a refusal names first, and after the leftover cell
+    # above is settled, which never reads it. The gate below judges the re-read at its own clock.
+    contract = read_venue_contract(root)
+    contract_refusal = venue_contract_refusal(contract, symbol=symbol, at=now)
+    if contract_refusal is not None:
+        raise _Refusal(
+            probe.PROBE_VENUE_CONTRACT,
+            f"the venue contract does not back a probe on {symbol} ({contract_refusal['reason_code']}); "
+            "see: python -m scripts.venue_contract --show",
+        )
+
     limits, budget = resolve_live_order_limits(root, now=now)
     control_store = ControlStore(root) if root is not None else ControlStore.default()
     control_state = control_store.load()
@@ -677,17 +691,6 @@ def run_fire(
             probe.PROBE_API_BREAKER,
             f"the API error breaker cannot record this fire ({', '.join(adapter.unrecorded)}); "
             "nothing was sent",
-        )
-    # PR4b (Thomas decision 46): a probe is a mainnet entry, decided on the venue contract sentinel's
-    # usable PASS like an autonomous one. Refused here, beside the breakers, so the refusal names it;
-    # the gate below judges the re-read again at its own clock.
-    contract = read_venue_contract(root)
-    contract_refusal = venue_contract_refusal(contract, symbol=symbol, at=now)
-    if contract_refusal is not None:
-        raise _Refusal(
-            probe.PROBE_VENUE_CONTRACT,
-            f"the venue contract does not back a probe on {symbol} ({contract_refusal['reason_code']}); "
-            "see: python -m scripts.venue_contract --show",
         )
     readable, _excluded = live_outcomes_for_analysis(read_live_outcomes(root))
     risk_limits = resolve_risk_limits(root, now=now)

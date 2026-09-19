@@ -818,7 +818,8 @@ def gate_probe_order(
         "runtime_active": guard_kwargs.get("runtime_active"),
         "account_collected_at": account_collected_at,
         "clock": clock,
-        # Which verification backed the probe (PR4b); the record keeps the checks.
+        # Which verification backed the probe (PR4b). Its per-check answers are not sealed; the
+        # record keeps them only until the next decided run overwrites it.
         "venue_contract": ({field: venue_contract.get(field) for field in ("recorded", "error", *ENTRY_FACT_FIELDS)}
                            if isinstance(venue_contract, Mapping) else None),
     }

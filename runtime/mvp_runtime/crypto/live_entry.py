@@ -1071,7 +1071,8 @@ def gate_live_entry(
         "budget_registered": kw.get("budget_registered"),
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "api_breaker_tripped": kw.get("api_breaker_tripped"),
-        # PR4b: which verification backed the order (the record keeps the checks).
+        # PR4b: which verification backed the order. Its per-check answers are not sealed; the record
+        # keeps them only until the next decided run overwrites it.
         "venue_contract": ({field: contract.get(field) for field in ("recorded", "error", *ENTRY_FACT_FIELDS)}
                            if isinstance(contract, Mapping) else None),
         # PR2d-2: the optional data the context was judged on, as the decision read it.

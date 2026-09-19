@@ -96,6 +96,14 @@ from .live_pnl import (
 from .market_data import BINANCE_FUTURES, MARKET_DATA_ENV, TIMEFRAMES
 from .risk_limits import limits_status as risk_limits_status
 from .risk_limits import rebase_names as risk_rebase_names
+from .venue_contract import (
+    ENTRY_CONTRACT_STALE,
+    ENTRY_CONTRACT_VERSION,
+    covers,
+    read_refresh_mark,
+    status_line,
+    verification_status,
+)
 
 # LP4's order adapter exists (merged 2026-07-25): `live_execution.BinanceFuturesOrderAdapter`
 # can sign, send, and reconcile an order. This is a constant rather than a computed check
@@ -178,8 +186,6 @@ def _testnet_evidence(root: Path | None) -> dict[str, Any]:
 def _venue_contract(root: Path | None, *, now: str) -> dict[str, Any]:
     """What the venue contract sentinel last decided (PR4a), fail-soft for the board: a record that
     cannot prove itself is named, never rendered as "none recorded"."""
-    from .venue_contract import read_refresh_mark, status_line, verification_status
-
     try:
         mark = read_refresh_mark(root)
         last_attempt = ({"at": mark.get("attempted_at"), "line": status_line(mark)}
@@ -190,6 +196,8 @@ def _venue_contract(root: Path | None, *, now: str) -> dict[str, Any]:
         status = verification_status(root, now=now)
     except MvpRuntimeError as exc:
         return {"error": exc.reason_code, "last_attempt": last_attempt}
+    except Exception as exc:  # noqa: BLE001 — the board never raises; the doors refuse on it too
+        return {"error": type(exc).__name__, "last_attempt": last_attempt}
     return {"error": None, **status, "last_attempt": last_attempt}
 
 
@@ -694,8 +702,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     #     budget symbol the PASS did not cover fails the row too: entries there are refused until a
     #     verification covers it.
     contract = _venue_contract(root, now=now)
-    covered = {str(s).strip().upper() for s in contract.get("symbols") or ()}
-    uncovered = [str(s) for s in (budget.get("symbol_allowlist") or ()) if str(s).strip().upper() not in covered]
+    uncovered = [str(s) for s in (budget.get("symbol_allowlist") or ()) if not covers(contract.get("symbols"), s)]
     checks.append(_check(
         "venue_contract",
         contract.get("error") is None and bool(contract.get("usable")) and not uncovered,
@@ -976,9 +983,11 @@ def _venue_contract_detail(contract: Mapping[str, Any], *, uncovered: list[str])
                 f"(it asks while live trading is opted in; python -m scripts.venue_contract --show){tail}")
     age = contract.get("age_seconds")
     age_text = f"{int(age // 60)}m old" if isinstance(age, (int, float)) else "age unknown"
-    verdict = "usable" if contract.get("usable") else (
-        "STALE" if contract.get("stale") else
-        "other contract version" if not contract.get("version_current") else "not usable")
+    # The judge's own reason, in the judge's order: a stale record under another version reads as the
+    # doors refuse it.
+    verdict = "usable" if contract.get("usable") else {
+        ENTRY_CONTRACT_VERSION: "other contract version", ENTRY_CONTRACT_STALE: "STALE",
+    }.get(contract.get("refusal"), "not usable")
     failed = contract.get("failed_checks") or []
     failed_text = f" (failed: {', '.join(failed)})" if failed else ""
     detail = f"{contract.get('status')}{failed_text} at {contract.get('verified_at')}, {age_text} - {verdict}"

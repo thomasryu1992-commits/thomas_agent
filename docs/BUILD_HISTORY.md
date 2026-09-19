@@ -32,10 +32,16 @@ Append a new entry when a milestone ships, in the same PR.
     required fact with no default (`venue_contract`), and refuses without a PASS under this code's
     contract version, at most six hours old at the decision, naming the symbol — door
     `venue_contract_verified`, six codes, one per thing an operator does about it. The probe refuses
-    on the same rule before its gate (`PROBE_VENUE_CONTRACT`) and at it. The board's informational
-    line became a `venue_contract` check row, and `live_entry_possible` needs it.
+    on the same rule before any signed call (`PROBE_VENUE_CONTRACT`) and at its gate. The board's
+    informational line became a `venue_contract` check row, and `live_entry_possible` needs it.
   - **Why one judge:** `venue_contract.entry_refusal` is pure and is what the door, the probe gate,
-    the board and `verification_status` all call, so none of them can disagree about "usable".
+    the board and `verification_status` all call, so none of them can disagree about "usable" or
+    about which reason comes first; which symbols a verification covers is `venue_contract.covers`,
+    shared by the judge, the board's row and the refresh cadence.
+  - **Why a record that refuses is asked again at the next fire:** a FAIL already was (PR4a review).
+    A record under another contract version (a deploy that bumped it) or one that does not name a
+    symbol the budget gained would otherwise hold entries for up to an hour when the next ask could
+    let them through. A run that decides nothing keeps the hour (decision 44).
   - **Why it is judged at `clock` and read twice:** every freshness door here is judged at the moment
     of the decision, not the fire's start, and the gate's re-read exists because another writer (the
     fire, `--run`) can replace the record in between. The gate judges the re-read unless the first

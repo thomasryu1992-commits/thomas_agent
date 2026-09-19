@@ -1414,6 +1414,25 @@ def test_the_probe_gate_re_derives_every_refusal(tmp_path, overrides, check_id):
     assert check_id in snapshot["failed_checks"]
 
 
+@pytest.mark.parametrize("verified_after_clock,approved", [
+    (-6 * 3600, True),             # six hours old at the gate's clock
+    (-6 * 3600 - 1, False),        # a second past it, though not yet six hours old at the fire's start
+    (5 * 60, True),                # dated ahead within the skew at the clock, past it at the fire's start
+], ids=["six-hours-at-clock", "past-six-hours-at-clock", "within-skew-at-clock"])
+def test_the_probe_gate_judges_the_contract_at_its_own_clock(tmp_path, verified_after_clock, approved):
+    """Review of #903: the fire's early refusal judges at its start; the gate judges at its own clock,
+    so a PASS that went stale since is refused there — and one the fire's start could not judge yet is
+    not."""
+    plan = _active_plan(tmp_path)
+    clock = timeutil.plus_seconds(NOW, 30)
+    contract = usable_venue_contract(["BTCUSDT"], verified_at=timeutil.plus_seconds(clock, verified_after_clock))
+    intent, facts = _gate_facts(plan, clock=clock, account_collected_at=clock, venue_contract=contract,
+                                order_book=deep_order_book(100000.0, received_at=clock))
+    snapshot = probe.gate_probe_order(intent, **facts)
+    assert snapshot["approved"] is approved, snapshot["failed_checks"]
+    assert ("venue_contract_verified" in snapshot["failed_checks"]) is not approved
+
+
 @pytest.mark.parametrize("collected_at,fresh", [
     (-60, True),           # read exactly a minute before the gate
     (-61, False),          # a second past it
@@ -2862,13 +2881,35 @@ def test_the_probe_gate_seals_which_verification_backed_it(tmp_path):
      "LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS"),
 ], ids=["missing", "damaged", "fail"])
 def test_fire_refuses_without_a_usable_venue_contract_and_touches_nothing(tmp_path, monkeypatch, fact, code):
-    """A probe is a mainnet entry (decision 46): refused beside the breakers, before any venue call."""
+    """A probe is a mainnet entry (decision 46): refused before any signed call."""
     _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
     _stub_both(monkeypatch, "read_venue_contract", lambda root=None: fact)
     with pytest.raises(cli._Refusal) as exc:
         _fire(tmp_path)
     assert exc.value.reason_code == probe.PROBE_VENUE_CONTRACT
     assert code in str(exc.value) and "scripts.venue_contract --show" in str(exc.value)
+    assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
+
+
+def test_a_contract_refusal_comes_before_any_signed_read_or_breaker_count(tmp_path, monkeypatch):
+    """Review of #903: the contract is a record on this machine, so a probe it refuses has read the
+    public market (the cell is chosen by regime, and a probe in flight is named first) but not the
+    account over a signed call, and the API breaker has counted nothing."""
+    from runtime.mvp_runtime.crypto.live_order import ApiErrorRecordingAdapter
+
+    _wire_fire_to_the_guard(tmp_path, monkeypatch, _VenueMustNotBeTouched())
+    touched: list[str] = []
+    monkeypatch.setattr(cli, "_read_regime", lambda *a, **k: touched.append("regime read") or probe.REGIME_LOW)
+    monkeypatch.setattr(cli, "read_account", lambda **k: touched.append("signed account read") or (None, {}))
+    monkeypatch.setattr(ApiErrorRecordingAdapter, "record_account",
+                        lambda self, **k: touched.append("api breaker counted the account"))
+    monkeypatch.setattr(ApiErrorRecordingAdapter, "breaker_unwritable",
+                        lambda self: touched.append("api breaker written") or False)
+    _stub_both(monkeypatch, "read_venue_contract", lambda root=None: {"recorded": False})
+    with pytest.raises(cli._Refusal) as exc:
+        _fire(tmp_path)
+    assert exc.value.reason_code == probe.PROBE_VENUE_CONTRACT
+    assert touched == ["regime read"]
     assert all(c["status"] == probe.CELL_EMPTY for c in probe.read_plan(tmp_path)["cells"])
 
 

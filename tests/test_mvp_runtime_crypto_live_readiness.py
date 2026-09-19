@@ -1285,3 +1285,34 @@ def test_a_contract_the_doors_refuse_on_fails_the_row_and_says_entries_are_refus
     row, status = _contract_row(tmp_path)
     assert row["ok"] is False and status["ready"] is False
     assert text in row["detail"] and "every mainnet entry is refused" in row["detail"]
+
+
+def test_the_row_names_the_reason_the_doors_give_first(tmp_path, clean_env, monkeypatch):
+    """Review of #903: a stale record under another contract version reads as the doors refuse it —
+    the version first, in the judge's order, not STALE."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path)
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-23T05:59:59Z")
+    monkeypatch.setattr(vc, "CONTRACT_VERSION", "binance_futures_contract.v9")     # the deploy that bumps it
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is False and "- other contract version -" in row["detail"] and "STALE" not in row["detail"]
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol=None, at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_VERSION
+
+
+def test_an_unexpected_reader_exception_fails_the_row_and_never_the_board(tmp_path, clean_env, monkeypatch):
+    """Review of #903: the doors refuse on any exception the reader raises (UNREADABLE); the board names
+    it the same way instead of raising."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    def boom(root=None):
+        raise PermissionError("scripted: Path.is_file on 3.12")
+
+    _register_budget(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", boom)
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is False and "UNREADABLE (PermissionError)" in row["detail"]
+    assert status["ready"] is False
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW)["reason_code"] \
+        == vc.ENTRY_CONTRACT_UNREADABLE

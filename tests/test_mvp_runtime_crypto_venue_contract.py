@@ -646,11 +646,76 @@ def test_the_refresh_never_raises(tmp_path, monkeypatch, _scope):
     ({"attempted_at": "garbage"}, True),
     ({"attempted_at": "2026-09-19T07:01:00Z", "decided_status": "FAIL"}, False),
     ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "FAIL"}, True),
-    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "PASS"}, False),
+    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "PASS", "decided_version": vc.CONTRACT_VERSION},
+     False),
 ])
 def test_asked_about_hourly_on_a_fifteen_minute_fire_and_every_fire_while_failing(mark, due):
     assert vc.is_due(mark, NOW) is due
     assert vc.REFRESH_AFTER_SECONDS < 3600 and vc.RETRY_AFTER_FAIL_SECONDS < 15 * 60
+
+
+_DECIDED = {"decided_status": "PASS", "decided_version": vc.CONTRACT_VERSION, "decided_symbols": ["BTCUSDT"]}
+
+
+@pytest.mark.parametrize("decided,symbols,sooner", [
+    (_DECIDED, ["BTCUSDT"], False),
+    (_DECIDED, [" btcusdt "], False),                                   # the doors' own coverage rule
+    (_DECIDED, [], False),                                              # no valid budget, nothing to cover
+    (_DECIDED, ["BTCUSDT", "ETHUSDT"], True),                           # the budget gained a symbol
+    ({**_DECIDED, "decided_version": "binance_futures_contract.v0"}, ["BTCUSDT"], True),
+    ({"decided_status": "PASS"}, [], True),                             # a mark from before PR4b: once
+    ({**_DECIDED, "decided_status": "FAIL"}, ["BTCUSDT"], True),
+    ({"decided_status": None}, ["BTCUSDT"], False),                     # nothing decided keeps the hour
+], ids=["covered", "normalized", "no-budget", "budget-gained", "other-version", "pre-pr4b-mark", "fail",
+        "undecided"])
+def test_a_record_that_refuses_what_the_next_ask_can_let_through_is_asked_at_the_next_fire(decided, symbols,
+                                                                                           sooner):
+    """Review of #903: a deploy that bumps the contract version refuses every entry, and a budget that
+    gains a symbol refuses that symbol's, until the next decided run — so the next fire asks, as it
+    does on a FAIL. A run that decided nothing keeps the hour (decision 44)."""
+    mark = {"attempted_at": "2026-09-19T06:55:00Z", **decided}          # the fire before NOW
+    assert vc.is_due(mark, NOW, symbols=symbols) is sooner
+    assert vc.is_due({**mark, "attempted_at": "2026-09-19T07:05:00Z"}, NOW, symbols=symbols) is False
+
+
+def test_the_refresh_marks_what_the_record_was_verified_under_and_the_fire_asks_when_it_falls_short(
+        tmp_path, monkeypatch, _scope):
+    _write_snapshot(tmp_path)
+    _refresh(tmp_path, _Adapter())
+    mark = vc.read_refresh_mark(tmp_path)
+    assert (mark["decided_status"], mark["decided_version"], mark["decided_symbols"]) == \
+        ("PASS", vc.CONTRACT_VERSION, SYMBOLS)
+    next_fire = "2026-09-19T07:25:00Z"
+    assert vc.refresh_due(tmp_path, next_fire) is False
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: [*SYMBOLS, "XRPUSDT"])
+    assert vc.refresh_due(tmp_path, next_fire) is True, "the budget gained a symbol"
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
+    monkeypatch.setattr(vc, "CONTRACT_VERSION", "binance_futures_contract.v9")     # the deploy that bumps it
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=next_fire)["reason_code"] \
+        == vc.ENTRY_CONTRACT_VERSION
+    assert vc.refresh_due(tmp_path, next_fire) is True, "another version"
+
+
+def test_the_fire_s_cadence_question_never_raises(tmp_path, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("anything at all")
+
+    monkeypatch.setattr(vc, "_registered_symbols", boom)
+    assert vc.refresh_due(tmp_path, NOW) is True, "a question it cannot answer is due"
+    monkeypatch.setattr(vc, "read_refresh_mark", boom)
+    assert vc.refresh_due(tmp_path, NOW) is True
+
+
+def test_the_refresh_never_raises_on_a_record_it_cannot_read_back(tmp_path, monkeypatch, _scope):
+    """The mark reads the decided record after the run; an unexpected exception there (a permission
+    error from `Path.is_file` on 3.12) is a mark without a decided status, not a raise in the fire."""
+    def boom(root=None):
+        raise PermissionError("scripted")
+
+    _write_snapshot(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", boom)
+    assert _refresh(tmp_path, _Adapter()) == "venue contract: PASS"
+    assert vc.read_refresh_mark(tmp_path)["decided_status"] is None
 
 
 def test_only_a_decided_verification_can_be_recorded():
@@ -787,7 +852,9 @@ def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector
         order.append("venue")
         asked.append((type(collector), now, root))
         vc._write_json(vc.refresh_mark_path(root), {"attempted_at": now, "outcome": vc.OUTCOME_DECIDED,
-                                                    "status": "PASS", "decided_status": "PASS"},
+                                                    "status": "PASS", "decided_status": "PASS",
+                                                    "decided_version": vc.CONTRACT_VERSION,
+                                                    "decided_symbols": ["BTCUSDT"]},
                        code="VENUE_CONTRACT_MARK_LOCKED", label="test mark")
         return "venue contract: PASS"
 
@@ -807,6 +874,36 @@ def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector
     assert order[:2] == ["account", "venue"]
     assert statuses[0].endswith("account snapshot: stub venue contract: PASS")
     assert "venue contract" not in statuses[1]
+
+
+def test_the_pipeline_fire_asks_at_every_fire_while_the_budget_names_a_symbol_the_record_does_not(
+        tmp_path, monkeypatch):
+    """The fire hands the cadence the budget's symbols as they are now (review of #903)."""
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
+
+    asked: list[str] = []
+
+    def venue_refresh(*, collector, now, root, **_):
+        asked.append(now)
+        vc._write_json(vc.refresh_mark_path(root), {"attempted_at": now, "outcome": vc.OUTCOME_INCOMPLETE,
+                                                    "status": "UNVERIFIED", "decided_status": "PASS",
+                                                    "decided_version": vc.CONTRACT_VERSION,
+                                                    "decided_symbols": ["BTCUSDT"]},
+                       code="VENUE_CONTRACT_MARK_LOCKED", label="test mark")
+        return "venue contract: UNVERIFIED"
+
+    monkeypatch.setattr(account_store, "refresh_snapshot", lambda **_: "account snapshot: stub")
+    monkeypatch.setattr(vc, "refresh_verification", venue_refresh)
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: ["BTCUSDT", "ETHUSDT"])
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900, created_by="op",
+                             now="2026-07-22T11:00:00Z"))
+    fires = ("2026-07-22T13:00:00Z", "2026-07-22T13:15:00Z", "2026-07-22T13:30:00Z")
+    for now in fires:
+        run_due(store, now=now, control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path)
+    assert asked == list(fires)
 
 
 def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys, _scope):

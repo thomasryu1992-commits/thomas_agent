@@ -232,22 +232,29 @@ venue itself.
   PASS for their symbol — this code's `CONTRACT_VERSION`, at most six hours old at the moment of the
   decision (`clock`), dated no more than five minutes ahead, naming the symbol. The rule is one pure
   function (`venue_contract.entry_refusal`) that the autonomous decision's door
-  (`venue_contract_verified`), the probe's gate and the board's `venue_contract` row all call. Each
-  way it can refuse has its own code, so the refusal says what to do:
+  (`venue_contract_verified`), the probe's gate and the board's `venue_contract` row all call; which
+  symbols a verification covers is one more (`venue_contract.covers`), shared by the judge, the row
+  and the refresh cadence. Each way it can refuse has its own code, so the refusal says what to do:
 
   | Code | Means | Operator |
   |---|---|---|
   | `LIVE_ENTRY_VENUE_CONTRACT_MISSING` | nothing decided yet | wait for the pipeline fire, or `--run` |
   | `LIVE_ENTRY_VENUE_CONTRACT_UNREADABLE` | the record fails its hash, schema or parse | find out who changed it |
-  | `LIVE_ENTRY_VENUE_CONTRACT_VERSION` | verified under another contract version | the next fire re-verifies |
+  | `LIVE_ENTRY_VENUE_CONTRACT_VERSION` | verified under another contract version | the next fire re-verifies (asked sooner, like a FAIL) |
   | `LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS` | the venue contradicted an assumption | read `--show`; re-asked every fire |
   | `LIVE_ENTRY_VENUE_CONTRACT_STALE` | older than six hours at the decision | the sentinel has not been answered |
-  | `LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED` | the PASS did not name this symbol | the next verification covers the budget |
+  | `LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED` | the PASS did not name this symbol | the next fire verifies the budget's symbols (asked sooner) |
 
   The autonomous leg reads it once beside the breakers and again in the gate's re-read; the gate
   judges the re-read unless the first read already refused, so an entry needs both reads usable. The
-  probe refuses early (`PROBE_VENUE_CONTRACT`) and its gate judges the re-read. The pre-order
-  snapshot seals which verification backed the order (`facts.venue_contract`). A FAIL anywhere blocks
+  probe refuses early (`PROBE_VENUE_CONTRACT`) — a record on this machine, so before any signed call
+  or API-breaker count; after the cell is chosen, so a probe in flight is named first — and its gate
+  judges the re-read. The pre-order snapshot
+  seals which verification backed the order (`facts.venue_contract`: the judged fields and the
+  record's hash; the per-check answers stay only in the record, until the next decided run replaces
+  it). "Asked sooner" is the cadence a FAIL already had: while the decided record refuses entries the
+  next ask can let through (a FAIL, another contract version, a budget symbol it does not name), every
+  fire asks; a run that decides nothing keeps the hour (decision 44). A FAIL anywhere blocks
   every symbol; narrowing that to the symbols a FAIL names is a relaxation for Thomas to decide, not a
   default. **Closing, protecting and settling never read it**, and neither does the testnet door: the
   signed testnet cycle is itself a venue answer, with real orders.
