@@ -65,14 +65,15 @@ keeps the two populations labelled, so do not read the residual gap as drift.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .. import timeutil
 from ..approval_store import ApprovalStore
 from ..audit import AuditError
 from ..coerce import as_optional_float as _f
-from ..control import ControlStore
+from ..control import ACTIVE, HALT_HARD, ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..state_guard import assert_not_foreign_root_run
 from ..store import LedgerStore
@@ -111,6 +112,7 @@ from .live_position import (
     DRIFT_QUANTITY_MISMATCH,
     DRIFT_SIDE_MISMATCH,
     LIVE_POSITION_SLOT_TAKEN,
+    RECONCILED,
     list_open_live_positions,
     position_symbol,
     reconcile_positions,
@@ -1544,6 +1546,270 @@ def _is_incident(result: Mapping[str, Any]) -> bool:
     return any(reason in _INCIDENT_REASONS for reason in (result.get("reason_codes") or []))
 
 
+# --- the emergency close (PR6c, Thomas decision 49) ------------------------------------------
+#
+# The operator's close of every booked live position at market under the HARD halt, spent from one
+# single-use approval (`scripts/emergency_close.py`). It lives in the chokepoint because it is the
+# close every runtime exit already is — `live_leg.execute_live_exit`, reduceOnly, behind the same
+# gate, the same API error breaker recording and the same post-order audit — and not a second way
+# to the venue. What it adds is the order of events: everything that can refuse without the venue,
+# then the spend, then each position judged again just before its close.
+
+# Refusals before the spend: nothing was sent, and the approval stays APPROVED.
+EMERGENCY_CLOSE_NEEDS_HARD_HALT = "EMERGENCY_CLOSE_NEEDS_HARD_HALT"
+EMERGENCY_CLOSE_HALT_CHANGED = "EMERGENCY_CLOSE_HALT_CHANGED"
+EMERGENCY_CLOSE_NOTHING_BOOKED = "EMERGENCY_CLOSE_NOTHING_BOOKED"
+EMERGENCY_CLOSE_GATE_CLOSED = "EMERGENCY_CLOSE_GATE_CLOSED"
+EMERGENCY_CLOSE_NO_CONFIRMATION = "EMERGENCY_CLOSE_NO_CONFIRMATION"
+EMERGENCY_CLOSE_ACCOUNT_UNREADABLE = "EMERGENCY_CLOSE_ACCOUNT_UNREADABLE"
+# Each approved position's result, after the spend. Only CLOSED ends the position here; every
+# SKIPPED and NOT_ATTEMPTED sent nothing for it, and neither did REFUSED (the close guard) or BLOCKED
+# (a typed refusal before the send).
+EMERGENCY_CLOSED = "CLOSED"
+EMERGENCY_NOT_CONFIRMED = "NOT_CONFIRMED"
+EMERGENCY_REFUSED = "REFUSED"
+EMERGENCY_BLOCKED = "BLOCKED"
+# An unexpected error while closing: an order may be at the venue, so the rest are not attempted.
+EMERGENCY_INCIDENT = "INCIDENT"
+EMERGENCY_SKIPPED_NOT_BOOKED = "SKIPPED_NOT_BOOKED"
+EMERGENCY_SKIPPED_BOOK_CHANGED = "SKIPPED_BOOK_CHANGED"
+EMERGENCY_SKIPPED_CLOSED_AT_VENUE = "SKIPPED_CLOSED_AT_VENUE"
+EMERGENCY_SKIPPED_VENUE_MISMATCH = "SKIPPED_VENUE_MISMATCH"
+EMERGENCY_NOT_ATTEMPTED = "NOT_ATTEMPTED"
+_EMERGENCY_ROW_KEYS = ("position_id", "symbol", "direction", "quantity")
+
+
+def emergency_quantity_text(value: Any) -> str:
+    """A booked quantity as the decimal string an emergency close binds. The action fingerprint
+    forbids floats, and one spelling at the ask and at the spend is what makes the two comparable."""
+    quantity = _f(value)
+    return "" if quantity is None else format(Decimal(repr(quantity)), "f")
+
+
+def emergency_close_rows(positions: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The booked positions as an emergency close names them — id, symbol, side, quantity — in one
+    order, so the ask and the spend describe the same set the same way."""
+    return sorted(
+        ({"position_id": str(p.get("position_id") or ""), "symbol": position_symbol(p),
+          "direction": str(p.get("direction") or "").upper(),
+          "quantity": emergency_quantity_text(p.get("quantity"))} for p in positions),
+        key=lambda row: (row["symbol"], row["position_id"]),
+    )
+
+
+def emergency_halt_problem(state: Any, halt_ref: str | None) -> str | None:
+    """Why an emergency close may not run against ``state``, or None. It runs only under the HARD
+    halt with the runtime ACTIVE (decision 49), and once asked for, only under the very halt Thomas
+    approved: ``halt_ref`` is the switch door's ``stop_ref`` of it, which any control write moves."""
+    from ..switch_bridge import stop_ref  # local: the door module is not part of the live stack
+
+    if state.mode != ACTIVE or state.halt_level != HALT_HARD:
+        halt = f"a {state.halt_level} halt" if state.halt_level else "no halt"
+        return (f"the runtime is {state.mode} with {halt}; an emergency close runs only under the HARD "
+                "halt with the runtime ACTIVE (halt_trading hard)")
+    if halt_ref is not None and stop_ref(state) != halt_ref:
+        return (f"the HARD halt in effect ({stop_ref(state)}) is not the one this close was approved "
+                f"under ({halt_ref}): the control state was written since the ask")
+    return None
+
+
+def emergency_close_content(
+    *, root: Path | None, requested_by: str, reason: str, control_store: ControlStore | None = None,
+) -> dict[str, Any]:
+    """What an emergency-close ask binds (``permission.build_emergency_close_permission_decision``):
+    the HARD halt in effect and every position the book holds. Reads the control state and the book;
+    opens no socket and changes nothing."""
+    from ..switch_bridge import stop_ref
+
+    control = control_store if control_store is not None else ControlStore.default(root)
+    state = control.load()
+    problem = emergency_halt_problem(state, None)
+    if problem is not None:
+        raise ToolError(EMERGENCY_CLOSE_NEEDS_HARD_HALT, problem)
+    rows = emergency_close_rows(list_open_live_positions(root))
+    if not rows:
+        raise ToolError(EMERGENCY_CLOSE_NOTHING_BOOKED,
+                        "no live position is booked on this machine, so there is nothing to close")
+    return {"halt_ref": stop_ref(state), "positions": rows, "requested_by": requested_by, "reason": reason}
+
+
+def run_emergency_close(
+    approved: Sequence[Mapping[str, Any]],
+    *,
+    halt_ref: str,
+    spend: Callable[[], Any],
+    now: str,
+    root: Path | None = None,
+    control_store: ControlStore | None = None,
+    timeout_seconds: int = 10,
+) -> dict[str, Any]:
+    """Close the approved positions at market, reduceOnly: the effect of a spent emergency-close grant.
+
+    **Everything that can refuse without the venue refuses before ``spend``,** so a refusal there
+    leaves the approval APPROVED and sends nothing: the HARD halt it was approved under, the live gate
+    (a dry-run adapter would spend the grant and close nothing), the confirmation phrase the close
+    guard needs, at least one approved position still booked, and a readable account. ``spend`` is the
+    caller's single-use compare-and-set; it runs once, and a spend that loses raises before anything
+    is sent.
+
+    **After it, each position is judged again just before its close,** and skipped — never resized —
+    when anything moved: the halt (the rest are then not attempted), the book (the position is gone,
+    or holds another side or quantity), or the venue (it closed the position already, or holds a
+    different one). A position the venue holds that the book does not is never touched (decision 49).
+    The scheduler keeps managing positions under the HARD halt and may close one first: that reads as
+    SKIPPED_NOT_BOOKED, or, when the two closes cross, as a reduceOnly order the venue rejects on a
+    flat position (NOT_CONFIRMED). Nothing can be opened either way; the adapter refuses anything
+    that is not reduceOnly under the HARD halt (PR6b).
+
+    Returns the report. Raises only before the spend, or when the spend itself refuses."""
+    assert_not_foreign_root_run(root)
+    control = control_store if control_store is not None else ControlStore.default(root)
+    problem = emergency_halt_problem(control.load(), halt_ref)
+    if problem is not None:
+        raise ToolError(EMERGENCY_CLOSE_HALT_CHANGED, f"{problem}; nothing was spent")
+    adapter, gate_reason = select_live_gate(now=now, root=root)
+    if adapter is None:
+        raise ToolError(EMERGENCY_CLOSE_GATE_CLOSED,
+                        f"live routing is not open in this process ({gate_reason}), so no close could be "
+                        "sent; nothing was spent")
+    limits, _budget = resolve_live_order_limits(root, now=now)
+    if not limits.confirmation_present():
+        raise ToolError(EMERGENCY_CLOSE_NO_CONFIRMATION,
+                        "the live confirmation phrase is not set in this process, and the close guard "
+                        "refuses every close without it; nothing was spent")
+    wanted = {str(row.get("position_id")) for row in approved}
+    if not any(str(p.get("position_id")) in wanted for p in list_open_live_positions(root)):
+        raise ToolError(EMERGENCY_CLOSE_NOTHING_BOOKED,
+                        "none of the approved positions is booked any more; nothing was spent")
+    record: dict[str, Any] = {
+        "live_route_version": LIVE_ROUTE_VERSION,
+        "status": None,
+        "halt_ref": halt_ref,
+        "positions": [],
+        "live_reason_codes": [],
+        "created_at": now,
+    }
+    recorder = ApiErrorRecordingAdapter(
+        adapter, select_live_api_breaker(now=now, root=root),
+        on_unrecorded=lambda code: _note_codes(record, API_BREAKER_UNRECORDED, code),
+    )
+    try:
+        snapshot, account_use = read_account(timeout_seconds=timeout_seconds, root=root)
+        recorder.record_account(readable=snapshot is not None, reason_code=account_use.get("error_reason_code"))
+        if snapshot is None:
+            raise ToolError(EMERGENCY_CLOSE_ACCOUNT_UNREADABLE,
+                            f"the account could not be read ({account_use.get('degraded_reason_code')}), so "
+                            "no position can be checked against the venue; nothing was spent")
+        spend()
+        _close_emergency_positions(
+            record, approved, adapter=recorder, snapshot=snapshot, limits=limits, control=control,
+            halt_ref=halt_ref, now=now, root=root, timeout_seconds=timeout_seconds,
+        )
+    finally:
+        _close_api_breaker_pass(record, recorder, root=root, now=now)
+    closed = sum(1 for row in record["positions"] if row["status"] == EMERGENCY_CLOSED)
+    record["status"] = "COMPLETE" if closed == len(record["positions"]) else "INCOMPLETE"
+    return record
+
+
+def _close_emergency_positions(
+    record: dict[str, Any],
+    approved: Sequence[Mapping[str, Any]],
+    *,
+    adapter: Any,
+    snapshot: Any,
+    limits: Any,
+    control: ControlStore,
+    halt_ref: str,
+    now: str,
+    root: Path | None,
+    timeout_seconds: int,
+) -> None:
+    """Each approved position in turn, judged again just before its close (see
+    :func:`run_emergency_close`). Never raises: every position gets a result on the record."""
+    position_store = select_live_position_store(now=now, root=root)
+    ledger = select_live_ledger(now=now, root=root)
+    stopped: str | None = None
+    for wanted in approved:
+        row: dict[str, Any] = {key: str(wanted.get(key) or "") for key in _EMERGENCY_ROW_KEYS}
+        row.update(status=None, reason_codes=[], detail=None, outcome_id=None)
+        record["positions"].append(row)
+        if stopped is not None:
+            row.update(status=EMERGENCY_NOT_ATTEMPTED, detail=stopped)
+            continue
+        try:
+            problem = emergency_halt_problem(control.load(), halt_ref)
+            if problem is not None:
+                stopped = problem
+                row.update(status=EMERGENCY_NOT_ATTEMPTED, detail=problem)
+                _note_codes(record, EMERGENCY_CLOSE_HALT_CHANGED)
+                continue
+            booked = list_open_live_positions(root)
+            position = next((p for p in booked if str(p.get("position_id")) == row["position_id"]), None)
+            if position is None:
+                row.update(status=EMERGENCY_SKIPPED_NOT_BOOKED,
+                           detail="no longer booked: closed since the ask (the scheduler, or the venue's bracket)")
+                continue
+            now_row = emergency_close_rows([position])[0]
+            if now_row != {key: row[key] for key in _EMERGENCY_ROW_KEYS}:
+                row.update(status=EMERGENCY_SKIPPED_BOOK_CHANGED,
+                           detail=(f"the book now holds {now_row['symbol']} {now_row['direction']} "
+                                   f"{now_row['quantity']}; refused, not resized"))
+                continue
+            book = (reconcile_positions(booked, snapshot, now=now).get("books") or {}).get(row["symbol"]) or {}
+            reasons = [str(r) for r in (book.get("reasons") or ())]
+            if DRIFT_MISSING_AT_VENUE in reasons:
+                row.update(status=EMERGENCY_SKIPPED_CLOSED_AT_VENUE,
+                           detail="the venue holds no position on this symbol: it closed there, and the "
+                                  "scheduler settles it")
+                continue
+            if book.get("status") != RECONCILED:
+                row["reason_codes"].extend(reasons)
+                row.update(status=EMERGENCY_SKIPPED_VENUE_MISMATCH,
+                           detail=(f"book and venue disagree ({', '.join(reasons) or book.get('status')}; the "
+                                   f"venue holds {book.get('venue_quantity')}); refused, not resized"))
+                continue
+            closed = live_leg.execute_live_exit(
+                position, adapter=adapter, position_store=position_store, ledger=ledger, gate_open=True,
+                limits=limits, close_reason=live_leg.CLOSE_REASON_EMERGENCY, now=now,
+                timeout_seconds=timeout_seconds,
+            )
+            row["reason_codes"].extend(closed["reason_codes"])
+            row["status"] = {live_leg.EXIT_CLOSED: EMERGENCY_CLOSED,
+                             live_leg.EXIT_NOT_CONFIRMED: EMERGENCY_NOT_CONFIRMED}.get(closed["status"],
+                                                                                    EMERGENCY_REFUSED)
+            if row["status"] == EMERGENCY_REFUSED:
+                row["detail"] = "; ".join((closed.get("close_guard") or {}).get("blocks") or ()) or None
+            outcome = closed.get("outcome")
+            row["outcome_id"] = outcome.get("outcome_id") if isinstance(outcome, Mapping) else None
+            if closed["status"] == live_leg.EXIT_CLOSED and isinstance(closed.get("intent"), Mapping):
+                _audit_emergency_close(record, closed, now=now, root=root)
+        except MvpRuntimeError as exc:
+            # A typed refusal before or between venue calls (an unreadable book, a refused send):
+            # reported on this position, and the next one is still judged on its own.
+            row["reason_codes"].append(exc.reason_code)
+            row.update(status=EMERGENCY_BLOCKED, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001 — an order may be at the venue: report it, and stop
+            row["reason_codes"].append(f"UNEXPECTED_{type(exc).__name__}")
+            row.update(status=EMERGENCY_INCIDENT, detail=str(exc)[:300])
+            stopped = "not attempted after an unexpected error on an earlier position"
+
+
+def _audit_emergency_close(record: dict[str, Any], closed: Mapping[str, Any], *, now: str,
+                           root: Path | None) -> None:
+    """Audited after the fact, as every runtime close is (`_settle_or_protect`): refusing to close
+    because governance could not be prepared would keep open the position the operator asked to
+    close. A failure is on the record, never a reason the close did not happen."""
+    try:
+        governance = live_governance.prepare_live_order_governance(
+            closed["intent"], purpose=live_governance.PURPOSE_EMERGENCY_CLOSE, now=now, repo_root=root,
+        )
+    except (MvpRuntimeError, ValueError) as exc:
+        _note_codes(record, AUDIT_NOT_RECORDED, getattr(exc, "reason_code", type(exc).__name__))
+    else:
+        _report(record, governance, closed["exit"], guard=closed["close_guard"], now=now, root=root)
+
+
 def live_route_status_line(record: Mapping[str, Any]) -> str:
     """One ASCII line for the cycle's status (Windows consoles are cp949)."""
     # `halt` on this module's own record, `live_halt` once the cycle record has folded it in —
@@ -1567,6 +1833,13 @@ __all__ = [
     "AUDIT_NOT_RECORDED",
     "BOOK_DRIFT",
     "DEFAULT_TIMING_CONTEXT",
+    "EMERGENCY_CLOSE_ACCOUNT_UNREADABLE",
+    "EMERGENCY_CLOSE_GATE_CLOSED",
+    "EMERGENCY_CLOSE_HALT_CHANGED",
+    "EMERGENCY_CLOSE_NEEDS_HARD_HALT",
+    "EMERGENCY_CLOSE_NOTHING_BOOKED",
+    "EMERGENCY_CLOSE_NO_CONFIRMATION",
+    "EMERGENCY_CLOSED",
     "LIVE_HOLD_NOT_TIMED_HERE",
     "LIVE_ROUTE_VERSION",
     "ROUTE_BLOCKED",
@@ -1577,9 +1850,14 @@ __all__ = [
     "ROUTE_SETTLED",
     "ROUTING_DISABLED",
     "ROUTING_PRECONDITION",
+    "emergency_close_content",
+    "emergency_close_rows",
+    "emergency_halt_problem",
+    "emergency_quantity_text",
     "live_position_contexts",
     "live_route_status_line",
     "position_timing_context",
+    "run_emergency_close",
     "run_live_leg",
     "select_live_gate",
 ]

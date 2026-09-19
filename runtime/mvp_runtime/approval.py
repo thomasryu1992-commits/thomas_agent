@@ -50,6 +50,7 @@ from .errors import ApprovalBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
 from .permission import (
+    EMERGENCY_CLOSE_TARGET_PREFIX,
     EXECUTION_STAGE_TARGET_PREFIX,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     STRATEGY_POOL_LIVE_TARGET_REF,
@@ -482,6 +483,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # runtime; a demotion is the reversible direction and needs no ask at all.
     execution_stage = target_ref.startswith(EXECUTION_STAGE_TARGET_PREFIX)
     live_stage = execution_stage and target_ref.split(":")[-1].startswith("LIVE_")
+    # The operator's emergency close (crypto PR6c). Spent by the operator's --confirm, never by the
+    # runtime; unlike every ask above, what it does cannot be undone.
+    emergency_close = target_ref.startswith(EMERGENCY_CLOSE_TARGET_PREFIX)
     lines = [
         "Approval Request",
         "",
@@ -497,6 +501,8 @@ def format_request(approval: Mapping[str, Any]) -> str:
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
         ("예상 비용: 실주문이 다시 나갈 수 있게 되므로 그 이후의 손익이 곧 비용입니다"
          if arms_live else
+         "예상 비용: 시장가 청산의 수수료·슬리피지, 그리고 청산으로 확정되는 각 포지션의 손익"
+         if emergency_close else
          "예상 비용: 이 단계에서 진입 문이 실주문을 낼 수 있게 되므로(PR1b부터 강제) 그 이후의 손익이 곧 비용입니다"
          if live_stage else "예상 비용: 없음"),
         ("되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)"
@@ -510,6 +516,8 @@ def format_request(approval: Mapping[str, Any]) -> str:
          if workflow_step else
          "되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), 청산은 어느 단계에서도 막히지 않습니다"
          if execution_stage else
+         "되돌릴 수 있는가: 아니오 — 청산된 포지션은 되돌릴 수 없습니다. 다시 열려면 진입 경로를 처음부터 거쳐야 합니다"
+         if emergency_close else
          "되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 적용되고, "
          "이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다"
          if arms_pool_live else
@@ -530,6 +538,14 @@ def format_request(approval: Mapping[str, Any]) -> str:
         lines += [
             "이 승인은 이 계획 버전의 이 요청(해시)에만 묶입니다. 계획이 바뀌거나 단계가 바뀌면 이 승인은",
             "APPROVAL_STALE로 거부되고 새 요청이 올라옵니다. 거절하면 단계는 멈추고 워크플로는 결정을 기다립니다.",
+        ]
+    elif emergency_close:
+        lines += [
+            "승인 후 운영자가 scheduler 컨테이너에서 `scripts/emergency_close.py --confirm --approval-id <id>`로",
+            "1회 소비해야 청산 주문이 나갑니다. 요청 이후 HARD 정지 상태가 바뀌면(해제·완화·kill 포함)",
+            "EMERGENCY_CLOSE_HALT_CHANGED로 거부되고 새 요청이 필요합니다. 포지션마다 장부와 거래소를 다시",
+            "확인해, 장부에서 사라졌거나 수량·방향이 목록과 다르면 그 포지션은 건너뛰고 보고합니다(크기를",
+            "바꿔 보내지 않음). 장부에 없는 거래소 포지션은 건드리지 않습니다.",
         ]
     elif execution_stage:
         lines += [

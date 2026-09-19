@@ -183,6 +183,10 @@ TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL = "P4"  # INTERNAL_MODIFY — mutates r
 # The execution-stage transition rides the same scope and level: it mutates governed runtime state
 # (which stage the entry doors will read), reaches no venue, and is single-use like the switch.
 EXECUTION_STAGE_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
+# The emergency close rides it too, at P4 for the slippage probe's reason: the grant authorizes the
+# operator's close of a named set, and every close order still carries its own P5 decision in the
+# audit trail and passes the close guard at send time.
+EMERGENCY_CLOSE_PERMISSION_SCOPE = "RUNTIME_GOVERNANCE"
 
 # The two shapes of resume ask, and the ONE thing that tells them apart at spend time.
 #
@@ -204,6 +208,11 @@ WORKFLOW_STEP_TARGET_PREFIX = "workflow_step:"
 # `execution_stage:<venue>:<to_stage>`. Announced on the control channel, never mirrored. Spent once
 # by `scripts/register_execution_stage.py --confirm`.
 EXECUTION_STAGE_TARGET_PREFIX = "execution_stage:"
+# The operator's emergency close (crypto PR6c, Thomas decision 49, 2026-09-19):
+# `emergency_close:<set id>`, the set being the booked positions it closes and the HARD halt it is
+# bound to. Announced on the control channel, never mirrored. Spent once by
+# `scripts/emergency_close.py --confirm`.
+EMERGENCY_CLOSE_TARGET_PREFIX = "emergency_close:"
 
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
@@ -1218,6 +1227,94 @@ def build_execution_stage_permission_decision(
     return build_permission_decision(
         bound_task,
         permission_scope=EXECUTION_STAGE_PERMISSION_SCOPE,
+        required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+        role_permission_ceiling=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
+        now=now,
+        actor_id=actor_id,
+        ttl_minutes=ttl_minutes,
+        repo_root=repo_root,
+        action=action,
+        approval_id=approval_id,
+    )
+
+
+_EMERGENCY_CLOSE_POSITION_KEYS = ("position_id", "symbol", "direction", "quantity")
+
+
+def build_emergency_close_permission_decision(
+    bound_task: Mapping[str, Any],
+    *,
+    content: Mapping[str, Any],
+    now: str,
+    actor_id: str = "thomas.prime",
+    ttl_minutes: int = MVP_TTL_MINUTES,
+    repo_root: Path | None = None,
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the APPROVAL_REQUIRED PermissionDecision for one emergency close (crypto PR6c, Thomas
+    decision 49).
+
+    ``content`` is ``live_route.emergency_close_content``'s output: the HARD halt the close is bound
+    to (``halt_ref``, the switch door's ``stop_ref`` of that state), every booked position it closes
+    by id, symbol, side and quantity (a decimal string: the action fingerprint forbids floats), who
+    asks and why. All of it rides in ``normalized_parameters`` and ``content_sha256``, so a grant for
+    one set cannot close another (``invalidated_by_any_material_field_change``), and ``target_ref``
+    names the set.
+
+    RED: it sends real market orders. They only ever reduce: each is reduceOnly, sized from the book,
+    and sent only while the book and the venue agree on that position."""
+    halt_ref = content.get("halt_ref") if isinstance(content, Mapping) else None
+    positions = content.get("positions") if isinstance(content, Mapping) else None
+    if not (isinstance(halt_ref, str) and halt_ref):
+        raise PlannerBlocked("INVALID_EMERGENCY_CLOSE", "an emergency-close ask names the HARD halt it is bound to")
+    if not (isinstance(positions, list) and positions and all(
+            isinstance(p, Mapping) and all(isinstance(p.get(k), str) and p.get(k) for k in _EMERGENCY_CLOSE_POSITION_KEYS)
+            for p in positions)):
+        raise PlannerBlocked("INVALID_EMERGENCY_CLOSE",
+                             "an emergency-close ask names every position it closes by id, symbol, side and quantity")
+    for key in ("requested_by", "reason"):
+        if not (isinstance(content.get(key), str) and content[key].strip()):
+            raise PlannerBlocked("INVALID_EMERGENCY_CLOSE", f"an emergency-close ask carries {key}")
+    normalized = {
+        "halt_ref": halt_ref,
+        "positions": [{k: str(p[k]) for k in _EMERGENCY_CLOSE_POSITION_KEYS} for p in positions],
+        "requested_by": content["requested_by"].strip(),
+        "reason": content["reason"].strip(),
+    }
+    listing = ", ".join(f"{p['symbol']} {p['direction']} {p['quantity']}" for p in normalized["positions"])
+    action = _ActionSpec(
+        action_type="crypto.live.emergency_close",
+        target_suffix="emergency_close",
+        tool_id=None,
+        data_scope=("crypto.live_position_book", "runtime.control_state"),
+        normalized_parameters=normalized,
+        risk_reason=(
+            f"Closes {len(normalized['positions'])} booked live position(s) at market, reduceOnly: {listing}. "
+            "Each close realizes that position's result and pays taker fees and slippage, and cannot be "
+            f"undone. Bound to the HARD halt {halt_ref}: a changed halt refuses the spend. A position no "
+            "longer booked, or whose book or venue side or quantity differs from this list, is skipped "
+            "and reported, never resized. A position the venue holds that this runtime did not book is "
+            "not touched."
+        ),
+        authority_reason="Thomas asks for the emergency close; only Thomas may authorize it.",
+        decision_reason=(
+            "Closing live positions at market outside the strategies' own rules requires exact Thomas "
+            "approval on the verified control channel."
+        ),
+        constraint=(
+            "Single-use; spent once by scripts/emergency_close.py --confirm, run by the operator in the "
+            "scheduler container, only while this HARD halt is in effect. Sends reduceOnly market closes "
+            "for the listed positions and nothing else; each still passes the close guard (the live-trading "
+            "opt-in and the confirmation phrase) and the order adapter. Opens nothing, raises no cap, arms "
+            "no strategy, and clears no halt."
+        ),
+        target_ref=f"{EMERGENCY_CLOSE_TARGET_PREFIX}{integrity.short_id('emergency_close', normalized)}",
+        content_sha256=integrity.sha256_record(normalized),
+        risk_level="RED",
+    )
+    return build_permission_decision(
+        bound_task,
+        permission_scope=EMERGENCY_CLOSE_PERMISSION_SCOPE,
         required_permission_level=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         role_permission_ceiling=TRADING_SWITCH_REQUIRED_PERMISSION_LEVEL,
         now=now,

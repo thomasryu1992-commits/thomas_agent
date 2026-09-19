@@ -502,6 +502,29 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   control state for one. `/order/test` validation and cancels are not refused. The refusal sends
   nothing, the API error breaker does not count it, and the entry leg gives back the symbol it
   reserved. The signed testnet rehearsal runs under SOFT, as before, and stops under HARD.
+- **Emergency close (PR6c, Thomas decision 49, 2026-09-19):** closes every position this machine
+  has booked, at market and reduceOnly, on one single-use approval. `scripts/emergency_close.py`,
+  run by the operator in the scheduler container:
+  1. `--request` stores the ask. It is refused unless the HARD halt is in effect with the runtime
+     ACTIVE and something is booked. It binds that halt (the switch door's `stop_ref`) and every
+     booked position by id, symbol, side and a decimal quantity.
+  2. Thomas answers on the control channel. The ask is announced there and never mirrored, and
+     RUNTIME_GOVERNANCE caps it at 15 minutes.
+  3. `--confirm` spends it once. Before the spend, it refuses with nothing sent and the approval
+     left APPROVED on any of: another halt, a closed gate, no confirmation phrase, nothing still
+     booked, an unreadable account. The halt is checked again inside the spend lock.
+  4. Each position is then judged again just before its close. It is skipped, never resized, when
+     the halt moved (the rest are not attempted), when the book no longer holds it or holds another
+     side or quantity, or when the venue closed it or disagrees with the book. A venue position the
+     book does not hold is never touched.
+
+  The close is `live_leg.execute_live_exit` with close reason `emergency_close`, the leg every
+  runtime exit uses: brackets are withdrawn only after a confirmed close, the outcome is recorded,
+  and the order is audited under the purpose `emergency_close`. The halt is not cleared. Under HARD
+  the adapter refuses anything that is not reduceOnly (PR6b), so the path cannot add exposure. The
+  scheduler keeps managing positions under HARD and may close one first; that shows as a skip, or
+  as a reduceOnly order the venue rejects on a flat position. The assistant cannot ask for an
+  emergency close yet: a door verb for it is a policy change.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries

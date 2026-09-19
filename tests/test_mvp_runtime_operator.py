@@ -1267,6 +1267,31 @@ def test_an_execution_stage_ask_is_announced_on_the_control_channel_and_never_mi
     assert "--confirm --approval-id" in text and "승인 없이 즉시" in text
 
 
+@requires_local_core
+def test_an_emergency_close_ask_is_announced_on_the_control_channel_and_never_mirrored(tmp_path):
+    """Crypto PR6c: Thomas approves an emergency close on the control channel (decision 49); it is
+    not a switch-door ask, so the assistant's window never gets the copy."""
+    _register(tmp_path, chat_id="chat-registered")
+    store = ApprovalStore(tmp_path)
+    announce_pending_approvals(MockOperatorChannel(), store, now=_ANN_NOW, repo_root=tmp_path)
+    content = {"halt_ref": "stop_x", "requested_by": "thomas", "reason": "venue incident", "positions": [
+        {"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
+    task = build_task("긴급 청산 검토", now=_ANN_NOW, channel="manual", requester_id="Thomas")
+    _, bound = bind_task_to_core(task, now=_ANN_NOW)
+    permdec = _permission.build_emergency_close_permission_decision(bound, content=content, now=_ANN_NOW)
+    ask = _approval.build_approval_request(permdec, now=_ANN_NOW)
+    store.append([ask])
+    store.append_permission_decision(permdec)
+    primary, mirror = MockOperatorChannel(), MockOperatorChannel()
+
+    assert announce_pending_approvals(primary, store, now=_ANN_NOW, repo_root=tmp_path, mirror=mirror) == [
+        ask["approval_id"]]
+    assert len(primary.sent) == 1 and mirror.sent == []
+    _chat, text = primary.sent[0]
+    assert _permission.EMERGENCY_CLOSE_TARGET_PREFIX in text and "BTCUSDT LONG 0.002" in text
+    assert "--confirm --approval-id" in text and "되돌릴 수 있는가: 아니오" in text
+
+
 class _RefusingMirror(MockOperatorChannel):
     def send(self, chat_id: str, text: str) -> str | None:
         raise OperatorBlocked("NO_BOT_TOKEN", "environment variable HERMES_BOT_TOKEN is not set")
