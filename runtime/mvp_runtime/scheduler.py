@@ -1468,28 +1468,34 @@ def _execute(
             return f"{line} {venue_contract.refresh_verification(collector=collector, now=now, root=repo_root)}"
 
         # The venue contract notice (PR4b-2): the doors refuse on the record quietly, so the fire tells
-        # the operator once, on the edge — after this fire's own ask, so what it says is what the next
-        # fire's doors will read. The breaker watch's posture: channel selected at fire time, a transport
-        # failure reported and never raised, and the mark moved only once the message is delivered, so
-        # an edge that could not be sent is sent again at the next fire instead of lost.
+        # the operator once, on the edge — after this fire's own ask, so it says what the doors read
+        # from here on. The breaker watch's posture: channel selected at fire time, a transport failure
+        # reported and never raised, the told reading moved only once the message is delivered, and one
+        # the channel did not take kept on the mark as undelivered, so the next message says it even when
+        # the reading has returned by then.
         def _announce_venue_contract(line: str) -> str:
-            from . import operator as operator_mod
-            from .crypto import venue_contract
-
+            result: dict[str, Any] = {}
             try:
+                from . import operator as operator_mod
+                from .crypto import venue_contract
+
                 result = venue_contract.notice(repo_root, now=now)
                 if not result["changed"]:
                     return line
                 channel = operator_mod.select_operator_channel(now=now, root=repo_root)
                 operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
-            except MvpRuntimeError as exc:
-                return f"{line} venue contract notice not sent ({exc.reason_code})"
             except Exception as exc:  # noqa: BLE001 — a notice must not stop the fire
-                return f"{line} venue contract notice not sent ({type(exc).__name__})"
-            reading = result["state"]["reading"]
+                why = exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+                if result.get("changed"):
+                    try:
+                        venue_contract.note_undelivered(result, root=repo_root)
+                    except Exception as kept:  # noqa: BLE001 — told again only while the reading differs
+                        return f"{line} venue contract notice not sent ({why}), not kept ({type(kept).__name__})"
+                return f"{line} venue contract notice not sent ({why})"
+            reading = (result.get("state") or {}).get("reading")
             try:
                 venue_contract.write_notice_mark(result["state"], root=repo_root)
-            except Exception as exc:  # noqa: BLE001 — sent; the next fire may send it again
+            except Exception as exc:  # noqa: BLE001 — sent; sent again every fire until it is marked
                 return f"{line} venue contract notice sent ({reading}), mark not written ({type(exc).__name__})"
             return f"{line} venue contract notice sent ({reading})"
 

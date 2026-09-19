@@ -29,19 +29,25 @@ Append a new entry when a milestone ships, in the same PR.
   - **The change:** after the sentinel's own ask, the pipeline fire compares what the doors would
     answer about the decided record (usable, or the refusal's code) with what the operator was last
     told, and sends one message when it moved (`venue_contract.notice`, mark
-    `venue_contract_notice.json`). The sentinel's entry-id query asks for the first symbol the entry
-    test was actually sent for.
+    `venue_contract_notice.json`). The sentinel's entry-id query asks for an id that could name an
+    order: the first symbol whose entry test was accepted, else the first left unanswered.
   - **Why on the edge, in the pipeline fire:** PR4b made a FAIL, a stale or a damaged record refuse
     every mainnet entry, and nothing told an operator — the board showed it, each refused decision
     recorded it. The fire that asks the venue is the one that knows first, and a notice after its
-    ask says what the next fire's doors will read. A new schedule kind would have needed a
-    registration on the host before it said anything.
-  - **Why the mark moves only after delivery:** the breaker watch's posture. An edge the channel did
-    not take is sent again at the next fire instead of lost; one that was sent and could not be
-    marked may be sent twice, which is the cheaper error.
-  - **Why the first sent symbol:** the entry-id query asked for the first budget symbol's id even
-    when that symbol's entry test had been skipped for want of a price, and read "nothing sent" as a
-    PASS while the next symbol's request had gone out.
+    ask says what the doors read from there on. A new schedule kind would have needed a registration
+    on the host before it said anything.
+  - **Why the told reading moves only after delivery, and what the channel did not take waits on the
+    mark:** the breaker watch's posture, missed transitions included. Without the waiting list, a FAIL
+    whose send failed and whose next ask came back PASS would never be told, though it refused the
+    entries of the fire between (review of #904). One that was sent and could not be marked is sent
+    again every fire until it can be: the loud error, not the silent one.
+  - **Why a FAIL naming other checks is a change:** the operator who fixed what the last FAIL named
+    is told what the next one names, as the breaker watch re-announces when its problems change.
+  - **Why the id asked for is one that could name an order:** the query asked for the first budget
+    symbol's id even when that symbol's test had been skipped, refused by the venue, or refused by the
+    builder before it left, and read "not found" as a PASS while the next symbol's accepted MARKET BUY
+    — the one a path that drifted to the order endpoint would have filled — was never asked about
+    (review of #904). A builder refusal is now recorded as not sent.
   - **Not done, on the record:** recording the algo query's raw venue code. `fetch_order` reads both
     -2013 and a body that is not an object as "not found", and so does the money path that relies on
     the answer; the observed check asks exactly that question. Making `fetch_order` raise on a

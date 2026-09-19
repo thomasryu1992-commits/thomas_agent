@@ -692,17 +692,17 @@ def check_entry_left_no_order(found: Any, *, sent: bool, failure: Mapping[str, A
     The entry test is the runtime's executable MARKET BUY in all but its path; an order found under
     its id means the validator created one — a path that no longer points at ``/order/test`` — and a
     filled order leaves nothing resting for :func:`check_nothing_resting` to see. Not sent (no price,
-    no filters, no budget) is a PASS with nothing to find: no id, no order. A query that could not be
-    answered, or answered with a code the reader does not take as "not found", is UNVERIFIED.
-    ``symbol`` names whose id was asked for (PR4b-2)."""
+    no filters, no budget, a refusal by the venue or the builder) is a PASS with nothing to find: no
+    order can carry the id. A query that could not be answered, or answered with a code the reader does
+    not take as "not found", is UNVERIFIED. ``symbol`` names whose id was asked for (PR4b-2)."""
     expected = "no order under the entry test's own id"
     asked = {"symbol": symbol} if symbol is not None else {}
     if not sent:
         return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected, observed={"sent": False},
-                      detail="no entry test was sent, so none can have left an order")
+                      detail="no entry test was accepted or left unanswered, so none can have left an order")
     if failure is not None:
         return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_UNVERIFIED, expected=expected,
-                      observed={**asked, **failure}, detail="the order could not be asked for")
+                      observed={"sent": True, **asked, **failure}, detail="the order could not be asked for")
     if found is None:
         return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected,
                       observed={"sent": True, **asked, "answer": "not_found"})
@@ -736,6 +736,29 @@ def check_nothing_resting(plain: Sequence[Mapping[str, Any]] | None, algo: Seque
 
 def _observed(check_id: str, expected: str, observed: Mapping[str, Any], detail: str = "") -> dict[str, Any]:
     return _check(check_id, RESULT_OBSERVED, expected=expected, observed=observed, detail=detail)
+
+
+def _entry_id_symbol(symbols: Sequence[str], entries: Mapping[str, Any]) -> str | None:
+    """Whose entry-test id could name an order (PR4b-2 review): the first symbol whose request the
+    validator accepted — on a path that drifted to the order endpoint, that one filled; else the first
+    whose outcome is unknown — the call was made and no answer of the venue's came back, or a 5xx did,
+    which an order endpoint also answers when it does not know. A request the venue refused, or one
+    that never left the process, created nothing, and its id is not worth the call."""
+    def entry(symbol: str) -> Mapping[str, Any]:
+        value = entries.get(symbol)
+        return value if isinstance(value, Mapping) else {}
+
+    for symbol in symbols:
+        if entry(symbol).get("sent") is True and entry(symbol).get("accepted") is True:
+            return symbol
+    for symbol in symbols:
+        answer = entry(symbol)
+        status = answer.get("http_status")
+        unanswered = "accepted" not in answer and "venue_code" not in answer
+        server_side = isinstance(status, int) and not isinstance(status, bool) and 500 <= status <= 599
+        if answer.get("sent") is True and (unanswered or server_side):
+            return symbol
+    return None
 
 
 def _validator_answer(answer: Any) -> dict[str, Any]:
@@ -882,8 +905,15 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
             continue
         entry_intent = {"symbol": symbol, "side": "BUY", "order_type_exchange": "MARKET", "quantity": quantity,
                         "reduce_only": False, "client_order_id": _sentinel_id("E", now, symbol)}
-        answer, failure = ask(lambda t: adapter.validate_order(build_order_request(entry_intent), timeout_seconds=t),
-                              validator=True)
+        # Built before the call: a builder refusal is this symbol's answer, not the run's end — and
+        # nothing left the process, so nothing was sent (PR4b-2 review).
+        try:
+            entry_request = build_order_request(entry_intent)
+        except Exception as exc:  # noqa: BLE001 — see the comment above
+            entries[symbol] = {"sent": False, **(_failure(exc) if isinstance(exc, MvpRuntimeError)
+                                                 else {"error": type(exc).__name__})}
+            continue
+        answer, failure = ask(lambda t: adapter.validate_order(entry_request, timeout_seconds=t), validator=True)
         # "Sent" whenever the call was made at all: a request that timed out may still have reached the
         # venue, and that is exactly the one whose id must be asked for afterwards.
         attempted = failure is None or failure.get("error") not in (RUN_STOPPED, RUN_BUDGET_SPENT)
@@ -924,16 +954,16 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
                             failure if failure is not None else {"answer": "not_found" if found is None else "found"}))
 
     # 8-9. The last three judged reads, on the budget kept for them: the entry test's own id (a filled
-    # order rests nowhere), then everything resting. The id is the first symbol's the entry test was
-    # actually sent for: a first symbol skipped for want of a price left nothing to find under its id,
-    # while the next one's request went out (PR4b-2).
-    sent_for = next((s for s in symbols if (entries.get(s) or {}).get("sent")), None)
-    if sent_for is not None:
-        entry_id = _sentinel_id("E", now, sent_for)
-        found, failure = ask(lambda t: adapter.fetch_order(sent_for, entry_id, timeout_seconds=t), reserve=0.0)
+    # order rests nowhere), then everything resting. The id is one that could name an order
+    # (:func:`_entry_id_symbol`, PR4b-2): a first symbol skipped, refused by the venue or by the builder
+    # left nothing under its id, while the next one's request may have.
+    asked_for = _entry_id_symbol(symbols, entries)
+    if asked_for is not None:
+        entry_id = _sentinel_id("E", now, asked_for)
+        found, failure = ask(lambda t: adapter.fetch_order(asked_for, entry_id, timeout_seconds=t), reserve=0.0)
     else:
         found, failure = None, None
-    checks.append(check_entry_left_no_order(found, sent=sent_for is not None, failure=failure, symbol=sent_for))
+    checks.append(check_entry_left_no_order(found, sent=asked_for is not None, failure=failure, symbol=asked_for))
     plain, plain_failure = ask(lambda t: adapter.open_orders(None, timeout_seconds=t), reserve=0.0)
     algo_rows, algo_failure = ask(lambda t: adapter.algo_open_orders(None, timeout_seconds=t), reserve=0.0)
     failures = {**({"plain": plain_failure} if plain_failure else {}), **({"algo": algo_failure} if algo_failure else {})}
@@ -1035,12 +1065,16 @@ def status_line(mark: Mapping[str, Any]) -> str:
 #
 # The doors refuse on the record quietly: a FAIL, a stale or a damaged record shows on the board and
 # in each refused decision, and nowhere an operator is told. The pipeline fire says so once, on the
-# edge — when what the doors would answer about the record changes — and nothing while it holds. The
-# mark moves only once the channel has taken the message, so an edge that could not be delivered is
-# sent again at the next fire rather than lost (the breaker watch's posture).
+# edge — when what the doors would answer about the record changes, or a FAIL names other checks — and
+# nothing while it holds. The told reading moves only once the channel has taken the message; one it
+# did not take is kept on the mark as undelivered and said with the next message, even when the
+# reading has returned by then (the breaker watch's missed transitions).
 
 NOTICE_FILENAME = "venue_contract_notice.json"
 READING_USABLE = "USABLE"
+# Undelivered changes kept on the mark, newest last: enough for a channel that is down for hours on a
+# venue that flaps, bounded so a mark cannot grow without end.
+UNDELIVERED_KEPT = 10
 
 _READING_TEXT = {
     READING_USABLE: "usable - mainnet entries are backed (the stage and every other door still apply)",
@@ -1050,7 +1084,8 @@ _READING_TEXT = {
                              "the next fire verifies under this one"),
     ENTRY_CONTRACT_NOT_PASS: ("FAIL - the venue contradicted what the runtime assumes; every mainnet entry is "
                               "refused, and the next fire asks again"),
-    ENTRY_CONTRACT_STALE: "STALE - no PASS for six hours; every mainnet entry is refused",
+    ENTRY_CONTRACT_STALE: ("STALE - no usable PASS within six hours of this fire, or one dated ahead of its "
+                           "clock; every mainnet entry is refused"),
 }
 
 
@@ -1087,11 +1122,34 @@ def entry_reading(root: Path | None = None, *, now: str) -> dict[str, Any]:
     }
 
 
-def render_notice(current: Mapping[str, Any], previous: Mapping[str, Any] | None) -> str:
-    """The operator-facing message. ASCII only, like every other channel render."""
+def _names(value: Any) -> list[str]:
+    return sorted(str(v) for v in value) if isinstance(value, list) else []
+
+
+def _moved(told: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """Whether the doors' reading moved since ``told``: another reading, or a FAIL that now names other
+    checks — the operator who fixed what the last FAIL named is told the next one's (the breaker watch
+    re-announces when the problems it names change)."""
+    if told.get("reading") != current.get("reading"):
+        return True
+    return current.get("reading") == ENTRY_CONTRACT_NOT_PASS and \
+        _names(told.get("failed_checks")) != _names(current.get("failed_checks"))
+
+
+def _undelivered(mark: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    rows = mark.get("undelivered") if isinstance(mark, Mapping) else None
+    return [dict(row) for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
+
+
+def render_notice(current: Mapping[str, Any], previous: Mapping[str, Any] | None,
+                  *, missed: Sequence[Mapping[str, Any]] = ()) -> str:
+    """The operator-facing message. ASCII only, like every other channel render. ``previous`` is the
+    reading the operator was last told; ``missed`` the changes the channel did not take since."""
     reading = current.get("reading")
     if previous is None:
         headline = "CRYPTO VENUE CONTRACT - first report"
+    elif not _moved(previous, current):
+        headline = "CRYPTO VENUE CONTRACT - a change was not delivered when it happened"
     elif reading == READING_USABLE:
         headline = "CRYPTO VENUE CONTRACT USABLE - mainnet entries are backed again"
     elif previous.get("reading") == READING_USABLE:
@@ -1101,6 +1159,10 @@ def render_notice(current: Mapping[str, Any], previous: Mapping[str, Any] | None
     lines = [headline, f"  now      : {_READING_TEXT.get(str(reading), reading)}"]
     if previous is not None:
         lines.append(f"  was      : {previous.get('reading')} (told at {previous.get('announced_at')})")
+    for row in missed:
+        failed = _names(row.get("failed_checks"))
+        lines.append(f"  missed   : {row.get('reading')} at {row.get('at')}"
+                     + (f" (failed: {', '.join(failed)})" if failed else "") + " - not delivered then")
     if current.get("error"):
         lines.append(f"  record   : unreadable ({current['error']})")
     elif current.get("status") is not None:
@@ -1114,31 +1176,54 @@ def render_notice(current: Mapping[str, Any], previous: Mapping[str, Any] | None
 
 
 def notice(root: Path | None = None, *, now: str) -> dict[str, Any]:
-    """Whether the doors' reading moved since the operator was last told (``changed``), the message
-    (``text``) and the mark to write once it is delivered (``state``). Never raises."""
+    """Whether there is something to tell (``changed``): the doors' reading moved since the operator
+    was last told, or a change the channel did not take is waiting. The message (``text``) and the mark
+    to write once it is delivered (``state``), which clears what was waiting. Never raises."""
     current = entry_reading(root, now=now)
-    previous = read_notice_mark(root)
-    changed = previous is None or previous.get("reading") != current["reading"]
-    return {"changed": changed, "text": render_notice(current, previous) if changed else "",
+    mark = read_notice_mark(root)
+    told = mark if mark is not None and isinstance(mark.get("reading"), str) else None
+    missed = _undelivered(mark)
+    if missed and not _moved(missed[-1], current):
+        missed = missed[:-1]      # the last change not delivered is what "now" says: a retry reads as the original
+    changed = told is None or _moved(told, current) or bool(missed)
+    return {"changed": changed, "text": render_notice(current, told, missed=missed) if changed else "",
             "state": {**current, "announced_at": now}}
 
 
 def write_notice_mark(state: Mapping[str, Any], *, root: Path | None = None) -> None:
+    """The reading the operator has now been told; what was waiting is cleared with it."""
     _write_json(notice_mark_path(root), state, code="VENUE_CONTRACT_NOTICE_LOCKED",
                 label="venue contract notice mark")
+
+
+def note_undelivered(result: Mapping[str, Any], *, root: Path | None = None) -> None:
+    """A notice the channel did not take: its reading kept on the mark as undelivered — the told
+    reading unchanged — so the next message says it even when the reading has returned by then.
+    Raises on a mark it cannot write, like :func:`write_notice_mark`."""
+    state = result.get("state") if isinstance(result, Mapping) else None
+    if not isinstance(state, Mapping) or not state.get("reading"):
+        return
+    mark = read_notice_mark(root) or {}
+    row = {"reading": state.get("reading"), "failed_checks": _names(state.get("failed_checks")),
+           "at": state.get("announced_at")}
+    rows = _undelivered(mark)
+    if not rows or (rows[-1].get("reading"), _names(rows[-1].get("failed_checks"))) != \
+            (row["reading"], row["failed_checks"]):
+        rows.append(row)
+    _write_json(notice_mark_path(root), {**mark, "undelivered": rows[-UNDELIVERED_KEPT:]},
+                code="VENUE_CONTRACT_NOTICE_LOCKED", label="venue contract notice mark")
 
 
 __all__ = [
     "CHECK_IDS", "CONTRACT_VERSION", "ENTRY_CONTRACT_CODES", "ENTRY_CONTRACT_MISSING", "ENTRY_CONTRACT_NOT_PASS",
     "ENTRY_CONTRACT_STALE", "ENTRY_CONTRACT_SYMBOL", "ENTRY_CONTRACT_UNREADABLE", "ENTRY_CONTRACT_VERSION",
-    "ENTRY_FACT_FIELDS", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED",
-    "NOTICE_FILENAME", "OBSERVED_CHECKS", "READING_USABLE", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS",
-    "SENTINEL_ID_PREFIX",
+    "ENTRY_FACT_FIELDS", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED", "NOTICE_FILENAME", "OBSERVED_CHECKS",
+    "READING_USABLE", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS", "SENTINEL_ID_PREFIX", "UNDELIVERED_KEPT",
     "STATUS_FAIL", "STATUS_PASS", "STATUS_UNVERIFIED", "VENUE_CONTRACT_INVALID", "VENUE_CONTRACT_TAMPERED",
     "VENUE_CONTRACT_UNREADABLE", "build_record", "check_conditional_refused", "check_entry_left_no_order",
     "check_exchange_info", "check_leverage", "check_nothing_resting", "check_position_mode", "covers",
     "entry_fact", "entry_reading", "entry_refusal", "is_due", "judge", "legacy_conditional_probe", "notice",
-    "notice_mark_path", "read_notice_mark", "read_refresh_mark", "read_verification", "refresh_due",
+    "note_undelivered", "notice_mark_path", "read_notice_mark", "read_refresh_mark", "read_verification", "refresh_due",
     "refresh_verification", "render_notice", "run_checks", "status_line", "verification_status",
     "write_notice_mark",
 ]

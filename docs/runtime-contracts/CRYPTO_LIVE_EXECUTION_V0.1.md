@@ -214,9 +214,10 @@ venue itself.
   - configured leverage at most the backtests' 5x (decision 45), read from the account snapshot this
     lane refreshes every 15 minutes, and judged only on a snapshot at most 45 minutes old;
   - the entry test left no order: the entry test's own id, asked of the order API afterwards, names
-    nothing (a filled order rests nowhere, so only its id can find it). The id asked for is the first
-    symbol's the entry test was actually sent for (PR4b-2): a first symbol skipped for want of a
-    price leaves nothing under its id;
+    nothing (a filled order rests nowhere, so only its id can find it). The id asked for is one that
+    could name an order (PR4b-2): the first symbol whose entry test the venue accepted, else the first
+    left unanswered (no answer of the venue's, or a 5xx). A request skipped, refused by the venue or
+    refused by the builder before it left created nothing; none of those is asked for;
   - nothing the sentinel sent is resting.
 - **Observed checks** are recorded and never judged until the host's answers are known: the
   runtime's MARKET entry and a reduce-only take-profit LIMIT twice the `PERCENT_PRICE` band away
@@ -263,11 +264,16 @@ venue itself.
 - **The operator is told on the edge (PR4b-2).** The doors refuse on the record quietly, so after
   its own ask the pipeline fire compares what the doors would answer about the record (usable, or
   the refusal's code) with what the operator was last told, and sends one message when it moved:
-  a PASS turning FAIL (with the failed checks), a PASS going stale, a damaged record, a FAIL
-  recovering, a first report after the mark is new. Nothing while it holds. The mark
-  (`venue_contract_notice.json`) moves only once the operator channel took the message, so an edge
-  that could not be delivered is sent again at the next fire (the breaker watch's posture). A
-  transport failure is on the fire's status line and never stops the fire.
+  a PASS turning FAIL (with the failed checks), a FAIL that now names other checks, a PASS going
+  stale, a damaged record, a FAIL recovering, and a first report when there is no mark or it cannot
+  be read. Nothing while it holds. The told reading (`venue_contract_notice.json`) moves only once
+  the operator channel took the message. One it did not take is kept on the mark as undelivered and
+  said with the next message, even when the reading has returned by then (the breaker watch's missed
+  transitions). A message sent but not marked is sent again at every fire until the mark can be
+  written: loud, never silent. A transport failure is on the fire's status line and never stops the
+  fire; each socket operation of the send is bounded by the channel's 30 s timeout, after every
+  trading step of the fire. The reading is the record's alone: a budget symbol the record does not
+  name is on the board and asked sooner, and is not a notice.
 - **Not stopped by** the PAPER stage or the manual kill switch env — it places nothing; the scheduler's
   own kill/pause stops the fire it rides. Revoking it is unsetting `MVP_LIVE_TRADING` and restarting.
 

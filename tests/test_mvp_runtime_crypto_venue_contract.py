@@ -77,6 +77,7 @@ class _Adapter:
     def __init__(self, *, conditional=MOVED, hedge=False, resting=(), algo_resting=(), fail=(),
                  found=None, raise_on=None):
         self.calls: list[tuple] = []
+        self.fetched: list[tuple] = []      # (symbol, id, algo): GET /fapi/v1/order looks up per symbol
         self.conditional = conditional
         self.hedge = hedge
         self.resting = list(resting)
@@ -105,6 +106,7 @@ class _Adapter:
 
     def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
         self.calls.append(("fetch_order", client_order_id, algo))
+        self.fetched.append((symbol, client_order_id, algo))
         self._maybe_fail("fetch_order")
         return self.found.get(client_order_id)
 
@@ -1017,7 +1019,7 @@ def test_the_entry_id_asked_for_is_the_first_symbol_the_entry_test_was_sent_for(
     assert "skipped" in entries["BTCUSDT"] and entries["ETHUSDT"]["sent"] is True
     eth_id = next(c[1]["newClientOrderId"] for c in adapter.calls if c[0] == "validate_order"
                   and c[1].get("type") == "MARKET" and c[1].get("symbol") == "ETHUSDT")
-    assert [c[1] for c in adapter.calls if c[0] == "fetch_order" and c[2] is False] == [eth_id]
+    assert [f for f in adapter.fetched if f[2] is False] == [("ETHUSDT", eth_id, False)]
     check = _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]
     assert check["result"] == "PASS"
     assert check["observed"] == {"sent": True, "symbol": "ETHUSDT", "answer": "not_found"}
@@ -1073,7 +1075,7 @@ def test_a_pass_that_goes_stale_is_told_without_any_new_record(tmp_path):
     assert vc.notice(tmp_path, now="2026-09-19T13:10:00Z")["changed"] is False       # six hours: still usable
     stale = vc.notice(tmp_path, now="2026-09-19T13:10:01Z")
     assert stale["changed"] is True and stale["state"]["reading"] == vc.ENTRY_CONTRACT_STALE
-    assert "STALE - no PASS for six hours" in stale["text"]
+    assert "STALE - no usable PASS within six hours of this fire" in stale["text"]
 
 
 def test_a_reason_that_changes_while_refusing_is_told_and_a_damaged_record_is_named(tmp_path):
@@ -1140,8 +1142,220 @@ def test_the_pipeline_fire_tells_the_operator_once_on_the_edge_and_again_after_a
 
     assert fire("2026-07-22T13:00:00Z").endswith(
         "venue contract: PASS venue contract notice not sent (RuntimeError)")
-    assert vc.read_notice_mark(tmp_path) is None and sent == []
+    waiting = vc.read_notice_mark(tmp_path)
+    assert "reading" not in waiting and [r["reading"] for r in waiting["undelivered"]] == ["USABLE"]
+    assert sent == []
     down["transport"] = False
     assert fire("2026-07-22T13:15:00Z").endswith("venue contract: PASS venue contract notice sent (USABLE)")
     assert len(sent) == 1 and sent[0].startswith("CRYPTO VENUE CONTRACT - first report")
+    assert "missed" not in sent[0], "a retry of the same reading reads as the original"
     assert "venue contract notice" not in fire("2026-07-22T13:30:00Z") and len(sent) == 1
+    told = vc.read_notice_mark(tmp_path)
+    assert told["announced_at"] == "2026-07-22T13:15:00Z" and "undelivered" not in told, "a quiet fire writes nothing"
+
+
+# --- which entry-test id is asked for (review of #904) --------------------------------------------
+
+REFUSED = {"accepted": False, "code": -4131,
+           "msg": "The counterparty's best price does not meet the PERCENT_PRICE filter limit."}
+FILLED = {"status": "FILLED"}
+
+
+class _EntryAnswers(_Adapter):
+    """The MARKET entry test answered per symbol as scripted (an answer, or an exception to raise);
+    every other request as the plain double does."""
+
+    def __init__(self, answers=None, **kwargs):
+        super().__init__(**kwargs)
+        self.answers = answers or {}
+
+    def validate_order(self, request, *, timeout_seconds=10):
+        scripted = self.answers.get(request.get("symbol")) if request.get("type") == "MARKET" else None
+        if scripted is None:
+            return super().validate_order(request, timeout_seconds=timeout_seconds)
+        self.calls.append(("validate_order", dict(request)))
+        if isinstance(scripted, BaseException):
+            raise scripted
+        return dict(scripted)
+
+
+@pytest.mark.parametrize("btc", [REFUSED, ValueError("could not encode the request")],
+                         ids=["venue-refused", "adapter-raised"])
+def test_the_id_asked_for_is_the_one_the_venue_accepted_so_a_filled_order_is_found(btc):
+    """BTC's entry test was refused, or failed in a way the venue never answered; ETH's was accepted —
+    on a path that drifted to the order endpoint, ETH's is the MARKET BUY that filled."""
+    eth_id = vc._sentinel_id("E", NOW, "ETHUSDT")
+    adapter = _EntryAnswers({"BTCUSDT": btc}, found={eth_id: {**FILLED, "clientOrderId": eth_id}})
+    checks = _run(adapter)
+    assert [f for f in adapter.fetched if f[2] is False] == [("ETHUSDT", eth_id, False)]
+    assert _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]["result"] == "FAIL"
+    assert vc.judge(checks) == vc.STATUS_FAIL
+
+
+def test_a_builder_refusal_is_not_sent_and_the_next_symbol_s_id_is_asked_for(monkeypatch):
+    from runtime.mvp_runtime.crypto import live_execution
+
+    real = live_execution.build_order_request
+
+    def build(intent):
+        if intent.get("symbol") == "BTCUSDT" and intent.get("order_type_exchange") == "MARKET":
+            raise ToolError("MALFORMED_INTENT", "scripted builder refusal")
+        return real(intent)
+
+    monkeypatch.setattr(live_execution, "build_order_request", build)
+    eth_id = vc._sentinel_id("E", NOW, "ETHUSDT")
+    adapter = _Adapter(found={eth_id: {**FILLED, "clientOrderId": eth_id}})
+    checks = _run(adapter)
+    assert _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]["BTCUSDT"] == \
+        {"sent": False, "error": "MALFORMED_INTENT"}
+    assert not any(c[0] == "validate_order" and c[1].get("symbol") == "BTCUSDT" and c[1].get("type") == "MARKET"
+                   for c in adapter.calls)
+    assert [f for f in adapter.fetched if f[2] is False] == [("ETHUSDT", eth_id, False)]
+    assert _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]["result"] == "FAIL"
+
+
+def test_entry_tests_the_venue_refused_leave_no_id_worth_asking_for():
+    adapter = _EntryAnswers({symbol: REFUSED for symbol in SYMBOLS})
+    check = _by_id(_run(adapter))[vc.CHECK_ENTRY_LEFT_NO_ORDER]
+    assert [f for f in adapter.fetched if f[2] is False] == []
+    assert check["result"] == "PASS" and check["observed"] == {"sent": False}
+    assert "accepted or left unanswered" in check["detail"]
+
+
+@pytest.mark.parametrize("btc", [ToolError("ORDER_TRANSPORT", "live order request failed or timed out"),
+                                 {"accepted": False, "code": None, "msg": "Service unavailable", "http_status": 503}],
+                         ids=["transport", "5xx"])
+def test_an_entry_test_left_unanswered_is_the_one_asked_for(btc):
+    """No answer of the venue's, or a 5xx an order endpoint gives when it does not know either: the
+    request may have landed. It also stops the run, so the query is not made and the check cannot pass."""
+    adapter = _EntryAnswers({"BTCUSDT": btc})
+    checks = _run(adapter)
+    entries = _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]
+    assert entries["BTCUSDT"]["sent"] is True and entries["ETHUSDT"]["error"] == vc.RUN_STOPPED
+    check = _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]
+    assert check["result"] == "UNVERIFIED"
+    assert (check["observed"]["sent"], check["observed"]["symbol"], check["observed"]["error"]) == \
+        (True, "BTCUSDT", vc.RUN_STOPPED)
+
+
+# --- the notice: what the review of #904 pinned ----------------------------------------------------
+
+def _pipeline(tmp_path, monkeypatch, *, request="", refresh=None, notify=None):
+    """A crypto pipeline schedule on a temp root, fired at a given time; the fire's status comes back."""
+    from runtime.mvp_runtime import operator as operator_mod
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
+
+    monkeypatch.setattr(account_store, "refresh_snapshot", lambda **_: "account snapshot: stub")
+    monkeypatch.setattr(vc, "refresh_verification", refresh or (lambda **_: "venue contract: PASS"))
+    if notify is not None:
+        monkeypatch.setattr(operator_mod, "select_operator_channel", lambda **_: "channel")
+        monkeypatch.setattr(operator_mod, "notify_operator", notify)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_CRYPTO, request=request, interval_seconds=900, created_by="op",
+                             now="2026-07-22T11:00:00Z"))
+
+    def fire(now):
+        summary = run_due(store, now=now, control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path)
+        return summary["results"][0]["status"]
+
+    return fire
+
+
+def test_a_change_the_channel_did_not_take_is_told_even_after_the_reading_returned(tmp_path, monkeypatch):
+    """USABLE told; a FAIL the next fire could not deliver; a PASS at the fire after. That FAIL refused
+    the entries of the fire between, so the operator hears of it."""
+    from tests._helpers import record_venue_contract
+
+    sent, down = [], {"on": False}
+
+    def notify(channel, text, **_):
+        if down["on"]:
+            raise RuntimeError("scripted transport failure")
+        sent.append(text)
+
+    answers = {"2026-07-22T13:00:00Z": (), "2026-07-22T13:15:00Z": ("position_mode",), "2026-07-22T13:30:00Z": ()}
+
+    def refresh(*, collector, now, root):
+        record_venue_contract(root, ["BTCUSDT"], verified_at=now, failed=answers[now])
+        return "venue contract: stub"
+
+    fire = _pipeline(tmp_path, monkeypatch, refresh=refresh, notify=notify)
+    fire("2026-07-22T13:00:00Z")
+    down["on"] = True
+    assert fire("2026-07-22T13:15:00Z").endswith("venue contract notice not sent (RuntimeError)")
+    down["on"] = False
+    assert fire("2026-07-22T13:30:00Z").endswith("venue contract notice sent (USABLE)")
+    assert len(sent) == 2
+    assert sent[1].startswith("CRYPTO VENUE CONTRACT - a change was not delivered when it happened")
+    assert ("  missed   : LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS at 2026-07-22T13:15:00Z (failed: position_mode)"
+            " - not delivered then") in sent[1]
+    assert "undelivered" not in vc.read_notice_mark(tmp_path)
+
+
+def test_a_fail_that_names_other_checks_is_told_and_one_that_holds_is_not(tmp_path):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW, failed=("configured_leverage",))
+    _told(tmp_path, NOW)
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-09-19T07:25:00Z", failed=("exchange_info",))
+    other = _told(tmp_path, "2026-09-19T07:26:00Z")
+    assert other["changed"] is True
+    assert other["text"].startswith("CRYPTO VENUE CONTRACT - still not usable, for another reason")
+    assert "failed: exchange_info" in other["text"]
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-09-19T07:40:00Z", failed=("exchange_info",))
+    assert vc.notice(tmp_path, now="2026-09-19T07:41:00Z")["changed"] is False
+
+
+@pytest.mark.parametrize("body", ["[]", '"USABLE"', "1", "null"])
+def test_a_mark_that_is_not_an_object_reads_as_never_told(tmp_path, body):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    path = vc.notice_mark_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    result = vc.notice(tmp_path, now=NOW)
+    assert result["changed"] is True and result["text"].startswith("CRYPTO VENUE CONTRACT - first report")
+
+
+def test_the_single_symbol_fire_also_tells_after_its_own_ask(tmp_path, monkeypatch):
+    from tests._helpers import record_venue_contract
+
+    sent = []
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-22T12:59:00Z")
+    fire = _pipeline(tmp_path, monkeypatch, request="ETHUSDT 4h", notify=lambda channel, text, **_: sent.append(text))
+    assert fire("2026-07-22T13:00:00Z").endswith("venue contract: PASS venue contract notice sent (USABLE)")
+    assert len(sent) == 1
+
+
+def test_a_notice_sent_but_not_marked_never_stops_the_fire_and_is_sent_again(tmp_path, monkeypatch):
+    """Loud, not silent: every fire sends it again until the mark can be written."""
+    from runtime.mvp_runtime.errors import PersistenceError
+    from tests._helpers import record_venue_contract
+
+    sent = []
+
+    def refuse(state, *, root=None):
+        raise PersistenceError("VENUE_CONTRACT_NOTICE_LOCKED", "scripted: the lock cannot be opened")
+
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-22T12:59:00Z")
+    fire = _pipeline(tmp_path, monkeypatch, notify=lambda channel, text, **_: sent.append(text))
+    monkeypatch.setattr(vc, "write_notice_mark", refuse)
+    for now in ("2026-07-22T13:00:00Z", "2026-07-22T13:15:00Z"):
+        assert fire(now).endswith("venue contract notice sent (USABLE), mark not written (PersistenceError)")
+    assert len(sent) == 2
+
+
+def test_without_an_operator_registration_the_notice_says_why_and_is_kept(tmp_path, monkeypatch):
+    """The real channel selection: no registration is the channel's typed refusal, named on the status
+    line; the change waits on the mark."""
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-22T12:59:00Z")
+    fire = _pipeline(tmp_path, monkeypatch)
+    for now in ("2026-07-22T13:00:00Z", "2026-07-22T13:15:00Z"):
+        assert fire(now).endswith("venue contract notice not sent (REGISTRATION_MISSING)")
+    mark = vc.read_notice_mark(tmp_path)
+    assert "reading" not in mark and [r["reading"] for r in mark["undelivered"]] == ["USABLE"]
