@@ -332,7 +332,8 @@ def run_live_leg(
         # None when the gate never opened — this leg then read nothing, the stage included.
         "execution_stage": None,
         # The gate's two operator switches as this leg read them (PR5a). None when the gate never
-        # opened, like the stage.
+        # opened, like the stage — and when the leg stopped before it read its limits (a foreign
+        # root run, an unreadable budget: BLOCKED).
         "live_gate": None,
     }
 

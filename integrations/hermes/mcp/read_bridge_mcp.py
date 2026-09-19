@@ -38,7 +38,7 @@ without being part of the value. A list can go stale again, so a runtime test
 (`test_live_entry_possible_is_the_four_fields_the_read_shim_names`) fails when a fifth joins.
 
 v2.12 (2026-09-19): the runtime computes `live_entry_possible` from the readiness state (crypto
-PR5a): ten named components, each true, false or null, and the value is their three-valued AND,
+PR5a): named components, each true, false or null, and the value is their three-valued AND,
 with `readiness.blocking` and `readiness.unknown` naming what refuses and what cannot be seen. The
 fifth condition 2.11 guarded against arrived with several more — the kill and the disarm, the
 breakers, the account, the last cycle — so the description names those lists instead of their

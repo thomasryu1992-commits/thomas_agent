@@ -790,12 +790,19 @@ def test_the_armed_set_is_a_row(tmp_path, clean_env):
 
 
 def test_an_arm_that_can_trade_is_not_called_one_that_cannot(tmp_path, clean_env):
+    from runtime.mvp_runtime.approval_store import ApprovalStore
     from runtime.mvp_runtime.crypto.strategy import StrategySpec
-    from tests._helpers import stamped_pool_entry
+    from tests._helpers import live_arm_approval, stamped_pool_entry
 
     entry = _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE)
     entry["strategy_rule_hash"] = StrategySpec.from_dict(entry["strategy_spec"]).strategy_rule_hash
+    entry["promoted_at"] = "2026-07-27T23:55:00Z"
     armed = stamped_pool_entry(entry)
+    # The approval Thomas answered to arm it, which the gate verifies at order time (review of #906).
+    approval = live_arm_approval(("c_S1",), (armed["strategy_rule_hash"],),
+                                 artifacts=(armed[pool_store.ARTIFACT_SHA256_FIELD],))
+    ApprovalStore.default(tmp_path).append([approval])
+    armed[pool_store.LIVE_TIER_APPROVAL_FIELD] = approval["approval_id"]
     _write_pool(tmp_path, armed, _pool_entry("S2"))
     row = _armed_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
     assert "1 armed of 2 occupying" in row["detail"] and "cannot trade" not in row["detail"]
@@ -1152,7 +1159,7 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
     from runtime.mvp_runtime.crypto import pre_order_gate
 
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    assert status["pre_order_snapshots"] == {"readable": True, "error": None, "count": 0,
+    assert status["pre_order_snapshots"] == {"readable": True, "appendable": True, "error": None, "count": 0,
                                              "last_created_at": None}
     row = {c["check"]: c for c in status["checks"]}["pre_order_snapshots"]
     assert row["ok"] is True and "none recorded" in row["detail"]
@@ -1166,6 +1173,7 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
                     encoding="utf-8")
     damaged = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert damaged["pre_order_snapshots"]["readable"] is False
+    assert damaged["pre_order_snapshots"]["appendable"] is False
     row = {c["check"]: c for c in damaged["checks"]}["pre_order_snapshots"]
     assert row["ok"] is False and pre_order_gate.RISK_SNAPSHOT_STORE_TAMPERED in row["detail"]
     assert damaged["ready"] is False
@@ -1176,6 +1184,8 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
                     encoding="utf-8")
     edited = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"]: c for c in edited["checks"]}["pre_order_snapshots"]["ok"] is False
+    # ...and refuses no entry: the append still takes rows, which the readiness state reads (review of #906).
+    assert edited["pre_order_snapshots"]["appendable"] is True
 
 
 # === the API error breaker row (PR2d-1) ============================================

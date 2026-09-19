@@ -27,9 +27,9 @@ Append a new entry when a milestone ships, in the same PR.
 - **`live_entry_possible` is the readiness state's answer: every fact an entry needs, each true,
   false or unknown** (crypto PR5a, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
   `crypto/live_route.py`, `crypto/cycle.py`, `integrations/hermes/mcp/read_bridge_mcp.py`).
-  - **The change:** the board's view carries `readiness`: ten components (`live_capability_installed`,
+  - **The change:** the board's view carries `readiness`: eleven components (`live_capability_installed`,
     `execution_stage`, `live_gate_open`, `runtime_control`, `armed_strategy_count`, `venue_ready`,
-    `risk_ready`, `account_ready`, `market_data_ready`, `reconciliation_ready`), each
+    `risk_ready`, `account_ready`, `trading_cycle_recent`, `market_data_ready`, `reconciliation_ready`), each
     `{ok: true|false|null, reason}`. `live_entry_possible` is their three-valued AND, and `blocking`
     and `unknown` name each false and each null component with its reason. The live leg stamps the
     gate's two operator switches on its record (`live_gate`). The C4 verdict the board reads is
@@ -47,20 +47,46 @@ Append a new entry when a milestone ships, in the same PR.
       an account snapshot over two hours old. None is never read as possible.
     - A process carrying the live-trading environment answers from its own switches and its own
       account read. Every other process answers from what the trading process recorded, dated.
-    - Market data is the one coarser judgement, and says so. It is False when half or more of the
-      last fire's contexts were refused on their data (a synthetic feed, a degraded collection, or
-      optional data per PR2d-2), which is the pipeline's stall rule. A minority may still enter.
-  - **Why a stale record is False and its gate unknown:** entries happen only inside a cycle, so a
-    trading process with no cycle in two hours opens nothing (`NO_RECENT_CYCLE`). The old record no
-    longer speaks for the gate, and the console's env rows never did (#382).
+    - Two judgements are coarser than a door, and say so. A refusal the last fire recorded per
+      context — data the door refuses (a synthetic feed, a degraded collection, candles the health
+      check refused, optional data per PR2d-2), an account the leg could not read, a leg refused whole
+      (BLOCKED) — counts when half or more of the contexts were refused, the pipeline's stall rule; a
+      minority may still enter. And `trading_cycle_recent` (below).
+  - **Why a quiet pipeline is False, under one component:** entries happen only inside a cycle. No
+    enabled `crypto_pipeline` schedule, or no fire within three of its intervals (45 minutes on this
+    host), is `trading_cycle_recent:PIPELINE_DISABLED` or `NO_RECENT_CYCLE`. What that fire saw is
+    unknown; its gate stays readable for two hours, the recorded gate's window, then is unknown too —
+    the console's env rows never spoke for it (#382). A stopped scheduler reads True for up to three
+    intervals: the heartbeat stall alarm is the instrument for that, not this board.
   - **Why the switches are stamped:** the confirmation phrase and the manual kill switch are
     environment in the trading process only. The recorded gate was the opt-in alone, so a console
     could not tell a missing phrase from an open gate. Records written before this change read
-    `SWITCHES_NOT_RECORDED` (unknown) until the first fire after the deploy.
+    `SWITCHES_NOT_RECORDED` (unknown) until the first fire after the deploy. A console reads them as
+    of the last fire, so an env change on the trading process shows one interval late.
   - **Why the daily loss comes from the account snapshot on a console:** the scheduler stores the
     account every fifteen minutes. The figure is judged with the door's own rule
     (`venue_daily_realized_net`, `live_risk_snapshot` with the venue figure required). Past two hours
     it is unknown.
+  - **Review of #906** — the board read True where a door refused, and False where one admitted:
+    - The account store keeps its previous snapshot when a read fails, so a console saw a fresh one
+      while every leg refused on the account. The leg's own reads at the last fire now decide first
+      (`LIVE_ROUTING_ACCOUNT_UNREADABLE`, `account_ready:ACCOUNT_UNREADABLE`).
+    - A fire whose legs were refused whole (BLOCKED — a damaged position file, say) read as a clean
+      fire: `reconciliation_ready:LEG_BLOCKED_<code>`. The live book is also read now, as the leg
+      reads it first (`POSITION_BOOK_UNREADABLE`).
+    - Candles the health check refused (stale, gapped) were not counted: `DATA_HEALTH`, read off
+      `paper_verdict_status`, the health verdict alone — not `verdict_status`, which carries the loss
+      breakers `risk_ready` names.
+    - Arms the gate cannot verify were counted as tradable: the count now runs the gate's own check
+      (`live_route.verify_live_arm`) and leaves out a lineage the live allowance held back.
+    - One budget symbol the venue contract did not cover, and a snapshot row that fails its seal, read
+      False while the doors admit: the door judges each entry's own symbol (`USABLE_PARTIAL`, naming
+      `uncovered`), and the entry path appends past a sealed row (`snapshots_status.appendable`). Both
+      check rows still fail, as before.
+    - A fresh snapshot without the realized figure read unknown where the door trips:
+      `DAILY_LOSS_FIGURE_MISSING`. Whose word the loss is follows who read the account, not the opt-in.
+    - A record dated ahead of the clock read as current, and a damaged newest record handed "the last
+      fire" to an older one. Both are now unknown.
   - **Not here:**
     - Per-order capacity (open exposure, the concurrency caps, a symbol in flight, a stop-loss
       cooldown). The guard decides those for the order at hand.

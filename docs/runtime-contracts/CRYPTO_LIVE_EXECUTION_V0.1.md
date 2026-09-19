@@ -187,12 +187,16 @@ implied otherwise would be the most dangerous output this repository could produ
 **Whether a live entry can open is not READY** (crypto PR5a). READY and the exit code answer for
 the process that runs the board, and a console built without the live-trading environment is never
 READY. The structured view's `live_entry_possible` answers for the machine: the three-valued AND of
-ten named components — installed, stage, gate, runtime control, armed count, venue, risk, account,
-market data, reconciliation. Each is true; false where an entry door refuses on it; or null where
-the reading process cannot see it. `readiness.blocking` and `readiness.unknown` name each false and
-null one with its reason. A process without the environment reads the trading process's own
-records, dated: its last fire's cycle records (the gate and its two switches, data health,
-incidents) and its account snapshot.
+eleven named components — installed, stage, gate, runtime control, armed count, venue, risk, account,
+whether the pipeline is still firing, market data, reconciliation. Each is true; false where an entry
+door refuses on it; or null where the reading process cannot see it. `readiness.blocking` and
+`readiness.unknown` name each false and null one with its reason. A process without the environment
+reads the trading process's own records, dated: its last fire's cycle records (the gate and its two
+switches, data health, account reads, legs refused whole, incidents, the live allowance) and its
+account snapshot. Two judgements are coarser than a door, and say so: a refusal the last fire
+recorded per context counts when half or more of its contexts were refused (the pipeline's stall
+rule), and no fire within three of the pipeline schedule's intervals — or no enabled schedule — is
+false (`trading_cycle_recent`), because nothing runs to enter.
 
 ## The venue contract sentinel (crypto PR4a/4b, Thomas decisions 43-46)
 
