@@ -1453,16 +1453,17 @@ def _execute(
             return f"{line} {account_store.refresh_snapshot(now=now, root=repo_root)}"
 
         # The venue contract sentinel (PR4a, Thomas decisions 43-44): about hourly (every fire while
-        # the decided record is a FAIL), asks the exchange whether what this runtime assumes about it
-        # still holds. Here for the account refresh's reason — this lane holds the venue keys — and
-        # after it, so the leverage check reads the snapshot as fresh as this lane keeps it; after the
-        # cycles, so no entry, settlement or protective re-assert of this fire waits on it. Handed the
-        # fire's own collector, so a fire the venue already rate limited asks it nothing more. Never
-        # raises; a no-op when not due.
+        # the decided record refuses entries the next ask can let through: a FAIL, another contract
+        # version, a budget symbol it does not name), asks the exchange whether what this runtime
+        # assumes about it still holds. Here for the account refresh's reason — this lane holds the
+        # venue keys — and after it, so the leverage check reads the snapshot as fresh as this lane
+        # keeps it; after the cycles, so no entry, settlement or protective re-assert of this fire
+        # waits on it. Handed the fire's own collector, so a fire the venue already rate limited asks
+        # it nothing more. Never raises; a no-op when not due.
         def _refresh_venue_contract(line: str) -> str:
             from .crypto import venue_contract
 
-            if not venue_contract.is_due(venue_contract.read_refresh_mark(repo_root), now):
+            if not venue_contract.refresh_due(repo_root, now):
                 return line
             return f"{line} {venue_contract.refresh_verification(collector=collector, now=now, root=repo_root)}"
 

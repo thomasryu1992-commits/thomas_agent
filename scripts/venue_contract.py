@@ -7,7 +7,8 @@ The pipeline fire asks the exchange, about hourly (every fire while the last dec
 FAIL), whether what this runtime assumes about it still holds — the traded symbols' listing and
 filters, the -4120 that says conditional orders live on the Algo API, the account's position mode
 and leverage, and that the validator left no order — and records the last decided answer
-(``crypto/venue_contract.py``). A PASS stands six hours. Nothing refuses an entry on it yet (PR4b).
+(``crypto/venue_contract.py``). A PASS stands six hours, and a mainnet autonomous entry or a probe
+is decided only on one that covers its symbol (PR4b).
 
 ``--show`` reads and writes nothing and runs anywhere.
 
@@ -57,7 +58,7 @@ def render(status: Mapping[str, Any], record: Mapping[str, Any] | None, mark: Ma
             head += f" - NOT this code's version ({venue_contract.CONTRACT_VERSION})"
         elif status["stale"]:
             head += f" - STALE (a PASS stands {venue_contract.MAX_AGE_SECONDS // 3600}h)"
-        head += " - usable" if status["usable"] else " - not usable"
+        head += " - usable" if status["usable"] else " - not usable: mainnet entries are refused"
     lines = [head]
     if record:
         lines += _render_checks(record.get("checks"))

@@ -120,6 +120,7 @@ from . import paper
 from .paper import build_entry_plan
 from .promotion import live_arm_problem
 from .risk_limits import resolve_risk_limits
+from .venue_contract import entry_fact as read_venue_contract
 
 LIVE_ROUTE_VERSION = "live_route.v0.1"
 
@@ -599,6 +600,11 @@ def _run_gated_live_leg(
         "tripped_class": api_breaker_before["tripped_class"],
         "unwritable": api_unwritable,
     }
+    # And what the venue contract sentinel last decided (PR4b, Thomas decision 46), read here with the
+    # breakers for their reason. The reader never raises: a record that cannot prove itself is a
+    # refusal the decision names, not an exception on the path that has just settled and protected.
+    venue_contract = read_venue_contract(root)
+    record["live_venue_contract"] = _contract_summary(venue_contract)
 
     # Which bars this venue has already sent an entry on, and which contexts a stop-out still
     # holds (PR2a). Read here, after settle/protect, so a corrupt file can only hold entries: the
@@ -639,6 +645,7 @@ def _run_gated_live_leg(
         daily_loss_breached=bool(risk["daily_loss_limit_breached"]),
         bracket_failures_consecutive=breaker["consecutive"],
         api_breaker_tripped=bool(api_breaker_before["tripped"]) or api_unwritable,
+        venue_contract=venue_contract,
         optional_data=optional_data,
         submitted_today=count_today(root),
         # Unknown equity sizes nothing: `size_live_order` refuses rather than defaulting, so an
@@ -713,6 +720,7 @@ def _run_gated_live_leg(
         "bracket_failures_consecutive": fresh["bracket_failures_consecutive"],
         "api_breaker_tripped": fresh["api_breaker_tripped"],
         "risk_limits_problem": fresh["risk_limits_problem"],
+        "venue_contract": _contract_summary(fresh["venue_contract"]),
         "live_arm": live_arm,
     }
 
@@ -1337,8 +1345,9 @@ def reread_entry_facts(
     fire's ``now`` and ``clock``, the moment the door judged: a record that expired in between no
     longer backs the order. Today's loss is judged again against the fresh limit, on the realized
     figure the door already read (the account is not read again). ``with_pool=False`` (the probe,
-    which no pool entry authorizes) leaves the pool unread. Raises on anything it cannot read; the
-    caller refuses."""
+    which no pool entry authorizes) leaves the pool unread. The venue contract is read again as well
+    (PR4b); its reader never raises, and the gate refuses on what it says. Raises on anything else it
+    cannot read; the caller refuses."""
     limits, budget = resolve_live_order_limits(root, now=now)
     _, budget_at_clock = resolve_live_order_limits(root, now=clock)
     active_pool = pool.load_active_pool(root) if with_pool else None
@@ -1371,7 +1380,17 @@ def reread_entry_facts(
         "bracket_failures_consecutive": int(breaker["consecutive"]),
         "bracket_breaker_tripped": bool(breaker["tripped"]),
         "risk_limits_problem": risk_problem,
+        # PR4b: the verification a verification-writer (the fire, `--run`) may have replaced since.
+        "venue_contract": read_venue_contract(root),
     }
+
+
+def _contract_summary(fact: Any) -> dict[str, Any] | None:
+    """What the cycle record keeps of a venue contract read: enough to say which verification an
+    entry was judged on, or why none could be read."""
+    if not isinstance(fact, Mapping):
+        return None
+    return {key: fact.get(key) for key in ("recorded", "error", "status", "verified_at", "contract_version")}
 
 
 # Why the gate cannot verify the arming approval an entry names (PR2c-2b), beside the reasons

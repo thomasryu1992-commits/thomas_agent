@@ -646,11 +646,76 @@ def test_the_refresh_never_raises(tmp_path, monkeypatch, _scope):
     ({"attempted_at": "garbage"}, True),
     ({"attempted_at": "2026-09-19T07:01:00Z", "decided_status": "FAIL"}, False),
     ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "FAIL"}, True),
-    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "PASS"}, False),
+    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "PASS", "decided_version": vc.CONTRACT_VERSION},
+     False),
 ])
 def test_asked_about_hourly_on_a_fifteen_minute_fire_and_every_fire_while_failing(mark, due):
     assert vc.is_due(mark, NOW) is due
     assert vc.REFRESH_AFTER_SECONDS < 3600 and vc.RETRY_AFTER_FAIL_SECONDS < 15 * 60
+
+
+_DECIDED = {"decided_status": "PASS", "decided_version": vc.CONTRACT_VERSION, "decided_symbols": ["BTCUSDT"]}
+
+
+@pytest.mark.parametrize("decided,symbols,sooner", [
+    (_DECIDED, ["BTCUSDT"], False),
+    (_DECIDED, [" btcusdt "], False),                                   # the doors' own coverage rule
+    (_DECIDED, [], False),                                              # no valid budget, nothing to cover
+    (_DECIDED, ["BTCUSDT", "ETHUSDT"], True),                           # the budget gained a symbol
+    ({**_DECIDED, "decided_version": "binance_futures_contract.v0"}, ["BTCUSDT"], True),
+    ({"decided_status": "PASS"}, [], True),                             # a mark from before PR4b: once
+    ({**_DECIDED, "decided_status": "FAIL"}, ["BTCUSDT"], True),
+    ({"decided_status": None}, ["BTCUSDT"], False),                     # nothing decided keeps the hour
+], ids=["covered", "normalized", "no-budget", "budget-gained", "other-version", "pre-pr4b-mark", "fail",
+        "undecided"])
+def test_a_record_that_refuses_what_the_next_ask_can_let_through_is_asked_at_the_next_fire(decided, symbols,
+                                                                                           sooner):
+    """Review of #903: a deploy that bumps the contract version refuses every entry, and a budget that
+    gains a symbol refuses that symbol's, until the next decided run — so the next fire asks, as it
+    does on a FAIL. A run that decided nothing keeps the hour (decision 44)."""
+    mark = {"attempted_at": "2026-09-19T06:55:00Z", **decided}          # the fire before NOW
+    assert vc.is_due(mark, NOW, symbols=symbols) is sooner
+    assert vc.is_due({**mark, "attempted_at": "2026-09-19T07:05:00Z"}, NOW, symbols=symbols) is False
+
+
+def test_the_refresh_marks_what_the_record_was_verified_under_and_the_fire_asks_when_it_falls_short(
+        tmp_path, monkeypatch, _scope):
+    _write_snapshot(tmp_path)
+    _refresh(tmp_path, _Adapter())
+    mark = vc.read_refresh_mark(tmp_path)
+    assert (mark["decided_status"], mark["decided_version"], mark["decided_symbols"]) == \
+        ("PASS", vc.CONTRACT_VERSION, SYMBOLS)
+    next_fire = "2026-09-19T07:25:00Z"
+    assert vc.refresh_due(tmp_path, next_fire) is False
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: [*SYMBOLS, "XRPUSDT"])
+    assert vc.refresh_due(tmp_path, next_fire) is True, "the budget gained a symbol"
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
+    monkeypatch.setattr(vc, "CONTRACT_VERSION", "binance_futures_contract.v9")     # the deploy that bumps it
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=next_fire)["reason_code"] \
+        == vc.ENTRY_CONTRACT_VERSION
+    assert vc.refresh_due(tmp_path, next_fire) is True, "another version"
+
+
+def test_the_fire_s_cadence_question_never_raises(tmp_path, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("anything at all")
+
+    monkeypatch.setattr(vc, "_registered_symbols", boom)
+    assert vc.refresh_due(tmp_path, NOW) is True, "a question it cannot answer is due"
+    monkeypatch.setattr(vc, "read_refresh_mark", boom)
+    assert vc.refresh_due(tmp_path, NOW) is True
+
+
+def test_the_refresh_never_raises_on_a_record_it_cannot_read_back(tmp_path, monkeypatch, _scope):
+    """The mark reads the decided record after the run; an unexpected exception there (a permission
+    error from `Path.is_file` on 3.12) is a mark without a decided status, not a raise in the fire."""
+    def boom(root=None):
+        raise PermissionError("scripted")
+
+    _write_snapshot(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", boom)
+    assert _refresh(tmp_path, _Adapter()) == "venue contract: PASS"
+    assert vc.read_refresh_mark(tmp_path)["decided_status"] is None
 
 
 def test_only_a_decided_verification_can_be_recorded():
@@ -750,23 +815,25 @@ def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_pa
     _write_snapshot(tmp_path)
     _refresh(tmp_path, _Adapter(hedge=True))
     board = live_readiness._venue_contract(tmp_path, now="2026-09-19T07:20:00Z")
-    line = live_readiness._venue_contract_line({"venue_contract": board})
-    assert "FAIL (failed: position_mode)" in line and "not usable" in line and "last attempt" in line
+    detail = live_readiness._venue_contract_detail(board, uncovered=[])
+    assert "FAIL (failed: position_mode)" in detail and "not usable" in detail and "last attempt" in detail
+    assert "every mainnet entry is refused" in detail
     data = live_readiness.readiness_data({"venue_contract": board})["venue_contract"]
     assert (data["usable"], data["status"], data["failed_checks"], data["symbols"]) == (
         False, "FAIL", ["position_mode"], SYMBOLS)
     vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
-    assert "UNREADABLE - VENUE_CONTRACT_UNREADABLE" in live_readiness._venue_contract_line(
-        {"venue_contract": live_readiness._venue_contract(tmp_path, now=NOW)})
-    assert "none recorded" in live_readiness._venue_contract_line({})
+    assert "UNREADABLE (VENUE_CONTRACT_UNREADABLE)" in live_readiness._venue_contract_detail(
+        live_readiness._venue_contract(tmp_path, now=NOW), uncovered=[])
+    assert "none recorded" in live_readiness._venue_contract_detail({}, uncovered=[])
 
 
-def test_the_rendered_board_carries_the_line(tmp_path):
+def test_the_rendered_board_carries_the_row(tmp_path):
+    """PR4b: a check row, and a failing one while nothing is recorded — the doors refuse on it."""
     from runtime.mvp_runtime.crypto import live_readiness
 
     text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
     line = next(row for row in text.splitlines() if "venue_contract" in row)
-    assert "none recorded" in line
+    assert line.startswith("[FAIL] venue_contract") and "none recorded" in line
 
 
 def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector_about_hourly(tmp_path, monkeypatch):
@@ -785,7 +852,9 @@ def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector
         order.append("venue")
         asked.append((type(collector), now, root))
         vc._write_json(vc.refresh_mark_path(root), {"attempted_at": now, "outcome": vc.OUTCOME_DECIDED,
-                                                    "status": "PASS", "decided_status": "PASS"},
+                                                    "status": "PASS", "decided_status": "PASS",
+                                                    "decided_version": vc.CONTRACT_VERSION,
+                                                    "decided_symbols": ["BTCUSDT"]},
                        code="VENUE_CONTRACT_MARK_LOCKED", label="test mark")
         return "venue contract: PASS"
 
@@ -805,6 +874,36 @@ def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector
     assert order[:2] == ["account", "venue"]
     assert statuses[0].endswith("account snapshot: stub venue contract: PASS")
     assert "venue contract" not in statuses[1]
+
+
+def test_the_pipeline_fire_asks_at_every_fire_while_the_budget_names_a_symbol_the_record_does_not(
+        tmp_path, monkeypatch):
+    """The fire hands the cadence the budget's symbols as they are now (review of #903)."""
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
+
+    asked: list[str] = []
+
+    def venue_refresh(*, collector, now, root, **_):
+        asked.append(now)
+        vc._write_json(vc.refresh_mark_path(root), {"attempted_at": now, "outcome": vc.OUTCOME_INCOMPLETE,
+                                                    "status": "UNVERIFIED", "decided_status": "PASS",
+                                                    "decided_version": vc.CONTRACT_VERSION,
+                                                    "decided_symbols": ["BTCUSDT"]},
+                       code="VENUE_CONTRACT_MARK_LOCKED", label="test mark")
+        return "venue contract: UNVERIFIED"
+
+    monkeypatch.setattr(account_store, "refresh_snapshot", lambda **_: "account snapshot: stub")
+    monkeypatch.setattr(vc, "refresh_verification", venue_refresh)
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: ["BTCUSDT", "ETHUSDT"])
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900, created_by="op",
+                             now="2026-07-22T11:00:00Z"))
+    fires = ("2026-07-22T13:00:00Z", "2026-07-22T13:15:00Z", "2026-07-22T13:30:00Z")
+    for now in fires:
+        run_due(store, now=now, control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path)
+    assert asked == list(fires)
 
 
 def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys, _scope):
@@ -829,6 +928,7 @@ def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys,
     assert run(_Adapter()) == 0
     assert "venue contract: PASS" in capsys.readouterr().out
     assert run(_Adapter(hedge=True)) == cli.EXIT_FAIL
+    assert "not usable: mainnet entries are refused" in capsys.readouterr().out     # PR4b
     assert run(_Adapter(fail={"position_mode"})) == 2        # not decided by this run
     assert "NOT verified by this run" in capsys.readouterr().err
 
@@ -837,3 +937,68 @@ def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys,
 
     monkeypatch.setattr(cli, "assert_not_foreign_root_run", refuse)
     assert cli.main(["--run", "--root", str(tmp_path)]) == 2
+
+
+# --- the entry doors' reading (PR4b, Thomas decision 46) ----------------------------------------
+
+def test_entry_fact_carries_the_judged_fields_and_never_raises(tmp_path, monkeypatch):
+    from tests._helpers import record_venue_contract
+
+    assert vc.entry_fact(tmp_path) == {"recorded": False}
+    record = record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW)
+    assert vc.entry_fact(tmp_path) == {"recorded": True, **{f: record[f] for f in vc.ENTRY_FACT_FIELDS}}
+    vc.contract_path(tmp_path).write_text(json.dumps({**record, "symbols": ["DOGEUSDT"]}), encoding="utf-8")
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": vc.VENUE_CONTRACT_TAMPERED}
+    vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": vc.VENUE_CONTRACT_UNREADABLE}
+
+    def _broken(root=None):
+        raise RuntimeError("scripted")
+
+    monkeypatch.setattr(vc, "read_verification", _broken)
+    assert vc.entry_fact(tmp_path) == {"recorded": True, "error": "RuntimeError"}
+
+
+def test_entry_refusal_names_the_first_reason_in_a_fixed_order():
+    fact = {"recorded": True, "status": "FAIL", "contract_version": "binance_futures_contract.v0",
+            "verified_at": None, "symbols": [], "failed_checks": ["exchange_info"]}
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_VERSION
+    fact["contract_version"] = vc.CONTRACT_VERSION
+    refusal = vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)
+    assert (refusal["reason_code"], refusal["failed_checks"]) == (vc.ENTRY_CONTRACT_NOT_PASS, ["exchange_info"])
+    fact["status"] = vc.STATUS_PASS
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_STALE
+    fact["verified_at"] = NOW
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_SYMBOL
+    assert vc.entry_refusal(fact, symbol=None, at=NOW) is None, "the board judges the record alone"
+    fact["symbols"] = ["BTCUSDT"]
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=NOW) is None
+    assert vc.entry_refusal(fact, symbol="", at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_SYMBOL
+    assert vc.entry_refusal(fact, symbol="BTCUSDT", at=None)["reason_code"] == vc.ENTRY_CONTRACT_STALE
+
+
+@pytest.mark.parametrize("failed,at,usable", [
+    ((), NOW, True),
+    (("position_mode",), NOW, False),
+    ((), "2026-09-19T13:10:00Z", True),
+    ((), "2026-09-19T13:10:01Z", False),
+    ((), "2026-09-19T07:04:59Z", False),
+], ids=["pass", "fail", "six-hours", "six-hours-and-a-second", "dated-past-the-skew"])
+def test_the_board_and_the_doors_judge_with_one_function(tmp_path, failed, at, usable):
+    from tests._helpers import record_venue_contract
+
+    record_venue_contract(tmp_path, SYMBOLS, verified_at=NOW, failed=failed)
+    assert vc.verification_status(tmp_path, now=at)["usable"] is usable
+    assert (vc.entry_refusal(vc.entry_fact(tmp_path), symbol=None, at=at) is None) is usable
+
+
+def test_an_age_is_never_an_exception():
+    for stamp, now in ((NOW, None), (None, NOW), ("yesterday", NOW), (NOW, "tomorrow"), (NOW, 7)):
+        assert vc._age_seconds(stamp, now) is None
+
+
+def test_coverage_is_one_rule_that_ignores_case_and_space_and_covers_no_empty_symbol():
+    assert vc.covers(["BTCUSDT"], " btcusdt ") and vc.covers((" ethusdt ",), "ETHUSDT")
+    assert not vc.covers(["", "BTCUSDT"], "") and not vc.covers([" "], "  ")
+    assert not vc.covers("BTCUSDT", "BTCUSDT") and not vc.covers(None, "BTCUSDT")
+    assert not vc.covers({"BTCUSDT": 1}, "BTCUSDT") and not vc.covers(["BTCUSDT"], None)

@@ -41,9 +41,10 @@ than an hour later. A PASS stands for :data:`MAX_AGE_SECONDS`.
 (decision 27), and the sentinel is not the money path: it asks the raw adapter, and its failures are
 its own record. And ``/order/test`` is never evidence for an execution-stage transition (decision 3).
 
-4a records; nothing refuses an entry on the record yet (4b). The reader half of this module
-imports nothing heavier than the state and integrity helpers, so a door can read it; the checks
-import the venue modules where they run.
+**What it gates (PR4b, decision 46).** A mainnet autonomous entry and a probe are decided on a usable
+PASS (:func:`entry_fact`, :func:`entry_refusal`); closing, protecting and the testnet door never read
+it. The reader half of this module imports nothing heavier than the state and integrity helpers, so
+a door can read it; the checks import the venue modules where they run.
 """
 
 from __future__ import annotations
@@ -134,7 +135,7 @@ CHECK_ALGO_QUERY = "algo_query_unknown_id"
 #   (resting-order reads cannot see an order that filled).
 JUDGED_CHECKS = (CHECK_EXCHANGE_INFO, CHECK_CONDITIONAL_REFUSED, CHECK_LEVERAGE, CHECK_POSITION_MODE,
                  CHECK_ENTRY_LEFT_NO_ORDER, CHECK_NOTHING_RESTING)
-# What is recorded for 4b to judge once the host's answers are known. The entry and target requests
+# What is recorded, never judged, until the host's answers are on record. The entry and target requests
 # are the runtime's own, through its own builder; the algo query asks for an id no order carries.
 OBSERVED_CHECKS = (CHECK_ENTRY_TEST, CHECK_TARGET_TEST, CHECK_ALGO_QUERY)
 CHECK_IDS = (*JUDGED_CHECKS, *OBSERVED_CHECKS)
@@ -217,8 +218,10 @@ def _write_json(path: Path, body: Mapping[str, Any], *, code: str, label: str) -
         tmp.replace(path)
 
 
-def _age_seconds(stamp: Any, now: str) -> float | None:
-    if not isinstance(stamp, str) or not stamp:
+def _age_seconds(stamp: Any, now: Any) -> float | None:
+    """``now - stamp`` in seconds, or None when either is not a timestamp. Never raises: a door
+    judges on it, and an undated fact is one the door refuses, not an exception."""
+    if not isinstance(stamp, str) or not stamp or not isinstance(now, str) or not now:
         return None
     try:
         return (timeutil.parse_iso(now) - timeutil.parse_iso(stamp)).total_seconds()
@@ -245,16 +248,39 @@ def read_refresh_mark(root: Path | None = None) -> dict[str, Any] | None:
     return data
 
 
-def is_due(mark: Mapping[str, Any] | None, now: str) -> bool:
+def is_due(mark: Mapping[str, Any] | None, now: str, *, symbols: Sequence[str] = ()) -> bool:
     """Whether to ask the venue again, given when it was last ASKED — not last answered. Never asked,
-    or a mark that cannot be read, is due: being wrong costs one run. While the decided record stands
-    at FAIL, the next fire asks (:data:`RETRY_AFTER_FAIL_SECONDS`)."""
+    or a mark that cannot be read, is due: being wrong costs one run. While the decided record refuses
+    entries that the next ask can let through — a FAIL, a record under another contract version, one
+    that does not name a symbol in ``symbols`` (the budget's, now) — the next fire asks
+    (:data:`RETRY_AFTER_FAIL_SECONDS`)."""
     attempted = mark.get("attempted_at") if isinstance(mark, Mapping) else None
     age = _age_seconds(attempted, now)
     if age is None or age < 0:
         return True
-    failing = isinstance(mark, Mapping) and mark.get("decided_status") == STATUS_FAIL
-    return age >= (RETRY_AFTER_FAIL_SECONDS if failing else REFRESH_AFTER_SECONDS)
+    return age >= (RETRY_AFTER_FAIL_SECONDS if _asks_sooner(mark, symbols) else REFRESH_AFTER_SECONDS)
+
+
+def _asks_sooner(mark: Mapping[str, Any], symbols: Sequence[str]) -> bool:
+    """The decided record as the last attempt saw it (:func:`_decided`). Nothing decided keeps the
+    hour (Thomas decision 44): the venue did not answer, and asking it sooner is not an answer. A mark
+    written before PR4b names no version, and is asked sooner once."""
+    decided = mark.get("decided_status")
+    if decided is None:
+        return False
+    if decided == STATUS_FAIL or mark.get("decided_version") != CONTRACT_VERSION:
+        return True
+    return any(not covers(mark.get("decided_symbols"), symbol) for symbol in symbols)
+
+
+def refresh_due(root: Path | None, now: str) -> bool:
+    """:func:`is_due` for this machine: its mark, and the symbols its registered budget names now.
+    **Never raises** — the pipeline fire asks it; a question it cannot answer is due, and the refresh
+    that follows never raises either."""
+    try:
+        return is_due(read_refresh_mark(root), now, symbols=_registered_symbols(root, now))
+    except Exception:  # noqa: BLE001 — see the docstring
+        return True
 
 
 def build_record(*, status: str, checks: Sequence[Mapping[str, Any]], symbols: Sequence[str],
@@ -284,7 +310,7 @@ def read_verification(root: Path | None = None) -> dict[str, Any] | None:
     """The last decided verification, VERIFIED — or None when none was ever recorded.
 
     Anything unparseable, failing its self-hash or not schema-valid raises: the record is what a
-    door will read to let an entry through (4b), and one that cannot prove itself must not."""
+    doors read to let an entry through (PR4b), and one that cannot prove itself must not."""
     path = contract_path(root)
     if not path.is_file():
         return None
@@ -329,30 +355,130 @@ def verification_status(root: Path | None = None, *, now: str) -> dict[str, Any]
     """What the last decided verification says at ``now``. Raises on a record that cannot prove
     itself (see :func:`read_verification`); the board names that, a door refuses on it.
 
-    ``usable`` is PASS, this code's contract version, and no older than :data:`MAX_AGE_SECONDS` (nor
-    dated in the future). It speaks for the ``symbols`` the verification covered and no others: a door
-    also requires its symbol among them, since the budget may name one the last run did not."""
+    ``usable`` is :func:`entry_refusal`'s answer for the record alone, and ``refusal`` its reason —
+    the doors' own judge, so the board and a door cannot disagree about it. It speaks for the
+    ``symbols`` the verification covered and no others: a door also requires its symbol among them
+    (:func:`covers`), since the budget may name one the last run did not."""
     record = read_verification(root)
     if record is None:
         return {"recorded": False, "status": None, "contract_version": None, "verified_at": None,
                 "age_seconds": None, "stale": True, "version_current": False, "usable": False,
-                "failed_checks": [], "symbols": [], "symbol_failures": {}}
+                "refusal": ENTRY_CONTRACT_MISSING, "failed_checks": [], "symbols": [], "symbol_failures": {}}
     age = _age_seconds(record.get("verified_at"), now)
-    stale = age is None or age < -FUTURE_SKEW_SECONDS or age > MAX_AGE_SECONDS
-    version_current = record.get("contract_version") == CONTRACT_VERSION
+    refusal = entry_refusal(_fact_of(record), symbol=None, at=now)
     return {
         "recorded": True,
         "status": record.get("status"),
         "contract_version": record.get("contract_version"),
         "verified_at": record.get("verified_at"),
         "age_seconds": age,
-        "stale": stale,
-        "version_current": version_current,
-        "usable": record.get("status") == STATUS_PASS and not stale and version_current,
+        "stale": _stale(age),
+        "version_current": record.get("contract_version") == CONTRACT_VERSION,
+        "usable": refusal is None,
+        "refusal": refusal["reason_code"] if refusal is not None else None,
         "failed_checks": list(record.get("failed_checks") or []),
         "symbols": list(record.get("symbols") or []),
         "symbol_failures": _symbol_failures(record),
     }
+
+
+# --- the entry doors' reading (PR4b, Thomas decision 46) ---------------------------------------
+#
+# A mainnet autonomous entry and a probe are decided on a usable PASS: the last decided verification
+# says the venue still honours what the runtime assumes, under this code's contract version, at most
+# MAX_AGE_SECONDS before the decision, for the symbol the entry is on. Closing, protecting and
+# settling never read it — a venue that changed is a reason to stop opening positions, never to
+# strand the ones open. The testnet door does not read it either: the signed testnet cycle is itself
+# a venue answer, with real orders (PR1d).
+
+# Why a door refuses, one code per thing the operator does about it: wait for the next fire (or ask
+# now, `scripts/venue_contract.py --run`), find out who damaged the record, read what the venue
+# contradicted, or wait for the next fire to verify under this code's version or cover a symbol the
+# budget gained since (both are asked sooner, :func:`is_due`).
+ENTRY_CONTRACT_MISSING = "LIVE_ENTRY_VENUE_CONTRACT_MISSING"
+ENTRY_CONTRACT_UNREADABLE = "LIVE_ENTRY_VENUE_CONTRACT_UNREADABLE"
+ENTRY_CONTRACT_VERSION = "LIVE_ENTRY_VENUE_CONTRACT_VERSION"
+ENTRY_CONTRACT_NOT_PASS = "LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS"
+ENTRY_CONTRACT_STALE = "LIVE_ENTRY_VENUE_CONTRACT_STALE"
+ENTRY_CONTRACT_SYMBOL = "LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED"
+ENTRY_CONTRACT_CODES = frozenset({ENTRY_CONTRACT_MISSING, ENTRY_CONTRACT_UNREADABLE, ENTRY_CONTRACT_VERSION,
+                                  ENTRY_CONTRACT_NOT_PASS, ENTRY_CONTRACT_STALE, ENTRY_CONTRACT_SYMBOL})
+# What of the decided record a door judges and the gate seals. The per-check answers are not sealed:
+# the record keeps them only until the next decided run overwrites it.
+ENTRY_FACT_FIELDS = ("status", "contract_version", "verified_at", "symbols", "failed_checks", "record_sha256")
+
+
+def _stale(age: float | None) -> bool:
+    return age is None or age < -FUTURE_SKEW_SECONDS or age > MAX_AGE_SECONDS
+
+
+def _fact_of(record: Mapping[str, Any]) -> dict[str, Any]:
+    fact: dict[str, Any] = {"recorded": True, **{field: record.get(field) for field in ENTRY_FACT_FIELDS}}
+    for field in ("symbols", "failed_checks"):
+        fact[field] = list(fact[field]) if isinstance(fact[field], list) else fact[field]
+    return fact
+
+
+def entry_fact(root: Path | None = None) -> dict[str, Any]:
+    """The decided verification as an entry door reads it: :data:`ENTRY_FACT_FIELDS`, or why it
+    could not be read. **Never raises** — the reader runs in the leg that settles and protects open
+    positions, and a record that cannot prove itself is a refusal the door names, not an exception
+    there."""
+    try:
+        record = read_verification(root)
+    except MvpRuntimeError as exc:
+        return {"recorded": True, "error": exc.reason_code}
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return {"recorded": True, "error": type(exc).__name__}
+    if record is None:
+        return {"recorded": False}
+    return _fact_of(record)
+
+
+def entry_refusal(fact: Any, *, symbol: str | None, at: str) -> dict[str, Any] | None:
+    """Why ``fact`` (:func:`entry_fact`'s) does not back an entry on ``symbol`` decided at ``at``, or
+    None. Pure.
+
+    One reason, the first of: no fact or no record; a record that could not prove itself; another
+    contract version; a decided FAIL; a verification older than :data:`MAX_AGE_SECONDS` at ``at``, or
+    dated past it by more than the skew, or undated; a PASS that did not cover ``symbol``. ``symbol``
+    None judges the record alone, as the board does."""
+    if not isinstance(fact, Mapping):
+        return {"reason_code": ENTRY_CONTRACT_MISSING, "detail": "no venue contract was read"}
+    if fact.get("error"):
+        return {"reason_code": ENTRY_CONTRACT_UNREADABLE, "error": str(fact["error"])}
+    if fact.get("recorded") is not True:
+        return {"reason_code": ENTRY_CONTRACT_MISSING,
+                "detail": "no verification is recorded; the pipeline fire asks while live trading is opted in"}
+    verified_at = fact.get("verified_at")
+    if fact.get("contract_version") != CONTRACT_VERSION:
+        return {"reason_code": ENTRY_CONTRACT_VERSION, "contract_version": fact.get("contract_version"),
+                "expected": CONTRACT_VERSION, "verified_at": verified_at}
+    if fact.get("status") != STATUS_PASS:
+        failed = fact.get("failed_checks")
+        return {"reason_code": ENTRY_CONTRACT_NOT_PASS, "status": fact.get("status"),
+                "failed_checks": list(failed) if isinstance(failed, (list, tuple)) else None,
+                "verified_at": verified_at}
+    age = _age_seconds(verified_at, at)
+    if _stale(age):
+        return {"reason_code": ENTRY_CONTRACT_STALE, "verified_at": verified_at, "age_seconds": age,
+                "max_age_seconds": MAX_AGE_SECONDS}
+    covered = fact.get("symbols")
+    if symbol is not None and not covers(covered, symbol):
+        return {"reason_code": ENTRY_CONTRACT_SYMBOL, "symbol": symbol,
+                "symbols": list(covered) if isinstance(covered, (list, tuple)) else None,
+                "verified_at": verified_at}
+    return None
+
+
+def covers(symbols: Any, symbol: Any) -> bool:
+    """Whether a verification that named ``symbols`` covers ``symbol`` — the rule the doors, the board
+    and the refresh cadence share. Case and surrounding space do not count; anything but a list or a
+    tuple names nothing, and an empty symbol is never covered."""
+    wanted = str(symbol).strip().upper() if symbol is not None else ""
+    if not wanted or not isinstance(symbols, (list, tuple)):
+        return False
+    return wanted in {str(s).strip().upper() for s in symbols}
 
 
 # --- the checks --------------------------------------------------------------------------------
@@ -822,14 +948,18 @@ def _registered_symbols(root: Path | None, now: str) -> list[str]:
     return [s for s in budget.get("symbol_allowlist") or [] if isinstance(s, str) and s]
 
 
-def _decided_status(root: Path | None) -> str | None:
-    """The decided record's status as it stands, for the mark (a FAIL is asked again sooner); None
-    when there is none or it cannot prove itself."""
+def _decided(root: Path | None) -> dict[str, Any]:
+    """The decided record as it stands, for the mark: its status, and the version and symbols it was
+    verified under — what :func:`is_due` asks sooner on. Status None when there is none or it cannot
+    prove itself; never raises, for :func:`refresh_verification`'s reason."""
     try:
         record = read_verification(root)
-    except MvpRuntimeError:
-        return None
-    return record.get("status") if isinstance(record, Mapping) else None
+    except Exception:  # noqa: BLE001 — see the docstring
+        record = None
+    if not isinstance(record, Mapping):
+        return {"decided_status": None}
+    return {"decided_status": record.get("status"), "decided_version": record.get("contract_version"),
+            "decided_symbols": list(record.get("symbols") or [])}
 
 
 def refresh_verification(*, collector: Any, now: str, root: Path | None = None, adapter: Any = None,
@@ -875,7 +1005,7 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
                                 code="VENUE_CONTRACT_LOCKED", label="venue contract record")
     except Exception as exc:  # noqa: BLE001 — see the docstring
         mark.update(outcome=OUTCOME_ERROR, error=str(getattr(exc, "reason_code", type(exc).__name__)))
-    mark["decided_status"] = _decided_status(root)
+    mark.update(_decided(root))
     try:
         _write_json(refresh_mark_path(root), mark, code="VENUE_CONTRACT_MARK_LOCKED",
                     label="venue contract refresh mark")
@@ -897,11 +1027,13 @@ def status_line(mark: Mapping[str, Any]) -> str:
 
 
 __all__ = [
-    "CHECK_IDS", "CONTRACT_VERSION", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED",
+    "CHECK_IDS", "CONTRACT_VERSION", "ENTRY_CONTRACT_CODES", "ENTRY_CONTRACT_MISSING", "ENTRY_CONTRACT_NOT_PASS",
+    "ENTRY_CONTRACT_STALE", "ENTRY_CONTRACT_SYMBOL", "ENTRY_CONTRACT_UNREADABLE", "ENTRY_CONTRACT_VERSION",
+    "ENTRY_FACT_FIELDS", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED",
     "OBSERVED_CHECKS", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS", "SENTINEL_ID_PREFIX",
     "STATUS_FAIL", "STATUS_PASS", "STATUS_UNVERIFIED", "VENUE_CONTRACT_INVALID", "VENUE_CONTRACT_TAMPERED",
     "VENUE_CONTRACT_UNREADABLE", "build_record", "check_conditional_refused", "check_entry_left_no_order",
-    "check_exchange_info", "check_leverage", "check_nothing_resting", "check_position_mode", "is_due",
-    "judge", "legacy_conditional_probe", "read_refresh_mark", "read_verification", "refresh_verification",
-    "run_checks", "status_line", "verification_status",
+    "check_exchange_info", "check_leverage", "check_nothing_resting", "check_position_mode", "covers",
+    "entry_fact", "entry_refusal", "is_due", "judge", "legacy_conditional_probe", "read_refresh_mark",
+    "read_verification", "refresh_due", "refresh_verification", "run_checks", "status_line", "verification_status",
 ]

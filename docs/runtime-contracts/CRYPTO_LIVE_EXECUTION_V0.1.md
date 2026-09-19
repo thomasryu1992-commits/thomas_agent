@@ -184,7 +184,7 @@ so its answer cannot drift from what the code enforces. It exits 0 only when eve
 passes, and it **cannot report READY while no order path exists** — a row of green ticks that
 implied otherwise would be the most dangerous output this repository could produce.
 
-## The venue contract sentinel (crypto PR4a, Thomas decisions 43-46)
+## The venue contract sentinel (crypto PR4a/4b, Thomas decisions 43-46)
 
 Every check before an order used to point at this runtime's own model of the venue. On 2026-08-02
 they all passed while the venue refused both protective stops, because conditional order types had
@@ -227,9 +227,37 @@ venue itself.
   attempt. A run that could not decide moves only the attempt; a violation is written as FAIL at
   once. A PASS is usable for six hours, only under this code's `CONTRACT_VERSION`, and only for the
   symbols it covered (decision 44).
-- **Not stage evidence** (decision 3), and **not enforced yet**: PR4b makes a usable PASS a
-  condition of the mainnet autonomous entry and the probe (decision 46). Until then it is a line
-  on the readiness board and `python -m scripts.venue_contract --show`.
+- **Not stage evidence** (decision 3).
+- **Enforced (PR4b, decision 46):** a mainnet autonomous entry and a probe are decided on a usable
+  PASS for their symbol — this code's `CONTRACT_VERSION`, at most six hours old at the moment of the
+  decision (`clock`), dated no more than five minutes ahead, naming the symbol. The rule is one pure
+  function (`venue_contract.entry_refusal`) that the autonomous decision's door
+  (`venue_contract_verified`), the probe's gate and the board's `venue_contract` row all call; which
+  symbols a verification covers is one more (`venue_contract.covers`), shared by the judge, the row
+  and the refresh cadence. Each way it can refuse has its own code, so the refusal says what to do:
+
+  | Code | Means | Operator |
+  |---|---|---|
+  | `LIVE_ENTRY_VENUE_CONTRACT_MISSING` | nothing decided yet | wait for the pipeline fire, or `--run` |
+  | `LIVE_ENTRY_VENUE_CONTRACT_UNREADABLE` | the record fails its hash, schema or parse | find out who changed it |
+  | `LIVE_ENTRY_VENUE_CONTRACT_VERSION` | verified under another contract version | the next fire re-verifies (asked sooner, like a FAIL) |
+  | `LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS` | the venue contradicted an assumption | read `--show`; re-asked every fire |
+  | `LIVE_ENTRY_VENUE_CONTRACT_STALE` | older than six hours at the decision | the sentinel has not been answered |
+  | `LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED` | the PASS did not name this symbol | the next fire verifies the budget's symbols (asked sooner) |
+
+  The autonomous leg reads it once beside the breakers and again in the gate's re-read; the gate
+  judges the re-read unless the first read already refused, so an entry needs both reads usable. The
+  probe refuses early (`PROBE_VENUE_CONTRACT`) — a record on this machine, so before any signed call
+  or API-breaker count; after the cell is chosen, so a probe in flight is named first — and its gate
+  judges the re-read. The pre-order snapshot
+  seals which verification backed the order (`facts.venue_contract`: the judged fields and the
+  record's hash; the per-check answers stay only in the record, until the next decided run replaces
+  it). "Asked sooner" is the cadence a FAIL already had: while the decided record refuses entries the
+  next ask can let through (a FAIL, another contract version, a budget symbol it does not name), every
+  fire asks; a run that decides nothing keeps the hour (decision 44). A FAIL anywhere blocks
+  every symbol; narrowing that to the symbols a FAIL names is a relaxation for Thomas to decide, not a
+  default. **Closing, protecting and settling never read it**, and neither does the testnet door: the
+  signed testnet cycle is itself a venue answer, with real orders.
 - **Not stopped by** the PAPER stage or the manual kill switch env — it places nothing; the scheduler's
   own kill/pause stops the fire it rides. Revoking it is unsetting `MVP_LIVE_TRADING` and restarting.
 

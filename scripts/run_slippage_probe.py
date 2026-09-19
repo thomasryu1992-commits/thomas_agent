@@ -73,6 +73,10 @@ from runtime.mvp_runtime.crypto.features import latest_feature_row  # noqa: E402
 from runtime.mvp_runtime.crypto.guards import DEFAULT_RISK_LIMITS, run_risk_guard  # noqa: E402
 from runtime.mvp_runtime.crypto.live_entry import BRACKET_WORKING_TYPE, narrow_guard_facts  # noqa: E402
 from runtime.mvp_runtime.crypto.live_route import reread_entry_facts  # noqa: E402
+from runtime.mvp_runtime.crypto.venue_contract import (  # noqa: E402
+    entry_fact as read_venue_contract,
+    entry_refusal as venue_contract_refusal,
+)
 from runtime.mvp_runtime.crypto.live_filters import read_symbol_filters  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import PURPOSE_PROBE, resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto.live_order import (  # noqa: E402
@@ -598,6 +602,20 @@ def run_fire(
     print(f"cell      : {cell_index} ({cell['symbol']} {cell['regime']} #{cell['repeat']}), "
           f"measured {probe.REGIME_FEATURE}@{probe.REGIME_TIMEFRAME} regime = {regime}")
 
+    # PR4b (Thomas decision 46): a probe is a mainnet entry, decided on the venue contract sentinel's
+    # usable PASS like an autonomous one. A record on this machine, so refused before the account is
+    # read over a signed call or the API breaker counts anything (review of #903); after the cell is
+    # chosen, so a probe still in flight is what a refusal names first, and after the leftover cell
+    # above is settled, which never reads it. The gate below judges the re-read at its own clock.
+    contract = read_venue_contract(root)
+    contract_refusal = venue_contract_refusal(contract, symbol=symbol, at=now)
+    if contract_refusal is not None:
+        raise _Refusal(
+            probe.PROBE_VENUE_CONTRACT,
+            f"the venue contract does not back a probe on {symbol} ({contract_refusal['reason_code']}); "
+            "see: python -m scripts.venue_contract --show",
+        )
+
     limits, budget = resolve_live_order_limits(root, now=now)
     control_store = ControlStore(root) if root is not None else ControlStore.default()
     control_state = control_store.load()
@@ -785,6 +803,9 @@ def run_fire(
         # must leave within a minute of this judgment.
         account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
         order_book=order_book,
+        # PR4b: the verification the re-read found (not ``contract``, the first read), judged at the
+        # gate's clock.
+        venue_contract=fresh["venue_contract"],
     )
     if not snapshot_record["approved"]:
         raise _Refusal(

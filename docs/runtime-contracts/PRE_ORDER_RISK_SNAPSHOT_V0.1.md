@@ -21,7 +21,7 @@ and their tests.
 | Door | Purpose | What the door re-derives before the gate seals |
 |---|---|---|
 | Autonomous leg (`live_route` → `live_leg.execute_live_entry`) | `autonomous` | `live_entry.plan_live_entry`, re-run on the decision's facts narrowed by the gate's re-read (below). This covers every door by name and the final guard's checks. The order must be the one those facts decide, and the bracket the leg will place must be the one they price (`bracket_matches_intent`). The facts include the freshness doors below. |
-| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the four breakers (the daily loss, the risk guard, the bracket breaker and, since PR2d-1, the API error breaker), the order book it read just before the gate (since PR2d-3: at most 60 seconds old, a spread short of 50 bps, deep enough to fill the probe at no more than the cost model's slippage), the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
+| Slippage probe (`scripts/run_slippage_probe.py --fire`) | `probe` | `probe.gate_probe_order`: the plan and its cell, the account (readable and at most 60 seconds old at the gate), the symbol being free, the four breakers (the daily loss, the risk guard, the bracket breaker and, since PR2d-1, the API error breaker), the order book it read just before the gate (since PR2d-3: at most 60 seconds old, a spread short of 50 bps, deep enough to fill the probe at no more than the cost model's slippage), the venue contract sentinel's PASS for the probe's symbol (since PR4b, judged at the gate's clock), the priced ceiling, and the order rebuilt and judged by the live guard in canary mode, on facts narrowed by the same re-read. |
 | Signed testnet cycle, entry only (`scripts/run_signed_testnet_cycle.py`) | `signed_testnet` | `testnet_execution.gate_testnet_order`: the testnet guard re-run, and the order rebuilt from the cycle's inputs. |
 
 The gate never judges reduce-only orders: closes, brackets and cancels. The venue enforces that
@@ -46,6 +46,7 @@ none of its orders) and fold them in only to narrow (`live_entry.narrow_guard_fa
 | orders spent today | the fresh count |
 | bracket breaker | the higher streak, tripped if either read says so |
 | API error breaker (PR2d-1) | not clear unless both reads say clear, and not clear while the breaker cannot record the pass |
+| venue contract (PR4b) | the fresh read, unless the first read already refused (`live_entry.narrow_entry_facts`); judged at the decision's `clock`, so both reads must back the entry. The probe refuses on its first read and its gate judges the fresh one. The gate seals which verification it was (`facts.venue_contract`) |
 | risk limits | the verdict stands only if the limits in force at both `now` and `clock` are the record it was judged on (`LIVE_ENTRY_RISK_LIMITS_CHANGED`; `LIVE_ENTRY_RISK_LIMITS_UNNAMED` for a verdict that names none, `LIVE_ENTRY_RISK_LIMITS_UNRESOLVED` when nothing resolves, or the resolver's own code) |
 
 - The account, the book, the filters and the market price are not re-read: they are what the order
