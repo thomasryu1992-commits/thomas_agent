@@ -33,7 +33,7 @@ shims:
   runtime_requirement: every door speaks proto 2 (candidate-833 or later)
   full_data_requirement: crypto_readiness / crypto_funds carry their view only from the runtime that includes P02 (readiness_data, funds_data); an older runtime answers `{action}` and the line still renders
   v3_requirement: the workflow tools need a runtime that includes P05 AND a dispatch-bridge started with --workflow-manager; any other door refuses them as WORKFLOW_UNAVAILABLE (thomas_capabilities says which)
-  host_state: as of 2026-09-19 the host runs 2.10 (installed 2026-09-15 03:46Z, gateway restarted 03:47Z; byte-identical to the 2.10 files on 2026-09-19); 2.11 and 2.12 wait for scripts/ops/install_hermes_shims.sh --install and a gateway restart (operator step; install 2.12 only on a runtime with PR5a, whose [data] carries `readiness`). --check is the live answer, not this line
+  host_state: as of 2026-09-19 15:04Z the host runs 2.11 (read_bridge_mcp.py sha256 1900e8f2… from a59a4371, installed 15:04:02Z with the 2.10 copy kept as read_bridge_mcp.py.bak-20260919-150402; gateway restarted 15:04:31Z, 53 tools from 4 servers), because the running runtime, candidate-904, has no PR5a and so no `readiness` in [data]. Install 2.12 in the same step as the PR5a runtime deploy (candidate-906 or later) — scripts/ops/install_hermes_shims.sh --install from a clean main checkout, then a gateway restart. Until then --check from main reports read_bridge_mcp.py DIFFERS, as expected
   files:
     thomas_door_client.py: 19b2ec0e92ed51082fb814b505b44e4469ccbf460bbeded5dab4487c76e36d4f
     read_bridge_mcp.py: 4c7d98d1ff8a5ddbb85714a03ddf0fea00312812c243853d6bc66347d1949e35
