@@ -204,6 +204,8 @@ def test_the_ask_binds_the_hard_halt_and_every_booked_position(tmp_path, monkeyp
         "requested_by": "thomas", "reason": "venue incident",
     }
     assert record["status"] == "PENDING"
+    decision = ApprovalStore.default(tmp_path).get_permission_decision(record["permission_decision_id"])
+    assert decision["risk"]["risk_level"] == "RED"
     # Decision 49's 15 minutes: the RUNTIME_GOVERNANCE ceiling, below the decision's own expiry.
     assert record["validity"]["expires_at"] == "2026-09-19T12:15:00Z"
     assert wired.venue.submitted == [] and len(list_open_live_positions(tmp_path)) == 2
@@ -275,6 +277,9 @@ def test_a_halt_written_since_the_ask_refuses_before_the_spend(tmp_path, monkeyp
     approval_id = _granted(wired)
     wired.control.save(ControlState(mode=ACTIVE, updated_by="op", updated_at="2026-09-19T12:05:00Z",
                                     reason="hard again", trading_armed=False, halt_level=HALT_HARD))
+    # Judged before anything reaches for the venue: not even the gate or the account is consulted.
+    monkeypatch.setattr(live_route, "select_live_gate", lambda **kw: pytest.fail("the gate was consulted"))
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: pytest.fail("the account was read"))
     _refused(wired, approval_id, live_route.EMERGENCY_CLOSE_HALT_CHANGED)
 
 
@@ -543,3 +548,16 @@ def test_an_incomplete_close_exits_blocked(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(door.timeutil, "utc_now_iso", lambda: NOW)
     assert door.main(["--confirm", "--approval-id", approval_id, "--root", str(tmp_path)]) == door.EXIT_BLOCKED
     assert "INCOMPLETE: 1 of 2 closed" in capsys.readouterr().out
+
+
+@requires_local_core
+def test_the_ask_only_asks(tmp_path, monkeypatch, capsys):
+    """--request stores the ask and nothing else: it never spends, even its own approval, and never
+    reaches the venue. Asking and spending are two invocations."""
+    _wire(tmp_path, monkeypatch, gate=lambda **kw: pytest.fail("the ask reached for the venue"))
+    assert door.main(["--request", "--requested-by", "thomas", "--reason", "venue incident",
+                      "--root", str(tmp_path)]) == door.EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("ASKED: close 2 booked position(s)") and "Nothing has been sent." in out
+    (ask,) = ApprovalStore.default(tmp_path).pending()
+    assert ask["status"] == "PENDING"

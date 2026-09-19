@@ -194,6 +194,14 @@ def test_preparation_fails_closed_without_an_active_core(monkeypatch):
 
 
 @requires_local_core
+def test_an_emergency_close_is_prepared_like_any_live_order():
+    """PR6c: the emergency close's orders carry their own P5 decision, under their own purpose."""
+    governance = lg.prepare_live_order_governance(INTENT, purpose=lg.PURPOSE_EMERGENCY_CLOSE, now=NOW)
+    assert governance["purpose"] == lg.PURPOSE_EMERGENCY_CLOSE
+    assert governance["order_fingerprint"] == lg.order_fingerprint(INTENT)
+
+
+@requires_local_core
 def test_preparation_builds_a_real_P5_decision_bound_to_this_order():
     governance = lg.prepare_live_order_governance(
         INTENT, purpose=lg.PURPOSE_CANARY, now=NOW,
