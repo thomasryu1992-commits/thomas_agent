@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.5
+version: 1.5.6
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -100,12 +100,15 @@ cron 실행에는 thomas-switch 도구가 주어지지 않으므로 그때는 �
 > "실주문은 나가지 않습니다"를 둘 다 단정한 기록이 있다.
 > 보드에 `!!` 배너가 붙어 오면 `live_trading_opt_in` / `confirmation_phrase` /
 > `account_visibility` / `market_data_visibility` 네 행과 `guard dry-run: BLOCKED` 줄은
-> **인용조차 하지 마라.** 라이브 여부의 답은 `live_gate_recorded` 와
-> `live_armed_strategies` 두 줄뿐이고, 그 둘을 원문 그대로 인용해서만 답한다.
+> **인용조차 하지 마라.** 라이브 진입이 가능한지의 답은 `[data]` 줄의
+> **`live_entry_possible`** 하나다(`null`은 "알 수 없음"). 그 값이 무엇으로 정해지는지,
+> `false`·`null`일 때 무엇을 인용할지는 `trading_readiness` 도구 설명을 그대로 따라라.
+> `live_gate_recorded`·`live_armed_strategies` 줄은 그 조건 중 일부일 뿐 결론이 아니다.
 
 **"실주문이 나갈 수 있는가"의 유일한 권위 있는 답은 `trading_readiness`다.** 권한 목록에서
 추론하지 마라. 만료를 발견하면 "권한 기록이 만료돼 있다"까지만 말하고, 차단 여부는
-`trading_readiness`를 불러서 확인해라. 그 보드가 `READY`면 **실주문은 나갈 수 있다.**
+`trading_readiness`를 불러서 `live_entry_possible`로 확인해라. 보드의 `READY`는 그 보드를
+그린 프로세스의 점검 결과일 뿐이다 — **`READY`만 보고 "실주문이 나갈 수 있다"고 말하지 마라.**
 
 ## 3. 지표 해석
 
@@ -120,7 +123,8 @@ cron 실행에는 thomas-switch 도구가 주어지지 않으므로 그때는 �
   "페이퍼"를 붙여 써라** — "열렸다 / 청산됐다" 같은 체결 표현도 마찬가지다. 라이브 포지션이
   있다고 말하려면 `trading_readiness`의 `live_armed_strategies` 줄이 `0 armed`가 아님을
   확인하고 그 줄을 인용해라. (실측: 포지션을 보고한 35건 중 18건이 수식 없이 "보유 중"이라
-  썼고, 그 대부분의 기간에 실제로는 `0 armed`였다.)
+  썼고, 그 대부분의 기간에 실제로는 `0 armed`였다.) 포지션이 있는지와 지금 진입이 가능한지
+  (`live_entry_possible`)는 다른 질문이다.
 - **`trading_readiness` 보드를 옮길 때는 대괄호 한정어와 `NOTE :` 줄을 원문 그대로 함께
   전해라.** `[... cannot prove their size — no fill recorded]`, `none registered` 같은
   단서를 떼면서 PASS를 ✅로 바꾸는 것은 요약이 아니라 다른 사실이다. 특히 **정지 방법을
@@ -139,7 +143,9 @@ readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한�
        the trading process recorded the gate OPEN at ...
 
 **이 경고가 있으면 "라이브가 꺼져 있다"고 말하면 안 된다.** `live_gate_recorded` 줄이
-거래 프로세스가 실제로 기록한 값이다. 그것을 전해라.
+거래 프로세스가 실제로 기록한 게이트 값이다. 그것을 전하되, 진입이 가능한지는
+`live_entry_possible`로 답해라 — 게이트가 OPEN이어도 다른 조건 때문에 `false`일 수 있고,
+`null`이면 "알 수 없다"고 말해라.
 
 ## 5. 상신 양식 (C등급)
 
