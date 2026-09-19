@@ -984,6 +984,57 @@ def test_a_stage_that_admits_no_entry_still_settles_and_protects(tmp_path, monke
     assert out["execution_stage"]["stage"] == status.stage
 
 
+@pytest.mark.parametrize("phrase,kill", [(True, False), (False, False), (True, True)],
+                         ids=["armed_phrase", "no_phrase", "manual_kill"])
+def test_the_leg_stamps_the_gate_switches_its_entry_is_judged_on(tmp_path, monkeypatch, phrase, kill):
+    """PR5a: the confirmation phrase and the manual kill switch are this process's environment, which
+    the console and the assistant's read door are built without. The leg stamps them — from the same
+    `limits` the entry is judged on — so the readiness board there reads the trading process's own
+    switches instead of guessing from rows computed in a container that cannot see them."""
+    from runtime.mvp_runtime.crypto.live_order import (
+        CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE, MANUAL_KILL_SWITCH_ENV,
+    )
+
+    monkeypatch.setenv("MVP_LIVE_TRADING", "real")
+    if phrase:
+        monkeypatch.setenv(CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE)
+    else:
+        monkeypatch.delenv(CONFIRMATION_ENV, raising=False)
+    if kill:
+        monkeypatch.setenv(MANUAL_KILL_SWITCH_ENV, "on")
+    else:
+        monkeypatch.delenv(MANUAL_KILL_SWITCH_ENV, raising=False)
+    monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+    monkeypatch.setattr(live_route, "list_open_live_positions", lambda root: [])
+    monkeypatch.setattr(live_route, "reconcile_positions",
+                        lambda local, snapshot, now: {"status": "RECONCILED", "books": {}})
+    seen: dict[str, Any] = {}
+
+    def _plan(plan, **kw):
+        seen.update(kw)
+        return {"status": "REFUSED", "ready": False, "reasons": ["stubbed"]}
+
+    monkeypatch.setattr(live_route, "plan_live_entry", _plan)
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={"timestamp": NOW},
+        verdict={"allow_new_position": True}, symbol=SYMBOL, collector=object(), now=NOW,
+        root=tmp_path,
+    )
+    assert out["live_gate"] == {"confirmation_present": phrase, "manual_kill_switch": kill}
+    assert out["live_gate"] == {"confirmation_present": seen["limits"].confirmation_present(),
+                                "manual_kill_switch": seen["limits"].manual_kill_switch}
+
+
+def test_a_closed_gate_stamps_no_switches(tmp_path, monkeypatch):
+    """The leg reads nothing when the gate is shut, the switches included — as with the stage."""
+    monkeypatch.delenv("MVP_LIVE_TRADING", raising=False)
+    out = live_route.run_live_leg(
+        live_routable_strategy_ids={"S1"}, route=None, feature_row={}, verdict={"allow_new_position": True},
+        symbol=SYMBOL, collector=object(), now=NOW, root=tmp_path,
+    )
+    assert out["live_route_status"] == live_route.ROUTE_DISABLED and out["live_gate"] is None
+
+
 # --- settle and enter are mutually exclusive within one cycle -------------------------------
 
 def test_a_cycle_that_settles_never_also_enters(tmp_path, monkeypatch):

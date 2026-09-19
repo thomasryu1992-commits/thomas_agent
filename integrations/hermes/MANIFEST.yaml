@@ -29,14 +29,14 @@ hermes:
   mcp_dir: /root/hermes-trial/data/mcp
   mount_into_container: /opt/data          # the gateway spawns /opt/data/mcp/<shim>.py
 shims:
-  version: "2.11"  # 2.2 = the 2026-09-07 switch-shim revision (bak-pre-v2.2 on the host); 2.3 = the read shim's [data] line (P02); 2.4 = the dispatch shim's door API v3 workflow tools (P05); 2.5 = retry_workflow_step (P06); 2.6 = propose_workflow_update (P07); 2.7 = workflow_changes + report_workflow_usage (P08); 2.8 = propose_schedule_change (P09; refused by the runtime until policy 1.6.0); 2.9 = the V2_INTAKE_CLOSED cutover rendering (P10); 2.10 = review fixes — a mutation sent without a reply is UNCONFIRMED, reported cost keeps billed rows (2026-09-14); 2.11 = trading_readiness defines live_entry_possible as readiness_data computes it — its four [data] fields, the execution stage and the venue contract included (2026-09-19)
+  version: "2.12"  # 2.2 = the 2026-09-07 switch-shim revision (bak-pre-v2.2 on the host); 2.3 = the read shim's [data] line (P02); 2.4 = the dispatch shim's door API v3 workflow tools (P05); 2.5 = retry_workflow_step (P06); 2.6 = propose_workflow_update (P07); 2.7 = workflow_changes + report_workflow_usage (P08); 2.8 = propose_schedule_change (P09; refused by the runtime until policy 1.6.0); 2.9 = the V2_INTAKE_CLOSED cutover rendering (P10); 2.10 = review fixes — a mutation sent without a reply is UNCONFIRMED, reported cost keeps billed rows (2026-09-14); 2.11 = trading_readiness defines live_entry_possible as readiness_data computes it — its four [data] fields, the execution stage and the venue contract included (2026-09-19); 2.12 = trading_readiness reads live_entry_possible off the readiness state's own lists — readiness.components / blocking / unknown (crypto PR5a, 2026-09-19)
   runtime_requirement: every door speaks proto 2 (candidate-833 or later)
   full_data_requirement: crypto_readiness / crypto_funds carry their view only from the runtime that includes P02 (readiness_data, funds_data); an older runtime answers `{action}` and the line still renders
   v3_requirement: the workflow tools need a runtime that includes P05 AND a dispatch-bridge started with --workflow-manager; any other door refuses them as WORKFLOW_UNAVAILABLE (thomas_capabilities says which)
-  host_state: as of 2026-09-19 the host runs 2.10 (installed 2026-09-15 03:46Z, gateway restarted 03:47Z; byte-identical to the 2.10 files on 2026-09-19); 2.11 waits for scripts/ops/install_hermes_shims.sh --install and a gateway restart (operator step). --check is the live answer, not this line
+  host_state: as of 2026-09-19 the host runs 2.10 (installed 2026-09-15 03:46Z, gateway restarted 03:47Z; byte-identical to the 2.10 files on 2026-09-19); 2.11 and 2.12 wait for scripts/ops/install_hermes_shims.sh --install and a gateway restart (operator step; install 2.12 only on a runtime with PR5a, whose [data] carries `readiness`). --check is the live answer, not this line
   files:
     thomas_door_client.py: 19b2ec0e92ed51082fb814b505b44e4469ccbf460bbeded5dab4487c76e36d4f
-    read_bridge_mcp.py: 1900e8f246cf361c136e2a5eeffd7af08bcfc44f4221be2e396665037f198b7e
+    read_bridge_mcp.py: 380938067311a9ec9da583c50082b7b6e463633918e38ae9a0efc92ede2d5e9b
     dispatch_bridge_mcp.py: 20ae1e24eb82fa13b3710b82cf3c32ee8d80f9fa0caf4495c05458a95821f667
     switch_bridge_mcp.py: fc6fc597958afa72c6968637637e63f58f20d8b2f29e82ed88d5fa9e1b430768
     knowledge_bridge_mcp.py: c3d44c341f264008bdfa2346c85b460ce8a63bc7589d2173088d210314fa3326

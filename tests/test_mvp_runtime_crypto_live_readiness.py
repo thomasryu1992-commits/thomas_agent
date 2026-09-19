@@ -1034,7 +1034,7 @@ def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_en
 #
 # One word cannot carry what this board says. The 2026-09-13 review found `ready: true` beside
 # zero armed strategies read through the assistant door as "live trading is on". The view keeps
-# the four facts apart as fields, so a consumer never derives one from the prose of another.
+# the facts apart as fields, so a consumer never derives one from the prose of another.
 
 def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, gate_open=True,
                      gate_stale=False, stage_admits=True, contract_usable=True):
@@ -1064,67 +1064,44 @@ def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, 
     }
 
 
-def test_ready_infrastructure_with_no_armed_strategy_is_not_live_entry_possible():
-    data = live_readiness.readiness_data(_status_for_view(ready=True, armed=0))
-    assert data["infrastructure_ready"] is True
-    assert data["live_armed_strategies"] == {"known": True, "armed": 0, "occupying": 15, "error": None}
-    assert data["live_entry_possible"] is False
+# What `live_entry_possible` is made of, and each fact that decides it, is the readiness state's:
+# tests/test_mvp_runtime_crypto_readiness_state.py (model v2, PR5a). The four-fact answer these
+# tests pinned read True under a kill or a disarm (FO-10).
 
 
-def test_an_armed_strategy_behind_an_open_fresh_gate_is_live_entry_possible():
-    data = live_readiness.readiness_data(_status_for_view(armed=1))
-    assert data["live_entry_possible"] is True
-    assert data["recorded_gate"]["open"] is True and data["recorded_gate"]["stale"] is False
-
-
-def test_a_stage_below_the_rung_the_doors_admit_means_no_entry(tmp_path):
-    """PR1b: however armed and open the machine is, a stage that admits nothing cannot enter."""
-    data = live_readiness.readiness_data(_status_for_view(armed=1, stage_admits=False))
-    assert data["live_entry_possible"] is False
-    assert data["execution_stage"]["admits_entry"] is False
-
-
-def test_a_venue_contract_the_doors_refuse_on_means_no_entry():
-    """PR4b: however armed, open and staged, an entry is decided on a usable venue contract PASS."""
-    data = live_readiness.readiness_data(_status_for_view(armed=1, contract_usable=False))
-    assert data["live_entry_possible"] is False
-    assert data["venue_contract"]["usable"] is False and data["venue_contract"]["status"] == "FAIL"
-
-
-def test_a_stale_or_closed_recorded_gate_means_no_entry_and_says_which():
-    stale = live_readiness.readiness_data(_status_for_view(armed=1, gate_stale=True))
-    assert stale["live_entry_possible"] is False and stale["recorded_gate"]["stale"] is True
-    closed = live_readiness.readiness_data(_status_for_view(armed=1, gate_open=False))
-    assert closed["live_entry_possible"] is False and closed["recorded_gate"]["open"] is False
-
-
-def test_an_unknown_fact_answers_none_never_a_guess():
-    pool_unreadable = live_readiness.readiness_data(_status_for_view(armed_known=False))
-    assert pool_unreadable["live_entry_possible"] is None
-    assert pool_unreadable["live_armed_strategies"]["error"] == "POOL_UNREADABLE"
-    no_cycle = live_readiness.readiness_data(_status_for_view(armed=1, gate_known=False))
-    assert no_cycle["live_entry_possible"] is None and no_cycle["recorded_gate"]["known"] is False
-
-
-def test_live_entry_possible_is_the_four_fields_the_read_shim_names():
-    """The assistant is told `live_entry_possible` is four `[data]` fields and nothing else
-    (`trading_readiness` in integrations/hermes/mcp/read_bridge_mcp.py). It was told two while the
-    stage (PR1b) and the venue contract (PR4b) joined the value, and explained a `false` without
-    either (shims 2.11). A status carrying only those four must read True, so a fifth condition
-    fails here, and its author updates the description in the same change."""
-    four = {
+def test_live_entry_possible_is_what_the_read_shim_says_it_is(tmp_path, clean_env):
+    """The assistant is told `live_entry_possible` is `true` only when every entry of
+    `readiness.components` is ok, and to quote `readiness.blocking` or `readiness.unknown` otherwise
+    (`trading_readiness` in integrations/hermes/mcp/read_bridge_mcp.py, shims 2.12). 2.11 listed the
+    four fields the value was made of and said "nothing else", which stopped being true the day the
+    readiness state added the kill, the disarm and the breakers (PR5a) — as a list of members had gone
+    stale twice before. The description names the lists now, so a joining component needs no new
+    sentence; this pins that the value IS those lists, on hand-made statuses and on the real board, and
+    that the description says so."""
+    four_fields_of_2_11 = {
         "live_armed_strategies": {"known": True, "armed": 1},
         "recorded_gate": {"known": True, "open": True, "stale": False},
         "execution_stage": {"admits_entry": True},
         "venue_contract": {"usable": True},
     }
-    assert live_readiness.readiness_data(four)["live_entry_possible"] is True
+    for status in ({}, four_fields_of_2_11, _status_for_view(),
+                   live_readiness.build_readiness(root=tmp_path, now=NOW)):
+        data = live_readiness.readiness_data(status)
+        components = data["readiness"]["components"]
+        assert list(components) == list(live_readiness.READINESS_COMPONENTS)
+        values = [component["ok"] for component in components.values()]
+        expected = False if False in values else (None if None in values else True)
+        assert data["live_entry_possible"] is expected
+        assert data["readiness"]["blocking"] == [
+            f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is False]
+        assert data["readiness"]["unknown"] == [
+            f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is None]
     shim = Path(__file__).resolve().parents[1] / "integrations" / "hermes" / "mcp" / "read_bridge_mcp.py"
     tool = next(node for node in ast.parse(shim.read_text(encoding="utf-8")).body
                 if isinstance(node, ast.FunctionDef) and node.name == "trading_readiness")
     description = ast.get_docstring(tool) or ""
-    for field in ("live_armed_strategies.armed", "recorded_gate", "execution_stage.admits_entry",
-                  "venue_contract.usable"):
+    for field in ("live_entry_possible", "readiness.components", "readiness.blocking",
+                  "readiness.unknown"):
         assert f"`{field}`" in description, field
 
 
@@ -1136,12 +1113,15 @@ def test_the_view_carries_the_boards_instant_and_is_json_safe():
 
 
 def test_the_real_board_on_a_fresh_machine_has_the_view(tmp_path, clean_env):
-    """Built from the real board, not a hand-made status: a fresh machine is not ready and
-    knows neither its pool nor a recorded gate, so entry is unknown — not False."""
+    """Built from the real board, not a hand-made status: a fresh machine is not ready, and no entry
+    can open on it — it reads READ_ONLY and comes up disarmed (decision 10), and the doors refuse on
+    both. Until the readiness state (PR5a) this read None, for want of a pool and a recorded gate."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     data = live_readiness.readiness_data(status)
     assert data["infrastructure_ready"] is False
-    assert data["live_entry_possible"] is None
+    assert data["live_entry_possible"] is False
+    assert {"execution_stage:EXECUTION_STAGE_RECORD_MISSING",
+            "runtime_control:TRADING_DISARMED"} <= set(data["readiness"]["blocking"])
     assert {c["check"] for c in data["checks"]} == {c["check"] for c in status["checks"]}
     json.dumps(data)
 

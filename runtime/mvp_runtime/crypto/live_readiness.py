@@ -54,17 +54,18 @@ from typing import Any
 
 from .. import timeutil
 from ..cli_common import force_utf8_io
-from ..control import ControlStore
+from ..control import ACTIVE, KILLED, PAUSED, ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
-from . import pool, pre_order_gate
+from . import account_store, breaker_watch, pool, pre_order_gate
 from .account import (
     ACCOUNT_API_KEY_ENV, ACCOUNT_API_SECRET_ENV, ACCOUNT_FEED_ENV, BINANCE_ACCOUNT,
     read_account,
 )
+from .cycle import OPTIONAL_DATA_DEGRADED_CODES
 from .dashboard import _read_cycle_records
 from .live_position import compute_open_notional_usdt
-from .live_route import ROUTE_DISABLED
+from .live_route import ROUTE_DISABLED, ROUTE_INCIDENT
 from .live_order import (
     API_CALL_CLASSES,
     CONFIRMATION_ENV,
@@ -135,6 +136,11 @@ DEFAULT_PROBE_SYMBOL = "BTCUSDT"
 # means the scheduler stopped rather than that the gate changed.
 RECORDED_GATE_STALE_AFTER_SECONDS = 2 * 60 * 60
 
+# How many recent cycle records the board reads. The newest decides the recorded gate; every record
+# stamped with the newest instant is the trading process's last fire (PR5a). A fire writes one record
+# per routed context — thirteen on 2026-09-19 — so this holds several fires.
+RECORDED_FIRE_LOOKBACK = 64
+
 
 def _claim_worth_showing(claim: Mapping[str, Any], now: str) -> bool:
     """A claim still holding its symbol, or one that expired less than a day ago."""
@@ -201,7 +207,25 @@ def _venue_contract(root: Path | None, *, now: str) -> dict[str, Any]:
     return {"error": None, **status, "last_attempt": last_attempt}
 
 
-def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
+def _age_seconds(now: str, stamp: str) -> float | None:
+    try:
+        return (timeutil.parse_iso(now) - timeutil.parse_iso(stamp)).total_seconds()
+    except (MvpRuntimeError, ValueError, TypeError):
+        return None
+
+
+def _recent_cycles(root: Path) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """The newest cycle records, the reader's warning, and the error that stopped the read — one pass
+    over the ledger for every recorded fact on the board. Never raises."""
+    try:
+        records, warning = _read_cycle_records(root, RECORDED_FIRE_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001 — an observability row must not break the board
+        return [], None, type(exc).__name__
+    return [r for r in records if isinstance(r, Mapping)], warning, None
+
+
+def _recorded_gate(recent: tuple[list[dict[str, Any]], str | None, str | None], *,
+                   now: str) -> dict[str, Any]:
     """What the process that CAN trade last recorded about its own live gate.
 
     Every row this board computes from ``os.environ`` answers "can *this process* place a live
@@ -223,10 +247,9 @@ def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
         "known": False, "open": None, "status": None,
         "recorded_at": None, "age_seconds": None, "stale": False, "error": None,
     }
-    try:
-        records, warning = _read_cycle_records(root, 1)
-    except Exception as exc:  # noqa: BLE001 — an observability row must not break the board
-        return {**unknown, "error": type(exc).__name__}
+    records, warning, error = recent
+    if error is not None:
+        return {**unknown, "error": error}
     if not records:
         return {**unknown, "error": warning}
     record = records[-1]
@@ -234,10 +257,7 @@ def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
     recorded_at = record.get("created_at")
     if not isinstance(status, str) or not isinstance(recorded_at, str):
         return {**unknown, "error": "cycle record carries no live route status"}
-    try:
-        age = (timeutil.parse_iso(now) - timeutil.parse_iso(recorded_at)).total_seconds()
-    except (MvpRuntimeError, ValueError):
-        age = None
+    age = _age_seconds(now, recorded_at)
     return {
         "known": True,
         # DISABLED is the one status meaning the gate refused to open. Every other status was
@@ -251,6 +271,117 @@ def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
         "stale": age is None or age > RECORDED_GATE_STALE_AFTER_SECONDS,
         "error": warning,
     }
+
+
+def _data_refusal(record: Mapping[str, Any]) -> str | None:
+    """Why the live entry door refuses this context on its data — the first that applies — or None:
+    a synthetic feed (the guard blocks trading on it), a degraded collection, or optional data that
+    is degraded, past its bound or missing from the bar (PR2d-2, decision 28)."""
+    collection = record.get("collection")
+    if isinstance(collection, Mapping) and collection.get("is_synthetic"):
+        return "SYNTHETIC"
+    if record.get("degraded"):
+        return "DEGRADED"
+    codes = record.get("reason_codes")
+    if record.get("optional_data_stale") or record.get("optional_data_missing") or (
+            isinstance(codes, list)
+            and any(isinstance(code, str) and code in OPTIONAL_DATA_DEGRADED_CODES for code in codes)):
+        return "OPTIONAL_DATA"
+    return None
+
+
+def _recorded_fire(recent: tuple[list[dict[str, Any]], str | None, str | None], *,
+                   now: str) -> dict[str, Any]:
+    """The trading process's last fire as its cycle records tell it (PR5a): every record stamped with
+    the newest instant, one per context the fire routed. How many the entry door would refuse on
+    their data, and why; which ones halted on money the runtime cannot account for; and the gate
+    switches the live leg read.
+
+    For the readiness state, which needs more of the trading process's last word than the recorded
+    gate's one status. Never raises and never guesses: an absent or unreadable ledger reports
+    ``known: False``.
+    """
+    records, warning, error = recent
+    newest = records[-1].get("created_at") if records else None
+    if error is not None or not isinstance(newest, str):
+        return {
+            "known": False, "created_at": None, "age_seconds": None, "stale": False, "contexts": 0,
+            "synthetic": 0, "degraded": 0, "optional_data": 0, "incident": [], "gate": None,
+            "error": error or warning or ("cycle record carries no instant" if records else None),
+        }
+    fire = [r for r in records if r.get("created_at") == newest]
+    age = _age_seconds(now, newest)
+    refusals = [_data_refusal(r) for r in fire]
+    # One process wrote the fire, so its contexts read the same switches; folded the strict way anyway.
+    switches = [r["live_gate"] for r in fire if isinstance(r.get("live_gate"), Mapping)]
+    return {
+        "known": True,
+        "created_at": newest,
+        "age_seconds": age,
+        # The recorded gate's window: one concept of "too old to speak for now" on this board.
+        "stale": age is None or age > RECORDED_GATE_STALE_AFTER_SECONDS,
+        "contexts": len(fire),
+        # Each context counted once, under the first reason its data is refused.
+        "synthetic": refusals.count("SYNTHETIC"),
+        "degraded": refusals.count("DEGRADED"),
+        "optional_data": refusals.count("OPTIONAL_DATA"),
+        # INCIDENT, or a halt: the pass stopped its fan-out on a state it cannot account for, and the
+        # next pass halts again until the book and the venue agree.
+        "incident": sorted(f"{r.get('symbol')}__{r.get('timeframe')}" for r in fire
+                           if r.get("live_route_status") == ROUTE_INCIDENT or r.get("live_halt")),
+        "gate": ({"confirmation_present": all(bool(g.get("confirmation_present")) for g in switches),
+                  "manual_kill_switch": any(bool(g.get("manual_kill_switch")) for g in switches)}
+                 if switches else None),
+        "error": warning,
+    }
+
+
+def _recorded_account(root: Path, *, now: str, limit_usdt: float) -> dict[str, Any]:
+    """The account as the trading process last read it (PR5a), for a process that does not read it
+    itself: the snapshot the scheduler stores every fifteen minutes, dated, with today's loss judged
+    from the figure it carries by the entry door's own rule — the stricter of the calendar day and the
+    rolling 24 hours, a missing figure a trip. Too old to speak for now, the loss is not judged at all.
+    Never raises: a snapshot that cannot be read reads ``recorded: False``.
+    """
+    unknown: dict[str, Any] = {
+        "source": SOURCE_RECORDED, "configured": False, "recorded": False, "as_of": None,
+        "age_seconds": None, "stale": True, "realized_net": None, "daily_loss_breached": None,
+    }
+    try:
+        body = account_store.read_snapshot(root)
+    except Exception:  # noqa: BLE001 — the store reads damage as absence; this is the same answer
+        body = None
+    if not isinstance(body, Mapping):
+        return unknown
+    as_of = body.get("as_of")
+    age = _age_seconds(now, as_of) if isinstance(as_of, str) else None
+    stale = age is None or age > account_store.STALE_AFTER_SECONDS
+    net = venue_daily_realized_net(body.get("realized_windows"))
+    breached: bool | None = None
+    if not stale and net is not None:
+        try:
+            breached = bool(live_risk_snapshot(
+                limit_usdt=limit_usdt, root=root, now=now,
+                venue_realized_pnl_usdt=net, venue_required=True,
+            )["daily_loss_limit_breached"])
+        except Exception:  # noqa: BLE001 — unjudged, never a comfortable False
+            breached = None
+    return {**unknown, "recorded": True, "as_of": as_of, "age_seconds": age, "stale": stale,
+            "realized_net": net, "daily_loss_breached": breached}
+
+
+def _c4_verdict(root: Path, *, now: str) -> dict[str, Any]:
+    """The C4 loss breakers' verdict on a live entry now, in the composition the live leg judges
+    (`breaker_watch.live_risk_verdict`). Never raises: a verdict that cannot be computed is
+    ``allow: None`` with its reason."""
+    try:
+        verdict = breaker_watch.live_risk_verdict(root, now=now)
+    except MvpRuntimeError as exc:
+        return {"allow": None, "problems": [], "error": exc.reason_code}
+    except Exception as exc:  # noqa: BLE001 — the board never raises
+        return {"allow": None, "problems": [], "error": type(exc).__name__}
+    return {"allow": bool(verdict.get("allow_new_position")),
+            "problems": [str(p) for p in verdict.get("problems") or ()], "error": None}
 
 
 def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict[str, Any]:
@@ -370,6 +501,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         state = ControlStore(root).load()
         runtime_active, runtime_detail = state.execution_allowed, f"runtime is {state.mode}"
         trading_armed = state.trading_armed
+        # The same state as facts, for the readiness state (PR5a).
+        control: dict[str, Any] = {"mode": state.mode, "trading_armed": bool(state.trading_armed),
+                                   "fail_closed": bool(state.fail_closed), "error": None}
         armed_detail = (
             "armed" if trading_armed else
             f"DISARMED ({state.reason}) - new live entries are refused"
@@ -380,6 +514,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     except MvpRuntimeError as exc:
         runtime_active, runtime_detail = False, f"control state unreadable ({exc.reason_code})"
         trading_armed, armed_detail = False, f"control state unreadable ({exc.reason_code})"
+        control = {"mode": None, "trading_armed": False, "fail_closed": False, "error": exc.reason_code}
     checks.append(_check("runtime_active", runtime_active, runtime_detail))
     # 5b. The arm, as its own row. Folding it into `runtime_active` would make one FAIL mean two
     # different situations with different fixes — a kill needs a resume, a disarm needs a
@@ -416,6 +551,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"UNREADABLE ({pool_error}) - the entry door refuses on this too, so no strategy "
             "can open a live position until the pool is repaired"
         )
+        tradable_armed: int | None = None
     else:
         armed_ids = pool.live_routable_strategy_ids(active_pool)
         occupying_ids = pool.routable_strategy_ids(active_pool)
@@ -424,6 +560,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             "error": None,
         }
         armed_strategies_ok = True
+        # The armed entries the gate would accept (PR5a): the count an entry actually needs.
+        tradable_armed = len(armed_ids)
         if armed_ids:
             armed_strategies_detail = (
                 f"{len(armed_ids)} armed of {len(occupying_ids)} occupying (live_tier=LIVE)"
@@ -436,6 +574,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
                 for sid, armed in sorted(pool.live_arm_entries(active_pool).items())
             ]
             cannot_trade = [(sid, why) for sid, why in cannot_trade if why is not None]
+            refused = {sid for sid, _why in cannot_trade}
+            tradable_armed = sum(1 for sid in armed_ids if sid not in refused)
             if cannot_trade:
                 armed_strategies_detail += (
                     f"; {len(cannot_trade)} of them cannot trade: "
@@ -480,6 +620,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
                 account_error = "account read returned no realized figure"
         except MvpRuntimeError as exc:      # degrade, never block — the R3 posture
             account_error = exc.reason_code
+    # The account for the readiness state (PR5a): this process's own read where it has a feed,
+    # otherwise the trading process's stored snapshot.
+    account_fact = (
+        {"source": SOURCE_THIS_PROCESS, "configured": True, "readable": snapshot is not None,
+         "error": account_error}
+        if account_configured else
+        _recorded_account(root, now=now, limit_usdt=limits.daily_loss_limit_usdt)
+    )
     risk = live_risk_snapshot(
         limit_usdt=limits.daily_loss_limit_usdt, root=root, now=now,
         venue_realized_pnl_usdt=venue_realized,
@@ -782,6 +930,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         execution_stage=stage,
     )
 
+    recent = _recent_cycles(root)
     return {
         "created_at": now,
         # Deliberately still "can THIS process trade": the CLI's exit code is documented as a
@@ -790,7 +939,7 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # board read off the scheduler cannot flip this verdict.
         "ready": all(c["ok"] for c in checks),
         "checks": checks,
-        "recorded_gate": _recorded_gate(root, now=now),
+        "recorded_gate": _recorded_gate(recent, now=now),
         # The armed set as data, beside its check row — the render needs the count (the WIRED
         # note below qualifies itself on it), and a JSON consumer should not parse prose.
         "live_armed_strategies": armed_strategies,
@@ -814,6 +963,359 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The pre-order snapshots real orders left under (PR2b), verified; the `pre_order_snapshots`
         # check row above reads the same value.
         "pre_order_snapshots": snapshots,
+        # What the readiness state reads beside the rows above (PR5a) — see `readiness_state`.
+        "readiness_inputs": {
+            "runtime_control": control,
+            "tradable_armed": tradable_armed,
+            "recorded_fire": _recorded_fire(recent, now=now),
+            "account": account_fact,
+            "c4": _c4_verdict(root, now=now),
+            "daily_order_cap": {"submitted_today": submitted_today,
+                                "cap": limits.max_daily_order_count, "error": counter_error},
+        },
+    }
+
+
+# === the readiness state (model v2, crypto PR5a) ===================================================
+#
+# `ready` answers "can THIS process trade", and was read as "live trading is on" (the 2026-09-13
+# review). `live_entry_possible` then answered "can a real position open" from four facts and missed
+# the kill, the disarm and every breaker: a KILLED runtime drops every later fire, so its last record
+# stayed OPEN and fresh — and the answer True — for two hours; a disarmed one keeps firing and records
+# HELD, which the recorded gate reads as open, so the answer stayed True for as long as it ran (FO-10).
+#
+# v2 names every fact an entry needs as a component, and each is three-valued:
+#
+# * ``False`` — an entry door refuses on it. Only where a door would, so False is never a guess.
+#   (One judgement is coarser, and says so: market data is False when half or more of the last
+#   fire's contexts were refused on their data, the pipeline's stall rule.)
+# * ``None`` — this process cannot observe it: no cycle on record yet, an unreadable ledger, an
+#   account snapshot too old to speak for now. Never to be read as possible.
+# * ``True`` — observed, and admitting.
+#
+# `live_entry_possible` is their three-valued AND: any False is False, else any None is None, and only
+# all True is True. `blocking` and `unknown` name each False and each None with its reason.
+#
+# Whose word a fact is depends on where the board runs. A process carrying the live-trading
+# environment — the trading process itself — answers from its own switches and its own account read.
+# Every other process (the operator console, the assistant's read door) answers from what the trading
+# process recorded: its cycle records and its account snapshot, dated, and unknown once too old.
+#
+# "Possible" means the autonomous leg may open a position at its next cycle. Entries happen only
+# inside a cycle, so a trading process that has recorded none for two hours opens nothing — False,
+# NO_RECENT_CYCLE — while its gate, which that old record no longer speaks for, is unknown.
+#
+# Per-order capacity is not readiness, and is not here: open exposure against its cap, the concurrent-
+# position caps, a symbol already in flight, a stop-loss cooldown. The guard decides those for the
+# order at hand; `guard_dry_run_status` is this process's judgement of a representative one.
+
+READINESS_MODEL = "readiness_state.v2"
+
+# In the order a reader fixes them: what is installed, what the machine is allowed, what the operator
+# switched, what is armed, what the venue backs, what risk admits, and what the last cycle saw.
+READINESS_COMPONENTS = (
+    "live_capability_installed",
+    "execution_stage",
+    "live_gate_open",
+    "runtime_control",
+    "armed_strategy_count",
+    "venue_ready",
+    "risk_ready",
+    "account_ready",
+    "market_data_ready",
+    "reconciliation_ready",
+)
+
+SOURCE_THIS_PROCESS = "this_process"
+SOURCE_RECORDED = "recorded"
+NOT_REPORTED = "NOT_REPORTED"
+
+# The rows the entry door refuses on, read from state every process mounts, and what each is called
+# when it refuses.
+_RISK_ROWS = (
+    ("registered_budget", "BUDGET_INVALID"),
+    ("risk_limits_record", "RISK_LIMITS_UNUSABLE"),
+    ("bracket_breaker", "BRACKET_BREAKER"),
+    ("api_breaker", "API_BREAKER"),
+    ("entry_marks", "ENTRY_MARKS_UNREADABLE"),
+    ("pre_order_snapshots", "PRE_ORDER_SNAPSHOTS_UNREADABLE"),
+)
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _component(ok: bool | None, reason: str, **extra: Any) -> dict[str, Any]:
+    return {"ok": ok, "reason": reason, **extra}
+
+
+def _check_ok(status: Mapping[str, Any], name: str) -> bool | None:
+    """The named row's verdict, or None when the board carries no such row."""
+    for check in status.get("checks") or ():
+        if isinstance(check, Mapping) and check.get("check") == name:
+            return bool(check.get("ok"))
+    return None
+
+
+def _capability_component(status: Mapping[str, Any]) -> dict[str, Any]:
+    implemented = status.get("order_path_implemented")
+    wired = status.get("autonomous_routing_wired")
+    if implemented is None or wired is None:
+        return _component(None, NOT_REPORTED)
+    if not implemented:
+        return _component(False, "ORDER_PATH_NOT_IMPLEMENTED")
+    if not wired:
+        return _component(False, "ROUTING_NOT_WIRED")
+    return _component(True, "INSTALLED")
+
+
+def _stage_component(status: Mapping[str, Any]) -> dict[str, Any]:
+    stage = _mapping(status.get("execution_stage"))
+    if "admits_entry" not in stage:
+        return _component(None, NOT_REPORTED)
+    name = str(stage.get("stage"))
+    if stage.get("admits_entry"):
+        return _component(True, f"STAGE_{name}", stage=name)
+    # An unbound record reads READ_ONLY; its own reason says why, which the rung name would not.
+    reason = str(stage["reason_code"]) if stage.get("valid") is False and stage.get("reason_code") \
+        else f"STAGE_{name}"
+    return _component(False, reason, stage=name)
+
+
+def _gate_component(status: Mapping[str, Any], inputs: Mapping[str, Any], *,
+                    opted: bool) -> dict[str, Any]:
+    """The opt-in, the confirmation phrase and the manual kill switch — the gate and the two switches
+    the guard refuses every autonomous entry on."""
+    if opted:
+        if _check_ok(status, "confirmation_phrase") is not True:
+            return _component(False, "CONFIRMATION_MISSING", source=SOURCE_THIS_PROCESS)
+        if _check_ok(status, "manual_kill_switch") is not True:
+            return _component(False, "MANUAL_KILL_ENGAGED", source=SOURCE_THIS_PROCESS)
+        return _component(True, "OPEN", source=SOURCE_THIS_PROCESS)
+    # This process's env rows describe this container (#382); the trading process's record decides.
+    recorded = _mapping(status.get("recorded_gate"))
+    if not recorded:
+        return _component(None, NOT_REPORTED, source=SOURCE_RECORDED)
+    if not recorded.get("known"):
+        return _component(None, "RECORD_UNREADABLE" if recorded.get("error") else "NO_RECORD",
+                          source=SOURCE_RECORDED)
+    if recorded.get("stale"):
+        return _component(None, "RECORD_STALE", source=SOURCE_RECORDED)
+    if not recorded.get("open"):
+        return _component(False, "GATE_DISABLED", source=SOURCE_RECORDED)
+    switches = _mapping(_mapping(inputs.get("recorded_fire")).get("gate"))
+    if not switches:
+        # A record written before the leg stamped its switches: the opt-in is known, the rest is not.
+        return _component(None, "SWITCHES_NOT_RECORDED", source=SOURCE_RECORDED)
+    if not switches.get("confirmation_present"):
+        return _component(False, "CONFIRMATION_MISSING", source=SOURCE_RECORDED)
+    if switches.get("manual_kill_switch"):
+        return _component(False, "MANUAL_KILL_ENGAGED", source=SOURCE_RECORDED)
+    return _component(True, "OPEN", source=SOURCE_RECORDED)
+
+
+def _control_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """The runtime control state every entry reads (`ControlState.trading_allowed`): ACTIVE and armed."""
+    control = _mapping(inputs.get("runtime_control"))
+    if not control:
+        return _component(None, NOT_REPORTED)
+    if control.get("fail_closed"):
+        return _component(False, "CONTROL_FAIL_CLOSED")
+    mode = control.get("mode")
+    if mode == KILLED:
+        return _component(False, "RUNTIME_KILLED")
+    if mode == PAUSED:
+        return _component(False, "RUNTIME_PAUSED")
+    if mode != ACTIVE:
+        # No mode: the state could not be read, and the leg's own read would refuse (BLOCKED).
+        return _component(False, "CONTROL_UNREADABLE")
+    if not control.get("trading_armed"):
+        return _component(False, "TRADING_DISARMED")
+    return _component(True, "ACTIVE_ARMED")
+
+
+def _armed_component(status: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """How many armed strategies the gate would accept. An unreadable pool is refused by the entry
+    door, so it is False, not unknown."""
+    armed = _mapping(status.get("live_armed_strategies"))
+    if not armed:
+        return _component(None, NOT_REPORTED, count=None, armed=None)
+    if not armed.get("known"):
+        return _component(False, "POOL_UNREADABLE", count=None, armed=None)
+    raw = _count(armed.get("armed"))
+    tradable = _count(inputs.get("tradable_armed"))
+    if tradable is None:
+        return _component(None, NOT_REPORTED, count=None, armed=raw)
+    if tradable > 0:
+        return _component(True, "ARMED", count=tradable, armed=raw)
+    return _component(False, "ARMED_CANNOT_TRADE" if raw else "NONE_ARMED", count=0, armed=raw)
+
+
+def _venue_component(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The venue contract row's own judgement (PR4b): a usable PASS covering every budget symbol."""
+    row = _check_ok(status, "venue_contract")
+    if row is None:
+        return _component(None, NOT_REPORTED)
+    if row:
+        return _component(True, "USABLE")
+    contract = _mapping(status.get("venue_contract"))
+    if contract.get("error"):
+        return _component(False, "CONTRACT_UNREADABLE")
+    if not contract.get("usable"):
+        return _component(False, str(contract.get("refusal") or "CONTRACT_NOT_USABLE"))
+    return _component(False, "BUDGET_SYMBOL_UNCOVERED")
+
+
+def _risk_component(status: Mapping[str, Any], inputs: Mapping[str, Any], *,
+                    opted: bool) -> dict[str, Any]:
+    """Every breaker and record the entry door refuses on, the C4 loss breakers, today's realized loss
+    and the daily order cap. Several can refuse at once, and each is named."""
+    refused: list[str] = []
+    unknown: list[str] = []
+    for row, code in _RISK_ROWS:
+        ok = _check_ok(status, row)
+        if ok is None:
+            unknown.append(NOT_REPORTED)
+        elif not ok:
+            refused.append(code)
+    c4 = _mapping(inputs.get("c4"))
+    if not c4:
+        unknown.append(NOT_REPORTED)
+    elif c4.get("allow") is None:
+        unknown.append("C4_UNREADABLE")
+    elif not c4.get("allow"):
+        refused.append("C4_BREAKER")
+    if opted:
+        # The trading process measured the loss itself, from its own account read.
+        ok = _check_ok(status, "daily_loss_breaker")
+        if ok is None:
+            unknown.append(NOT_REPORTED)
+        elif not ok:
+            refused.append("DAILY_LOSS")
+    else:
+        breached = _mapping(inputs.get("account")).get("daily_loss_breached")
+        if breached is None:
+            unknown.append("DAILY_LOSS_UNMEASURED")
+        elif breached:
+            refused.append("DAILY_LOSS_BREACHED")
+    cap = _mapping(inputs.get("daily_order_cap"))
+    submitted, limit = _count(cap.get("submitted_today")), _count(cap.get("cap"))
+    if not cap:
+        unknown.append(NOT_REPORTED)
+    elif cap.get("error"):
+        refused.append("ORDER_COUNTER_UNREADABLE")
+    elif submitted is not None and limit is not None and limit > 0 and submitted >= limit:
+        # A cap of zero is a budget that backs nothing, which BUDGET_INVALID already names.
+        refused.append("DAILY_ORDER_CAP")
+    if refused:
+        return _component(False, "+".join(dict.fromkeys(refused)))
+    if unknown:
+        return _component(None, "+".join(dict.fromkeys(unknown)))
+    return _component(True, "CLEAR")
+
+
+def _account_component(inputs: Mapping[str, Any], *, opted: bool) -> dict[str, Any]:
+    account = _mapping(inputs.get("account"))
+    if not account:
+        return _component(None, NOT_REPORTED)
+    if opted and not account.get("configured"):
+        # The leg reads the account before it enters and refuses without it.
+        return _component(False, "ACCOUNT_FEED_NOT_CONFIGURED", source=SOURCE_THIS_PROCESS)
+    if account.get("source") == SOURCE_THIS_PROCESS:
+        if account.get("readable"):
+            return _component(True, "READ", source=SOURCE_THIS_PROCESS)
+        return _component(False, "ACCOUNT_UNREADABLE", source=SOURCE_THIS_PROCESS)
+    if not account.get("recorded"):
+        return _component(None, "SNAPSHOT_MISSING", source=SOURCE_RECORDED)
+    if account.get("stale"):
+        return _component(None, "SNAPSHOT_STALE", source=SOURCE_RECORDED)
+    return _component(True, "SNAPSHOT_FRESH", source=SOURCE_RECORDED)
+
+
+def _fire_unknown(fire: Mapping[str, Any]) -> str | None:
+    """Why the last fire cannot be read, or None when it can."""
+    if not fire:
+        return NOT_REPORTED
+    if not fire.get("known") or not _count(fire.get("contexts")):
+        return "RECORD_UNREADABLE" if fire.get("error") else "NO_RECORD"
+    return None
+
+
+# Counted per context under the first reason its data is refused, in this order.
+_DATA_REFUSALS = (("SYNTHETIC", "synthetic"), ("DEGRADED", "degraded"), ("OPTIONAL_DATA", "optional_data"))
+
+
+def _market_data_component(status: Mapping[str, Any], inputs: Mapping[str, Any], *,
+                           opted: bool) -> dict[str, Any]:
+    """Whether the last fire's contexts had data the entry door trades on. Judged the way the
+    pipeline's stall alarm judges a fire (`pool_cycle_is_stalled`, Thomas 2026-08-22): half or more
+    of the contexts refused on their data is a pool that is not trading, and False — though a minority
+    may still enter, so this is the one component that is False short of every entry being refused.
+    One flaky feed of thirteen does not make it False. The reason names the commonest refusal."""
+    if opted and _check_ok(status, "market_data_visibility") is False:
+        return _component(False, "MARKET_DATA_NOT_CONFIGURED")
+    fire = _mapping(inputs.get("recorded_fire"))
+    missing = _fire_unknown(fire)
+    if missing is not None:
+        return _component(None, missing)
+    if fire.get("stale"):
+        return _component(False, "NO_RECENT_CYCLE")
+    contexts = _count(fire.get("contexts")) or 0
+    refused = {kind: _count(fire.get(key)) or 0 for kind, key in _DATA_REFUSALS}
+    if 2 * sum(refused.values()) >= contexts:
+        commonest = max(refused, key=lambda kind: refused[kind])
+        return _component(False, f"MAJORITY_{commonest}")
+    return _component(True, "FRESH")
+
+
+def _reconciliation_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether the last fire's book agreed with the venue: an INCIDENT or a halt there halts the next
+    pass too, until they agree."""
+    fire = _mapping(inputs.get("recorded_fire"))
+    missing = _fire_unknown(fire)
+    if missing is not None:
+        return _component(None, missing)
+    if fire.get("stale"):
+        return _component(False, "NO_RECENT_CYCLE")
+    if fire.get("incident"):
+        return _component(False, "INCIDENT")
+    return _component(True, "CLEAR")
+
+
+def readiness_state(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The readiness state (model v2): each component with its value and reason, and
+    `live_entry_possible` as their three-valued AND. Pure over a board, and never raises: a fact the
+    board does not carry is ``None`` (``NOT_REPORTED``), never a guess."""
+    inputs = _mapping(status.get("readiness_inputs"))
+    # A process that carries the live-trading environment is the trading process: its own switches
+    # and its own account read decide. Everywhere else the trading process's record does.
+    opted = _check_ok(status, "live_trading_opt_in") is True
+    components = {
+        "live_capability_installed": _capability_component(status),
+        "execution_stage": _stage_component(status),
+        "live_gate_open": _gate_component(status, inputs, opted=opted),
+        "runtime_control": _control_component(inputs),
+        "armed_strategy_count": _armed_component(status, inputs),
+        "venue_ready": _venue_component(status),
+        "risk_ready": _risk_component(status, inputs, opted=opted),
+        "account_ready": _account_component(inputs, opted=opted),
+        "market_data_ready": _market_data_component(status, inputs, opted=opted),
+        "reconciliation_ready": _reconciliation_component(inputs),
+    }
+    blocking = [f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is False]
+    unknown = [f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is None]
+    possible: bool | None = False if blocking else (None if unknown else True)
+    return {
+        "model": READINESS_MODEL,
+        "live_entry_possible": possible,
+        "blocking": blocking,
+        "unknown": unknown,
+        "components": components,
     }
 
 
@@ -821,7 +1323,7 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
     """The board's structured view — the facts a reader must keep apart, as fields a JSON
     consumer reads instead of parsing the rendered rows (sequence 2, P02).
 
-    One word cannot carry what this board says. Four fields keep the meanings apart:
+    One word cannot carry what this board says. These fields keep the meanings apart:
 
     * ``infrastructure_ready`` — every check row ok, i.e. "can THIS process place a live
       order". Read through the assistant door it describes that door's container, which
@@ -831,26 +1333,17 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
       the one a summariser turns into "live trading is on".
     * ``recorded_gate`` — the trading process's own last word about its gate, dated, with
       the ``stale`` verdict the text banner uses.
-    * ``live_entry_possible`` — whether a real position can open now: at least one armed
-      strategy AND the recorded gate OPEN and not stale, at a stage that admits an entry (PR1b) on a
-      usable venue contract PASS (PR4b). ``None`` when the armed count or the gate is unknown (an
-      unreadable pool, no cycle recorded yet) — never a guess in either direction.
+    * ``live_entry_possible`` — whether the autonomous leg may open a real position at its next
+      cycle: the three-valued AND of the readiness state's components (model v2, PR5a — see
+      `readiness_state`). ``False`` names what refuses in ``readiness.blocking``; ``None`` names
+      what this process cannot see in ``readiness.unknown``, and is never a guess in either
+      direction. Until PR5a this was four facts — armed, the recorded gate, the stage, the
+      contract — and read True under a kill or a disarm (FO-10).
+    * ``readiness`` — the components themselves, each ``{ok: true|false|null, reason}``.
     """
     armed = status.get("live_armed_strategies") or {}
     gate = status.get("recorded_gate") or {}
-    armed_count = armed.get("armed") if armed.get("known") else None
-    entry_possible: bool | None
-    stage = status.get("execution_stage") or {}
-    stage_admits = bool(stage.get("admits_entry"))
-    # And the venue contract joined it when the doors began requiring a usable PASS (PR4b).
-    contract_admits = bool((status.get("venue_contract") or {}).get("usable"))
-    if not isinstance(armed_count, int) or not gate.get("known"):
-        entry_possible = None
-    else:
-        # The stage joined this answer when the doors began reading it (PR1b): a machine below
-        # LIVE_AUTONOMOUS cannot open a position however armed it is.
-        entry_possible = bool(armed_count > 0 and gate.get("open") and not gate.get("stale")
-                              and stage_admits and contract_admits)
+    state = readiness_state(status)
     guard = status.get("guard_dry_run") or {}
     return {
         "as_of": status.get("created_at"),
@@ -875,7 +1368,8 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
             "age_seconds": gate.get("age_seconds"),
             "stale": bool(gate.get("stale")),
         },
-        "live_entry_possible": entry_possible,
+        "live_entry_possible": state["live_entry_possible"],
+        "readiness": {key: state[key] for key in ("model", "blocking", "unknown", "components")},
         # The stage record's own answer: which rung, whether it binds, whether it admits a new
         # entry, and that the doors read it (crypto PR1a/PR1b).
         "execution_stage": status.get("execution_stage"),

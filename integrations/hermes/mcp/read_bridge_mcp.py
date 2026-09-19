@@ -36,6 +36,14 @@ four `[data]` fields the value is computed from, not `checks` rows: the `venue_c
 fails on a budget symbol the PASS does not cover, and rows such as `trading_armed` refuse entries
 without being part of the value. A list can go stale again, so a runtime test
 (`test_live_entry_possible_is_the_four_fields_the_read_shim_names`) fails when a fifth joins.
+
+v2.12 (2026-09-19): the runtime computes `live_entry_possible` from the readiness state (crypto
+PR5a): ten named components, each true, false or null, and the value is their three-valued AND,
+with `readiness.blocking` and `readiness.unknown` naming what refuses and what cannot be seen. The
+fifth condition 2.11 guarded against arrived with several more — the kill and the disarm, the
+breakers, the account, the last cycle — so the description names those lists instead of their
+members, and a component that joins needs no new sentence. The runtime test is now
+`test_live_entry_possible_is_what_the_read_shim_says_it_is`.
 """
 
 from __future__ import annotations
@@ -77,12 +85,12 @@ def trading_readiness() -> str:
     and a live order, today's realized P&L against the limit. Rendered in YOUR container: env
     rows always FAIL here, so never say live trading is disabled because of one; the trading
     process's own gate is `live_gate_recorded`.
-    The `[data]` line keeps four things apart — say which one you mean: `infrastructure_ready`
-    (this process's checks), `live_armed_strategies.armed`, `recorded_gate` (with `stale`), and
-    `live_entry_possible` (`live_armed_strategies.armed` > 0, `recorded_gate` open and not
-    stale, `execution_stage.admits_entry` and `venue_contract.usable` — these four and nothing
-    else; `null` = armed count or gate unknown). If it is `false`, quote each one that fails.
-    `ready` alone never means "live trading is on"."""
+    Whether a live entry can open is `live_entry_possible` in the `[data]` line, and nothing
+    else: `true` only when every entry of `readiness.components` is ok; if `false`, quote each
+    entry of `readiness.blocking` (component:reason); if `null`, some fact cannot be seen from
+    here — quote `readiness.unknown`. Quote those lists, not the `checks` rows.
+    `infrastructure_ready` is only this process's checks, and `ready` alone never means "live
+    trading is on"."""
     return _ask("crypto_readiness", with_data=True)
 
 

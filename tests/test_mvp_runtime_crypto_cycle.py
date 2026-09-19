@@ -1208,6 +1208,19 @@ def test_a_live_stop_cooldown_reaches_the_cycle_record(tmp_path, monkeypatch):
     assert record["live_stop_cooldown"] == cooldown
 
 
+def test_the_gate_switches_the_leg_read_reach_the_cycle_record(tmp_path, monkeypatch):
+    """PR5a: the readiness board on a console reads the trading process's switches off this row."""
+    from runtime.mvp_runtime.crypto import cycle as cycle_mod
+
+    switches = {"confirmation_present": True, "manual_kill_switch": False}
+    monkeypatch.setattr(cycle_mod, "run_live_leg", lambda **kw: {
+        "live_route_status": "HELD", "live_opened": None, "live_settled": None,
+        "live_reason_codes": [], "halt": False, "live_gate": switches})
+    _install_pool(tmp_path, _always_spec())
+    record = _cycle(tmp_path, FakeExchangeCollector())
+    assert record["live_gate"] == switches
+
+
 # --- the LIVE PERMISSION phase runs before the entry (#615 §5) ------------------------------
 
 def _install_live_armed_pool(root, spec, *, candidate_id="cand-1"):

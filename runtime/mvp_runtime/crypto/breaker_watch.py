@@ -236,6 +236,36 @@ def transitions_since(
     return transitions, coverage
 
 
+def _judge_live(root: Path | None, *, now: str) -> tuple[dict[str, Any], list, list]:
+    """The C4 verdict on the live outcomes, with the outcomes it judged and the ones it excluded — the
+    composition `evaluate` reports and `live_risk_verdict` hands out, written once."""
+    live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+    limits = resolve_risk_limits(root, now=now)
+    # The routable set the drawdown baseline is re-checked against, read the way the cycle reads
+    # it — including the distinction that carries the fail-closed property: an unreadable pool is
+    # `None` (cannot verify, so no lineage leaves the window), never the empty set (every named
+    # lineage confirmed retired). A watch that collapsed those two would announce a released
+    # breaker on the strength of a failed read.
+    try:
+        active = pool.load_active_pool(root)
+        routable = pool.routable_strategy_ids(active)
+        routable_lineages = pool.routable_lineage_keys(active)
+    except ToolError:
+        routable = routable_lineages = None
+    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable,
+                                    routable_lineages=routable_lineages)
+    return verdict, live, live_excluded
+
+
+def live_risk_verdict(root: Path | None = None, *, now: str) -> dict[str, Any]:
+    """The C4 breakers' verdict on a live entry now — `evaluate`'s door without the watch's
+    bookkeeping. For a reader that must judge exactly this composition rather than assemble a second
+    one: the readiness board (crypto PR5a). ``allow_new_position`` is the door; an unusable limits
+    record propagates as a ``ToolError``, as it does from `evaluate`."""
+    verdict, _live, _excluded = _judge_live(root, now=now)
+    return verdict
+
+
 def evaluate(
     root: Path | None = None, *, now: str, since: str | None = None,
 ) -> dict[str, Any]:
@@ -264,21 +294,7 @@ def evaluate(
     # breakers judge live outcomes only now, so a watch that still blended the two would report
     # a state the runtime is not in — the exact failure this module's docstring forbids.
     own, _imported = split_by_provenance(read_outcomes(root))
-    live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
-    limits = resolve_risk_limits(root, now=now)
-    # The routable set the drawdown baseline is re-checked against, read the way the cycle reads
-    # it — including the distinction that carries the fail-closed property: an unreadable pool is
-    # `None` (cannot verify, so no lineage leaves the window), never the empty set (every named
-    # lineage confirmed retired). A watch that collapsed those two would announce a released
-    # breaker on the strength of a failed read.
-    try:
-        active = pool.load_active_pool(root)
-        routable = pool.routable_strategy_ids(active)
-        routable_lineages = pool.routable_lineage_keys(active)
-    except ToolError:
-        routable = routable_lineages = None
-    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable,
-                                    routable_lineages=routable_lineages)
+    verdict, live, live_excluded = _judge_live(root, now=now)
 
     # Gate 0 was read here until 2026-08-03, as the second lock on this door. It is gone — see
     # `live_entry`'s docstring and `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md` — so this
