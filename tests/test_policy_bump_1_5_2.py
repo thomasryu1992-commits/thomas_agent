@@ -50,6 +50,9 @@ def test_the_written_policy_parses_and_the_runtime_reads_the_grant(tmp_path):
     if not _at_baseline(bump):
         return
     written = _applied_policy_text(bump)
+    # The comment correction rides along: the door has carried `hard` since PR6a.
+    assert "disable: fail_safe_immediate        # kill|pause|soft|hard, reason required" in written
+    assert "# kill|pause|soft, reason required" not in written
     policy = yaml.safe_load(written)
     before = yaml.safe_load((ROOT / bump.POLICY_REL).read_text(encoding="utf-8"))
     assert policy["policy_version"] == bump.NEW
