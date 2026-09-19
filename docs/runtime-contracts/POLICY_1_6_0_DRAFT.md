@@ -6,7 +6,8 @@ Trading Soft Halt grant, `POLICY_1_5_1_DRAFT.md`) and **1.5.2** (the assistant's
 draft says 1.5.0 below, read "1.5.0, 1.5.1 or 1.5.2". Until PR6e its `--check` refused over 1.5.1 on two
 test literals that pin nothing; they are on its list now.
 
-**Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` stays at **1.5.0** until
+**Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` stays at **1.5.1** (1.5.2 once that
+bump is applied) until
 Thomas applies the bump himself (decision Q2, 2026-09-03: policy edits are written together and
 applied by Thomas, at a zero-PENDING moment, atomically). The code this clause switches on is
 merged and **dormant**: without the clause the dispatch door refuses every schedule change

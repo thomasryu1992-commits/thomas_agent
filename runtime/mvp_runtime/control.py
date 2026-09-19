@@ -692,10 +692,22 @@ def granted_emergency_controls(root: Path | None = None) -> frozenset[str]:
     return frozenset(v for v in allowed if isinstance(v, str))
 
 
+# What the switch door does with each verb, which is what the policy must say for the verb to count as
+# listed: a verb under any other disposition (``refused``, ``null``, a typo) grants nothing. Key presence
+# alone used to grant (crypto PR6e review), so the value the policy validators pin was never read.
+SWITCH_VERB_DISPOSITIONS: dict[str, str] = {
+    "status": "read_only",
+    "disable": "fail_safe_immediate",
+    "enable": "approval_required_always",
+    "emergency_close": "approval_required_always",
+}
+
+
 def granted_switch_verbs(root: Path | None = None) -> frozenset[str]:
     """The verbs the committed policy lists for the assistant's switch door
     (``control_channel.assistant_switch.verbs``), read now.
 
+    A verb counts only under the disposition :data:`SWITCH_VERB_DISPOSITIONS` names for it.
     Fail-closed like :func:`granted_emergency_controls`, and consulted the same way: only by a verb
     the door carries dormant until the policy names it (``switch_bridge.POLICY_GATED_COMMANDS``). A
     policy read failing can never take ``disable`` away, because ``disable`` never asks."""
@@ -703,7 +715,8 @@ def granted_switch_verbs(root: Path | None = None) -> frozenset[str]:
     verbs = switch.get("verbs") if isinstance(switch, dict) else None
     if not isinstance(verbs, dict):
         return frozenset()
-    return frozenset(v for v in verbs if isinstance(v, str))
+    return frozenset(v for v, disposition in verbs.items()
+                     if isinstance(v, str) and SWITCH_VERB_DISPOSITIONS.get(v) == disposition)
 
 
 def command_verb(head: str, *, slash_seen: bool) -> str:

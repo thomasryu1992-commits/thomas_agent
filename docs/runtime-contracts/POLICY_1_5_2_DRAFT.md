@@ -56,8 +56,10 @@ deploy.
 
 **Then a REBIND.** `assistant_switch` is one of the policy's safety sections
 (`policy_fingerprint.SAFETY_SECTIONS`), and the version moves too. After the deploy the execution stage
-reads READ_ONLY until Thomas approves a REBIND of the same rung (`EXECUTION_STAGE_V0.1.md` §4). One bump
-means one REBIND, so fold any other safety change into this bump rather than following it with a second.
+reads READ_ONLY until Thomas approves a REBIND of the same rung (`EXECUTION_STAGE_V0.1.md` §4). The stage
+binds the policy version as well as the safety fingerprint, so every deploy that moves the version costs
+one REBIND. To pay it once, ship 1.5.2 and 1.6.0 in one image: apply both, in the order below, before a
+single deploy.
 
 **Order with 1.6.0 (schedule delegation):** apply 1.5.2 first. `policy_bump_1_6_0.py` accepts the 1.5.0,
 1.5.1 or 1.5.2 baseline, and every anchor it edits survives 1.5.2's text. This script refuses once 1.6.0

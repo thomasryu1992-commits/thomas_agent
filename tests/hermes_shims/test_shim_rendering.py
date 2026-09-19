@@ -185,6 +185,40 @@ def test_a_replayed_emergency_close_ask_answers_from_the_record_without_a_scope(
                                request_id="hermes-1")
     assert text.startswith("NOT DONE (REPLAYED)") and "approval_e" in text and "scope" not in text
     assert "request_emergency_close again with a NEW request_id" in text and "DONE:" not in text.replace("NOT DONE", "")
+    # The record is up to 24 hours old: it can say what that call did, never that nothing closed since
+    # (review of #916). Re-asking is Thomas's to want, not the expiry's.
+    assert "this call sent nothing" in text and "Nothing has been closed" not in text
+    assert "no order was sent" not in text and "Thomas still wants the close" in text
+    assert "request id  : hermes-1" in text
+
+
+def test_the_emergency_close_ask_names_the_request_id_to_retry_with():
+    frame = {"ok": False, "reason_code": "APPROVAL_REQUIRED", "reason": "r", "action": "emergency_close", **_CLOSE_ASK}
+    text = switch_shim._render(_answer("switch", frame), payload={"command": "emergency_close"},
+                               retry_tool="request_emergency_close", request_id="hermes-1")
+    assert "request id  : hermes-1" in text and "Ask again only if Thomas still wants the close" in text
+
+
+@pytest.mark.parametrize("failure", [door.TIMEOUT_AFTER_SEND, door.EMPTY_REPLY, door.UNPARSEABLE])
+def test_an_emergency_close_frame_sent_without_an_answer_is_unconfirmed_and_names_the_id(failure):
+    """M1: the door can mint the ask after the client stops waiting. "Nothing was changed" and the
+    Telegram advice were both false here, and the model, never shown its id, retried under a new one."""
+    text = switch_shim._render(_answer("switch", failure=failure, sent=True, detail="timed out"),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-9")
+    assert text.startswith("UNCONFIRMED:") and "MAY HAVE BEEN MINTED" in text
+    assert 'request_id="hermes-9"' in text and "Do NOT call again under a new id" in text
+    assert "Nothing was changed" not in text and "Telegram" not in text
+    assert "scripts.emergency_close --show" in text
+
+
+@pytest.mark.parametrize("failure", [door.NOT_SENT, door.NO_SOCKET])
+def test_an_emergency_close_frame_that_never_left_minted_nothing_and_points_to_the_operator(failure):
+    text = switch_shim._render(_answer("switch", failure=failure, detail="refused"),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-9")
+    assert text.startswith("UNAVAILABLE:") and "No ask was minted" in text
+    assert "scripts.emergency_close --request" in text and "Telegram" not in text
 
 
 def test_an_emergency_close_refusal_is_a_refusal():

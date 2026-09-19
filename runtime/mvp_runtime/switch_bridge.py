@@ -68,7 +68,8 @@ Failure directions, each chosen once:
 - An approval whose named stop is no longer the one in effect -> ``STOP_CHANGED``, nothing
   applied. Re-asking is one round trip; clearing an unapproved stop is not recoverable by one.
 - ``emergency_close`` while the committed policy does not list it -> ``CONTROL_VERB_NOT_GRANTED``,
-  nothing asked. Granted, it only ever mints the ask; an ``approval_id`` beside it is refused.
+  nothing asked. Granted, it only ever mints the ask; an ``approval_id`` beside it is refused, and so
+  is a new ask while an emergency-close ask is still open (``EMERGENCY_CLOSE_ASK_OPEN``, naming it).
 """
 
 from __future__ import annotations
@@ -81,12 +82,12 @@ from . import bridge_idempotency, control, socket_door, timeutil
 from .approval_store import ApprovalStore
 from .binding import bind_task_to_core
 from .control import ControlStore
-from .errors import ControlBlocked
+from .errors import ControlBlocked, MvpRuntimeError
 from .filelock import locked
 from .intake import build_task
 from .audit import build_approval_request_audit
-from .errors import MvpRuntimeError
 from .permission import (
+    EMERGENCY_CLOSE_TARGET_PREFIX,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_PERMISSION_SCOPE,
     TRADING_SWITCH_TARGET_PREFIX,
@@ -132,7 +133,7 @@ POLICY_GATED_COMMANDS: frozenset[str] = frozenset({CMD_EMERGENCY_CLOSE})
 # Every key this door will act on. An unexpected key is refused rather than ignored: a frame
 # carrying something this module does not understand must not be treated as a frame that means
 # what the understood subset says. `request_id` is optional and carries no authority — see
-# `_ENABLE_DOOR` for which verb actually uses it and why the other two do not.
+# `_ENABLE_DOOR` for which verbs actually use it (`enable`, `emergency_close`) and why the other two do not.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"command", "domain", "reason", "mode", "approval_id", "scope",
      bridge_idempotency.REQUEST_ID_KEY}
@@ -159,7 +160,7 @@ SCOPE_RUNTIME = "runtime"
 _ALLOWED_SCOPES: frozenset[str] = frozenset({SCOPE_TRADING, SCOPE_RUNTIME})
 _DEFAULT_SCOPE = SCOPE_TRADING
 
-# `enable` is the only verb here with a duplicate worth preventing, and it has two of them. The
+# `enable` was the first verb here with a duplicate worth preventing, and it has two of them. The
 # ask shape mints an APPROVAL_REQUIRED record, so a retried frame puts a SECOND pending approval
 # in front of Thomas for one intent — the failure mode where he answers one and the other sits
 # there spendable. The spend shape is already single-use through the approval itself, but a
@@ -171,8 +172,14 @@ _DEFAULT_SCOPE = SCOPE_TRADING
 # for a stop to block. An emergency control you must first acquire a lock for is a worse trade
 # than the duplicate it would prevent.
 _ENABLE_DOOR = "switch.enable"
-# The emergency-close ask dedups for the enable ask's reason: two pending asks for one intent.
+# The emergency-close ask dedups for the enable ask's reason: two pending asks for one intent. It
+# also refuses while any emergency-close ask is still open (`EMERGENCY_CLOSE_ASK_OPEN`), which is what
+# holds when a retry comes under a new id: a reply that outlived the client's timeout, or a claim
+# released after the ask was stored.
 _EMERGENCY_CLOSE_DOOR = "switch.emergency_close"
+EMERGENCY_CLOSE_ASK_OPEN = "EMERGENCY_CLOSE_ASK_OPEN"
+# The one domain the close has an effect in: it closes the crypto lane's booked live positions.
+_EMERGENCY_CLOSE_DOMAIN = "crypto"
 
 # Stopping has four shapes and the caller picks. `kill` and `pause` are in the policy's
 # `emergency_controls_allowed`; `soft` is the Trading Soft Halt (Thomas decision 7, 2026-09-15) —
@@ -440,6 +447,21 @@ def _open_ask(
     }
 
 
+def _open_emergency_close(approval_store: ApprovalStore, *, now: str) -> dict[str, Any] | None:
+    """An emergency-close ask still open: minted, not expired, and not yet rejected or spent.
+
+    PENDING waits for Thomas and APPROVED waits for the operator's confirm; either way one ask is in
+    front of him for this intent, whoever minted it. The operator's own ``--request`` does not consult
+    this, only this door."""
+    for approval in approval_store.current().values():
+        snapshot = approval.get("approved_action_snapshot") or {}
+        if (approval.get("status") in (approval_mod.STATUS_PENDING, approval_mod.STATUS_APPROVED)
+                and str(snapshot.get("target_ref") or "").startswith(EMERGENCY_CLOSE_TARGET_PREFIX)
+                and not approval_mod.is_expired(approval, now=now)):
+            return approval
+    return None
+
+
 def _open_emergency_close_ask(
     domain: str,
     reason: str,
@@ -464,6 +486,15 @@ def _open_emergency_close_ask(
     content = live_route.emergency_close_content(
         root=repo_root, requested_by=ASSISTANT_ACTOR, reason=reason, control_store=control_store,
     )
+    standing = _open_emergency_close(approval_store, now=now)
+    if standing is not None:
+        standing_id = standing["approval_id"]
+        raise ControlBlocked(
+            EMERGENCY_CLOSE_ASK_OPEN,
+            f"an emergency-close ask is already open ({standing_id}, {standing['status']}, expires "
+            f"{standing['validity']['expires_at']}); Thomas answers that one, and this door mints no second "
+            f"ask while it stands. approval_status({standing_id}) shows where it is",
+        )
     rows = content["positions"]
     task = build_task(
         f"긴급 청산 검토 (비서 요청): 장부의 라이브 포지션 {len(rows)}개"
@@ -477,12 +508,16 @@ def _open_emergency_close_ask(
     approval_store.append_permission_decision(decision)
     approval_store.append([request])
     warnings: list[str] = []
+    # From here on the ask exists, so nothing may propagate as if it did not: an exception reaching the
+    # caller releases the request_id and reads "nothing was changed" (crypto PR6e review). Any failure
+    # of the audit write is a warning beside the ask, typed or not.
     try:
         ledger.append_audit_events(build_approval_request_audit(
             request, now=now, genesis_previous_hash=ledger.last_audit_hash(),
         ))
-    except MvpRuntimeError as exc:
-        warnings.append(f"the request audit was not written ({exc.reason_code}); the ask stands")
+    except Exception as exc:  # noqa: BLE001 - the ask stands either way; say what was not written
+        code = exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+        warnings.append(f"the request audit was not written ({code}); the ask stands")
     approval_id = request["approval_id"]
     reply: dict[str, Any] = {
         "ok": False,
@@ -531,6 +566,14 @@ def _emergency_close_ask(
             "never through this door",
         )
     domain = _require_domain(request)
+    if domain != _EMERGENCY_CLOSE_DOMAIN:
+        # Unreachable while the door carries one domain; it fires the moment the set widens, before
+        # a `prediction` request could mint the crypto close under that name (`_spend` has the twin).
+        raise ControlBlocked(
+            "DOMAIN_EFFECT_MISMATCH",
+            f"the emergency close closes the {_EMERGENCY_CLOSE_DOMAIN} lane's booked live positions; it has "
+            f"no {domain!r} effect to ask for",
+        )
     request_id = bridge_idempotency.request_id_of(request)
     fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
     if request_id is not None:
@@ -556,6 +599,8 @@ def _emergency_close_ask(
             )
         raise
     if request_id is not None:
+        # `positions` rides in the outcome although `complete` records identity, not payload: the
+        # replay has to list what the ask would close, and the book may have moved since.
         bridge_idempotency.complete(
             ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
             request_fingerprint=fingerprint, now=now,
@@ -787,8 +832,9 @@ def apply_switch(
         raise ControlBlocked(
             control.VERB_NOT_GRANTED,
             f"{command} is not granted by the committed Governance Policy yet "
-            "(control_channel.assistant_switch.verbs); nothing was asked and nothing changed. Thomas "
-            "can ask for one himself in the scheduler container (scripts.emergency_close --request).",
+            "(control_channel.assistant_switch.verbs); nothing was asked and nothing changed"
+            + (". Thomas can ask for the close himself in the scheduler container "
+               "(scripts.emergency_close --request)" if command == CMD_EMERGENCY_CLOSE else ""),
         )
 
     now = now or timeutil.utc_now_iso()

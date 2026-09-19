@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime import control, permission, switch_bridge
+from runtime.mvp_runtime import approval, control, permission, switch_bridge
 from runtime.mvp_runtime.approval_store import ApprovalStore
-from runtime.mvp_runtime.control import ACTIVE, HALT_HARD, HALT_SOFT, ControlState, ControlStore
+from runtime.mvp_runtime.control import ACTIVE, HALT_HARD, HALT_SOFT, KILLED, PAUSED, ControlState, ControlStore
 from runtime.mvp_runtime.crypto import live_route
-from runtime.mvp_runtime.errors import ControlBlocked, ToolError
+from runtime.mvp_runtime.errors import ControlBlocked, MvpRuntimeError, ToolError
 from runtime.mvp_runtime.store import LEDGER_REL, LedgerStore
+from tests import test_mvp_runtime_crypto_emergency_close as operator_close
 from tests._helpers import requires_local_core
 
 NOW = "2026-09-19T12:00:00Z"
@@ -46,9 +47,9 @@ class _Machine:
         self.ledger = LedgerStore(root / LEDGER_REL)
         self.approvals = ApprovalStore.default(root)
 
-    def ask(self, request):
+    def ask(self, request, *, now=NOW):
         return switch_bridge.apply_switch(request, control_store=self.control, ledger=self.ledger,
-                                          approval_store=self.approvals, now=NOW, repo_root=self.root)
+                                          approval_store=self.approvals, now=now, repo_root=self.root)
 
     def pending(self):
         return [a for a in self.approvals.pending()]
@@ -180,3 +181,200 @@ def test_a_refused_ask_does_not_spend_its_request_id(machine, granted):
                                       trading_armed=False, halt_level=HALT_HARD))
     out = machine.ask({**REQUEST, "request_id": "hermes-2"})
     assert out["reason_code"] == "APPROVAL_REQUIRED" and not out.get("replayed")
+
+
+# --- after review (#916) -----------------------------------------------------------------------------
+
+LATER = "2026-09-19T12:05:00Z"      # inside the first ask's 15 minutes
+AFTER_EXPIRY = "2026-09-19T12:16:00Z"
+_THOMAS = approval.Verification(approved_by="Thomas", method="telegram_private_control_channel",
+                                verification_ref="telegram:private_chat:registered-thomas:x")
+
+
+def _answer(machine, approval_id, *, granted):
+    record = machine.approvals.get(approval_id)
+    decision = machine.approvals.get_permission_decision(record["permission_decision_id"])
+    machine.approvals.append([approval.record_decision(record, decision, granted=granted, verification=_THOMAS,
+                                                       reason="r", now=NOW)])
+
+
+def _message(machine, approval_id) -> str:
+    record = machine.approvals.get(approval_id)
+    return approval.request_message(record, machine.approvals.get_permission_decision(record["permission_decision_id"]))
+
+
+@requires_local_core
+def test_the_ask_thomas_reads_says_the_assistant_asked_and_its_reason_is_unverified(machine, granted):
+    """H1: without these lines the RED ask reached Thomas exactly as one he had minted himself, and the
+    decision recorded that he asked."""
+    out = machine.ask(dict(REQUEST))
+    record = machine.approvals.get(out["approval_id"])
+    decision = machine.approvals.get_permission_decision(record["permission_decision_id"])
+    assert decision["authority"]["authority_reasons"] == [
+        "The assistant (assistant_bridge) asks for the emergency close; its stated reason is its own and "
+        "unverified. Only Thomas may authorize it."]
+    text = _message(machine, out["approval_id"])
+    assert "요청자: 어시스턴트(assistant_bridge) — Thomas나 운영자가 만든 요청이 아닙니다" in text
+    assert "어시스턴트가 적은 사유(검증되지 않은 입력): 거래소 장애, 전부 정리" in text
+
+
+@requires_local_core
+def test_the_operators_own_ask_still_says_thomas_asked(machine):
+    asked = operator_close.door.run_request(root=machine.root, now=NOW, requested_by="thomas", reason="venue incident")
+    record = machine.approvals.get(asked["approval_id"])
+    decision = machine.approvals.get_permission_decision(record["permission_decision_id"])
+    assert decision["authority"]["authority_reasons"] == [
+        "Thomas asks for the emergency close; only Thomas may authorize it."]
+    text = _message(machine, asked["approval_id"])
+    assert "요청자: thomas (운영자 요청, scripts/emergency_close.py --request)" in text
+    assert "요청자가 적은 사유: venue incident" in text and "어시스턴트" not in text
+
+
+@requires_local_core
+@pytest.mark.parametrize("answer", ["pending", "approved"])
+def test_no_second_ask_while_one_is_open_whoever_minted_it(machine, granted, answer):
+    """M1/L7: a retry under a NEW id (a reply that outlived the client's timeout) or a flood of asks put
+    more than one RED ask in front of Thomas for one intent. One stays open; the refusal names it."""
+    first = operator_close.door.run_request(root=machine.root, now=NOW, requested_by="thomas", reason="r")
+    if answer == "approved":
+        _answer(machine, first["approval_id"], granted=True)
+    with pytest.raises(ControlBlocked) as exc:
+        machine.ask({**REQUEST, "request_id": "hermes-new"}, now=LATER)
+    assert exc.value.reason_code == switch_bridge.EMERGENCY_CLOSE_ASK_OPEN
+    assert first["approval_id"] in str(exc.value) and answer.upper() in str(exc.value)
+    assert [a["approval_id"] for a in machine.approvals.current().values()] == [first["approval_id"]]
+
+
+@requires_local_core
+@pytest.mark.parametrize("closed_by", ["rejected", "expired"])
+def test_an_ask_that_is_no_longer_open_does_not_hold_the_next(machine, granted, closed_by):
+    first = machine.ask({**REQUEST, "request_id": "hermes-1"})
+    if closed_by == "rejected":
+        _answer(machine, first["approval_id"], granted=False)
+    now = LATER if closed_by == "rejected" else AFTER_EXPIRY
+    # The refused id above was never spent, and a fresh one asks.
+    out = machine.ask({**REQUEST, "request_id": "hermes-2"}, now=now)
+    assert out["reason_code"] == "APPROVAL_REQUIRED" and out["approval_id"] != first["approval_id"]
+
+
+@requires_local_core
+def test_an_audit_failure_after_the_ask_is_stored_is_a_warning_and_the_id_stays_spent(machine, granted, monkeypatch):
+    """L1: an untyped exception after the store used to release the id and read "nothing was changed",
+    so a same-id retry minted a second ask."""
+    def _boom(*a, **kw):
+        raise RuntimeError("audit ledger torn")
+    monkeypatch.setattr(switch_bridge, "build_approval_request_audit", _boom)
+    out = machine.ask({**REQUEST, "request_id": "hermes-3"})
+    assert out["reason_code"] == "APPROVAL_REQUIRED"
+    assert out["warnings"] == ["the request audit was not written (RuntimeError); the ask stands"]
+    again = machine.ask({**REQUEST, "request_id": "hermes-3"}, now=LATER)
+    assert again.get("replayed") is True and again["data"]["approval_id"] == out["approval_id"]
+    assert len(machine.pending()) == 1
+
+
+def test_the_close_is_bound_to_the_crypto_domain(machine, granted, monkeypatch):
+    """L6: a second domain on this door must not mint the crypto close under its name."""
+    monkeypatch.setattr(switch_bridge, "_ALLOWED_DOMAINS", frozenset({"crypto", "prediction"}))
+    with pytest.raises(ControlBlocked) as exc:
+        machine.ask({**REQUEST, "domain": "prediction"})
+    assert exc.value.reason_code == "DOMAIN_EFFECT_MISMATCH" and machine.pending() == []
+
+
+@pytest.mark.parametrize("disposition,granted_it", [
+    ("approval_required_always", True), ("refused", False), (None, False), ("fail_safe_immediate", False),
+])
+def test_the_policy_grants_the_verb_only_under_the_disposition_the_door_implements(tmp_path, disposition, granted_it):
+    """L2: key presence alone used to grant, so `emergency_close: refused` granted it."""
+    policy = tmp_path / control.POLICY_REL
+    policy.parent.mkdir(parents=True)
+    value = "null" if disposition is None else disposition
+    policy.write_text(
+        "control_channel:\n  assistant_switch:\n    verbs:\n      status: read_only\n"
+        f"      disable: fail_safe_immediate\n      enable: approval_required_always\n      emergency_close: {value}\n",
+        encoding="utf-8")
+    verbs = control.granted_switch_verbs(root=tmp_path)
+    assert {"status", "disable", "enable"} <= verbs
+    assert ("emergency_close" in verbs) is granted_it
+
+
+@pytest.mark.parametrize("mode", [KILLED, PAUSED])
+def test_a_stopped_runtime_refuses_the_ask_even_under_a_hard_halt_and_keeps_the_id(machine, granted, mode):
+    machine.control.save(ControlState(mode=mode, updated_by="tg-1", updated_at=NOW, reason="r",
+                                      trading_armed=False, halt_level=HALT_HARD))
+    with pytest.raises(ToolError) as exc:
+        machine.ask({**REQUEST, "request_id": "hermes-4"})
+    assert exc.value.reason_code == live_route.EMERGENCY_CLOSE_NEEDS_HARD_HALT and machine.pending() == []
+
+
+def test_a_control_file_that_failed_closed_refuses_the_ask(machine, granted):
+    machine.control.path.write_text("{torn", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        machine.ask(dict(REQUEST))
+    assert exc.value.reason_code == live_route.EMERGENCY_CLOSE_NEEDS_HARD_HALT and machine.pending() == []
+
+
+@requires_local_core
+def test_a_torn_book_refuses_the_ask_and_the_same_id_asks_once_it_reads(machine, granted):
+    (book,) = [p for p in machine.root.rglob("BTCUSDT.json")]
+    whole = book.read_text(encoding="utf-8")
+    book.write_text(whole[: len(whole) // 2], encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        machine.ask({**REQUEST, "request_id": "hermes-5"})
+    assert exc.value.reason_code == "LIVE_POSITION_STATE_UNREADABLE" and machine.pending() == []
+    book.write_text(whole, encoding="utf-8")
+    assert machine.ask({**REQUEST, "request_id": "hermes-5"})["reason_code"] == "APPROVAL_REQUIRED"
+
+
+@requires_local_core
+def test_a_request_id_under_a_changed_reason_is_refused(machine, granted):
+    machine.ask({**REQUEST, "request_id": "hermes-6"})
+    with pytest.raises(MvpRuntimeError) as exc:
+        machine.ask({**REQUEST, "reason": "다른 이유", "request_id": "hermes-6"}, now=LATER)
+    assert exc.value.reason_code == "REQUEST_ID_REUSED" and len(machine.pending()) == 1
+
+
+def test_a_verb_the_policy_does_not_grant_writes_nothing(machine, monkeypatch):
+    monkeypatch.setattr(control, "granted_switch_verbs", lambda root=None: frozenset({"status", "disable", "enable"}))
+    before = sorted(p for p in machine.root.rglob("*") if p.is_file())
+    with pytest.raises(ControlBlocked):
+        machine.ask({**REQUEST, "request_id": "hermes-7"})
+    assert sorted(p for p in machine.root.rglob("*") if p.is_file()) == before
+
+
+@requires_local_core
+def test_enable_refuses_an_emergency_close_grant(machine, granted):
+    out = machine.ask(dict(REQUEST))
+    _answer(machine, out["approval_id"], granted=True)
+    with pytest.raises(ControlBlocked) as exc:
+        machine.ask({"command": "enable", "approval_id": out["approval_id"], "reason": "r", "domain": "crypto"})
+    assert exc.value.reason_code == "TARGET_NOT_SWITCH"
+    assert machine.approvals.get(out["approval_id"])["status"] == "APPROVED"
+
+
+# The spend, end to end: the ask this door mints is the operator's ask. Wired like the operator's own
+# tests (a scripted venue, the real book and ledger in the temp root).
+
+@requires_local_core
+def test_the_door_minted_ask_is_spent_by_the_operators_confirm(tmp_path, monkeypatch, granted):
+    wired = operator_close._wire(tmp_path, monkeypatch)
+    out = _Machine(tmp_path).ask(dict(REQUEST))
+    operator_close._approve(tmp_path, out["approval_id"])
+    report = operator_close.door.run_confirm(root=tmp_path, now=NOW, approval_id=out["approval_id"])["report"]
+    assert report["status"] == "COMPLETE"
+    assert [(r["symbol"], r["type"], r["reduceOnly"]) for r in wired.venue.submitted] == [
+        ("BTCUSDT", "MARKET", True), ("ETHUSDT", "MARKET", True)]
+    assert ApprovalStore.default(tmp_path).get(out["approval_id"])["status"] == "CONSUMED"
+    assert ControlStore(tmp_path).load().halt_level == HALT_HARD
+
+
+@requires_local_core
+def test_a_replayed_ask_whose_halt_moved_is_refused_at_the_confirm(tmp_path, monkeypatch, granted):
+    wired = operator_close._wire(tmp_path, monkeypatch)
+    machine = _Machine(tmp_path)
+    out = machine.ask({**REQUEST, "request_id": "hermes-8"})
+    operator_close._approve(tmp_path, out["approval_id"])
+    machine.control.save(ControlState(mode=ACTIVE, updated_by="tg-2", updated_at=LATER, reason="again",
+                                      trading_armed=False, halt_level=HALT_HARD))
+    replay = machine.ask({**REQUEST, "request_id": "hermes-8"}, now=LATER)
+    assert replay.get("replayed") is True and replay["data"]["approval_id"] == out["approval_id"]
+    operator_close._refused(wired, out["approval_id"], "EMERGENCY_CLOSE_HALT_CHANGED")

@@ -94,21 +94,25 @@ def _disable_text(src: dict, *, payload: dict, reply: str) -> str:
     return f"{head}{note}\nRuntime reply: {reply}"
 
 
-def _emergency_close_text(src: dict, *, replayed: bool) -> str:
+def _emergency_close_text(src: dict, *, replayed: bool, request_id: str | None = None) -> str:
     """The emergency-close ask (shim 2.14, crypto PR6e; Thomas decision 49: the assistant only asks).
     Two steps follow and neither is the model's: Thomas approves on the control bot, and the operator
     spends the approval in the scheduler container. Nothing has closed when this is read."""
     positions = src.get("positions") or []
     listing = ", ".join(f"{p.get('symbol')} {p.get('direction')} {p.get('quantity')}"
                         for p in positions if isinstance(p, dict)) or "(not in this reply)"
+    # A replay answers from the record for 24 hours, by which time Thomas may have approved and the
+    # operator confirmed: it can say what THIS call did, never what has happened since.
     head = ("NOT DONE (REPLAYED) — this request_id already minted the emergency-close ask; no new ask "
-            "was minted, nothing has been closed and no order was sent." if replayed else
+            "was minted and this call sent nothing. Whether Thomas has answered, or the operator has "
+            "confirmed, is not in this reply: approval_status(<id>) says." if replayed else
             "NOT DONE — nothing has been closed and no order was sent. This minted Thomas's approval "
             "ask for the emergency close.")
     return (
         f"{head}\n"
         f"  approval id : {src.get('approval_id')}\n"
-        f"  expires at  : {src.get('expires_at')}\n"
+        + (f"  request id  : {request_id}\n" if request_id else "")
+        + f"  expires at  : {src.get('expires_at')}\n"
         f"  would close : {listing} — every booked live position, at market, reduceOnly\n"
         + (f"  bound to    : {src.get('halt')}\n" if src.get("halt") else "")
         + "Two steps follow, and neither is yours:\n"
@@ -117,15 +121,40 @@ def _emergency_close_text(src: dict, *, replayed: bool) -> str:
         f"     {src.get('confirm_with')}\n"
         "You cannot approve it and you cannot confirm it. Never say positions are closing or closed. "
         "Nothing moves until both steps are done, and the confirm refuses, spending nothing, if the HARD "
-        "halt it was asked under is no longer the one in effect: any control change voids the ask, and "
-        "then you ask again. Convert `expires at` into the minutes remaining and say it; the ask dies 15 "
-        "minutes after it is minted. approval_status(<id>) shows whether Thomas has answered."
-        + (" If it reads EXPIRED, call request_emergency_close again with a NEW request_id."
-           if replayed else "")
+        "halt it was asked under is no longer the one in effect: any control change voids the ask. Ask "
+        "again only if Thomas still wants the close. Convert `expires at` into the minutes remaining and "
+        "say it; the ask dies 15 minutes after it is minted. approval_status(<id>) shows whether Thomas "
+        "has answered."
+        + (" If it reads EXPIRED and Thomas still wants the close, call request_emergency_close again with "
+           "a NEW request_id." if replayed else "")
+    )
+
+
+def _emergency_close_unanswered(answer: door.Answer, *, request_id: str | None) -> str:
+    """The emergency-close frame failed in transport. Sent without an answer, the ask may exist: the
+    door can have minted it after the client stopped waiting, and a retry under a fresh id put a second
+    RED ask in front of Thomas (crypto PR6e review). The same id is the retry that cannot, and the door
+    refuses any new ask while one is open. The control channel has no emergency-close command, so the
+    fallback is the operator's own tool, never the Telegram advice the other verbs give."""
+    if answer.sent:
+        return (
+            "UNCONFIRMED: the emergency-close frame was sent and no reply arrived; the ask MAY HAVE BEEN "
+            "MINTED. This call closed nothing and sent no order either way. Do NOT call again under a new "
+            f"id — call request_emergency_close again with request_id=\"{request_id}\": the door answers a "
+            "minted ask from its record and never mints it twice. If the door stays unreachable, tell "
+            "Thomas; the operator can see and make the ask in the scheduler container "
+            "(scripts.emergency_close --show / --request)."
+        )
+    return (
+        f"UNAVAILABLE: could not reach the switch door ({answer.failure}). No ask was minted, nothing was "
+        "closed and no order was sent. Tell Thomas; the operator can ask for the close in the scheduler "
+        "container (scripts.emergency_close --request)."
     )
 
 
 def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: str | None) -> str:
+    if answer.failure and payload.get("command") == "emergency_close":
+        return _emergency_close_unanswered(answer, request_id=request_id)
     if answer.failure:
         return f"{answer.failure_text()} Nothing was changed."
     if answer.ok:
@@ -139,7 +168,7 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
         # 2026-09-04 drill: reading the top level rendered "DONE: None applied to None".
         src = answer.data if answer.replayed else (answer.frame or {})
         if answer.replayed and payload.get("command") == "emergency_close":
-            return _emergency_close_text(src, replayed=True)
+            return _emergency_close_text(src, replayed=True, request_id=request_id)
         if answer.replayed and ("approve_with" in src or "expires_at" in src):
             # The ask itself was the effect the first time; nothing new is minted on a repeat.
             return (
@@ -196,7 +225,7 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
         )
 
     if answer.reason_code == "APPROVAL_REQUIRED" and payload.get("command") == "emergency_close":
-        return _emergency_close_text(answer.frame or {}, replayed=False)
+        return _emergency_close_text(answer.frame or {}, replayed=False, request_id=request_id)
     if answer.reason_code == "APPROVAL_REQUIRED":
         scope = answer.get("scope")
         what = ("resume the runtime WITHOUT re-arming live trading" if scope == "runtime"
@@ -294,9 +323,10 @@ def request_emergency_close(reason: str, domain: str = "crypto", request_id: str
     You can only ask. This sends no order and closes nothing: it mints one approval Thomas answers on
     the CONTROL bot, and then the operator runs the close in the scheduler container. It needs the
     HARD halt with the runtime ACTIVE (halt_trading with hard=True first) and refuses otherwise. Only
-    when Thomas asks for it. It refuses by name until the governance policy grants it. `request_id`:
-    leave it EMPTY; pass one back only to retry this same call after a timeout or an unclear reply,
-    which is what stops a second ask being minted."""
+    when Thomas asks for it. It refuses by name until the governance policy grants it, and while
+    another emergency-close ask is still open. `request_id`: leave it EMPTY; pass one back only to
+    retry this same call after a timeout or an unclear reply (the reply names it), which is what stops
+    a second ask being minted."""
     rid = request_id.strip() or door.new_request_id()
     return _ask({"command": "emergency_close", "reason": reason, "domain": domain},
                 retry_tool="request_emergency_close", request_id=rid)

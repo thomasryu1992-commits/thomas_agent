@@ -38,7 +38,7 @@ shims:
     thomas_door_client.py: 19b2ec0e92ed51082fb814b505b44e4469ccbf460bbeded5dab4487c76e36d4f
     read_bridge_mcp.py: 7d10be17440467d8b62474de5208f87cdbea35ca9f24ce60dbffb49888791470
     dispatch_bridge_mcp.py: 20ae1e24eb82fa13b3710b82cf3c32ee8d80f9fa0caf4495c05458a95821f667
-    switch_bridge_mcp.py: 90f86dc5eaea12f8e27419a84ce5edde95c94a5e8d8242675d8cb4a82d9872d2
+    switch_bridge_mcp.py: eee9d690ccd98baa63157b07c36b24131c2a36fb1cea755674abd6d5223e64da
     knowledge_bridge_mcp.py: c3d44c341f264008bdfa2346c85b460ce8a63bc7589d2173088d210314fa3326
 prompts:
   soul: config/SOUL.md                       # no version field of its own; measured 2026-09-14; halt_trading added with shim 2.13 and request_emergency_close with 2.14 (PR6e, 2026-09-19)
