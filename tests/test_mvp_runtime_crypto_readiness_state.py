@@ -332,6 +332,14 @@ def test_a_process_holding_the_account_feed_measures_the_loss_itself():
     assert state["blocking"] == ["risk_ready:DAILY_LOSS"]
 
 
+def test_a_budget_that_backs_no_order_is_named_once():
+    """A daily cap of zero is a budget that backs nothing, which BUDGET_INVALID already names; the cap
+    is not a second refusal with nothing submitted against it."""
+    _, state = _state(_status(checks={"registered_budget": False},
+                              inputs={"daily_order_cap": {"submitted_today": 0, "cap": 0}}))
+    assert state["components"]["risk_ready"] == {"ok": False, "reason": "BUDGET_INVALID"}
+
+
 def test_several_risk_refusals_are_all_named():
     _, state = _state(_status(checks={"api_breaker": False},
                               inputs={"c4": {"allow": False}, "daily_order_cap": {"submitted_today": 5}}))
@@ -686,6 +694,15 @@ def test_a_kill_is_read_at_once_under_a_fresh_open_record(tmp_path, clean_env, m
     assert status["recorded_gate"]["open"] is True and status["recorded_gate"]["stale"] is False
     assert data["live_entry_possible"] is False
     assert data["readiness"]["blocking"] == ["runtime_control:RUNTIME_KILLED"]
+
+
+def test_a_control_state_that_cannot_be_read_is_named_as_fail_closed(tmp_path, clean_env, monkeypatch):
+    """A damaged control-state file reads KILLED and fail-closed (`ControlStore._corrupt_killed`): the
+    board names the fail-closed, which an operator repairs differently from a kill they issued."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    ControlStore(tmp_path).path.write_text("{damaged", encoding="utf-8")
+    _, data = _board(tmp_path)
+    assert data["readiness"]["blocking"] == ["runtime_control:CONTROL_FAIL_CLOSED"]
 
 
 def test_a_disarm_is_read_while_the_runtime_keeps_cycling(tmp_path, clean_env, monkeypatch):
