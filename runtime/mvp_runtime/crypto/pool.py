@@ -821,7 +821,8 @@ def silent_reactivations(
         if replaced:
             row["replaces"] = [
                 {"strategy_id": str(r.get("strategy_id")), "candidate_id": r.get("candidate_id"),
-                 "status": str(r.get("status")), "lineage": outcome_attribution_key(r)}
+                 "status": str(r.get("status")), "lineage": outcome_attribution_key(r),
+                 "lifecycle_reasons": r.get("lifecycle_reasons")}
                 for r in replaced
             ]
         found.append(row)
@@ -854,13 +855,12 @@ def assert_no_silent_reactivation(
     ``--allow-reactivation`` through — recorded on the ledger, because an escape that leaves
     no trace is indistinguishable later from a door that never refused.
 
-    This does not make the approval cover the reactivation; only the content hash could, and
-    changing what Thomas's signature binds is his decision, not this door's. It makes the
-    reactivation deliberate and legible, which is the half that can be fixed here.
+    The approval names the reactivation: its content hash carries the set
+    (:func:`reactivated_candidate_ids`, since #619), and since PR3c-2 the ask signs it and says so.
+    This guard makes performing it deliberate and leaves it on the ledger.
 
     Since PR3c-2 a retired RULE returned under another candidate id is a reactivation too
-    (Thomas decision 40), refused here the same way and named in the content hash
-    (:func:`reactivated_candidate_ids`).
+    (Thomas decision 40), refused here the same way.
 
     Raises ``POOL_SILENT_REACTIVATION``.
     """
@@ -875,9 +875,9 @@ def assert_no_silent_reactivation(
     )
     raise ToolError(
         "POOL_SILENT_REACTIVATION",
-        f"this install returns {len(found)} terminal member(s) to trading, which the "
-        f"promotion approval does not name: {listed}. Retire-then-promote, or pass the "
-        f"explicit --allow-reactivation escape.",
+        f"this install returns {len(found)} terminal member(s) to trading: {listed}. A return is an "
+        f"operator's explicit act: pass --allow-reactivation, at the ask and at the install (the "
+        f"approval names what returns).",
     )
 
 
@@ -927,9 +927,19 @@ def replaced_entries(
     record: Mapping[str, Any], entries: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
     """The retired entries (SUSPENDED, ARCHIVED) a promotion of ``record`` replaces: every one
-    holding its rule under another lineage (decision 40)."""
+    holding its rule under another lineage (decision 40), when the rule is RETURNING.
+
+    It is not when ``record``'s own entry is trading: a replace-mode restate of a routed entry
+    brings nothing back, and a retired twin beside it (a rule installed twice before PR3c-2) goes
+    the way replace mode has always taken what it does not re-list. Naming it would put a return
+    that is not happening in the approval, and in front of the ask's real-money warning, while the
+    reactivation guard rightly saw none (review of PR3c-2)."""
     from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
 
+    own = record.get("candidate_id")
+    if own and any(isinstance(entry, Mapping) and entry.get("candidate_id") == own
+                   and str(entry.get("status")) not in TERMINAL_STATUSES for entry in entries):
+        return []
     return [entry for entry in same_rule_entries(record, entries)
             if str(entry.get("status")) in TERMINAL_STATUSES]
 

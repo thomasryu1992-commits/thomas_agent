@@ -249,11 +249,14 @@ def run_promotion(
             *(precise_lineage_keys(e) for e in replaced[c["candidate_id"]])))
         for c in candidates
     }
-    # And the longest failure streak among what it replaces, so a returning rule the lifecycle had
-    # been demoting does not start over at nothing (review of PR3c-1).
+    # And the longest failure streak among its own entry (a re-listed one) and what it replaces, so
+    # neither a returning rule nor a restate starts the lifecycle over at nothing (reviews of PR3c-1
+    # and PR3c-2; a restate used to reset every re-listed entry's streak).
     carried_failures = {
-        c["candidate_id"]: max((int(e.get("lifecycle_consecutive_failures") or 0) for e in replaced[c["candidate_id"]]),
-                               default=0)
+        c["candidate_id"]: max(
+            (int(e.get("lifecycle_consecutive_failures") or 0)
+             for e in [*replaced[c["candidate_id"]], on_disk_by_cid.get(c["candidate_id"]) or {}]),
+            default=0)
         for c in candidates
     }
     existing_ids = {e.get("strategy_id") for e in entries}
@@ -375,9 +378,9 @@ def run_promotion(
     except MvpRuntimeError as exc:
         raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
-    # Who this install returns from a terminal status — recorded on the summary whether or
-    # not the escape fired, because the reactivation is the part of the effect the approval's
-    # content hash cannot name, so the ledger is the only place it is written down at all.
+    # Who this install returns from a terminal status — recorded on the summary whether or not
+    # the escape fired, beside the approval that named it: the ledger is where an install's own
+    # account of it stays (an escaped install without approval has no other).
     reactivations = pool_store.silent_reactivations(entries, root=root)
 
     new_pool = {
@@ -387,7 +390,11 @@ def run_promotion(
         "updated_by": promoted_by,
         "updated_at": now,
     }
-    installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
+    try:
+        installed = pool_store.install_active_pool(new_pool, root=root)  # validates fail-closed
+    except MvpRuntimeError as exc:
+        # Refused as the other doors refuse, not as a traceback (review of PR3c-2).
+        raise SystemExit(f"BLOCKED {exc.reason_code}: {exc.reason}")
 
     summary = {
         "promoted_candidate_ids": [c["candidate_id"] for c in candidates],
@@ -440,9 +447,8 @@ def run_promotion(
         "derivations": [c.get("derivation_type") for c in candidates],
         "quarantined_derivation_escape": bool(allow_quarantined_derivation),
         # Who came back from a terminal status, and from which. Recorded whether or not the
-        # escape fired, like the bases and depths above: the reactivation is the part of the
-        # effect the approval's content hash cannot name, so the ledger is the only place it
-        # is written down at all.
+        # escape fired, like the bases and depths above: the approval names it when there is one,
+        # and the ledger is the install's own account of it.
         "reactivation_escape": bool(allow_reactivation),
         "reactivated": reactivations,
         # The retired entries this install replaced (PR3c-2). They are gone from the pool, so this is
@@ -837,7 +843,10 @@ def main(argv: list[str] | None = None) -> int:
     # because the operator holding the argv is the last reader who can still stop.
     if summary["reactivated"]:
         print(f"NOTE: returned {len(summary['reactivated'])} terminal member(s) to trading — "
-              + ", ".join(f"{r['strategy_id']} (was {r['from_status']})"
+              + ", ".join(f"{r['strategy_id']} (was {r['from_status']}"
+                          + ("; replaced " + ", ".join(f"{x['strategy_id']} [{x['candidate_id'] or x['lineage']}]"
+                                                       for x in r["replaces"]) if r.get("replaces") else "")
+                          + ")"
                           for r in summary["reactivated"]))
     if summary["reviews_skipped"]:
         print(f"NOTE: this promotion skipped {len(summary['reviews_skipped'])} review(s): "

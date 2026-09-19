@@ -1582,6 +1582,9 @@ def build_strategy_promotion_permission_decision(
     # (`pool.reactivated_candidate_ids`, already in ``content_sha256``). Shown and signed so the
     # ask SAYS it (PR3c-2): a retired rule returning under a new candidate replaces its entries.
     reactivated: Sequence[str] = (),
+    # The same returns in words (display ids, statuses, why each was retired), for the risk reason
+    # only: what Thomas reads, never what is signed.
+    reactivation_notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to promote
     strategy candidates into the active pool (Crypto Pipeline C8b).
@@ -1608,9 +1611,10 @@ def build_strategy_promotion_permission_decision(
         raise PlannerBlocked("INVALID_PROMOTION", f"unknown live tier {live_tier!r}")
     arms_live = live_tier == STRATEGY_POOL_TIER_LIVE
     returning = (
-        "RETURNS RETIRED STRATEGIES TO TRADING: " + ", ".join(sorted(str(r) for r in reactivated))
-        + ". A retired rule returning under a new candidate replaces its retired entries and is judged "
-        "on their record. "
+        "RETURNS RETIRED STRATEGIES TO TRADING: "
+        + ("; ".join(str(n) for n in reactivation_notes) if reactivation_notes
+           else ", ".join(sorted(str(r) for r in reactivated)))
+        + ". "
         if reactivated else ""
     )
 

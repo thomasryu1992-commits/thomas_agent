@@ -38,10 +38,12 @@ Append a new entry when a milestone ships, in the same PR.
       the retired entries' lineage keys, and in the signed parameters and risk reason Thomas reads.
       It is refused without `--allow-reactivation`.
     - The new entry replaces those entries in either mode and inherits their record (PR3c-1), with
-      the longest failure streak among them. The promotion event keeps who they were and why they
-      had been retired. A replace-mode restate keeps what an entry had inherited.
-  - **No hash-version bump:** an ordinary promotion hashes as before. A same-rule return hashes
-    differently, so an approval asked before this refuses rather than install an effect it did
+      the longest failure streak among them and its own. The promotion event keeps who they were
+      and why they had been retired. A replace-mode restate keeps what an entry had inherited and
+      its streak. The ask tells Thomas what returns by display id, status and retirement reason.
+  - **No hash-version bump:** a promotion that returns no retired rule hashes as before (a restate of
+    a routed entry included: its retired twin is not a return, review of PR3c-2). A same-rule return
+    hashes differently, so an approval asked before this refuses rather than install an effect it did
     not name.
   - **Door only:** the pool read keeps loading S008 and S008-GEN-696, one rule installed twice
     (decision 42).

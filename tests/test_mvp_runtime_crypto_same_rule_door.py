@@ -185,7 +185,8 @@ def test_the_returning_rule_replaces_the_retired_entry_and_inherits_its_record(t
     [returned] = summary["reactivated"]
     assert returned["from_status"] == "SUSPENDED"
     assert returned["replaces"] == [{"strategy_id": "S1", "candidate_id": first["candidate_id"],
-                                     "status": "SUSPENDED", "lineage": f"cand:{first['candidate_id']}"}]
+                                     "status": "SUSPENDED", "lineage": f"cand:{first['candidate_id']}",
+                                     "lifecycle_reasons": ["operator_retired"]}]
     assert "silent_reactivation" in summary["reviews_skipped"]
     assert retired["candidate_id"] not in {e["candidate_id"] for e in _entries(tmp_path)}
 
@@ -403,3 +404,114 @@ def test_the_lifecycle_judges_the_returned_rule_on_the_retired_record(tmp_path):
     assert decision["status_changed"] is True
     assert decision["candidate_id"] == twin["candidate_id"]
     assert lineage_of(_entries(tmp_path)[0])["candidate_id"] == twin["candidate_id"]
+
+
+# --- review of PR3c-2 -----------------------------------------------------------------------------
+
+def test_a_restate_of_a_routed_entry_returns_nothing(tmp_path):
+    """A routed entry and a retired twin of its rule (a shape older doors could leave). Restating the
+    routed one in replace mode brings nothing back: the hash names no return, no escape is needed,
+    it inherits nothing, and the twin goes as replace mode has always taken what it does not
+    re-list. The ask once named the twin as "returning" in front of the real-money warning."""
+    routed = _seed(tmp_path, generation="GEN-001")
+    twin = _seed(tmp_path, generation="GEN-002")
+    pool.install_active_pool({"active_strategies": [
+        _hand_entry(routed, strategy_id="S1", status="PAPER_ACTIVE"),
+        _hand_entry(twin, strategy_id="S1-GEN-002", status="SUSPENDED")]}, root=tmp_path)
+    assert pool.reactivated_candidate_ids([routed["candidate_id"]], keep_active=False, root=tmp_path,
+                                          candidates=[routed]) == []
+    assert promotion_mod.content_sha256_of([routed], keep_active=False, live_tier="OBSERVATION", root=tmp_path) == \
+        promotion_content_sha256([routed["candidate_id"]], [routed["strategy_rule_hash"]], False, "OBSERVATION", [],
+                                 artifact_sha256s=promotion_mod.candidate_artifacts([routed]))
+    summary = _promote(tmp_path, routed, keep_active=False)
+    assert summary["reactivated"] == [] and summary["replaced_entries"] == []
+    [entry] = _entries(tmp_path)
+    assert entry["candidate_id"] == routed["candidate_id"] and PREDECESSOR_KEYS_FIELD not in entry
+
+
+def test_a_replaced_entry_without_a_candidate_id_is_named_by_its_generation(tmp_path):
+    """41 of the host's retired entries were installed without a candidate id; their record keys on
+    `gen:`, and that is the key the approval names and the successor inherits."""
+    retired = _seed(tmp_path, generation="GEN-001")
+    imported = {k: v for k, v in _hand_entry(retired, strategy_id="S1", status="SUSPENDED").items()
+                if k != "candidate_id"}
+    pool.install_active_pool({"active_strategies": [imported]}, root=tmp_path)
+    back = _seed(tmp_path, generation="GEN-002")
+    key = f"gen:GEN-001:{retired['strategy_rule_hash']}"
+    assert pool.reactivated_candidate_ids([back["candidate_id"]], keep_active=True, root=tmp_path,
+                                          candidates=[back]) == [key]
+    with pytest.raises(SystemExit) as refused:
+        _promote(tmp_path, back)
+    assert "POOL_SILENT_REACTIVATION" in str(refused.value)
+    _promote(tmp_path, back, allow_reactivation=True)
+    [entry] = _entries(tmp_path)
+    assert entry[PREDECESSOR_KEYS_FIELD] == [key]
+
+
+def test_an_archived_rule_returns_as_a_reactivation_too(tmp_path):
+    first = _seed(tmp_path, generation="GEN-001")
+    _promote(tmp_path, first)
+    _set_status(tmp_path, "S1", "ARCHIVED")
+    with pytest.raises(SystemExit) as refused:
+        _promote(tmp_path, _seed(tmp_path, generation="GEN-002"))
+    assert "POOL_SILENT_REACTIVATION" in str(refused.value) and "ARCHIVED" in str(refused.value)
+
+
+def test_the_returning_rule_keeps_the_longest_streak_among_what_it_replaces(tmp_path):
+    a, b = _seed(tmp_path, generation="GEN-001"), _seed(tmp_path, generation="GEN-002")
+    pool.install_active_pool({"active_strategies": [
+        {**_hand_entry(a, strategy_id="S1", status="SUSPENDED"), "lifecycle_consecutive_failures": 1},
+        {**_hand_entry(b, strategy_id="S1-GEN-002", status="SUSPENDED"), "lifecycle_consecutive_failures": 3},
+    ]}, root=tmp_path)
+    _promote(tmp_path, _seed(tmp_path, generation="GEN-003"), allow_reactivation=True)
+    [entry] = _entries(tmp_path)
+    assert entry["lifecycle_consecutive_failures"] == 3
+
+
+def test_a_restate_keeps_the_entry_s_own_streak(tmp_path):
+    """Review of PR3c-2: a replace-mode restate rebuilt every entry from its candidate row, and every
+    re-listed entry's failure streak went back to nothing — including a returning rule's, which the
+    LIVE-arming restate goes through."""
+    row = _seed(tmp_path, generation="GEN-001")
+    _promote(tmp_path, row)
+    _set_status(tmp_path, "S1", "WARNING", lifecycle_consecutive_failures=1)
+    _promote(tmp_path, row, keep_active=False)
+    [entry] = _entries(tmp_path)
+    assert entry["lifecycle_consecutive_failures"] == 1
+
+
+@requires_local_core
+def test_the_ask_says_who_returns_in_words_thomas_can_check(tmp_path, monkeypatch):
+    first, twin = _retired_twin(tmp_path)
+    _pool_at(monkeypatch, tmp_path)
+    prepared = request_promotion([twin["candidate_id"]], keep_active=True, live_tier="OBSERVATION", now=NOW,
+                                 candidates_root=tmp_path, allow_reactivation=True)
+    [said] = [r for r in prepared["permission_decision"]["risk"]["risk_reasons"] if "RETURNS RETIRED" in r]
+    assert f"replacing S1 [{first['candidate_id']}] SUSPENDED (operator_retired)" in said
+    assert "judged on their record" in said
+
+
+def test_an_approved_return_installs_and_one_asked_before_it_named_returns_does_not(tmp_path):
+    """Ask, approve, install — the approval's hash names the retired lineage the rule returns from.
+    One minted without it (as before PR3c-2) binds another effect, and the door refuses it."""
+    from tests.test_mvp_runtime_crypto_strategy_artifact import _approval
+
+    first = _seed(tmp_path, generation="GEN-001")
+    _promote(tmp_path, first)
+    _retire(tmp_path)
+    twin = _seed(tmp_path, generation="GEN-002")
+    stale = _approval(tmp_path, [twin], live_tier="OBSERVATION", approval_id="approval_named_nothing",
+                      content=promotion_content_sha256(
+                          [twin["candidate_id"]], [twin["strategy_rule_hash"]], False, "OBSERVATION", [],
+                          artifact_sha256s=promotion_mod.candidate_artifacts([twin])))
+    with pytest.raises(SystemExit) as refused:
+        run_promotion(selectors=[twin["candidate_id"]], promoted_by="Thomas", reason="r", keep_active=False,
+                      live_tier="OBSERVATION", root=tmp_path, now=NOW, approval_id=stale, allow_reactivation=True)
+    assert "APPROVAL_CONTENT_MISMATCH" in str(refused.value)
+    named = _approval(tmp_path, [twin], live_tier="OBSERVATION", approval_id="approval_named_the_return")
+    summary = run_promotion(selectors=[twin["candidate_id"]], promoted_by="Thomas", reason="r", keep_active=False,
+                            live_tier="OBSERVATION", root=tmp_path, now=NOW, approval_id=named,
+                            allow_reactivation=True)
+    assert summary["approval_verified"] is True
+    [entry] = _entries(tmp_path)
+    assert f"cand:{first['candidate_id']}" in entry[PREDECESSOR_KEYS_FIELD]

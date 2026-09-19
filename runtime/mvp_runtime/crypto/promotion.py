@@ -434,6 +434,25 @@ def predicted_pool_entries(
     return predicted
 
 
+def _reactivation_notes(found: Sequence[Mapping[str, Any]]) -> list[str]:
+    """What an ask says returns, in words Thomas can check against the pool: display ids, candidate
+    ids, statuses and why each replaced entry had been retired (review of PR3c-2). Display only —
+    the content hash and the signed parameters carry the lineage keys."""
+    notes = []
+    for row in found:
+        note = f"{row['strategy_id']} [{row['candidate_id']}] from {row['from_status']}"
+        replaces = row.get("replaces") or []
+        if replaces:
+            note += ", replacing " + ", ".join(
+                f"{r['strategy_id']} [{r['candidate_id'] or r['lineage']}] {r['status']}"
+                + (f" ({', '.join(str(x) for x in r['lifecycle_reasons'])})"
+                   if isinstance(r.get("lifecycle_reasons"), list) and r["lifecycle_reasons"] else "")
+                for r in replaces
+            ) + " — the same rule, judged on their record"
+        notes.append(note)
+    return notes
+
+
 def request_promotion(
     selectors: list[str],
     *,
@@ -478,13 +497,12 @@ def request_promotion(
     # promotion the next step was always going to block. That argument was already written
     # beside eight of these gates while the size cap and the reactivation guard still ran
     # at the install alone; the roster is what makes it structural.
+    predicted = predicted_pool_entries(candidates, keep_active=keep_active, live_tier=live_tier, root=store_root)
     run_promotion_gates(
         candidates,
         keep_active=keep_active,
         live_tier=live_tier,
-        entries=predicted_pool_entries(
-            candidates, keep_active=keep_active, live_tier=live_tier, root=store_root,
-        ),
+        entries=predicted,
         store_root=store_root,
         # The stage as the machine reads it now. The install door resolves its own, so an ask
         # approved at a rung the machine has since left refuses there rather than installing.
@@ -529,6 +547,7 @@ def request_promotion(
         artifact_sha256s=artifacts,
         keep_active=keep_active, live_tier=live_tier, content_sha256=content, now=now, repo_root=root,
         reactivated=reactivated,
+        reactivation_notes=_reactivation_notes(pool_store.silent_reactivations(predicted, root=store_root)),
     )
     approval_request = approval_mod.build_approval_request(
         permission_decision, now=now, ttl_minutes=ttl_minutes, repo_root=root,
