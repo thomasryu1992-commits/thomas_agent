@@ -168,9 +168,11 @@ def test_control_verbs_cannot_be_named_directly(tmp_path, verb):
 
 
 def test_resume_is_absent_from_the_verb_set():
-    """The frozenset is the enforcement, not documentation of it."""
+    """The frozenset is the enforcement, not documentation of it. `emergency_close` (PR6e) only asks,
+    and stays dormant until the committed policy lists it (`POLICY_GATED_COMMANDS`)."""
     assert control.CMD_RESUME not in switch_bridge._ALLOWED_COMMANDS
-    assert switch_bridge._ALLOWED_COMMANDS == {"status", "enable", "disable"}
+    assert switch_bridge._ALLOWED_COMMANDS == {"status", "enable", "disable", "emergency_close"}
+    assert switch_bridge.POLICY_GATED_COMMANDS == {"emergency_close"}
 
 
 def test_the_stop_modes_stay_within_the_policy_emergency_controls():

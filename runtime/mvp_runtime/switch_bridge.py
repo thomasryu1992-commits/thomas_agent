@@ -67,6 +67,8 @@ Failure directions, each chosen once:
   rather than spent on an assumption.
 - An approval whose named stop is no longer the one in effect -> ``STOP_CHANGED``, nothing
   applied. Re-asking is one round trip; clearing an unapproved stop is not recoverable by one.
+- ``emergency_close`` while the committed policy does not list it -> ``CONTROL_VERB_NOT_GRANTED``,
+  nothing asked. Granted, it only ever mints the ask; an ``approval_id`` beside it is refused.
 """
 
 from __future__ import annotations
@@ -82,10 +84,13 @@ from .control import ControlStore
 from .errors import ControlBlocked
 from .filelock import locked
 from .intake import build_task
+from .audit import build_approval_request_audit
+from .errors import MvpRuntimeError
 from .permission import (
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_PERMISSION_SCOPE,
     TRADING_SWITCH_TARGET_PREFIX,
+    build_emergency_close_permission_decision,
     build_nonfinancial_resume_permission_decision,
     build_trading_switch_permission_decision,
 )
@@ -105,11 +110,24 @@ ASSISTANT_ACTOR = socket_door.ASSISTANT_ACTOR
 CMD_STATUS = "status"
 CMD_ENABLE = "enable"
 CMD_DISABLE = "disable"
+CMD_EMERGENCY_CLOSE = "emergency_close"
 
 # The whole permission surface of this module. `control.CMD_RESUME` is deliberately NOT a verb
 # a caller can name — `enable` is the only route to it, and it goes through an approval. A test
 # asserts the raw control verbs stay unnameable here.
-_ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISABLE})
+_ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISABLE, CMD_EMERGENCY_CLOSE})
+
+# The verbs this door carries dormant: each refuses by name until the committed policy lists it under
+# `control_channel.assistant_switch.verbs` (`control.granted_switch_verbs`), the pattern `halt_trading`
+# followed before policy 1.5.1. The other verbs never read the policy, so a policy that cannot be read
+# can never take `disable` away.
+#
+# `emergency_close` (crypto PR6e, Thomas decision 49: the assistant may only request). It mints the
+# ask `scripts.emergency_close --request` mints — every booked live position, closed at market and
+# reduceOnly, under the HARD halt in effect — and nothing more. Thomas answers it on the control
+# channel, and the operator spends it once in the scheduler container, the only one with the order key
+# (`--confirm`). This door has no path to the spend.
+POLICY_GATED_COMMANDS: frozenset[str] = frozenset({CMD_EMERGENCY_CLOSE})
 
 # Every key this door will act on. An unexpected key is refused rather than ignored: a frame
 # carrying something this module does not understand must not be treated as a frame that means
@@ -153,6 +171,8 @@ _DEFAULT_SCOPE = SCOPE_TRADING
 # for a stop to block. An emergency control you must first acquire a lock for is a worse trade
 # than the duplicate it would prevent.
 _ENABLE_DOOR = "switch.enable"
+# The emergency-close ask dedups for the enable ask's reason: two pending asks for one intent.
+_EMERGENCY_CLOSE_DOOR = "switch.emergency_close"
 
 # Stopping has four shapes and the caller picks. `kill` and `pause` are in the policy's
 # `emergency_controls_allowed`; `soft` is the Trading Soft Halt (Thomas decision 7, 2026-09-15) —
@@ -420,6 +440,131 @@ def _open_ask(
     }
 
 
+def _open_emergency_close_ask(
+    domain: str,
+    reason: str,
+    *,
+    approval_store: ApprovalStore,
+    control_store: ControlStore,
+    ledger: LedgerStore,
+    now: str,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """Create the emergency-close ask, with the assistant as the requester, and return it.
+
+    The content is ``live_route.emergency_close_content``'s, exactly as for the operator's
+    ``--request``: the HARD halt in effect (its ``stop_ref``) and every booked position. It refuses,
+    by that function's codes, when no HARD halt is in effect with the runtime ACTIVE, when nothing is
+    booked, or when a book record is incomplete. Reading the book and the control state changes
+    nothing; the ask is still not an action."""
+    # The lane, entered at its dispatch site: the core loads no domain module at import
+    # (tests/test_mvp_runtime_domain_isolation.py).
+    from .crypto import live_route
+
+    content = live_route.emergency_close_content(
+        root=repo_root, requested_by=ASSISTANT_ACTOR, reason=reason, control_store=control_store,
+    )
+    rows = content["positions"]
+    task = build_task(
+        f"긴급 청산 검토 (비서 요청): 장부의 라이브 포지션 {len(rows)}개"
+        f"({', '.join(r['symbol'] for r in rows)})를 시장가 reduceOnly로 청산 - {reason}",
+        now=now, channel="agent", requester_type="agent", requester_id=ASSISTANT_ACTOR,
+        authenticated=True,
+    )
+    _, bound = bind_task_to_core(task, now=now)
+    decision = build_emergency_close_permission_decision(bound, content=content, now=now)
+    request = approval_mod.build_approval_request(decision, now=now)
+    approval_store.append_permission_decision(decision)
+    approval_store.append([request])
+    warnings: list[str] = []
+    try:
+        ledger.append_audit_events(build_approval_request_audit(
+            request, now=now, genesis_previous_hash=ledger.last_audit_hash(),
+        ))
+    except MvpRuntimeError as exc:
+        warnings.append(f"the request audit was not written ({exc.reason_code}); the ask stands")
+    approval_id = request["approval_id"]
+    reply: dict[str, Any] = {
+        "ok": False,
+        "reason_code": "APPROVAL_REQUIRED",
+        "reason": ("closing every booked live position needs Thomas's approval on the control channel, "
+                   "then the operator's confirm in the scheduler container; nothing has been closed "
+                   "and no order was sent"),
+        "action": CMD_EMERGENCY_CLOSE,
+        "domain": domain,
+        "approval_id": approval_id,
+        "expires_at": request["validity"]["expires_at"],
+        "approve_with": f"/approve {approval_id}",
+        "confirm_with": ("docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close "
+                         f"--confirm --approval-id {approval_id}"),
+        "positions": rows,
+        "halt": content["halt_summary"],
+        "halt_ref": content["halt_ref"],
+        "requested_reason": reason,
+    }
+    if warnings:
+        reply["warnings"] = warnings
+    return reply
+
+
+def _emergency_close_ask(
+    request: dict[str, Any],
+    reason: str,
+    *,
+    approval_store: ApprovalStore,
+    control_store: ControlStore,
+    ledger: LedgerStore,
+    now: str,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """The ``emergency_close`` verb: mint the ask, once per ``request_id``, and never spend it.
+
+    Keys this verb does not use are refused rather than ignored, the door's rule everywhere else, and
+    ``approval_id`` above all: a caller that sends one believes this door can close positions, and it
+    cannot. A retried frame answers from the record instead of minting a second ask."""
+    unexpected = {"approval_id", "mode", "scope"} & set(request)
+    if unexpected:
+        raise ControlBlocked(
+            "ARGUMENT_NOT_ACCEPTED",
+            f"{CMD_EMERGENCY_CLOSE} only asks, and takes no {sorted(unexpected)}: Thomas's approval is "
+            "spent by the operator in the scheduler container (scripts.emergency_close --confirm), "
+            "never through this door",
+        )
+    domain = _require_domain(request)
+    request_id = bridge_idempotency.request_id_of(request)
+    fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
+    if request_id is not None:
+        prior = bridge_idempotency.claim(
+            ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+        )
+        if prior is not None:
+            return socket_door.envelope(
+                bridge_idempotency.replay_reply(prior), request=request,
+                data=dict(prior.get("outcome") or {}),
+            )
+    try:
+        reply = _open_emergency_close_ask(
+            domain, reason, approval_store=approval_store, control_store=control_store,
+            ledger=ledger, now=now, repo_root=repo_root,
+        )
+    except BaseException:
+        if request_id is not None:
+            bridge_idempotency.release(
+                ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+                request_fingerprint=fingerprint, now=now,
+            )
+        raise
+    if request_id is not None:
+        bridge_idempotency.complete(
+            ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+            outcome={key: reply.get(key) for key in ("action", "approval_id", "expires_at", "approve_with",
+                                                     "confirm_with", "domain", "halt_ref", "positions")},
+        )
+    return _enveloped(request, _echo_request_id(request, reply))
+
+
 def _spend(
     approval_id: str,
     reason: str,
@@ -638,6 +783,13 @@ def apply_switch(
             f"{command!r} is not permitted here; this door carries "
             f"{sorted(_ALLOWED_COMMANDS)} only",
         )
+    if command in POLICY_GATED_COMMANDS and command not in control.granted_switch_verbs():
+        raise ControlBlocked(
+            control.VERB_NOT_GRANTED,
+            f"{command} is not granted by the committed Governance Policy yet "
+            "(control_channel.assistant_switch.verbs); nothing was asked and nothing changed. Thomas "
+            "can ask for one himself in the scheduler container (scripts.emergency_close --request).",
+        )
 
     now = now or timeutil.utc_now_iso()
     approval_store = approval_store or ApprovalStore.default(repo_root)
@@ -654,6 +806,12 @@ def apply_switch(
         }))
 
     reason = _require_reason(request)
+
+    if command == CMD_EMERGENCY_CLOSE:
+        return _emergency_close_ask(
+            request, reason, approval_store=approval_store, control_store=control_store,
+            ledger=ledger, now=now, repo_root=repo_root,
+        )
 
     if command == CMD_DISABLE:
         raw_mode = request.get("mode")

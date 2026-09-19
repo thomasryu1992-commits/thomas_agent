@@ -94,6 +94,37 @@ def _disable_text(src: dict, *, payload: dict, reply: str) -> str:
     return f"{head}{note}\nRuntime reply: {reply}"
 
 
+def _emergency_close_text(src: dict, *, replayed: bool) -> str:
+    """The emergency-close ask (shim 2.14, crypto PR6e; Thomas decision 49: the assistant only asks).
+    Two steps follow and neither is the model's: Thomas approves on the control bot, and the operator
+    spends the approval in the scheduler container. Nothing has closed when this is read."""
+    positions = src.get("positions") or []
+    listing = ", ".join(f"{p.get('symbol')} {p.get('direction')} {p.get('quantity')}"
+                        for p in positions if isinstance(p, dict)) or "(not in this reply)"
+    head = ("NOT DONE (REPLAYED) — this request_id already minted the emergency-close ask; no new ask "
+            "was minted, nothing has been closed and no order was sent." if replayed else
+            "NOT DONE — nothing has been closed and no order was sent. This minted Thomas's approval "
+            "ask for the emergency close.")
+    return (
+        f"{head}\n"
+        f"  approval id : {src.get('approval_id')}\n"
+        f"  expires at  : {src.get('expires_at')}\n"
+        f"  would close : {listing} — every booked live position, at market, reduceOnly\n"
+        + (f"  bound to    : {src.get('halt')}\n" if src.get("halt") else "")
+        + "Two steps follow, and neither is yours:\n"
+        f"  1) Thomas approves on the CONTROL bot ({CONTROL_BOT_ID}): {src.get('approve_with')}\n"
+        "  2) then the OPERATOR runs, in the scheduler container:\n"
+        f"     {src.get('confirm_with')}\n"
+        "You cannot approve it and you cannot confirm it. Never say positions are closing or closed. "
+        "Nothing moves until both steps are done, and the confirm refuses, spending nothing, if the HARD "
+        "halt it was asked under is no longer the one in effect: any control change voids the ask, and "
+        "then you ask again. Convert `expires at` into the minutes remaining and say it; the ask dies 15 "
+        "minutes after it is minted. approval_status(<id>) shows whether Thomas has answered."
+        + (" If it reads EXPIRED, call request_emergency_close again with a NEW request_id."
+           if replayed else "")
+    )
+
+
 def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: str | None) -> str:
     if answer.failure:
         return f"{answer.failure_text()} Nothing was changed."
@@ -107,6 +138,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
         # `data` (and `outcome`), not in the top-level keys a fresh reply has. Measured on the
         # 2026-09-04 drill: reading the top level rendered "DONE: None applied to None".
         src = answer.data if answer.replayed else (answer.frame or {})
+        if answer.replayed and payload.get("command") == "emergency_close":
+            return _emergency_close_text(src, replayed=True)
         if answer.replayed and ("approve_with" in src or "expires_at" in src):
             # The ask itself was the effect the first time; nothing new is minted on a repeat.
             return (
@@ -162,6 +195,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
             "that left mode and arm exactly as they were; it does not prove anything moved."
         )
 
+    if answer.reason_code == "APPROVAL_REQUIRED" and payload.get("command") == "emergency_close":
+        return _emergency_close_text(answer.frame or {}, replayed=False)
     if answer.reason_code == "APPROVAL_REQUIRED":
         scope = answer.get("scope")
         what = ("resume the runtime WITHOUT re-arming live trading" if scope == "runtime"
@@ -251,6 +286,20 @@ def halt_trading(reason: str, hard: bool = False, domain: str = "crypto") -> str
     a halt needs Thomas's start_trading approval; resume_runtime_only keeps it. Like any control change,
     it voids a pending start_trading/resume ask (STOP_CHANGED)."""
     return _ask({"command": "disable", "mode": "hard" if hard else "soft", "reason": reason, "domain": domain})
+
+
+@mcp.tool()
+def request_emergency_close(reason: str, domain: str = "crypto", request_id: str = "") -> str:
+    """ASK Thomas for the emergency close: every booked live position closed at market, reduceOnly.
+    You can only ask. This sends no order and closes nothing: it mints one approval Thomas answers on
+    the CONTROL bot, and then the operator runs the close in the scheduler container. It needs the
+    HARD halt with the runtime ACTIVE (halt_trading with hard=True first) and refuses otherwise. Only
+    when Thomas asks for it. It refuses by name until the governance policy grants it. `request_id`:
+    leave it EMPTY; pass one back only to retry this same call after a timeout or an unclear reply,
+    which is what stops a second ask being minted."""
+    rid = request_id.strip() or door.new_request_id()
+    return _ask({"command": "emergency_close", "reason": reason, "domain": domain},
+                retry_tool="request_emergency_close", request_id=rid)
 
 
 @mcp.tool()

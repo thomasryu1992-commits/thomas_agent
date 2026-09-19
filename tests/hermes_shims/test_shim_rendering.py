@@ -144,9 +144,54 @@ def test_switch_enable_carries_a_request_id_and_disable_does_not(monkeypatch):
     assert seen[2][0] == {"command": "enable", "reason": "why", "domain": "crypto", "scope": "runtime"} and seen[2][1]["request_id"] == "hermes-2"
 
 
-def test_switch_tools_are_status_the_two_stops_the_halt_and_the_two_starts():
+def test_switch_tools_are_status_the_two_stops_the_halt_the_two_starts_and_the_close_ask():
     assert set(switch_shim.mcp.tools) == {"trading_switch_status", "stop_trading", "pause_trading", "halt_trading",
-                                          "start_trading", "resume_runtime_only"}
+                                          "start_trading", "resume_runtime_only", "request_emergency_close"}
+
+
+def test_the_emergency_close_request_sends_its_shape_under_a_request_id(monkeypatch):
+    """Shim 2.14 (decision 49: the assistant only asks). A request_id, because the ask is minted, and a
+    retry must not mint a second one."""
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((p, kw)) or _answer("switch", {"ok": True, "reply": ""}))
+    switch_shim.request_emergency_close("거래소 장애"); switch_shim.request_emergency_close("r", request_id="hermes-7")
+    assert seen[0][0] == {"command": "emergency_close", "reason": "거래소 장애", "domain": "crypto"}
+    assert seen[0][1]["request_id"].startswith("hermes-") and seen[1][1]["request_id"] == "hermes-7"
+
+
+_CLOSE_ASK = {"approval_id": "approval_e", "expires_at": "2026-09-19T12:15:00Z", "approve_with": "/approve approval_e",
+              "confirm_with": "docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confirm "
+                              "--approval-id approval_e",
+              "positions": [{"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
+
+
+def test_the_emergency_close_ask_says_nothing_closed_and_names_two_steps_neither_the_models():
+    frame = {"ok": False, "reason_code": "APPROVAL_REQUIRED", "reason": "r", "action": "emergency_close",
+             "halt": "the HARD halt placed by tg-1 at T", **_CLOSE_ASK}
+    text = switch_shim._render(_answer("switch", frame), payload={"command": "emergency_close"},
+                               retry_tool="request_emergency_close", request_id="hermes-1")
+    assert text.startswith("NOT DONE — nothing has been closed and no order was sent")
+    assert switch_shim.CONTROL_BOT_ID in text and "/approve approval_e" in text
+    assert "--confirm --approval-id approval_e" in text and "the OPERATOR runs" in text
+    assert "You cannot approve it and you cannot confirm it" in text and "Never say positions are closing" in text
+    assert "BTCUSDT LONG 0.002" in text and "the HARD halt placed by tg-1 at T" in text
+    # Not the re-arm ask's text: no scope, no restart, no spend by the model.
+    assert "scope" not in text and "restart trading" not in text and "WITH that approval id" not in text
+
+
+def test_a_replayed_emergency_close_ask_answers_from_the_record_without_a_scope():
+    text = switch_shim._render(_answer("switch", {"ok": True, "replayed": True, "data": dict(_CLOSE_ASK)}),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-1")
+    assert text.startswith("NOT DONE (REPLAYED)") and "approval_e" in text and "scope" not in text
+    assert "request_emergency_close again with a NEW request_id" in text and "DONE:" not in text.replace("NOT DONE", "")
+
+
+def test_an_emergency_close_refusal_is_a_refusal():
+    text = switch_shim._render(
+        _answer("switch", {"ok": False, "reason_code": "CONTROL_VERB_NOT_GRANTED", "reason": "not granted"}),
+        payload={"command": "emergency_close"}, retry_tool="request_emergency_close", request_id="hermes-1")
+    assert text.startswith("REFUSED [CONTROL_VERB_NOT_GRANTED]") and "Nothing was changed" in text
 
 
 def test_the_halt_sends_soft_or_hard_and_no_request_id(monkeypatch):

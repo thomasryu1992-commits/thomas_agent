@@ -1,8 +1,10 @@
 # Governance policy 1.6.0 — draft for Thomas to apply
 
-**Baseline note (2026-09-15):** `policy_bump_1_6_0.py` also applies over **1.5.1** (the Trading Soft
-Halt grant, `POLICY_1_5_1_DRAFT.md`), which touches none of this bump's anchors; apply 1.5.1 first.
-Where this draft says 1.5.0 below, read "1.5.0 or 1.5.1".
+**Baseline note (2026-09-15, 2026-09-19):** `policy_bump_1_6_0.py` also applies over **1.5.1** (the
+Trading Soft Halt grant, `POLICY_1_5_1_DRAFT.md`) and **1.5.2** (the assistant's emergency-close ask,
+`POLICY_1_5_2_DRAFT.md`), neither of which touches this bump's anchors; apply those first. Where this
+draft says 1.5.0 below, read "1.5.0, 1.5.1 or 1.5.2". Until PR6e its `--check` refused over 1.5.1 on two
+test literals that pin nothing; they are on its list now.
 
 **Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` stays at **1.5.0** until
 Thomas applies the bump himself (decision Q2, 2026-09-03: policy edits are written together and
