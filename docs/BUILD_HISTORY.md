@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The venue contract sentinel: the exchange is asked what the runtime assumes about it**
+  (crypto PR4a, Thomas decisions 43-46, 2026-09-19; `crypto/venue_contract.py`,
+  `scripts/venue_contract.py`, `schemas/venue_contract_verification.v0.1.schema.json`).
+  - **The gap:** every pre-order check validated the runtime's own model of the venue, which is how
+    2026-08-02 passed them all while the venue refused both protective stops. Measured 2026-09-19:
+    `exchangeInfo` still lists `STOP_MARKET`/`TAKE_PROFIT_MARKET` for every traded symbol, so it
+    cannot see that migration; the order API's -4120 is the only order-free observable. Position mode
+    was never queried, although no request carries a `positionSide`.
+  - **What it does:** about hourly, from the pipeline fire after its cycles, it asks through a
+    public GET, a signed GET and `/order/test` only (decision 43). Five judged checks
+    (`exchangeInfo`, the -4120 on the frozen 2026-08-03 request, one-way mode, leverage ≤ 5x from the
+    account snapshot, nothing left resting) decide PASS or FAIL. Four observed checks record the
+    host's answers to hypotheses — including a reduce-only LIMIT twice the `PERCENT_PRICE` band away,
+    because 360 of 778 shadow trades planned a target beyond the ±5% band and whether the band binds
+    a favourable-side LIMIT is the venue's to say.
+  - **Why two files:** as `account_store`, a run that could not ask must not erase a good verification;
+    a violation is FAIL at once; a PASS stands six hours (decision 44).
+  - **Why "could not ask" is never a verdict:** a rate-limit, clock, key or venue-failure code
+    (`live_order.API_ERROR_VENUE_CODES`) at the -4120 probe is UNVERIFIED, so a venue hiccup cannot
+    shut entries once 4b enforces.
+  - **Not yet enforced** (PR4b: the mainnet autonomous entry and the probe, decision 46), not stage
+    evidence (decision 3), and not counted by the API breaker (decision 27's scope).
+
 - **One rule, one entry: a retired rule returns only as an approved reactivation** (crypto PR3c-2,
   Thomas decisions 40 and 42, 2026-09-19; `crypto/pool.py`, `crypto/promotion.py`,
   `permission.py`, `scripts/promote_strategy_candidates.py`).

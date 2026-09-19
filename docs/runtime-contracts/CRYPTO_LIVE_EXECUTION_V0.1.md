@@ -184,6 +184,42 @@ so its answer cannot drift from what the code enforces. It exits 0 only when eve
 passes, and it **cannot report READY while no order path exists** — a row of green ticks that
 implied otherwise would be the most dangerous output this repository could produce.
 
+## The venue contract sentinel (crypto PR4a, Thomas decisions 43-46)
+
+Every check before an order used to point at this runtime's own model of the venue. On 2026-08-02
+they all passed while the venue refused both protective stops, because conditional order types had
+moved to the Algo API — a fact that lives only at the venue. `crypto/venue_contract.py` asks the
+venue itself.
+
+- **When:** the pipeline fire (the risk lane, which holds the venue keys) asks after its cycles,
+  about hourly (every 55 minutes, so every fourth fire), and only while live trading is opted in
+  and a valid budget names the symbols. Its line joins the fire's status line.
+- **What it may use** (decision 43): a public GET, a signed GET, and `POST /fapi/v1/order/test`,
+  which creates no order. No order or cancel verb is imported (pinned). Every client id it sends
+  starts `TAI_VC_`, and the last check reads the resting orders to measure that the validator
+  left nothing behind. Its calls go to the raw adapter, not to the one the API breaker records.
+- **Judged checks** (each expectation measured at this venue), all of which must pass:
+  - the traded symbols' `exchangeInfo` listing;
+  - the 2026-08-03 diagnostic stop, sent to `/order/test` in its frozen pre-migration shape, must
+    still be refused with -4120 (a rate-limit, clock, key or venue-failure code is "could not ask",
+    never a verdict);
+  - one-way position mode (`GET /fapi/v1/positionSide/dual`);
+  - configured leverage at most the backtests' 5x, read from the account snapshot (decision 45);
+  - nothing left resting.
+- **Observed checks** are recorded and never judged until the host's answers are known: the
+  runtime's MARKET entry and a reduce-only take-profit LIMIT twice the `PERCENT_PRICE` band away
+  at `/order/test`, and the answer to an order id and an algo id no order carries.
+- **What it cannot show** is written into every record (`not_verified`): an algo order's
+  placement (no validator exists; the signed testnet cycle is that evidence), the codes only a
+  real order or cancel produces, and account state, which `/order/test` does not judge.
+- **Records:** `venue_contract.json` holds the last decided verification (PASS or FAIL,
+  self-hashed, schema `venue_contract_verification.v0.1`); `venue_contract_refresh.json` the last
+  attempt. A run that could not decide moves only the attempt; a violation is written as FAIL at
+  once. A PASS is usable for six hours, and only under this code's `CONTRACT_VERSION` (decision 44).
+- **Not stage evidence** (decision 3), and **not enforced yet**: PR4b makes a usable PASS a
+  condition of the mainnet autonomous entry and the probe (decision 46). Until then it is a line
+  on the readiness board and `python -m scripts.venue_contract --show`.
+
 ## Operator go-live checklist
 
 Real money. Work top to bottom on one machine. Every step is Thomas's; **Claude does not run

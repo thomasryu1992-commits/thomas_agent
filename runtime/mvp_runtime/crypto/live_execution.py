@@ -169,6 +169,9 @@ OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
 # written from had the path wrong, and a path is exactly the kind of fact that reads plausible
 # either way.
 ALGO_OPEN_ORDERS_PATH = "/fapi/v1/openAlgoOrders"
+# Read-only: whether the account is in hedge mode (PR4a, the venue contract sentinel). Every request
+# this runtime builds assumes one-way mode — none carries a `positionSide` — and nothing asked.
+POSITION_MODE_PATH = "/fapi/v1/positionSide/dual"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
@@ -888,6 +891,28 @@ class BinanceFuturesOrderAdapter:
             )
         rows = [normalize_algo_order(o) for o in _order_rows(body, "algo open-orders")]
         return [r for r in rows if r is not None and (symbol is None or r.get("symbol") == symbol)]
+
+    def position_mode(self, *, timeout_seconds: int = 10) -> bool:
+        """Whether the account is in hedge mode (``dualSidePosition``). Read-only: places nothing.
+
+        Asked by the venue contract sentinel (PR4a), which is its only caller: the money path never
+        needs it per order, because the answer it depends on — one-way — is a standing property of
+        the account that the sentinel verifies on a schedule. A refusal raises, and an answer that
+        does not say ``dualSidePosition`` as a boolean is ``ORDER_MALFORMED_RESULT``: "one-way" must
+        never be the reading of a reply that did not say so."""
+        body, code = answer = self._signed_request(
+            "GET", POSITION_MODE_PATH, {}, timeout_seconds=timeout_seconds
+        )
+        if code is not None:
+            msg = body.get("msg") if isinstance(body, dict) else None
+            raise ToolError(
+                ORDER_REJECTED, f"venue refused the position-mode query (code {code}): {msg}",
+                data=_refusal_data(code, answer),
+            )
+        hedge = body.get("dualSidePosition") if isinstance(body, dict) else None
+        if not isinstance(hedge, bool):
+            raise ToolError(ORDER_MALFORMED_RESULT, "the position-mode query did not say dualSidePosition")
+        return hedge
 
     def cancel_order(
         self, symbol: str, client_order_id: str, *, timeout_seconds: int = 10,

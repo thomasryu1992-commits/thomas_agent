@@ -1,0 +1,584 @@
+"""The venue contract sentinel (crypto PR4a, Thomas decisions 43-46).
+
+What these pin is what makes a PASS worth reading:
+- only an expectation measured at this venue can fail the contract; a hypothesis is recorded, never
+  judged — and a venue that could not be asked is never a verdict either way;
+- the -4120 probe is the request that measured the migration, frozen, not today's Algo shape;
+- the sentinel asks through its validator and its reads only — no order, no cancel — and measures
+  that the validator left nothing behind;
+- a run that could not decide never erases a decided record, and a record that cannot prove itself
+  is refused, not read;
+- it stays out of the API breaker and out of the execution stage.
+
+Every venue answer used here was seen at this venue: the 2026-09-19 exchangeInfo (numbers copied
+from the public payload), the 2026-08-03 -4120, the 2026-09-02 leverage.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+
+import pytest
+
+from runtime.mvp_runtime.crypto import account_store, live_execution, market_data, paper
+from runtime.mvp_runtime.crypto import venue_contract as vc
+from runtime.mvp_runtime.errors import ToolError
+
+NOW = "2026-09-19T07:10:00Z"
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT"]
+PRICES = {"BTCUSDT": 60000.0, "ETHUSDT": 2500.0, "BNBUSDT": 600.0, "SOLUSDT": 150.0, "DOGEUSDT": 0.2}
+ORDER_TYPES = ["LIMIT", "MARKET", "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET",
+               "TRAILING_STOP_MARKET"]
+
+
+def _symbol_row(symbol, tick, step, min_qty, max_qty, market_max, notional, up, down):
+    """One symbol as the public exchangeInfo listed it on 2026-09-19, reduced to what is read."""
+    return {
+        "symbol": symbol, "status": "TRADING", "contractType": "PERPETUAL",
+        "quoteAsset": "USDT", "marginAsset": "USDT",
+        # The migrated conditional types are still listed: exchangeInfo cannot see the migration.
+        "orderTypes": list(ORDER_TYPES), "timeInForce": ["GTC", "IOC", "FOK", "GTX", "GTD"],
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": tick},
+            {"filterType": "LOT_SIZE", "stepSize": step, "minQty": min_qty, "maxQty": max_qty},
+            {"filterType": "MARKET_LOT_SIZE", "stepSize": step, "minQty": min_qty, "maxQty": market_max},
+            {"filterType": "MIN_NOTIONAL", "notional": notional},
+            {"filterType": "PERCENT_PRICE", "multiplierUp": up, "multiplierDown": down},
+        ],
+    }
+
+
+def _exchange_info():
+    return {"symbols": [
+        _symbol_row("BTCUSDT", "0.10", "0.001", "0.001", "1000", "120", "50", "1.0500", "0.9500"),
+        _symbol_row("ETHUSDT", "0.01", "0.001", "0.001", "10000", "2000", "20", "1.0500", "0.9500"),
+        _symbol_row("BNBUSDT", "0.010", "0.01", "0.01", "100000", "2000", "5", "1.0500", "0.9500"),
+        _symbol_row("DOGEUSDT", "0.000010", "1", "1", "300000000", "30000000", "5", "1.1000", "0.9000"),
+        _symbol_row("SOLUSDT", "0.0100", "0.01", "0.01", "1000000", "80000", "5", "1.0500", "0.9500"),
+    ]}
+
+
+MOVED = {"accepted": False, "code": -4120,
+         "msg": "Order type not supported for this endpoint. Please use the Algo Order API endpoints instead."}
+
+
+class _Adapter:
+    """The live adapter's surface as the sentinel may use it, answering as the venue did."""
+
+    network_egress = True
+
+    def __init__(self, *, conditional=MOVED, hedge=False, resting=(), algo_resting=(), fail=()):
+        self.calls: list[tuple] = []
+        self.conditional = conditional
+        self.hedge = hedge
+        self.resting = list(resting)
+        self.algo_resting = list(algo_resting)
+        self.fail = set(fail)
+
+    def _maybe_fail(self, name):
+        if name in self.fail:
+            raise ToolError("ORDER_TRANSPORT", "live order request failed or timed out")
+
+    def validate_order(self, request, *, timeout_seconds=10):
+        self.calls.append(("validate_order", dict(request)))
+        self._maybe_fail("validate_order")
+        if request.get("type") == "STOP_MARKET" and not request.get("algoType"):
+            return dict(self.conditional)
+        return {"accepted": True, "code": None, "msg": None}
+
+    def position_mode(self, *, timeout_seconds=10):
+        self.calls.append(("position_mode",))
+        self._maybe_fail("position_mode")
+        return self.hedge
+
+    def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
+        self.calls.append(("fetch_order", client_order_id, algo))
+        self._maybe_fail("fetch_order")
+        return None
+
+    def open_orders(self, symbol=None, *, timeout_seconds=10):
+        self.calls.append(("open_orders", symbol))
+        self._maybe_fail("open_orders")
+        return list(self.resting)
+
+    def algo_open_orders(self, symbol=None, *, timeout_seconds=10):
+        self.calls.append(("algo_open_orders", symbol))
+        self._maybe_fail("algo_open_orders")
+        return list(self.algo_resting)
+
+
+class _Collector:
+    def __init__(self, payload=None):
+        self.payload = payload if payload is not None else _exchange_info()
+
+    def exchange_info(self, *, timeout_seconds):
+        return self.payload
+
+
+def _snapshot(**leverage):
+    return {"as_of": "2026-09-19T07:00:00Z", "configured_leverage": {s: 5.0 for s in SYMBOLS} | leverage}
+
+
+@pytest.fixture(autouse=True)
+def _prices(monkeypatch):
+    monkeypatch.setattr(market_data, "read_reference_quote",
+                        lambda symbol, **_: {"price": PRICES[symbol], "reason": None})
+
+
+def _run(adapter=None, *, collector=None, snapshot=None, clock=None, symbols=SYMBOLS):
+    kwargs = {"clock": clock} if clock is not None else {}
+    return vc.run_checks(symbols=symbols, adapter=adapter or _Adapter(), collector=collector or _Collector(),
+                         now=NOW, root=None, snapshot=snapshot if snapshot is not None else _snapshot(), **kwargs)
+
+
+def _by_id(checks):
+    return {c["check"]: c for c in checks}
+
+
+# --- the judge ----------------------------------------------------------------------------------
+
+def test_the_measured_venue_passes_every_judged_check_and_the_hypotheses_are_only_recorded():
+    checks = _run()
+    assert vc.judge(checks) == vc.STATUS_PASS
+    by_id = _by_id(checks)
+    assert {cid: by_id[cid]["result"] for cid in vc.JUDGED_CHECKS} == dict.fromkeys(vc.JUDGED_CHECKS, "PASS")
+    assert {cid: by_id[cid]["result"] for cid in vc.OBSERVED_CHECKS} == dict.fromkeys(vc.OBSERVED_CHECKS, "OBSERVED")
+    assert [c["check"] for c in checks][-1] == vc.CHECK_NOTHING_RESTING
+
+
+def test_a_hypothesis_can_never_fail_the_contract_even_when_a_record_calls_it_judged():
+    checks = _run()
+    forged = [dict(c, result="FAIL", judged=True) if c["check"] in vc.OBSERVED_CHECKS else c for c in checks]
+    assert vc.judge(forged) == vc.STATUS_PASS
+
+
+def test_one_judged_failure_fails_and_one_unanswered_judged_check_decides_nothing():
+    checks = _run()
+    failed = [dict(c, result="FAIL") if c["check"] == vc.CHECK_LEVERAGE else c for c in checks]
+    assert vc.judge(failed) == vc.STATUS_FAIL
+    unasked = [dict(c, result="UNVERIFIED") if c["check"] == vc.CHECK_POSITION_MODE else c for c in checks]
+    assert vc.judge(unasked) == vc.STATUS_UNVERIFIED
+    assert vc.judge([c for c in checks if c["check"] != vc.CHECK_EXCHANGE_INFO]) == vc.STATUS_UNVERIFIED
+
+
+# --- exchangeInfo -------------------------------------------------------------------------------
+
+def test_exchange_info_records_the_price_band_the_filter_reader_does_not_use():
+    check = vc.check_exchange_info(_exchange_info(), SYMBOLS)
+    assert check["result"] == "PASS"
+    symbols = check["observed"]["symbols"]
+    assert symbols["BTCUSDT"]["percent_price"] == {"up": 1.05, "down": 0.95}
+    assert symbols["DOGEUSDT"]["percent_price"] == {"up": 1.1, "down": 0.9}
+    assert symbols["BTCUSDT"]["tick_size"] == 0.1 and symbols["BTCUSDT"]["min_notional"] == 50.0
+    # Still listed 2026-09-19, which is exactly why this check could not have caught 2026-08-02.
+    assert "STOP_MARKET" in symbols["BTCUSDT"]["order_types"]
+
+
+@pytest.mark.parametrize("change,problem", [
+    ({"status": "BREAK"}, "status 'BREAK'"),
+    ({"contractType": "CURRENT_QUARTER"}, "contractType"),
+    ({"marginAsset": "BTC"}, "marginAsset"),
+    ({"orderTypes": ["MARKET", "STOP_MARKET"]}, "no order type LIMIT"),
+    ({"timeInForce": ["IOC"]}, "no GTC"),
+    ({"filters": [{"filterType": "PRICE_FILTER", "tickSize": "0.10"}]}, "filters:"),
+])
+def test_a_listing_this_runtime_cannot_trade_on_fails(change, problem):
+    payload = _exchange_info()
+    payload["symbols"][0].update(change)
+    check = vc.check_exchange_info(payload, SYMBOLS)
+    assert check["result"] == "FAIL"
+    assert any(problem in p for p in check["observed"]["problems"]["BTCUSDT"])
+
+
+def test_an_unlisted_symbol_and_a_shapeless_payload_fail_but_an_unread_one_is_unverified():
+    assert vc.check_exchange_info(_exchange_info(), ["XRPUSDT"])["observed"]["problems"] == {"XRPUSDT": ["not listed"]}
+    assert vc.check_exchange_info({"rateLimits": []}, SYMBOLS)["result"] == "FAIL"
+    unread = vc.check_exchange_info(None, SYMBOLS, failure={"error": "TOOL_TRANSPORT"})
+    assert unread["result"] == "UNVERIFIED"
+
+
+# --- the -4120 ----------------------------------------------------------------------------------
+
+def test_the_probe_is_the_measured_shape_and_the_validator_routes_it_to_the_order_api():
+    probe = vc.legacy_conditional_probe("BTCUSDT", stop_price=54000.0, client_id="TAI_VC_C_0123456789abcdef")
+    assert tuple(probe) == vc.LEGACY_CONDITIONAL_PROBE_KEYS
+    assert "algoType" not in probe and probe["closePosition"] == "true" and probe["type"] == "STOP_MARKET"
+    assert live_execution.is_algo_request(probe) is False
+
+    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    sent = []
+
+    def signed(method, path, params, *, timeout_seconds):
+        sent.append((method, path))
+        return live_execution._SignedAnswer({"code": -4120, "msg": MOVED["msg"]}, -4120, 400)
+
+    adapter._signed_request = signed
+    assert adapter.validate_order(probe) == {"accepted": False, "code": -4120, "msg": MOVED["msg"]}
+    assert sent == [("POST", live_execution.ORDER_TEST_PATH)]
+
+
+@pytest.mark.parametrize("answer,result", [
+    (MOVED, "PASS"),
+    ({"accepted": True, "code": None, "msg": None}, "FAIL"),              # the order API takes it again
+    ({"accepted": False, "code": -1104, "msg": "Not all sent parameters were read"}, "FAIL"),
+    ({"accepted": False, "code": -1003, "msg": "Too many requests"}, "UNVERIFIED"),   # could not ask
+    ({"accepted": False, "code": -1021, "msg": "Timestamp outside recvWindow"}, "UNVERIFIED"),
+    ({"accepted": False, "code": -2015, "msg": "Invalid API-key"}, "UNVERIFIED"),
+    ({"accepted": None, "code": None, "msg": None, "supported": False}, "UNVERIFIED"),
+])
+def test_only_a_business_answer_judges_the_migration(answer, result):
+    assert vc.check_conditional_refused(answer)["result"] == result
+
+
+def test_a_probe_that_could_not_be_sent_is_unverified():
+    assert vc.check_conditional_refused(None, failure={"error": "ORDER_TRANSPORT"})["result"] == "UNVERIFIED"
+    checks = _run(_Adapter(fail={"validate_order"}))
+    assert _by_id(checks)[vc.CHECK_CONDITIONAL_REFUSED]["result"] == "UNVERIFIED"
+    assert vc.judge(checks) == vc.STATUS_UNVERIFIED
+
+
+# --- leverage and position mode -----------------------------------------------------------------
+
+def test_leverage_at_or_below_the_backtests_passes_and_above_fails():
+    stale = float(account_store.STALE_AFTER_SECONDS)
+    check = vc.check_leverage(_snapshot(SOLUSDT=3.0), SYMBOLS, now=NOW, max_leverage=5.0, stale_after_seconds=stale)
+    assert check["result"] == "PASS"
+    above = vc.check_leverage(_snapshot(DOGEUSDT=20.0), SYMBOLS, now=NOW, max_leverage=5.0, stale_after_seconds=stale)
+    assert above["result"] == "FAIL" and "DOGEUSDT 20x" in above["detail"]
+    assert paper.ASSUMED_LEVERAGE == 5   # decision 45's bound is the backtests' own number
+
+
+@pytest.mark.parametrize("snapshot", [
+    None,
+    {"as_of": "2026-09-19T01:00:00Z", "configured_leverage": {s: 5.0 for s in SYMBOLS}},   # older than 2h
+    {"as_of": "2026-09-19T07:00:00Z", "degraded": True, "configured_leverage": {}},
+    {"as_of": "2026-09-19T07:00:00Z", "configured_leverage": {"BTCUSDT": 5.0}},            # others unreported
+])
+def test_leverage_the_account_did_not_currently_state_is_unverified(snapshot):
+    check = vc.check_leverage(snapshot, SYMBOLS, now=NOW, max_leverage=5.0,
+                              stale_after_seconds=float(account_store.STALE_AFTER_SECONDS))
+    assert check["result"] == "UNVERIFIED"
+
+
+def test_hedge_mode_fails_and_an_unanswered_mode_is_unverified_even_on_a_404():
+    assert _by_id(_run(_Adapter(hedge=True)))[vc.CHECK_POSITION_MODE]["result"] == "FAIL"
+    assert vc.check_position_mode(None, failure={"error": "ORDER_TRANSPORT", "http_status": 404})["result"] == "UNVERIFIED"
+    assert vc.check_position_mode("false")["result"] == "UNVERIFIED"
+
+
+def test_the_position_mode_read_never_reads_an_unclear_answer_as_one_way():
+    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    answers = iter([({"dualSidePosition": False}, None), ({"dualSidePosition": True}, None), ({}, None),
+                    ({"code": -2015, "msg": "Invalid API-key"}, -2015)])
+    sent = []
+
+    def signed(method, path, params, *, timeout_seconds):
+        sent.append((method, path, dict(params)))
+        body, code = next(answers)
+        return live_execution._SignedAnswer(body, code, 401 if code else None)
+
+    adapter._signed_request = signed
+    assert adapter.position_mode() is False
+    assert adapter.position_mode() is True
+    with pytest.raises(ToolError) as malformed:
+        adapter.position_mode()
+    assert malformed.value.reason_code == "ORDER_MALFORMED_RESULT"
+    with pytest.raises(ToolError) as refused:
+        adapter.position_mode()
+    assert refused.value.data == {"venue_code": -2015, "http_status": 401}
+    assert {(m, p) for m, p, _ in sent} == {("GET", live_execution.POSITION_MODE_PATH)}
+
+
+# --- what the sentinel sends, and what it leaves ------------------------------------------------
+
+def test_the_sentinel_asks_only_through_the_validator_and_the_reads():
+    adapter = _Adapter()
+    _run(adapter)
+    assert {call[0] for call in adapter.calls} == {
+        "validate_order", "position_mode", "fetch_order", "open_orders", "algo_open_orders"}
+    sent_ids = [c[1].get("newClientOrderId") or c[1].get("clientAlgoId") for c in adapter.calls if c[0] == "validate_order"]
+    queried_ids = [c[1] for c in adapter.calls if c[0] == "fetch_order"]
+    assert sent_ids and all(i.startswith(vc.SENTINEL_ID_PREFIX) for i in sent_ids + queried_ids)
+    assert all(live_execution.CLIENT_ORDER_ID_PATTERN.match(i) for i in sent_ids + queried_ids)
+    # One-way mode and every entry request are the runtime's own: no positionSide, built by the builder.
+    entries = [c[1] for c in adapter.calls if c[0] == "validate_order" and c[1].get("type") == "MARKET"]
+    assert [e["symbol"] for e in entries] == SYMBOLS
+    assert all("positionSide" not in e and e["reduceOnly"] is False for e in entries)
+
+
+def test_the_module_imports_and_calls_nothing_that_can_place_or_cancel():
+    source = Path(vc.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called = {node.func.attr for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and isinstance(node.func.value, ast.Name) and node.func.value.id == "adapter"}
+    assert called == {"validate_order", "position_mode", "fetch_order", "open_orders", "algo_open_orders"}
+    forbidden = {"submit", "cancel_order", "submit_and_reconcile", "place_bracket_leg", "_signed_request",
+                 "execute_live_entry", "ApiErrorRecordingAdapter"}
+    names = ({n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+             | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+             | {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names})
+    assert not names & forbidden, sorted(names & forbidden)
+
+
+def test_an_order_the_validator_left_resting_fails_and_the_runtimes_own_legs_do_not():
+    own = [{"clientOrderId": "TAI_BTCUSDT_TP_764f36ae2ac555eeeb", "symbol": "BTCUSDT"}]
+    assert _by_id(_run(_Adapter(resting=own)))[vc.CHECK_NOTHING_RESTING]["result"] == "PASS"
+    left = _run(_Adapter(algo_resting=[{"clientAlgoId": "TAI_VC_C_b60d4eca1c4f5e7d", "symbol": "BTCUSDT"}]))
+    check = _by_id(left)[vc.CHECK_NOTHING_RESTING]
+    assert check["result"] == "FAIL" and check["observed"]["sentinel_left"] == ["TAI_VC_C_b60d4eca1c4f5e7d"]
+    assert vc.judge(left) == vc.STATUS_FAIL
+    unread = _run(_Adapter(fail={"algo_open_orders"}))
+    assert _by_id(unread)[vc.CHECK_NOTHING_RESTING]["result"] == "UNVERIFIED"
+
+
+def test_the_hypotheses_record_what_the_venue_answered():
+    by_id = _by_id(_run())
+    entry = by_id[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]["BTCUSDT"]
+    assert entry == {"quantity": 0.001, "accepted": True, "code": None, "msg": None}
+    legs = by_id[vc.CHECK_TARGET_TEST]["observed"]["legs"]
+    assert (legs["LONG_TP"]["side"], legs["SHORT_TP"]["side"]) == ("SELL", "BUY")
+    assert legs["LONG_TP"]["price_over_reference"] == pytest.approx(1.10)
+    assert by_id[vc.CHECK_ALGO_QUERY]["observed"] == {"answer": "not_found"}
+
+
+def test_the_target_request_is_the_runtimes_reduce_only_limit_beyond_the_band():
+    adapter = _Adapter()
+    _run(adapter)
+    limits = [c[1] for c in adapter.calls if c[0] == "validate_order" and c[1].get("type") == "LIMIT"]
+    assert [(r["side"], r["price"]) for r in limits] == [("SELL", 66000.0), ("BUY", 54000.0)]
+    assert all(r["reduceOnly"] is True and r["timeInForce"] == "GTC" for r in limits)
+
+
+# --- the budget ---------------------------------------------------------------------------------
+
+class _Clock:
+    """Seconds pass only when a call is made."""
+
+    def __init__(self, per_call, adapter):
+        self.t = 0.0
+        self.per_call = per_call
+        self.adapter = adapter
+        self.seen = 0
+
+    def __call__(self):
+        if len(self.adapter.calls) > self.seen:
+            self.t += self.per_call * (len(self.adapter.calls) - self.seen)
+            self.seen = len(self.adapter.calls)
+        return self.t
+
+
+def test_a_slow_venue_skips_the_hypotheses_and_still_reaches_a_decision():
+    adapter = _Adapter()
+    checks = _run(adapter, clock=_Clock(3.0, adapter))
+    assert vc.judge(checks) == vc.STATUS_PASS
+    entries = _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]
+    assert any(v == {"error": "RUN_BUDGET_SPENT"} for v in entries.values())
+    assert [c[0] for c in adapter.calls][-2:] == ["open_orders", "algo_open_orders"]
+
+
+def test_a_budget_spent_before_the_judged_checks_decides_nothing():
+    adapter = _Adapter()
+    checks = _run(adapter, clock=_Clock(20.0, adapter))
+    assert vc.judge(checks) == vc.STATUS_UNVERIFIED
+    assert len(adapter.calls) == 1
+
+
+# --- the two files ------------------------------------------------------------------------------
+
+@pytest.fixture
+def _scope(monkeypatch):
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
+
+
+def _write_snapshot(root, **leverage):
+    path = account_store.snapshot_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_snapshot(**leverage)), encoding="utf-8")
+
+
+def _refresh(root, adapter, **kwargs):
+    return vc.refresh_verification(collector=_Collector(), now=kwargs.pop("now", NOW), root=root, adapter=adapter,
+                                   **kwargs)
+
+
+def test_a_decided_run_is_recorded_and_reads_back_usable(tmp_path, _scope):
+    _write_snapshot(tmp_path)
+    assert _refresh(tmp_path, _Adapter()) == "venue contract: PASS"
+    record = vc.read_verification(tmp_path)
+    assert record["status"] == "PASS" and record["contract_version"] == vc.CONTRACT_VERSION
+    assert record["not_verified"] == list(vc.NOT_VERIFIED)
+    status = vc.verification_status(tmp_path, now="2026-09-19T12:00:00Z")
+    assert status["usable"] is True and status["stale"] is False
+    assert vc.read_refresh_mark(tmp_path)["outcome"] == vc.OUTCOME_DECIDED
+
+
+def test_a_run_that_could_not_ask_keeps_the_decided_record_and_moves_only_the_mark(tmp_path, _scope):
+    _write_snapshot(tmp_path)
+    _refresh(tmp_path, _Adapter())
+    before = vc.contract_path(tmp_path).read_text(encoding="utf-8")
+    line = _refresh(tmp_path, _Adapter(fail={"position_mode", "open_orders"}), now="2026-09-19T08:10:00Z")
+    assert line.startswith("venue contract: UNVERIFIED")
+    assert vc.contract_path(tmp_path).read_text(encoding="utf-8") == before
+    mark = vc.read_refresh_mark(tmp_path)
+    assert mark["outcome"] == vc.OUTCOME_INCOMPLETE and mark["attempted_at"] == "2026-09-19T08:10:00Z"
+
+
+def test_a_violation_overwrites_a_pass_at_once(tmp_path, _scope):
+    _write_snapshot(tmp_path)
+    _refresh(tmp_path, _Adapter())
+    assert _refresh(tmp_path, _Adapter(hedge=True), now="2026-09-19T08:10:00Z") == "venue contract: FAIL (position_mode)"
+    status = vc.verification_status(tmp_path, now="2026-09-19T08:11:00Z")
+    assert (status["status"], status["usable"], status["failed_checks"]) == ("FAIL", False, ["position_mode"])
+
+
+def test_nothing_is_asked_without_live_trading_or_a_budget(tmp_path, monkeypatch):
+    adapter = _Adapter()
+    adapter.network_egress = False
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
+    assert _refresh(tmp_path, adapter) == "venue contract: not verified (live_trading_not_opted_in)"
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: [])
+    assert _refresh(tmp_path, _Adapter()) == "venue contract: not verified (no_registered_symbols)"
+    assert adapter.calls == [] and not vc.contract_path(tmp_path).exists()
+
+
+def test_without_a_live_opt_in_the_selected_adapter_is_inert_and_asked_nothing(tmp_path, _scope):
+    # conftest strips every gate opt-in: the real selector hands back the dry-run adapter.
+    line = vc.refresh_verification(collector=_Collector(), now=NOW, root=tmp_path)
+    assert line == "venue contract: not verified (live_trading_not_opted_in)"
+
+
+def test_the_symbols_are_the_valid_budgets_allowlist(tmp_path):
+    from runtime.mvp_runtime.crypto import live_budget
+
+    assert vc._registered_symbols(tmp_path, NOW) == []
+    record = live_budget.build_live_trading_budget_record(
+        caps=dict(max_order_notional_usdt=60.0, absolute_max_notional_usdt=200.0, max_daily_order_count=2,
+                  max_open_notional_usdt=120.0, daily_loss_limit_usdt=20.0),
+        symbol_allowlist=["BTCUSDT", "ETHUSDT"], registered_by="thomas", registered_at="2026-08-30T09:19:11Z")
+    live_budget.write_registered_budget(record, root=tmp_path)
+    assert vc._registered_symbols(tmp_path, NOW) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_the_refresh_never_raises(tmp_path, monkeypatch, _scope):
+    def boom(**_):
+        raise RuntimeError("anything at all")
+
+    monkeypatch.setattr(vc, "run_checks", boom)
+    assert _refresh(tmp_path, _Adapter()) == "venue contract: not verified (RuntimeError)"
+    assert vc.read_refresh_mark(tmp_path)["outcome"] == vc.OUTCOME_ERROR
+
+
+@pytest.mark.parametrize("attempted,due", [
+    (None, True), ("2026-09-19T06:16:00Z", False), ("2026-09-19T06:15:00Z", True),
+    ("2026-09-19T09:00:00Z", True), ("garbage", True),
+])
+def test_asked_about_hourly_on_a_fifteen_minute_fire(attempted, due):
+    mark = None if attempted is None else {"attempted_at": attempted}
+    assert vc.is_due(mark, NOW) is due
+    assert vc.REFRESH_AFTER_SECONDS < 3600 and vc.MAX_AGE_SECONDS == 6 * 3600
+
+
+def test_only_a_decided_verification_can_be_recorded():
+    with pytest.raises(ToolError) as refused:
+        vc.build_record(status=vc.STATUS_UNVERIFIED, checks=_run(), symbols=SYMBOLS, now=NOW)
+    assert refused.value.reason_code == vc.VENUE_CONTRACT_INVALID
+
+
+# --- the verified read --------------------------------------------------------------------------
+
+def _stored(tmp_path, record):
+    path = vc.contract_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_a_pass_stands_six_hours_and_only_for_this_contract_version(tmp_path):
+    record = vc.build_record(status="PASS", checks=_run(), symbols=SYMBOLS, now=NOW)
+    _stored(tmp_path, record)
+    assert vc.verification_status(tmp_path, now="2026-09-19T13:10:00Z")["usable"] is True
+    assert vc.verification_status(tmp_path, now="2026-09-19T13:10:01Z")["stale"] is True
+    assert vc.verification_status(tmp_path, now="2026-09-19T07:06:00Z")["usable"] is True   # clocks disagree a little
+    assert vc.verification_status(tmp_path, now="2026-09-19T07:04:00Z")["usable"] is False  # not ten minutes ahead
+    older = dict(record, contract_version="binance_futures_contract.v0")
+    older["record_sha256"] = __import__("runtime.read_only_kernel.integrity", fromlist=["x"]).sha256_record(
+        {k: v for k, v in older.items() if k != "record_sha256"})
+    _stored(tmp_path, older)
+    status = vc.verification_status(tmp_path, now=NOW)
+    assert (status["version_current"], status["usable"]) == (False, False)
+
+
+def test_a_record_that_cannot_prove_itself_is_refused(tmp_path):
+    from runtime.read_only_kernel import integrity
+
+    failed = vc.build_record(status="FAIL", checks=_run(_Adapter(hedge=True)), symbols=SYMBOLS, now=NOW)
+    _stored(tmp_path, dict(failed, status="PASS"))
+    with pytest.raises(ToolError) as tampered:
+        vc.verification_status(tmp_path, now=NOW)
+    assert tampered.value.reason_code == vc.VENUE_CONTRACT_TAMPERED
+
+    invalid = dict(failed, status="MAYBE")
+    invalid["record_sha256"] = integrity.sha256_record({k: v for k, v in invalid.items() if k != "record_sha256"})
+    _stored(tmp_path, invalid)
+    with pytest.raises(ToolError) as schema:
+        vc.read_verification(tmp_path)
+    assert schema.value.reason_code == vc.VENUE_CONTRACT_INVALID
+
+    vc.contract_path(tmp_path).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ToolError) as unreadable:
+        vc.read_verification(tmp_path)
+    assert unreadable.value.reason_code == vc.VENUE_CONTRACT_UNREADABLE
+
+
+def test_none_recorded_is_not_usable_and_raises_nothing(tmp_path):
+    status = vc.verification_status(tmp_path, now=NOW)
+    assert (status["recorded"], status["usable"]) == (False, False)
+
+
+# --- what it is not -----------------------------------------------------------------------------
+
+def test_the_record_is_never_execution_stage_evidence():
+    """Decision 3: `/order/test` does not stand in for the signed testnet cycle."""
+    repo = Path(vc.__file__).resolve().parents[3]
+    for rel in ("runtime/mvp_runtime/crypto/execution_stage.py", "scripts/register_execution_stage.py",
+                "runtime/mvp_runtime/crypto/testnet_evidence.py"):
+        text = (repo / rel).read_text(encoding="utf-8")
+        assert "venue_contract" not in text, rel
+
+
+def test_the_sentinel_is_not_a_door_the_api_breaker_counts():
+    """Decision 27 counts the money path's signed calls; the sentinel asks the raw adapter."""
+    from runtime.mvp_runtime.crypto import live_order
+
+    assert "position_mode" not in live_order.API_ADAPTER_CALLS
+    assert "select_live_api_breaker" not in Path(vc.__file__).read_text(encoding="utf-8")
+
+
+# --- the board and the fire ---------------------------------------------------------------------
+
+def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_path, _scope):
+    from runtime.mvp_runtime.crypto import live_readiness
+
+    _write_snapshot(tmp_path)
+    _refresh(tmp_path, _Adapter(hedge=True))
+    board = live_readiness._venue_contract(tmp_path, now="2026-09-19T07:20:00Z")
+    line = live_readiness._venue_contract_line({"venue_contract": board})
+    assert "FAIL (failed: position_mode)" in line and "not usable" in line and "last attempt" in line
+    data = live_readiness.readiness_data({"venue_contract": board})
+    assert data["venue_contract"]["usable"] is False and data["venue_contract"]["status"] == "FAIL"
+    vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    assert "UNREADABLE - VENUE_CONTRACT_UNREADABLE" in live_readiness._venue_contract_line(
+        {"venue_contract": live_readiness._venue_contract(tmp_path, now=NOW)})
+    assert "none recorded" in live_readiness._venue_contract_line({})
+
+
+def test_the_pipeline_fire_asks_after_its_cycles_and_only_when_due(tmp_path, monkeypatch):
+    """The fire appends the sentinel's line after the account refresh's, only when due."""
+    source = (Path(vc.__file__).resolve().parents[1] / "scheduler.py").read_text(encoding="utf-8")
+    assert source.count("_refresh_venue_contract(_refresh_funds(") == 2
+    tree = ast.parse(source)
+    hook = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_refresh_venue_contract")
+    calls = {ast.unparse(n.func) for n in ast.walk(hook) if isinstance(n, ast.Call)}
+    assert {"venue_contract.is_due", "venue_contract.read_refresh_mark", "venue_contract.refresh_verification"} <= calls

@@ -1452,6 +1452,18 @@ def _execute(
                 return line
             return f"{line} {account_store.refresh_snapshot(now=now, root=repo_root)}"
 
+        # The venue contract sentinel (PR4a, Thomas decisions 43-44): at most hourly, asks the
+        # exchange whether what this runtime assumes about it still holds. Here for the account
+        # refresh's reason — this lane holds the venue keys — and after it, so the leverage check
+        # reads the snapshot this fire just wrote; after the cycles, so no entry, settlement or
+        # protective re-assert of this fire waits on it. Never raises; a no-op when not due.
+        def _refresh_venue_contract(line: str) -> str:
+            from .crypto import venue_contract
+
+            if not venue_contract.is_due(venue_contract.read_refresh_mark(repo_root), now):
+                return line
+            return f"{line} {venue_contract.refresh_verification(collector=collector, now=now, root=repo_root)}"
+
         from .crypto.cycle import (
             PIPELINE_STALLED,
             cycle_is_stalled,
@@ -1496,7 +1508,7 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            status = _refresh_funds(cycle_status_line(record))
+            status = _refresh_venue_contract(_refresh_funds(cycle_status_line(record)))
             if cycle_is_stalled(record, schedule.last_status):
                 raise SchedulerBlocked(PIPELINE_STALLED, (
                     f"crypto pipeline has degraded for two consecutive fires; "
@@ -1513,7 +1525,7 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        status = _refresh_funds(pool_cycle_status_line(summary))
+        status = _refresh_venue_contract(_refresh_funds(pool_cycle_status_line(summary)))
         if pool_cycle_is_stalled(summary, schedule.last_status):
             raise SchedulerBlocked(PIPELINE_STALLED, (
                 f"crypto pipeline has degraded across all contexts for two consecutive fires; "

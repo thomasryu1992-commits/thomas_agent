@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "venue_contract_verification.v0.1.schema.json",
+  "title": "Venue Contract Verification v0.1",
+  "description": "The last DECIDED verification of what this runtime assumes about the exchange, asked of the exchange itself by the venue contract sentinel (crypto PR4a, Thomas decisions 43-46): exchangeInfo, the -4120 that says conditional orders live on the Algo API, the account's position mode and leverage, and that the validator left nothing resting. Written by the pipeline fire that holds the venue keys, at most hourly; a run that could not decide never writes one. Self-hashed. Only judged checks decide the status; observed checks record the host's answers to hypotheses. What no check here can show is listed in not_verified.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_type",
+    "contract_version",
+    "venue",
+    "status",
+    "verified_at",
+    "symbols",
+    "failed_checks",
+    "checks",
+    "not_verified",
+    "record_sha256"
+  ],
+  "properties": {
+    "record_type": {
+      "const": "venue_contract_verification.v0.1"
+    },
+    "contract_version": {
+      "description": "The runtime's contract definition this verification was judged against. A record of another version never authorizes an entry.",
+      "type": "string",
+      "pattern": "^binance_futures_contract\\.v[0-9]+$"
+    },
+    "venue": {
+      "enum": [
+        "binance_futures"
+      ]
+    },
+    "status": {
+      "description": "Only a decided verification is recorded: PASS when every judged check passed, FAIL when one failed.",
+      "enum": [
+        "PASS",
+        "FAIL"
+      ]
+    },
+    "verified_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "symbols": {
+      "description": "The registered budget's symbol allowlist the verification covered.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9]{5,20}$"
+      }
+    },
+    "failed_checks": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "exchange_info",
+          "conditional_type_refused_on_order_api",
+          "configured_leverage",
+          "position_mode",
+          "nothing_left_resting",
+          "order_test_market_entry",
+          "order_test_target_limit",
+          "order_query_unknown_id",
+          "algo_query_unknown_id"
+        ]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check",
+          "judged",
+          "result",
+          "expected",
+          "observed",
+          "detail"
+        ],
+        "properties": {
+          "check": {
+            "enum": [
+              "exchange_info",
+              "conditional_type_refused_on_order_api",
+              "configured_leverage",
+              "position_mode",
+              "nothing_left_resting",
+              "order_test_market_entry",
+              "order_test_target_limit",
+              "order_query_unknown_id",
+              "algo_query_unknown_id"
+            ]
+          },
+          "judged": {
+            "type": "boolean"
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "UNVERIFIED",
+              "OBSERVED"
+            ]
+          },
+          "expected": {
+            "type": "string"
+          },
+          "observed": {
+            "description": "What the venue answered, as facts (codes, counts, filters) — never a raw body, a credential or a signed URL.",
+            "type": "object"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "not_verified": {
+      "description": "What no check here can show, stated in every record so a PASS never reads as more than it is.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "record_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
