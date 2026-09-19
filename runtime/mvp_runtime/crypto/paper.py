@@ -48,7 +48,7 @@ from ..paths import RESERVED_BASENAMES, repo_root as _repo_root
 from ..safety_gate import FILESYSTEM_WRITE, Authorization
 from . import cost as costs
 from .distribution_gate import distribution_admits
-from .candidate_identity import entry_attribution_keys, outcome_attribution_key
+from .candidate_identity import PREDECESSOR_KEYS_FIELD, entry_attribution_keys, outcome_attribution_key
 from .strategy import StrategySpec, evaluate_spec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
 
@@ -414,8 +414,9 @@ def _realized_evidence(
 
     ``realized_stats`` is keyed by lineage (`feedback.realized_by_lineage`, Thomas decision 35).
     The match reads every key an outcome of its entry may carry across three eras of
-    record-keeping (`candidate_identity.entry_attribution_keys`), as the lifecycle does, and the
-    groups it finds are one record: an outcome carries exactly one key, so they never overlap.
+    record-keeping, and those of the entries it replaced (PR3c, Thomas decision 41)
+    (`candidate_identity.entry_attribution_keys`), as the lifecycle does, and the groups it finds
+    are one record: an outcome carries exactly one key, so they never overlap.
     Keyed by the display id, a lineage that reused another's id inherited its record, and one
     renamed lost its own.
 
@@ -610,6 +611,10 @@ def route_entries(
                 # plan, position, outcome, shadow, forward, the live order and its snapshot — so a
                 # result names the strategy that produced it whole, not only its rule (PR3a-2).
                 ARTIFACT_SHA256_FIELD: entry.get(ARTIFACT_SHA256_FIELD),
+                # The lineages this entry replaced (PR3c, Thomas decision 41): the realized record
+                # it is ranked on is theirs too. Read by `_realized_evidence` alone; no record
+                # carries it — an outcome names its own lineage.
+                PREDECESSOR_KEYS_FIELD: entry.get(PREDECESSOR_KEYS_FIELD),
                 "direction": result.direction,
                 "champion_score": entry.get("champion_score"),
                 "spec": spec,

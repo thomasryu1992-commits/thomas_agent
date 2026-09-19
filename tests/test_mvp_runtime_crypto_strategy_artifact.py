@@ -147,7 +147,9 @@ def test_what_the_artifact_leaves_out_does_not_move_it(tmp_path):
     moved = {**entry, "strategy_id": "S1-GEN-001", "status": "SUSPENDED",
              "lifecycle_consecutive_failures": 3, "lifecycle_reasons": ["x"],
              pool.LIVE_TIER_FIELD: pool.LIVE_TIER_LIVE, pool.LIVE_TIER_APPROVAL_FIELD: "appr_1",
-             "live_tier_updated_at": NOW, "promoted_by": "someone", "promoted_at": NOW}
+             "live_tier_updated_at": NOW, "promoted_by": "someone", "promoted_at": NOW,
+             # What the entry inherited is the pool's fact, bound by the approval (PR3c).
+             "predecessor_lineage_keys": ["cand:cand_retired", "gen:GEN-000:deadbeef"]}
     assert artifact_mod.entry_artifact_problem(moved) is None
 
 

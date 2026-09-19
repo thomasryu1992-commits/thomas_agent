@@ -56,7 +56,7 @@ from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
 from . import guards
-from .candidate_identity import entry_attribution_keys, is_lineage_key, outcome_attribution_key
+from .candidate_identity import is_lineage_key, precise_lineage_keys
 from .guards import RiskLimits
 from .live_pnl import state_dir
 
@@ -96,12 +96,13 @@ def seal_drawdown_exclusion(names: Sequence[str], pool: Mapping[str, Any]) -> li
     decisions 37 and 39).
 
     A display id is replaced by the keys that name the lineage holding it
-    (`candidate_identity.entry_attribution_keys`): its candidate and its generation and rule hash.
-    Not its display id (``sid:``), which would keep display-id matching alive for rows that carry
-    no lineage — another lineage's old rows under the same name would leave with it, and its own
-    old rows would stay out when it is installed again under another name (review of PR3b-3). An
-    entry that names neither is sealed by its display id, the one key it has. So a row with no
-    lineage fields stays in the window unless its ``sid:`` key is named on purpose.
+    (`candidate_identity.precise_lineage_keys`): its candidate and its generation and rule hash,
+    and the keys it inherited from the entries it replaced (PR3c, Thomas decision 41). Not its
+    display id (``sid:``), which would keep display-id matching alive for rows that carry no
+    lineage — another lineage's old rows under the same name would leave with it, and its own old
+    rows would stay out when it is installed again under another name (review of PR3b-3). An entry
+    that names neither is sealed by its display id, the one key it has. So a row with no lineage
+    fields stays in the window unless its ``sid:`` key is named on purpose.
 
     A lineage key passes through unchecked, which is how a lineage no longer in the pool is named.
     An id the pool does not hold is refused: its lineage cannot be sealed."""
@@ -120,8 +121,7 @@ def seal_drawdown_exclusion(names: Sequence[str], pool: Mapping[str, Any]) -> li
                 f"{name!r} names no pool entry, so its lineage cannot be sealed; name it by a lineage "
                 "key (cand:<candidate id>, gen:<generation>:<rule hash>, sid:<display id>)",
             )
-        keys = {key for key in entry_attribution_keys(entry) if not key.startswith("sid:")}
-        sealed.update(keys or {outcome_attribution_key(entry)})
+        sealed.update(precise_lineage_keys(entry))
     return sorted(sealed)
 
 

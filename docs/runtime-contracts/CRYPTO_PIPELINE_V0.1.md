@@ -224,8 +224,8 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
 - **The live allowance** (decision 38, PR3b-1): an armed display id with no pool entry to name its
   lineage falls back to `sid:<display id>`; it was `id:`, which no outcome key equals. The fallback is
   unreachable from the cycle today, which hands the pool read its armed set came from. The allowance
-  reads an entry's own key, not all three: live outcomes carry a candidate id since 2026-07-26, and
-  only stamped entries can be armed.
+  reads an entry's own key and what it inherited (PR3c-1, below), not all three eras: live outcomes
+  carry a candidate id since 2026-07-26, and only stamped entries can be armed.
 - **Lifecycle decisions** (decision 36, PR3b-2): each decision names what it judged, the lineage
   (`candidate_identity.lineage_of`: candidate, generation, rule hash) and the status, and so does
   an operator retirement. The locked pool write (`pool.apply_status_decisions`) finds a decision
@@ -257,6 +257,22 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
     excluded. Re-register the rebase by display id for that image, or remove the record.
   - A record from before names display ids, still judged by display id. On 2026-09-18 no record is
     registered on the host, and no command registers a rebase: the block is built in code.
+- **Inherited records** (decision 41, PR3c-1): an entry the promotion door installs in a retired
+  rule's place accepts the keys of the entries it replaced (`candidate_identity.PREDECESSOR_KEYS_FIELD`:
+  their candidate and generation keys, a display-id key only for an entry with neither, and what they
+  had inherited), so the rule keeps one record. The lifecycle judges it on that record, the router
+  ranks it by it, the live allowance charges it (its own key and what it inherited, read in the
+  order the rows closed), and the drawdown guard counts those keys as routable (a sealed
+  predecessor's losses come back while its successor routes).
+  - Keys, not candidate ids: 41 of the pool's 121 entries (2026-09-19) have none, and their record
+    keys on `gen:`.
+  - The pool refuses, at install and on read, an inheritance that is not a list of lineage keys, and
+    a `cand:` or `gen:` key inherited by two entries or held by another entry as its own. Two
+    entries' own keys are not compared: S008 and S008-GEN-696 share `gen:GEN-696:…` today, and
+    stay (decision 42).
+  - The strategy artifact does not cover the field, a fact about the pool like `status`; the
+    promotion approval that writes it binds it (PR3c-2). No entry carries it until that door writes
+    one.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or
