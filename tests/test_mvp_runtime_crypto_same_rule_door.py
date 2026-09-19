@@ -145,7 +145,7 @@ def test_a_new_rule_promotes_as_before(tmp_path):
     """The inverse pin: nothing is replaced, nothing inherited, nothing reactivated."""
     summary = _promote(tmp_path, _seed(tmp_path, generation="GEN-001"))
     [entry] = _entries(tmp_path)
-    assert PREDECESSOR_KEYS_FIELD not in entry
+    assert PREDECESSOR_KEYS_FIELD not in entry and "lifecycle_consecutive_failures" not in entry
     assert summary["replaced_entries"] == [] and summary["reactivated"] == []
 
 
@@ -198,6 +198,33 @@ def test_replace_mode_records_what_a_returning_rule_replaced(tmp_path):
     _promote(tmp_path, twin, keep_active=False, allow_reactivation=True)
     [entry] = _entries(tmp_path)
     assert f"cand:{first['candidate_id']}" in entry[PREDECESSOR_KEYS_FIELD]
+
+
+def test_a_restate_keeps_what_an_entry_inherited(tmp_path):
+    """Review of PR3c-1: replace mode rebuilds every entry from its candidate row, which carries no
+    inheritance, and arming a successor LIVE goes through such a restate. Its record survives it."""
+    first = _seed(tmp_path, generation="GEN-001")
+    _promote(tmp_path, first)
+    _retire(tmp_path)
+    twin = _seed(tmp_path, generation="GEN-002")
+    _promote(tmp_path, twin, allow_reactivation=True)
+    [entry] = _entries(tmp_path)
+    _promote(tmp_path, twin, keep_active=False)                  # re-list it alone
+    [restated] = _entries(tmp_path)
+    assert restated[PREDECESSOR_KEYS_FIELD] == entry[PREDECESSOR_KEYS_FIELD]
+    assert f"cand:{first['candidate_id']}" in restated[PREDECESSOR_KEYS_FIELD]
+
+
+def test_a_returning_rule_keeps_the_longest_failure_streak(tmp_path):
+    """Review of PR3c-1: a rule the lifecycle suspended after three failing evaluations comes back
+    at three, not at nothing — the next failing evaluation suspends it again, as it would have."""
+    first = _seed(tmp_path, generation="GEN-001")
+    _promote(tmp_path, first)
+    _set_status(tmp_path, "S1", "SUSPENDED", lifecycle_consecutive_failures=3,
+                lifecycle_reasons=["suspend_conditions_met"])
+    _promote(tmp_path, _seed(tmp_path, generation="GEN-002"), allow_reactivation=True)
+    [entry] = _entries(tmp_path)
+    assert entry["lifecycle_consecutive_failures"] == 3
 
 
 def test_a_chain_of_returns_inherits_every_predecessor(tmp_path):

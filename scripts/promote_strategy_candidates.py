@@ -61,7 +61,7 @@ from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod  # noqa: E402
 from runtime.mvp_runtime.crypto.candidate_identity import (  # noqa: E402
-    PREDECESSOR_KEYS_FIELD, precise_lineage_keys,
+    PREDECESSOR_KEYS_FIELD, precise_lineage_keys, predecessor_keys,
 )
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.events import stamped_event  # noqa: E402
@@ -240,6 +240,22 @@ def run_promotion(
     replaced = {c["candidate_id"]: pool_store.replaced_entries(c, on_disk) for c in candidates}
     leaving = {id(e) for found in replaced.values() for e in found}
     entries = [e for e in entries if id(e) not in leaving]
+    # What each new entry inherits: the keys naming what it replaces, and what an entry re-listed in
+    # replace mode had already inherited — its candidate row carries none, and a restate (arming it
+    # LIVE goes through one) must not drop its record (review of PR3c-1).
+    on_disk_by_cid = {e.get("candidate_id"): e for e in on_disk if e.get("candidate_id")}
+    inherits = {
+        c["candidate_id"]: sorted(set(predecessor_keys(on_disk_by_cid.get(c["candidate_id"]) or {})).union(
+            *(precise_lineage_keys(e) for e in replaced[c["candidate_id"]])))
+        for c in candidates
+    }
+    # And the longest failure streak among what it replaces, so a returning rule the lifecycle had
+    # been demoting does not start over at nothing (review of PR3c-1).
+    carried_failures = {
+        c["candidate_id"]: max((int(e.get("lifecycle_consecutive_failures") or 0) for e in replaced[c["candidate_id"]]),
+                               default=0)
+        for c in candidates
+    }
     existing_ids = {e.get("strategy_id") for e in entries}
     existing_cids = {e.get("candidate_id") for e in entries}
     display_ids: list[str] = []
@@ -312,9 +328,9 @@ def run_promotion(
             artifact_mod.ARTIFACT_SHA256_FIELD: artifacts[c["candidate_id"]],
             # The lineages this entry replaced, whose record it is judged on with its own (PR3c,
             # decision 41): what named each, and what each had inherited. Absent when none.
-            **({PREDECESSOR_KEYS_FIELD: sorted(set().union(*(precise_lineage_keys(e)
-                                                            for e in replaced[c["candidate_id"]])))}
-               if replaced[c["candidate_id"]] else {}),
+            **({PREDECESSOR_KEYS_FIELD: inherits[c["candidate_id"]]} if inherits[c["candidate_id"]] else {}),
+            **({"lifecycle_consecutive_failures": carried_failures[c["candidate_id"]]}
+               if carried_failures[c["candidate_id"]] else {}),
             "promoted_by": promoted_by,
             "promoted_at": now,
         })
