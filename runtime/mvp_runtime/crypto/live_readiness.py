@@ -828,7 +828,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"realized today {risk['daily_realized_pnl_usdt']} USDT, "
             f"limit {risk['daily_loss_limit_usdt']} (source={risk.get('pnl_source')})"
         )
-    checks.append(_check("daily_loss_breaker", not breached and not no_source, detail))
+    checks.append({
+        **_check("daily_loss_breaker", not breached and not no_source, detail),
+        # NO DATA SOURCE only because this process reads no account is a fact about this process —
+        # the readiness state reads the trading process's snapshot instead — and a process without
+        # the live-trading environment says so on the row (`_row`, review of #907). BREACHED is a fact
+        # about the limit, and is never scoped.
+        "env_scoped": no_source and not breached and not account_configured,
+    })
 
     # 6b. The bracket breaker. Unlike the loss breaker above it always has a source: it counts
     # what this runtime's own leg did, so it reads zero only when zero is true. It is on the
@@ -1204,6 +1211,13 @@ SOURCE_THIS_PROCESS = "this_process"
 SOURCE_RECORDED = "recorded"
 NOT_REPORTED = "NOT_REPORTED"
 
+# The reasons the stall rule decides (`_majority`). A component refused on one is False for most of the
+# last fire's contexts, and a minority may still enter (`minority_may_enter`, review of #907).
+# Private: `live_route.ACCOUNT_UNREADABLE` is the leg's own code, with another value.
+_MAJORITY = "MAJORITY_"
+_LEG_BLOCKED = "LEG_BLOCKED"
+_ACCOUNT_UNREADABLE = "ACCOUNT_UNREADABLE"
+
 # The rows the entry door refuses on, read from state every process mounts, and what each is called
 # when it refuses. The pre-order snapshot row is judged apart (`_risk_component`): it also fails on a
 # record that no longer proves past orders, which the entry path does not refuse.
@@ -1458,13 +1472,13 @@ def _account_component(inputs: Mapping[str, Any], *, opted: bool) -> dict[str, A
     if account.get("source") == SOURCE_THIS_PROCESS:
         if account.get("readable"):
             return _component(True, "READ", source=SOURCE_THIS_PROCESS)
-        return _component(False, "ACCOUNT_UNREADABLE", source=SOURCE_THIS_PROCESS)
+        return _component(False, _ACCOUNT_UNREADABLE, source=SOURCE_THIS_PROCESS)
     # The trading process's own reads at its last fire decide before its snapshot does: the store keeps
     # the previous snapshot when a read fails, so a fresh snapshot is no evidence the account reads now
     # (review of #906).
     fire = _mapping(inputs.get("recorded_fire"))
     if _fire_unseen(fire) is None and _majority(fire, fire.get("account_unreadable")):
-        return _component(False, "ACCOUNT_UNREADABLE", source=SOURCE_RECORDED)
+        return _component(False, _ACCOUNT_UNREADABLE, source=SOURCE_RECORDED)
     if not account.get("recorded"):
         return _component(None, "SNAPSHOT_MISSING", source=SOURCE_RECORDED)
     if account.get("stale"):
@@ -1509,7 +1523,7 @@ def _market_data_component(status: Mapping[str, Any], inputs: Mapping[str, Any],
     refused = {kind: _count(fire.get(key)) or 0 for kind, key in _DATA_REFUSALS}
     if _majority(fire, sum(refused.values())):
         commonest = max(refused, key=lambda kind: refused[kind])
-        return _component(False, f"MAJORITY_{commonest}")
+        return _component(False, f"{_MAJORITY}{commonest}")
     return _component(True, "FRESH")
 
 
@@ -1529,8 +1543,33 @@ def _reconciliation_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
         return _component(False, "INCIDENT")
     if _majority(fire, fire.get("blocked")):
         code = fire.get("blocked_code")
-        return _component(False, f"LEG_BLOCKED_{code}" if isinstance(code, str) and code else "LEG_BLOCKED")
+        return _component(False, f"{_LEG_BLOCKED}_{code}" if isinstance(code, str) and code else _LEG_BLOCKED)
     return _component(True, "CLEAR")
+
+
+def _stall_rule_refusal(name: str, component: Mapping[str, Any]) -> bool:
+    """Whether this refusal is one of the stall rule's (`_majority`): False for most of the last fire's
+    contexts rather than for every entry. The account read counts only as the trading process recorded
+    it; this process's own failed read refuses its every entry."""
+    reason = component.get("reason")
+    if not isinstance(reason, str):
+        return False
+    if name == "market_data_ready":
+        return reason.startswith(_MAJORITY)
+    if name == "reconciliation_ready":
+        return reason == _LEG_BLOCKED or reason.startswith(_LEG_BLOCKED + "_")
+    if name == "account_ready":
+        return reason == _ACCOUNT_UNREADABLE and component.get("source") == SOURCE_RECORDED
+    return False
+
+
+def minority_may_enter(state: Mapping[str, Any]) -> bool:
+    """True when the answer is False by the stall rule alone: most of the last fire's contexts were
+    refused, and the rest may still open a position at the next cycle. Any other refusal refuses every
+    entry, and then this is False (review of #907: "no autonomous entry can open now" overclaimed)."""
+    components = _mapping(state.get("components"))
+    refused = [(name, c) for name, c in components.items() if isinstance(c, Mapping) and c.get("ok") is False]
+    return bool(refused) and all(_stall_rule_refusal(name, c) for name, c in refused)
 
 
 def readiness_state(status: Mapping[str, Any]) -> dict[str, Any]:
@@ -1698,21 +1737,29 @@ OUT_OF_SCOPE_MARK = "n/a "
 # the banner above names the command that renders the one that is.
 OUT_OF_SCOPE_DETAIL = "not observable from this container - see the banner and live_gate_recorded"
 
+# The loss breaker's own stand-in, for a row that fails NO DATA SOURCE only because this process reads
+# no account (`env_scoped` on the row): "the limit currently bounds nothing" read as a claim about the
+# system while the trading process measured it (review of #907).
+OUT_OF_SCOPE_LOSS_DETAIL = ("not observable from this container (no account feed) - risk_ready above "
+                            "reads the trading process's own snapshot")
+_OUT_OF_SCOPE_DETAILS = {"daily_loss_breaker": OUT_OF_SCOPE_LOSS_DETAIL}
+
 
 def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]:
     """``(mark, detail)`` — ``n/a`` plus a scoped detail for an env row this process cannot see.
 
     Only ever downgrades a **failure**, and only while :func:`env_out_of_scope` holds — this process
     carries no live-trading environment and no fresh record of the trading process says its gate
-    was closed. Where the money path actually runs the env is present, the predicate is False, and
-    every row reads exactly as it did before. ``status["ready"]`` and ``status["checks"]`` are
-    untouched: this is what the board SAYS, not what it permits, and a console that cannot see the
-    environment still is not READY.
+    was closed. The rows are :data:`ENV_SCOPED_CHECKS`, and any row that says its failure is this
+    process's own (``env_scoped``: the loss breaker without an account feed). Where the money path
+    actually runs the env is present, the predicate is False, and every row reads exactly as it did
+    before. ``status["ready"]`` and ``status["checks"]`` are untouched: this is what the board SAYS,
+    not what it permits, and a console that cannot see the environment still is not READY.
     """
     if check["ok"]:
         return "PASS", check["detail"]
-    if env_out_of_scope and check["check"] in ENV_SCOPED_CHECKS:
-        return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+    if env_out_of_scope and (check["check"] in ENV_SCOPED_CHECKS or check.get("env_scoped") is True):
+        return OUT_OF_SCOPE_MARK, _OUT_OF_SCOPE_DETAILS.get(check["check"], OUT_OF_SCOPE_DETAIL)
     return "FAIL", check["detail"]
 
 
@@ -1776,7 +1823,16 @@ def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     )
 
 
-_ANSWER = {True: "YES", False: "NO", None: "UNKNOWN"}
+def _record_age(recorded: Mapping[str, Any]) -> str:
+    """Why a record of the gate speaks for no now, by kind: the recorded gate's ``stale`` covers a
+    stamp over two hours old, one dated ahead of this clock and one that does not parse, and only
+    the first is an age (review of #907)."""
+    age = recorded.get("age_seconds")
+    if not isinstance(age, (int, float)) or isinstance(age, bool):
+        return "cannot be dated"
+    if age < -FUTURE_SKEW_SECONDS:
+        return "is dated ahead of this clock"
+    return "is over two hours old"
 
 
 def _named(names: list[str]) -> list[str]:
@@ -1785,8 +1841,9 @@ def _named(names: list[str]) -> list[str]:
 
 
 def _wrap(head: str, items: list[str], *, width: int = 80) -> list[str]:
-    """``items`` after ``head``, comma-separated and wrapped at ``width`` — never inside an item, so
-    a component and its reason stay on one line for a reader and for grep."""
+    """``items`` after ``head``, comma-separated and wrapped at ``width`` between items — never inside
+    one, so a component and its reason stay on one line for a reader and for grep. An item wider than
+    the room left keeps a line of its own."""
     lines: list[str] = []
     line, filled = head, False
     for index, item in enumerate(items):
@@ -1808,10 +1865,16 @@ def _readiness_lines(state: Mapping[str, Any]) -> list[str]:
     possible = state.get("live_entry_possible")
     components = state.get("components") or {}
     admitting = [name for name, c in components.items() if c.get("ok") is True]
-    lines = [f"LIVE ENTRY POSSIBLE: {_ANSWER.get(possible, 'UNKNOWN')}"
-             + {True: " - every component admits; the next cycle may open a REAL position",
-                False: " - no autonomous entry can open now",
-                None: " - nothing refuses one, but this process cannot see everything"}.get(possible, "")]
+    if possible is True:
+        head = "YES - the next cycle may open a REAL position"
+    elif possible is False and minority_may_enter(state):
+        # The stall rule's judgements alone: most contexts refused, not every one (review of #907).
+        head = "NO - for most contexts; a minority may still enter"
+    elif possible is False:
+        head = "NO - no autonomous entry can open now"
+    else:
+        head = "UNKNOWN - this process cannot see every fact it needs"
+    lines = ["LIVE ENTRY POSSIBLE: " + head]
     if state.get("blocking"):
         lines += _wrap("  blocked by : ", _named(list(state["blocking"])))
     if state.get("unknown"):
@@ -1823,15 +1886,19 @@ def _readiness_lines(state: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _live_entry_verdict(state: Mapping[str, Any]) -> list[str]:
-    """The board's last line: the answer, and why — the line a hurried reader keeps."""
+def _live_entry_verdict(state: Mapping[str, Any]) -> str:
+    """The board's last line: the answer, and why — the line a hurried reader keeps. ONE line however
+    long, the one line the board does not wrap (review of #907): wrapped, the board ended on a bare
+    `armed_strategy_count (NONE_ARMED)`. A console and Telegram wrap it for the eye; grep and a
+    reader that keeps the last line get all of it."""
     possible = state.get("live_entry_possible")
     if possible is True:
-        return ["LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"]
+        return "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"
     if possible is False:
-        return _wrap("LIVE ENTRY POSSIBLE: NO - blocked by ", _named(list(state.get("blocking") or [])))
-    return _wrap("LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see ",
-                 _named(list(state.get("unknown") or [])))
+        return ("LIVE ENTRY POSSIBLE: NO - blocked by " + ", ".join(_named(list(state.get("blocking") or [])))
+                + ("; a minority of contexts may still enter" if minority_may_enter(state) else ""))
+    return "LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see " + ", ".join(
+        _named(list(state.get("unknown") or [])))
 
 
 def render_readiness_text(status: dict[str, Any]) -> str:
@@ -1857,12 +1924,13 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     if out_of_scope:
         lines.append("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
         # What IS known about the trading process's gate, in the three states the rows cannot
-        # speak for (FC-10): a fresh OPEN record, an old record, and none.
+        # speak for (FC-10): a fresh OPEN record, an old record, and none. "Old" says which kind
+        # of old (`_record_age`): a record dated ahead of this clock is not two hours old.
         if contradicts_recorded_gate(status):
-            lines.append(f"   the trading process recorded the gate OPEN at {recorded['recorded_at']}")
+            lines.append(f"   the trading process recorded the gate OPEN at {recorded.get('recorded_at')}")
         elif recorded.get("known"):
-            lines.append(f"   the trading process's last record ({recorded.get('recorded_at')}) is over "
-                         "two hours old - not a statement about now")
+            lines.append(f"   the trading process's last record ({recorded.get('recorded_at')})")
+            lines.append(f"   {_record_age(recorded)} - not a statement about now")
         else:
             lines.append("   no record of the trading process's gate is readable here")
         lines.append("   the env rows below describe THIS container, not the system")
@@ -1907,13 +1975,13 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     elif out_of_scope:
         # Unqualified "NOT READY" here would be the same false statement the banner exists to
         # prevent. The second line states what IS known — the trading process's own record.
-        lines.append("THIS PROCESS: NOT READY (THIS PROCESS ONLY) - it carries no live-trading environment;")
+        lines.append("THIS PROCESS: NOT READY (THIS PROCESS ONLY) - no live-trading environment here;")
         if contradicts_recorded_gate(status):
             lines.append("           the system's own gate was recorded OPEN at "
-                         f"{recorded['recorded_at']}")
+                         f"{recorded.get('recorded_at')}")
         elif recorded.get("known"):
-            lines.append("           the system's last record of its gate is over two hours old "
-                         f"({recorded.get('recorded_at')})")
+            lines.append(f"           the system's last record of its gate ({recorded.get('recorded_at')})")
+            lines.append(f"           {_record_age(recorded)}")
         else:
             lines.append("           no record of the system's own gate is readable here")
     else:
@@ -1959,7 +2027,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append("NOTE  : no order path exists yet; this board cannot report READY until LP4 lands")
     # Last, because it is the line a reader keeps: the system's answer, not this process's.
     lines.append("")
-    lines += _live_entry_verdict(state)
+    lines.append(_live_entry_verdict(state))
     return "\n".join(lines)
 
 
@@ -1969,12 +2037,19 @@ def main(argv: list[str] | None = None) -> int:
         description="Live-trading readiness board (read-only: no network, no writes, no orders)."
     )
     parser.add_argument("--json", action="store_true",
-                        help="emit the full status as JSON, with the readiness state as `readiness`")
+                        help="emit the full status as JSON, with `live_entry_possible` and `readiness` "
+                             "as the [data] line carries them")
     args = parser.parse_args(argv)
     status = build_readiness()
     if args.json:
-        sys.stdout.write(json.dumps({**status, "readiness": readiness_state(status)},
-                                    ensure_ascii=False, indent=1) + "\n")
+        # The readiness state in the [data] line's shape (`readiness_data`): the answer at the top
+        # level, its components and lists under `readiness` (review of #907).
+        state = readiness_state(status)
+        sys.stdout.write(json.dumps({
+            **status,
+            "live_entry_possible": state["live_entry_possible"],
+            "readiness": {key: state[key] for key in ("model", "blocking", "unknown", "components")},
+        }, ensure_ascii=False, indent=1) + "\n")
     else:
         sys.stdout.write(render_readiness_text(status) + "\n")
     return 0 if status["ready"] else 1

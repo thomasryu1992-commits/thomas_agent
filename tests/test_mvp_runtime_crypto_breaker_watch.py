@@ -238,6 +238,8 @@ def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopp
         door = [line for line in text.splitlines() if line.startswith(("  DOOR", "  entry", "      "))]
         assert door and all(len(line) <= 80 for line in door), door
     assert opened.splitlines()[0] == "CRYPTO LIVE ENTRY OPEN - the loss breakers no longer refuse live entries"
+    # Both doors, pinned whole: "real orders refused again" named the system's answer too (review of #907).
+    assert closed.splitlines()[0] == "CRYPTO LIVE ENTRY CLOSED - the loss breakers refuse live entries again"
 
 
 def test_the_render_separates_the_judged_rows_from_the_ones_that_are_not(tmp_path):

@@ -198,9 +198,11 @@ recorded per context counts when half or more of its contexts were refused (the 
 rule), and no fire within three of the pipeline schedule's intervals — or no enabled schedule — is
 false (`trading_cycle_recent`), because nothing runs to enter.
 The text board opens and closes with that answer (`LIVE ENTRY POSSIBLE: YES / NO / UNKNOWN`,
-PR5b) and prints this process's own verdict as `THIS PROCESS: READY / NOT READY`. Where the
-process cannot see the live-trading environment, its env rows read `n/a` rather than FAIL unless a
-fresh record of the trading process says the gate was closed.
+PR5b; the last line is one line however long) and prints this process's own verdict as
+`THIS PROCESS: READY / NOT READY`. A NO decided only by the stall rule says a minority of contexts
+may still enter. Where the process cannot see the live-trading environment, its env rows read `n/a`
+rather than FAIL unless a fresh record of the trading process says the gate was closed, and so does
+the loss breaker's NO DATA SOURCE where the process reads no account.
 
 ## The venue contract sentinel (crypto PR4a/4b, Thomas decisions 43-46)
 
