@@ -82,6 +82,7 @@ from .live_execution import (
     TIME_IN_FORCE_GTC,
     SubmitRefused,
     fill_facts,
+    is_protective_request,
     submit_and_reconcile,
     submit_may_have_landed,
     submit_refused_outright,
@@ -533,7 +534,7 @@ def place_bracket_leg(
     }
     try:
         request = build_order_request(intent)
-        if not (request.get("reduceOnly") is True or request.get("closePosition") == "true"):
+        if not is_protective_request(request):
             # Nothing was sent, so nothing can be resting: `placed` stays False and the caller
             # closes the position this leg was meant to protect.
             result["status"] = BRACKET_LEG_NOT_PROTECTIVE

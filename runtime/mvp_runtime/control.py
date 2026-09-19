@@ -77,8 +77,10 @@ COMMANDS = frozenset({CMD_STATUS, CMD_PAUSE, CMD_KILL, CMD_RESUME, CMD_STOP, CMD
 
 # The two halt levels (PR6, Thomas decision 47, 2026-09-19). Both leave the runtime ACTIVE, so open
 # positions keep being settled, protected, time-exited and reconciled, and both refuse new live
-# entries. SOFT is `halt_trading` as it was. HARD is the tighter of the two, and only the
-# authenticated operator may loosen it. A level is a field beside `mode`, never a fourth mode: an
+# entries. SOFT is `halt_trading` as it was. HARD is the tighter of the two: only the authenticated
+# operator may loosen it, and it refuses at the order adapter every order that is neither reduceOnly
+# nor closePosition, the signed testnet rehearsal's included (`live_execution.control_refusal`,
+# PR6b). A level is a field beside `mode`, never a fourth mode: an
 # older image reads an unknown `mode` as corrupt, i.e. KILLED, which stops position management on a
 # rollback; it ignores an unknown field, and reads this state as the soft halt it already knows.
 HALT_SOFT = "SOFT"
@@ -201,8 +203,9 @@ def halt_level_of(raw: Any) -> str | None:
 def halt_description(level: str | None) -> str:
     """One line on what a halt level refuses, for the operator's `/status`."""
     if level == HALT_HARD:
-        return ("HARD - new live entries refused; exits and protection still go out; only the "
-                "authenticated operator may loosen it")
+        return ("HARD - new live entries refused, and at the order adapter every order that is "
+                "neither reduceOnly nor closePosition, testnet included; exits and protection "
+                "still go out; only the authenticated operator may loosen it")
     if level == HALT_SOFT:
         return "SOFT - new live entries refused; exits and protection still go out"
     return "none"

@@ -1399,6 +1399,18 @@ def test_a_refusal_after_the_symbol_was_taken_gives_it_back(kw, reason):
     assert marks.given_back == [_CLAIM]
 
 
+def test_an_entry_the_adapter_refused_under_a_halt_gives_its_symbol_back():
+    """PR6b: a HARD halt that lands between the guard and the send is refused at the adapter, before
+    anything leaves. The leg reports the refusal and releases the symbol, as for any refusal before
+    the venue — nothing is left to fill."""
+    from runtime.mvp_runtime.crypto.live_execution import ORDER_HALTED
+
+    marks = FakeMarks()
+    result = _entry(entry_marks=marks, adapter=FakeAdapter(submit_errors={"ENTRY": ORDER_HALTED}))
+    assert result["status"] == ll.ENTRY_REFUSED and result["reason_codes"] == [ORDER_HALTED]
+    assert marks.given_back == [_CLAIM]
+
+
 def test_an_entry_the_venue_did_not_confirm_keeps_the_symbol():
     """No fill reported is not "nothing is working": the order may still fill, so the symbol stays
     taken until its claim expires."""

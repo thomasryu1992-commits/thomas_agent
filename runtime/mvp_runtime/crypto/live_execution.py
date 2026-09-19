@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from .. import safety_gate, timeutil
+from ..control import HALT_HARD, ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..safety_gate import Authorization
 from .live_pnl import (
@@ -227,7 +228,8 @@ GUARD_NOT_APPROVED = "GUARD_NOT_APPROVED"
 
 
 class SubmitRefused(ToolError):
-    """Raised by :func:`submit_and_reconcile` only BEFORE the adapter is called: nothing was sent.
+    """Raised by :func:`submit_and_reconcile` only before anything is sent: before the adapter is
+    called, or when the adapter refused before its send (`ORDER_HALTED`, PR6b).
 
     A ``ToolError`` so every existing catch still holds; its own class so a caller can tell a
     refusal from a failure that may have happened after an order left (PR2b)."""
@@ -240,6 +242,10 @@ ORDER_REJECTED = "ORDER_REJECTED"
 ORDER_OUTCOME_UNKNOWN = "ORDER_OUTCOME_UNKNOWN"
 ORDER_TRANSPORT = "ORDER_TRANSPORT"
 ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
+# The runtime control state refused an order that could add exposure, at the adapter, before the
+# send (PR6b, Thomas decision 47): see `control_refusal`. Nothing left, so there is nothing to
+# reconcile, and it carries no venue code, so the API error breaker does not count it.
+ORDER_HALTED = "ORDER_HALTED"
 
 # Venue error codes, verified from its error-code reference (2026-07-25).
 VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
@@ -249,7 +255,47 @@ VENUE_UNKNOWN_ORDER = -2011             # a cancelled/filled/never-placed order 
 # unknown; execution status unknown"): none of them says the order was not applied.
 VENUE_UNKNOWN_OUTCOME_CODES = frozenset({-1000, -1001, -1006, -1007})
 # Refusals that happen before anything is sent, whatever the adapter.
-NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED"})
+NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED", ORDER_HALTED})
+
+
+def is_protective_request(order_request: Mapping[str, Any]) -> bool:
+    """Whether a built order request can only reduce or close a position: ``reduceOnly``, or a
+    Close-All ``closePosition`` conditional. The one spelling of the shape every halt lets through
+    — the bracket leg's own check (`live_leg.place_bracket_leg`) and the adapter's egress refusal
+    (`control_refusal`) read it here."""
+    return order_request.get("reduceOnly") is True or order_request.get("closePosition") == "true"
+
+
+def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = None) -> str | None:
+    """Why the runtime control state refuses this order at egress, or None (PR6b).
+
+    **An exit or a protection is never refused here, and the control state is not even read for
+    one** — a halt that traps an open position is worse than what the halt prevents, and a store
+    that cannot be read must not be able to strand one. Every other order could add exposure, and
+    is refused under a HARD halt (Thomas decision 47) or while the runtime is PAUSED or KILLED —
+    a stop refuses at least what a HARD halt does. A corrupt store reads KILLED under a HARD halt,
+    so it refuses too.
+
+    The SOFT halt and a bare disarm are not refused here: the entry gate refuses the entry
+    (`ControlState.trading_allowed`, which the leg and the probe read), and the signed testnet
+    rehearsal runs under them, as it always has. That is the line between the two levels: SOFT
+    stops new entries where they are decided; HARD also stops every order that could add exposure
+    where it leaves, whoever sends it — mainnet and testnet alike.
+
+    Read at every call, never cached: an adapter built before a halt must see it. Anything that
+    goes wrong reading the state refuses, which is safe only because exits never get here."""
+    if is_protective_request(order_request):
+        return None
+    try:
+        state = (ControlStore(root) if root is not None else ControlStore.default()).load()
+    except Exception as exc:  # noqa: BLE001 — uncertainty about a safety state is not permission
+        return f"the control state could not be read ({type(exc).__name__})"
+    if state.halt_level == HALT_HARD:
+        return ("a HARD halt is in effect: only reduceOnly and closePosition orders may be sent "
+                f"(stated reason: {state.reason})")
+    if not state.execution_allowed:
+        return f"the runtime is {state.mode}, which sends no order that could add exposure"
+    return None
 
 
 def submit_refused_outright(error: Any, detail: Any) -> bool:
@@ -644,13 +690,16 @@ class BinanceFuturesOrderAdapter:
     provider_id = LIVE_TRADING_PROVIDER_ID
     network_egress = True
 
-    def __init__(self, *, base_url: str = ORDER_BASE_URL, authorization: Authorization | None = None):
+    def __init__(self, *, base_url: str = ORDER_BASE_URL, authorization: Authorization | None = None,
+                 root: Path | None = None):
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in ALLOWED_ORDER_HOSTS:
             # A URL typo must fail loudly rather than sign a request to an unexpected host.
             raise ToolError("ORDER_HOST_NOT_ALLOWED", "order base URL is not an allowed live host")
         self._base_url = base_url.rstrip("/")
         self._authorization = authorization
+        # Where the control state is read at every submit (`control_refusal`); None is this checkout.
+        self._root = root
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -730,7 +779,14 @@ class BinanceFuturesOrderAdapter:
         A rejection is raised rather than returned because a rejected submit is not an outcome the
         caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
         actually happened. The one rejection that is *informative* is a duplicate client order id:
-        it means this exact order already landed, so the reconcile read will find it."""
+        it means this exact order already landed, so the reconcile read will find it.
+
+        Before anything is signed, the runtime control state is asked whether this order may leave
+        (`control_refusal`): an order that could add exposure is refused with ``ORDER_HALTED`` while
+        entries are not allowed. Exits and protection are never refused there."""
+        refusal = control_refusal(order_request, root=self._root)
+        if refusal is not None:
+            raise ToolError(ORDER_HALTED, f"order not sent: {refusal}")
         body, code = answer = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
@@ -969,16 +1025,17 @@ def select_order_adapter(*, now: str | None = None, root: Path | None = None) ->
     ``Authorization``, so it still cannot exist before the gate opens, and it still re-verifies at
     every egress. See the block comment above ``select_env_gated`` for the decision and its cost.
 
-    ``now``/``root`` are kept in the signature and unused: every caller passes them, they cost
-    nothing, and restoring the grant should be a one-line change here rather than a change at
-    each call site."""
+    ``root`` is where the capable adapter reads the control state at every submit
+    (`control_refusal`, PR6b). ``now`` is kept in the signature and unused: every caller passes it,
+    it costs nothing, and restoring the grant should be a one-line change here rather than a change
+    at each call site."""
     return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunOrderAdapter,
-        gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization),
+        gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization, root=root),
     )
 
 
@@ -1062,6 +1119,10 @@ def submit_and_reconcile(
     try:
         submit_response = adapter.submit(request, timeout_seconds=timeout_seconds)
     except ToolError as exc:
+        if exc.reason_code == ORDER_HALTED:
+            # The adapter refused before its send (PR6b): nothing left, so there is nothing to ask
+            # the venue about, and the caller gives back what it reserved for this order.
+            raise SubmitRefused(ORDER_HALTED, getattr(exc, "reason", str(exc))) from exc
         # A rejected OR ambiguous submit: do not assume nothing landed and do not blind-retry.
         # Reconcile by client_order_id below to learn the truth from the venue.
         submit_error = exc.reason_code
