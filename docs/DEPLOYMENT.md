@@ -411,11 +411,12 @@ either path halts the loop's next task immediately:
 ```bash
 # From the host (works even if Telegram is unreachable):
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli halt_trading --reason "entries off, keep managing"
+docker exec thomas-operator python -m runtime.mvp_runtime.console_cli halt_trading hard --reason "only exits from here"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli kill --reason "halt now"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli status
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
-# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading, /stop <id>.
+# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading [hard], /stop <id>.
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
@@ -423,7 +424,9 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
 **A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
 protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
 are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management
-running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. Over Telegram it
+running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. It has two levels
+(PR6): SOFT, the default, and `hard`, which only the authenticated operator loosens and `/resume`
+clears; `CRYPTO_LIVE_EXECUTION_V0.1.md`, "Standing controls", has the rules. Over Telegram it
 lands when a running analysis finishes (the mid-run peek acts only on /kill and /pause); for an
 immediate entries-only halt during one, use the console command. A missing control
 file reads ACTIVE with live entries **unarmed** (Thomas decision 10) — `/resume` arms them.

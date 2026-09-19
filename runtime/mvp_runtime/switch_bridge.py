@@ -154,15 +154,20 @@ _DEFAULT_SCOPE = SCOPE_TRADING
 # than the duplicate it would prevent.
 _ENABLE_DOOR = "switch.enable"
 
-# Stopping has three shapes and the caller picks. `kill` and `pause` are in the policy's
+# Stopping has four shapes and the caller picks. `kill` and `pause` are in the policy's
 # `emergency_controls_allowed`; `soft` is the Trading Soft Halt (Thomas decision 7, 2026-09-15) —
-# entries off, positions still managed — and refuses by name until the policy grants
-# `halt_trading` (control.POLICY_GATED_COMMANDS). This door never passes
-# `halt_may_release_stop`: `soft` on a PAUSED or KILLED runtime leaves the stop in place. Built
-# from control's own constants so a rename there cannot silently widen this.
+# entries off, positions still managed — and `hard` the same verb's tighter level (decision 47,
+# 2026-09-19). Both refuse by name until the policy grants `halt_trading`
+# (control.POLICY_GATED_COMMANDS). This door never passes `halt_may_release_stop`: `soft` or `hard`
+# on a PAUSED or KILLED runtime leaves the stop in place, and `soft` under a hard halt leaves it
+# hard — halting is this door's to do without an approval, loosening is not. Built from control's
+# own constants so a rename there cannot silently widen this.
 _DISABLE_MODES: dict[str, str] = {
     "kill": control.CMD_KILL, "pause": control.CMD_PAUSE, "soft": control.CMD_HALT_TRADING,
+    "hard": control.CMD_HALT_TRADING,
 }
+# The level each halt mode names; `kill` and `pause` name none.
+_DISABLE_HALT_LEVELS: dict[str, str] = {"soft": control.HALT_SOFT, "hard": control.HALT_HARD}
 _DEFAULT_DISABLE_MODE = "kill"
 
 # Domains this door switches. `crypto` is the only trading domain that exists; `prediction`
@@ -242,9 +247,10 @@ def stop_summary(state: control.ControlState) -> str:
         # The soft halt (or a runtime-only resume). The runtime is running; what a trading grant
         # would change is the arm, and saying "resumes nothing" here would misprice a re-arm.
         placed_at = state.updated_at or "an unrecorded time"
+        halt = f"a {state.halt_level} halt, " if state.halt_level else ""
         return (
-            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down (set by "
-            f"{state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
+            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down ({halt}set "
+            f"by {state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
             "RE-ARMS live entries and resumes nothing else; a runtime grant changes nothing"
         )
     if state.mode == control.ACTIVE:
@@ -254,9 +260,12 @@ def stop_summary(state: control.ControlState) -> str:
         )
     derived = " (derived by failing closed, not written by an operator)" if state.fail_closed else ""
     placed_at = state.updated_at or "an unrecorded time"
+    # A halt carried under the stop is what a runtime grant comes back to; a trading grant clears it.
+    kept = (f"; a {state.halt_level} halt is kept under it, which a runtime grant leaves in place"
+            if state.halt_level else "")
     return (
         f"the {state.mode} placed by {state.updated_by} at {placed_at}{derived}, "
-        f"whose stated reason is: {state.reason}"
+        f"whose stated reason is: {state.reason}{kept}"
     )
 
 
@@ -654,7 +663,7 @@ def apply_switch(
         domain = _require_domain(request)
         outcome = control.apply_command(
             control_store, _DISABLE_MODES[mode], actor=ASSISTANT_ACTOR, now=now,
-            reason=reason, ledger=ledger,
+            reason=reason, ledger=ledger, halt_level=_DISABLE_HALT_LEVELS.get(mode),
         )
         return _enveloped(request, _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],

@@ -1231,6 +1231,19 @@ def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
     assert "management is stopped too" in row["detail"]
 
 
+def test_the_arm_row_names_the_halt_level(tmp_path):
+    """PR6: the row says which halt holds the arm down, and the readiness input carries it."""
+    from runtime.mvp_runtime.control import ACTIVE, HALT_HARD, ControlState, ControlStore
+
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="청산만",
+                                             trading_armed=False, halt_level=HALT_HARD))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "trading_armed")
+    assert row["ok"] is False and "DISARMED (HARD halt: 청산만)" in row["detail"]
+    assert "still managed" in row["detail"]
+    assert status["readiness_inputs"]["runtime_control"]["halt_level"] == HALT_HARD
+
+
 def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
     """PR2b: the mainnet snapshot record is a check row. The first version reported it beside the
     checks; the review made the store refuse to append past a damaged line, which refuses every

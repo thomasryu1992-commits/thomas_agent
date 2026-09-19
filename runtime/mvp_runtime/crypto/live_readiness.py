@@ -58,7 +58,7 @@ from typing import Any
 
 from .. import timeutil
 from ..cli_common import force_utf8_io
-from ..control import ACTIVE, KILLED, PAUSED, ControlStore
+from ..control import ACTIVE, HALT_SOFT, KILLED, PAUSED, ControlStore
 from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from . import account_store, breaker_watch, pool, pre_order_gate
@@ -652,10 +652,12 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         trading_armed = state.trading_armed
         # The same state as facts, for the readiness state (PR5a).
         control: dict[str, Any] = {"mode": state.mode, "trading_armed": bool(state.trading_armed),
-                                   "fail_closed": bool(state.fail_closed), "error": None}
+                                   "fail_closed": bool(state.fail_closed), "error": None,
+                                   "halt_level": state.halt_level}
+        halt = f"{state.halt_level} halt: " if state.halt_level else ""
         armed_detail = (
             "armed" if trading_armed else
-            f"DISARMED ({state.reason}) - new live entries are refused"
+            f"DISARMED ({halt}{state.reason}) - new live entries are refused"
             + ("; the runtime is ACTIVE, so open positions are still managed and closed and paper "
                "is unaffected" if state.execution_allowed else
                f"; the runtime is {state.mode}, so position management is stopped too until /resume")
@@ -663,7 +665,8 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
     except MvpRuntimeError as exc:
         runtime_active, runtime_detail = False, f"control state unreadable ({exc.reason_code})"
         trading_armed, armed_detail = False, f"control state unreadable ({exc.reason_code})"
-        control = {"mode": None, "trading_armed": False, "fail_closed": False, "error": exc.reason_code}
+        control = {"mode": None, "trading_armed": False, "fail_closed": False, "error": exc.reason_code,
+                   "halt_level": None}
     checks.append(_check("runtime_active", runtime_active, runtime_detail))
     # 5b. The arm, as its own row. Folding it into `runtime_active` would make one FAIL mean two
     # different situations with different fixes — a kill needs a resume, a disarm needs a
@@ -1314,7 +1317,8 @@ def _gate_component(status: Mapping[str, Any], inputs: Mapping[str, Any], *,
 
 
 def _control_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
-    """The runtime control state every entry reads (`ControlState.trading_allowed`): ACTIVE and armed."""
+    """The runtime control state every entry reads (`ControlState.trading_allowed`): ACTIVE, armed, and
+    no halt placed."""
     control = _mapping(inputs.get("runtime_control"))
     if not control:
         return _component(None, NOT_REPORTED)
@@ -1328,6 +1332,11 @@ def _control_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
     if mode != ACTIVE:
         # No mode: the state could not be read, and the leg's own read would refuse (BLOCKED).
         return _component(False, "CONTROL_UNREADABLE")
+    # A named halt before the arm, as `ControlState.trading_allowed` refuses on either (PR6). Any
+    # level but SOFT reads HARD, the way `control.halt_level_of` reads the file.
+    level = control.get("halt_level")
+    if level is not None:
+        return _component(False, "SOFT_HALT" if level == HALT_SOFT else "HARD_HALT")
     if not control.get("trading_armed"):
         return _component(False, "TRADING_DISARMED")
     return _component(True, "ACTIVE_ARMED")

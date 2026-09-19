@@ -168,6 +168,13 @@ _FLIPS = {
                "runtime_control", False, "RUNTIME_PAUSED"),
     "disarmed": (dict(inputs={"runtime_control": {"trading_armed": False}}),
                  "runtime_control", False, "TRADING_DISARMED"),
+    # PR6: a named halt reads before the arm, as `ControlState.trading_allowed` refuses on either.
+    "soft_halt": (dict(inputs={"runtime_control": {"trading_armed": False, "halt_level": "SOFT"}}),
+                  "runtime_control", False, "SOFT_HALT"),
+    "hard_halt": (dict(inputs={"runtime_control": {"trading_armed": False, "halt_level": "HARD"}}),
+                  "runtime_control", False, "HARD_HALT"),
+    "halt_whatever_the_arm": (dict(inputs={"runtime_control": {"trading_armed": True, "halt_level": "HARD"}}),
+                              "runtime_control", False, "HARD_HALT"),
     "control_fail_closed": (dict(inputs={"runtime_control": {"mode": KILLED, "fail_closed": True}}),
                             "runtime_control", False, "CONTROL_FAIL_CLOSED"),
     "control_unreadable": (dict(inputs={"runtime_control": {"mode": None, "error": "CONTROL_X"}}),
@@ -715,6 +722,18 @@ def test_a_disarm_is_read_while_the_runtime_keeps_cycling(tmp_path, clean_env, m
     _, data = _board(tmp_path)
     assert data["live_entry_possible"] is False
     assert data["readiness"]["blocking"] == ["runtime_control:TRADING_DISARMED"]
+
+
+@pytest.mark.parametrize("level", ["SOFT", "HARD"])
+def test_a_halt_is_named_on_the_board(tmp_path, clean_env, monkeypatch, level):
+    """PR6: the halt the operator placed is its own reason, apart from a disarm nobody named."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="halt",
+                                             trading_armed=False, halt_level=level))
+    _write_fire(tmp_path, created_at=NOW, statuses=("HELD", "BLOCKED", "HELD"))
+    _, data = _board(tmp_path)
+    assert data["live_entry_possible"] is False
+    assert data["readiness"]["blocking"] == [f"runtime_control:{level}_HALT"]
 
 
 def test_a_stale_record_on_a_console_is_not_live_trading_off(tmp_path, clean_env, monkeypatch):

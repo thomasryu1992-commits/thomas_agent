@@ -672,6 +672,75 @@ def test_the_soft_stop_refuses_by_name_until_the_policy_grants_it(tmp_path, monk
     assert exc.value.reason_code == control.VERB_NOT_GRANTED
 
 
+# --- the hard halt through this door (Thomas decision 47, 2026-09-19) ---------------
+#
+# Halting is this door's to do without an approval; loosening is not. `hard` tightens any halt,
+# `soft` never loosens a hard one, and neither releases a stop.
+
+def test_the_hard_stop_halts_entries_and_leaves_the_runtime_active(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    out = _apply({"command": "disable", "mode": "hard", "reason": "청산만"}, store)
+    state = store.load()
+    assert out["ok"] is True and out["action"] == control.CMD_HALT_TRADING and out["changed"] is True
+    assert (state.mode, state.trading_armed, state.halt_level) == (ACTIVE, False, control.HALT_HARD)
+    assert state.reason == "청산만"
+
+
+def test_the_hard_stop_tightens_a_soft_halt(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    _apply({"command": "disable", "mode": "soft", "reason": "r"}, store)
+    assert store.load().halt_level == control.HALT_SOFT
+    out = _apply({"command": "disable", "mode": "hard", "reason": "r2"}, store)
+    assert out["changed"] is True and store.load().halt_level == control.HALT_HARD
+
+
+def test_the_soft_stop_never_loosens_a_hard_halt(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    _apply({"command": "disable", "mode": "hard", "reason": "r"}, store)
+    before = store.load()
+    out = _apply({"command": "disable", "mode": "soft", "reason": "loosen"}, store)
+    assert out["changed"] is False and store.load() == before
+
+
+@pytest.mark.parametrize("stop", [control.CMD_KILL, control.CMD_PAUSE])
+def test_the_hard_stop_never_releases_a_stop_from_this_door(tmp_path, halt_granted, stop):
+    store = _armed_store(tmp_path)
+    control.apply_command(store, stop, actor="op", now=NOW)
+    before = store.load()
+    out = _apply({"command": "disable", "mode": "hard", "reason": "r"}, store)
+    assert out["changed"] is False and store.load() == before
+
+
+def test_the_hard_stop_refuses_by_name_until_the_policy_grants_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(control, "granted_emergency_controls", lambda root=None: frozenset({"kill"}))
+    with pytest.raises(ControlBlocked) as exc:
+        _apply({"command": "disable", "mode": "hard", "reason": "r"}, _armed_store(tmp_path))
+    assert exc.value.reason_code == control.VERB_NOT_GRANTED
+
+
+def test_every_halt_mode_names_its_level_and_the_stops_name_none():
+    assert switch_bridge._DISABLE_HALT_LEVELS == {"soft": control.HALT_SOFT, "hard": control.HALT_HARD}
+    for mode, command in switch_bridge._DISABLE_MODES.items():
+        assert (mode in switch_bridge._DISABLE_HALT_LEVELS) is (command == control.CMD_HALT_TRADING)
+
+
+def test_an_ask_against_a_hard_halt_names_it(tmp_path):
+    state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",
+                                 trading_armed=False, halt_level=control.HALT_HARD)
+    summary = switch_bridge.stop_summary(state)
+    assert "a HARD halt" in summary and "RE-ARMS" in summary
+
+
+def test_an_ask_against_a_stop_names_the_halt_kept_under_it(tmp_path):
+    state = control.ControlState(mode=KILLED, updated_by="op", updated_at=NOW, reason="r",
+                                 trading_armed=False, halt_level=control.HALT_HARD)
+    summary = switch_bridge.stop_summary(state)
+    assert "the KILLED placed by op" in summary
+    assert "a HARD halt is kept under it, which a runtime grant leaves in place" in summary
+    bare = control.ControlState(mode=KILLED, updated_by="op", updated_at=NOW, reason="r", trading_armed=False)
+    assert "halt" not in switch_bridge.stop_summary(bare)
+
+
 def test_a_trading_ask_against_a_soft_halt_says_it_re_arms(tmp_path):
     """"no stop — resumes nothing" would misprice this grant: it re-arms live entries."""
     state = control.ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="변동성",

@@ -24,6 +24,34 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The trading halt has two levels, SOFT and HARD** (crypto PR6a, 2026-09-19; `control.py`,
+  `switch_bridge.py`, `console_cli.py`, `crypto/live_readiness.py`).
+  - **The change:** `halt_trading` takes a level. Alone, or with `soft`, it is the halt it always
+    was. `halt_trading hard` (`/halt_trading hard <reason>`; switch door `disable mode=hard`) is the
+    HARD halt. Both keep the runtime ACTIVE, so settlement, protection, the time exit and
+    reconciliation keep running, and both refuse new entries. Tightening needs nothing; loosening
+    HARD to SOFT is a release, the authenticated operator's alone, like releasing a pause or kill
+    through the same verb; `/resume` clears either. What HARD adds at the order adapter, and the
+    EMERGENCY_CLOSE it gates, are the next PRs (decisions 47 and 49).
+  - **Representation:** a `halt_level` field beside `mode`, not a fourth mode. An older image reads
+    an unknown mode as corrupt, i.e. KILLED, which stops position management on a rollback; it ignores
+    an unknown field and reads either level as the soft halt. Absent is no halt (a file from before
+    levels); present and unreadable is HARD. `trading_allowed` refuses on any halt, whatever the arm.
+  - **Carried, never lost:** `/kill`, `/pause` and `/stop` carry the level, and a resume that does not
+    re-arm keeps it, so the assistant's runtime-only resume cannot come back looser. Every control
+    event records `resulting_halt_level`, and a lost state file recovers it from the ledger (until now
+    a lost file came back as a bare disarm, which the assistant's door could have loosened). A corrupt
+    file still reads KILLED (decision 48), with a HARD halt under it.
+  - **A halt over a bare disarm now names it** (it was a no-op): `/status` shows a `halt:` line, and
+    the board says `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`.
+  - **Found on the way:** a state file whose `mode` was a list raised `TypeError` out of
+    `ControlStore.load` instead of reading KILLED, because `in` on a frozenset hashes; the ledger
+    recovery had the same fault. Both check the type first now.
+  - **Not in this PR:** the policy comment on the grant still describes the soft halt; it is a byte
+    of the fingerprinted policy and changes with the next bump Thomas applies. The Hermes shim has no
+    halt tool yet, and Telegram's `/halt_trading` still waits for a running analysis to finish (the
+    mid-run peek acts on `/kill` and `/pause` only); both are PR6's last part.
+
 - **The readiness board opens and closes with whether a live entry can open**
   (crypto PR5b, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
   `integrations/hermes/mcp/read_bridge_mcp.py`).
