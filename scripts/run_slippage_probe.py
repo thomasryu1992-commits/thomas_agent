@@ -681,7 +681,8 @@ def run_fire(
     # PR4b (Thomas decision 46): a probe is a mainnet entry, decided on the venue contract sentinel's
     # usable PASS like an autonomous one. Refused here, beside the breakers, so the refusal names it;
     # the gate below judges the re-read again at its own clock.
-    contract_refusal = venue_contract_refusal(read_venue_contract(root), symbol=symbol, at=now)
+    contract = read_venue_contract(root)
+    contract_refusal = venue_contract_refusal(contract, symbol=symbol, at=now)
     if contract_refusal is not None:
         raise _Refusal(
             probe.PROBE_VENUE_CONTRACT,
@@ -799,7 +800,8 @@ def run_fire(
         # must leave within a minute of this judgment.
         account_collected_at=getattr(snapshot, "collected_at", None), clock=gate_clock,
         order_book=order_book,
-        # PR4b: the verification the re-read found, judged at the gate's clock.
+        # PR4b: the verification the re-read found (not ``contract``, the first read), judged at the
+        # gate's clock.
         venue_contract=fresh["venue_contract"],
     )
     if not snapshot_record["approved"]:

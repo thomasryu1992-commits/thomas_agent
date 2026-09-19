@@ -831,6 +831,7 @@ def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys,
     assert run(_Adapter()) == 0
     assert "venue contract: PASS" in capsys.readouterr().out
     assert run(_Adapter(hedge=True)) == cli.EXIT_FAIL
+    assert "not usable: mainnet entries are refused" in capsys.readouterr().out     # PR4b
     assert run(_Adapter(fail={"position_mode"})) == 2        # not decided by this run
     assert "NOT verified by this run" in capsys.readouterr().err
 

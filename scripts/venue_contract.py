@@ -58,7 +58,7 @@ def render(status: Mapping[str, Any], record: Mapping[str, Any] | None, mark: Ma
             head += f" - NOT this code's version ({venue_contract.CONTRACT_VERSION})"
         elif status["stale"]:
             head += f" - STALE (a PASS stands {venue_contract.MAX_AGE_SECONDS // 3600}h)"
-        head += " - usable" if status["usable"] else " - not usable"
+        head += " - usable" if status["usable"] else " - not usable: mainnet entries are refused"
     lines = [head]
     if record:
         lines += _render_checks(record.get("checks"))
