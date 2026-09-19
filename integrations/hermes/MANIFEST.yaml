@@ -43,7 +43,7 @@ shims:
 prompts:
   soul: config/SOUL.md                       # no version field of its own; measured 2026-09-14
   skill: config/skills/thomas-ops/SKILL.md
-  skill_version: "1.5.5"                     # §6 cutover note, §7 items 8–13 (P07–P10) and the review fixes
+  skill_version: "1.5.6"                     # 1.5.5 = §6 cutover note, §7 items 8–13 (P07–P10) and the review fixes; 1.5.6 = §2–§4 answer "can a live entry open" with live_entry_possible alone and take its conditions from the trading_readiness description, where "live_gate_recorded and live_armed_strategies, two lines only" and "READY means a real order can go out" had stood (2026-09-19). Copied to the host by hand (DEPLOYMENT_PLAN_SEQUENCE2.md §6); as of 2026-09-19 the host has 1.5.5
 templates:
   config: config/config.template.yaml        # operator Telegram ids replaced by ${HERMES_HOME_CHAT_ID} / ${HERMES_HOME_USER_ID}
   cron_jobs: config/cron-jobs.template.json  # delivery target replaced by ${HERMES_DELIVER_TARGET}; run state omitted; the fourth job (워크플로 서술, P08) is not on the host until installed with the 2.7 shims
