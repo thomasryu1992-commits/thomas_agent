@@ -276,6 +276,11 @@ CLOSE_REASON_TIME_EXIT = "time_exit"
 # decision into the population the R statistics use to judge a strategy. It is a real outcome
 # and it is recorded as one; it is simply not the strategy's.
 CLOSE_REASON_VENUE_EXTERNAL = "venue_external_close"
+# An operator's emergency close (PR6c, Thomas decision 49): every booked position closed at market
+# under the HARD halt, on a single-use approval. A human decision again, so it is kept out of the
+# strategy rules' names for the reason above; its own name, not `venue_external_close`, because this
+# runtime sent it and knows exactly why.
+CLOSE_REASON_EMERGENCY = "emergency_close"
 
 # Whether this position's protective legs are still where the entry left them.
 PROTECTED = "PROTECTED"
@@ -1914,6 +1919,7 @@ __all__ = [
     "place_bracket_leg",
     "read_bracket_legs",
     "CLOSE_REASON_VENUE_EXTERNAL",
+    "CLOSE_REASON_EMERGENCY",
     "EXIT_SOURCE_BRACKET_LEG",
     "EXIT_SOURCE_FILL_HISTORY",
     "EXIT_SOURCE_RUNTIME_CLOSE",

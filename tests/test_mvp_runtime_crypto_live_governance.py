@@ -121,6 +121,12 @@ def test_the_purpose_distinguishes_a_canary_from_an_autonomous_order():
     assert "PURPOSE_AUTONOMOUS" in autonomous["event"]["reason_codes"]
 
 
+def test_an_emergency_close_is_named_on_the_trail():
+    """PR6c: the operator's emergency close is neither a strategy's order nor a probe's."""
+    emergency, _ = _audit(purpose=lg.PURPOSE_EMERGENCY_CLOSE)
+    assert "PURPOSE_EMERGENCY_CLOSE" in emergency["event"]["reason_codes"]
+
+
 def test_the_event_carries_the_permission_decision_it_was_placed_under():
     record, _ = _audit()
     assert "in_memory:permdec_1" in record["event"]["related_record_refs"]
@@ -185,6 +191,14 @@ def test_preparation_fails_closed_without_an_active_core(monkeypatch):
     with pytest.raises(MvpRuntimeError) as excinfo:
         lg.prepare_live_order_governance(INTENT, purpose=lg.PURPOSE_CANARY, now=NOW)
     assert excinfo.value.reason_code == "CORE_NOT_ACTIVATED"
+
+
+@requires_local_core
+def test_an_emergency_close_is_prepared_like_any_live_order():
+    """PR6c: the emergency close's orders carry their own P5 decision, under their own purpose."""
+    governance = lg.prepare_live_order_governance(INTENT, purpose=lg.PURPOSE_EMERGENCY_CLOSE, now=NOW)
+    assert governance["purpose"] == lg.PURPOSE_EMERGENCY_CLOSE
+    assert governance["order_fingerprint"] == lg.order_fingerprint(INTENT)
 
 
 @requires_local_core

@@ -502,6 +502,48 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   control state for one. `/order/test` validation and cancels are not refused. The refusal sends
   nothing, the API error breaker does not count it, and the entry leg gives back the symbol it
   reserved. The signed testnet rehearsal runs under SOFT, as before, and stops under HARD.
+- **Emergency close (PR6c, Thomas decision 49, 2026-09-19):** closes every position this machine
+  has booked, at market and reduceOnly, on one single-use approval. `scripts/emergency_close.py`,
+  run by the operator in the scheduler container:
+  1. `--request` stores the ask. It is refused unless the HARD halt is in effect with the runtime
+     ACTIVE and something is booked. It binds that halt (the switch door's `stop_ref`) and every
+     booked position by id, symbol, side and a decimal quantity.
+  2. Thomas answers on the control channel. The ask is announced there and never mirrored, and
+     RUNTIME_GOVERNANCE caps it at 15 minutes.
+  3. `--confirm` spends it once. Before the spend, it refuses with nothing sent and the approval
+     left APPROVED on any of: another halt (a kill or pause refuses under its own code), a closed
+     gate, no confirmation phrase, nothing still booked, an unreadable account, or no approved
+     position that would be closed now. The expiry and the halt are checked again inside the spend
+     lock, on a fresh clock.
+  4. The account is read once, just before the spend. Each position is then judged again just
+     before its close, against that read and a fresh read of the halt and the book. It is skipped,
+     never resized, when the halt moved (the rest are not attempted), when the book no longer holds
+     it or holds another side or quantity, or when the venue had closed it or disagreed with the
+     book. A venue position the book does not hold is never touched, and neither is a position
+     booked after the ask; the report names both, so the operator knows they are there.
+  5. The report is COMPLETE when no approved position is left open as far as the runtime knows:
+     each was closed, or was already gone. Otherwise it is INCOMPLETE and the command exits BLOCKED.
+     It is kept on the record ledger (`crypto_emergency_close`) under the approval id, and names
+     every order it sent: client and venue ids, the reconcile status and what filled.
+
+  The close is `live_leg.execute_live_exit` with close reason `emergency_close`, the leg every
+  runtime exit uses: brackets are withdrawn only after a confirmed close and the outcome is
+  recorded. **Every order that reached the venue is audited** under the purpose `emergency_close`,
+  closed or not, and a failure to audit never stops a close. The halt is not cleared. Under HARD
+  the adapter refuses anything that is not reduceOnly (PR6b), so the path cannot add exposure.
+
+  **Racing the scheduler.** The scheduler keeps managing positions under HARD, and the two do not
+  share a lock. It may close a position first, which shows here as a skip or as a reduceOnly order
+  the venue rejects on a flat position. The reverse also happens. A scheduler pass that read the book
+  before the close may see the withdrawn legs as unprotected and send its own close, which the venue
+  rejects on the flat position: that fire reports an incident. Or it may write the position back
+  after its slow venue read. The next fire's reconciliation settles both. Neither can open anything.
+
+  **A limit of the halt binding.** A HARD halt recovered from the ledger after the state file was
+  lost derives the same `stop_ref` each time. An ask made under such a state could therefore be
+  spent under a later one that was recovered the same way. It is still ACTIVE under a HARD halt.
+
+  The assistant cannot ask for an emergency close yet: a door verb for it is a policy change.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries

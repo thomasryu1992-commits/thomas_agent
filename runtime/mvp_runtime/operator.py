@@ -1052,7 +1052,9 @@ def announce_pending_approvals(
     imported from ``permission`` which mints it, because these asks share ``RUNTIME_GOVERNANCE``
     with strategy promotion and only the target says what is being started. A workflow-step ask
     is announced on the control channel and **never mirrored** to the assistant's window
-    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``).
+    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``), and so are the
+    execution-stage asks (crypto PR1a) and the emergency-close asks (crypto PR6c): the operator
+    spends both from the console, and Thomas answers them here.
 
     Expired asks are never announced: a dead id cannot be approved, and sending one invites
     Thomas to answer something that will refuse him.
@@ -1069,7 +1071,8 @@ def announce_pending_approvals(
     switch_asks = [
         a for a in pending
         if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
-            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX)
+            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX,
+                               permission.EMERGENCY_CLOSE_TARGET_PREFIX)
         )
         and not approval.is_expired(a, now=now)
     ]

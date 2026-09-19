@@ -419,6 +419,12 @@ docker exec thomas-operator python -m runtime.mvp_runtime.console_cli status
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
 # Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading [soft|hard], /stop <id>.
+
+# Emergency close (PR6c): every booked live position at market, reduceOnly, under the HARD halt.
+# Ask, Thomas answers /approve <id> on the control channel within 15 minutes, then spend it once:
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --show
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --request --requested-by thomas --reason "..."
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confirm --approval-id <id>
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and

@@ -24,6 +24,46 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The emergency close** (crypto PR6c, 2026-09-19, Thomas decision 49; `scripts/emergency_close.py`,
+  `crypto/live_route.py`, `permission.py`).
+  - **The change:** the operator can close every booked live position at market, reduceOnly, under
+    the HARD halt, on one single-use approval Thomas gives on the control channel. `--request` binds
+    the halt in effect and the book, `--confirm` spends the approval once, and the two are never one
+    invocation.
+  - **Where it lives:** in the chokepoint, `live_route.run_emergency_close`. Its close is
+    `live_leg.execute_live_exit`, the leg every runtime exit uses, behind the same gate, API breaker
+    recording and post-order audit. The "one module starts a live order" tests are unchanged, and
+    so is the daily-counter gate, because it adds no `submit_and_reconcile` caller.
+  - **Everything that can refuse without the venue refuses before the spend.** That covers another
+    halt, a closed gate (a dry-run adapter would spend the grant and close nothing), no confirmation
+    phrase (the close guard would refuse every close), nothing still booked, and an unreadable
+    account. The halt is checked again inside the spend lock. After the spend, each position is
+    judged again just before its close and skipped, never resized, when anything moved. A venue
+    position the book does not hold is never closed, but the report names it.
+  - **Why the grant binds the halt's `stop_ref`:** any control write moves it. A kill, a resume, a
+    loosening or a re-placed halt after the ask refuses the spend, so Thomas's approval never closes
+    positions under a state he did not see.
+  - **Why it is not a control-ledger event:** that would need a new record schema. The trail is the
+    CONSUMED approval (it names the set), one outcome per position (`close_reason: emergency_close`)
+    and one audit event per order (purpose `emergency_close`).
+  - **Not in this PR:** the assistant asking for one. The switch door's verbs are closed in the
+    policy (`control_channel.assistant_switch.verbs`), so a door verb is a policy change Thomas
+    applies.
+  - **Review of #913.** Nothing could open or add exposure, and the single use and the halt binding
+    held. The fixes:
+    - (MEDIUM) A close that reached the venue but was not confirmed, such as a partial fill or an
+      unanswered status query, left no trace but a printed line. Every sent order is now audited with
+      what the venue answered. The report names each order and is kept on the record ledger under the
+      approval id.
+    - An audit failure no longer stops the closes behind it.
+    - A grant whose every position would be skipped is refused before the spend.
+    - The expiry is re-checked at the spend on a fresh clock.
+    - A position booked after the ask, and an incomplete book record, are named rather than silently
+      skipped or generically refused.
+    - The docs now say the account is read once, before the spend. They also describe both
+      directions of the race with the scheduler and the halt binding's one limit (a HARD halt
+      recovered from the ledger).
+
 - **The HARD halt refuses at the order adapter** (crypto PR6b, 2026-09-19;
   `crypto/live_execution.py`, `crypto/testnet_execution.py`, `scripts/run_signed_testnet_cycle.py`).
   - **The change:** both order adapters — mainnet `BinanceFuturesOrderAdapter` and the signed testnet
