@@ -37,8 +37,9 @@ Append a new entry when a milestone ships, in the same PR.
     - A rule that only retired entries hold is a reactivation. It is named in the content hash by
       the retired entries' lineage keys, and in the signed parameters and risk reason Thomas reads.
       It is refused without `--allow-reactivation`.
-    - The new entry replaces those entries in either mode and inherits their record (PR3c-1). The
-      promotion event keeps who they were and why they had been retired.
+    - The new entry replaces those entries in either mode and inherits their record (PR3c-1), with
+      the longest failure streak among them. The promotion event keeps who they were and why they
+      had been retired. A replace-mode restate keeps what an entry had inherited.
   - **No hash-version bump:** an ordinary promotion hashes as before. A same-rule return hashes
     differently, so an approval asked before this refuses rather than install an effect it did
     not name.

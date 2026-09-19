@@ -300,6 +300,13 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
     in either mode, and their display ids leave with them; it records what named them and inherits
     their record (above). The promotion event keeps who they were and why they had been retired
     (`replaced_entries`).
+  - The new entry also carries the longest failure streak of the entries it replaces, so the
+    lifecycle does not start a returning rule over. A replace-mode restate keeps what an entry had
+    inherited: its candidate row carries none, and arming it LIVE goes through such a restate.
+  - The LIVE-arming forward confirmation still reads the candidate's own stream, as a fresh
+    install's does. The approval names the retired lineages the rule returns from, and Thomas reads
+    them there; refusing a LIVE arming on a replaced lineage's forward record would be a new gate
+    with no escape, and is not added.
   - The pool read does not enforce it: S008 and S008-GEN-696 hold one rule, both retired, and stay
     (decision 42); their rule's return replaces both.
   - Replayed on the host on 2026-09-19: of the 70 rules the pool holds with another candidate id in
