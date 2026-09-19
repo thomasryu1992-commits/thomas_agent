@@ -43,7 +43,10 @@ with `readiness.blocking` and `readiness.unknown` naming what refuses and what c
 fifth condition 2.11 guarded against arrived with several more — the kill and the disarm, the
 breakers, the account, the last cycle — so the description names those lists instead of their
 members, and a component that joins needs no new sentence. The runtime test is now
-`test_live_entry_possible_is_what_the_read_shim_says_it_is`.
+`test_live_entry_possible_is_what_the_read_shim_says_it_is`. The board's text (PR5b) opens and
+closes with `LIVE ENTRY POSSIBLE`, names this container's verdict `THIS PROCESS:`, and marks its
+env rows n/a wherever no fresh record says the gate was closed — so "env rows always FAIL here"
+went with it.
 """
 
 from __future__ import annotations
@@ -82,15 +85,15 @@ def trading_status() -> str:
 @mcp.tool()
 def trading_readiness() -> str:
     """Live-trading readiness board — call it fresh every time. Every gate between this machine
-    and a live order, today's realized P&L against the limit. Rendered in YOUR container: env
-    rows always FAIL here, so never say live trading is disabled because of one; the trading
-    process's own gate is `live_gate_recorded`.
-    Whether a live entry can open is `live_entry_possible` in the `[data]` line, and nothing
-    else: `true` only when every entry of `readiness.components` is ok; if `false`, quote each
-    entry of `readiness.blocking` (component:reason); if `null`, some fact cannot be seen from
-    here — quote `readiness.unknown`. Quote those lists, not the `checks` rows.
-    `infrastructure_ready` is only this process's checks, and `ready` alone never means "live
-    trading is on"."""
+    and a live order, today's realized P&L against the limit. Rendered in YOUR container: its
+    env rows read n/a or FAIL here, so never say live trading is disabled because of one.
+    Whether a live entry can open is `live_entry_possible` in the `[data]` line (the board's
+    first and last `LIVE ENTRY POSSIBLE` lines say the same), and nothing else: `true` only when
+    every entry of `readiness.components` is ok; if `false`, quote each entry of
+    `readiness.blocking` (component:reason); if `null`, some fact cannot be seen from here —
+    quote `readiness.unknown`. Quote those lists, not the `checks` rows. `infrastructure_ready`
+    and the board's `THIS PROCESS:` line are only this container's checks, and `ready` alone
+    never means "live trading is on"."""
     return _ask("crypto_readiness", with_data=True)
 
 

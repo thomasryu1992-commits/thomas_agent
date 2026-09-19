@@ -27,10 +27,12 @@ makes no outbound call at all and the breaker row fails for want of a source —
 honest answer, not a degraded one. The read is the same gated, read-only `account` module the
 dashboard uses; it cannot place, amend, or cancel anything.
 
-The final line is deliberately blunt. Since LP4 landed (2026-07-25) an order path **does** exist,
-so READY here no longer means "configured" — it means a real order could actually be placed on
-this machine. The board says that out loud rather than letting a row of green ticks read as
-harmless.
+The board opens and closes with the readiness state (crypto PR5a/5b): ``LIVE ENTRY POSSIBLE``
+YES / NO / UNKNOWN, with what refuses an entry and what this process cannot see. That — not READY —
+is whether an autonomous entry can open. READY is this process's own verdict, printed as
+``THIS PROCESS: ...``: since LP4 landed (2026-07-25) an order path **does** exist, so a READY
+process is one from which a real order could actually be placed. The board says both out loud
+rather than letting a row of green ticks read as harmless, or a red row as "live trading off".
 
 **Status claims live in computed rows, not in prose.** This module's whole purpose is that an
 answer here cannot drift from what the code enforces — and it drifted anyway: for a day after the
@@ -39,7 +41,9 @@ right the whole time; the sentence a human reads before risking money was wrong.
 autonomous path exists is now the `autonomous_routing_wired` row, derived from a constant that a
 test pins to the actual import graph, and a second test asserts this prose makes no build claim.
 
-Exit code is 0 only when every check passes, so it can be used as a precondition in a script.
+Exit code is 0 only when every check passes — THIS process is READY — so it can be used as a
+precondition in a script that runs where trading runs. It is not whether an entry can open;
+``--json`` carries that as ``readiness`` (``live_entry_possible``, ``blocking``, ``unknown``).
 """
 
 from __future__ import annotations
@@ -414,9 +418,9 @@ def _recorded_fire(recent: tuple[list[dict[str, Any]], str | None, str | None], 
     gate's one status. Never raises and never guesses: an absent or unreadable ledger reports
     ``known: False``, and a newest record this board cannot date reports ``recent: None``.
 
-    The fire is every record at the newest instant, so a single-context pipeline schedule's fire would
-    be read as the fire too. This host runs the pool fan-out alone (one ``crypto_pipeline`` schedule,
-    request "").
+    The fire is every record at the newest instant, so where a single-context pipeline schedule is
+    registered beside the pool fan-out, its fire would be read as the fire too: this reading does not
+    tell the two apart.
     """
     records, warning, error = recent
     newest = records[-1].get("created_at") if records else None
@@ -824,7 +828,14 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
             f"realized today {risk['daily_realized_pnl_usdt']} USDT, "
             f"limit {risk['daily_loss_limit_usdt']} (source={risk.get('pnl_source')})"
         )
-    checks.append(_check("daily_loss_breaker", not breached and not no_source, detail))
+    checks.append({
+        **_check("daily_loss_breaker", not breached and not no_source, detail),
+        # NO DATA SOURCE only because this process reads no account is a fact about this process —
+        # the readiness state reads the trading process's snapshot instead — and a process without
+        # the live-trading environment says so on the row (`_row`, review of #907). BREACHED is a fact
+        # about the limit, and is never scoped.
+        "env_scoped": no_source and not breached and not account_configured,
+    })
 
     # 6b. The bracket breaker. Unlike the loss breaker above it always has a source: it counts
     # what this runtime's own leg did, so it reads zero only when zero is true. It is on the
@@ -1200,6 +1211,13 @@ SOURCE_THIS_PROCESS = "this_process"
 SOURCE_RECORDED = "recorded"
 NOT_REPORTED = "NOT_REPORTED"
 
+# The reasons the stall rule decides (`_majority`). A component refused on one is False for most of the
+# last fire's contexts, and a minority may still enter (`minority_may_enter`, review of #907).
+# Private: `live_route.ACCOUNT_UNREADABLE` is the leg's own code, with another value.
+_MAJORITY = "MAJORITY_"
+_LEG_BLOCKED = "LEG_BLOCKED"
+_ACCOUNT_UNREADABLE = "ACCOUNT_UNREADABLE"
+
 # The rows the entry door refuses on, read from state every process mounts, and what each is called
 # when it refuses. The pre-order snapshot row is judged apart (`_risk_component`): it also fails on a
 # record that no longer proves past orders, which the entry path does not refuse.
@@ -1454,13 +1472,13 @@ def _account_component(inputs: Mapping[str, Any], *, opted: bool) -> dict[str, A
     if account.get("source") == SOURCE_THIS_PROCESS:
         if account.get("readable"):
             return _component(True, "READ", source=SOURCE_THIS_PROCESS)
-        return _component(False, "ACCOUNT_UNREADABLE", source=SOURCE_THIS_PROCESS)
+        return _component(False, _ACCOUNT_UNREADABLE, source=SOURCE_THIS_PROCESS)
     # The trading process's own reads at its last fire decide before its snapshot does: the store keeps
     # the previous snapshot when a read fails, so a fresh snapshot is no evidence the account reads now
     # (review of #906).
     fire = _mapping(inputs.get("recorded_fire"))
     if _fire_unseen(fire) is None and _majority(fire, fire.get("account_unreadable")):
-        return _component(False, "ACCOUNT_UNREADABLE", source=SOURCE_RECORDED)
+        return _component(False, _ACCOUNT_UNREADABLE, source=SOURCE_RECORDED)
     if not account.get("recorded"):
         return _component(None, "SNAPSHOT_MISSING", source=SOURCE_RECORDED)
     if account.get("stale"):
@@ -1505,7 +1523,7 @@ def _market_data_component(status: Mapping[str, Any], inputs: Mapping[str, Any],
     refused = {kind: _count(fire.get(key)) or 0 for kind, key in _DATA_REFUSALS}
     if _majority(fire, sum(refused.values())):
         commonest = max(refused, key=lambda kind: refused[kind])
-        return _component(False, f"MAJORITY_{commonest}")
+        return _component(False, f"{_MAJORITY}{commonest}")
     return _component(True, "FRESH")
 
 
@@ -1525,8 +1543,33 @@ def _reconciliation_component(inputs: Mapping[str, Any]) -> dict[str, Any]:
         return _component(False, "INCIDENT")
     if _majority(fire, fire.get("blocked")):
         code = fire.get("blocked_code")
-        return _component(False, f"LEG_BLOCKED_{code}" if isinstance(code, str) and code else "LEG_BLOCKED")
+        return _component(False, f"{_LEG_BLOCKED}_{code}" if isinstance(code, str) and code else _LEG_BLOCKED)
     return _component(True, "CLEAR")
+
+
+def _stall_rule_refusal(name: str, component: Mapping[str, Any]) -> bool:
+    """Whether this refusal is one of the stall rule's (`_majority`): False for most of the last fire's
+    contexts rather than for every entry. The account read counts only as the trading process recorded
+    it; this process's own failed read refuses its every entry."""
+    reason = component.get("reason")
+    if not isinstance(reason, str):
+        return False
+    if name == "market_data_ready":
+        return reason.startswith(_MAJORITY)
+    if name == "reconciliation_ready":
+        return reason == _LEG_BLOCKED or reason.startswith(_LEG_BLOCKED + "_")
+    if name == "account_ready":
+        return reason == _ACCOUNT_UNREADABLE and component.get("source") == SOURCE_RECORDED
+    return False
+
+
+def minority_may_enter(state: Mapping[str, Any]) -> bool:
+    """True when the answer is False by the stall rule alone: most of the last fire's contexts were
+    refused, and the rest may still open a position at the next cycle. Any other refusal refuses every
+    entry, and then this is False (review of #907: "no autonomous entry can open now" overclaimed)."""
+    components = _mapping(state.get("components"))
+    refused = [(name, c) for name, c in components.items() if isinstance(c, Mapping) and c.get("ok") is False]
+    return bool(refused) and all(_stall_rule_refusal(name, c) for name, c in refused)
 
 
 def readiness_state(status: Mapping[str, Any]) -> dict[str, Any]:
@@ -1592,7 +1635,7 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
         "as_of": status.get("created_at"),
         "infrastructure_ready": bool(status.get("ready")),
         "env_scope": "this_process",
-        "env_out_of_scope": contradicts_recorded_gate(status),
+        "env_out_of_scope": env_out_of_scope(status),
         "checks": [
             {"check": check.get("check"), "ok": bool(check.get("ok"))} for check in _rows(status)
         ],
@@ -1649,6 +1692,28 @@ def contradicts_recorded_gate(status: Mapping[str, Any]) -> bool:
     )
 
 
+def env_out_of_scope(status: Mapping[str, Any]) -> bool:
+    """True when this board's env rows describe only this container (crypto PR5b, FC-10).
+
+    A process without the live-trading environment cannot see the trading process's, so its env
+    rows are a fact about itself. The one exception is the trading process's own fresh record of a
+    CLOSED gate: then "live trading off" is true of the system as well, and the rows say it.
+
+    Until PR5b only :func:`contradicts_recorded_gate` qualified — a fresh record of an OPEN gate —
+    on the argument that absence of evidence is no licence to soften a row. That was right while
+    these rows were the board's conclusion. They are not any more: whether a live entry can open is
+    the readiness state's answer (PR5a), at the top of the board and in its last line. What was
+    left was the harm: a console whose last record had gone stale — the state a kill leaves behind,
+    since a killed runtime writes no more cycles — printed "MVP_LIVE_TRADING is not 'real' (live
+    trading off)" off its own empty environment. Right by accident after a kill, for the wrong
+    reason, in the one sentence a summariser lifts (the 2026-08-10 misreport). ``ready`` and
+    ``checks`` are untouched: this decides what the board SAYS, never what it permits.
+    """
+    recorded = status.get("recorded_gate") or {}
+    closed_now = bool(recorded.get("known")) and not recorded.get("stale") and not recorded.get("open")
+    return not _opted_in(status) and not closed_now
+
+
 # The rows computed from ``os.environ``. On a process that carries no live-trading environment
 # every one of them fails for a single reason — the environment is absent — and the failure is a
 # fact about that container, never about the system. Named here so the renderer can say so on the
@@ -1660,7 +1725,7 @@ ENV_SCOPED_CHECKS = frozenset({
     "market_data_visibility",
 })
 
-# What those rows are marked instead of FAIL while the banner is up. Four characters, so the
+# What those rows are marked instead of FAIL while the banner is up (`env_out_of_scope`). Four characters, so the
 # columns still line up under `[PASS]` / `[FAIL]` on an 80-column console.
 OUT_OF_SCOPE_MARK = "n/a "
 
@@ -1672,21 +1737,29 @@ OUT_OF_SCOPE_MARK = "n/a "
 # the banner above names the command that renders the one that is.
 OUT_OF_SCOPE_DETAIL = "not observable from this container - see the banner and live_gate_recorded"
 
+# The loss breaker's own stand-in, for a row that fails NO DATA SOURCE only because this process reads
+# no account (`env_scoped` on the row): "the limit currently bounds nothing" read as a claim about the
+# system while the trading process measured it (review of #907).
+OUT_OF_SCOPE_LOSS_DETAIL = ("not observable from this container (no account feed) - risk_ready above "
+                            "reads the trading process's own snapshot")
+_OUT_OF_SCOPE_DETAILS = {"daily_loss_breaker": OUT_OF_SCOPE_LOSS_DETAIL}
+
 
 def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]:
     """``(mark, detail)`` — ``n/a`` plus a scoped detail for an env row this process cannot see.
 
-    Only ever downgrades a **failure**, and only while :func:`contradicts_recorded_gate` holds —
-    which needs the trading process's own non-stale record saying the gate is OPEN. Where the
-    money path actually runs the env is present, the predicate is False, and every row reads
-    exactly as it did before. ``status["ready"]`` and ``status["checks"]`` are untouched: this is
-    what the board SAYS, not what it permits, and a console that cannot see the environment still
-    is not READY.
+    Only ever downgrades a **failure**, and only while :func:`env_out_of_scope` holds — this process
+    carries no live-trading environment and no fresh record of the trading process says its gate
+    was closed. The rows are :data:`ENV_SCOPED_CHECKS`, and any row that says its failure is this
+    process's own (``env_scoped``: the loss breaker without an account feed). Where the money path
+    actually runs the env is present, the predicate is False, and every row reads exactly as it did
+    before. ``status["ready"]`` and ``status["checks"]`` are untouched: this is what the board SAYS,
+    not what it permits, and a console that cannot see the environment still is not READY.
     """
     if check["ok"]:
         return "PASS", check["detail"]
-    if env_out_of_scope and check["check"] in ENV_SCOPED_CHECKS:
-        return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+    if env_out_of_scope and (check["check"] in ENV_SCOPED_CHECKS or check.get("env_scoped") is True):
+        return OUT_OF_SCOPE_MARK, _OUT_OF_SCOPE_DETAILS.get(check["check"], OUT_OF_SCOPE_DETAIL)
     return "FAIL", check["detail"]
 
 
@@ -1750,9 +1823,90 @@ def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     )
 
 
+def _record_age(recorded: Mapping[str, Any]) -> str:
+    """Why a record of the gate speaks for no now, by kind: the recorded gate's ``stale`` covers a
+    stamp over two hours old, one dated ahead of this clock and one that does not parse, and only
+    the first is an age (review of #907)."""
+    age = recorded.get("age_seconds")
+    if not isinstance(age, (int, float)) or isinstance(age, bool):
+        return "cannot be dated"
+    if age < -FUTURE_SKEW_SECONDS:
+        return "is dated ahead of this clock"
+    return "is over two hours old"
+
+
+def _named(names: list[str]) -> list[str]:
+    """``component:REASON`` entries as ``component (REASON)``, for a reader."""
+    return ["{} ({})".format(*entry.split(":", 1)) if ":" in entry else entry for entry in names]
+
+
+def _wrap(head: str, items: list[str], *, width: int = 80) -> list[str]:
+    """``items`` after ``head``, comma-separated and wrapped at ``width`` between items — never inside
+    one, so a component and its reason stay on one line for a reader and for grep. An item wider than
+    the room left keeps a line of its own."""
+    lines: list[str] = []
+    line, filled = head, False
+    for index, item in enumerate(items):
+        piece = item + ("," if index < len(items) - 1 else "")
+        if filled and len(line) + 1 + len(piece) > width:
+            lines.append(line)
+            line = " " * len(head) + piece
+        else:
+            line = f"{line} {piece}" if filled else line + piece
+        filled = True
+    lines.append(line.rstrip())
+    return lines
+
+
+def _readiness_lines(state: Mapping[str, Any]) -> list[str]:
+    """The readiness state as the head of the board (PR5b): the answer first, then what refuses it,
+    what cannot be seen from here, and what admits. Placed above the rows because the rows are this
+    process's checks, and the conclusion a reader takes away must not be built from them."""
+    possible = state.get("live_entry_possible")
+    components = state.get("components") or {}
+    admitting = [name for name, c in components.items() if c.get("ok") is True]
+    if possible is True:
+        head = "YES - the next cycle may open a REAL position"
+    elif possible is False and minority_may_enter(state):
+        # The stall rule's judgements alone: most contexts refused, not every one (review of #907).
+        head = "NO - for most contexts; a minority may still enter"
+    elif possible is False:
+        head = "NO - no autonomous entry can open now"
+    else:
+        head = "UNKNOWN - this process cannot see every fact it needs"
+    lines = ["LIVE ENTRY POSSIBLE: " + head]
+    if state.get("blocking"):
+        lines += _wrap("  blocked by : ", _named(list(state["blocking"])))
+    if state.get("unknown"):
+        lines += _wrap("  unknown    : ", _named(list(state["unknown"])))
+    if admitting:
+        lines += _wrap("  admitting  : ", admitting)
+    lines.append("  The rows below are THIS process's own checks, and so is the THIS PROCESS line")
+    lines.append("  under them - neither says whether the system trades.")
+    return lines
+
+
+def _live_entry_verdict(state: Mapping[str, Any]) -> str:
+    """The board's last line: the answer, and why — the line a hurried reader keeps. ONE line however
+    long, the one line the board does not wrap (review of #907): wrapped, the board ended on a bare
+    `armed_strategy_count (NONE_ARMED)`. A console and Telegram wrap it for the eye; grep and a
+    reader that keeps the last line get all of it."""
+    possible = state.get("live_entry_possible")
+    if possible is True:
+        return "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"
+    if possible is False:
+        return ("LIVE ENTRY POSSIBLE: NO - blocked by " + ", ".join(_named(list(state.get("blocking") or [])))
+                + ("; a minority of contexts may still enter" if minority_may_enter(state) else ""))
+    return "LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see " + ", ".join(
+        _named(list(state.get("unknown") or [])))
+
+
 def render_readiness_text(status: dict[str, Any]) -> str:
     """ASCII-only board. Windows consoles are cp949."""
     lines = ["=== live trading readiness ==="]
+    state = readiness_state(status)
+    lines += _readiness_lines(state)
+    lines.append("")
     # Before the rows, not after: the rows are what mislead, so a reader must meet the warning
     # first. #382 — the operator console and the assistant read door both ran this board in
     # containers with no MVP_LIVE_*, and both told a reader live trading was off while the
@@ -1765,18 +1919,27 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     # around a row does not beat the row: `[FAIL] live_trading_opt_in ... (live trading off)` is
     # the thing a summariser carries out, so the scope now lives ON it. Prose is what a careful
     # reader reads; the mark is what every reader takes.
-    env_out_of_scope = contradicts_recorded_gate(status)
-    if env_out_of_scope:
-        recorded = status["recorded_gate"]
+    out_of_scope = env_out_of_scope(status)
+    recorded = status.get("recorded_gate") or {}
+    if out_of_scope:
         lines.append("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
-        lines.append(f"   the trading process recorded the gate OPEN at {recorded['recorded_at']}")
+        # What IS known about the trading process's gate, in the three states the rows cannot
+        # speak for (FC-10): a fresh OPEN record, an old record, and none. "Old" says which kind
+        # of old (`_record_age`): a record dated ahead of this clock is not two hours old.
+        if contradicts_recorded_gate(status):
+            lines.append(f"   the trading process recorded the gate OPEN at {recorded.get('recorded_at')}")
+        elif recorded.get("known"):
+            lines.append(f"   the trading process's last record ({recorded.get('recorded_at')})")
+            lines.append(f"   {_record_age(recorded)} - not a statement about now")
+        else:
+            lines.append("   no record of the trading process's gate is readable here")
         lines.append("   the env rows below describe THIS container, not the system")
         lines.append("   authoritative board:")
         lines.append("     docker exec thomas-scheduler python -m runtime.mvp_runtime.crypto"
                      ".live_readiness")
         lines.append("")
     for check in status["checks"]:
-        mark, detail = _row(check, env_out_of_scope=env_out_of_scope)
+        mark, detail = _row(check, env_out_of_scope=out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     lines.append(_testnet_evidence_line(status))
@@ -1784,7 +1947,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
     lines.append(f"guard dry-run ({probe} at the configured cap): {guard['status']}")
-    if env_out_of_scope:
+    if out_of_scope:
         # The dry-run puts the REAL guard against THIS process's environment, so its blocks read
         # back the absent env as a refusal — "live trading is not enabled (MVP_LIVE_TRADING is
         # not 'real')", the same sentence the rows above just stopped printing. Listing them here
@@ -1805,28 +1968,35 @@ def render_readiness_text(status: dict[str, Any]) -> str:
     if status.get("counter_error"):
         lines.append(f"WARNING : daily order counter unreadable ({status['counter_error']})")
     lines.append("")
+    # THIS process's verdict, named as such (PR5b). It is what the CLI's exit code follows, and it
+    # is not the system's answer — that is the last line.
     if status["ready"]:
-        lines.append("READY")
-    elif env_out_of_scope:
+        lines.append("THIS PROCESS: READY - every check above passes")
+    elif out_of_scope:
         # Unqualified "NOT READY" here would be the same false statement the banner exists to
-        # prevent, in the one line a hurried reader keeps. The second line used to say only what
-        # this verdict is NOT evidence of; a reader who takes one line away deserves the fact
-        # instead, so it now states what IS known — the trading process's own record.
-        lines.append("NOT READY (THIS PROCESS ONLY) - it carries no live-trading environment;")
-        lines.append("           the system's own gate was recorded OPEN at "
-                     f"{status['recorded_gate']['recorded_at']}")
+        # prevent. The second line states what IS known — the trading process's own record.
+        lines.append("THIS PROCESS: NOT READY (THIS PROCESS ONLY) - no live-trading environment here;")
+        if contradicts_recorded_gate(status):
+            lines.append("           the system's own gate was recorded OPEN at "
+                         f"{recorded.get('recorded_at')}")
+        elif recorded.get("known"):
+            lines.append(f"           the system's last record of its gate ({recorded.get('recorded_at')})")
+            lines.append(f"           {_record_age(recorded)}")
+        else:
+            lines.append("           no record of the system's own gate is readable here")
     else:
-        lines.append("NOT READY - every FAIL above must clear first")
+        lines.append("THIS PROCESS: NOT READY - every FAIL above must clear first")
     if status["order_path_implemented"]:
         # READY is no longer an abstract "configured" — say what it now means.
-        lines.append("NOTE  : an order path EXISTS; READY here means a real order can be placed")
+        lines.append("NOTE  : an order path EXISTS; from a READY process a real order can be placed")
         if status.get("autonomous_routing_wired"):
             # The loudest line the board has, and it earns it: this is the one state in which
             # nobody is standing at a terminal when the order goes out. It says how to stop it
             # too — an operator reading a board they do not like should not have to go and find
             # the runbook first.
             lines.append("NOTE  : autonomous routing is WIRED - a scheduled crypto run on this")
-            lines.append("        machine opens and closes REAL positions once every FAIL clears")
+            lines.append("        machine opens and closes REAL positions while LIVE ENTRY POSSIBLE")
+            lines.append("        reads YES")
             # The sentence above is the one a reader believed on 2026-08-10 while the armed set
             # was empty. When nothing is armed the qualification goes HERE, where the promise is
             # made — a PASS row further up does not outweigh a NOTE that says positions will
@@ -1834,7 +2004,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             armed_fact = status.get("live_armed_strategies") or {}
             if armed_fact.get("known") and armed_fact.get("armed") == 0:
                 lines.append("NOTE  : ...but 0 strategies are armed - no autonomous entry will OPEN")
-                lines.append("        even with every FAIL clear; open positions still close. To arm")
+                lines.append("        whatever else clears; open positions still close. To arm")
                 lines.append("        one: python -m scripts.promote_strategy_candidates ... --live-tier LIVE")
             # The stop instruction changed with the gate (2026-07-28): there is no grant file to
             # delete any more. `console_cli kill` is what replaces it and is strictly the better
@@ -1855,6 +2025,9 @@ def render_readiness_text(status: dict[str, Any]) -> str:
             lines.append("        scripts/run_slippage_probe.py --fire, one deliberate probe")
     else:
         lines.append("NOTE  : no order path exists yet; this board cannot report READY until LP4 lands")
+    # Last, because it is the line a reader keeps: the system's answer, not this process's.
+    lines.append("")
+    lines.append(_live_entry_verdict(state))
     return "\n".join(lines)
 
 
@@ -1863,11 +2036,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Live-trading readiness board (read-only: no network, no writes, no orders)."
     )
-    parser.add_argument("--json", action="store_true", help="emit the full status as JSON")
+    parser.add_argument("--json", action="store_true",
+                        help="emit the full status as JSON, with `live_entry_possible` and `readiness` "
+                             "as the [data] line carries them")
     args = parser.parse_args(argv)
     status = build_readiness()
     if args.json:
-        sys.stdout.write(json.dumps(status, ensure_ascii=False, indent=1) + "\n")
+        # The readiness state in the [data] line's shape (`readiness_data`): the answer at the top
+        # level, its components and lists under `readiness` (review of #907).
+        state = readiness_state(status)
+        sys.stdout.write(json.dumps({
+            **status,
+            "live_entry_possible": state["live_entry_possible"],
+            "readiness": {key: state[key] for key in ("model", "blocking", "unknown", "components")},
+        }, ensure_ascii=False, indent=1) + "\n")
     else:
         sys.stdout.write(render_readiness_text(status) + "\n")
     return 0 if status["ready"] else 1
