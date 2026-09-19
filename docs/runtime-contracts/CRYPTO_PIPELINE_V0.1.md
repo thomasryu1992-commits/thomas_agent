@@ -287,6 +287,26 @@ installed without a candidate id writes `gen:` rows (or `sid:` rows if it names 
     and a sealed predecessor's losses stay out of the drawdown window while its rule trades. An
     older door can also re-promote a replaced lineage beside the entry that inherited it; this code
     then refuses the pool on read (`STRATEGY_POOL_DUPLICATE`) until one of them is retired.
+- **One rule, one entry** (decisions 40 and 42, PR3c-2): the same rule is the same strategy, whatever
+  candidate id it was re-scored under. "Same rule" is the label or the spec's computed hash
+  (`pool.rule_hashes_of`).
+  - A rule the pool routes (any status but SUSPENDED and ARCHIVED) is never installed under another
+    candidate, and a batch never carries one rule twice: `POOL_RULE_ALREADY_ROUTED`, a roster gate
+    with no escape, at the ask and at the install (where it runs before display ids are assigned).
+  - A rule that only retired entries hold returns as a reactivation. It is named in the content hash
+    (`pool.reactivated_candidate_ids`, by the retired entries' lineage keys, where a re-listed member
+    is named by its bare id) and in the ask's signed parameters (`reactivated_lineages`) and risk
+    reason, and it is refused without `--allow-reactivation`. The new entry replaces those entries,
+    in either mode, and their display ids leave with them; it records what named them and inherits
+    their record (above). The promotion event keeps who they were and why they had been retired
+    (`replaced_entries`).
+  - The pool read does not enforce it: S008 and S008-GEN-696 hold one rule, both retired, and stay
+    (decision 42); their rule's return replaces both.
+  - Replayed on the host on 2026-09-19: of the 70 rules the pool holds with another candidate id in
+    the store, none could have been installed that day, but only because another gate or a
+    display-id collision happened to refuse each. One (`cand_d3556f0f1a137ede74c9`, the retired
+    S005-GEN-626's rule) passed every gate and was stopped by the collision alone; it now needs
+    an approval that names the return and the escape.
 - Measured 2026-09-18, over the own paper and supporting-shadow outcomes and the occupying pool: no
   display id names two lineages, no lineage was recorded under two display ids, each occupying entry
   reads the same rows under both keys and none spans two keys, and no context has an exact score or

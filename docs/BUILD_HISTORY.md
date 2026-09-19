@@ -24,6 +24,28 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **One rule, one entry: a retired rule returns only as an approved reactivation** (crypto PR3c-2,
+  Thomas decisions 40 and 42, 2026-09-19; `crypto/pool.py`, `crypto/promotion.py`,
+  `permission.py`, `scripts/promote_strategy_candidates.py`).
+  - **The gap:** every identity check at the door compared candidate ids, and the store re-scores
+    a rule under new ones. A routed rule could be installed twice. A retired rule could come back
+    silently as a fresh hypothesis. On 2026-09-10 only a display-id collision stopped one.
+  - **The change:**
+    - A roster gate with no escape refuses a rule the pool routes, and a batch that carries one
+      rule twice (`POOL_RULE_ALREADY_ROUTED`). The install also runs it before assigning display
+      ids.
+    - A rule that only retired entries hold is a reactivation. It is named in the content hash by
+      the retired entries' lineage keys, and in the signed parameters and risk reason Thomas reads.
+      It is refused without `--allow-reactivation`.
+    - The new entry replaces those entries in either mode and inherits their record (PR3c-1). The
+      promotion event keeps who they were and why they had been retired.
+  - **No hash-version bump:** an ordinary promotion hashes as before. A same-rule return hashes
+    differently, so an approval asked before this refuses rather than install an effect it did
+    not name.
+  - **Door only:** the pool read keeps loading S008 and S008-GEN-696, one rule installed twice
+    (decision 42).
+  - **Measured:** see the CRYPTO_PIPELINE bullet ("One rule, one entry") for the 2026-09-19 replay.
+
 - **An entry that replaced a retired rule is judged on its record too** (crypto PR3c-1, Thomas
   decision 41, 2026-09-19; `crypto/candidate_identity.py`, `crypto/pool.py`, `crypto/paper.py`,
   `crypto/live_allowance.py`, `crypto/risk_limits.py`, a `crypto/strategy_artifact.py` docstring).
