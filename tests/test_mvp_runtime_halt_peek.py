@@ -12,7 +12,10 @@ What must hold, and each is a direction chosen once:
 - The peek **does not claim** what it reads. The cursor is the whole risk of this design:
   advancing it would destroy an ordinary request that arrived in the same batch as a `/kill`.
 - Because it does not claim, everything it acts on is seen again — so it acts **only** on
-  verbs that are safe to apply twice, and it writes **state only**: no ledger event, no reply.
+  verbs that are safe to apply twice, and it sends no reply. A kill or a pause writes state
+  only (the normal handling writes it again, event included); a trading halt writes its event
+  when it changes the state, because the normal handling then has nothing to change (PR6d).
+- A trading halt in the peek only **tightens**: it never releases a stop or loosens HARD.
 - `resume` is not peekable, and that is a safety property rather than an omission.
 - It does **not** stop the running analysis. That is decision K4, not this.
 - Every failure direction is "the run wins".
@@ -52,8 +55,9 @@ def _control(tmp_path):
 
 def test_only_halt_verbs_are_peekable():
     """The peek does not claim what it reads, so everything here is seen twice. `kill`/`pause`
-    are the same runtime applied twice; `resume`, `approve`, `status` are not."""
-    assert operator.PEEKABLE_HALT_VERBS == {control.CMD_KILL, control.CMD_PAUSE}
+    are the same runtime applied twice, and so is a trading halt applied as tightening only (PR6d);
+    `resume`, `approve`, `status` are not."""
+    assert operator.PEEKABLE_HALT_VERBS == {control.CMD_KILL, control.CMD_PAUSE, control.CMD_HALT_TRADING}
 
 
 def test_resume_is_not_peekable_and_that_is_the_point(tmp_path):
@@ -147,7 +151,9 @@ def test_the_peek_writes_no_ledger_event_and_sends_no_reply(tmp_path):
     channel = MockOperatorChannel(inbound=[_msg("/kill")])
     control_log = tmp_path / "ledger" / CONTROL_FILE
 
-    peek_for_halt(channel, registration=REG, control_store=store, now=NOW)
+    # Handed the ledger, as the drain hands it (PR6d, for halts): a kill still writes none here.
+    peek_for_halt(channel, registration=REG, control_store=store, now=NOW,
+                  ledger=LedgerStore(tmp_path / "ledger"))
 
     assert channel.sent == []
     assert not control_log.exists(), "the peek wrote a control event the normal path will write"
@@ -351,3 +357,122 @@ def test_one_unusable_message_does_not_take_the_rest_of_the_batch_with_it(tmp_pa
 
     assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) == control.CMD_KILL
     assert store.load().mode == control.KILLED
+
+# --- the trading halt in the peek (PR6d) -------------------------------------
+
+@pytest.fixture
+def halt_granted(monkeypatch):
+    """Policy 1.5.1 grants halt_trading; pinned so these tests do not depend on the checkout's policy."""
+    monkeypatch.setattr(control, "granted_emergency_controls",
+                        lambda root=None: frozenset({"kill", "pause", "resume", "status", "stop", "halt_trading"}))
+
+
+def _armed_store(tmp_path):
+    store = _control(tmp_path)
+    store.save(control.ControlState(mode=control.ACTIVE, updated_by="tg-12345", updated_at=NOW,
+                                    reason="armed", trading_armed=True))
+    return store
+
+
+def _control_events(tmp_path):
+    from runtime.mvp_runtime.store import CONTROL_FILE
+
+    log = tmp_path / "ledger" / CONTROL_FILE
+    import json
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+
+def test_a_trading_halt_lands_during_an_analysis(tmp_path, halt_granted):
+    """The default recorded with decisions 47-50: a halt lands at once, like /kill, and management
+    keeps running because the runtime stays ACTIVE. Its event is written once, by the peek."""
+    store = _armed_store(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    channel = MockOperatorChannel(inbound=[_msg("/halt_trading hard 변동성")])
+
+    assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW,
+                         ledger=ledger) == control.CMD_HALT_TRADING
+    state = store.load()
+    assert (state.mode, state.halt_level, state.trading_armed, state.reason) == (
+        control.ACTIVE, control.HALT_HARD, False, "변동성")
+    assert channel.sent == [] and len(channel.inbound) == 1
+    assert [e["action"] for e in _control_events(tmp_path)] == [control.CMD_HALT_TRADING]
+
+
+def test_the_normal_handling_of_a_halt_the_peek_applied_writes_no_second_event(tmp_path, halt_granted):
+    """The next poll delivers the same message; it changes nothing, writes nothing, and its reply
+    says since when the halt is in effect and that the reason is on record."""
+    store = _armed_store(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+    channel = MockOperatorChannel(inbound=[_msg("/halt_trading hard 변동성")])
+    peek_for_halt(channel, registration=REG, control_store=store, now=NOW, ledger=ledger)
+
+    out = control.apply_command(store, control.CMD_HALT_TRADING, actor="tg-12345", now=NOW,
+                                arg="hard 변동성", ledger=ledger, halt_may_release_stop=True)
+    assert out["changed"] is False
+    assert f"in effect since {NOW}, placed by tg-12345" in out["reply"]
+    assert "그대로 남아 있습니다" in out["reply"] and "기록되지 않았습니다" not in out["reply"]
+    assert len(_control_events(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("stop", ["/kill", "/pause"])
+def test_the_peek_never_releases_a_stop_with_a_halt(tmp_path, halt_granted, stop):
+    """From a stop the peek records the halt under it and lifts nothing: releasing a stop is the
+    normal handling's, once, for the authenticated operator."""
+    store = _armed_store(tmp_path)
+    peek_for_halt(MockOperatorChannel(inbound=[_msg(stop)]), registration=REG, control_store=store, now=NOW)
+    stopped = store.load().mode
+    peek_for_halt(MockOperatorChannel(inbound=[_msg("/halt_trading hard")]), registration=REG,
+                  control_store=store, now=NOW)
+    state = store.load()
+    assert (state.mode, state.execution_allowed, state.halt_level) == (stopped, False, control.HALT_HARD)
+
+
+def test_the_peek_never_loosens_hard(tmp_path, halt_granted):
+    store = _armed_store(tmp_path)
+    peek_for_halt(MockOperatorChannel(inbound=[_msg("/halt_trading hard")]), registration=REG,
+                  control_store=store, now=NOW)
+    before = store.load()
+    for text in ("/halt_trading soft", "/halt_trading", "/halt_trading soft 완화"):
+        peek_for_halt(MockOperatorChannel(inbound=[_msg(text)]), registration=REG, control_store=store, now=NOW)
+    assert store.load() == before and before.halt_level == control.HALT_HARD
+
+
+def test_a_halt_queued_ahead_of_a_kill_does_not_hide_it(tmp_path, halt_granted):
+    """Review of H2: returning at the first match meant a /halt_trading queued ahead of a /kill was
+    re-applied on every peek and the kill never landed. The whole batch is read, in order, and a
+    second peek over the same batch changes nothing."""
+    store = _armed_store(tmp_path)
+    channel = MockOperatorChannel(inbound=[_msg("/halt_trading"), _msg("/kill")])
+
+    assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) == control.CMD_KILL
+    after = store.load()
+    assert (after.mode, after.halt_level) == (control.KILLED, control.HALT_SOFT)
+    peek_for_halt(channel, registration=REG, control_store=store, now=NOW)
+    assert store.load().mode == control.KILLED and store.load().halt_level == control.HALT_SOFT
+
+
+def test_a_halt_sent_during_an_analysis_lands_before_it_ends(tmp_path, monkeypatch, halt_granted):
+    """End to end on the real drain: the halt reaches the state while the analysis runs, the next
+    poll answers it once, and the ledger holds one halt event."""
+    seen: list = []
+    store = _armed_store(tmp_path)
+    ledger = LedgerStore(tmp_path / "ledger")
+
+    def _run(request, **kwargs):
+        channel.inbound.append(_msg("/halt_trading hard 변동성"))
+        kwargs["on_progress"]("analysis_worker")
+        seen.append((store.load().halt_level, store.load().trading_allowed))
+        return {"status": "COMPLETED", "final_response": "분석 결과",
+                "records": {"received_task": {"identity": {"task_id": "t", "trace_id": "tr"}}}}
+
+    monkeypatch.setattr("runtime.mvp_runtime.operator.run_task", _run)
+    monkeypatch.setattr("runtime.mvp_runtime.operator_feedback.record_delivery", lambda *a, **k: None)
+    channel = MockOperatorChannel(inbound=[_msg("이 아이디어를 분석해줘")])
+
+    run_operator_once(channel, REG, registry=TaskRegistryStore(tmp_path), control_store=store,
+                      store=ledger, repo_root=tmp_path)
+    assert seen == [(control.HALT_HARD, False)], "the halt did not land while the analysis ran"
+    run_operator_once(channel, REG, registry=TaskRegistryStore(tmp_path), control_store=store,
+                      store=ledger, repo_root=tmp_path)
+    assert any("in effect since" in text for _chat, text in channel.sent)
+    assert [e["action"] for e in _control_events(tmp_path)] == [control.CMD_HALT_TRADING]

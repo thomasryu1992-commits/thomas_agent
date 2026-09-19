@@ -1772,6 +1772,35 @@ def _row(check: Mapping[str, Any], *, env_out_of_scope: bool) -> tuple[str, str]
     return "FAIL", check["detail"]
 
 
+# Decision 50 (2026-09-19): the manual kill switch is the secondary control — it refuses new entries
+# only, and the process reads it at restart. The primary control is the control store, which the
+# runtime_active and trading_armed rows read (halt_trading, kill, pause, resume). Said on the row.
+MANUAL_KILL_SECONDARY = "secondary, entries only; the control store is primary"
+
+
+def _manual_kill_row(check: Mapping[str, Any], status: Mapping[str, Any]) -> tuple[str, str]:
+    """``(mark, detail)`` for the manual kill switch (decision 50).
+
+    In the trading process the row is its own switch. Anywhere else this process's environment says
+    nothing about the system, and the row read PASS "clear" off a console that carries no live-trading
+    environment at all. It now shows the trading process's last record of the switch — the record
+    ``live_gate_open`` already decides on, under the same conditions (fresh, and stamped by a leg that
+    records its switches) — or n/a when there is no such record. Rendering only: ``checks`` and
+    ``ready`` are untouched."""
+    if _opted_in(status):
+        mark, detail = _row(check, env_out_of_scope=False)
+        return mark, f"{detail} ({MANUAL_KILL_SECONDARY})"
+    recorded = _mapping(status.get("recorded_gate"))
+    fire = _mapping(_mapping(status.get("readiness_inputs")).get("recorded_fire"))
+    switches = _mapping(fire.get("gate"))
+    if recorded.get("known") and not recorded.get("stale") and switches:
+        seen = f"as the trading process recorded it at {fire.get('created_at')}"
+        if switches.get("manual_kill_switch"):
+            return "FAIL", f"{MANUAL_KILL_SWITCH_ENV} is engaged, {seen} ({MANUAL_KILL_SECONDARY})"
+        return "PASS", f"clear, {seen} ({MANUAL_KILL_SECONDARY})"
+    return OUT_OF_SCOPE_MARK, OUT_OF_SCOPE_DETAIL
+
+
 def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
     """What the SIGNED_TESTNET -> LIVE_AUTONOMOUS climb would find. Informational: it gates no
     check here, because the ladder's own door is where it decides anything (PR1d-2)."""
@@ -1948,7 +1977,10 @@ def render_readiness_text(status: dict[str, Any]) -> str:
                      ".live_readiness")
         lines.append("")
     for check in status["checks"]:
-        mark, detail = _row(check, env_out_of_scope=out_of_scope)
+        if check["check"] == "manual_kill_switch":
+            mark, detail = _manual_kill_row(check, status)
+        else:
+            mark, detail = _row(check, env_out_of_scope=out_of_scope)
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     lines.append(_testnet_evidence_line(status))

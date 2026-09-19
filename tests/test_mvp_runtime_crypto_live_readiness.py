@@ -897,14 +897,17 @@ def test_the_render_does_not_cry_zero_when_a_strategy_is_armed(tmp_path, clean_e
 # system whose scheduler held an open gate. These lock the fix: the board reports what the
 # trading process recorded, and refuses a bare "off" its own env cannot support.
 
-def _write_cycle(root, *, status: str, created_at: str):
-    """One crypto_cycle ledger row — the trading process's own record of its live gate."""
+def _write_cycle(root, *, status: str, created_at: str, live_gate=None):
+    """One crypto_cycle ledger row — the trading process's own record of its live gate, and of its
+    two switches when ``live_gate`` is given (the leg stamps them since PR5a)."""
     from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
 
     ledger = root / LEDGER_REL
     ledger.mkdir(parents=True, exist_ok=True)
-    row = {"kind": "crypto_cycle",
-           "record": {"live_route_status": status, "created_at": created_at}}
+    record = {"live_route_status": status, "created_at": created_at}
+    if live_gate is not None:
+        record["live_gate"] = live_gate
+    row = {"kind": "crypto_cycle", "record": record}
     with (ledger / RECORDS_FILE).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
 
@@ -1436,3 +1439,47 @@ def test_an_unexpected_reader_exception_fails_the_row_and_never_the_board(tmp_pa
     assert status["ready"] is False
     assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW)["reason_code"] \
         == vc.ENTRY_CONTRACT_UNREADABLE
+
+
+# --- the manual kill switch row (decision 50) ---------------------------------------
+
+def _kill_row(text):
+    return next(line for line in text.splitlines() if line.startswith("[") and "manual_kill_switch" in line)
+
+
+@pytest.mark.parametrize("engaged", [False, True])
+def test_a_console_shows_the_manual_kill_switch_the_trading_process_recorded(tmp_path, clean_env, engaged):
+    """Decision 50: the row read PASS "clear" off a console with no live-trading environment. It now
+    shows the trading process's own record of the switch, and says it is the secondary control."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z",
+                 live_gate={"confirmation_present": True, "manual_kill_switch": engaged})
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _kill_row(live_readiness.render_readiness_text(status))
+    seen = "as the trading process recorded it at 2026-07-23T11:55:00Z"
+    if engaged:
+        assert row.startswith("[FAIL]") and "MVP_LIVE_MANUAL_KILL_SWITCH is engaged" in row, row
+    else:
+        assert row.startswith("[PASS]") and "clear, " in row, row
+    assert seen in row and live_readiness.MANUAL_KILL_SECONDARY in row
+    # Rendering only: the check record every machine consumer reads is this process's, untouched.
+    check = next(c for c in status["checks"] if c["check"] == "manual_kill_switch")
+    assert (check["ok"], check["detail"]) == (True, "clear")
+
+
+@pytest.mark.parametrize("created_at,live_gate", [
+    ("2026-07-23T11:55:00Z", None),                                                     # not stamped
+    ("2026-07-23T08:00:00Z", {"confirmation_present": True, "manual_kill_switch": False}),  # stale
+])
+def test_a_console_without_a_usable_record_says_it_cannot_see_the_switch(tmp_path, clean_env, created_at,
+                                                                      live_gate):
+    _write_cycle(tmp_path, status="HELD", created_at=created_at, live_gate=live_gate)
+    row = _kill_row(live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW)))
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and live_readiness.OUT_OF_SCOPE_DETAIL in row
+    assert "clear" not in row
+
+
+def test_the_trading_process_shows_its_own_switch_as_the_secondary_control():
+    opted = {"checks": [{"check": "live_trading_opt_in", "ok": True, "detail": "real"}]}
+    for ok, detail, mark in ((True, "clear", "PASS"), (False, "MVP_LIVE_MANUAL_KILL_SWITCH is engaged", "FAIL")):
+        got = live_readiness._manual_kill_row({"check": "manual_kill_switch", "ok": ok, "detail": detail}, opted)
+        assert got == (mark, f"{detail} ({live_readiness.MANUAL_KILL_SECONDARY})")

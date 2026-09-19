@@ -89,6 +89,9 @@ HALT_LEVELS = frozenset({HALT_SOFT, HALT_HARD})
 # What a `halt_trading` argument's first word may name. Anything else is the start of the reason, as
 # it always was (`/halt_trading 변동성 급등`).
 _HALT_LEVEL_WORDS = {"soft": HALT_SOFT, "hard": HALT_HARD}
+# How tight each level is. A door that may not loosen may still tighten (decision 47): no halt, then
+# SOFT, then HARD.
+_HALT_RANK = {None: 0, HALT_SOFT: 1, HALT_HARD: 2}
 _ALIASES = {"stop_task": CMD_STOP}
 
 # Verbs the parser knows but that act only while the committed Governance Policy grants them
@@ -750,7 +753,9 @@ def apply_command(
     armed (``/resume`` then ``/halt_trading`` would leave one). That releases a stop, which
     ``resume_requires_thomas_authentication`` reserves for the authenticated operator, so only the
     local console and the verified Telegram channel pass True. It defaults to False: the assistant's
-    switch door can halt entries but can never release a stop through this verb.
+    switch door and the mid-run peek can halt entries but can never release a stop through this verb.
+    Under a stop they record a tighter halt instead (PR6d), so a resume that does not re-arm comes
+    back to it; the stop and its reason stay.
 
     ``halt_level`` applies to ``halt_trading`` alone: ``HALT_SOFT`` or ``HALT_HARD``. When None, the
     first word of ``arg`` names it if that word is exactly ``soft`` or ``hard`` (``/halt_trading hard
@@ -875,13 +880,19 @@ def apply_command(
             # A halt over a bare disarm is not a no-op: it names the halt, on the state and on the
             # ledger, where a lost state file is recovered from.
             if current.halt_level == level:
+                # The mid-run peek may have applied this very message already (PR6d), so say since
+                # when and by whom, and do not claim the operator's words went unrecorded when the
+                # state holds exactly them.
+                since = (f" - in effect since {current.updated_at}, placed by {current.updated_by}"
+                         if current.updated_at else "")
+                kept = bool(stated) and current.reason == stated and current.updated_by == actor
                 return {
-                    "reply": (f"Live entries are already halted ({level} halt) and the runtime is "
-                              "ACTIVE, so open positions are being managed. Nothing changed; "
+                    "reply": (f"Live entries are already halted ({level} halt){since}. The runtime is "
+                              "ACTIVE, so open positions are being managed. Nothing further changed; "
                               "/resume re-arms."
                               + (" `/halt_trading soft` loosens it to the soft halt (the "
                                  "authenticated operator only)." if level == HALT_HARD else "")
-                              + not_recorded),
+                              + ("\n(이유 기록: 그대로 남아 있습니다.)" if kept else not_recorded)),
                     "mode": ACTIVE, "changed": False, "action": CMD_HALT_TRADING,
                 }
             if current.halt_level == HALT_HARD and not halt_may_release_stop:
@@ -917,13 +928,33 @@ def apply_command(
                     + reason_note
                 )
         elif not halt_may_release_stop:
-            return {
-                "reply": (f"Runtime is {current.mode}, which already refuses every live entry (and "
-                          "also stops position management). Left as it is — this door cannot "
-                          "release a stop; the authenticated operator can move it to a halt "
-                          "with /halt_trading." + not_recorded),
-                "mode": current.mode, "changed": False, "action": CMD_HALT_TRADING,
-            }
+            # This door cannot release a stop, but it may record a tighter halt under one (PR6d,
+            # review of PR6a): a resume that does not re-arm then comes back to that halt rather than
+            # to a bare disarm, and tightening needs nothing (decision 47). The stop stays, and so
+            # does its reason; the halt is noted beside it.
+            if _HALT_RANK[level] <= _HALT_RANK.get(current.halt_level, _HALT_RANK[HALT_HARD]):
+                return {
+                    "reply": (f"Runtime is {current.mode}, which already refuses every live entry (and "
+                              "also stops position management). Left as it is"
+                              + (f", with a {current.halt_level} halt under it" if current.halt_level else "")
+                              + " — this door cannot release a stop; the authenticated operator can "
+                              "move it to a halt with /halt_trading." + not_recorded),
+                    "mode": current.mode, "changed": False, "action": CMD_HALT_TRADING,
+                }
+            new_state = ControlState(
+                mode=current.mode, updated_by=actor, updated_at=stamp,
+                reason=(f"{current.reason} [{level} halt recorded under the stop"
+                        + (f": {stated}]" if stated else "]")),
+                stop_requested_task_ids=current.stop_requested_task_ids,
+                trading_armed=False,
+                halt_level=level,
+            )
+            verb_reply = (
+                f"Runtime is {current.mode} and stays {current.mode} — this door cannot release a stop. "
+                f"A {level.lower()} halt is recorded under it, so a resume that does not re-arm comes "
+                f"back to the {level.lower()} halt, not to live entries. The authenticated operator can "
+                "move it to the halt now with /halt_trading." + reason_note
+            )
         else:
             released = current.mode
             # A level carried from a state that failed closed was kept, not asked for: say so on the

@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **A halt lands during an analysis, and the console board stops guessing the manual kill switch**
+  (crypto PR6d, 2026-09-19; `operator.py`, `control.py`, `crypto/live_readiness.py`).
+  - **The peek applies `/halt_trading`** (the default recorded with decisions 47-50). It had been
+    left out for two reasons (review of H2), and each now has an answer:
+    - A halt from a stop releases the stop. The peek now applies it as a door that may not release
+      a stop or loosen a level, so from a stop it only records the halt under it. The normal
+      handling still releases and loosens, once, when it claims the message.
+    - The peek returned at its first match, so a `/halt_trading` queued ahead of a `/kill` hid the
+      kill for the whole analysis. It now reads the whole batch, in order.
+  - **One event per transition.** A halt the peek applied leaves the normal handling nothing to
+    change, and a no-op writes no event, so the peek writes the halt's event itself. The no-op reply
+    now says since when the halt is in effect and who placed it, and that the reason is on record.
+  - **A halt under a stop** (review of PR6a, F12). A door that cannot release a stop records a
+    tighter halt under it; tightening needs nothing (decision 47). That covers the peek and the
+    assistant's `disable mode=soft|hard`. The stop and its reason stay, and a resume that does not
+    re-arm comes back to the halt instead of to a bare disarm. It only tightens: SOFT never replaces
+    HARD there.
+  - **The manual kill switch row** (decision 50). A board without the live-trading environment
+    printed `[PASS] manual_kill_switch clear` off its own empty environment. It now shows the
+    trading process's last record of the switch, the same record `live_gate_open` decides on, or n/a.
+    Every board says the switch is secondary: entries only, read at restart, with the control store
+    as the primary control. This changes rendering only; `checks` and `ready` are untouched.
+
 - **The emergency close** (crypto PR6c, 2026-09-19, Thomas decision 49; `scripts/emergency_close.py`,
   `crypto/live_route.py`, `permission.py`).
   - **The change:** the operator can close every booked live position at market, reduceOnly, under

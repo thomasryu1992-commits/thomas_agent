@@ -482,7 +482,12 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   resume) comes back to the halt that was in effect. The level is a field beside `mode`
   (`halt_level`), recorded on every control event (`resulting_halt_level`) and recovered from the
   ledger when the state file is lost; a corrupt file still reads KILLED (decision 48), with a HARD
-  halt under it. A halt that names no level (`/halt_trading <reason>`, or the console command in the
+  halt under it. **A halt lands during an analysis too (PR6d):** Telegram's mid-run peek applies
+  `/halt_trading` as it applies `/kill`, but only as a tightening. It never releases a stop or
+  loosens HARD, and it reads the whole unclaimed batch in order, so a halt queued ahead of a `/kill`
+  cannot hide the kill. From a stop, a door that cannot release one (the peek, and the assistant's
+  `disable mode=soft|hard`) records the halt under the stop instead. A resume that does not re-arm
+  then comes back to that halt, not to a bare disarm. A halt that names no level (`/halt_trading <reason>`, or the console command in the
   incident notices) keeps the level in effect, so only an explicit `soft` loosens HARD. The level
   is the argument's first word, so a Telegram reason that itself begins with `soft` or `hard` is
   read as the level; the reply names every change of level. **Rollback is
@@ -556,6 +561,10 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
 - **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true` and restart the
   scheduler. Refuses entries; the runtime stays ACTIVE, so closes and management continue. Reach
   for the soft halt above first — it lands on the *running* service, this one waits for a restart.
+  **It is the secondary control (Thomas decision 50, 2026-09-19); the control store is the primary
+  one.** The readiness board says so on the row. A board that cannot see the scheduler's environment
+  shows the switch as the trading process last recorded it, or n/a; until PR6d it read "clear" off
+  its own empty environment.
   History worth keeping, because this bullet was false for longer than anyone would guess: until
   2026-09-07 `docker-compose.yml` forwarded this variable to no service, so setting it in `.env`
   and restarting halted nothing on the scheduler the autonomous entry path runs on, and the

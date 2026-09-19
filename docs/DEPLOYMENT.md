@@ -438,8 +438,10 @@ running; it is policy-gated and refuses by name until the 1.5.1 policy grants it
 **Rolling back across PR6 loses a HARD halt on the old image's next control write** — it reads the
 halt as the soft one but writes no level. After rolling forward again, check the `halt:` line in
 `console_cli status` and place `halt_trading hard` again if it was in effect. Over Telegram it
-lands when a running analysis finishes (the mid-run peek acts only on /kill and /pause); for an
-immediate entries-only halt during one, use the console command. A missing control
+lands at once, during a running analysis too (PR6d): the mid-run peek applies it, but only as a
+tightening. It never releases a stop or loosens HARD; the loop's normal handling does that when it
+reaches the message. The control store is the primary control; `MVP_LIVE_MANUAL_KILL_SWITCH` is a
+secondary one (entries only, read at restart; decision 50). A missing control
 file reads ACTIVE with live entries **unarmed** (Thomas decision 10) — `/resume` arms them.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 
