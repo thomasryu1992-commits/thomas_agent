@@ -24,6 +24,39 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The venue contract sentinel: the exchange is asked what the runtime assumes about it**
+  (crypto PR4a, Thomas decisions 43-46, 2026-09-19; `crypto/venue_contract.py`,
+  `scripts/venue_contract.py`, `schemas/venue_contract_verification.v0.1.schema.json`).
+  - **The gap:** every pre-order check validated the runtime's own model of the venue, which is how
+    2026-08-02 passed them all while the venue refused both protective stops. Measured 2026-09-19:
+    `exchangeInfo` still lists `STOP_MARKET`/`TAKE_PROFIT_MARKET` for every traded symbol, so it
+    cannot see that migration; the order API's -4120 is the only order-free observable. Position mode
+    was never queried, although no request carries a `positionSide`.
+  - **What it does:** about hourly, from the pipeline fire after its cycles, it asks through a
+    public GET, a signed GET and `/order/test` only (decision 43). Six judged checks decide PASS or
+    FAIL: `exchangeInfo`, the -4120 on the frozen 2026-08-03 request, one-way mode, leverage ≤ 5x
+    from a snapshot at most 45 minutes old, the entry test's own id naming no order, and nothing the
+    sentinel sent resting. Three observed checks record the host's answers to hypotheses —
+    including a reduce-only LIMIT twice the `PERCENT_PRICE` band away, because 360 of 778 shadow trades
+    planned a target beyond the ±5% band and whether the band binds a favourable-side LIMIT is the
+    venue's to say.
+  - **Why it asks for its own entry test by id:** the entry test is an executable MARKET BUY in all
+    but its path, and a filled order rests nowhere — a path re-pointed at the order endpoint would
+    otherwise send five real BUYs an hour with nothing noticing (review of #902).
+  - **Why it stops at the first "could not ask":** continuing to knock after a rate limit is how this
+    venue's throttling becomes an IP ban, and a ban refuses the money path's closes too (review of
+    #902). A fire the venue already rate limited is not run at all.
+  - **Why two files:** as `account_store`, a run that could not decide must not erase a good
+    verification; a violation is FAIL at once, and is asked again on the next fire rather than an
+    hour later; a PASS stands six hours (decision 44).
+  - **Why "could not ask" is never a verdict:** a rate-limit, clock, key or venue-failure code, a
+    418/429 or any 5xx at the -4120 probe is UNVERIFIED — so, once 4b enforces, a venue hiccup
+    leaves the last PASS standing rather than shutting entries. What can still shut them is an answer
+    the venue gives: a symbol that is not TRADING fails its listing (recorded per symbol, for 4b to
+    scope), and is re-asked on every fire until it clears.
+  - **Not yet enforced** (PR4b: the mainnet autonomous entry and the probe, decision 46), not stage
+    evidence (decision 3), and not counted by the API breaker (decision 27's scope).
+
 - **One rule, one entry: a retired rule returns only as an approved reactivation** (crypto PR3c-2,
   Thomas decisions 40 and 42, 2026-09-19; `crypto/pool.py`, `crypto/promotion.py`,
   `permission.py`, `scripts/promote_strategy_candidates.py`).

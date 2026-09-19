@@ -175,6 +175,24 @@ def _testnet_evidence(root: Path | None) -> dict[str, Any]:
     }
 
 
+def _venue_contract(root: Path | None, *, now: str) -> dict[str, Any]:
+    """What the venue contract sentinel last decided (PR4a), fail-soft for the board: a record that
+    cannot prove itself is named, never rendered as "none recorded"."""
+    from .venue_contract import read_refresh_mark, status_line, verification_status
+
+    try:
+        mark = read_refresh_mark(root)
+        last_attempt = ({"at": mark.get("attempted_at"), "line": status_line(mark)}
+                        if isinstance(mark, Mapping) else None)
+    except Exception as exc:  # noqa: BLE001 — the board never raises; the attempt is a footnote
+        last_attempt = {"at": None, "line": f"attempt mark unreadable ({type(exc).__name__})"}
+    try:
+        status = verification_status(root, now=now)
+    except MvpRuntimeError as exc:
+        return {"error": exc.reason_code, "last_attempt": last_attempt}
+    return {"error": None, **status, "last_attempt": last_attempt}
+
+
 def _recorded_gate(root: Path, *, now: str) -> dict[str, Any]:
     """What the process that CAN trade last recorded about its own live gate.
 
@@ -770,6 +788,9 @@ def build_readiness(root: Path | None = None, *, now: str | None = None) -> dict
         # The signed testnet cycles this machine has earned (PR1d-2). Read here rather than at
         # `resolve_execution_stage`, whose contract with the live leg is that it never raises.
         "testnet_evidence": _testnet_evidence(root),
+        # What the venue contract sentinel last decided (PR4a). Informational until PR4b makes a
+        # usable PASS a condition of every mainnet entry.
+        "venue_contract": _venue_contract(root, now=now),
         # The pre-order snapshots real orders left under (PR2b), verified; the `pre_order_snapshots`
         # check row above reads the same value.
         "pre_order_snapshots": snapshots,
@@ -835,6 +856,13 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
         # The stage record's own answer: which rung, whether it binds, whether it admits a new
         # entry, and that the doors read it (crypto PR1a/PR1b).
         "execution_stage": status.get("execution_stage"),
+        # The venue contract sentinel's last decided answer (PR4a); `usable` is what PR4b's doors
+        # will require of every mainnet entry.
+        "venue_contract": {
+            key: (status.get("venue_contract") or {}).get(key)
+            for key in ("error", "recorded", "status", "verified_at", "age_seconds", "stale",
+                        "version_current", "usable", "failed_checks", "symbols")
+        },
         "guard_dry_run_status": guard.get("status"),
         "submitted_today": status.get("submitted_today"),
     }
@@ -919,6 +947,28 @@ def _testnet_evidence_line(status: Mapping[str, Any]) -> str:
             f"{complete[-1]} - name it with --testnet-cycle on the stage ask")
 
 
+def _venue_contract_line(status: Mapping[str, Any]) -> str:
+    """What the exchange last answered about this runtime's assumptions (PR4a). Informational: it
+    gates no check here until PR4b puts it on the entry doors."""
+    contract = status.get("venue_contract") or {}
+    last = contract.get("last_attempt") or {}
+    tail = f"; last attempt {last.get('at')}: {last.get('line')}" if last else ""
+    if contract.get("error"):
+        return f"[----] {'venue_contract':24} UNREADABLE - {contract['error']}{tail}"
+    if not contract.get("recorded"):
+        return (f"[----] {'venue_contract':24} none recorded - the pipeline fire asks hourly while "
+                f"live trading is opted in{tail}")
+    age = contract.get("age_seconds")
+    age_text = f"{int(age // 60)}m old" if isinstance(age, (int, float)) else "age unknown"
+    verdict = "usable" if contract.get("usable") else (
+        "STALE" if contract.get("stale") else
+        "other contract version" if not contract.get("version_current") else "not usable")
+    failed = contract.get("failed_checks") or []
+    failed_text = f" (failed: {', '.join(failed)})" if failed else ""
+    return (f"[----] {'venue_contract':24} {contract.get('status')}{failed_text} at "
+            f"{contract.get('verified_at')}, {age_text} - {verdict}{tail}")
+
+
 def _recorded_gate_line(status: Mapping[str, Any]) -> str:
     recorded = status.get("recorded_gate") or {}
     if not recorded.get("known"):
@@ -965,6 +1015,7 @@ def render_readiness_text(status: dict[str, Any]) -> str:
         lines.append(f"[{mark}] {check['check']:24} {detail}")
     lines.append(_recorded_gate_line(status))
     lines.append(_testnet_evidence_line(status))
+    lines.append(_venue_contract_line(status))
     guard = status["guard_dry_run"]
     lines.append("")
     probe = status.get("guard_dry_run_symbol") or DEFAULT_PROBE_SYMBOL
