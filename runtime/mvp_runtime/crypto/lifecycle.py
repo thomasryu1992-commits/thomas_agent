@@ -48,6 +48,8 @@ from . import feedback
 # Moved to the leaf (PR3b-1) so the router can key on a lineage without importing this module,
 # which imports `feedback`, which imports `paper`. Re-exported: its callers import it from here.
 from .candidate_identity import entry_attribution_keys as _entry_attribution_keys
+from .candidate_identity import own_attribution_keys as _own_attribution_keys
+from .candidate_identity import predecessor_keys as _predecessor_keys
 from .candidate_identity import lineage_of, outcome_attribution_key
 
 DEFAULT_WINDOWS = (20, 30, 50, 100)
@@ -401,7 +403,9 @@ def run_lifecycle(
     """Evaluate every pool strategy against its attributed outcomes. Pure.
 
     Attribution is by LINEAGE (:func:`outcome_attribution_key`), not by display name:
-    a strategy is judged only on trades its own lineage made. Returns one decision per
+    a strategy is judged only on trades its own lineage made, and those of the lineages it replaced
+    (PR3c, Thomas decision 41) — the stricter of the two judgements, so an inherited record never
+    loosens one. Returns one decision per
     non-terminal strategy (terminal ones are left untouched without even an evaluation
     — the source rule). Each decision names the lineage it judged, and the caller applies them
     through ``pool.apply_status_decisions``, which skips one whose display id names another
@@ -420,18 +424,31 @@ def run_lifecycle(
         status = str(entry.get("status") or "PAPER_ACTIVE")
         if not isinstance(strategy_id, str) or not strategy_id or status in TERMINAL_STATUSES:
             continue
-        attributed = sorted(
-            (o for key in _entry_attribution_keys(entry) for o in by_lineage.get(key, [])),
-            key=lambda o: str(o.get("created_at_utc") or ""),
-        )
-        performance = compute_strategy_performance(
-            strategy_id, attributed, backtest_win_rate=entry.get("backtest_win_rate"), now=now,
-        )
-        decision = evaluate_lifecycle(
-            status, performance,
-            consecutive_failures=int(entry.get("lifecycle_consecutive_failures") or 0),
-            thresholds=thresholds, now=now,
-        )
+        def judged(keys: set[str]) -> dict[str, Any]:
+            attributed = sorted(
+                (o for key in keys for o in by_lineage.get(key, [])),
+                key=lambda o: str(o.get("created_at_utc") or ""),
+            )
+            performance = compute_strategy_performance(
+                strategy_id, attributed, backtest_win_rate=entry.get("backtest_win_rate"), now=now,
+            )
+            return evaluate_lifecycle(
+                status, performance,
+                consecutive_failures=int(entry.get("lifecycle_consecutive_failures") or 0),
+                thresholds=thresholds, now=now,
+            )
+
+        decision = judged(_entry_attribution_keys(entry))
+        inherited = _predecessor_keys(entry)
+        if inherited:
+            # An inherited record tightens a judgement, never loosens it (PR3c, review of PR3c-1):
+            # a predecessor's wins in a rolling window, or its late-closing position, must not hold
+            # off a demotion the entry's own record already calls for.
+            own = judged(_own_attribution_keys(entry))
+            if (_RANK.get(own["new_status"], 0), own["consecutive_failures"]) > (
+                    _RANK.get(decision["new_status"], 0), decision["consecutive_failures"]):
+                decision = own
+            decision = {**decision, "inherited_lineage_keys": sorted(inherited)}
         # The lineage judged (PR3b-2, Thomas decision 36). The pool can change between this read
         # and the locked write, and the display id may then name another lineage: the write
         # refuses this one decision rather than demote a strategy on another's record.

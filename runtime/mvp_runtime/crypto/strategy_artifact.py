@@ -53,6 +53,14 @@ the candidate-id rule (every stored id does), and field names — and a golden t
 A later ``strategy_artifact.v2`` must keep writing the v1 stamp beside its own, or a rollback to
 this code refuses the pool: this code does not know v2 and treats it as a stamp that does not hold.
 
+**Not everything the runtime reads off an entry is hashed.** ``status``, the ``live_tier`` and, since
+PR3c, ``candidate_identity.PREDECESSOR_KEYS_FIELD`` (the lineages an entry replaced, whose record the
+router and the lifecycle read with its own) are facts about the pool at the moment a door wrote
+them, not about the strategy, and the stamp does not cover them. Nothing writes the predecessors
+before PR3c-2, whose promotion door names what an entry replaces in the approval instead (the
+reactivation set of ``promotion.promotion_content_sha256``). An edit that drops them judges the entry
+as a fresh install would; one that adds them can only tighten the controls that read them.
+
 The hash is :func:`integrity.sha256_record` over canonical JSON. Floats are allowed (scores, R,
 bps), so the two adapters must present them identically: both parse the spec through
 :class:`StrategySpec` (which turns an integer condition value into a float), and a field an older

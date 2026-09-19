@@ -11,7 +11,8 @@ The lineage KEY an outcome is attributed by (``outcome_attribution_key``) and th
 accepts (``entry_attribution_keys``) moved here from ``lifecycle`` for the same reason (PR3b-1): the
 router ranks by a lineage's realized record (Thomas decision 35), and ``lifecycle -> feedback ->
 paper`` would close a cycle the other way. ``lifecycle`` imports them back, so its importers are
-unchanged.
+unchanged. Since PR3c an entry also accepts the keys of the entries it replaced (Thomas decision 41,
+:data:`PREDECESSOR_KEYS_FIELD`).
 """
 
 from __future__ import annotations
@@ -74,8 +75,47 @@ def is_lineage_key(value: Any) -> bool:
         value.startswith(prefix) and len(value) > len(prefix) for prefix in LINEAGE_KEY_PREFIXES)
 
 
+# The lineage keys a pool entry inherited (PR3c, Thomas decision 41): when the promotion door returns
+# a retired RULE to trading under a new candidate, the new entry replaces the retired entries that
+# held the rule and records the keys that named them (`precise_lineage_keys`, transitively). The
+# same rule is the same strategy, so its record follows it. Written by the door alone; an entry
+# that replaced nothing carries no field. A door-time fact about the pool, not a property of the
+# candidate, so the strategy artifact does not cover it (like `status` and `live_tier`).
+PREDECESSOR_KEYS_FIELD = "predecessor_lineage_keys"
+
+
+def predecessor_keys(entry: Mapping[str, Any]) -> set[str]:
+    """The lineage keys ``entry`` inherited (:data:`PREDECESSOR_KEYS_FIELD`). A value that is not a
+    lineage key names nothing and is not read; the pool's identity check refuses a pool that
+    carries one (`pool.assert_pool_identity_unique`)."""
+    value = entry.get(PREDECESSOR_KEYS_FIELD)
+    if not isinstance(value, (list, tuple)):
+        return set()
+    return {key for key in value if is_lineage_key(key)}
+
+
 def entry_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
-    """Every key an outcome of THIS pool entry could carry, across three eras of
+    """Every key an outcome of THIS pool entry could carry: its own (:func:`own_attribution_keys`)
+    and the ones it inherited from the entries it replaced (:func:`predecessor_keys`, PR3c). What
+    the lifecycle judges an entry on, what the router ranks it by, what the live allowance charges
+    it and what the drawdown guard counts as routable."""
+    return own_attribution_keys(entry) | predecessor_keys(entry)
+
+
+def precise_lineage_keys(entry: Mapping[str, Any]) -> set[str]:
+    """The keys that name ``entry``'s lineage itself: its candidate and its generation and rule
+    hash, the display-id key only when it has neither, and what it inherited.
+
+    The rule a drawdown rebase is sealed by (PR3b-3) and a successor inherits by (PR3c): a
+    ``sid:`` key is a display name, which a later entry may take, so it names a lineage only when
+    nothing better does."""
+    own = own_attribution_keys(entry)
+    precise = {key for key in own if not key.startswith("sid:")}
+    return (precise or own) | predecessor_keys(entry)
+
+
+def own_attribution_keys(entry: Mapping[str, Any]) -> set[str]:
+    """Every key an outcome of THIS pool entry's own lineage could carry, across three eras of
     record-keeping. An outcome is keyed at the best precision IT has, so the entry
     must accept all three or history written before a field existed goes unattributed:
 

@@ -56,7 +56,10 @@ from .. import jsonl
 from ..errors import ToolError
 from ..filelock import locked
 from . import market_data
-from .candidate_identity import LINEAGE_FIELDS, entry_attribution_keys, lineage_of
+from .candidate_identity import (
+    LINEAGE_FIELDS, PREDECESSOR_KEYS_FIELD, entry_attribution_keys, is_lineage_key, lineage_of,
+    own_attribution_keys,
+)
 from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
 # this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
 # moved to a leaf so `factory` no longer needs a module-level edge into this store.
@@ -1501,16 +1504,27 @@ def candidates_path(root: Path | None = None) -> Path:
 
 
 def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
-    """No two active entries may share a ``strategy_id`` or a ``candidate_id``.
+    """No two active entries may share a ``strategy_id`` or a ``candidate_id``, and no lineage is
+    inherited by two entries.
 
     Both are keys the runtime resolves by: ``strategy_id`` selects the champion and
     keys every lifecycle status update, ``candidate_id`` names the lineage an outcome
     is attributed to. A duplicate makes routing, demotion and attribution ambiguous —
     the pool would silently pick one entry and update the other. Fail-closed at both
-    doors (install and read) so a duplicate can neither be written nor traded on."""
+    doors (install and read) so a duplicate can neither be written nor traded on.
+
+    **Inherited lineages (PR3c, Thomas decision 41).** An entry's
+    :data:`~candidate_identity.PREDECESSOR_KEYS_FIELD` must be a list of lineage keys, and a
+    ``cand:`` or ``gen:`` key in it may name neither another entry's own lineage nor what another
+    entry inherited: either way one lineage's record would judge two entries. ``sid:`` keys are
+    display names, the one imprecise join, and stay out of the comparison. Two entries' OWN keys
+    are not compared either: the pool holds a rule installed twice, S008 and S008-GEN-696 (both
+    SUSPENDED, sharing ``gen:GEN-696:…``, left as they are by Thomas decision 42), and refusing
+    that here would stop the pool. A rule is kept unique at the promotion door."""
+    entries = [e for e in pool.get("active_strategies") or [] if isinstance(e, Mapping)]
     seen_strategy: set[str] = set()
     seen_candidate: set[str] = set()
-    for entry in pool.get("active_strategies") or []:
+    for entry in entries:
         strategy_id = entry.get("strategy_id")
         if isinstance(strategy_id, str) and strategy_id:
             if strategy_id in seen_strategy:
@@ -1521,6 +1535,40 @@ def assert_pool_identity_unique(pool: Mapping[str, Any]) -> None:
             if candidate_id in seen_candidate:
                 raise ToolError("STRATEGY_POOL_DUPLICATE", f"duplicate candidate_id in the pool: {candidate_id}")
             seen_candidate.add(candidate_id)
+
+    # Entries are told apart by position, not display id: an entry need not carry one, and two that
+    # do not must not read as one owner (review of PR3c-1).
+    def named(index: int) -> str:
+        return str(entries[index].get("strategy_id") or f"entry #{index}")
+
+    holders: dict[str, set[int]] = {}
+    for index, entry in enumerate(entries):
+        for key in own_attribution_keys(entry):
+            holders.setdefault(key, set()).add(index)
+    inherited_by: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        keys = entry.get(PREDECESSOR_KEYS_FIELD)
+        if keys is None:
+            continue
+        if not isinstance(keys, list) or not all(is_lineage_key(key) for key in keys):
+            raise ToolError(
+                "STRATEGY_POOL_INVALID",
+                f"{named(index)}: {PREDECESSOR_KEYS_FIELD} is not a list of lineage keys",
+            )
+        for key in keys:
+            if key.startswith("sid:"):
+                continue
+            others = sorted(holders.get(key, set()) - {index})
+            if others:
+                raise ToolError(
+                    "STRATEGY_POOL_DUPLICATE",
+                    f"{named(index)} inherits {key}, the lineage {named(others[0])} holds as its own",
+                )
+            if inherited_by.setdefault(key, index) != index:
+                raise ToolError(
+                    "STRATEGY_POOL_DUPLICATE",
+                    f"{key} is inherited by both {named(inherited_by[key])} and {named(index)}",
+                )
 
 
 def _read_active_pool(root: Path | None, *, artifacts: bool) -> dict[str, Any]:

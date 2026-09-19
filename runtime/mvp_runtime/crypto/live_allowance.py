@@ -33,6 +33,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from ..coerce import as_optional_float as _f
+from .candidate_identity import predecessor_keys
 from .lifecycle import outcome_attribution_key
 
 LIVE_ALLOWANCE_VERSION = "live_allowance.v0.1"
@@ -91,9 +92,13 @@ def evaluate_live_allowance(
     wrong the other way spends real money against a limit nobody could verify.
 
     Attribution is by LINEAGE (`outcome_attribution_key`), never by display id — `strategy_id`
-    restarts at S001 each generation, so counting by it would charge a fresh strategy for its
-    predecessor's losses. An outcome with no attributable key is counted against nothing and
-    reported separately: misattributing a live loss is worse than not attributing it.
+    restarts at S001 each generation, so counting by it would charge a fresh strategy for another
+    lineage's losses. An outcome with no attributable key is counted against nothing and
+    reported separately: misattributing a live loss is worse than not attributing it. An entry the
+    promotion door installed in a retired rule's place is the same strategy, and is charged the
+    losses of the lineages it replaced too (`candidate_identity.predecessor_keys`, PR3c, Thomas
+    decision 41) — never credited with their wins: each limit reads the stricter of its own rows
+    and its rows with the inherited ones, so it is never looser than a fresh install.
     """
     armed = set(live_routable_strategy_ids or set())
     result: dict[str, Any] = {
@@ -118,6 +123,7 @@ def evaluate_live_allowance(
     # so a display id and its lineage can be matched; without a pool the display id is all there
     # is, which is the coarse-but-honest fallback `outcome_attribution_key` itself ends on.
     lineage_of: dict[str, str] = {}
+    inherited: dict[str, set[str]] = {}
     for entry in ((pool or {}).get("active_strategies") or []):
         if not isinstance(entry, Mapping):
             continue
@@ -129,8 +135,11 @@ def evaluate_live_allowance(
                 "strategy_rule_hash": entry.get("strategy_rule_hash"),
                 "strategy_id": sid,
             })
+            inherited[sid] = predecessor_keys(entry)
 
-    by_lineage: dict[str, list[Mapping[str, Any]]] = {}
+    # In file order, which is the order they closed in: the consecutive count reads a sequence, and
+    # an entry that inherited records reads several keys' rows as one.
+    closed: list[tuple[str, Mapping[str, Any]]] = []
     for outcome in live_outcomes:
         if not isinstance(outcome, Mapping) or outcome.get("outcome_closed") is not True:
             continue
@@ -138,7 +147,7 @@ def evaluate_live_allowance(
         if not key:
             result["unattributed_outcomes"] += 1
             continue
-        by_lineage.setdefault(key, []).append(outcome)
+        closed.append((key, outcome))
 
     for sid in sorted(armed):
         # The fallback is the key an outcome naming only this display id carries. It was `id:`,
@@ -146,11 +155,17 @@ def evaluate_live_allowance(
         # which hands the pool read its armed set came from (every armed id has an entry); it
         # charges only rows that carry no lineage fields at all.
         lineage = lineage_of.get(sid, f"sid:{sid}")
-        rows = by_lineage.get(lineage) or []
+        predecessors = inherited.get(sid, set())
+        rows = [outcome for key, outcome in closed if key == lineage or key in predecessors]
         if not rows:
             continue
-        consecutive = _consecutive_losses(rows)
-        cumulative = sum(_f(r.get("result_R")) or 0.0 for r in rows)
+        # An inherited record tightens the allowance, never loosens it (review of PR3c-1): the
+        # predecessors' wins must not offset the entry's own losses or break its own streak, so
+        # each limit reads the stricter of the entry's own rows and the rows it inherited with them.
+        own = [outcome for key, outcome in closed if key == lineage] if predecessors else rows
+        consecutive = max(_consecutive_losses(own), _consecutive_losses(rows))
+        cumulative = min(sum(_f(r.get("result_R")) or 0.0 for r in own),
+                         sum(_f(r.get("result_R")) or 0.0 for r in rows))
         reasons = []
         if consecutive >= max_consecutive:
             reasons.append(BREACH_CONSECUTIVE)
@@ -163,6 +178,8 @@ def evaluate_live_allowance(
                 "reasons": reasons,
                 "consecutive": consecutive,
                 "cumulative_r": round(cumulative, 6),
+                # What else this judgement read (PR3c): a breach the inherited rows caused names them.
+                **({"inherited_lineages": sorted(predecessors)} if predecessors else {}),
             })
     return result
 

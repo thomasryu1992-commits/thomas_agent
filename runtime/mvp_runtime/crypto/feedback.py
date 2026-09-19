@@ -199,6 +199,32 @@ def realized_by_lineage(records: Iterable[Mapping[str, Any]]) -> dict[str, dict[
     return _grouped(closed, outcome_attribution_key, keep_total=True)
 
 
+# What names one trade of one rule: the rule and where and when it entered, which way.
+_TRADE_IDENTITY = ("strategy_rule_hash", "symbol", "timeframe", "opened_at_utc", "direction")
+
+
+def distinct_trades(records: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """``records`` with each trade once: a row that records the same trade as an earlier row of the
+    same RULE — the same symbol, timeframe, entry time and direction — is dropped. Pass the rows
+    that record real trades first (the cycle passes its own paper rows, then the supporting shadows).
+
+    Two entries holding one rule (installed twice before PR3c-2; S008 and S008-GEN-696 on the host,
+    neither with a row) record each trade twice while both route: one as its own paper row, the
+    other as a supporting shadow benched behind it. Keyed by lineage the copies sit under two keys,
+    and an entry that inherited both (PR3c-1) would read the trade twice (review of PR3c-1). A row
+    that does not name all five is kept: it cannot be matched, and was counted before."""
+    seen: set[tuple[str, ...]] = set()
+    kept: list[Mapping[str, Any]] = []
+    for record in records:
+        identity = tuple(record.get(field) for field in _TRADE_IDENTITY)
+        if all(isinstance(value, str) and value for value in identity):
+            if identity in seen:
+                continue
+            seen.add(identity)
+        kept.append(record)
+    return kept
+
+
 def r_distribution(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     """The source's R histogram over closed outcomes."""
     values = [_f(r.get("result_R")) for r in records if isinstance(r, Mapping) and r.get("outcome_closed") is True]
@@ -612,6 +638,7 @@ __all__ = [
     "UNCOSTABLE",
     "build_performance_report",
     "count_independent_trade_events",
+    "distinct_trades",
     "net_result_r",
     "r_distribution",
     "realized_by_lineage",
