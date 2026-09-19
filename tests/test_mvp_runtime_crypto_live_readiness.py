@@ -1287,6 +1287,21 @@ def test_a_contract_the_doors_refuse_on_fails_the_row_and_says_entries_are_refus
     assert text in row["detail"] and "every mainnet entry is refused" in row["detail"]
 
 
+def test_the_row_and_the_doors_agree_about_coverage_however_a_symbol_is_spelled(tmp_path, clean_env, monkeypatch):
+    """One rule (`venue_contract.covers`): the schemas keep both lists upper case today, and the row must
+    not start disagreeing with the doors the day one of them does not."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT",))
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+    real = vc.read_verification(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", lambda root=None: {**real, "symbols": [" btcusdt "]})
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW) is None
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is True, row["detail"]
+
+
 def test_the_row_names_the_reason_the_doors_give_first(tmp_path, clean_env, monkeypatch):
     """Review of #903: a stale record under another contract version reads as the doors refuse it —
     the version first, in the judge's order, not STALE."""

@@ -995,3 +995,10 @@ def test_the_board_and_the_doors_judge_with_one_function(tmp_path, failed, at, u
 def test_an_age_is_never_an_exception():
     for stamp, now in ((NOW, None), (None, NOW), ("yesterday", NOW), (NOW, "tomorrow"), (NOW, 7)):
         assert vc._age_seconds(stamp, now) is None
+
+
+def test_coverage_is_one_rule_that_ignores_case_and_space_and_covers_no_empty_symbol():
+    assert vc.covers(["BTCUSDT"], " btcusdt ") and vc.covers((" ethusdt ",), "ETHUSDT")
+    assert not vc.covers(["", "BTCUSDT"], "") and not vc.covers([" "], "  ")
+    assert not vc.covers("BTCUSDT", "BTCUSDT") and not vc.covers(None, "BTCUSDT")
+    assert not vc.covers({"BTCUSDT": 1}, "BTCUSDT") and not vc.covers(["BTCUSDT"], None)
