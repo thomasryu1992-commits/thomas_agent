@@ -474,7 +474,8 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   KILLED runtime the operator's `/halt_trading` moves it straight to that state. **Policy 1.5.1
   grants the verb (2026-09-17); an image older than that policy refuses it by name.**
   **Two levels (Thomas decision 47, 2026-09-19):** `halt_trading` alone, or `halt_trading soft`, is
-  the SOFT halt; `halt_trading hard` (`/halt_trading hard <reason>`, switch door `disable mode=hard`)
+  the SOFT halt; `halt_trading hard` (`/halt_trading hard <reason>`, switch door `disable mode=hard`,
+  which the assistant sends with `halt_trading(reason, hard=True)` from Hermes shim 2.13)
   is the HARD halt. Both keep the runtime ACTIVE and refuse new entries. HARD is the tighter one:
   tightening SOFT to HARD needs nothing, and only the authenticated operator (local console,
   Telegram) loosens HARD to SOFT; `/resume` clears either. `/kill` and `/pause` keep their meaning

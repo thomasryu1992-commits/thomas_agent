@@ -29,8 +29,8 @@ hermes:
   mcp_dir: /root/hermes-trial/data/mcp
   mount_into_container: /opt/data          # the gateway spawns /opt/data/mcp/<shim>.py
 shims:
-  version: "2.12"  # 2.2 = the 2026-09-07 switch-shim revision (bak-pre-v2.2 on the host); 2.3 = the read shim's [data] line (P02); 2.4 = the dispatch shim's door API v3 workflow tools (P05); 2.5 = retry_workflow_step (P06); 2.6 = propose_workflow_update (P07); 2.7 = workflow_changes + report_workflow_usage (P08); 2.8 = propose_schedule_change (P09; refused by the runtime until policy 1.6.0); 2.9 = the V2_INTAKE_CLOSED cutover rendering (P10); 2.10 = review fixes — a mutation sent without a reply is UNCONFIRMED, reported cost keeps billed rows (2026-09-14); 2.11 = trading_readiness defines live_entry_possible as readiness_data computes it — its four [data] fields, the execution stage and the venue contract included (2026-09-19); 2.12 = trading_readiness reads live_entry_possible off the readiness state's own lists — readiness.components / blocking / unknown — and the board it describes opens and closes with LIVE ENTRY POSSIBLE (crypto PR5a/5b, 2026-09-19)
-  runtime_requirement: every door speaks proto 2 (candidate-833 or later)
+  version: "2.13"  # 2.2 = the 2026-09-07 switch-shim revision (bak-pre-v2.2 on the host); 2.3 = the read shim's [data] line (P02); 2.4 = the dispatch shim's door API v3 workflow tools (P05); 2.5 = retry_workflow_step (P06); 2.6 = propose_workflow_update (P07); 2.7 = workflow_changes + report_workflow_usage (P08); 2.8 = propose_schedule_change (P09; refused by the runtime until policy 1.6.0); 2.9 = the V2_INTAKE_CLOSED cutover rendering (P10); 2.10 = review fixes — a mutation sent without a reply is UNCONFIRMED, reported cost keeps billed rows (2026-09-14); 2.11 = trading_readiness defines live_entry_possible as readiness_data computes it — its four [data] fields, the execution stage and the venue contract included (2026-09-19); 2.12 = trading_readiness reads live_entry_possible off the readiness state's own lists — readiness.components / blocking / unknown — and the board it describes opens and closes with LIVE ENTRY POSSIBLE (crypto PR5a/5b, 2026-09-19); 2.13 = the switch shim's halt_trading tool (disable mode=soft|hard: soft since policy 1.5.1, hard since PR6a) and a disable note that no longer tells the model a halt stopped position management (crypto PR6e, 2026-09-19)
+  runtime_requirement: every door speaks proto 2 (candidate-833 or later); halt_trading (2.13) needs policy 1.5.1 for soft, PR6a for hard and PR6d for a halt recorded under a stop — an older runtime refuses by name or changes nothing, and the shim says so
   full_data_requirement: crypto_readiness / crypto_funds carry their view only from the runtime that includes P02 (readiness_data, funds_data); an older runtime answers `{action}` and the line still renders
   v3_requirement: the workflow tools need a runtime that includes P05 AND a dispatch-bridge started with --workflow-manager; any other door refuses them as WORKFLOW_UNAVAILABLE (thomas_capabilities says which)
   host_state: as of 2026-09-19 the host runs 2.10 (installed 2026-09-15 03:46Z, gateway restarted 03:47Z; byte-identical to the 2.10 files on 2026-09-19); 2.11 and 2.12 wait for scripts/ops/install_hermes_shims.sh --install and a gateway restart (operator step; install 2.12 only on a runtime with PR5a, whose [data] carries `readiness`). --check is the live answer, not this line
@@ -38,10 +38,10 @@ shims:
     thomas_door_client.py: 19b2ec0e92ed51082fb814b505b44e4469ccbf460bbeded5dab4487c76e36d4f
     read_bridge_mcp.py: 7d10be17440467d8b62474de5208f87cdbea35ca9f24ce60dbffb49888791470
     dispatch_bridge_mcp.py: 20ae1e24eb82fa13b3710b82cf3c32ee8d80f9fa0caf4495c05458a95821f667
-    switch_bridge_mcp.py: fc6fc597958afa72c6968637637e63f58f20d8b2f29e82ed88d5fa9e1b430768
+    switch_bridge_mcp.py: 32c99d0f49830b60f76e4f32b8dd6f2bbccf563c8023e2df8892f9782b23c9cc
     knowledge_bridge_mcp.py: c3d44c341f264008bdfa2346c85b460ce8a63bc7589d2173088d210314fa3326
 prompts:
-  soul: config/SOUL.md                       # no version field of its own; measured 2026-09-14
+  soul: config/SOUL.md                       # no version field of its own; measured 2026-09-14; halt_trading added with shim 2.13 (PR6e, 2026-09-19)
   skill: config/skills/thomas-ops/SKILL.md
   skill_version: "1.5.5"                     # §6 cutover note, §7 items 8–13 (P07–P10) and the review fixes
 templates:
