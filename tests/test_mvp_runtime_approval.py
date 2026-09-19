@@ -12,6 +12,7 @@ CI checkout, like every other binding-dependent suite here.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -631,3 +632,182 @@ def test_a_memory_promotion_ask_is_unchanged():
     assert "예상 비용: 없음" in text
     assert "approval_consumption" in text
     assert "스위치 문" not in text
+
+
+# --- what undoes each ask ---------------------------------------------------------
+#
+# The switch door's fix above was one kind at a time. Until 2026-09-19 the reversibility line still
+# fell through to the memory promotion's answer, so a paper-tier pool promotion, a retirement, a
+# P&L correction, a probe batch and a program registration all rendered as permanent because
+# "validated memory는 지속됩니다" — and a retirement, which shares its target with a paper
+# promotion, rendered the promotion door's install step. The promotion, probe and registration asks
+# are printed for Thomas by their scripts; no door renders the other two yet, so theirs was latent.
+
+_MEMORY_UNDO = "되돌릴 수 있는가: 아니오 — validated memory는 지속됩니다"
+_MEMORY_CONSUME_STEP = "이 승인 하나에 묶인 승격을 1회 수행합니다."
+_PAPER_POOL_UNDO = ("되돌릴 수 있는가: 예 — 이후의 승격(교체)이나 은퇴(scripts/retire_strategies.py)로 "
+                    "되돌리며, 어느 쪽이든 새 승인 요청을 거칩니다")
+_PROMOTION = dict(candidate_ids=["cand_a"], strategy_ids=["S1"], rule_hashes=["sha256:r"],
+                  artifact_sha256s=["sha256:a"], keep_active=False, content_sha256="sha256:" + "c" * 64)
+
+
+def _minted_ask(builder, *args, **kwargs):
+    """The ask a real builder mints, without a bound task: the decision builder is stubbed and the
+    snapshot carries the fields `build_approval_request` copies from its fingerprint payload."""
+    captured = {}
+
+    def fake_build(bound, **kw):
+        captured.update(kw)
+        return {}
+
+    with mock.patch.object(permission, "build_permission_decision", fake_build):
+        builder({}, *args, now=NOW, **kwargs)
+    action = captured["action"]
+    return {
+        "approval_id": "approval_x", "task_id": "task_x",
+        "validity": {"expires_at": LATER}, "action_fingerprint": "sha256:f",
+        "approved_action_snapshot": {
+            "action_type": action.action_type,
+            "permission_scope": captured["permission_scope"],
+            "target_ref": action.target_ref,
+            "content_sha256": action.content_sha256,
+        },
+    }
+
+
+_ASKS = {
+    "memory": lambda: _minted_ask(permission.build_memory_promotion_permission_decision, CANDIDATE),
+    "trial": lambda: _minted_ask(
+        permission.build_trial_permission_decision,
+        {"role_id": "research.candidate", "version": "0.1.0", "definition_sha256": "sha256:d"},
+        trial_request="t",
+    ),
+    "trading_switch": lambda: _minted_ask(
+        permission.build_trading_switch_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
+    "runtime_resume": lambda: _minted_ask(
+        permission.build_nonfinancial_resume_permission_decision, "crypto", stop_ref="stop_1", stop_summary="s"),
+    "workflow_step": lambda: _minted_ask(
+        permission.build_workflow_step_permission_decision, workflow_id="wf_1", step_key="s1", plan_version=1,
+        capability="analysis", request_sha256="sha256:q", request_preview="p",
+    ),
+    "execution_stage": lambda: _minted_ask(
+        permission.build_execution_stage_permission_decision,
+        content={"venue": "binance", "transition": "CLIMB", "from_stage": "PAPER", "to_stage": "SIGNED_TESTNET",
+                 "stage_ref": "sha256:s", "policy_version": "1.5.1", "policy_safety_sha256": "sha256:p",
+                 "registered_by": "Thomas", "reason": "r", "evidence": {}},
+    ),
+    "pool_live": lambda: _minted_ask(
+        permission.build_strategy_promotion_permission_decision, live_tier="LIVE", **_PROMOTION),
+    "pool_paper": lambda: _minted_ask(
+        permission.build_strategy_promotion_permission_decision, live_tier="OBSERVATION", **_PROMOTION),
+    "retirement": lambda: _minted_ask(
+        permission.build_strategy_retirement_permission_decision, strategy_ids=["S1"], candidate_ids=["cand_a"],
+        rule_hashes=["sha256:r"], reason="r", content_sha256="sha256:c",
+    ),
+    "correction": lambda: _minted_ask(
+        permission.build_live_outcome_correction_permission_decision, corrects_outcome_id="live_out_1",
+        corrects_record_sha256="sha256:o", disposition="VOID", reason="r", content_sha256="sha256:c",
+    ),
+    "probe": lambda: _minted_ask(
+        permission.build_slippage_probe_permission_decision, batch_id="b1",
+        params={"symbols": ["BTCUSDT"], "n": 3}, content_sha256="sha256:c",
+    ),
+    "registration": lambda: _minted_ask(
+        permission.build_program_registration_permission_decision, program_id="p.x", program_version="0.1.0",
+        definition_sha256="sha256:d", candidate_id="progcand_1", program_request_id="progreq_1",
+    ),
+    # A kind this renderer has never heard of: it must say so, not borrow another kind's answer.
+    "unregistered": lambda: {
+        "approval_id": "approval_x", "task_id": "task_x",
+        "validity": {"expires_at": LATER}, "action_fingerprint": "sha256:f",
+        "approved_action_snapshot": {"action_type": "crypto.something.new",
+                                     "permission_scope": "RUNTIME_GOVERNANCE", "target_ref": "something:x"},
+    },
+}
+
+_UNDO = {
+    "memory": _MEMORY_UNDO,
+    "trial": "되돌릴 수 있는가: 예 — 격리된 1회 시험 실행이며 기록만 남습니다 (역할 활성화 아님)",
+    "trading_switch": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
+    "runtime_resume": "되돌릴 수 있는가: 예 — 끄기(stop/pause)는 승인 없이 즉시 적용됩니다",
+    "workflow_step": ("되돌릴 수 있는가: 실행 전까지는 예(cancel_workflow·/kill) — 실행된 단계는 "
+                      "P3 작업(모델 호출·작업공간 쓰기)으로 기록이 남습니다"),
+    "execution_stage": ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
+                        "청산은 어느 단계에서도 막히지 않습니다"),
+    "pool_live": ("되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 "
+                  "적용되고, 이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다"),
+    "pool_paper": _PAPER_POOL_UNDO,
+    "retirement": ("되돌릴 수 있는가: 예 — 은퇴한 규칙은 재활성화 승격(scripts/promote_strategy_candidates.py "
+                   "--allow-reactivation)으로만 돌아오며, 그 승격도 새 승인 요청을 거칩니다"),
+    "correction": ("되돌릴 수 있는가: 아니오 — 정정은 추가 전용 기록이라 거두는 문이 없고, 같은 행에 정정을 "
+                   "하나 더 붙이면 CORRECTION_AMBIGUOUS로 라이브 이력 전체가 읽히지 않습니다"),
+    "probe": ("되돌릴 수 있는가: 발주 전까지는 예(scripts/run_slippage_probe.py --abandon, 승인 불필요) — "
+              "이미 나간 프로브 주문은 실주문이라 그 손익은 되돌릴 수 없습니다"),
+    "registration": ("되돌릴 수 있는가: 예 — 작업 트리에 후보 항목(enabled false)만 쓰고 반영은 Thomas의 "
+                     "PR이므로, 그 PR을 머지하지 않거나 되돌리면 됩니다"),
+    "unregistered": ("되돌릴 수 있는가: 확인되지 않음 — 이 요청 종류에는 등록된 답이 없습니다"
+                     "(되돌릴 수 없다고 보고 판단해 주세요)"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_ASKS))
+def test_each_ask_names_what_undoes_it_and_only_a_memory_ask_says_memory(kind):
+    text = approval.format_request(_ASKS[kind]())
+    assert [line for line in text.splitlines() if line.startswith("되돌릴 수 있는가:")] == [_UNDO[kind]]
+    # The memory promotion's answer and its consume step are its own, not a default.
+    assert (_MEMORY_UNDO in text) == (kind == "memory")
+    assert (_MEMORY_CONSUME_STEP in text) == (kind == "memory")
+
+
+# The doors that verify their approval (never spend it), each named by the ask it serves.
+_DOORS = {
+    "pool_paper": "scripts/promote_strategy_candidates.py --confirm",
+    "retirement": "scripts/retire_strategies.py --confirm",
+    "correction": "scripts/correct_live_outcome.py --confirm",
+    "probe": "scripts/run_slippage_probe.py --confirm",
+    "registration": "scripts/register_program_candidate.py --confirm",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_DOORS))
+def test_each_verified_ask_sends_the_operator_to_its_own_door(kind):
+    """A retirement's target is a paper promotion's (`active_strategy_pool:paper`), so the closing
+    paragraph keyed on the target rendered a retirement ask with the promotion door's install step."""
+    text = approval.format_request(_ASKS[kind]())
+    assert [door for door in _DOORS.values() if door in text] == [_DOORS[kind]]
+    assert "approval_consumption" not in text
+
+
+def test_an_unregistered_ask_names_no_door():
+    """The REVIEW_ONLY sentence is true of every ask; a next step for an unknown kind is not guessed."""
+    text = approval.format_request(_ASKS["unregistered"]())
+    assert text.endswith("이 승인은 REVIEW_ONLY입니다. 승인만으로 런타임이 자동 실행하지 않습니다.")
+
+
+@requires_local_core
+def test_a_paper_tier_pool_promotion_names_the_verbs_that_undo_it():
+    """The ask as Thomas receives it: an OBSERVATION promotion is undone by a later promotion or a
+    retirement, each asked for again — not "validated memory persists", which it said until
+    2026-09-19."""
+    permdec = permission.build_strategy_promotion_permission_decision(
+        _bound(), live_tier="OBSERVATION", now=NOW, **_PROMOTION)
+    text = approval.request_message(approval.build_approval_request(permdec, now=NOW), permdec)
+    assert permdec["fingerprint_payload"]["target_ref"] == permission.STRATEGY_POOL_PAPER_TARGET_REF
+    assert _PAPER_POOL_UNDO in text
+    assert "validated memory" not in text
+    assert _MEMORY_CONSUME_STEP not in text
+    assert "예상 비용: 없음" in text
+
+
+def test_the_action_types_the_renderer_keys_on_are_the_ones_their_doors_verify():
+    """`permission` names these for the renderer; each owning module keeps its own copy for its
+    verification and content hash (`live_correction` must not import `permission`). A drifted pair
+    would render one kind's ask with another's text — or with none."""
+    from runtime.mvp_runtime import registration
+    from runtime.mvp_runtime.crypto import live_correction, probe, promotion, retirement
+
+    assert permission.STRATEGY_PROMOTION_ACTION_TYPE == promotion.PROMOTION_ACTION_TYPE
+    assert permission.STRATEGY_RETIREMENT_ACTION_TYPE == retirement.RETIREMENT_ACTION_TYPE
+    assert permission.LIVE_OUTCOME_CORRECTION_ACTION_TYPE == live_correction.CORRECTION_ACTION_TYPE
+    assert permission.SLIPPAGE_PROBE_ACTION_TYPE == probe.PROBE_ACTION_TYPE
+    assert permission.REGISTRATION_ACTION_TYPE == registration.REGISTRATION_ACTION_TYPE

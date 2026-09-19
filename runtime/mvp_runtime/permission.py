@@ -205,6 +205,19 @@ WORKFLOW_STEP_TARGET_PREFIX = "workflow_step:"
 # by `scripts/register_execution_stage.py --confirm`.
 EXECUTION_STAGE_TARGET_PREFIX = "execution_stage:"
 
+# The asks `approval.format_request` tells apart by action type rather than by target, because a
+# target is not always enough: a retirement names the same `active_strategy_pool:paper` a paper
+# promotion does. Named here, where they are minted, for the reason the prefixes above are. The
+# owning modules keep their own copies for their verification and content hashes
+# (`live_correction` must not import this module, it sits on the breaker's read path);
+# `tests/test_mvp_runtime_approval.py` pins each pair equal.
+MEMORY_PROMOTION_ACTION_TYPE = "memory.validated.promote"
+STRATEGY_PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
+STRATEGY_RETIREMENT_ACTION_TYPE = "crypto.strategy_pool.retirement"
+LIVE_OUTCOME_CORRECTION_ACTION_TYPE = "crypto.live_outcome.correction"
+SLIPPAGE_PROBE_ACTION_TYPE = "crypto.probe.stop_slippage_batch"
+REGISTRATION_ACTION_TYPE = "program.registry.registration"
+
 EXECUTE_AND_REPORT = "EXECUTE_AND_REPORT"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 # Dispositions the MVP can ACT on: it has an implementation and a reporting path for each.
@@ -909,7 +922,7 @@ def build_memory_promotion_permission_decision(
         raise PlannerBlocked("INVALID_CANDIDATE", "candidate must carry content to promote")
 
     action = _ActionSpec(
-        action_type="memory.validated.promote",
+        action_type=MEMORY_PROMOTION_ACTION_TYPE,
         target_suffix="memory_promotion",
         tool_id=None,
         data_scope=(f"memory.candidate.{candidate_id}", "task.evidence"),
@@ -1350,7 +1363,7 @@ def build_slippage_probe_permission_decision(
         * float(params.get("worst_case_loss_fraction") or 0.0)
     )
     action = _ActionSpec(
-        action_type="crypto.probe.stop_slippage_batch",
+        action_type=SLIPPAGE_PROBE_ACTION_TYPE,
         target_suffix="stop_slippage_probe",
         tool_id=None,
         data_scope=("crypto.stop_slippage_probe_plan", "crypto.registered_trading_budget"),
@@ -1521,7 +1534,7 @@ def build_program_registration_permission_decision(
     if not (isinstance(definition_sha256, str) and definition_sha256.startswith("sha256:")):
         raise PlannerBlocked("INVALID_REGISTRATION", "registration needs the definition content hash")
     action = _ActionSpec(
-        action_type="program.registry.registration",
+        action_type=REGISTRATION_ACTION_TYPE,
         target_suffix="program_registration",
         tool_id=None,
         program_id=f"{program_id}@{program_version}",
@@ -1619,7 +1632,7 @@ def build_strategy_promotion_permission_decision(
     )
 
     action = _ActionSpec(
-        action_type="crypto.strategy_pool.promotion",
+        action_type=STRATEGY_PROMOTION_ACTION_TYPE,
         target_suffix="strategy_pool_promotion",
         tool_id=None,
         data_scope=("crypto.strategy_candidates", "crypto.active_strategy_pool"),
@@ -1716,7 +1729,7 @@ def build_live_outcome_correction_permission_decision(
         raise PlannerBlocked("INVALID_CORRECTION", "a correction needs an operator reason")
 
     action = _ActionSpec(
-        action_type="crypto.live_outcome.correction",
+        action_type=LIVE_OUTCOME_CORRECTION_ACTION_TYPE,
         target_suffix="live_outcome_correction",
         tool_id=None,
         data_scope=("crypto.live_outcomes", "crypto.live_outcome_corrections"),
@@ -1792,7 +1805,7 @@ def build_strategy_retirement_permission_decision(
         raise PlannerBlocked("INVALID_RETIREMENT", "a retirement needs an operator reason")
 
     action = _ActionSpec(
-        action_type="crypto.strategy_pool.retirement",
+        action_type=STRATEGY_RETIREMENT_ACTION_TYPE,
         target_suffix="strategy_pool_retirement",
         tool_id=None,
         data_scope=("crypto.active_strategy_pool",),
