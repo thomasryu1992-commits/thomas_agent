@@ -24,6 +24,19 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The assistant can halt entries** (crypto PR6e-1, 2026-09-19; Hermes shim 2.13, `SOUL.md`).
+  - **The tool:** `halt_trading(reason, hard=False)` sends the switch door's `disable mode=soft|hard`,
+    which the runtime has carried since PR6a (policy 1.5.1). No shim tool sent it before, so the
+    assistant's only stops also stopped position management.
+  - **The note (F11 from the review of PR6a):** every `disable` was rendered with the stop's note,
+    "dropped the scheduler's due cycles ... NOT being settled". That is false for a halt, which leaves
+    the runtime ACTIVE. A halt now says positions are still managed; one on a stopped runtime says
+    the stop stays and the halt is recorded under it; one that changed nothing claims nothing.
+  - **What it cannot do:** loosen HARD to SOFT, or release a stop. Lifting a halt needs Thomas's
+    `start_trading` approval, and `resume_runtime_only` keeps it, as for a stop.
+  - **Not in this PR:** the skill's wording (§5 lists the stops). It rides the next skill version,
+    because the 1.5.6 bump is still open in two PRs (#909, #910).
+
 - **The console board stops guessing the manual kill switch, and a halt under a stop is recorded**
   (crypto PR6d, 2026-09-19; `crypto/live_readiness.py`, `control.py`, `operator.py`).
   - **The manual kill switch row** (decision 50). A board without the live-trading environment

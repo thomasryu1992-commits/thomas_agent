@@ -41,6 +41,38 @@ CONTROL_BOT_ID = "8732952898"
 ASSISTANT_BOT_ID = "8950942278"
 
 
+# What a stop leaves behind. `kill` and `pause` stop the runtime, and with it the crypto cycle.
+_STOP_NOTE = (
+    " This stop ALSO disarmed live entries, and it dropped the scheduler's due "
+    "cycles: while stopped, the crypto cycle does not run, so open positions are "
+    "NOT being settled or protected by the runtime — only whatever protective "
+    "order already rests at the venue. Do not say positions will close on their "
+    "own. The disarm is sticky: resume_runtime_only brings the runtime back with "
+    "trading still off, and re-arming needs a separate start_trading approval."
+)
+# The modes `halt_trading` sends. A halt stops entries only and never stops the runtime.
+_HALT_MODES = frozenset({"soft", "hard"})
+
+
+def _halt_note(src: dict) -> str:
+    """What a halt left behind (shim 2.13). The stop note above is false for it: a halt leaves the runtime
+    ACTIVE, so positions keep being managed, and on a stopped runtime this door cannot release the stop —
+    the halt is recorded under it (PR6d). Only a halt that changed something is described as one."""
+    if not src.get("changed"):
+        return (" Nothing changed. The reply above says why and what is in effect; call "
+                "trading_switch_status before saying whether live entries are halted.")
+    if src.get("mode") == "ACTIVE":
+        return (" New live entries are refused and the runtime stays ACTIVE, so open positions keep being "
+                "settled, protected, time-exited and reconciled — say that; do not say trading or position "
+                "management stopped. A HARD halt also has the order adapter refuse every order that could add "
+                "exposure; closes and protective orders still go out. The halt is sticky: resume_runtime_only "
+                "keeps it, and lifting it needs Thomas's start_trading approval.")
+    return (f" The runtime is still {src.get('mode')} — this tool cannot release a stop. While stopped the "
+            "crypto cycle does not run, so open positions are NOT being settled or protected by the runtime "
+            "(only whatever protective order already rests at the venue). The halt is recorded under the "
+            "stop, so resume_runtime_only comes back to the halt, not to live entries.")
+
+
 def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: str | None) -> str:
     if answer.failure:
         return f"{answer.failure_text()} Nothing was changed."
@@ -90,14 +122,7 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
                 "trading is running."
             )
         if payload.get("command") == "disable":
-            armed_note = (
-                " This stop ALSO disarmed live entries, and it dropped the scheduler's due "
-                "cycles: while stopped, the crypto cycle does not run, so open positions are "
-                "NOT being settled or protected by the runtime — only whatever protective "
-                "order already rests at the venue. Do not say positions will close on their "
-                "own. The disarm is sticky: resume_runtime_only brings the runtime back with "
-                "trading still off, and re-arming needs a separate start_trading approval."
-            )
+            armed_note = _halt_note(src) if payload.get("mode") in _HALT_MODES else _STOP_NOTE
         replay_note = (
             " (REPLAYED: this request_id was already applied earlier — the door did not apply "
             "it again; what follows is the state from that first application.)"
@@ -189,6 +214,18 @@ def pause_trading(reason: str, domain: str = "crypto") -> str:
     entirely and live entries are disarmed, sticky); it only reads softer in the ledger.
     Only when Thomas asks."""
     return _ask({"command": "disable", "mode": "pause", "reason": reason, "domain": domain})
+
+
+@mcp.tool()
+def halt_trading(reason: str, hard: bool = False, domain: str = "crypto") -> str:
+    """Halt NEW live entries and keep managing open positions: the runtime stays ACTIVE, so they keep
+    being settled, protected, time-exited and reconciled. Prefer it to stop_trading when the point is
+    to stop opening positions. Same rules as stop_trading: no approval, applied at once. hard=True is
+    the tighter level — the order adapter also refuses every order that could add exposure; closes and
+    protective orders still go out. From here it only tightens: a soft halt never loosens a hard one,
+    and on a stopped runtime it cannot release the stop, only record the halt under it. Lifting a halt
+    needs Thomas's start_trading approval; resume_runtime_only keeps it."""
+    return _ask({"command": "disable", "mode": "hard" if hard else "soft", "reason": reason, "domain": domain})
 
 
 @mcp.tool()

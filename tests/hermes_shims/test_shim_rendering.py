@@ -142,6 +142,55 @@ def test_switch_enable_carries_a_request_id_and_disable_does_not(monkeypatch):
     assert seen[2][0] == {"command": "enable", "reason": "why", "domain": "crypto", "scope": "runtime"} and seen[2][1]["request_id"] == "hermes-2"
 
 
+def test_switch_tools_are_status_the_two_stops_the_halt_and_the_two_starts():
+    assert set(switch_shim.mcp.tools) == {"trading_switch_status", "stop_trading", "pause_trading", "halt_trading",
+                                          "start_trading", "resume_runtime_only"}
+
+
+def test_the_halt_sends_soft_or_hard_and_no_request_id(monkeypatch):
+    """Shim 2.13: the door has carried `disable mode=soft|hard` since PR6a; no tool sent it."""
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((p, kw)) or _answer("switch", {"ok": True, "reply": ""}))
+    switch_shim.halt_trading("why"); switch_shim.halt_trading("why", hard=True)
+    assert [p for p, _kw in seen] == [{"command": "disable", "mode": "soft", "reason": "why", "domain": "crypto"},
+                                      {"command": "disable", "mode": "hard", "reason": "why", "domain": "crypto"}]
+    assert all(kw == {"request_id": None} for _p, kw in seen)
+
+
+def _disable(mode, frame):
+    return switch_shim._render(_answer("switch", {"ok": True, "reply": "runtime says", "action": "halt_trading",
+                                                  "actor": "assistant_bridge", "domain": "crypto", **frame}),
+                               payload={"command": "disable", "mode": mode}, retry_tool="start_trading", request_id=None)
+
+
+def test_a_halt_on_an_active_runtime_says_positions_are_still_managed():
+    """F11 (review of PR6a): the stop's note — "dropped the scheduler's due cycles ... NOT being settled" —
+    was rendered for every disable, and is false for a halt, which leaves the runtime ACTIVE."""
+    text = _disable("hard", {"mode": "ACTIVE", "changed": True})
+    assert "runtime stays ACTIVE" in text and "settled, protected, time-exited and reconciled" in text
+    assert "NOT being settled" not in text and "due cycles" not in text and "runtime says" in text
+
+
+def test_a_halt_on_a_stopped_runtime_says_the_stop_stays_and_the_halt_is_recorded_under_it():
+    text = _disable("soft", {"mode": "KILLED", "changed": True})
+    assert "still KILLED" in text and "cannot release a stop" in text and "recorded under the stop" in text
+    assert "NOT being settled" in text and "runtime stays ACTIVE" not in text
+
+
+def test_a_halt_that_changed_nothing_claims_nothing():
+    """Refused to loosen, already at that level, or the state moved while it was applied: the reply says
+    which, and the shim must not claim entries are halted."""
+    text = _disable("soft", {"mode": "ACTIVE", "changed": False})
+    assert "Nothing changed" in text and "trading_switch_status" in text
+    assert "New live entries are refused" not in text and "recorded under the stop" not in text
+
+
+def test_kill_and_pause_keep_the_stop_note():
+    for mode in ("kill", "pause"):
+        text = _disable(mode, {"mode": "KILLED" if mode == "kill" else "PAUSED", "changed": True})
+        assert "dropped the scheduler's due cycles" in text and "runtime stays ACTIVE" not in text
+
+
 # --- knowledge ----------------------------------------------------------------------------
 
 def test_knowledge_ask_returns_the_frame_or_a_sentence(monkeypatch):
