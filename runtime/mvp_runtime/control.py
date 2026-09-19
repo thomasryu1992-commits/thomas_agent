@@ -74,6 +74,19 @@ CMD_RECOVERY = "recovery"
 CMD_HALT_TRADING = "halt_trading"
 COMMANDS = frozenset({CMD_STATUS, CMD_PAUSE, CMD_KILL, CMD_RESUME, CMD_STOP, CMD_AUDIT, CMD_RECOVERY,
                       CMD_HALT_TRADING})
+
+# The two halt levels (PR6, Thomas decision 47, 2026-09-19). Both leave the runtime ACTIVE, so open
+# positions keep being settled, protected, time-exited and reconciled, and both refuse new live
+# entries. SOFT is `halt_trading` as it was. HARD is the tighter of the two, and only the
+# authenticated operator may loosen it. A level is a field beside `mode`, never a fourth mode: an
+# older image reads an unknown `mode` as corrupt, i.e. KILLED, which stops position management on a
+# rollback; it ignores an unknown field, and reads this state as the soft halt it already knows.
+HALT_SOFT = "SOFT"
+HALT_HARD = "HARD"
+HALT_LEVELS = frozenset({HALT_SOFT, HALT_HARD})
+# What a `halt_trading` argument's first word may name. Anything else is the start of the reason, as
+# it always was (`/halt_trading 변동성 급등`).
+_HALT_LEVEL_WORDS = {"soft": HALT_SOFT, "hard": HALT_HARD}
 _ALIASES = {"stop_task": CMD_STOP}
 
 # Verbs the parser knows but that act only while the committed Governance Policy grants them
@@ -123,6 +136,12 @@ class ControlState:
     # step refuses before the live leg, so nothing settles or protects until resume. That is why
     # `halt_trading` exists (entries off, mode left ACTIVE).
     trading_armed: bool = True
+    # The halt the operator placed: None, HALT_SOFT or HALT_HARD. A halt always holds the arm down
+    # (`trading_allowed` refuses on either, and `ControlStore.load` disarms any record carrying
+    # one). None with the arm down is a disarm nobody named a halt — a fresh deployment, a lost
+    # state file, a resume that did not re-arm. pause and kill carry the level, so a resume that
+    # does not re-arm comes back to the halt that was in effect; a resume that re-arms clears it.
+    halt_level: str | None = None
 
     @classmethod
     def active_default(cls, *, now: str | None = None) -> "ControlState":
@@ -138,8 +157,10 @@ class ControlState:
         """A live ENTRY needs both: the runtime running, and trading armed.
 
         The conjunction lives here rather than at the call site so the two facts cannot be
-        read separately and combined differently by a second caller later."""
-        return self.execution_allowed and self.trading_armed
+        read separately and combined differently by a second caller later. A halt refuses here
+        too, whatever the arm says: the store never writes a halt with the arm up, and a state
+        built some other way must not be able to."""
+        return self.execution_allowed and self.trading_armed and self.halt_level is None
 
     def refusal_reason_code(self) -> str:
         """The ONE reason-code vocabulary for a kill-switch refusal, mode-aware.
@@ -160,8 +181,31 @@ class ControlState:
             "updated_at": self.updated_at,
             "reason": self.reason,
             "stop_requested_task_ids": list(self.stop_requested_task_ids),
-            "trading_armed": self.trading_armed,
+            # Never a halt with the arm up on disk (review of PR6a): `load` would clamp it, but an image
+            # from before halt levels reads only this field, and would read the halt as armed.
+            "trading_armed": self.trading_armed and self.halt_level is None,
+            "halt_level": self.halt_level,
         }
+
+
+def halt_level_of(raw: Any) -> str | None:
+    """A recorded halt level, read fail-closed: absent or null is no halt, a level is itself, and
+    anything else is HARD — present but unreadable is uncertainty about a safety state, and the
+    tightest halt that still manages positions is the answer that cannot loosen one."""
+    if raw is None:
+        return None
+    # isinstance first: `in` on a frozenset hashes, and a list would raise instead of failing closed.
+    return raw if isinstance(raw, str) and raw in HALT_LEVELS else HALT_HARD
+
+
+def halt_description(level: str | None) -> str:
+    """One line on what a halt level refuses, for the operator's `/status`."""
+    if level == HALT_HARD:
+        return ("HARD - new live entries refused; exits and protection still go out; only the "
+                "authenticated operator may loosen it")
+    if level == HALT_SOFT:
+        return "SOFT - new live entries refused; exits and protection still go out"
+    return "none"
 
 
 def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
@@ -185,6 +229,13 @@ def status_lines(state: ControlState, *, ledger: Any | None = None) -> str:
     # Named "live entries" and not "trading": paper is deliberately NOT gated on this, so an
     # operator reading `disarmed` must not conclude the research loop stopped too.
     lines.append(f"live entries: {'armed' if state.trading_armed else 'DISARMED'}")
+    # Only when one is placed: every reply before halt levels existed stays as it was. Under a
+    # stop the level is what a resume that does not re-arm comes back to.
+    if state.halt_level is not None and state.execution_allowed:
+        lines.append(f"halt: {halt_description(state.halt_level)}")
+    elif state.halt_level is not None:
+        lines.append(f"halt: {state.halt_level}, kept under {state.mode} - a resume that does not "
+                     "re-arm comes back to it; /resume clears it")
     if state.stop_requested_task_ids:
         lines.append("stop_requested_task_ids: " + ", ".join(state.stop_requested_task_ids))
     if ledger is not None:
@@ -241,6 +292,29 @@ def _stated_reason(reason: str, arg: Any) -> str:
     if not stated and isinstance(arg, str):
         stated = arg.strip()
     return " ".join(stated.split())[:MAX_REASON_CHARS]
+
+
+# Where a halt kept from a state that failed closed came from. Neither "placed by an operator" nor
+# "placed by nobody" holds for every case: a lost file's halt is the ledger's last event, an operator's,
+# while a corrupt file or an unreadable ledger sets HARD by failing closed (review of PR6a).
+_RECOVERED_STATE = "a control state recovered after its file was lost or unreadable"
+
+
+def _halt_level_and_reason(level: str | None, arg: Any) -> tuple[str | None, Any]:
+    """``(the level asked for, what is left of arg)`` for a ``halt_trading``. An explicit level wins;
+    otherwise a first word of exactly ``soft`` or ``hard``, followed by any whitespace (a newline in a
+    two-line message included), names it and is not part of the reason. Otherwise the level is None —
+    NOT asked for — and ``arg`` is untouched: the caller keeps the halt in effect, or places SOFT, so a
+    halt that names no level can never loosen one (review of PR6a: `/halt_trading 변동성 급등`, and the
+    runbook's own `console_cli halt_trading --reason ...`, turned HARD into SOFT)."""
+    if level is not None:
+        return level, arg
+    if isinstance(arg, str):
+        parts = arg.split(None, 1)
+        named = _HALT_LEVEL_WORDS.get(parts[0].lower()) if parts else None
+        if named is not None:
+            return named, parts[1] if len(parts) > 1 else ""
+    return None, arg
 
 
 def _audit_gap_summary(ledger: Any) -> list[dict[str, Any]]:
@@ -361,6 +435,16 @@ def recovery_lines(state: ControlState, ledger: Any | None) -> str:
     if state.fail_closed and state.reason and "no control-state file" in state.reason:
         lines.append("     (the state FILE is missing; the mode above was recovered from the")
         lines.append("      control-event ledger, so a deleted state file did not clear the stop.)")
+    if state.halt_level is not None:
+        lines.append(f"  halt: {state.halt_level}" + ("" if state.execution_allowed else f", kept under {state.mode}"))
+        # No operator writes a state without a time: this one was derived from a missing or unreadable
+        # file (review of PR6a), and the halt in it was kept rather than read from a record. Where it
+        # came from differs by case, so the note names both rather than claiming either.
+        if state.updated_by == "system" and not state.updated_at:
+            lines.append("  -> this halt was not read from a state file: the file is missing or unreadable, so")
+            lines.append("     the halt was kept from the control ledger's last event (an operator's halt) or,")
+            lines.append("     when the file or the ledger cannot be read, set HARD by failing closed. `resume`")
+            lines.append("     clears it; a resume that does not re-arm keeps it.")
 
     lines.append("")
     if ledger is None:
@@ -433,7 +517,18 @@ class ControlStore:
         volume remount or a stray cleanup script does exactly that. See
         :meth:`_mode_from_ledger`."""
         if not self._path.is_file():
-            recovered = self._mode_from_ledger()
+            recovered, level = self._mode_from_ledger()
+            if recovered is None and level is not None:
+                # The last event left the runtime ACTIVE under a named halt. Losing the file must
+                # not loosen it: a HARD halt that came back as a bare disarm would let the
+                # assistant's door, which may not loosen HARD, do exactly that.
+                return replace(
+                    ControlState.active_default(),
+                    reason=(f"no control-state file; the control-event ledger's last event left a "
+                            f"{level} halt in effect, so it is kept - /resume clears it"),
+                    trading_armed=False,
+                    halt_level=level,
+                )
             if recovered is None:
                 # ACTIVE, so a fresh deployment is not bricked — but UNARMED (Thomas decision 10,
                 # 2026-09-15): live entries wait for an operator to arm them. Before this, a
@@ -455,12 +550,15 @@ class ControlStore:
                 ),
                 fail_closed=True,
                 trading_armed=False,
+                halt_level=level,
             )
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return self._corrupt_killed("control state file is unreadable")
-        if not isinstance(data, dict) or data.get("mode") not in _MODES:
+        # isinstance before `in`: an unhashable mode (a list) raised TypeError out of `load`, where
+        # every caller — `/status` and `/recovery` among them — expects a state or a typed refusal.
+        if not isinstance(data, dict) or not isinstance(data.get("mode"), str) or data["mode"] not in _MODES:
             return self._corrupt_killed("control state file is malformed or has an unknown mode")
         raw_ids = data.get("stop_requested_task_ids", [])
         ids = tuple(str(x) for x in raw_ids) if isinstance(raw_ids, list) else ()
@@ -472,38 +570,47 @@ class ControlStore:
         # fails closed, exactly like an unknown `mode` does.
         raw_armed = data.get("trading_armed", True)
         armed = raw_armed if isinstance(raw_armed, bool) else False
+        # The halt level splits the same way (`halt_level_of`): absent is a file from before halt
+        # levels, which carries no halt; present and unreadable is HARD. A halt holds the arm down
+        # whatever the file says beside it.
+        level = halt_level_of(data.get("halt_level"))
         return ControlState(
             mode=str(data["mode"]),
             updated_by=str(data.get("updated_by", "unknown")),
             updated_at=str(data.get("updated_at", "")),
             reason=str(data.get("reason", "")),
             stop_requested_task_ids=ids,
-            trading_armed=armed,
+            trading_armed=armed and level is None,
+            halt_level=level,
         )
 
-    def _mode_from_ledger(self) -> str | None:
-        """The mode the durable control-event ledger says was last in effect, or None when
-        the ledger genuinely has nothing to say (a fresh deployment).
+    def _mode_from_ledger(self) -> tuple[str | None, str | None]:
+        """``(mode, halt level)`` the durable control-event ledger says was last in effect. The mode
+        is None when the ledger has no stop to report — ACTIVE, or a fresh deployment — and the
+        level is None when it has no halt to report.
 
         This is what makes "missing file = ACTIVE" safe. The ledger is the durable record
         of every transition, on the same volume as the state file, so it answers the one
-        question deletion was otherwise able to erase: was a stop in effect? Returns None
-        only when the ledger is ABSENT (nothing ever happened here); an unreadable ledger
-        returns KILLED, because uncertainty about a safety state is not permission.
+        question deletion was otherwise able to erase: was a stop in effect? Returns
+        ``(None, None)`` only when the ledger has nothing to say (nothing ever happened here);
+        an unreadable ledger returns KILLED under a HARD halt, because uncertainty about a
+        safety state is not permission. An event written before halt levels existed carries
+        none, and reports none.
         """
         ledger_path = self._path.parent / "runtime_ledger" / "control_events.jsonl"
         if not ledger_path.is_file():
-            return None                     # fresh deployment: no history to contradict ACTIVE
+            return None, None               # fresh deployment: no history to contradict ACTIVE
         try:
             events = jsonl.read_objects(
                 ledger_path, read_code="LEDGER_UNREADABLE", label="the control ledger")
         except MvpRuntimeError:
-            return KILLED                   # cannot rule out a stop => do not permit execution
+            return KILLED, HALT_HARD        # cannot rule out a stop => do not permit execution
         for event in reversed(events):
             mode = event.get("resulting_mode") if isinstance(event, dict) else None
-            if mode in _MODES:
-                return None if mode == ACTIVE else mode
-        return None
+            if isinstance(mode, str) and mode in _MODES:
+                level = halt_level_of(event.get("resulting_halt_level"))
+                return (None if mode == ACTIVE else mode), level
+        return None, None
 
     @staticmethod
     def _corrupt_killed(detail: str) -> ControlState:
@@ -514,6 +621,9 @@ class ControlStore:
             reason=f"fail-closed: {detail}; manual recovery required (resume to clear)",
             fail_closed=True,
             trading_armed=False,
+            # The file may have held a HARD halt. A resume that re-arms clears this with everything
+            # else; one that does not must not come back looser than the file could have been.
+            halt_level=HALT_HARD,
         )
 
     def save(self, state: ControlState) -> None:
@@ -535,6 +645,9 @@ def _control_event(action: str, state: ControlState, *, now: str, task_id: str |
         # Recorded so the ledger answers "were live entries armed after this?" — a soft halt
         # changes nothing else, and an event without it would read as a no-op.
         resulting_trading_armed=bool(state.trading_armed),
+        # And the halt level, which `ControlStore._mode_from_ledger` reads back when the state file
+        # is lost: a HARD halt must survive that the way a stop does.
+        resulting_halt_level=state.halt_level,
         actor=state.updated_by, reason=state.reason, created_at=now, **extra,
     )
 
@@ -603,6 +716,8 @@ def apply_command(
     ledger: Any | None = None,
     resume_arms: bool = True,
     halt_may_release_stop: bool = False,
+    halt_level: str | None = None,
+    expected_state: ControlState | None = None,
 ) -> dict[str, Any]:
     """Apply a console command and return ``{reply, mode, changed, action}``.
 
@@ -632,9 +747,33 @@ def apply_command(
     armed (``/resume`` then ``/halt_trading`` would leave one). That releases a stop, which
     ``resume_requires_thomas_authentication`` reserves for the authenticated operator, so only the
     local console and the verified Telegram channel pass True. It defaults to False: the assistant's
-    switch door can halt entries but can never release a stop through this verb."""
+    switch door can halt entries but can never release a stop through this verb.
+
+    ``halt_level`` applies to ``halt_trading`` alone: ``HALT_SOFT`` or ``HALT_HARD``. When None, the
+    first word of ``arg`` names it if that word is exactly ``soft`` or ``hard`` (``/halt_trading hard
+    변동성``). A halt that names no level keeps the one in effect, or places SOFT where none is, and
+    all of ``arg`` is the reason. Tightening — SOFT to HARD, or naming a halt over a bare disarm —
+    needs nothing. Loosening HARD to SOFT is a release: it must name ``soft`` explicitly, and it takes
+    ``halt_may_release_stop`` like releasing a pause or kill does. ``resume`` clears either level,
+    and a resume that does not re-arm keeps it.
+
+    **Concurrent writers (review of PR6a).** Nothing here takes a lock — an emergency control must
+    never wait on one — so each writing verb re-reads the state immediately before it writes. A stop
+    (``pause``, ``kill``, ``stop``) always goes through and builds on what it re-read, so a halt level
+    or a stop request that landed after the first read is carried, never erased. ``halt_trading`` and
+    ``resume`` start things, and write nothing when the state moved: ``halt_trading`` says so in its
+    reply, ``resume`` refuses with ``CONTROL_STATE_CHANGED``. ``expected_state`` (``resume`` only) is
+    the state a caller already checked — the switch door's spend checks ``stop_ref`` against it — and
+    the resume refuses unless the state is still exactly that one when it writes."""
     if command not in COMMANDS:
         raise ControlBlocked("UNKNOWN_COMMAND", f"unknown control command: {command!r}")
+    if halt_level is not None and (command != CMD_HALT_TRADING or not isinstance(halt_level, str)
+                                   or halt_level not in HALT_LEVELS):
+        raise ControlBlocked("UNKNOWN_HALT_LEVEL",
+                             f"halt_level {halt_level!r} applies to {CMD_HALT_TRADING} only, "
+                             f"as one of {sorted(HALT_LEVELS)}")
+    if expected_state is not None and command != CMD_RESUME:
+        raise ControlBlocked("ARGUMENT_NOT_ACCEPTED", f"expected_state applies to {CMD_RESUME} only")
     # The grant is read BEFORE the state, never between reading and writing it (review of H2): the
     # policy parse takes milliseconds, and a kill landing inside that window would otherwise be
     # overwritten by this verb's save.
@@ -683,15 +822,19 @@ def apply_command(
         # named it back as though it were an id.
         task_id, _, tail = arg.strip().partition(" ")
         stated_stop = _stated_reason(reason, tail)
-        pending = tuple(dict.fromkeys((*current.stop_requested_task_ids, task_id)))
+        # Built on a re-read, not on `current`: this branch keeps the mode, the arm and the halt, and
+        # a kill or a halt that landed since the first read must be what it keeps (review of PR6a).
+        latest = store.load()
+        pending = tuple(dict.fromkeys((*latest.stop_requested_task_ids, task_id)))
         new_state = ControlState(
-            mode=current.mode, updated_by=actor, updated_at=stamp,
+            mode=latest.mode, updated_by=actor, updated_at=stamp,
             reason=stated_stop or f"stop requested for task {task_id}",
             stop_requested_task_ids=pending,
             # Carried, not defaulted. This branch keeps `mode` deliberately; letting the arm
             # fall back to the dataclass default would make an auditable no-op stop request
-            # silently re-arm a disarmed runtime.
-            trading_armed=current.trading_armed,
+            # silently re-arm a disarmed runtime. The halt level likewise.
+            trading_armed=latest.trading_armed,
+            halt_level=latest.halt_level,
         )
         store.save(new_state)
         if ledger is not None:
@@ -716,51 +859,90 @@ def apply_command(
     # pause/kill/resume/halt_trading: the operator's own words, from `--reason` on the local
     # console or from the text after the verb over Telegram. Recorded on the state and on the
     # ledger event, and echoed back so the operator can see that it landed.
+    if command == CMD_HALT_TRADING:
+        asked, arg = _halt_level_and_reason(halt_level, arg)
+        # A halt that names no level keeps the one in effect (carried under a stop too), else SOFT.
+        level = asked if asked is not None else (current.halt_level or HALT_SOFT)
     stated = _stated_reason(reason, arg)
     reason_note = f"\n(이유 기록: {stated})" if stated else ""
     not_recorded = "\n(상태가 그대로이므로 적어주신 이유는 기록되지 않았습니다.)" if stated else ""
 
     if command == CMD_HALT_TRADING:
         if current.mode == ACTIVE:
-            if not current.trading_armed:
+            # A halt over a bare disarm is not a no-op: it names the halt, on the state and on the
+            # ledger, where a lost state file is recovered from.
+            if current.halt_level == level:
                 return {
-                    "reply": ("Live entries are already halted and the runtime is ACTIVE, so open "
-                              "positions are being managed. Nothing changed; /resume re-arms."
+                    "reply": (f"Live entries are already halted ({level} halt) and the runtime is "
+                              "ACTIVE, so open positions are being managed. Nothing changed; "
+                              "/resume re-arms."
+                              + (" `/halt_trading soft` loosens it to the soft halt (the "
+                                 "authenticated operator only)." if level == HALT_HARD else "")
                               + not_recorded),
+                    "mode": ACTIVE, "changed": False, "action": CMD_HALT_TRADING,
+                }
+            if current.halt_level == HALT_HARD and not halt_may_release_stop:
+                return {
+                    "reply": ("A HARD halt is in effect, and this door cannot loosen it to the soft "
+                              "halt; it stays HARD. The authenticated operator can (/halt_trading "
+                              "soft), and /resume clears it." + not_recorded),
                     "mode": ACTIVE, "changed": False, "action": CMD_HALT_TRADING,
                 }
             new_state = ControlState(
                 mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                reason=stated or "live entries halted by operator (soft halt)",
+                reason=stated or f"live entries halted by operator ({level.lower()} halt)",
                 stop_requested_task_ids=current.stop_requested_task_ids,
                 trading_armed=False,
+                halt_level=level,
             )
-            verb_reply = (
-                "Live entries HALTED (soft halt). The runtime stays ACTIVE: open positions keep "
-                "being settled, protected, time-exited and reconciled, and paper keeps running. "
-                "New live entries — autonomous and probe — are refused until /resume."
-                + reason_note
-            )
+            if current.halt_level == HALT_HARD:
+                verb_reply = ("Hard halt loosened to the soft halt. The runtime stays ACTIVE and open "
+                              "positions keep being managed; new live entries stay refused until "
+                              "/resume." + reason_note)
+            elif current.halt_level == HALT_SOFT:
+                verb_reply = ("Soft halt tightened to the hard halt. The runtime stays ACTIVE and open "
+                              "positions keep being managed; new live entries stay refused until "
+                              "/resume, and only the authenticated operator may loosen it to the soft "
+                              "halt." + reason_note)
+            else:
+                verb_reply = (
+                    f"Live entries HALTED ({level.lower()} halt). The runtime stays ACTIVE: open "
+                    "positions keep being settled, protected, time-exited and reconciled, and paper "
+                    "keeps running. New live entries — autonomous and probe — are refused until /resume."
+                    + (" Only the authenticated operator may loosen it to the soft halt."
+                       if level == HALT_HARD else "")
+                    + reason_note
+                )
         elif not halt_may_release_stop:
             return {
                 "reply": (f"Runtime is {current.mode}, which already refuses every live entry (and "
                           "also stops position management). Left as it is — this door cannot "
-                          "release a stop; the authenticated operator can move it to the soft "
-                          "halt with /halt_trading." + not_recorded),
+                          "release a stop; the authenticated operator can move it to a halt "
+                          "with /halt_trading." + not_recorded),
                 "mode": current.mode, "changed": False, "action": CMD_HALT_TRADING,
             }
         else:
             released = current.mode
+            # A level carried from a state that failed closed was kept, not asked for: say so on the
+            # state it now writes, as the resume does, or it reads as this actor's own halt.
+            derived = (f" [{level} halt kept from {_RECOVERED_STATE}]"
+                       if asked is None and current.fail_closed and current.halt_level is not None else "")
             new_state = ControlState(
                 mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                reason=stated or f"soft halt (released {released}): entries halted, management resumed",
+                reason=(stated or (f"{level.lower()} halt (released {released}): entries halted, "
+                                   "management resumed")) + derived,
                 stop_requested_task_ids=current.stop_requested_task_ids,
                 trading_armed=False,
+                halt_level=level,
             )
             verb_reply = (
-                f"{released} -> soft halt. The runtime is ACTIVE again, so open positions are "
-                "managed (settle, protect, time exit, reconcile) and queued work resumes; new "
-                "live entries stay refused until /resume." + reason_note
+                f"{released} -> {level.lower()} halt. The runtime is ACTIVE again, so open positions "
+                "are managed (settle, protect, time exit, reconcile) and queued work resumes; new "
+                "live entries stay refused until /resume."
+                + (f"\nThe {level} halt was kept from {_RECOVERED_STATE}"
+                   + ("; `/halt_trading soft` loosens it." if level == HALT_HARD else ".")
+                   if derived else "")
+                + reason_note
             )
         # Compare before writing (review of H2). This verb can write ACTIVE, and a stop that landed
         # after `current` was read must not be overwritten by it: the assistant's door would have
@@ -779,6 +961,11 @@ def apply_command(
             ledger.append_control(_control_event(command, new_state, now=stamp))
         return {"reply": verb_reply, "mode": new_state.mode, "changed": True, "action": command}
 
+    if command in (CMD_PAUSE, CMD_KILL):
+        # A stop always goes through and never waits on a lock, so it re-reads immediately before it
+        # writes and builds on that: a halt level or a stop request that landed after `current` was
+        # read is carried, not erased (review of PR6a). The window left is the replace itself.
+        current = store.load()
     if command == CMD_PAUSE:
         if current.mode == KILLED:
             # A kill is the stronger stop, and `pause` is not the verb for clearing one —
@@ -795,31 +982,55 @@ def apply_command(
             }
         new_state = ControlState(mode=PAUSED, updated_by=actor, updated_at=stamp,
                                  reason=stated or "paused by operator", stop_requested_task_ids=current.stop_requested_task_ids,
-                                 trading_armed=False)
+                                 trading_armed=False, halt_level=current.halt_level)
         verb_reply = "Paused. New task requests are refused until /resume." + reason_note
     elif command == CMD_KILL:
         # Stopping disarms in both dimensions and needs no approval to do it. The asymmetry is
         # the existing one: a stop must be cheap, and a start must not be.
         new_state = ControlState(mode=KILLED, updated_by=actor, updated_at=stamp,
                                  reason=stated or "killed by operator", stop_requested_task_ids=current.stop_requested_task_ids,
-                                 trading_armed=False)
+                                 trading_armed=False, halt_level=current.halt_level)
         verb_reply = ("KILLED. All new/pending execution is blocked; only status and audit reads "
                       "remain. /resume to clear." + reason_note)
     else:  # CMD_RESUME
+        # The state this resume is judged against: the one its caller checked, or the one read above.
+        baseline = expected_state if expected_state is not None else current
         # Pending stop requests survive the resume: they are operator intent about specific
         # tasks, not part of the pause/kill they happened to be recorded during. Dropping
         # them silently (the old default-empty tuple) discarded that intent with no event
         # saying so.
-        armed = True if resume_arms else current.trading_armed
+        # A resume that re-arms clears the halt with the arm; one that does not keeps both, so a
+        # runtime-only resume never comes back looser than the halt it resumed under.
+        armed = True if resume_arms else baseline.trading_armed
+        kept = None if resume_arms else baseline.halt_level
+        # A halt kept from a state that failed closed was kept, not placed by this actor: say so on
+        # the state it now writes, or it reads as this actor's own halt (review of PR6a).
+        derived = (f" [{kept} halt kept from {_RECOVERED_STATE}]"
+                   if kept and baseline.fail_closed else "")
         new_state = ControlState(mode=ACTIVE, updated_by=actor, updated_at=stamp,
-                                 reason=stated or "resumed by operator",
-                                 stop_requested_task_ids=current.stop_requested_task_ids,
-                                 trading_armed=armed)
+                                 reason=(stated or "resumed by operator") + derived,
+                                 stop_requested_task_ids=baseline.stop_requested_task_ids,
+                                 trading_armed=armed and kept is None, halt_level=kept)
         verb_reply = ("Resumed. The runtime is ACTIVE and will accept task requests again."
-                      + ("" if armed else
-                         "\nLive entries stay DISARMED - this resume did not re-arm trading. "
+                      + ("" if new_state.trading_armed else
+                         "\nLive entries stay DISARMED"
+                         + (f" ({kept} halt kept)" if kept else "")
+                         + " - this resume did not re-arm trading. "
                          "Open positions still close; paper is unaffected.")
+                      + (f"\nThe {kept} halt was kept from {_RECOVERED_STATE}." if derived else "")
                       + reason_note)
+        # Compare before writing: a resume starts things, so a stop or a halt that landed after the
+        # state it was judged against must not be overwritten by it (review of PR6a — the check the
+        # switch door's spend makes against `stop_ref` held only up to its own read).
+        latest = store.load()
+        if latest != baseline:
+            raise ControlBlocked(
+                "CONTROL_STATE_CHANGED",
+                f"the control state changed while this resume was being applied (now {latest.mode}, "
+                f"live entries {'armed' if latest.trading_armed else 'DISARMED'}"
+                + (f", {latest.halt_level} halt" if latest.halt_level else "")
+                + "). Nothing was written; send /status and repeat the resume if it is still wanted.",
+            )
 
     store.save(new_state)
     if ledger is not None:

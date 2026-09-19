@@ -473,6 +473,26 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   only new entries (autonomous and probe) are refused, until `/resume`. From a PAUSED or
   KILLED runtime the operator's `/halt_trading` moves it straight to that state. **Policy 1.5.1
   grants the verb (2026-09-17); an image older than that policy refuses it by name.**
+  **Two levels (Thomas decision 47, 2026-09-19):** `halt_trading` alone, or `halt_trading soft`, is
+  the SOFT halt; `halt_trading hard` (`/halt_trading hard <reason>`, switch door `disable mode=hard`)
+  is the HARD halt. Both keep the runtime ACTIVE and refuse new entries. HARD is the tighter one:
+  tightening SOFT to HARD needs nothing, and only the authenticated operator (local console,
+  Telegram) loosens HARD to SOFT; `/resume` clears either. `/kill` and `/pause` keep their meaning
+  and carry the level, so a resume that does not re-arm (the assistant's approved runtime-only
+  resume) comes back to the halt that was in effect. The level is a field beside `mode`
+  (`halt_level`), recorded on every control event (`resulting_halt_level`) and recovered from the
+  ledger when the state file is lost; a corrupt file still reads KILLED (decision 48), with a HARD
+  halt under it. A halt that names no level (`/halt_trading <reason>`, or the console command in the
+  incident notices) keeps the level in effect, so only an explicit `soft` loosens HARD. The level
+  is the argument's first word, so a Telegram reason that itself begins with `soft` or `hard` is
+  read as the level; the reply names every change of level. **Rollback is
+  read-safe, not write-safe:** an image from before halt levels ignores the field and reads either
+  level as the soft halt, but its next control write (a `/stop`, a kill, a resume) drops the level,
+  so after rolling forward again check the `halt:` line in `/status` and place HARD again if it was
+  in effect. `/status` shows a `halt:` line, and the readiness board names the component
+  `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`, a disarm nobody
+  named. The policy's comment on the grant still describes the soft halt alone: it is a byte of the
+  fingerprinted policy, so it changes with the next policy bump Thomas applies.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries
