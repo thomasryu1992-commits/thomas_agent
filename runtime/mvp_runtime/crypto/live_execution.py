@@ -290,11 +290,13 @@ def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = Non
         state = (ControlStore(root) if root is not None else ControlStore.default()).load()
     except Exception as exc:  # noqa: BLE001 — uncertainty about a safety state is not permission
         return f"the control state could not be read ({type(exc).__name__})"
+    # The stop first: a corrupt store reads KILLED under a HARD halt, and KILLED is what to name.
+    if not state.execution_allowed:
+        return (f"the runtime is {state.mode}, which sends no order that could add exposure "
+                f"(stated reason: {state.reason})")
     if state.halt_level == HALT_HARD:
         return ("a HARD halt is in effect: only reduceOnly and closePosition orders may be sent "
                 f"(stated reason: {state.reason})")
-    if not state.execution_allowed:
-        return f"the runtime is {state.mode}, which sends no order that could add exposure"
     return None
 
 
@@ -1121,7 +1123,8 @@ def submit_and_reconcile(
     except ToolError as exc:
         if exc.reason_code == ORDER_HALTED:
             # The adapter refused before its send (PR6b): nothing left, so there is nothing to ask
-            # the venue about, and the caller gives back what it reserved for this order.
+            # the venue about. The entry leg gives the symbol back; the day's slot, the bar claim and
+            # the pre-order snapshot stay spent, as for any refusal after they were taken (PR2a).
             raise SubmitRefused(ORDER_HALTED, getattr(exc, "reason", str(exc))) from exc
         # A rejected OR ambiguous submit: do not assume nothing landed and do not blind-retry.
         # Reconcile by client_order_id below to learn the truth from the venue.

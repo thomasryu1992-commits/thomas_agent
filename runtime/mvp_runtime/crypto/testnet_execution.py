@@ -403,7 +403,7 @@ def evaluate_testnet_order_guard(
         block("runtime_active", "runtime is not ACTIVE; kill_blocks external_execution forbids an order")
     # The HARD halt (PR6b) under the same check: the control state is what it reads. A SOFT halt
     # keeps the rehearsal running, as before; the adapter refuses the same order at its egress.
-    if hard_halt and not intent.get("reduce_only"):
+    if hard_halt and not (intent.get("reduce_only") or intent.get("close_position")):
         block("runtime_active", "a HARD halt is in effect; it refuses every order that could add "
                                 "exposure, testnet included")
     # 4. The bound this path carries in code, because no record declares one for a venue that
@@ -515,7 +515,7 @@ def gate_testnet_order(
         "client_order_id": intent.get("client_order_id"),
     }
     facts = {key: guard_kwargs.get(key) for key in (
-        "gate_open", "runtime_active", "manual_kill_switch", "submitted_today",
+        "gate_open", "runtime_active", "manual_kill_switch", "submitted_today", "hard_halt",
     )}
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_TESTNET, venue=VENUE_TESTNET, checks=checks,

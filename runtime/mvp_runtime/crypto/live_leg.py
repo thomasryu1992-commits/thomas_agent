@@ -817,7 +817,8 @@ def execute_live_entry(
             risk_snapshot=risk_snapshot, snapshot_store=snapshot_store,
         )
     except SubmitRefused as exc:
-        # Raised only before the adapter is called: nothing left.
+        # Raised only before anything is sent (a refusal before the adapter, or the adapter's own
+        # refusal before its send, PR6b): nothing left.
         result["reason_codes"] = [exc.reason_code]
         _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result

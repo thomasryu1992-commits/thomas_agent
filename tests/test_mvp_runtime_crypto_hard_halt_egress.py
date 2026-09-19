@@ -135,6 +135,8 @@ def test_a_reduce_only_close_goes_out_under_a_corrupt_store(tmp_path, sent):
     with pytest.raises(ToolError) as exc:
         adapter.submit(ENTRY)
     assert exc.value.reason_code == lx.ORDER_HALTED and len(sent) == 2
+    # A corrupt store reads KILLED under a HARD halt; the refusal names the stop (review of #912).
+    assert "the runtime is KILLED" in str(exc.value) and "fail-closed" in str(exc.value)
 
 
 def test_an_exit_never_reads_the_control_state(tmp_path, sent, monkeypatch):
@@ -282,6 +284,33 @@ def test_the_testnet_guard_refuses_the_entry_under_a_hard_halt_and_not_the_exit(
     exit_ = testnet_execution.evaluate_testnet_order_guard(
         {"symbol": "BTCUSDT", "quantity": 0.001, "order_notional_usdt": 0.0, "reduce_only": True}, **kwargs)
     assert not any("HARD halt" in b for b in exit_["blocks"])
+    # A closePosition stop is protective too, spelled as the adapter spells it (review of #912).
+    from runtime.mvp_runtime.crypto import live_leg
+
+    stop = live_leg.build_bracket_intent(symbol="BTCUSDT", leg="SL", side="SELL", price=49000.0,
+                                         working_type="MARK_PRICE", position_seed="seed")
+    assert stop["close_position"] is True and stop["reduce_only"] is False
+    assert lx.is_protective_request(lx.build_order_request(stop))
+    guarded = testnet_execution.evaluate_testnet_order_guard({**stop, "order_notional_usdt": 0.0}, **kwargs)
+    assert not any("HARD halt" in b for b in guarded["blocks"])
+
+
+def test_the_sealed_testnet_facts_carry_the_hard_halt():
+    """The pre-order snapshot seals what the guard judged: a HARD refusal must not read as a runtime
+    that was ACTIVE and nothing else (review of #912)."""
+    from runtime.mvp_runtime.crypto import execution_stage as es
+    from scripts import run_signed_testnet_cycle as door
+
+    stage = es.StageStatus(stage="SIGNED_TESTNET", valid=True, reason_code=None, recorded_stage="SIGNED_TESTNET",
+                           stage_id="s", record_sha256="sha256:" + "5" * 64, approval_id="a")
+    intent = door._entry_intent(symbol="BTCUSDT", quantity=0.001, price=50000.0, now=NOW)
+    for hard in (True, False):
+        kwargs = dict(gate_open=True, runtime_active=True, manual_kill_switch=False, submitted_today=0,
+                      execution_stage=stage, hard_halt=hard)
+        snap = testnet_execution.gate_testnet_order(intent, expected_intent=intent, guard_kwargs=kwargs,
+                                                    stage=stage, cycle_id="c", now=NOW, decided_at=NOW)
+        assert snap["facts"]["hard_halt"] is hard
+        assert ("runtime_active" in snap["failed_checks"]) is hard
 
 
 def test_the_testnet_door_plans_no_cycle_under_a_hard_halt(tmp_path, monkeypatch):
