@@ -8,24 +8,34 @@ types had moved off ``/fapi/v1/order`` to the Algo API — lives only at the ven
 see drift in a contract it never calls. This module calls it.
 
 **What it can see without creating an order.** Three verbs: a public GET, a signed GET, and
-``POST /fapi/v1/order/test`` — the order API's own validator, which creates nothing.
-``exchangeInfo`` alone would not have caught 2026-08-02: on 2026-09-19 it still lists
-``STOP_MARKET`` and ``TAKE_PROFIT_MARKET`` for every traded symbol, although the order API refuses
-both with -4120. The -4120 is the observable: the 2026-08-03 diagnostic request, sent to the
-validator, must still be refused with it. What none of the three can show is written into every
-record (:data:`NOT_VERIFIED`) so a PASS never reads as more than it is: an algo order's placement
-(the Algo API has no validator; the signed testnet cycle, PR1d, is that evidence), the codes only a
-real order or cancel produces, and account state, which the validator does not judge.
+``POST /fapi/v1/order/test`` — the order API's own validator, which creates nothing. The sentinel
+does not take that on trust: it asks for its own entry test by id afterwards and reads the resting
+orders last (:data:`CHECK_ENTRY_LEFT_NO_ORDER`, :data:`CHECK_NOTHING_RESTING`). ``exchangeInfo``
+alone would not have caught 2026-08-02: on 2026-09-19 it still lists ``STOP_MARKET`` and
+``TAKE_PROFIT_MARKET`` for every traded symbol, although the order API refuses both with -4120. The
+-4120 is the observable: the 2026-08-03 diagnostic request, sent to the validator, must still be
+refused with it. What none of the three verbs can show is written into every record
+(:data:`NOT_VERIFIED`) so a PASS never reads as more than it is: an algo order's placement (the Algo
+API has no validator; the signed testnet cycle, PR1d, is that evidence), the codes only a real order
+or cancel produces, and account state, which the validator does not judge.
 
 **Judged and observed.** A check may fail the contract only where what it expects has been measured
 at this venue (:data:`JUDGED_CHECKS`). The others are hypotheses the runtime's reads rest on — the
-answer to an unknown id, a take-profit LIMIT beyond the price band while flat — and are recorded,
-never judged (:data:`OBSERVED_CHECKS`), until the host's own answers are on record.
+answer to an unknown algo id, a take-profit LIMIT beyond the price band while flat — and are
+recorded, never judged (:data:`OBSERVED_CHECKS`), until the host's own answers are on record.
+
+**It backs off.** The first answer that says the venue could not be asked — a rate limit, a ban, a
+5xx, a transport failure, a key or clock refusal (`live_order.api_error_counts`, the breaker's own
+test of "could not ask") — stops the run, and a fire whose market data was already rate limited is
+not run at all: continuing to knock after a 429 is how this venue's throttling becomes an IP ban,
+and a ban would refuse the money path's closes too. What was not asked is UNVERIFIED, never a
+verdict.
 
 **Two files**, as :mod:`account_store` keeps them and for its reason: the last DECIDED verification
-(PASS or FAIL) and the last ATTEMPT. A run that could not ask moves only the attempt, so a venue
+(PASS or FAIL) and the last ATTEMPT. A run that could not decide moves only the attempt, so a venue
 hiccup never erases a good verification; a run the venue answered with a violation writes FAIL at
-once (decision 44). A PASS stands for :data:`MAX_AGE_SECONDS`.
+once (decision 44), and while the decided record is a FAIL it is asked again on the next fire rather
+than an hour later. A PASS stands for :data:`MAX_AGE_SECONDS`.
 
 **Not the API breaker's, and not stage evidence.** The breaker counts the money path's signed calls
 (decision 27), and the sentinel is not the money path: it asks the raw adapter, and its failures are
@@ -64,19 +74,32 @@ REFRESH_MARK_FILENAME = "venue_contract_refresh.json"
 # is the 15-minute pipeline: at 60 the hour-mark fire lands a few seconds short, and the ask slips to
 # the next one — an effective 75. Six hours is five failed asks in a row before a PASS stops being one.
 REFRESH_AFTER_SECONDS = 55 * 60
+# While the decided record is a FAIL, the next fire asks again (review of #902): a symbol back from a
+# break, or a venue answer that was a blip, must not hold the record at FAIL for another hour.
+RETRY_AFTER_FAIL_SECONDS = 10 * 60
 MAX_AGE_SECONDS = 6 * 60 * 60
 # A verification dated this far past the clock is not one to trust either: clocks disagree by
 # seconds, not minutes.
 FUTURE_SKEW_SECONDS = 5 * 60
+# The account snapshot the leverage is judged on is refreshed on this lane every 15 minutes (a fire
+# a few seconds early skips one); older than three refreshes, it says nothing about the account now,
+# so the leverage is not judged on it — in either direction.
+LEVERAGE_SNAPSHOT_MAX_AGE_SECONDS = 45 * 60
 
 # Per call, and per run. The run rides the risk lane's pipeline fire, after its cycles: about fifteen
-# calls at the venue's usual latency is a few seconds, and the budget bounds the unusual case — a
-# venue slow on every call must not add a minute to the fire that manages positions.
+# calls at the venue's usual latency is a few seconds. The budget bounds the unusual case. A call is
+# started only with its full timeout still inside the budget, beyond what the checks after it keep
+# back (:data:`FINAL_RESERVE_SECONDS`) — so a venue answering every call within its timeout always
+# reaches a decision, and a slow one adds at most the budget and one call's socket timeouts to the
+# fire. (The timeout bounds each socket operation, not a call as a whole; a DNS lookup is not bounded
+# by it — the account refresh on the same fire has the same property.)
 CALL_TIMEOUT_SECONDS = 4
-RUN_BUDGET_SECONDS = 15.0
-# What the last judged check (the two resting-order reads) keeps for itself: the observed checks stop
-# starting calls once less than this is left, so a decision is never hostage to a hypothesis.
-RESERVED_SECONDS = 2.0 * CALL_TIMEOUT_SECONDS
+RUN_BUDGET_SECONDS = 30.0
+# The last three judged calls — the entry test's own id, and the two resting-order lists — run after
+# every validator call, so they can see what those left. Everything before them starts only while
+# their full timeouts are still in the budget: a decision is never hostage to a slow early call or to
+# a hypothesis.
+FINAL_RESERVE_SECONDS = 3.0 * CALL_TIMEOUT_SECONDS
 
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
@@ -92,10 +115,10 @@ CHECK_EXCHANGE_INFO = "exchange_info"
 CHECK_CONDITIONAL_REFUSED = "conditional_type_refused_on_order_api"
 CHECK_LEVERAGE = "configured_leverage"
 CHECK_POSITION_MODE = "position_mode"
+CHECK_ENTRY_LEFT_NO_ORDER = "entry_test_left_no_order"
 CHECK_NOTHING_RESTING = "nothing_left_resting"
 CHECK_ENTRY_TEST = "order_test_market_entry"
 CHECK_TARGET_TEST = "order_test_target_limit"
-CHECK_ORDER_QUERY = "order_query_unknown_id"
 CHECK_ALGO_QUERY = "algo_query_unknown_id"
 
 # What may fail the contract, each because its expectation was measured here:
@@ -105,12 +128,15 @@ CHECK_ALGO_QUERY = "algo_query_unknown_id"
 # - the position mode: not a venue behaviour but the runtime's requirement — no request carries a
 #   `positionSide` and the book nets per symbol (`live_position`), so a hedge-mode account refuses
 #   every entry (-4061) and breaks the reconcile's premise;
-# - nothing left resting: by construction — the sentinel creates nothing, and this measures it.
+# - the entry test left no order, and nothing is left resting: by construction — the validator
+#   creates nothing, and these measure it. The entry test is an executable MARKET BUY in all but its
+#   path; if the path ever pointed at the order endpoint, the order would be FOUND by its own id
+#   (resting-order reads cannot see an order that filled).
 JUDGED_CHECKS = (CHECK_EXCHANGE_INFO, CHECK_CONDITIONAL_REFUSED, CHECK_LEVERAGE, CHECK_POSITION_MODE,
-                 CHECK_NOTHING_RESTING)
+                 CHECK_ENTRY_LEFT_NO_ORDER, CHECK_NOTHING_RESTING)
 # What is recorded for 4b to judge once the host's answers are known. The entry and target requests
-# are the runtime's own, through its own builder; the two queries ask for an id no order carries.
-OBSERVED_CHECKS = (CHECK_ENTRY_TEST, CHECK_TARGET_TEST, CHECK_ORDER_QUERY, CHECK_ALGO_QUERY)
+# are the runtime's own, through its own builder; the algo query asks for an id no order carries.
+OBSERVED_CHECKS = (CHECK_ENTRY_TEST, CHECK_TARGET_TEST, CHECK_ALGO_QUERY)
 CHECK_IDS = (*JUDGED_CHECKS, *OBSERVED_CHECKS)
 
 NOT_VERIFIED = (
@@ -128,7 +154,13 @@ OUTCOME_DECIDED = "decided"
 OUTCOME_INCOMPLETE = "incomplete"
 OUTCOME_NOT_OPTED_IN = "live_trading_not_opted_in"
 OUTCOME_NO_SCOPE = "no_registered_symbols"
+OUTCOME_RATE_LIMITED = "rate_limited_this_fire"
 OUTCOME_ERROR = "error"
+
+# Why a call was not made: the budget had no full slot left for it, or an earlier answer said the
+# venue could not be asked and the run stopped there.
+RUN_BUDGET_SPENT = "RUN_BUDGET_SPENT"
+RUN_STOPPED = "RUN_STOPPED"
 
 # Every client id the sentinel sends starts with this. The runtime's own are `TAI_<SYMBOL>_<LEG>_…`
 # and no symbol is `VC`, so a sentinel id can neither name a real order nor be mistaken for one — and
@@ -190,13 +222,14 @@ def _age_seconds(stamp: Any, now: str) -> float | None:
         return None
     try:
         return (timeutil.parse_iso(now) - timeutil.parse_iso(stamp)).total_seconds()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
 def read_refresh_mark(root: Path | None = None) -> dict[str, Any] | None:
-    """The last attempt, or None for absent AND for damaged: the mark only says when to ask again,
-    and a mark nobody can read must not be able to stop the asking."""
+    """The last attempt, or None for absent AND for damaged: the mark only says when to ask again and
+    what the last attempt saw, and a mark nobody can read must neither stop the asking nor take down
+    a board that renders it. Its checks are kept only while they are a list of objects."""
     path = refresh_mark_path(root)
     if not path.is_file():
         return None
@@ -204,15 +237,24 @@ def read_refresh_mark(root: Path | None = None) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    checks = data.get("checks")
+    if checks is not None and not (isinstance(checks, list) and all(isinstance(c, dict) for c in checks)):
+        data = {key: value for key, value in data.items() if key != "checks"}
+    return data
 
 
 def is_due(mark: Mapping[str, Any] | None, now: str) -> bool:
     """Whether to ask the venue again, given when it was last ASKED — not last answered. Never asked,
-    or a mark that cannot be read, is due: being wrong costs one run."""
+    or a mark that cannot be read, is due: being wrong costs one run. While the decided record stands
+    at FAIL, the next fire asks (:data:`RETRY_AFTER_FAIL_SECONDS`)."""
     attempted = mark.get("attempted_at") if isinstance(mark, Mapping) else None
     age = _age_seconds(attempted, now)
-    return age is None or age < 0 or age >= REFRESH_AFTER_SECONDS
+    if age is None or age < 0:
+        return True
+    failing = isinstance(mark, Mapping) and mark.get("decided_status") == STATUS_FAIL
+    return age >= (RETRY_AFTER_FAIL_SECONDS if failing else REFRESH_AFTER_SECONDS)
 
 
 def build_record(*, status: str, checks: Sequence[Mapping[str, Any]], symbols: Sequence[str],
@@ -264,17 +306,37 @@ def read_verification(root: Path | None = None) -> dict[str, Any] | None:
     return data
 
 
+def _symbol_failures(record: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Which judged checks failed for which symbol — the listing and the leverage are per symbol —
+    so a door can tell a failure of one symbol from one of the account (review of #902)."""
+    failures: dict[str, list[str]] = {}
+    for check in record.get("checks") or []:
+        if not isinstance(check, Mapping) or check.get("result") != STATUS_FAIL:
+            continue
+        observed = check.get("observed") if isinstance(check.get("observed"), Mapping) else {}
+        if check.get("check") == CHECK_EXCHANGE_INFO:
+            symbols = list((observed.get("problems") or {}).keys())
+        elif check.get("check") == CHECK_LEVERAGE:
+            symbols = list(observed.get("above") or [])
+        else:
+            continue
+        for symbol in symbols:
+            failures.setdefault(str(symbol), []).append(str(check["check"]))
+    return failures
+
+
 def verification_status(root: Path | None = None, *, now: str) -> dict[str, Any]:
     """What the last decided verification says at ``now``. Raises on a record that cannot prove
     itself (see :func:`read_verification`); the board names that, a door refuses on it.
 
-    ``usable`` is the whole answer a door needs: PASS, this code's contract version, and no older
-    than :data:`MAX_AGE_SECONDS` (nor dated in the future)."""
+    ``usable`` is PASS, this code's contract version, and no older than :data:`MAX_AGE_SECONDS` (nor
+    dated in the future). It speaks for the ``symbols`` the verification covered and no others: a door
+    also requires its symbol among them, since the budget may name one the last run did not."""
     record = read_verification(root)
     if record is None:
         return {"recorded": False, "status": None, "contract_version": None, "verified_at": None,
                 "age_seconds": None, "stale": True, "version_current": False, "usable": False,
-                "failed_checks": []}
+                "failed_checks": [], "symbols": [], "symbol_failures": {}}
     age = _age_seconds(record.get("verified_at"), now)
     stale = age is None or age < -FUTURE_SKEW_SECONDS or age > MAX_AGE_SECONDS
     version_current = record.get("contract_version") == CONTRACT_VERSION
@@ -288,6 +350,8 @@ def verification_status(root: Path | None = None, *, now: str) -> dict[str, Any]
         "version_current": version_current,
         "usable": record.get("status") == STATUS_PASS and not stale and version_current,
         "failed_checks": list(record.get("failed_checks") or []),
+        "symbols": list(record.get("symbols") or []),
+        "symbol_failures": _symbol_failures(record),
     }
 
 
@@ -323,6 +387,18 @@ def _failure(exc: BaseException) -> dict[str, Any]:
     return failure
 
 
+def _could_not_answer(answer: Mapping[str, Any]) -> bool:
+    """Whether a validator's refusal says the venue could not be asked rather than what it thinks of
+    the request: the breaker's own codes and statuses (`live_order`), a 418/429 or any 5xx."""
+    from .live_order import API_ERROR_HTTP_STATUSES, API_ERROR_VENUE_CODES
+
+    code, status = answer.get("code"), answer.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and (
+            status in API_ERROR_HTTP_STATUSES or 500 <= status <= 599):
+        return True
+    return isinstance(code, int) and not isinstance(code, bool) and code in API_ERROR_VENUE_CODES
+
+
 def _percent_price(row: Mapping[str, Any]) -> dict[str, float] | None:
     for entry in row.get("filters") or []:
         if isinstance(entry, Mapping) and entry.get("filterType") == "PERCENT_PRICE":
@@ -337,7 +413,8 @@ def check_exchange_info(payload: Any, symbols: Sequence[str], *,
                         failure: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Every traded symbol is listed, TRADING, a USDT-margined PERPETUAL whose filters this runtime
     can read, and takes MARKET and LIMIT orders with GTC. Records each symbol's filters and its
-    ``PERCENT_PRICE`` band, which the filter reader does not use.
+    ``PERCENT_PRICE`` band, which the filter reader does not use, and names the symbols that fail, so
+    a door can tell one symbol's break from the venue's.
 
     A payload the collector could not fetch or parse is UNVERIFIED; one that parses and does not say
     these things is FAIL — the venue answered, in a shape this runtime cannot trade on."""
@@ -395,18 +472,16 @@ def check_conditional_refused(answer: Mapping[str, Any] | None, *,
     migration the runtime places every protective stop around is still in force.
 
     Accepted, or refused with another business code, is FAIL — the venue no longer answers the way
-    the runtime's routing assumes. A code that means the venue could not be asked (rate limit, clock,
-    key, the venue's own failure: `live_order.API_ERROR_VENUE_CODES`) is UNVERIFIED, as is a call
-    that did not complete. The validator's answer carries the venue's code but not the HTTP status,
-    so a status-only failure is judged by its code alone."""
-    from .live_order import API_ERROR_VENUE_CODES
-
+    the runtime's routing assumes. An answer that means the venue could not be asked (a rate limit,
+    clock, key or venue-failure code, a 418/429 or any 5xx — :func:`_could_not_answer`) is
+    UNVERIFIED, as is a call that did not complete."""
     expected = f"refused with {VENUE_CONDITIONAL_MOVED} (conditional types live on the Algo API)"
     if failure is not None or not isinstance(answer, Mapping):
         return _check(CHECK_CONDITIONAL_REFUSED, STATUS_UNVERIFIED, expected=expected,
                       observed=dict(failure or {}), detail=detail or "the validator could not be asked")
     observed = {"accepted": answer.get("accepted"), "code": answer.get("code"),
-                "msg": str(answer.get("msg"))[:200] if answer.get("msg") is not None else None}
+                "msg": str(answer.get("msg"))[:200] if answer.get("msg") is not None else None,
+                **({"http_status": answer["http_status"]} if isinstance(answer.get("http_status"), int) else {})}
     if answer.get("supported") is False or answer.get("dry_run"):
         # Never reached with the frozen probe on the live adapter; named so it can never pass.
         return _check(CHECK_CONDITIONAL_REFUSED, STATUS_UNVERIFIED, expected=expected, observed=observed,
@@ -416,29 +491,31 @@ def check_conditional_refused(answer: Mapping[str, Any] | None, *,
         return _check(CHECK_CONDITIONAL_REFUSED, STATUS_FAIL, expected=expected, observed=observed,
                       detail="the order API ACCEPTS a conditional type again: the routing this runtime "
                              "is built on no longer matches the venue")
-    if code == VENUE_CONDITIONAL_MOVED:
-        return _check(CHECK_CONDITIONAL_REFUSED, STATUS_PASS, expected=expected, observed=observed)
-    if isinstance(code, int) and code in API_ERROR_VENUE_CODES:
+    if _could_not_answer(answer):
         return _check(CHECK_CONDITIONAL_REFUSED, STATUS_UNVERIFIED, expected=expected, observed=observed,
                       detail="the venue could not be asked")
+    if code == VENUE_CONDITIONAL_MOVED:
+        return _check(CHECK_CONDITIONAL_REFUSED, STATUS_PASS, expected=expected, observed=observed)
     return _check(CHECK_CONDITIONAL_REFUSED, STATUS_FAIL, expected=expected, observed=observed,
                   detail=f"refused with {code}, not {VENUE_CONDITIONAL_MOVED}: the venue's answer "
                          "about conditional orders changed")
 
 
 def check_leverage(snapshot: Mapping[str, Any] | None, symbols: Sequence[str], *, now: str,
-                   max_leverage: float, stale_after_seconds: float) -> dict[str, Any]:
+                   max_leverage: float, max_age_seconds: float = LEVERAGE_SNAPSHOT_MAX_AGE_SECONDS
+                   ) -> dict[str, Any]:
     """Every traded symbol's configured leverage is at most the backtests' (decision 45). Read off the
-    account snapshot the same fire writes, so it asks the venue nothing.
+    account snapshot this lane refreshes every 15 minutes, so it asks the venue nothing.
 
     Higher is FAIL: the liquidation price sits nearer than the evidence assumed. Lower is safer and
-    passes. A symbol the account does not report, or a snapshot missing, degraded or older than the
-    account board's own staleness, is UNVERIFIED."""
+    passes. Judged only on a snapshot at most :data:`LEVERAGE_SNAPSHOT_MAX_AGE_SECONDS` old, in either
+    direction — an older one says nothing about the account now (review of #902). A symbol the
+    account does not report, or a snapshot missing, degraded or older, is UNVERIFIED."""
     expected = f"configured leverage <= {max_leverage:g}x on every traded symbol"
     if not isinstance(snapshot, Mapping):
         return _check(CHECK_LEVERAGE, STATUS_UNVERIFIED, expected=expected, detail="no account snapshot")
     age = _age_seconds(snapshot.get("as_of"), now)
-    if age is None or age > stale_after_seconds or snapshot.get("degraded"):
+    if age is None or age > max_age_seconds or snapshot.get("degraded"):
         return _check(CHECK_LEVERAGE, STATUS_UNVERIFIED, expected=expected,
                       observed={"as_of": snapshot.get("as_of")}, detail="the account snapshot is not current")
     configured = snapshot.get("configured_leverage")
@@ -454,7 +531,7 @@ def check_leverage(snapshot: Mapping[str, Any] | None, symbols: Sequence[str], *
         seen[symbol] = float(value)
         if value > max_leverage:
             above.append(symbol)
-    observed = {"leverage": seen, "as_of": snapshot.get("as_of"), "unreported": unknown}
+    observed = {"leverage": seen, "as_of": snapshot.get("as_of"), "unreported": unknown, "above": above}
     if above:
         return _check(CHECK_LEVERAGE, STATUS_FAIL, expected=expected, observed=observed,
                       detail="above the backtests' leverage: " + ", ".join(f"{s} {seen[s]:g}x" for s in above))
@@ -482,15 +559,41 @@ def check_position_mode(hedge: Any, *, failure: Mapping[str, Any] | None = None)
     return _check(CHECK_POSITION_MODE, STATUS_PASS, expected=expected, observed={"dual_side_position": False})
 
 
+def check_entry_left_no_order(found: Any, *, sent: bool, failure: Mapping[str, Any] | None = None
+                              ) -> dict[str, Any]:
+    """The entry test's own id, asked of the order API afterwards, names no order.
+
+    The entry test is the runtime's executable MARKET BUY in all but its path; an order found under
+    its id means the validator created one — a path that no longer points at ``/order/test`` — and a
+    filled order leaves nothing resting for :func:`check_nothing_resting` to see. Not sent (no price,
+    no filters, no budget) is a PASS with nothing to find: no id, no order. A query that could not be
+    answered, or answered with a code the reader does not take as "not found", is UNVERIFIED."""
+    expected = "no order under the entry test's own id"
+    if not sent:
+        return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected, observed={"sent": False},
+                      detail="no entry test was sent, so none can have left an order")
+    if failure is not None:
+        return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_UNVERIFIED, expected=expected, observed=dict(failure),
+                      detail="the order could not be asked for")
+    if found is None:
+        return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_PASS, expected=expected,
+                      observed={"sent": True, "answer": "not_found"})
+    status = found.get("status") if isinstance(found, Mapping) else None
+    return _check(CHECK_ENTRY_LEFT_NO_ORDER, STATUS_FAIL, expected=expected,
+                  observed={"sent": True, "answer": "found", "status": status},
+                  detail="the validator's entry test left an ORDER at the venue: its path is not the "
+                         "order API's validator")
+
+
 def _client_id(row: Mapping[str, Any]) -> str:
     return str(row.get("clientAlgoId") or row.get("clientOrderId") or "")
 
 
 def check_nothing_resting(plain: Sequence[Mapping[str, Any]] | None, algo: Sequence[Mapping[str, Any]] | None, *,
                           failures: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """No order resting at the venue carries the sentinel's prefix: what ``/order/test`` promises —
-    that it creates nothing — measured every run rather than trusted. Either list unreadable is
-    UNVERIFIED."""
+    """No order resting at the venue carries the sentinel's prefix — nothing the sentinel sent is
+    resting. (What rests is all this can see; an order that filled is
+    :func:`check_entry_left_no_order`'s.) Either list unreadable is UNVERIFIED."""
     expected = f"no resting order whose client id starts {SENTINEL_ID_PREFIX}"
     if failures or plain is None or algo is None:
         return _check(CHECK_NOTHING_RESTING, STATUS_UNVERIFIED, expected=expected, observed=dict(failures or {}),
@@ -511,14 +614,16 @@ def _validator_answer(answer: Any) -> dict[str, Any]:
     if not isinstance(answer, Mapping):
         return {"answer": "none"}
     return {"accepted": answer.get("accepted"), "code": answer.get("code"),
-            "msg": str(answer.get("msg"))[:200] if answer.get("msg") is not None else None}
+            "msg": str(answer.get("msg"))[:200] if answer.get("msg") is not None else None,
+            **({"http_status": answer["http_status"]} if isinstance(answer.get("http_status"), int) else {})}
 
 
 # --- one run -----------------------------------------------------------------------------------
 
 class _Budget:
-    """The run's deadline. A call starts only with at least a second left beyond what it must leave
-    for later; its timeout is what remains, at most :data:`CALL_TIMEOUT_SECONDS`."""
+    """The run's deadline. A call starts only if its full :data:`CALL_TIMEOUT_SECONDS` fits in what
+    is left beyond what the calls after it keep back — never on a truncated timeout, which would turn
+    a slow-but-answering venue into a failure of the sentinel's own making."""
 
     def __init__(self, clock: Callable[[], float], seconds: float):
         self._clock = clock
@@ -526,12 +631,7 @@ class _Budget:
 
     def timeout(self, *, reserve: float = 0.0) -> int | None:
         left = self._deadline - self._clock() - reserve
-        if left < 1.0:
-            return None
-        return int(min(float(CALL_TIMEOUT_SECONDS), left))
-
-
-_SPENT = {"error": "RUN_BUDGET_SPENT"}
+        return CALL_TIMEOUT_SECONDS if left >= CALL_TIMEOUT_SECONDS else None
 
 
 def _sentinel_id(kind: str, now: str, symbol: str) -> str:
@@ -557,31 +657,47 @@ def _test_quantity(filters: Any, price: float) -> float | None:
 def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str, root: Path | None,
                clock: Callable[[], float] = time.monotonic,
                snapshot: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Every check, in the order that keeps a decision reachable: the judged ones that ask the venue,
-    then the observed ones while the budget allows, then the resting-order reads, which run last so
-    they can see what the validator calls before them left behind — on the budget kept back for them.
+    """Every check, in the order that keeps a decision reachable: the judged ones that ask the venue
+    early, then the observed ones, then the three judged reads that must see what every validator call
+    before them left — each started only with its full timeout inside the budget beyond what the last
+    three keep back.
 
-    The adapter is asked only through its validator and its reads; never raises for a venue answer."""
+    The first answer that says the venue could not be asked stops the run (a fire whose market data
+    was already rate limited stops before the first call): every call after it is RUN_STOPPED. The
+    adapter is asked only through its validator and its reads; never raises for a venue answer."""
     from . import account_store, paper
     from .live_execution import build_order_request
     from .live_filters import parse_symbol_filters
+    from .live_order import api_error_counts
     from .live_sizing import round_price_to_tick
     from .market_data import read_reference_quote
 
     budget = _Budget(clock, RUN_BUDGET_SECONDS)
     checks: list[dict[str, Any]] = []
     first = symbols[0]
+    stopped: dict[str, Any] = {}
 
-    def ask(call: Callable[[int], Any], *, reserve: float = 0.0) -> tuple[Any, dict[str, Any] | None]:
+    def ask(call: Callable[[int], Any], *, reserve: float = FINAL_RESERVE_SECONDS,
+            validator: bool = False) -> tuple[Any, dict[str, Any] | None]:
+        if not stopped and getattr(collector, "rate_limited", None) is not None:
+            stopped["error"] = "MARKET_DATA_RATE_LIMITED"
+        if stopped:
+            return None, {"error": RUN_STOPPED, "after": dict(stopped)}
         timeout = budget.timeout(reserve=reserve)
         if timeout is None:
-            return None, dict(_SPENT)
+            return None, {"error": RUN_BUDGET_SPENT}
         try:
-            return call(timeout), None
-        except MvpRuntimeError as exc:
-            return None, _failure(exc)
-        except Exception as exc:  # noqa: BLE001 — a check that cannot complete is UNVERIFIED, never a crash
-            return None, {"error": type(exc).__name__}
+            answer = call(timeout)
+        except Exception as exc:  # noqa: BLE001 — a call that cannot complete is UNVERIFIED, never a crash
+            failure = _failure(exc) if isinstance(exc, MvpRuntimeError) else {"error": type(exc).__name__}
+            if api_error_counts(exc):
+                stopped.update(failure)
+            return None, failure
+        if validator and isinstance(answer, Mapping) and _could_not_answer(answer):
+            stopped.update(error="VENUE_COULD_NOT_ANSWER", venue_code=answer.get("code"),
+                           **({"http_status": answer["http_status"]}
+                              if isinstance(answer.get("http_status"), int) else {}))
+        return answer, None
 
     # 1. exchangeInfo (public).
     reader = getattr(collector, "exchange_info", None)
@@ -594,10 +710,9 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
 
     prices: dict[str, float] = {}
 
-    def price_of(symbol: str, *, reserve: float = 0.0) -> float | None:
+    def price_of(symbol: str) -> float | None:
         if symbol not in prices:
-            quote, _ = ask(lambda t: read_reference_quote(symbol, collector=collector, now=now, timeout_seconds=t),
-                           reserve=reserve)
+            quote, _ = ask(lambda t: read_reference_quote(symbol, collector=collector, now=now, timeout_seconds=t))
             value = quote.get("price") if isinstance(quote, Mapping) else None
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
                 prices[symbol] = float(value)
@@ -608,7 +723,7 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
     stop = round_price_to_tick(price * 0.9, tick, mode="down") if price and tick else 0.0
     if stop > 0:
         probe = legacy_conditional_probe(first, stop_price=stop, client_id=_sentinel_id("C", now, first))
-        answer, failure = ask(lambda t: adapter.validate_order(probe, timeout_seconds=t))
+        answer, failure = ask(lambda t: adapter.validate_order(probe, timeout_seconds=t), validator=True)
         checks.append(check_conditional_refused(answer, failure=failure))
     else:
         checks.append(check_conditional_refused(None, detail=f"no price or tick for {first} to shape the probe"))
@@ -617,23 +732,22 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
     hedge, failure = ask(lambda t: adapter.position_mode(timeout_seconds=t))
     checks.append(check_position_mode(hedge, failure=failure))
 
-    # 4. Leverage (the account snapshot this fire already wrote; no call).
+    # 4. Leverage (the account snapshot this lane keeps; no call).
     if snapshot is None:
         snapshot = account_store.read_snapshot(root)
-    checks.append(check_leverage(snapshot, symbols, now=now, max_leverage=float(paper.ASSUMED_LEVERAGE),
-                                 stale_after_seconds=float(account_store.STALE_AFTER_SECONDS)))
+    checks.append(check_leverage(snapshot, symbols, now=now, max_leverage=float(paper.ASSUMED_LEVERAGE)))
 
-    # 5-8. The hypotheses, while the budget leaves the resting reads their share. Each request is
-    # the runtime's own, built by the money path's builder inside the call, so a builder refusal is
-    # this check's answer rather than the run's end.
+    # 5-7. The hypotheses. Each request is the runtime's own, built by the money path's builder inside
+    # the call, so a builder refusal is this check's answer rather than the run's end.
     entries: dict[str, Any] = {}
     for symbol in symbols:
-        if budget.timeout(reserve=RESERVED_SECONDS) is None:
-            # Said as the budget, not as a missing price: "the venue gave no price" and "there was no
-            # time to ask" are different facts about a run.
-            entries[symbol] = dict(_SPENT)
+        if stopped or budget.timeout(reserve=FINAL_RESERVE_SECONDS) is None:
+            # Said as what it was, not as a missing price: "the venue gave no price" and "there was no
+            # time, or no leave, to ask" are different facts about a run.
+            entries[symbol] = ({"error": RUN_STOPPED, "after": dict(stopped)} if stopped
+                               else {"error": RUN_BUDGET_SPENT})
             continue
-        symbol_price = price_of(symbol, reserve=RESERVED_SECONDS)
+        symbol_price = price_of(symbol)
         quantity = _test_quantity(filters.get(symbol), symbol_price or 0.0)
         if quantity is None:
             entries[symbol] = {"skipped": "no filters or price to size a request"}
@@ -641,8 +755,12 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
         entry_intent = {"symbol": symbol, "side": "BUY", "order_type_exchange": "MARKET", "quantity": quantity,
                         "reduce_only": False, "client_order_id": _sentinel_id("E", now, symbol)}
         answer, failure = ask(lambda t: adapter.validate_order(build_order_request(entry_intent), timeout_seconds=t),
-                              reserve=RESERVED_SECONDS)
-        entries[symbol] = failure if failure is not None else {"quantity": quantity, **_validator_answer(answer)}
+                              validator=True)
+        # "Sent" whenever the call was made at all: a request that timed out may still have reached the
+        # venue, and that is exactly the one whose id must be asked for afterwards.
+        attempted = failure is None or failure.get("error") not in (RUN_STOPPED, RUN_BUDGET_SPENT)
+        entries[symbol] = ({"sent": attempted, **failure} if failure is not None
+                           else {"sent": True, "quantity": quantity, **_validator_answer(answer)})
     checks.append(_observed(CHECK_ENTRY_TEST, "the runtime's MARKET entry request is accepted", {"symbols": entries}))
 
     targets: dict[str, Any] = {}
@@ -662,7 +780,7 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
                              "client_order_id": _sentinel_id("T" + side[0], now, first)}
             answer, failure = ask(
                 lambda t: adapter.validate_order(build_order_request(target_intent), timeout_seconds=t),
-                reserve=RESERVED_SECONDS)
+                validator=True)
             targets[leg] = {"side": side, "price_over_reference": round(factor, 6), "band": band,
                             **(failure if failure is not None else _validator_answer(answer))}
     else:
@@ -672,16 +790,22 @@ def run_checks(*, symbols: Sequence[str], adapter: Any, collector: Any, now: str
         {"symbol": first, "legs": targets},
         detail="reduceOnly while flat: a refusal may be the account's state (-2022), not the band"))
 
-    for check_id, algo in ((CHECK_ORDER_QUERY, False), (CHECK_ALGO_QUERY, True)):
-        unknown = _sentinel_id("QA" if algo else "Q", now, first)
-        found, failure = ask(lambda t: adapter.fetch_order(first, unknown, timeout_seconds=t, algo=algo),
-                             reserve=RESERVED_SECONDS)
-        observed = failure if failure is not None else {"answer": "not_found" if found is None else "found"}
-        checks.append(_observed(check_id, "an id no order carries reads as not found (None)", observed))
+    unknown = _sentinel_id("QA", now, first)
+    found, failure = ask(lambda t: adapter.fetch_order(first, unknown, timeout_seconds=t, algo=True))
+    checks.append(_observed(CHECK_ALGO_QUERY, "an algo id no order carries reads as not found (None)",
+                            failure if failure is not None else {"answer": "not_found" if found is None else "found"}))
 
-    # 9. Nothing left resting (signed reads, on the budget kept for them).
-    plain, plain_failure = ask(lambda t: adapter.open_orders(None, timeout_seconds=t))
-    algo_rows, algo_failure = ask(lambda t: adapter.algo_open_orders(None, timeout_seconds=t))
+    # 8-9. The last three judged reads, on the budget kept for them: the entry test's own id (a filled
+    # order rests nowhere), then everything resting.
+    sent = bool((entries.get(first) or {}).get("sent"))
+    entry_id = _sentinel_id("E", now, first)
+    if sent:
+        found, failure = ask(lambda t: adapter.fetch_order(first, entry_id, timeout_seconds=t), reserve=0.0)
+    else:
+        found, failure = None, None
+    checks.append(check_entry_left_no_order(found, sent=sent, failure=failure))
+    plain, plain_failure = ask(lambda t: adapter.open_orders(None, timeout_seconds=t), reserve=0.0)
+    algo_rows, algo_failure = ask(lambda t: adapter.algo_open_orders(None, timeout_seconds=t), reserve=0.0)
     failures = {**({"plain": plain_failure} if plain_failure else {}), **({"algo": algo_failure} if algo_failure else {})}
     checks.append(check_nothing_resting(plain, algo_rows, failures=failures or None))
     return checks
@@ -698,6 +822,16 @@ def _registered_symbols(root: Path | None, now: str) -> list[str]:
     return [s for s in budget.get("symbol_allowlist") or [] if isinstance(s, str) and s]
 
 
+def _decided_status(root: Path | None) -> str | None:
+    """The decided record's status as it stands, for the mark (a FAIL is asked again sooner); None
+    when there is none or it cannot prove itself."""
+    try:
+        record = read_verification(root)
+    except MvpRuntimeError:
+        return None
+    return record.get("status") if isinstance(record, Mapping) else None
+
+
 def refresh_verification(*, collector: Any, now: str, root: Path | None = None, adapter: Any = None,
                          clock: Callable[[], float] = time.monotonic) -> str:
     """Verify once and store what was decided. Returns a one-line status for the fire.
@@ -707,7 +841,8 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
     a status line and a moved mark.
 
     Asks nothing unless live trading is opted in (the live adapter exists only then) and a valid budget
-    names the symbols; asks through the raw adapter, never the one the API breaker records."""
+    names the symbols, and nothing in a fire whose market data the venue already rate limited; asks
+    through the raw adapter, never the one the API breaker records."""
     try:
         _write_json(refresh_mark_path(root), {"attempted_at": now, "outcome": OUTCOME_STARTED},
                     code="VENUE_CONTRACT_MARK_LOCKED", label="venue contract refresh mark")
@@ -719,6 +854,8 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
         symbols = _registered_symbols(root, now)
         if not symbols:
             mark["outcome"] = OUTCOME_NO_SCOPE
+        elif getattr(collector, "rate_limited", None) is not None:
+            mark["outcome"] = OUTCOME_RATE_LIMITED
         else:
             if adapter is None:
                 from .live_execution import select_order_adapter
@@ -738,6 +875,7 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
                                 code="VENUE_CONTRACT_LOCKED", label="venue contract record")
     except Exception as exc:  # noqa: BLE001 — see the docstring
         mark.update(outcome=OUTCOME_ERROR, error=str(getattr(exc, "reason_code", type(exc).__name__)))
+    mark["decided_status"] = _decided_status(root)
     try:
         _write_json(refresh_mark_path(root), mark, code="VENUE_CONTRACT_MARK_LOCKED",
                     label="venue contract refresh mark")
@@ -749,8 +887,9 @@ def refresh_verification(*, collector: Any, now: str, root: Path | None = None, 
 def status_line(mark: Mapping[str, Any]) -> str:
     outcome = mark.get("outcome")
     if outcome in (OUTCOME_DECIDED, OUTCOME_INCOMPLETE):
-        failed = [str(c.get("check")) for c in mark.get("checks") or []
-                  if c.get("check") in JUDGED_CHECKS and c.get("result") != STATUS_PASS]
+        checks = mark.get("checks") if isinstance(mark.get("checks"), list) else []
+        failed = [str(c.get("check")) for c in checks
+                  if isinstance(c, Mapping) and c.get("check") in JUDGED_CHECKS and c.get("result") != STATUS_PASS]
         return f"venue contract: {mark.get('status')}" + (f" ({', '.join(failed)})" if failed else "")
     if outcome == OUTCOME_ERROR:
         return f"venue contract: not verified ({mark.get('error')})"
@@ -759,10 +898,10 @@ def status_line(mark: Mapping[str, Any]) -> str:
 
 __all__ = [
     "CHECK_IDS", "CONTRACT_VERSION", "JUDGED_CHECKS", "MAX_AGE_SECONDS", "NOT_VERIFIED",
-    "OBSERVED_CHECKS", "REFRESH_AFTER_SECONDS", "SENTINEL_ID_PREFIX", "STATUS_FAIL", "STATUS_PASS",
-    "STATUS_UNVERIFIED", "VENUE_CONTRACT_INVALID", "VENUE_CONTRACT_TAMPERED", "VENUE_CONTRACT_UNREADABLE",
-    "build_record", "check_conditional_refused", "check_exchange_info", "check_leverage",
-    "check_nothing_resting", "check_position_mode", "is_due", "judge", "legacy_conditional_probe",
-    "read_refresh_mark", "read_verification", "refresh_verification", "run_checks", "status_line",
-    "verification_status",
+    "OBSERVED_CHECKS", "REFRESH_AFTER_SECONDS", "RETRY_AFTER_FAIL_SECONDS", "SENTINEL_ID_PREFIX",
+    "STATUS_FAIL", "STATUS_PASS", "STATUS_UNVERIFIED", "VENUE_CONTRACT_INVALID", "VENUE_CONTRACT_TAMPERED",
+    "VENUE_CONTRACT_UNREADABLE", "build_record", "check_conditional_refused", "check_entry_left_no_order",
+    "check_exchange_info", "check_leverage", "check_nothing_resting", "check_position_mode", "is_due",
+    "judge", "legacy_conditional_probe", "read_refresh_mark", "read_verification", "refresh_verification",
+    "run_checks", "status_line", "verification_status",
 ]

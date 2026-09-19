@@ -3,15 +3,20 @@
 What these pin is what makes a PASS worth reading:
 - only an expectation measured at this venue can fail the contract; a hypothesis is recorded, never
   judged — and a venue that could not be asked is never a verdict either way;
-- the -4120 probe is the request that measured the migration, frozen, not today's Algo shape;
+- the -4120 probe is the request that measured the migration, frozen, not today's Algo shape, and it
+  reaches the literal ``/fapi/v1/order/test``;
 - the sentinel asks through its validator and its reads only — no order, no cancel — and measures
-  that the validator left nothing behind;
-- a run that could not decide never erases a decided record, and a record that cannot prove itself
-  is refused, not read;
+  that the validator left no order: none under its entry test's own id, none resting;
+- it backs off: the first answer that says the venue could not be asked stops the run, and a fire the
+  venue already rate limited is not run;
+- a run that could not decide never erases a decided record, a FAIL is asked again on the next fire,
+  and a record that cannot prove itself is refused, not read;
 - it stays out of the API breaker and out of the execution stage.
 
-Every venue answer used here was seen at this venue: the 2026-09-19 exchangeInfo (numbers copied
-from the public payload), the 2026-08-03 -4120, the 2026-09-02 leverage.
+The answers the JUDGED checks expect were seen at this venue: the 2026-09-19 exchangeInfo (numbers
+copied from the public payload), the 2026-08-03 -4120, the 2026-09-02 leverage. The failure codes
+(-1003, -1021, -2015, -1104, 503) are stand-ins for the failure modes they name, and the observed
+checks' answers here are placeholders — what the host answers is exactly what 4a exists to record.
 """
 
 from __future__ import annotations
@@ -65,19 +70,24 @@ MOVED = {"accepted": False, "code": -4120,
 
 
 class _Adapter:
-    """The live adapter's surface as the sentinel may use it, answering as the venue did."""
+    """The live adapter's surface as the sentinel may use it."""
 
     network_egress = True
 
-    def __init__(self, *, conditional=MOVED, hedge=False, resting=(), algo_resting=(), fail=()):
+    def __init__(self, *, conditional=MOVED, hedge=False, resting=(), algo_resting=(), fail=(),
+                 found=None, raise_on=None):
         self.calls: list[tuple] = []
         self.conditional = conditional
         self.hedge = hedge
         self.resting = list(resting)
         self.algo_resting = list(algo_resting)
         self.fail = set(fail)
+        self.found = found or {}          # client id -> the order the venue would return
+        self.raise_on = raise_on or {}    # call name -> the exception it raises
 
     def _maybe_fail(self, name):
+        if name in self.raise_on:
+            raise self.raise_on[name]
         if name in self.fail:
             raise ToolError("ORDER_TRANSPORT", "live order request failed or timed out")
 
@@ -96,7 +106,7 @@ class _Adapter:
     def fetch_order(self, symbol, client_order_id, *, timeout_seconds=10, algo=False):
         self.calls.append(("fetch_order", client_order_id, algo))
         self._maybe_fail("fetch_order")
-        return None
+        return self.found.get(client_order_id)
 
     def open_orders(self, symbol=None, *, timeout_seconds=10):
         self.calls.append(("open_orders", symbol))
@@ -110,15 +120,16 @@ class _Adapter:
 
 
 class _Collector:
-    def __init__(self, payload=None):
+    def __init__(self, payload=None, rate_limited=None):
         self.payload = payload if payload is not None else _exchange_info()
+        self.rate_limited = rate_limited
 
     def exchange_info(self, *, timeout_seconds):
         return self.payload
 
 
-def _snapshot(**leverage):
-    return {"as_of": "2026-09-19T07:00:00Z", "configured_leverage": {s: 5.0 for s in SYMBOLS} | leverage}
+def _snapshot(as_of="2026-09-19T07:00:00Z", **leverage):
+    return {"as_of": as_of, "configured_leverage": {s: 5.0 for s in SYMBOLS} | leverage}
 
 
 @pytest.fixture(autouse=True)
@@ -145,7 +156,7 @@ def test_the_measured_venue_passes_every_judged_check_and_the_hypotheses_are_onl
     by_id = _by_id(checks)
     assert {cid: by_id[cid]["result"] for cid in vc.JUDGED_CHECKS} == dict.fromkeys(vc.JUDGED_CHECKS, "PASS")
     assert {cid: by_id[cid]["result"] for cid in vc.OBSERVED_CHECKS} == dict.fromkeys(vc.OBSERVED_CHECKS, "OBSERVED")
-    assert [c["check"] for c in checks][-1] == vc.CHECK_NOTHING_RESTING
+    assert [c["check"] for c in checks][-2:] == [vc.CHECK_ENTRY_LEFT_NO_ORDER, vc.CHECK_NOTHING_RESTING]
 
 
 def test_a_hypothesis_can_never_fail_the_contract_even_when_a_record_calls_it_judged():
@@ -201,7 +212,7 @@ def test_an_unlisted_symbol_and_a_shapeless_payload_fail_but_an_unread_one_is_un
 
 # --- the -4120 ----------------------------------------------------------------------------------
 
-def test_the_probe_is_the_measured_shape_and_the_validator_routes_it_to_the_order_api():
+def test_the_probe_is_the_measured_shape_and_reaches_the_literal_validator_path():
     probe = vc.legacy_conditional_probe("BTCUSDT", stop_price=54000.0, client_id="TAI_VC_C_0123456789abcdef")
     assert tuple(probe) == vc.LEGACY_CONDITIONAL_PROBE_KEYS
     assert "algoType" not in probe and probe["closePosition"] == "true" and probe["type"] == "STOP_MARKET"
@@ -215,8 +226,12 @@ def test_the_probe_is_the_measured_shape_and_the_validator_routes_it_to_the_orde
         return live_execution._SignedAnswer({"code": -4120, "msg": MOVED["msg"]}, -4120, 400)
 
     adapter._signed_request = signed
-    assert adapter.validate_order(probe) == {"accepted": False, "code": -4120, "msg": MOVED["msg"]}
-    assert sent == [("POST", live_execution.ORDER_TEST_PATH)]
+    assert adapter.validate_order(probe) == {"accepted": False, "code": -4120, "msg": MOVED["msg"],
+                                             "http_status": 400}
+    # The literal, not the constant: a constant re-pointed at the order endpoint would pass a test that
+    # compares the path with itself, while the hourly entry test became a real MARKET BUY (review of #902).
+    assert sent == [("POST", "/fapi/v1/order/test")]
+    assert live_execution.ORDER_TEST_PATH == "/fapi/v1/order/test"
 
 
 @pytest.mark.parametrize("answer,result", [
@@ -226,10 +241,18 @@ def test_the_probe_is_the_measured_shape_and_the_validator_routes_it_to_the_orde
     ({"accepted": False, "code": -1003, "msg": "Too many requests"}, "UNVERIFIED"),   # could not ask
     ({"accepted": False, "code": -1021, "msg": "Timestamp outside recvWindow"}, "UNVERIFIED"),
     ({"accepted": False, "code": -2015, "msg": "Invalid API-key"}, "UNVERIFIED"),
+    ({"accepted": False, "code": -1010, "msg": "unlisted", "http_status": 503}, "UNVERIFIED"),  # any 5xx
+    ({"accepted": False, "code": -1010, "msg": "unlisted", "http_status": 429}, "UNVERIFIED"),
     ({"accepted": None, "code": None, "msg": None, "supported": False}, "UNVERIFIED"),
 ])
 def test_only_a_business_answer_judges_the_migration(answer, result):
     assert vc.check_conditional_refused(answer)["result"] == result
+
+
+def test_the_validator_answer_carries_its_http_status_only_when_the_venue_sent_one():
+    adapter = live_execution.BinanceFuturesOrderAdapter.__new__(live_execution.BinanceFuturesOrderAdapter)
+    adapter._signed_request = lambda m, p, params, *, timeout_seconds: ({"code": -2021, "msg": "x"}, -2021)
+    assert adapter.validate_order({"symbol": "ETHUSDT"}) == {"accepted": False, "code": -2021, "msg": "x"}
 
 
 def test_a_probe_that_could_not_be_sent_is_unverified():
@@ -239,27 +262,75 @@ def test_a_probe_that_could_not_be_sent_is_unverified():
     assert vc.judge(checks) == vc.STATUS_UNVERIFIED
 
 
+# --- backing off --------------------------------------------------------------------------------
+
+def test_a_rate_limit_answer_stops_the_run_at_once():
+    adapter = _Adapter(conditional={"accepted": False, "code": -1003, "msg": "Too many requests"})
+    checks = _run(adapter)
+    assert [c[0] for c in adapter.calls] == ["validate_order"]
+    by_id = _by_id(checks)
+    assert by_id[vc.CHECK_POSITION_MODE]["observed"]["error"] == vc.RUN_STOPPED
+    assert by_id[vc.CHECK_POSITION_MODE]["observed"]["after"]["venue_code"] == -1003
+    assert vc.judge(checks) == vc.STATUS_UNVERIFIED
+
+
+def test_a_raised_venue_failure_stops_the_run_and_a_business_refusal_does_not():
+    banned = ToolError("ORDER_REJECTED", "banned", data={"venue_code": -1003, "http_status": 418})
+    adapter = _Adapter(raise_on={"position_mode": banned})
+    _run(adapter)
+    assert [c[0] for c in adapter.calls] == ["validate_order", "position_mode"]
+    business = ToolError("ORDER_REJECTED", "bad parameter", data={"venue_code": -1102, "http_status": 400})
+    adapter = _Adapter(raise_on={"position_mode": business})
+    checks = _run(adapter)
+    assert adapter.calls[-1][0] == "algo_open_orders"
+    assert _by_id(checks)[vc.CHECK_POSITION_MODE]["observed"] == {"error": "ORDER_REJECTED", "venue_code": -1102,
+                                                                  "http_status": 400}
+
+
+def test_a_fire_the_venue_already_rate_limited_asks_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
+    adapter = _Adapter()
+    line = vc.refresh_verification(collector=_Collector(rate_limited=ToolError("TOOL_RATE_LIMITED", "429")),
+                                   now=NOW, root=tmp_path, adapter=adapter)
+    assert line == "venue contract: not verified (rate_limited_this_fire)" and adapter.calls == []
+
+
+def test_a_rate_limit_latched_mid_run_stops_the_signed_calls_too():
+    collector = _Collector()
+    adapter = _Adapter()
+
+    def latch_then_answer(*_, **__):
+        collector.rate_limited = ToolError("TOOL_RATE_LIMITED", "429")
+        return {"accepted": False, "code": -4120, "msg": MOVED["msg"]}
+
+    adapter.validate_order = lambda request, *, timeout_seconds=10: (
+        adapter.calls.append(("validate_order", dict(request))) or latch_then_answer())
+    checks = _run(adapter, collector=collector)
+    assert [c[0] for c in adapter.calls] == ["validate_order"]
+    assert _by_id(checks)[vc.CHECK_POSITION_MODE]["observed"]["after"] == {"error": "MARKET_DATA_RATE_LIMITED"}
+
+
 # --- leverage and position mode -----------------------------------------------------------------
 
 def test_leverage_at_or_below_the_backtests_passes_and_above_fails():
-    stale = float(account_store.STALE_AFTER_SECONDS)
-    check = vc.check_leverage(_snapshot(SOLUSDT=3.0), SYMBOLS, now=NOW, max_leverage=5.0, stale_after_seconds=stale)
+    check = vc.check_leverage(_snapshot(SOLUSDT=3.0), SYMBOLS, now=NOW, max_leverage=5.0)
     assert check["result"] == "PASS"
-    above = vc.check_leverage(_snapshot(DOGEUSDT=20.0), SYMBOLS, now=NOW, max_leverage=5.0, stale_after_seconds=stale)
+    above = vc.check_leverage(_snapshot(DOGEUSDT=20.0), SYMBOLS, now=NOW, max_leverage=5.0)
     assert above["result"] == "FAIL" and "DOGEUSDT 20x" in above["detail"]
+    assert above["observed"]["above"] == ["DOGEUSDT"]
     assert paper.ASSUMED_LEVERAGE == 5   # decision 45's bound is the backtests' own number
 
 
 @pytest.mark.parametrize("snapshot", [
     None,
-    {"as_of": "2026-09-19T01:00:00Z", "configured_leverage": {s: 5.0 for s in SYMBOLS}},   # older than 2h
+    _snapshot(as_of="2026-09-19T06:20:00Z", DOGEUSDT=20.0),            # 50 minutes: judged in neither direction
+    _snapshot(as_of="2026-09-19T06:20:00Z"),
     {"as_of": "2026-09-19T07:00:00Z", "degraded": True, "configured_leverage": {}},
     {"as_of": "2026-09-19T07:00:00Z", "configured_leverage": {"BTCUSDT": 5.0}},            # others unreported
 ])
 def test_leverage_the_account_did_not_currently_state_is_unverified(snapshot):
-    check = vc.check_leverage(snapshot, SYMBOLS, now=NOW, max_leverage=5.0,
-                              stale_after_seconds=float(account_store.STALE_AFTER_SECONDS))
-    assert check["result"] == "UNVERIFIED"
+    assert vc.check_leverage(snapshot, SYMBOLS, now=NOW, max_leverage=5.0)["result"] == "UNVERIFIED"
+    assert vc.LEVERAGE_SNAPSHOT_MAX_AGE_SECONDS == 3 * account_store.REFRESH_AFTER_SECONDS
 
 
 def test_hedge_mode_fails_and_an_unanswered_mode_is_unverified_even_on_a_404():
@@ -288,7 +359,7 @@ def test_the_position_mode_read_never_reads_an_unclear_answer_as_one_way():
     with pytest.raises(ToolError) as refused:
         adapter.position_mode()
     assert refused.value.data == {"venue_code": -2015, "http_status": 401}
-    assert {(m, p) for m, p, _ in sent} == {("GET", live_execution.POSITION_MODE_PATH)}
+    assert {(m, p) for m, p, _ in sent} == {("GET", "/fapi/v1/positionSide/dual")}
 
 
 # --- what the sentinel sends, and what it leaves ------------------------------------------------
@@ -306,6 +377,8 @@ def test_the_sentinel_asks_only_through_the_validator_and_the_reads():
     entries = [c[1] for c in adapter.calls if c[0] == "validate_order" and c[1].get("type") == "MARKET"]
     assert [e["symbol"] for e in entries] == SYMBOLS
     assert all("positionSide" not in e and e["reduceOnly"] is False for e in entries)
+    # The entry test's own id is asked for afterwards, on the order API, not the algo one.
+    assert ("fetch_order", entries[0]["newClientOrderId"], False) in adapter.calls
 
 
 def test_the_module_imports_and_calls_nothing_that_can_place_or_cancel():
@@ -323,6 +396,35 @@ def test_the_module_imports_and_calls_nothing_that_can_place_or_cancel():
     assert not names & forbidden, sorted(names & forbidden)
 
 
+def test_an_entry_test_that_left_an_order_fails_although_nothing_rests():
+    """A filled order rests nowhere: only its own id finds it (review of #902)."""
+    probe_adapter = _Adapter()
+    _run(probe_adapter)
+    entry_id = next(c[1]["newClientOrderId"] for c in probe_adapter.calls
+                    if c[0] == "validate_order" and c[1].get("type") == "MARKET")
+    adapter = _Adapter(found={entry_id: {"status": "FILLED", "clientOrderId": entry_id}})
+    checks = _run(adapter)
+    check = _by_id(checks)[vc.CHECK_ENTRY_LEFT_NO_ORDER]
+    assert check["result"] == "FAIL" and check["observed"]["status"] == "FILLED"
+    assert _by_id(checks)[vc.CHECK_NOTHING_RESTING]["result"] == "PASS"
+    assert vc.judge(checks) == vc.STATUS_FAIL
+
+
+def test_an_entry_test_never_sent_has_no_order_to_find_and_one_that_failed_locally_is_still_asked_for():
+    not_sent = vc.check_entry_left_no_order(None, sent=False)
+    assert not_sent["result"] == "PASS" and not_sent["observed"] == {"sent": False}
+    adapter = _Adapter(fail={"validate_order"})
+    _run(adapter)
+    # The probe's transport failure stops the run before any entry test: nothing sent, nothing asked.
+    assert "fetch_order" not in [c[0] for c in adapter.calls]
+    # A call made that failed without stopping the run counts as sent, and its id is asked for.
+    odd = _Adapter(raise_on={"validate_order": ValueError("the builder refused it")})
+    odd.conditional = MOVED
+    checks = _run(odd)
+    assert _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]["BTCUSDT"]["sent"] is True
+    assert any(c[0] == "fetch_order" and c[2] is False for c in odd.calls)
+
+
 def test_an_order_the_validator_left_resting_fails_and_the_runtimes_own_legs_do_not():
     own = [{"clientOrderId": "TAI_BTCUSDT_TP_764f36ae2ac555eeeb", "symbol": "BTCUSDT"}]
     assert _by_id(_run(_Adapter(resting=own)))[vc.CHECK_NOTHING_RESTING]["result"] == "PASS"
@@ -337,7 +439,7 @@ def test_an_order_the_validator_left_resting_fails_and_the_runtimes_own_legs_do_
 def test_the_hypotheses_record_what_the_venue_answered():
     by_id = _by_id(_run())
     entry = by_id[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]["BTCUSDT"]
-    assert entry == {"quantity": 0.001, "accepted": True, "code": None, "msg": None}
+    assert entry == {"sent": True, "quantity": 0.001, "accepted": True, "code": None, "msg": None}
     legs = by_id[vc.CHECK_TARGET_TEST]["observed"]["legs"]
     assert (legs["LONG_TP"]["side"], legs["SHORT_TP"]["side"]) == ("SELL", "BUY")
     assert legs["LONG_TP"]["price_over_reference"] == pytest.approx(1.10)
@@ -352,10 +454,16 @@ def test_the_target_request_is_the_runtimes_reduce_only_limit_beyond_the_band():
     assert all(r["reduceOnly"] is True and r["timeInForce"] == "GTC" for r in limits)
 
 
+def test_a_failure_keeps_the_venue_code_and_the_http_status():
+    failure = vc._failure(ToolError("ORDER_REJECTED", "x", data={"venue_code": -2013, "http_status": 400}))
+    assert failure == {"error": "ORDER_REJECTED", "venue_code": -2013, "http_status": 400}
+    assert vc._failure(ToolError("ORDER_TRANSPORT", "x")) == {"error": "ORDER_TRANSPORT"}
+
+
 # --- the budget ---------------------------------------------------------------------------------
 
 class _Clock:
-    """Seconds pass only when a call is made."""
+    """Seconds pass only when the adapter is called."""
 
     def __init__(self, per_call, adapter):
         self.t = 0.0
@@ -370,20 +478,28 @@ class _Clock:
         return self.t
 
 
-def test_a_slow_venue_skips_the_hypotheses_and_still_reaches_a_decision():
+@pytest.mark.parametrize("per_call", [3.0, 3.9])
+def test_a_venue_answering_within_its_timeout_always_reaches_a_decision(per_call):
     adapter = _Adapter()
-    checks = _run(adapter, clock=_Clock(3.0, adapter))
+    checks = _run(adapter, clock=_Clock(per_call, adapter))
     assert vc.judge(checks) == vc.STATUS_PASS
     entries = _by_id(checks)[vc.CHECK_ENTRY_TEST]["observed"]["symbols"]
     assert any(v == {"error": "RUN_BUDGET_SPENT"} for v in entries.values())
-    assert [c[0] for c in adapter.calls][-2:] == ["open_orders", "algo_open_orders"]
+    assert [c[0] for c in adapter.calls][-3:] == ["fetch_order", "open_orders", "algo_open_orders"]
+
+
+def test_a_call_starts_only_with_its_full_timeout_left():
+    budget = vc._Budget(lambda: 0.0, 30.0)
+    assert budget.timeout(reserve=vc.FINAL_RESERVE_SECONDS) == vc.CALL_TIMEOUT_SECONDS
+    assert budget.timeout(reserve=26.5) is None     # 3.5s left: not enough for a full call
+    assert budget.timeout(reserve=26.0) == vc.CALL_TIMEOUT_SECONDS
 
 
 def test_a_budget_spent_before_the_judged_checks_decides_nothing():
     adapter = _Adapter()
     checks = _run(adapter, clock=_Clock(20.0, adapter))
     assert vc.judge(checks) == vc.STATUS_UNVERIFIED
-    assert len(adapter.calls) == 1
+    assert _by_id(checks)[vc.CHECK_POSITION_MODE]["observed"] == {"error": vc.RUN_BUDGET_SPENT}
 
 
 # --- the two files ------------------------------------------------------------------------------
@@ -393,10 +509,10 @@ def _scope(monkeypatch):
     monkeypatch.setattr(vc, "_registered_symbols", lambda root, now: list(SYMBOLS))
 
 
-def _write_snapshot(root, **leverage):
+def _write_snapshot(root, as_of="2026-09-19T07:00:00Z", **leverage):
     path = account_store.snapshot_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_snapshot(**leverage)), encoding="utf-8")
+    path.write_text(json.dumps(_snapshot(as_of=as_of, **leverage)), encoding="utf-8")
 
 
 def _refresh(root, adapter, **kwargs):
@@ -411,8 +527,21 @@ def test_a_decided_run_is_recorded_and_reads_back_usable(tmp_path, _scope):
     assert record["status"] == "PASS" and record["contract_version"] == vc.CONTRACT_VERSION
     assert record["not_verified"] == list(vc.NOT_VERIFIED)
     status = vc.verification_status(tmp_path, now="2026-09-19T12:00:00Z")
-    assert status["usable"] is True and status["stale"] is False
-    assert vc.read_refresh_mark(tmp_path)["outcome"] == vc.OUTCOME_DECIDED
+    assert status["usable"] is True and status["stale"] is False and status["symbols"] == SYMBOLS
+    mark = vc.read_refresh_mark(tmp_path)
+    assert (mark["outcome"], mark["decided_status"]) == (vc.OUTCOME_DECIDED, "PASS")
+
+
+def test_the_attempt_is_marked_before_the_venue_is_asked(tmp_path, _scope, monkeypatch):
+    seen = {}
+
+    def run_checks(**_):
+        seen["mark"] = vc.read_refresh_mark(tmp_path)
+        return []
+
+    monkeypatch.setattr(vc, "run_checks", run_checks)
+    _refresh(tmp_path, _Adapter())
+    assert seen["mark"] == {"attempted_at": NOW, "outcome": vc.OUTCOME_STARTED}
 
 
 def test_a_run_that_could_not_ask_keeps_the_decided_record_and_moves_only_the_mark(tmp_path, _scope):
@@ -424,14 +553,32 @@ def test_a_run_that_could_not_ask_keeps_the_decided_record_and_moves_only_the_ma
     assert vc.contract_path(tmp_path).read_text(encoding="utf-8") == before
     mark = vc.read_refresh_mark(tmp_path)
     assert mark["outcome"] == vc.OUTCOME_INCOMPLETE and mark["attempted_at"] == "2026-09-19T08:10:00Z"
+    assert mark["decided_status"] == "PASS"
 
 
-def test_a_violation_overwrites_a_pass_at_once(tmp_path, _scope):
+def test_a_violation_overwrites_a_pass_at_once_and_is_asked_again_on_the_next_fire(tmp_path, _scope):
     _write_snapshot(tmp_path)
     _refresh(tmp_path, _Adapter())
+    _write_snapshot(tmp_path, as_of="2026-09-19T08:05:00Z")
     assert _refresh(tmp_path, _Adapter(hedge=True), now="2026-09-19T08:10:00Z") == "venue contract: FAIL (position_mode)"
     status = vc.verification_status(tmp_path, now="2026-09-19T08:11:00Z")
     assert (status["status"], status["usable"], status["failed_checks"]) == ("FAIL", False, ["position_mode"])
+    mark = vc.read_refresh_mark(tmp_path)
+    assert vc.is_due(mark, "2026-09-19T08:25:00Z") is True       # the next fire, not an hour later
+    assert vc.is_due(mark, "2026-09-19T08:15:00Z") is False
+    # A later run that cannot decide still leaves the FAIL standing, and still asks sooner.
+    _refresh(tmp_path, _Adapter(fail={"position_mode"}), now="2026-09-19T08:25:00Z")
+    assert vc.is_due(vc.read_refresh_mark(tmp_path), "2026-09-19T08:40:00Z") is True
+
+
+def test_a_symbol_failure_is_told_apart_from_an_account_failure(tmp_path, _scope):
+    payload = _exchange_info()
+    payload["symbols"][3]["status"] = "BREAK"                       # DOGEUSDT
+    _write_snapshot(tmp_path, SOLUSDT=10.0)
+    vc.refresh_verification(collector=_Collector(payload), now=NOW, root=tmp_path, adapter=_Adapter())
+    status = vc.verification_status(tmp_path, now=NOW)
+    assert status["symbol_failures"] == {"DOGEUSDT": ["exchange_info"], "SOLUSDT": ["configured_leverage"]}
+    assert set(status["failed_checks"]) == {"exchange_info", "configured_leverage"}
 
 
 def test_nothing_is_asked_without_live_trading_or_a_budget(tmp_path, monkeypatch):
@@ -491,14 +638,19 @@ def test_the_refresh_never_raises(tmp_path, monkeypatch, _scope):
     assert vc.read_refresh_mark(tmp_path)["outcome"] == vc.OUTCOME_ERROR
 
 
-@pytest.mark.parametrize("attempted,due", [
-    (None, True), ("2026-09-19T06:16:00Z", False), ("2026-09-19T06:15:00Z", True),
-    ("2026-09-19T09:00:00Z", True), ("garbage", True),
+@pytest.mark.parametrize("mark,due", [
+    (None, True),
+    ({"attempted_at": "2026-09-19T06:16:00Z"}, False),
+    ({"attempted_at": "2026-09-19T06:15:00Z"}, True),
+    ({"attempted_at": "2026-09-19T09:00:00Z"}, True),                     # dated in the future
+    ({"attempted_at": "garbage"}, True),
+    ({"attempted_at": "2026-09-19T07:01:00Z", "decided_status": "FAIL"}, False),
+    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "FAIL"}, True),
+    ({"attempted_at": "2026-09-19T07:00:00Z", "decided_status": "PASS"}, False),
 ])
-def test_asked_about_hourly_on_a_fifteen_minute_fire(attempted, due):
-    mark = None if attempted is None else {"attempted_at": attempted}
+def test_asked_about_hourly_on_a_fifteen_minute_fire_and_every_fire_while_failing(mark, due):
     assert vc.is_due(mark, NOW) is due
-    assert vc.REFRESH_AFTER_SECONDS < 3600 and vc.MAX_AGE_SECONDS == 6 * 3600
+    assert vc.REFRESH_AFTER_SECONDS < 3600 and vc.RETRY_AFTER_FAIL_SECONDS < 15 * 60
 
 
 def test_only_a_decided_verification_can_be_recorded():
@@ -516,6 +668,8 @@ def _stored(tmp_path, record):
 
 
 def test_a_pass_stands_six_hours_and_only_for_this_contract_version(tmp_path):
+    from runtime.read_only_kernel import integrity
+
     record = vc.build_record(status="PASS", checks=_run(), symbols=SYMBOLS, now=NOW)
     _stored(tmp_path, record)
     assert vc.verification_status(tmp_path, now="2026-09-19T13:10:00Z")["usable"] is True
@@ -523,8 +677,7 @@ def test_a_pass_stands_six_hours_and_only_for_this_contract_version(tmp_path):
     assert vc.verification_status(tmp_path, now="2026-09-19T07:06:00Z")["usable"] is True   # clocks disagree a little
     assert vc.verification_status(tmp_path, now="2026-09-19T07:04:00Z")["usable"] is False  # not ten minutes ahead
     older = dict(record, contract_version="binance_futures_contract.v0")
-    older["record_sha256"] = __import__("runtime.read_only_kernel.integrity", fromlist=["x"]).sha256_record(
-        {k: v for k, v in older.items() if k != "record_sha256"})
+    older["record_sha256"] = integrity.sha256_record({k: v for k, v in older.items() if k != "record_sha256"})
     _stored(tmp_path, older)
     status = vc.verification_status(tmp_path, now=NOW)
     assert (status["version_current"], status["usable"]) == (False, False)
@@ -554,7 +707,20 @@ def test_a_record_that_cannot_prove_itself_is_refused(tmp_path):
 
 def test_none_recorded_is_not_usable_and_raises_nothing(tmp_path):
     status = vc.verification_status(tmp_path, now=NOW)
-    assert (status["recorded"], status["usable"]) == (False, False)
+    assert (status["recorded"], status["usable"], status["symbols"]) == (False, False, [])
+
+
+def test_a_damaged_mark_neither_stops_the_asking_nor_breaks_a_reader(tmp_path):
+    path = vc.refresh_mark_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"attempted_at": NOW, "outcome": vc.OUTCOME_DECIDED, "checks": ["x"]}),
+                    encoding="utf-8")
+    mark = vc.read_refresh_mark(tmp_path)
+    assert "checks" not in mark and vc.status_line(mark) == "venue contract: None"
+    assert vc.status_line({"outcome": vc.OUTCOME_INCOMPLETE, "status": "UNVERIFIED", "checks": ["x", None]}) == (
+        "venue contract: UNVERIFIED")
+    path.write_text("[1, 2]", encoding="utf-8")
+    assert vc.read_refresh_mark(tmp_path) is None and vc.is_due(None, NOW) is True
 
 
 # --- what it is not -----------------------------------------------------------------------------
@@ -576,7 +742,7 @@ def test_the_sentinel_is_not_a_door_the_api_breaker_counts():
     assert "select_live_api_breaker" not in Path(vc.__file__).read_text(encoding="utf-8")
 
 
-# --- the board and the fire ---------------------------------------------------------------------
+# --- the board, the fire and the CLI ------------------------------------------------------------
 
 def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_path, _scope):
     from runtime.mvp_runtime.crypto import live_readiness
@@ -586,8 +752,9 @@ def test_the_readiness_board_shows_the_last_decision_and_the_last_attempt(tmp_pa
     board = live_readiness._venue_contract(tmp_path, now="2026-09-19T07:20:00Z")
     line = live_readiness._venue_contract_line({"venue_contract": board})
     assert "FAIL (failed: position_mode)" in line and "not usable" in line and "last attempt" in line
-    data = live_readiness.readiness_data({"venue_contract": board})
-    assert data["venue_contract"]["usable"] is False and data["venue_contract"]["status"] == "FAIL"
+    data = live_readiness.readiness_data({"venue_contract": board})["venue_contract"]
+    assert (data["usable"], data["status"], data["failed_checks"], data["symbols"]) == (
+        False, "FAIL", ["position_mode"], SYMBOLS)
     vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
     assert "UNREADABLE - VENUE_CONTRACT_UNREADABLE" in live_readiness._venue_contract_line(
         {"venue_contract": live_readiness._venue_contract(tmp_path, now=NOW)})
@@ -602,11 +769,71 @@ def test_the_rendered_board_carries_the_line(tmp_path):
     assert "none recorded" in line
 
 
-def test_the_pipeline_fire_asks_after_its_cycles_and_only_when_due(tmp_path, monkeypatch):
-    """The fire appends the sentinel's line after the account refresh's, only when due."""
-    source = (Path(vc.__file__).resolve().parents[1] / "scheduler.py").read_text(encoding="utf-8")
-    assert source.count("_refresh_venue_contract(_refresh_funds(") == 2
-    tree = ast.parse(source)
-    hook = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_refresh_venue_contract")
-    calls = {ast.unparse(n.func) for n in ast.walk(hook) if isinstance(n, ast.Call)}
-    assert {"venue_contract.is_due", "venue_contract.read_refresh_mark", "venue_contract.refresh_verification"} <= calls
+def test_the_pipeline_fire_asks_after_the_account_refresh_with_its_own_collector_about_hourly(tmp_path, monkeypatch):
+    from runtime.mvp_runtime.control import ControlStore
+    from runtime.mvp_runtime.crypto.market_data import PerRunFeedCache
+    from runtime.mvp_runtime.scheduler import KIND_CRYPTO, ScheduleStore, build_schedule, run_due
+
+    order: list[str] = []
+    asked: list[tuple] = []
+
+    def account_refresh(*, now, root, **_):
+        order.append("account")
+        return "account snapshot: stub"
+
+    def venue_refresh(*, collector, now, root, **_):
+        order.append("venue")
+        asked.append((type(collector), now, root))
+        vc._write_json(vc.refresh_mark_path(root), {"attempted_at": now, "outcome": vc.OUTCOME_DECIDED,
+                                                    "status": "PASS", "decided_status": "PASS"},
+                       code="VENUE_CONTRACT_MARK_LOCKED", label="test mark")
+        return "venue contract: PASS"
+
+    monkeypatch.setattr(account_store, "refresh_snapshot", account_refresh)
+    monkeypatch.setattr(vc, "refresh_verification", venue_refresh)
+    store = ScheduleStore(tmp_path)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.add(build_schedule(kind=KIND_CRYPTO, request="", interval_seconds=900, created_by="op",
+                             now="2026-07-22T11:00:00Z"))
+    statuses = []
+    for now in ("2026-07-22T13:00:00Z", "2026-07-22T13:15:00Z", "2026-07-22T13:30:00Z",
+                "2026-07-22T13:45:00Z", "2026-07-22T14:00:00Z"):
+        summary = run_due(store, now=now, control_store=ControlStore(tmp_path), ledger=None, repo_root=tmp_path)
+        statuses.append(summary["results"][0]["status"])
+    assert [a[1] for a in asked] == ["2026-07-22T13:00:00Z", "2026-07-22T14:00:00Z"]
+    assert all(a[0] is PerRunFeedCache and a[2] == tmp_path for a in asked)
+    assert order[:2] == ["account", "venue"]
+    assert statuses[0].endswith("account snapshot: stub venue contract: PASS")
+    assert "venue contract" not in statuses[1]
+
+
+def test_the_cli_shows_and_runs_as_the_fire_would(tmp_path, monkeypatch, capsys, _scope):
+    from scripts import venue_contract as cli
+
+    from runtime.mvp_runtime import timeutil
+
+    assert cli.main(["--root", str(tmp_path)]) == 0
+    assert "venue contract: none recorded" in capsys.readouterr().out
+
+    _write_snapshot(tmp_path, as_of=timeutil.utc_now_iso())
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.market_data.select_market_data_collector",
+                        lambda **_: _Collector())
+    monkeypatch.setattr(cli, "assert_not_foreign_root_run", lambda root: None)
+    real = vc.refresh_verification
+
+    def run(adapter):
+        monkeypatch.setattr(vc, "refresh_verification",
+                            lambda **kw: real(**{**kw, "adapter": adapter}))
+        return cli.main(["--run", "--root", str(tmp_path)])
+
+    assert run(_Adapter()) == 0
+    assert "venue contract: PASS" in capsys.readouterr().out
+    assert run(_Adapter(hedge=True)) == cli.EXIT_FAIL
+    assert run(_Adapter(fail={"position_mode"})) == 2        # not decided by this run
+    assert "NOT verified by this run" in capsys.readouterr().err
+
+    def refuse(root):
+        raise ToolError("STATE_ROOT_FOREIGN_OWNER", "run as the service user")
+
+    monkeypatch.setattr(cli, "assert_not_foreign_root_run", refuse)
+    assert cli.main(["--run", "--root", str(tmp_path)]) == 2

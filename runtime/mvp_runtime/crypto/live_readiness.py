@@ -180,9 +180,12 @@ def _venue_contract(root: Path | None, *, now: str) -> dict[str, Any]:
     cannot prove itself is named, never rendered as "none recorded"."""
     from .venue_contract import read_refresh_mark, status_line, verification_status
 
-    mark = read_refresh_mark(root)
-    last_attempt = ({"at": mark.get("attempted_at"), "line": status_line(mark)}
-                    if isinstance(mark, Mapping) else None)
+    try:
+        mark = read_refresh_mark(root)
+        last_attempt = ({"at": mark.get("attempted_at"), "line": status_line(mark)}
+                        if isinstance(mark, Mapping) else None)
+    except Exception as exc:  # noqa: BLE001 — the board never raises; the attempt is a footnote
+        last_attempt = {"at": None, "line": f"attempt mark unreadable ({type(exc).__name__})"}
     try:
         status = verification_status(root, now=now)
     except MvpRuntimeError as exc:
@@ -857,7 +860,8 @@ def readiness_data(status: Mapping[str, Any]) -> dict[str, Any]:
         # will require of every mainnet entry.
         "venue_contract": {
             key: (status.get("venue_contract") or {}).get(key)
-            for key in ("error", "recorded", "status", "verified_at", "age_seconds", "usable")
+            for key in ("error", "recorded", "status", "verified_at", "age_seconds", "stale",
+                        "version_current", "usable", "failed_checks", "symbols")
         },
         "guard_dry_run_status": guard.get("status"),
         "submitted_today": status.get("submitted_today"),

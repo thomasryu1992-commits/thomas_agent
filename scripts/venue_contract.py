@@ -3,11 +3,11 @@
     docker exec thomas-scheduler python -m scripts.venue_contract --show
     docker exec -u 10001 thomas-scheduler python -m scripts.venue_contract --run
 
-The pipeline fire asks the exchange, at most hourly, whether what this runtime assumes about it
-still holds — the traded symbols' listing and filters, the -4120 that says conditional orders live
-on the Algo API, the account's position mode and leverage, and that the validator left nothing
-resting — and records the last decided answer (``crypto/venue_contract.py``). A PASS stands six
-hours. Nothing refuses an entry on it yet (PR4b).
+The pipeline fire asks the exchange, about hourly (every fire while the last decided answer is a
+FAIL), whether what this runtime assumes about it still holds — the traded symbols' listing and
+filters, the -4120 that says conditional orders live on the Algo API, the account's position mode
+and leverage, and that the validator left no order — and records the last decided answer
+(``crypto/venue_contract.py``). A PASS stands six hours. Nothing refuses an entry on it yet (PR4b).
 
 ``--show`` reads and writes nothing and runs anywhere.
 

@@ -191,34 +191,47 @@ they all passed while the venue refused both protective stops, because condition
 moved to the Algo API — a fact that lives only at the venue. `crypto/venue_contract.py` asks the
 venue itself.
 
-- **When:** the pipeline fire (the risk lane, which holds the venue keys) asks after its cycles,
-  about hourly (every 55 minutes, so every fourth fire), and only while live trading is opted in
-  and a valid budget names the symbols. Its line joins the fire's status line.
+- **When:** the pipeline fire (the risk lane, which holds the venue keys) asks after its cycles and
+  after the account refresh — about hourly (every 55 minutes, so every fourth fire), and on every fire
+  while the decided record is a FAIL — only while live trading is opted in and a valid budget names
+  the symbols. Its line joins the fire's status line.
 - **What it may use** (decision 43): a public GET, a signed GET, and `POST /fapi/v1/order/test`,
-  which creates no order. No order or cancel verb is imported (pinned). Every client id it sends
-  starts `TAI_VC_`, and the last check reads the resting orders to measure that the validator
-  left nothing behind. Its calls go to the raw adapter, not to the one the API breaker records.
+  which creates no order. No order or cancel verb is imported (pinned), and the literal validator path
+  is pinned. Every client id it sends starts `TAI_VC_`. Its calls go to the raw adapter, not to the
+  one the API breaker records.
+- **It backs off:** the first answer that says the venue could not be asked (the breaker's own test:
+  a rate limit or ban, a 5xx, a transport failure, a key or clock refusal) stops the run, and a fire
+  whose market data was already rate limited is not run. Each call starts only with its full 4 s
+  timeout inside a 30 s budget, beyond what the last three judged reads keep back, so a venue that
+  answers within its timeouts always reaches a decision (the timeout bounds each socket operation;
+  DNS is not bounded by it).
 - **Judged checks** (each expectation measured at this venue), all of which must pass:
-  - the traded symbols' `exchangeInfo` listing;
+  - the traded symbols' `exchangeInfo` listing (per-symbol problems are recorded, so a door can tell
+    one symbol's break from the venue's);
   - the 2026-08-03 diagnostic stop, sent to `/order/test` in its frozen pre-migration shape, must
-    still be refused with -4120 (a rate-limit, clock, key or venue-failure code is "could not ask",
-    never a verdict);
+    still be refused with -4120 (an answer that means "could not ask" is never a verdict);
   - one-way position mode (`GET /fapi/v1/positionSide/dual`);
-  - configured leverage at most the backtests' 5x, read from the account snapshot (decision 45);
-  - nothing left resting.
+  - configured leverage at most the backtests' 5x (decision 45), read from the account snapshot this
+    lane refreshes every 15 minutes, and judged only on a snapshot at most 45 minutes old;
+  - the entry test left no order: the entry test's own id, asked of the order API afterwards, names
+    nothing (a filled order rests nowhere, so only its id can find it);
+  - nothing the sentinel sent is resting.
 - **Observed checks** are recorded and never judged until the host's answers are known: the
   runtime's MARKET entry and a reduce-only take-profit LIMIT twice the `PERCENT_PRICE` band away
-  at `/order/test`, and the answer to an order id and an algo id no order carries.
+  at `/order/test`, and the answer to an algo id no order carries.
 - **What it cannot show** is written into every record (`not_verified`): an algo order's
   placement (no validator exists; the signed testnet cycle is that evidence), the codes only a
   real order or cancel produces, and account state, which `/order/test` does not judge.
 - **Records:** `venue_contract.json` holds the last decided verification (PASS or FAIL,
   self-hashed, schema `venue_contract_verification.v0.1`); `venue_contract_refresh.json` the last
   attempt. A run that could not decide moves only the attempt; a violation is written as FAIL at
-  once. A PASS is usable for six hours, and only under this code's `CONTRACT_VERSION` (decision 44).
+  once. A PASS is usable for six hours, only under this code's `CONTRACT_VERSION`, and only for the
+  symbols it covered (decision 44).
 - **Not stage evidence** (decision 3), and **not enforced yet**: PR4b makes a usable PASS a
   condition of the mainnet autonomous entry and the probe (decision 46). Until then it is a line
   on the readiness board and `python -m scripts.venue_contract --show`.
+- **Not stopped by** the PAPER stage or the manual kill switch env — it places nothing; the scheduler's
+  own kill/pause stops the fire it rides. Revoking it is unsetting `MVP_LIVE_TRADING` and restarting.
 
 ## Operator go-live checklist
 

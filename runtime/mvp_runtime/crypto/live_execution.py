@@ -171,6 +171,8 @@ OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
 ALGO_OPEN_ORDERS_PATH = "/fapi/v1/openAlgoOrders"
 # Read-only: whether the account is in hedge mode (PR4a, the venue contract sentinel). Every request
 # this runtime builds assumes one-way mode — none carries a `positionSide` — and nothing asked.
+# **GET only.** A POST to this same path CHANGES the account's position mode; this repository reads
+# it and never writes it, and a second verb on this constant is a change to the account, not a read.
 POSITION_MODE_PATH = "/fapi/v1/positionSide/dual"
 ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
@@ -784,10 +786,14 @@ class BinanceFuturesOrderAdapter:
             "POST", ORDER_TEST_PATH, dict(order_request), timeout_seconds=timeout_seconds
         )
         if code is not None:
+            # The HTTP status rides along when the venue sent one (PR4a, review of #902): a 429 or a
+            # 5xx says the venue could not be asked, whatever code came with it.
+            status = getattr(answer, "http_status", None)
             return {
                 "accepted": False,
                 "code": code,
                 "msg": body.get("msg") if isinstance(body, dict) else None,
+                **({"http_status": status} if isinstance(status, int) else {}),
             }
         return {"accepted": True, "code": None, "msg": None}
 

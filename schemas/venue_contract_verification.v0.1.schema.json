@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "venue_contract_verification.v0.1.schema.json",
   "title": "Venue Contract Verification v0.1",
-  "description": "The last DECIDED verification of what this runtime assumes about the exchange, asked of the exchange itself by the venue contract sentinel (crypto PR4a, Thomas decisions 43-46): exchangeInfo, the -4120 that says conditional orders live on the Algo API, the account's position mode and leverage, and that the validator left nothing resting. Written by the pipeline fire that holds the venue keys, at most hourly; a run that could not decide never writes one. Self-hashed. Only judged checks decide the status; observed checks record the host's answers to hypotheses. What no check here can show is listed in not_verified.",
+  "description": "The last DECIDED verification of what this runtime assumes about the exchange, asked of the exchange itself by the venue contract sentinel (crypto PR4a, Thomas decisions 43-46): exchangeInfo, the -4120 that says conditional orders live on the Algo API, the account's position mode and leverage, and that the validator left no order: none under its own entry test's id, none resting. Written by the pipeline fire that holds the venue keys, at most hourly; a run that could not decide never writes one. Self-hashed. Only judged checks decide the status; observed checks record the host's answers to hypotheses. What no check here can show is listed in not_verified.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -59,10 +59,10 @@
           "conditional_type_refused_on_order_api",
           "configured_leverage",
           "position_mode",
+          "entry_test_left_no_order",
           "nothing_left_resting",
           "order_test_market_entry",
           "order_test_target_limit",
-          "order_query_unknown_id",
           "algo_query_unknown_id"
         ]
       }
@@ -88,10 +88,10 @@
               "conditional_type_refused_on_order_api",
               "configured_leverage",
               "position_mode",
+              "entry_test_left_no_order",
               "nothing_left_resting",
               "order_test_market_entry",
               "order_test_target_limit",
-              "order_query_unknown_id",
               "algo_query_unknown_id"
             ]
           },
