@@ -296,7 +296,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CRYPTO_RISK_LIMITS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 439 | `write_registered_limits` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 268 | `read_registered_limits` | `—` |
 | `CRYPTO_RISK_LIMITS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/risk_limits.py` | 270 | `read_registered_limits` | `not isinstance(data, dict)` |
-| `CRYPTO_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/state.py` | 63 | `venue_state_dir` | `venue not in VENUES` |
+| `CRYPTO_VENUE_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/state.py` | 65 | `venue_state_dir` | `venue not in VENUES` |
 | `DECISION_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 186 | `build_approval_request` | `expires <= issued` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 91 | `build_program_definition` | `not isinstance(definition_input, Mapping)` |
 | `DEFINITION_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 94 | `build_program_definition` | `not (isinstance(purpose, str) and purpose.strip())` |
