@@ -58,7 +58,7 @@ from ..schema_cache import validate_against_schema
 from . import guards
 from .candidate_identity import is_lineage_key, precise_lineage_keys
 from .guards import RiskLimits
-from .live_pnl import state_dir
+from .state import state_dir
 
 RISK_LIMITS_SCHEMA_VERSION = "crypto_risk_limits.v0.1"
 RISK_LIMITS_SCHEMA_FILE = "crypto_risk_limits.v0.1.schema.json"

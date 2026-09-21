@@ -9,7 +9,9 @@ away from the other half, with no error anywhere on the way down — the two pla
 simply have stopped seeing each other's files.
 
 Both modules now re-export from here, so their importers keep their import lines and the two
-copies cannot drift. A leaf on purpose: this module imports nothing from the crypto package,
+copies cannot drift. Since crypto PR7b-1 the retention stores, the budget, the probe, the risk limits
+and the live order path import it from here directly: `paper` and `live_pnl` sit above them in the
+lane's layer order. A leaf on purpose: this module imports nothing from the crypto package,
 so anything in it may import the root without creating a cycle.
 """
 

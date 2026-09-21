@@ -24,6 +24,21 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **`state_dir` comes from `state`, and a dead import is gone** (crypto PR7b-1, 2026-09-21; the first
+  code step under PR7a's layer test and record comparison).
+  - **The repoints.** Ten modules took `state_dir` from `paper` or `live_pnl`, which sit above them:
+    `candle_archive`, `oi_store`, `orderbook_store`, `positioning_store`, `live_budget`, `risk_limits`,
+    `live_order`, `live_position`, `forward_book` and `probe`. They now take it from `state`, the leaf
+    both of those already re-export (`paper.state_dir is state.state_dir`, and the same for `live_pnl`).
+    The same object reaches the same call sites. No test or script patches `state_dir` on any of these
+    modules, so no patch is orphaned by the move.
+  - **The dead import.** `breaker_watch` no longer imports `feedback`. #414 added it for a report call, and
+    #473 removed that call's last use without the import.
+  - **The count.** 7 named upward pairs are gone and 4 more lose a name, so 25 remain. Pinning names in
+    PR7a is what makes the second half visible.
+  - **Records unchanged:** base `e4d9bbda` and this head, captured in one worktree from the same 6,107
+    tests, compare with 0 files changed (the numbers are in the PR).
+
 - **The crypto lane's dependency direction is enforced** (crypto PR7a, 2026-09-21; directive §9, "역방향
   dependency는 금지"; `tests/test_mvp_runtime_crypto_layers.py`, `scripts/ops/crypto_record_capture.py`).
   - **The map:** every crypto module, including any in a sub-package, sits in one of eleven layers. A

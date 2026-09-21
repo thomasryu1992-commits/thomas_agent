@@ -46,13 +46,12 @@ from ..filelock import locked
 from ..safety_gate import Authorization
 from .account import AccountSnapshot
 from ..coerce import as_float as _f
-from .state import VENUE_MAINNET, venue_state_dir
+from .state import VENUE_MAINNET, state_dir, venue_state_dir
 from .live_pnl import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
-    state_dir,
 )
 
 LIVE_POSITION_KERNEL_VERSION = "live_position_kernel.v0.1"

@@ -61,7 +61,8 @@ from ..filelock import locked
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_slippage_probe_permission_decision
-from .live_pnl import state_dir, stop_slippage_observations
+from .live_pnl import stop_slippage_observations
+from .state import state_dir
 from .live_sizing import SymbolFilters, round_price_to_tick
 
 PROBE_ACTION_TYPE = "crypto.probe.stop_slippage_batch"
