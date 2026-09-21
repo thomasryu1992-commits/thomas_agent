@@ -19,13 +19,13 @@ sha256: &id002
   role_registry: sha256:fb9de1677c5637b511e3cf04411845afa5dc6f8a435f954fc092265285e474f8
   tool_registry: sha256:bc51b29df6b99b2c7942db20e11ef7079a9a7fd1e3a970d93252d7696ee650b7
   program_registry: sha256:76f303b95af1708a7eae59816116798358182df045c3898ebe8ee12744871cff
-  governance_policy: sha256:c05daa648792b361085531c08dfa48d9c0e53d9fd6adbb9f156a1d6347f289fd
+  governance_policy: sha256:f95f5a5bf6c005aa7f96b1f4cf7237d382c93b264007889b903f9492eb8113b3
   i0_4_contract_set_index: sha256:7383c6bc374e897fa3f333c94302a495f157816db46510256956e530675ad67d
 governance_binding: &id003
   policy_id: thomas.governance.policy
-  policy_version: 1.5.1
+  policy_version: 1.5.2
   policy_ref: governance/GOVERNANCE_POLICY.yaml
-  policy_sha256: sha256:c05daa648792b361085531c08dfa48d9c0e53d9fd6adbb9f156a1d6347f289fd
+  policy_sha256: sha256:f95f5a5bf6c005aa7f96b1f4cf7237d382c93b264007889b903f9492eb8113b3
 constraints: &id004
   filesystem_read_only: true
   external_network_allowed: false
@@ -47,5 +47,5 @@ integrity:
     governance_binding: *id003
     constraints: *id004
     created_at: '2026-07-13T04:03:00Z'
-  bundle_sha256: sha256:c6ccb8e5de12fa7b16da45f3bd80b89d23cf88044c62633669b9267a2ad1db50
+  bundle_sha256: sha256:534a285f6c4f3d928bd4662a7cdb1f1c2dce7acf1acbeac7b509c1734c9b8a6f
 created_at: '2026-07-13T04:03:00Z'

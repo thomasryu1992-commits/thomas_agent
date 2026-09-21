@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.5.1
+policy_version: 1.5.2
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -310,7 +310,7 @@ control_channel:
       - crypto                            # the door's own closed set
     verbs:
       status: read_only                   # answers even while halted
-      disable: fail_safe_immediate        # kill|pause|soft, reason required, NO approval — the
+      disable: fail_safe_immediate        # kill|pause|soft|hard, reason required, NO approval — the
                                           # assistant may always stop; a stop needing sign-off
                                           # is not a fail-safe (S3: the halt door lives here)
       enable: approval_required_always    # S2 REJECTED (Thomas 2026-08-01): approval is
@@ -318,6 +318,12 @@ control_channel:
                                           # reads the untrusted web and cannot tell a user's
                                           # request from an injected one, so "start" is never
                                           # its own call. The verb only MINTS the ask.
+      emergency_close: approval_required_always  # 1.5.2, Thomas decision 49 (2026-09-19): the
+                                          # assistant only ASKS. Mints the ask to close every
+                                          # booked live position at market, reduceOnly, under
+                                          # the HARD halt in effect; Thomas approves on the
+                                          # control channel and the operator spends it once in
+                                          # the scheduler container. This door never spends it.
     enable_scopes:
       trading:                            # RED — re-arms live entries (resume_arms: true)
         risk_class: RED

@@ -28,7 +28,7 @@ DECISION_RANK = {
 POLICY_REL = "governance/GOVERNANCE_POLICY.yaml"
 POLICY_BINDING = {
     "policy_id": "thomas.governance.policy",
-    "policy_version": "1.5.1",
+    "policy_version": "1.5.2",
     "policy_ref": POLICY_REL,
 }
 LEGACY_POLICY_BINDING = {
@@ -200,7 +200,7 @@ def validate_policy_record(policy: dict[str, Any]) -> list[str]:
     expected_identity = {
         "schema_version": "thomas_governance_policy.v1",
         "policy_id": "thomas.governance.policy",
-        "policy_version": "1.5.1",
+        "policy_version": "1.5.2",
         "status": "ACTIVE_POLICY_SOURCE",
         "owner": "Thomas",
         "authoritative": True,
@@ -778,10 +778,11 @@ def main() -> int:
         [
             "thomas_governance_policy.v1",
             "policy_id: thomas.governance.policy",
-            "policy_version: 1.5.1",
+            "policy_version: 1.5.2",
             "status: ACTIVE_POLICY_SOURCE",
             "authoritative: true",
             "one_time_use_required: true",
+            "emergency_close: approval_required_always",
             "- halt_trading",
             "assistant_read:",
             "mutation_allowed: false",
