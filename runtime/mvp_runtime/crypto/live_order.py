@@ -44,6 +44,7 @@ from .execution_stage import (
     StageStatus,
     required_stage,
 )
+from . import live_budget
 from .state import VENUE_MAINNET, state_dir, venue_state_dir
 from .vocabulary import (
     LIVE_TRADING_ENV,
@@ -277,6 +278,26 @@ class LiveOrderLimits:
         return bool(self.canary_confirmation) and self.canary_confirmation == CANARY_CONFIRMATION_PHRASE
 
 
+def limits_from_budget(record: Mapping[str, Any]) -> LiveOrderLimits:
+    """A ``LiveOrderLimits`` carrying the registered caps (for a later guard-rewiring increment).
+
+    Beside the class it builds since crypto PR7b-2: in ``live_budget`` it was that module's only
+    import of this one, and the import that closed the lane's one cycle.
+
+    Maps the five registered caps (a legacy record's ``min_clean_canary_orders`` is not one of
+    them and is never indexed); ``confirmation`` and ``manual_kill_switch`` are deliberately
+    left at their defaults — they are operator env state (a phrase and a halt), not
+    budget-registered caps, so a budget can never carry the confirmation that proves intent."""
+    caps = record["caps"]
+    return LiveOrderLimits(
+        max_order_notional_usdt=float(caps["max_order_notional_usdt"]),
+        absolute_max_notional_usdt=float(caps["absolute_max_notional_usdt"]),
+        max_daily_order_count=int(caps["max_daily_order_count"]),
+        max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
+        daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
+    )
+
+
 # --- idempotency -------------------------------------------------------------------
 
 def make_idempotency_key(payload: Mapping[str, Any]) -> str:
@@ -458,7 +479,6 @@ def resolve_live_order_limits(
     The budget's retired ``caps.min_clean_canary_orders`` is never read here: a record registered
     before PR1r still carries it (schema-accepted, self-hashed, ignored) and a newer one does not,
     so indexing it would raise on the new shape — before the leg settles or protects anything."""
-    from . import live_budget  # lazy: live_budget imports LiveOrderLimits
 
     status = live_budget.budget_status(root, now=now or timeutil.utc_now_iso())
     env = LiveOrderLimits.from_env()  # confirmation + manual kill only

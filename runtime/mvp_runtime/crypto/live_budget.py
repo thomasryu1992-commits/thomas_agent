@@ -272,25 +272,6 @@ def budget_status(root: Path | None = None, *, now: str, venue: str = VENUE_MAIN
     }
 
 
-def limits_from_budget(record: Mapping[str, Any]) -> Any:
-    """A ``LiveOrderLimits`` carrying the registered caps (for a later guard-rewiring increment).
-
-    Maps the five registered caps (a legacy record's ``min_clean_canary_orders`` is not one of
-    them and is never indexed); ``confirmation`` and ``manual_kill_switch`` are deliberately
-    left at their defaults — they are operator env state (a phrase and a halt), not
-    budget-registered caps, so a budget can never carry the confirmation that proves intent."""
-    from .live_order import LiveOrderLimits
-
-    caps = record["caps"]
-    return LiveOrderLimits(
-        max_order_notional_usdt=float(caps["max_order_notional_usdt"]),
-        absolute_max_notional_usdt=float(caps["absolute_max_notional_usdt"]),
-        max_daily_order_count=int(caps["max_daily_order_count"]),
-        max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
-        daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
-    )
-
-
 def write_registered_budget(record: Mapping[str, Any], *, root: Path | None = None,
                             venue: str = VENUE_MAINNET) -> Path:
     """Persist a built budget record to the per-machine state dir (operator registration path).
