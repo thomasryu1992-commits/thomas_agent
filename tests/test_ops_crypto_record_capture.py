@@ -132,3 +132,21 @@ def test_an_empty_or_unfinished_capture_does_not_pass(tmp_path):
     assert capture.compare(base, head) == 1, "nothing captured is not evidence"
     (head / capture.IDS_FILE).unlink()
     assert capture.compare(base, head) == 2, "a capture whose runs did not both pass is not one"
+
+
+def test_a_decoder_that_runs_out_of_stack_still_compares_the_file(tmp_path, monkeypatch):
+    """How deep `json.loads` may go depends on the C stack: the Windows runner's raises RecursionError
+    on the 5,000-deep records this host parses. Such a file is compared as its text, on any host."""
+    parse = json.loads
+
+    def shallow(data, *args, **kwargs):
+        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        if text.count("[") > 900:
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+        return parse(data, *args, **kwargs)
+
+    monkeypatch.setattr(capture.json, "loads", shallow)
+    deep = lambda leaf: "[" * 5000 + json.dumps(leaf) + "]" * 5000  # noqa: E731
+    base = _capture(tmp_path / "base", {"t0/deep.jsonl": (deep(1), deep(1)), "t0/same.json": (deep(2), deep(2))})
+    head = _capture(tmp_path / "head", {"t0/deep.jsonl": (deep(3), deep(3)), "t0/same.json": (deep(2), deep(2))})
+    assert capture.diff(base, head)["changed"] == ["t0/deep.jsonl"]
