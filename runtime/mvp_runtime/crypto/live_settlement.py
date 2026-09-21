@@ -80,10 +80,10 @@ def build_live_outcome_record(
 
     ``settlement_id`` is derived from the position identity (``position_id`` + exit order),
     so a retried settlement rebuilds the SAME id even though ``outcome_id`` and the row hash
-    move with ``now``. That stable identity is what lets ``RealLiveLedger.append_outcome``
+    move with ``now``. That stable identity is what lets ``live_pnl.RealLiveLedger.append_outcome``
     skip a settlement it already holds: the retry that follows a failed book-clear completes
     the clear instead of doubling the day's realized P&L. The read-side duplicate check in
-    :func:`read_live_outcomes` is NOT that protection — it is the alarm for a duplicate that
+    :func:`live_ledger.read_live_outcomes` is NOT that protection — it is the alarm for a duplicate that
     lands anyway (a hand-edited file), and it fails the WHOLE history rather than
     double-count, so a duplicate reaching the disk takes the breaker, the risk guard and
     promotion down with it until an operator repairs the ledger. Detection at read time is

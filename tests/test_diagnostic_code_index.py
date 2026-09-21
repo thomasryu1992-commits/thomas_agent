@@ -25,6 +25,7 @@ from build_diagnostic_code_index import (  # noqa: E402
     collect_sites,
     is_reason_code,
     module_string_constants,
+    resolve_string_constants,
 )
 
 # Codes raised from more than one module as of 2026-08-06, when this check was introduced.
@@ -102,6 +103,16 @@ SHARED_ACROSS_MODULES = frozenset({
     # with the same code the workflow model uses for every other malformed plan, and refuses an
     # unknown workflow command with the read/switch doors' own "not a verb here" code.
     "PLAN_INVALID",
+    # Added 2026-09-21 (crypto PR7d-3), when the index learned to follow a code imported from the
+    # module that defines it. Not new collisions: newly visible ones, the same case as the two
+    # `jsonl` codes above. The testnet order adapter (PR1d-1) imports the live adapter's codes and
+    # raises them for the same failures at another venue: one vocabulary, two venues.
+    "NO_ORDER_API_KEY", "ORDER_HALTED", "ORDER_MALFORMED_RESULT", "ORDER_OUTCOME_UNKNOWN",
+    "ORDER_REJECTED", "ORDER_TRANSPORT",
+    # And the live history's own tamper code. `live_ledger`'s verified read raises it on a row whose
+    # self-hash fails, and `live_pnl`'s P&L sum raises it on a hash-valid row whose amount is not a
+    # number. Both mean that the history cannot be trusted as money, so the loss breaker trips.
+    "LIVE_HISTORY_TAMPERED",
 })
 
 
@@ -124,12 +135,15 @@ def test_the_committed_index_matches_the_source():
 def test_a_code_named_by_a_module_constant_is_resolved():
     """`NAME = "LITERAL"` at module scope has exactly one value, readable without executing
     anything — so a raise that names it is not "built at runtime", which is how the index used to
-    report 79 of them. The three below are the live outcome ledger's (read in `live_ledger` since
-    crypto PR7d-3) and the canary registry's own tamper codes: the codes an operator is most likely
-    to be holding when they come here."""
+    report 79 of them. The ones below are the live outcome ledger's and the canary registry's own
+    tamper codes: the codes an operator is most likely to be holding when they come here. The
+    ledger's are raised by its verified read (`live_ledger` since crypto PR7d-3) and, for a
+    hash-valid row whose amount is not a number, by the P&L sum left in `live_pnl`. That raise names
+    a constant it imports, so it is indexed only because imports are followed (the test below)."""
     per_code = _modules_per_code()
     for code, module in (
         ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_ledger.py"),
+        ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_pnl.py"),
         ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_ledger.py"),
         ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_promotion.py"),
     ):
@@ -157,6 +171,43 @@ def test_resolution_refuses_a_name_it_cannot_be_certain_of():
     # A same-valued repeat is not ambiguity — the value is the same either way.
     repeated = ast.parse('X = "same"\nX = "same"\n')
     assert module_string_constants(repeated) == {"X": "same"}
+
+
+def test_a_code_imported_from_the_module_that_defines_it_is_resolved(tmp_path):
+    """A raise that names an imported constant is as certain as one that names a local constant.
+
+    Missing it moved a raise site out of the index whenever a code's definition moved to its
+    owner. Imported names get the same refusals as local ones, plus the ones only an import has:
+    nested under ``if``/``try``, a star import, and a name the importer also assigns, binds in a
+    function or imports inside one. Paths are only keys here; nothing is read from disk."""
+    import ast
+
+    root = tmp_path
+    pkg = root / "runtime" / "lane"
+    trees = {
+        pkg / "codes.py": ast.parse('CODE = "CODE"\nOTHER = "OTHER"\n'),
+        pkg / "relay.py": ast.parse("from .codes import CODE\n"),
+        pkg / "user.py": ast.parse(
+            "from .codes import CODE, OTHER as RENAMED\n"
+            "from .relay import CODE as VIA_RELAY\n"
+            "from runtime.lane.codes import OTHER\n"
+            "from .missing import GONE\n"
+            "from .codes import *\n"
+            "try:\n    from .codes import NESTED\nexcept ImportError:\n    pass\n"
+        ),
+        pkg / "shadows.py": ast.parse(
+            "from .codes import CODE, OTHER\n"
+            "OTHER = 'rebound'\n"
+            "def f():\n    from .relay import CODE\n    return CODE\n"
+        ),
+    }
+    resolved = resolve_string_constants(trees, root)
+    assert resolved[pkg / "user.py"] == {
+        "CODE": "CODE", "RENAMED": "OTHER", "VIA_RELAY": "CODE", "OTHER": "OTHER",
+    }
+    # `OTHER` is imported and assigned at module scope, so which one wins depends on their order;
+    # `CODE` is imported again inside a function, so the raise may read that one. Both are dropped.
+    assert resolved[pkg / "shadows.py"] == {}
 
 
 def test_a_code_handed_to_a_shared_primitive_is_still_indexed():

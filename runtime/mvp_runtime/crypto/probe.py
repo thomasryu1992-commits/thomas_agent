@@ -1002,7 +1002,7 @@ def decision_readiness(observations: list[Mapping[str, Any]]) -> dict[str, Any]:
     (`stop_slippage_observations` over the whole ledger) — the probe buys rows for that
     series, it does not own a private one. Reports only; nothing here rewrites
     `cost.DEFAULT_STOP_SLIPPAGE_BPS` (a held PR owns that constant)."""
-    from . import cost  # local: cost imports live_pnl labels; keep this module light to import
+    from . import cost  # local, as when cost imported live_pnl's labels (vocabulary's since PR7b-2)
 
     values = sorted(
         float(o["stop_slippage_bps"]) for o in observations

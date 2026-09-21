@@ -37,17 +37,30 @@ Append a new entry when a milestone ships, in the same PR.
   - **`live_settlement.py` (execution, new)** takes `build_live_outcome_record`,
     `realized_stop_slippage_bps` and `LIVE_PROVENANCE`: arithmetic on a closed position's fills, with
     no I/O, called by the leg that closes it.
-  - **The store layer (new, between governance and market)** holds the lane's own records of what it
-    did: the live outcome ledger read back, and its governed corrections (`live_correction`, moved
-    from outcome, because the read path applies them). Market keeps what the venue and the vendors say.
-    Store reads nothing above foundation, and risk, execution and outcome read it.
-  - **Re-exports:** `live_pnl` re-exports all 13 names as the same objects and keeps the writer
+  - **The store layer (new, between governance and market)** holds the read path of a record that
+    layers below its writer must read. It does not hold every record the lane keeps: the book, the
+    counters, the marks and the evidence registry each sit with the layer whose readers are at or above
+    them. The ledger is written in outcome and read back by risk and execution, so its read path is
+    store, together with the governed corrections that read path applies (`live_correction`, moved from
+    outcome; its only writer is the operator's correction door, outside the lane). Market keeps what the
+    venue and the vendors say. A test enforces that store reads only foundation.
+  - **Re-exports:** `live_pnl` re-exports the 12 public names as the same objects. It keeps the writer
     (`RealLiveLedger`), `live_risk_snapshot` and the loss checks, which read the moved names through its
-    own bindings. The three lane readers import from the new owners. `live_promotion` keeps its
+    own bindings. The private `_approvals_for` is not re-exported: the corrected read looks it up in
+    `live_ledger`, so a patch left on `live_pnl` fails loudly instead of missing. The three lane
+    readers, and the correction script, import from the new owners. `live_promotion` keeps its
     function-local import from `live_pnl`, which the canary-evidence tests patch.
-  - **One patch moved:** a correction-door test patched `live_pnl._approvals_for`; the moved
+  - **One patch moved:** a correction-door test patched `live_pnl._approvals_for`. The moved
     `read_live_outcomes` reads `live_ledger`'s binding, so the test now patches that one.
-  - **Nothing changed.** The 13 moved definitions are AST-identical, and the records compare equal.
+  - **The diagnostic index follows imported codes.** `live_pnl`'s P&L sum still raises
+    `LIVE_HISTORY_TAMPERED`, now through a constant it imports, and the builder resolved only
+    constants defined in the raising module, so that site dropped out of the index. It now follows
+    module-scope `from X import NAME` to a certain value, with the same refusals as before plus those
+    only an import has. The fix also brought in the testnet adapter's twelve raises of the live
+    adapter's codes, which had been missing since PR1d-1: 1,180 → 1,193 sites, and 147 → 134 sites
+    whose code is built at runtime. The seven codes that became visibly shared are declared.
+  - **Nothing changed.** The 13 moved definitions are AST-identical except three docstrings, which now
+    name `live_pnl`'s writer and readers from the new module's side. The records compare equal.
   - **The count:** 1 named upward pair remains (`forward_confirmation -> pool`, PR7e).
 
 - **The live book and the drift check are two modules** (crypto PR7d-2, 2026-09-21).

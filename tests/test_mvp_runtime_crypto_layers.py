@@ -25,12 +25,17 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   pointed up went with that move, not with the code that left.
 - **foundation holds only leaves with no role of their own.** Sizing (``live_sizing``) is risk, and the
   distribution gate and limit-entry scoring are strategy.
-- **store holds the lane's own records, market what the venue and the vendors say** (PR7d-3). The live
-  outcome ledger's read path (``live_ledger``) and its governed corrections (``live_correction``) record
-  what the lane did; risk (``breaker_watch``), execution (``probe``) and outcome read them, and they read
-  nothing above foundation. The corrections were outcome until the ledger's read path, which applies
-  them, came down; they are that ledger's second file. What the ledger's rows earned (``live_pnl``) stays
-  outcome, and the row is built where the fill is (``live_settlement``, execution).
+- **store holds the read path of a record that layers below its writer must read** (PR7d-3). Not
+  every record the lane keeps: the book, the counters, the marks and the evidence registry each sit
+  with the layer that owns them, because their readers sit at or above it. The live outcome ledger
+  is written in outcome (``live_pnl``) and read back by risk (``breaker_watch``) and execution
+  (``probe``), so its read path (``live_ledger``) is store, with the corrections that read path
+  applies (``live_correction``). Their only writer is the operator's correction door, outside the
+  lane, and they are that ledger's second file. The ledger's own writer and what its rows earned stay
+  outcome, and the row is built where the fill is (``live_settlement``, execution). Market holds what
+  the venue and the vendors say. Store reads only foundation, which is enforced below, so its place
+  among the bottom layers carries no edge: it sits with the leaves every acting layer reads, beside
+  governance. Nothing in governance or market reads it.
 
 The edges that point up today are named in ``EXCEPTIONS`` with the step that removes each, and with the
 names each may take. Both only shrink: a new upward pair fails, a new name on a named pair fails, and so
@@ -60,7 +65,7 @@ LAYER: dict[str, str] = {
     "indicators": "foundation", "vocabulary": "foundation", "order_identity": "foundation",
     # governance: what every layer allowed to act reads (the stage, its evidence, an order's record)
     "execution_stage": "governance", "testnet_evidence": "governance", "live_governance": "governance",
-    # store: the lane's own records of what it did (not what the venue says), and how they are read
+    # store: the read path of a record written above the layers that read it, and what that read applies
     "live_ledger": "store", "live_correction": "store",
     # market: what the venue and the vendors say
     "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
@@ -78,7 +83,8 @@ LAYER: dict[str, str] = {
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
-    # execution: what is sent, the front half that prepares it, and the book the sends keep
+    # execution: what is sent, the front half that prepares it, the book the sends keep, and the row a
+    # close settles
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
     "live_position": "execution", "live_settlement": "execution",
@@ -266,6 +272,18 @@ def test_every_named_exception_still_exists_name_by_name():
 def test_no_import_cycle_but_the_named_one():
     cycles = _problems()["cycles"]
     assert cycles == set(CYCLES), f"import cycles now: {sorted(sorted(c) for c in cycles)}"
+
+
+def test_the_store_reads_nothing_above_foundation():
+    """The store is read from above by risk, execution and outcome. Its rule is what keeps that honest:
+    a store module that read a layer above foundation would carry that layer's dependencies into every
+    reader, which is the upward edge the layer exists to remove."""
+    lane = set(_modules())
+    store = {name for name, layer in LAYER.items() if layer == "store"}
+    assert store, "no store modules: the map changed, not the rule"
+    reads = {(src, dst) for (src, dst) in _edges() if src in store and LAYER.get(dst) not in ("foundation", "store")}
+    assert reads == set(), f"store modules read above foundation: {sorted(reads)}"
+    assert store <= lane
 
 
 def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):

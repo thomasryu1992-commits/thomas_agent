@@ -79,7 +79,8 @@ def read_live_outcomes_raw(root: Path | None = None, *, venue: str = VENUE_MAINN
     that cannot prove itself must not be allowed to argue that the breaker is clear.
 
     **Use this only where the FILE is the question** — currently one place, the settlement-id
-    dedupe on append. Everything that reasons about what happened reads
+    dedupe on append (``RealLiveLedger.append_outcome``, in ``live_pnl``). Everything that reasons
+    about what happened reads
     :func:`read_live_outcomes` instead, which is the same rows with corrections applied. The
     dedupe cannot: a VOID correction removes a row from the corrected view, and a dedupe that
     read the view would then not see the settlement already on disk and would append it twice —
@@ -89,7 +90,8 @@ def read_live_outcomes_raw(root: Path | None = None, *, venue: str = VENUE_MAINN
     outcomes: list[dict[str, Any]] = []
     seen_outcome_ids: set[str] = set()
     seen_settlement_ids: set[str] = set()
-    # Reads only. The append below keeps its own fsync, which append_lines does not do.
+    # Reads only. The append (`RealLiveLedger.append_outcome`, in `live_pnl`) keeps its own fsync,
+    # which append_lines does not do.
     for lineno, record in jsonl.iter_numbered(
         path,
         read_code=LIVE_HISTORY_UNREADABLE,
@@ -123,7 +125,7 @@ def read_live_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     deployment until one is written: with the corrections file absent this reads nothing extra,
     touches no approval store, and returns exactly what it always did. That is what let the
     correction record be added at ONE chokepoint — `breaker_watch`, `cycle`, `live_promotion`,
-    `run_slippage_probe` and this module's own readers all pass through here, and not one of
+    `run_slippage_probe` and `live_pnl`'s own readers all pass through here, and not one of
     them needed a line.
 
     A correction that cannot prove itself raises, exactly as a tampered outcome row does. The
