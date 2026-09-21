@@ -63,6 +63,7 @@ from . import (
     null_control,
     paper,
     pool,
+    pre_order_gate,
     probe,
     proposer,
     robustness,
@@ -232,8 +233,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "age the market price an autonomous entry is checked against may have at the decision",
             "a venue whose closed 1m candles routinely arrive more than a minute late, or an entry "
             "path slow enough that a price read at its start is often near the bound"),
-    Tunable("MAX_ACCOUNT_AGE_SECONDS", live_order.MAX_ACCOUNT_AGE_SECONDS,
-            "crypto/live_order.py", OPERATOR,
+    Tunable("MAX_ACCOUNT_AGE_SECONDS", pre_order_gate.MAX_ACCOUNT_AGE_SECONDS,
+            "crypto/pre_order_gate.py", OPERATOR,
             "decision 18: the account an entry is judged on may be at most a minute old; a pass "
             "settles, protects and prices between the read and the decision, normally in seconds. "
             "pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS is this value, bounding the gate-to-send wait, "

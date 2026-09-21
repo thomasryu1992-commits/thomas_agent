@@ -709,7 +709,7 @@ def gate_probe_order(
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
-    account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
+    account (readable, and read at most ``pre_order_gate.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
     the symbol being free, the four breakers, the order book (fresh, a spread short of the
     dislocation bound, deep enough to fill the order at no more than the cost model's slippage,
     PR2d-3), the notional the approval priced, and the order

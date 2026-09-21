@@ -47,8 +47,14 @@ from ..paths import repo_root as _repo_root
 from ..safety_gate import Authorization
 from ..schema_cache import validate_against_schema
 from .execution_stage import PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET
-from .live_order import MAX_ACCOUNT_AGE_SECONDS, enrich_order_identity
+from .order_identity import enrich_order_identity
 from .state import VENUE_MAINNET, VENUE_TESTNET, venue_state_dir
+
+# How old the account read an entry is judged on may be when the entry is judged (Thomas decisions
+# 18 and 24, PR2c-1). A door reads the account once, then settles, protects and prices before it
+# decides — normally seconds, with no bound: each venue call in between may take its own timeout.
+# Past a minute the balance and the exposure the caps are judged on may no longer be the account's.
+MAX_ACCOUNT_AGE_SECONDS = 60
 
 GATE_ID = "pre_order_gate.v1"
 SNAPSHOT_VERSION = "pre_order_risk_snapshot.v0.1"
@@ -780,6 +786,7 @@ __all__ = [
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
     "LIVE_ARM_VERIFIED_FIELD",
+    "MAX_ACCOUNT_AGE_SECONDS",
     "MAX_SNAPSHOT_AGE_SECONDS",
     "PR2B_GATE_CHECK_IDS",
     "PRE_ARTIFACT_LINEAGE_FIELDS",

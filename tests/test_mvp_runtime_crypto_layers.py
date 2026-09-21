@@ -47,7 +47,7 @@ LAYERS: tuple[str, ...] = (
 LAYER: dict[str, str] = {
     # foundation: leaves shared by every layer
     "state": "foundation", "candidate_identity": "foundation", "refresh_marks": "foundation",
-    "indicators": "foundation", "vocabulary": "foundation",
+    "indicators": "foundation", "vocabulary": "foundation", "order_identity": "foundation",
     # governance: what every layer allowed to act reads (the stage, its evidence, an order's record)
     "execution_stage": "governance", "testnet_evidence": "governance", "live_governance": "governance",
     # market: what the venue and the vendors say
@@ -86,12 +86,11 @@ _MODULE = "<module>"      # the module object itself is bound, and nothing is re
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
 _BOOK = "PR7d: the live book's reader and record builders leave the reconciliation module"
 _LEDGER = "PR7d: the outcome record builder leaves live_pnl"
-_IDENTITY = "PR7d: the order intent's identity and its codes move below the gate and the sender"
 _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes through stores)"
 
 # (importer, imported) -> (the step that removes it, the names it may take). Both only shrink: a new
-# upward pair fails, and so does a new name on a named pair (a new upward import of `submit_live_order`
-# through `pre_order_gate -> live_order` is as new as any other).
+# upward pair fails, and so does a new name on a named pair (a new upward import of `live_risk_snapshot`
+# through `probe -> live_pnl` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
     ("live_entry", "live_position"): (_BOOK, frozenset({"compute_open_notional_usdt", "entry_allowed", "live_capacity"})),
@@ -99,7 +98,6 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("live_order", "live_position"): (_BOOK, frozenset({"MAX_LIVE_CONCURRENT_POSITIONS", "list_open_live_positions"})),
     ("probe", "live_position"): (_BOOK, frozenset({"entry_allowed"})),
     ("live_leg", "live_pnl"): (_LEDGER, frozenset({"build_live_outcome_record"})),
-    ("pre_order_gate", "live_order"): (_IDENTITY, frozenset({"MAX_ACCOUNT_AGE_SECONDS", "enrich_order_identity"})),
     ("breaker_watch", "live_pnl"): (_STORE + " (the live ledger)",
                                     frozenset({"live_outcomes_for_analysis", "read_live_outcomes"})),
     ("probe", "live_pnl"): (_STORE + " (the slippage observations)", frozenset({"stop_slippage_observations"})),

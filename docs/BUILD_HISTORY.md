@@ -24,6 +24,26 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The order intent's identity and the account-age bound move below the gate** (crypto PR7d-1,
+  2026-09-21). The pre-order gate (risk) took both from `live_order`, the sender above it.
+  - **`order_identity.py` (foundation, new)** takes `make_idempotency_key`, `make_client_order_id` and
+    `enrich_order_identity`. They derive an id from the intent itself, with no I/O, and every layer
+    that names an order reads them: the gate records the id, the sender sends it, and the book keys on
+    it. That is the order's `candidate_identity`, and so foundation.
+  - **`MAX_ACCOUNT_AGE_SECONDS` moves to `pre_order_gate`,** the gate that enforces it, with its
+    rationale. `live_order`'s freshness helpers read it downward. The tunables owner moves with the
+    literal.
+  - **Nothing changed.**
+    - `live_order` re-exports all four names as the same objects.
+    - The four definitions are AST-identical to the originals.
+    - No test or script patches any of them. The patch point for the id helpers is now
+      `order_identity`: `enrich_order_identity` reads them there, so a patch on `live_order`'s re-exported
+      copies would reach nothing. The comment at the re-export says so.
+    - `live_order` imports `pre_order_gate` at module level. That is new, and the cycle test shows it
+      closes no loop: the gate no longer imports the sender.
+  - **The count:** `pre_order_gate → live_order` is gone, so 9 named upward pairs remain (PR7d 8,
+    PR7e 1).
+
 - **Paper's trade-plan maths leaves the position kernel** (crypto PR7c, 2026-09-21). The factory
   backtest and the forward book read the maths the paper book trades with: one set of rules for
   backtest and paper, on purpose. To do that they imported `paper`, the stateful kernel above them.
