@@ -5,7 +5,7 @@ parameter mutation, the pre-backtest validator) plus a replay backtest built fro
 already-ported evaluator and settlement math — the source's own guarantee ("a strategy
 behaves identically in backtest and live" because both share one evaluator and one
 exit model) holds here by construction, since ``strategy.evaluate_spec`` and
-``paper.settle_trade_plan`` are exactly what the live cycle runs.
+``trade_plan.settle_trade_plan`` are exactly what the live cycle runs.
 
 Template library: the families whose features the C3 rows compute. ``funding_fade_*``
 joined when the funding series landed, and the ``htf_*`` legs when every timeframe in
@@ -43,7 +43,7 @@ C12: the replay backtest is costed. Every simulated trade's gross (intended-pric
 is decomposed into net R after fees + slippage via ``cost.apply_cost_model`` (the
 source's S4b cost model, ported in R-space — see ``cost.py``). This was once the ONLY
 costed path, matching the source's boundary; since 2026-07-30 the paper kernel charges the
-same model in ``paper.build_outcome_record``, so a paper expectancy and the one below are
+same model in ``trade_plan.build_outcome_record``, so a paper expectancy and the one below are
 finally the same kind of number (``cost.py`` records why the boundary moved). ``champion_score`` and
 ``expectancy`` are computed over the costed (net) R, so a strategy that only looks
 good gross now scores accordingly; ``robustness.cost_robustness`` is measured for
@@ -76,7 +76,7 @@ from .cost import (
 from .outcome_math import summarize_outcomes
 from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
-from .paper import (
+from .trade_plan import (
     ASSUMED_LEVERAGE, COOLDOWN_BARS_AFTER_STOPLOSS, MAINTENANCE_MARGIN_RATE,
     liquidation_price, settle_trade_plan, stop_is_beyond_liquidation,
 )
@@ -207,7 +207,7 @@ _MUTATION_SCALE = 0.35
 _EXIT_PROBE_SLOTS = (1, 2)
 
 # What fraction of a context's bars must be able to CARRY the probe's stop for the slot to be
-# worth spending. The probe re-centres on a ceiling; if `paper.stop_is_beyond_liquidation`
+# worth spending. The probe re-centres on a ceiling; if `trade_plan.stop_is_beyond_liquidation`
 # then refuses most entries at that width, the slot mints a row with no evidence instead of a
 # wide-stop datapoint — which is what the first harvest did on 1d (2026-08-31, GEN-873:
 # `refused_entries` 2,428-4,796 against 198 for the same families' narrow rows, and 0/1/1/2
@@ -249,10 +249,10 @@ def liquidation_admissible_stop_atr(
 ) -> float | None:
     """The widest ``stop_atr`` that ``admit`` of these bars can carry, or None if unknowable.
 
-    A stop sits ``stop_atr x ATR`` from entry, and `paper.stop_is_beyond_liquidation` refuses
+    A stop sits ``stop_atr x ATR`` from entry, and `trade_plan.stop_is_beyond_liquidation` refuses
     it once that distance reaches the isolated-margin liquidation price. So per bar the widest
     legal multiple is ``room x close / ATR``, where ``room`` is the liquidation distance as a
-    fraction of entry — **read out of `paper.liquidation_price` itself rather than re-derived
+    fraction of entry — **read out of `trade_plan.liquidation_price` itself rather than re-derived
     here**, so the two can never disagree about what the guard does.
 
     Returns the multiple that ``admit`` of the bars are at or above (the ``1 - admit``
@@ -3171,7 +3171,7 @@ def _replay(
             # **The runtime's economics door, applied where the evidence is made.**
             # `cost.MAX_ENTRY_COST_R` refuses a plan whose round trip eats more than a quarter
             # of its own R, and until 2026-08-02 only the two RUNTIME doors enforced it
-            # (`paper.entry_cost_refusal`, `live_entry`). The backtest scored every signal, so
+            # (`trade_plan.entry_cost_refusal`, `live_entry`). The backtest scored every signal, so
             # a candidate's expectancy described a population the runtime would not trade —
             # measured on this store: 48 of 50 15m entries refused, 11 of 17 at 1h, none at 4h.
             #
@@ -3543,7 +3543,7 @@ def backtest_spec(
 
     Uses the exact live-path components: ``evaluate_spec`` decides entries on row i,
     the position opens at row i's close with the spec's ATR exits, and every later
-    bar settles through ``paper.settle_trade_plan`` (pessimistic SL-first, the spec's
+    bar settles through ``trade_plan.settle_trade_plan`` (pessimistic SL-first, the spec's
     own ``max_holding_bars`` as the time exit — backtest semantics). Rows whose
     features are indeterminate never enter (the evaluator's rule).
 
@@ -3682,7 +3682,7 @@ def backtest_spec_pooled(
         # were all this block recorded — so the loop computed a per-regime R and then threw
         # away the only thing that says WHERE the edge was. That is the input a router needs
         # to decline a regime a strategy has already demonstrated it loses in, which is what
-        # `paper.regime_admits` now reads through the pool entry.
+        # `trade_plan.regime_admits` now reads through the pool entry.
         "per_regime": {
             regime: {"trades": regime_trades[regime], "total_r": round(total, 8)}
             for regime, total in sorted(regime_r.items())

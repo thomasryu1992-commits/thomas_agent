@@ -141,7 +141,7 @@ def size_live_order(
 ) -> dict[str, Any]:
     """Decide the quantity for one live entry, or refuse. Pure.
 
-    ``plan`` is an entry plan as ``paper.build_entry_plan`` produces it: ``entry_price``
+    ``plan`` is an entry plan as ``trade_plan.build_entry_plan`` produces it: ``entry_price``
     and ``risk``, where ``risk`` is the per-unit entry↔stop distance in quote terms. The
     two candidates:
 
@@ -206,7 +206,7 @@ def size_live_order(
     # while the cap binds the notional is fixed, so the risk actually taken is
     # `cap × stop_distance / price` and therefore RISES with volatility. Scaling `risk_fraction`
     # would leave that untouched; scaling the final quantity does not. See
-    # `paper.volatility_size_multiplier` for the measurement and for why the multiplier is
+    # `trade_plan.volatility_size_multiplier` for the measurement and for why the multiplier is
     # capped at 1.0 (it may shrink an order, never widen one past what was registered).
     #
     # Read off the plan rather than recomputed here: the plan is what the execution step is

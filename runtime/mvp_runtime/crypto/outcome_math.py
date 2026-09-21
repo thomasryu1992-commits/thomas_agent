@@ -132,7 +132,7 @@ def net_result_r(
     # appeared, and the first time on the runtime's own current rows.
     #
     # What the two bases each contain has to be exact, or this trades a latch for a wrong
-    # number. `paper.build_outcome_record` charges fees and slippage at settlement and records
+    # number. `trade_plan.build_outcome_record` charges fees and slippage at settlement and records
     # no funding term, and `outcome_net_r` says the same in its own words: `intent_net_of_costs`
     # is "fees and slippage both inside". Carry is therefore the one term still owed, which is
     # also the term this function already owns (see the docstring above). So the net figure is

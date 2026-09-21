@@ -281,7 +281,7 @@ def price_bracket(
     }, None
 
 
-# What to assume when the venue cannot be asked. **Deliberately NOT `paper.ASSUMED_LEVERAGE`,
+# What to assume when the venue cannot be asked. **Deliberately NOT `trade_plan.ASSUMED_LEVERAGE`,
 # and the split is the point:** that constant answers "what is this account set to" and is
 # maintained against a verified reading, while this one answers "what should I assume when I
 # cannot check" — and the two have opposite failure costs. Being wrong LOW here lets through a

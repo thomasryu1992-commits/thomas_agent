@@ -70,3 +70,29 @@ STOP_EXIT_REASONS = frozenset({"stop_loss"})
 def utc_day(stamp: str | None = None) -> str:
     """The UTC calendar day a timestamp belongs to. The breaker resets at UTC midnight."""
     return (stamp or timeutil.utc_now_iso())[:10]
+
+
+# --- the paper plane's record labels (crypto PR7c) -----------------------------------------------------
+# The trade-plan maths (`trade_plan`, strategy) stamps these into positions and outcome rows, the paper
+# kernel (`paper`, decision) reads them back, and the forward book reads the router statuses. Kept here,
+# below all three; `paper` re-exports every one.
+
+PAPER_PROVENANCE = "mvp_paper_kernel"
+
+# The trading venue a position was opened on. One value today (the C2 collector is
+# Binance futures), carried explicitly so a later exchange adapter is a new context
+# rather than a second migration of every stored position.
+DEFAULT_VENUE = "binance_futures"
+
+# Router statuses/rules (source S7).
+STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
+
+STATUS_NO_ENTRY = "NO_ENTRY"
+
+STATUS_BLOCKED = "BLOCKED"
+
+BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
+
+OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
+
+PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker

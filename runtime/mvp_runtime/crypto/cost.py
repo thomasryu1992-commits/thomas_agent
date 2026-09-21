@@ -31,7 +31,7 @@ against a statistic that omits a term that size.
 **Two changes closed it from opposite ends, and both are load-bearing.** They were authored
 in parallel and read as competing until you notice they cover different rows:
 
-- **Settlement charges (2026-07-30).** ``paper.build_outcome_record`` applies this model as it
+- **Settlement charges (2026-07-30).** ``trade_plan.build_outcome_record`` applies this model as it
   writes, so ``result_R`` is net from that day on and says so: ``r_basis:
   intent_net_of_costs``. A paper expectancy and a backtest expectancy became the same kind of
   number. It cannot reach backwards — the rows already on disk stay as written, which is the
@@ -503,7 +503,7 @@ def outcome_net_r(
     "does this lose money at what the venue charges *now*", not at whatever it charged when
     the row was written.
 
-    **It is the backlog's half of the fix, not the whole fix.** ``paper.build_outcome_record``
+    **It is the backlog's half of the fix, not the whole fix.** ``trade_plan.build_outcome_record``
     charges the same model at settlement from 2026-07-30 on, so rows minted since then are
     already net and label themselves ``intent_net_of_costs``. That change could not reach the
     rows already on disk — which is precisely the population this function exists for. The two

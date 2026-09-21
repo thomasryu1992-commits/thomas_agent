@@ -235,7 +235,7 @@ def build_live_position(
         "holding_candles": 0,
         # Dedup key for the counter: one bar counts once however many times a cycle re-runs
         # within it. Paper learned this from the source system; live inherits it via the
-        # shared `paper.advance_holding` rather than by keeping a second copy of the rule.
+        # shared `trade_plan.advance_holding` rather than by keeping a second copy of the rule.
         "last_counted_candle_ts": None,
     }
     position["position_id"] = integrity.short_id(

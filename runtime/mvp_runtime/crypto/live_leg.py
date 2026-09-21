@@ -44,7 +44,7 @@ The three rules this leg owes, each implemented as a branch you can point at:
   market order, so it pays the taker rate plus adverse slippage to exit at a price the market
   had to come to anyway. A resting LIMIT at the same price earns the maker rate and fills at
   the target exactly — which is also what the backtest has always assumed the target does
-  (``paper.settle_trade_plan`` returns the target price itself as the exit), so this closes a
+  (``trade_plan.settle_trade_plan`` returns the target price itself as the exit), so this closes a
   model-versus-reality gap rather than opening one.
 
 The cost of that asymmetry is stated rather than hidden: ``closePosition`` is documented for
@@ -257,7 +257,7 @@ BRACKET_CONFIRM_ATTEMPTS = 3
 BRACKET_CONFIRM_BACKOFF_SECONDS = (0.5, 1.0)
 
 # Close reasons written onto the outcome record. The first two deliberately reuse paper's
-# vocabulary (`paper.settle_trade_plan`) so a live result and a paper result of the same shape
+# vocabulary (`trade_plan.settle_trade_plan`) so a live result and a paper result of the same shape
 # read identically to every consumer — the R statistics are compared across the two.
 CLOSE_REASON_NAKED = "naked_position_close"
 CLOSE_REASON_STOP = "stop_loss"
@@ -305,7 +305,7 @@ def _exit_terms(decision: Mapping[str, Any]) -> Mapping[str, Any]:
 
     Empty is a legitimate answer, not a defect: a decision built before `exit_terms` existed
     carries none, and `build_live_position` stores `None` for both. What that produces is a
-    *legacy* position, which `paper.position_max_hold` already knows how to judge — timeframe
+    *legacy* position, which `trade_plan.position_max_hold` already knows how to judge — timeframe
     table fallback, with the fallback reported so the gap stays attributable.
     """
     terms = decision.get("exit_terms")

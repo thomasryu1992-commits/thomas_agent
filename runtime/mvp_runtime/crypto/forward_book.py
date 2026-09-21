@@ -59,10 +59,8 @@ from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from .market_data import TIMEFRAMES
-from .paper import (
+from .trade_plan import (
     COOLDOWN_BARS_AFTER_STOPLOSS,
-    OCCUPYING_STATUSES,
-    STATUS_ENTRY_CANDIDATE,
     build_entry_plan,
     build_outcome_record,
     entry_cost_refusal,
@@ -72,6 +70,7 @@ from .paper import (
     settle_trade_plan,
     stop_beyond_liquidation_refusal,
 )
+from .vocabulary import OCCUPYING_STATUSES, STATUS_ENTRY_CANDIDATE
 from .state import state_dir
 from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec

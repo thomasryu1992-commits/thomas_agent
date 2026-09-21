@@ -1633,7 +1633,7 @@ def recorded_like(adapter: Any, source: Any) -> Any:
 #   one-position-per-symbol cap hides that while a position is open; once a stop closes it
 #   inside the bar, the next tick entered again on the same signal. The client order id did not
 #   stop it either — it was keyed on the wall clock.
-# - **the post-stop-loss cooldown** (`paper.COOLDOWN_BARS_AFTER_STOPLOSS`), the rule the paper
+# - **the post-stop-loss cooldown** (`trade_plan.COOLDOWN_BARS_AFTER_STOPLOSS`), the rule the paper
 #   evidence behind every live promotion was produced under.
 #
 # Paper marks every EVALUATION of a bar; the live mark is taken only when an order is about to be
