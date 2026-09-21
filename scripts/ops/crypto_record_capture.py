@@ -1,49 +1,60 @@
-"""Capture what the crypto lane's tests write, so two trees can be compared record for record.
+"""Capture what the crypto lane's tests write, so two commits can be compared record by record.
 
-Crypto PR7a; the directive's CI-3 (deterministic integration) and CI-4 (historical replay). PR7 moves
-code between modules and must not change trading behaviour (directive §9). A green suite says every
-assertion still holds. It does not say that a record nobody asserts on is still the same, and this
-does: it runs the lane's tests with pytest's ``--basetemp`` inside OUT, so every file a test writes
-under ``tmp_path`` is kept, and hashes each file after normalising it:
+Crypto PR7a. PR7 moves code between modules and must not change trading behaviour (directive §9); this
+is the evidence each step carries, beside the suite. A green suite says every assertion still holds.
+This says that every record the tests write to disk is still the same, including the fields no
+assertion reads.
 
-- JSON is parsed and re-dumped with sorted keys, and JSONL line by line;
-- the capture's own temp root, which records embed as absolute paths, becomes ``<BASETEMP>``.
+``capture`` runs the tests twice with pytest's ``--basetemp`` inside OUT, keeping every file a test
+writes under ``tmp_path``. ``compare`` reads two captures file by file:
 
-``capture`` runs the tests twice. Whatever differs between the two runs on one tree carries a wall
-clock or a random id, and ``compare`` masks exactly that: the JSON fields that differed between a
-tree's own two runs (a ``recorded_at``, an approval id) are set aside on both sides, and every other
-field must match. A file whose shape differs between runs is skipped whole. ``compare`` says how many
-fields and files it set aside.
+- JSON and JSONL are compared value by value after sorting keys and replacing the capture's own temp
+  root with ``<BASETEMP>``. A value is its JSON spelling, so ``true``, ``1`` and ``1.0`` differ, and so
+  do ``-0.0`` and ``0.0``, while ``NaN`` equals itself. Any other file is compared as text or bytes.
+- What differs between one commit's own two runs is a wall clock or a random id, and is set aside, but
+  only where both commits vary the same way. A field, or a file, that varies in one commit's runs and
+  not the other's is a difference: that is how a refactor that starts reading the wall clock shows up.
+- A record nested too deep to walk (the lane writes 5,000-deep records on purpose, to prove they are
+  refused) is compared whole.
 
-    python scripts/ops/crypto_record_capture.py capture OUT [TEST ...]
-    python scripts/ops/crypto_record_capture.py compare BASE HEAD
+    python scripts/ops/crypto_record_capture.py capture BASE_OUT [TEST ...]
+    python scripts/ops/crypto_record_capture.py capture HEAD_OUT --same-tests-as BASE_OUT
+    python scripts/ops/crypto_record_capture.py compare BASE_OUT HEAD_OUT
 
-Run ``capture`` once on the base commit and once on the head, then ``compare`` — **in one worktree,
-switching commits between the two**. The Core activation is per worktree, and every id bound to it (a
-``core_context_binding_id``, and the approval ids and fingerprints derived from it) differs between two
-worktrees while staying fixed within one: measured on PR7a, two worktrees at the same code differed in
-121 files, one worktree in none. Give both captures the same test list. A test that writes outside
-``tmp_path`` is not seen. Nothing here reads or writes runtime state: the tests run on temp
-roots, as they do in the suite.
+Two rules make the comparison mean something:
+
+- **One worktree, two commits.** Check out the base, capture it, check out the head, capture it. The
+  Core activation is per worktree, and every id bound to it (a ``core_context_binding_id``, and the
+  approval ids and fingerprints derived from it) differs between worktrees. Measured on PR7a: two
+  worktrees at the same code differed in 121 files, one worktree in none.
+- **The same tests, in the same order.** A capture records the test ids it ran, and the head runs
+  exactly those (``--same-tests-as``); ``compare`` refuses two captures of different tests. A test's
+  temp directories are numbered by the order tests run in, so one added test renumbers every
+  directory after it.
+
+What it does not see: anything a test keeps in memory (the scripted adapters' order requests among
+them), anything written outside ``tmp_path``, tests outside the list, and byte-level layout (key order,
+whitespace, blank lines). The default list is every test file that imports the crypto lane. Nothing
+here reads or writes runtime state: the tests run on temp roots, as they do in the suite.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
-DEFAULT_TESTS = ("tests/test_mvp_runtime_crypto_*.py", "tests/test_crypto_*.py")
-TESTS_FILE = "tests.json"
+IDS_FILE = "test_ids.txt"
 PLACEHOLDER = "<BASETEMP>"
+_MASK = "<UNSTABLE>"
+_LANE_MARKERS = ("mvp_runtime.crypto", "mvp_runtime import crypto")
 
 
 def normalise(path: Path, basetemp: Path) -> bytes:
-    """The bytes to hash: key order and the capture's own temp root do not count as a difference."""
+    """A file's bytes, with the capture's own temp root replaced and JSON keys sorted."""
     raw = path.read_bytes()
     try:
         text = raw.decode("utf-8")
@@ -66,12 +77,9 @@ def normalise(path: Path, basetemp: Path) -> bytes:
     return text.encode("utf-8")
 
 
-_MASK = "<UNSTABLE>"
-
-
 def value(path: Path, basetemp: Path) -> Any:
     """A file as data: JSON parsed, JSONL a list of lines (each parsed where it parses), anything else
-    its normalised text."""
+    its normalised bytes."""
     data = normalise(path, basetemp)
     if path.suffix == ".json":
         try:
@@ -89,13 +97,20 @@ def value(path: Path, basetemp: Path) -> Any:
     return data
 
 
+def same(a: Any, b: Any) -> bool:
+    """Equal as written: type-strict, where Python's ``True == 1 == 1.0`` and ``nan != nan`` are not."""
+    if isinstance(a, bytes) or isinstance(b, bytes):
+        return a == b
+    return json.dumps(a, sort_keys=True, ensure_ascii=False) == json.dumps(b, sort_keys=True, ensure_ascii=False)
+
+
 def unstable_paths(a: Any, b: Any, at: tuple = ()) -> set[tuple]:
-    """Where two runs of one tree differ: the leaf paths, or the subtree whose shape changed."""
+    """Where two runs of one commit differ: the leaf paths, or the subtree whose shape changed."""
     if isinstance(a, dict) and isinstance(b, dict) and a.keys() == b.keys():
         return set().union(*(unstable_paths(a[k], b[k], at + (k,)) for k in a)) if a else set()
     if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
         return set().union(*(unstable_paths(x, y, at + (i,)) for i, (x, y) in enumerate(zip(a, b)))) if a else set()
-    return set() if a == b else {at}
+    return set() if same(a, b) else {at}
 
 
 def masked(data: Any, paths: set[tuple], at: tuple = ()) -> Any:
@@ -112,74 +127,109 @@ def _files(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
 
+def _masks(runs: tuple[Path, Path], rel: str) -> tuple[Any, set[tuple]]:
+    """One commit's first run of a file, and what its two runs disagree on."""
+    first, second = runs
+    try:
+        a, b = value(first / rel, first), value(second / rel, second)
+        return a, unstable_paths(a, b)
+    except RecursionError:
+        a, b = normalise(first / rel, first), normalise(second / rel, second)
+        return a, (set() if a == b else {()})
+
+
 def diff(base: Path, head: Path) -> dict[str, Any]:
-    """Compare two captures (each OUT with run1 and run2) file by file, masking what either tree's own
-    two runs disagree on."""
+    """Compare two captures (each OUT with run1 and run2) file by file."""
     runs = {name: (out / "run1", out / "run2") for name, out in (("base", base), ("head", head))}
     present = {name: (_files(r1), _files(r2)) for name, (r1, r2) in runs.items()}
     stable = {name: f1 & f2 for name, (f1, f2) in present.items()}
-    wobbling = {p for f1, f2 in present.values() for p in f1 ^ f2}
-    result: dict[str, Any] = {"only_in_base": sorted(stable["base"] - _files(runs["head"][0]) - wobbling),
-                              "only_in_head": sorted(stable["head"] - _files(runs["base"][0]) - wobbling),
-                              "changed": [], "skipped_unstable": sorted(wobbling), "masked_fields": 0}
+    wobbling = {name: f1 ^ f2 for name, (f1, f2) in present.items()}
+    either = {name: f1 | f2 for name, (f1, f2) in present.items()}
+    result: dict[str, Any] = {
+        "only_in_base": sorted(stable["base"] - either["head"]),
+        "only_in_head": sorted(stable["head"] - either["base"]),
+        "changed": [],
+        # Varies between one commit's own runs and not the other's: new (or lost) nondeterminism.
+        "unstable_in_one": sorted(wobbling["base"] ^ wobbling["head"]),
+        "skipped_unstable": sorted(wobbling["base"] & wobbling["head"]),
+        "masked_fields": 0,
+        "files": len(either["base"]),
+    }
     for rel in sorted(stable["base"] & stable["head"]):
-        try:
-            (b1, b2), (h1, h2) = ([value(r / rel, r) for r in runs[name]] for name in ("base", "head"))
-            mask = unstable_paths(b1, b2) | unstable_paths(h1, h2)
-        except RecursionError:
-            # Nested too deep to walk field by field (the lane's tests write 5,000-deep records on
-            # purpose, to prove they are refused): compared whole, as normalised bytes.
-            (b1, b2), (h1, h2) = ([normalise(r / rel, r) for r in runs[name]] for name in ("base", "head"))
-            mask = set() if b1 == b2 and h1 == h2 else {()}
-        if () in mask:
+        (b1, base_mask), (h1, head_mask) = _masks(runs["base"], rel), _masks(runs["head"], rel)
+        if base_mask != head_mask:
+            result["unstable_in_one"].append(rel)
+        elif () in base_mask:
             result["skipped_unstable"].append(rel)
-            continue
-        result["masked_fields"] += len(mask)
-        if (b1 != h1) if isinstance(b1, bytes) else (masked(b1, mask) != masked(h1, mask)):
-            result["changed"].append(rel)
-    result["skipped_unstable"].sort()
+        else:
+            result["masked_fields"] += len(base_mask)
+            if not same(masked(b1, base_mask), masked(h1, base_mask)):
+                result["changed"].append(rel)
+    result["unstable_in_one"].sort()
     return result
 
 
-def _expand(patterns: Sequence[str]) -> list[str]:
-    found: list[str] = []
-    for pattern in patterns:
-        matches = sorted(str(p) for p in Path(".").glob(pattern)) if any(c in pattern for c in "*?[") else [pattern]
-        found.extend(m for m in matches if m not in found)
-    return found
+def lane_tests() -> list[str]:
+    """Every test file that imports the crypto lane."""
+    return sorted(
+        p.as_posix() for p in Path("tests").rglob("test_*.py")
+        if any(marker in p.read_text(encoding="utf-8", errors="replace") for marker in _LANE_MARKERS)
+    )
 
 
-def capture(out: Path, patterns: Sequence[str]) -> int:
-    tests = _expand(patterns)
-    if not tests:
-        print("no tests matched", file=sys.stderr)
+def _collect(tests: Sequence[str]) -> list[str]:
+    listing = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+                              *tests], capture_output=True, text=True)
+    if listing.returncode != 0:
+        print(listing.stdout[-2000:] + listing.stderr[-2000:], file=sys.stderr)
+        raise SystemExit(listing.returncode)
+    return [line for line in listing.stdout.splitlines() if "::" in line]
+
+
+def capture(out: Path, tests: Sequence[str], *, same_as: Path | None = None) -> int:
+    if same_as is not None:
+        ids = (same_as / IDS_FILE).read_text(encoding="utf-8").splitlines()
+    else:
+        ids = _collect(list(tests) or lane_tests())
+    if not ids:
+        print("no tests collected", file=sys.stderr)
         return 2
     out.mkdir(parents=True, exist_ok=True)      # pytest makes --basetemp itself, but not its parent
+    (out / IDS_FILE).unlink(missing_ok=True)    # written only when both runs pass
+    argfile = out / "pytest_args.txt"
+    argfile.write_text("\n".join(ids) + "\n", encoding="utf-8")
     for run in ("run1", "run2"):
-        basetemp = (out / run).resolve()
         code = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                               f"--basetemp={basetemp}", *tests]).returncode
+                               f"--basetemp={(out / run).resolve()}", f"@{argfile}"]).returncode
         if code != 0:
             print(f"the tests failed on {run} (exit {code}); a failing tree has no record to compare",
                   file=sys.stderr)
             return code
-    (out / TESTS_FILE).write_text(json.dumps(tests, indent=1), encoding="utf-8")
-    print(f"captured {len(_files((out / 'run1').resolve()))} files from {len(tests)} test files, twice")
+    (out / IDS_FILE).write_text("\n".join(ids) + "\n", encoding="utf-8")
+    print(f"captured {len(_files((out / 'run1').resolve()))} files from {len(ids)} tests, twice")
     return 0
 
 
 def compare(base: Path, head: Path) -> int:
-    tests = [json.loads((out / TESTS_FILE).read_text(encoding="utf-8")) for out in (base, head)]
-    if tests[0] != tests[1]:
-        print("the two captures ran different test files; capture both with the same list", file=sys.stderr)
+    for out in (base, head):
+        if not (out / IDS_FILE).is_file():
+            print(f"{out} holds no finished capture", file=sys.stderr)
+            return 2
+    ids = [(out / IDS_FILE).read_text(encoding="utf-8") for out in (base, head)]
+    if ids[0] != ids[1]:
+        print("the two captures ran different tests; capture the head with --same-tests-as BASE", file=sys.stderr)
         return 2
     result = diff(base.resolve(), head.resolve())
-    for key in ("only_in_base", "only_in_head", "changed"):
+    if not result["files"]:
+        print("nothing was captured: no test wrote a file under tmp_path", file=sys.stderr)
+        return 1
+    keys = ("only_in_base", "only_in_head", "changed", "unstable_in_one")
+    for key in keys:
         for path in result[key]:
             print(f"{key}: {path}")
-    differing = sum(len(result[k]) for k in ("only_in_base", "only_in_head", "changed"))
-    print(f"{differing} differing; set aside: {len(result['skipped_unstable'])} unstable files, "
-          f"{result['masked_fields']} unstable fields")
+    differing = sum(len(result[k]) for k in keys)
+    print(f"{differing} differing of {result['files']} files; set aside where both commits vary alike: "
+          f"{len(result['skipped_unstable'])} files, {result['masked_fields']} fields")
     return 1 if differing else 0
 
 
@@ -188,13 +238,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     cap = sub.add_parser("capture", help="run the tests twice, into OUT/run1 and OUT/run2")
     cap.add_argument("out", type=Path)
-    cap.add_argument("tests", nargs="*", default=list(DEFAULT_TESTS))
-    cmp_ = sub.add_parser("compare", help="compare two captures; exit 1 on any stable difference")
+    cap.add_argument("tests", nargs="*", help="test files (default: every test file that imports the lane)")
+    cap.add_argument("--same-tests-as", type=Path, default=None, help="run exactly the tests another capture ran")
+    cmp_ = sub.add_parser("compare", help="compare two captures; exit 1 on any difference")
     cmp_.add_argument("base", type=Path)
     cmp_.add_argument("head", type=Path)
     args = parser.parse_args(argv)
     if args.command == "capture":
-        return capture(args.out, args.tests)
+        return capture(args.out, args.tests, same_as=args.same_tests_as)
     return compare(args.base, args.head)
 
 

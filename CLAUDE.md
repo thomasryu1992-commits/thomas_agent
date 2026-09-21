@@ -12,7 +12,9 @@ audited approval turns it on.
 
 "Thin" is a claim about **policy, not size**. The domain packages have outgrown the core and
 keep growing while the kernel does not move (§G of `docs/REMAINING_WORK.md` re-measures this —
-and has already priced and declined restructuring, so do not "fix" the growth). What keeps the
+and has already priced and declined restructuring, so do not "fix" the growth; the one exception is
+crypto PR7, directive work since 2026-09-21, split step by step under a layer test and a record
+comparison). What keeps the
 core thin while lanes grow, stated as rules:
 
 - A domain package (`crypto/`, `knowledge/`) is an **application of the core's chokepoints**
