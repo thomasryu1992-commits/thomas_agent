@@ -8,9 +8,9 @@ assertion reads.
 ``capture`` runs the tests twice with pytest's ``--basetemp`` inside OUT, keeping every file a test
 writes under ``tmp_path``. It also loads ``crypto_request_log`` (crypto PR7e-3), which logs every call to
 the order path's pure seams (the request built from an intent, a conditional order's normalised answer,
-the verdict on a venue order) into ``_requests/`` beside the tests' temp directories, so an order request
-that lives only in a scripted adapter's memory is compared too. ``compare`` reads two captures file by
-file:
+the verdict on a venue order) into ``_requests/`` beside the tests' temp directories. So what those
+functions produce is compared even where it lives only in a scripted adapter's memory. ``compare`` reads
+two captures file by file:
 
 - JSON and JSONL are compared value by value after sorting keys and replacing the capture's own temp
   root with ``<BASETEMP>``. A value is its JSON spelling, so ``true``, ``1`` and ``1.0`` differ, and so
@@ -40,12 +40,14 @@ Two rules make the comparison mean something:
   temp directories are numbered by the order tests run in, so one added test renumbers every
   directory after it.
 
-What it does not see: anything else a test keeps in memory (an order request is seen at the seam that
-built it, not where an adapter stored it), anything written outside ``tmp_path`` and ``_requests/``, the
-calls of a test that patches a seam itself, tests outside the list, and byte-level layout (key order,
-whitespace, blank lines). A capture of a commit from before PR7e-3 has no ``_requests/``, so a compare
-across that line reports every log as present in one capture only. The default list is every test file that imports the crypto lane. Nothing
-here reads or writes runtime state: the tests run on temp roots, as they do in the suite.
+What it does not see: anything else a test keeps in memory (a request is seen as its builder returned it,
+not as an adapter received it, and the arguments of reads and cancels are not seen at all), anything
+written outside ``tmp_path`` and ``_requests/``, the calls of a test that patches a seam itself, tests
+outside the list, and byte-level layout (key order, whitespace, blank lines). A capture of a commit from
+before PR7e-3 has no ``_requests/``, so a compare across that line reports every log as present in one
+capture only; and this tool run on such a tree fails to load the plugin, which it reports as a failed
+run. The default list is every test file that imports the crypto lane. Nothing here reads or writes
+runtime state: the tests run on temp roots, as they do in the suite.
 """
 
 from __future__ import annotations
