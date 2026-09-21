@@ -30,8 +30,9 @@ has left it, and this header went on claiming otherwise:
 
   The zero it once returned uniformly is now the answer to one specific question, stated
   at :func:`_cost_robustness`: a record predating the carry has no ``total_net_r`` to
-  divide, and `candidate_ranking.cost_basis_rank` refuses such evidence outright rather than letting
-  it read as merely slightly better than it was.
+  divide, and the promotion door refuses such evidence outright (`pool.assert_promotable_cost_basis`,
+  on `candidate_ranking.cost_basis_rank`'s tier) rather than letting it read as merely slightly better
+  than it was.
 """
 
 from __future__ import annotations
@@ -311,8 +312,9 @@ def _cost_robustness(metrics: Mapping[str, Any]) -> float:
     through the clamp. That is the honest reading: an edge that survives its costs completely
     is the best this component can say, and being paid to hold is not evidence of a better
     entry rule. Absent (a record predating the carry) reads as 0.0 and the score is then the
-    pre-2026-07-29 figure, which is why `candidate_ranking.cost_basis_rank` refuses such evidence outright
-    rather than leaving it to look merely slightly better than it was."""
+    pre-2026-07-29 figure, which is why the promotion door refuses such evidence outright
+    (`pool.assert_promotable_cost_basis`, on `candidate_ranking.cost_basis_rank`'s tier) rather than
+    leaving it to look merely slightly better than it was."""
     net = _f(metrics.get("total_net_r"))
     if net <= 0:
         return 0.0

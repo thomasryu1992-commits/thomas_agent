@@ -38,8 +38,12 @@ Append a new entry when a milestone ships, in the same PR.
     It keeps no state and has no refusal of its own.
   - **`pool` keeps the door:** the promotable sets and `assert_promotable_cost_basis` /
     `assert_promotable_evidence_depth`, which turn a tier into a refusal, and also the store, its
-    invariants, the backlog and the live tier. It re-exports all 33 names as the same objects, and it
-    drops the cost and robustness imports that only the ranking used.
+    invariants, the backlog and the live tier. The argument for which depth tier the door refuses
+    moved beside it; the premise it rests on stays with the tiers. `pool` re-exports the 26 public
+    names and the two private helpers it calls (`_as_float` orders the live leg's context visits,
+    `_is_number` decides the lifecycle window), and those two say so where they are defined. It drops
+    the five other private helpers, so a patch left on `pool` fails loudly, and the cost and robustness
+    imports that only the ranking used.
   - **Readers:** `forward_confirmation` reads `candidate_ranking.candidate_quality` through a
     function-local import, as it read `pool`'s. The scripts and the promotion door still read through
     `pool`.
@@ -49,7 +53,8 @@ Append a new entry when a milestone ships, in the same PR.
     three REMAINING_WORK lines, now name the new owner.
   - **Nothing changed.** 32 moved definitions are AST-identical, and `search_context_key`'s docstring
     now points at `pool._lineage_key`. The records compare equal.
-  - **The count:** no named upward pair remains, and `EXCEPTIONS` is empty.
+  - **The count:** no named upward pair remains. `EXCEPTIONS` is empty, and a test pins it empty, so
+    an entry is a visible decision.
 
 - **The live ledger is read from a store layer; the outcome row is built in execution** (crypto PR7d-3,
   2026-09-21).

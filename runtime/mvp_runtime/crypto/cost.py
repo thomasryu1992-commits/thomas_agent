@@ -360,7 +360,8 @@ def apply_cost_model(
     position was open, so any non-zero default would be a holding period invented here rather
     than measured by the caller that has the bars. The safety lives one level up instead, where
     it can be honest: ``factory.backtest_spec`` always passes a real sum, and a candidate scored
-    with no funding term at all is refused at the promotion door by ``candidate_ranking.cost_basis_rank``.
+    with no funding term at all is refused at the promotion door (``pool.assert_promotable_cost_basis``,
+    on the tier ``candidate_ranking.cost_basis_rank`` gives it).
     """
     cost = cost or CostModel()
     if risk <= 0:

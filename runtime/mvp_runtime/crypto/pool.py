@@ -64,15 +64,16 @@ from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 
 # this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
 # moved to a leaf so `factory` no longer needs a module-level edge into this store.
 # The ranking view and the two comparability tiers moved to `candidate_ranking` (strategy) in crypto
-# PR7e-1. This store's doors and backlog read them, and every name is re-exported here, as the same
-# object, for the callers that read them as `pool.<name>`.
+# PR7e-1. This store's doors, backlog and routing read them, and every public name is re-exported
+# here, as the same object, for the callers that read them as `pool.<name>`. Of the private helpers,
+# only the two this module calls are imported: a patch on `pool` for any of the others would miss the
+# ranking that reads it, and without the name here such a patch fails loudly instead.
 from .candidate_ranking import (  # noqa: F401
     COST_BASIS_RANK_CONSERVATIVE, COST_BASIS_RANK_CURRENT, COST_BASIS_RANK_OPTIMISTIC,
     COST_BASIS_RANK_UNRECORDED, EDGE_COST_BASIS_NET, EDGE_COST_BASIS_UNRECORDED,
     EVIDENCE_DEPTH_RANK_FULL, EVIDENCE_DEPTH_RANK_SHALLOW, EVIDENCE_DEPTH_RANK_UNRECORDED,
-    EVIDENCE_DEPTH_REPLAYED, EVIDENCE_DEPTH_TOLERANCE, EVIDENCE_DEPTH_UNRECORDED, _ALL_WINS_RR_SORT,
-    _as_float, _designed_reward_risk, _evidence_symbols, _is_number, _lattice_attempts,
-    _replayed_window, attempt_context_key, attempts_by_context, candidate_quality, cost_basis_of,
+    EVIDENCE_DEPTH_REPLAYED, EVIDENCE_DEPTH_TOLERANCE, EVIDENCE_DEPTH_UNRECORDED, _as_float,
+    _is_number, attempt_context_key, attempts_by_context, candidate_quality, cost_basis_of,
     cost_basis_rank, current_cost_basis, current_evidence_depth, evidence_depth_of,
     evidence_depth_rank, expectancy_at, expected_replayed_bars, pooled_context_keys,
     rank_candidates, search_context_key,
@@ -148,6 +149,43 @@ def assert_promotable_cost_basis(records: list[Mapping[str, Any]]) -> None:
         )
 
 
+# The depth door, and why it refuses one tier and not the other. The premise (which way a shallow
+# window's error points, and why re-windowing is a different sample) opens `candidate_ranking`'s
+# evidence-depth block; the argument that acts on it is this one.
+#
+# So A KNOWN-SHALLOW ROW RANKS, REPORTS AND IS RECORDED — it is not refused. Three reasons:
+#   1. Every 1d row in the store was scored at the old window, so the day the floor lands a
+#      refusal makes the escape hatch the normal door. The cost tiers already record that
+#      lesson (equality was tried first and refused 90 of 359 rows on their own merits).
+#   2. The error runs AGAINST the candidate: a shallow row that still shows a verdict cleared
+#      a harder bar on the counted terms, and a shallow FRAGILE is absence of evidence rather
+#      than evidence of absence — refusing it would discard the 12-of-25 that were real.
+#   3. This door installs into the PAPER pool (`stage: paper`, `PAPER_ACTIVE`); live money has
+#      its own gates. Paper routing is where thin evidence goes to get thicker, so refusing
+#      shallow evidence here blocks the cheapest way to earn the depth it lacks.
+# What replaces the refusal is attribution: the tier orders the list, the `--list` view names
+# the split, and the depth each promoted row stood on rides onto the ledger beside its basis.
+#
+# AN UNRECORDED WINDOW IS REFUSED, AND ALL THREE OF THOSE REASONS COLLAPSE ON IT.
+# (1) does not grow: every row the factory mints records its depth, so the unrecorded set is a
+# closed legacy population that shrinks, not one the next policy change re-creates — the 41
+# arrive through the C7 import, which copies an outside pool's entries verbatim. (2) is the
+# argument that fails hardest: "the error runs against the candidate" is a claim about a
+# window you can SEE. An unrecorded one has no known direction, which is precisely why
+# `COST_BASIS_RANK_UNRECORDED` is refused rather than ranked. (3) proves nothing, because the
+# cost door already refuses unrecorded evidence into this same paper pool.
+#
+# And unrecorded depth is WORSE than unrecorded cost, not merely equal to it. An unrecorded
+# cost basis is partially repairable: `expectancy_at` re-derives the number that matters at
+# today's rates, exactly, from what the row already stores. Nothing re-windows a candidate.
+# The snapshot that produced the evidence is not kept — only `evidence_input_sha256`, its hash
+# — so a row that cannot say how much market it replayed cannot be made to say it, ever, by
+# any amount of arithmetic. The repo's standing rule for that case is not a ranking:
+# missing / uncertain → BLOCK, never guess.
+#
+# The escape is its own flag rather than a widening of `--allow-stale-cost-basis`. Two doors
+# that fail for different reasons must not open with one key.
+#
 # Which depth tiers may back a promotion. SHALLOW promotes because its error is known and runs
 # against the candidate; UNRECORDED is refused because no direction can be read off it and,
 # unlike an unrecorded cost basis, no part of it can be re-derived later.

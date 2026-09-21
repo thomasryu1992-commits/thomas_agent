@@ -277,7 +277,7 @@ def assert_live_tier_confirmed(
 
     Raises ``CANDIDATE_UNCONFIRMED_FOR_LIVE``.
     """
-    from . import candidate_ranking  # local: it loads market_data, which nothing else here needs
+    from . import candidate_ranking  # local, as the `pool` import it replaced: the gate's import graph is unchanged
 
     from .robustness import HOLDOUT_CONFIRMED
 

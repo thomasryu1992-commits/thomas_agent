@@ -44,12 +44,12 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   views (``current_cost_basis``, ``current_evidence_depth``) went with the formatters they are built on.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
-``EXCEPTIONS`` is empty. A new upward pair fails, and so would a new name on a named pair, or an
-exception or name that is no longer imported. Naming an upward edge there is a design decision: it
-carries the step that removes it and the exact names it may take. An edge whose removal would change
-trading behaviour stays as a permanent exception, because the directive puts "no behaviour change" above
-the direction. Moving a module to a lower layer removes an upward edge as surely as removing an import,
-so it is a design decision reviewed like one: the placement must say what the module does.
+``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
+new name on a named pair, or an exception or name that is no longer imported. The one reason an entry
+could ever be right is an edge whose removal would change trading behaviour, because the directive puts
+"no behaviour change" above the direction; such an entry would change the pin in the same PR, where a
+reviewer sees it. Moving a module to a lower layer removes an upward edge as surely as removing an
+import, so it is a design decision reviewed like one: the placement must say what the module does.
 """
 
 from __future__ import annotations
@@ -263,6 +263,13 @@ def test_no_crypto_import_points_up_a_layer_beyond_the_named_ones():
         + ". New names on a named pair: "
         + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in sorted(problems["widened"].items()))
     )
+
+
+def test_no_upward_edge_is_excepted():
+    """Empty since PR7e-1. The directive forbids reverse dependencies, so an entry is a decision to
+    allow one, justified only where removing the edge would change trading behaviour; it changes this
+    pin in the same PR, where a reviewer sees it."""
+    assert EXCEPTIONS == {}
 
 
 def test_every_named_exception_still_exists_name_by_name():
