@@ -390,7 +390,7 @@ def live_outcomes_for_analysis(
     """Split live outcomes into rows the R-based consumers may read, and rows they may not.
 
     Returns ``(readable, excluded)``. A readable row is exactly the shape
-    ``guards.run_risk_guard``, ``lifecycle`` and ``feedback.summarize_outcomes`` already
+    ``guards.run_risk_guard``, ``lifecycle`` and ``outcome_math.summarize_outcomes`` already
     consume — ``result_R``, ``created_at_utc``, ``outcome_closed``, plus the lineage the
     lifecycle groups by — so no consumer needs a live-specific branch.
 
@@ -499,8 +499,6 @@ def live_analysis_summary(
     }
 
 
-
-
 def daily_realized_pnl(outcomes: Iterable[Mapping[str, Any]], *, day: str | None = None) -> float:
     """Sum of realized live P&L for one UTC day, in USDT."""
     target = day or utc_day()
@@ -560,7 +558,6 @@ LIVE_PNL_NO_SOURCE = "LIVE_PNL_NO_SOURCE"
 # while the balance/positions call succeeded. The breaker reads that as TRIPPED on those paths
 # (`live_risk_snapshot(venue_required=True)`), never as the local ledger's reading: see there.
 LIVE_PNL_VENUE_FIGURE_MISSING = "LIVE_PNL_VENUE_FIGURE_MISSING"
-
 
 
 def venue_daily_realized_net(realized_windows: Mapping[str, Any] | None) -> float | None:

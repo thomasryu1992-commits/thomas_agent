@@ -3,8 +3,9 @@
 `net_result_r` re-reads one paper outcome net of fees, slippage and carry; `summarize_outcomes` reduces
 outcomes to R metrics. The guards (risk) and the lifecycle, forward confirmation and the factory
 backtest (strategy) read them, and both lived in `feedback`, the report module above every one of those
-readers. `net_result_r` reads the cost model, so the lowest place it can live is here, beside `cost`, in
-the strategy layer. `feedback` re-exports both as the same functions.
+readers. This is strategy-layer work by what it does: pure maths over the cost model, used to score
+strategies (the factory backtest, the lifecycle ladder, forward confirmation), and below the guards
+(risk) that also read it. `feedback` re-exports both as the same functions.
 """
 
 from __future__ import annotations

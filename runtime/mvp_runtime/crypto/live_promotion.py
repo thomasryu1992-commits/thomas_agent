@@ -24,7 +24,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import jsonl
 from ..errors import ToolError
-from .live_execution import RECONCILED  # noqa: F401  (re-exported: the canary rows derive `clean` from it)
+from .live_execution import RECONCILED  # noqa: F401  (re-exported: scripts/run_slippage_probe.py reads it here)
 from .live_pnl import state_dir
 
 # The shape of the rows already on disk: their file and the provenance they carry. Kept after the

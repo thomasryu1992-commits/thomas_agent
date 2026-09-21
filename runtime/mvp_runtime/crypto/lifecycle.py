@@ -46,7 +46,7 @@ from runtime.read_only_kernel import integrity
 from ..errors import ToolError
 from . import outcome_math
 # Moved to the leaf (PR3b-1) so the router can key on a lineage without importing this module,
-# which imports `feedback`, which imports `paper`. Re-exported: its callers import it from here.
+# which then imported `feedback`, which imports `paper`. Re-exported: its callers import it from here.
 from .candidate_identity import entry_attribution_keys as _entry_attribution_keys
 from .candidate_identity import own_attribution_keys as _own_attribution_keys
 from .candidate_identity import predecessor_keys as _predecessor_keys

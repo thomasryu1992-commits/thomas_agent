@@ -1,6 +1,6 @@
 """LP5.3 — the venue's own trading rules for one symbol. Read-only; nothing here trades.
 
-LP5.2 sized orders against a :class:`~.live_sizing.SymbolFilters` it could not obtain, so
+LP5.2 sized orders against a :class:`SymbolFilters` (defined below) it could not obtain, so
 every call refused: *"LP5.3 supplies real filters from a venue read; until then every call
 refuses, which is the honest state."* This is that read.
 

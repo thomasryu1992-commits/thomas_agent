@@ -31,13 +31,13 @@ Append a new entry when a milestone ships, in the same PR.
     exits and `utc_day`. They move with their rationale comments. They lived in `live_pnl`, the outcome
     ledger, above the order path, `cost` and `paper`, which all read them.
   - **`RECONCILED` is defined in `live_execution`,** with the rest of the reconcile-status vocabulary.
-    `live_promotion` and the live leg import it from there. `live_position` and `testnet_evidence` spell
+    The live leg reads it there; `live_promotion` re-exports it for `scripts/run_slippage_probe.py`. `live_position` and `testnet_evidence` spell
     their own statuses the same way; those are other vocabularies and stay theirs.
   - **`SymbolFilters` is defined in `live_filters`,** beside the reader that fills it. `live_sizing`
     re-exports it.
   - **`outcome_math.py` (strategy, new):** `net_result_r`, `summarize_outcomes` and their helpers leave
-    `feedback`. They read the cost model and nothing from `paper`, so beside `cost` is the lowest place
-    they can live.
+    `feedback`. By what they do they are strategy work: pure maths over the cost model, used to score
+    strategies. They read nothing from `paper`.
   - **`limits_from_budget` moves to `live_order`,** beside the class it builds. It has no runtime caller,
     only two tests. In `live_budget` it was that module's only import of `live_order`, the import that
     closed the cycle. `live_order` now imports `live_budget` at module level; the old lazy import existed
