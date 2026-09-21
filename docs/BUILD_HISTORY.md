@@ -24,6 +24,24 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The frame a spec is backtested on is assembled with the rest of the market inputs** (crypto PR7e-5,
+  2026-09-21).
+  - **What moved:** `attach_mining_legs` goes from `cycle` to `feed_assembly` (market). It is the one
+    call that attaches every leg the factory mines on, and it reads only `feed_assembly`'s five attaches
+    and `market_data`. After PR7e-2 it was the last piece of market assembly left in the orchestrator,
+    and PR7e-2's review suggested it follow.
+  - **Readers:**
+    - `cycle` re-exports it as the same object, so the scheduler's three call-time dispatches
+      (`crypto_cycle.attach_mining_legs`, core) and the mining-frame tests are untouched.
+    - The two scripts that imported it at module level (`seed_forward_book`, `probe_signal_rate`) import
+      it from its owner.
+    - `cycle` drops its now-unused `HIGHER_TIMEFRAME` import. Nothing reads it through `cycle`.
+  - **Nothing changed.** The function is AST-identical except its docstring. It says "the five attaches
+    above" again, as it did before PR7e-2, and names `cycle.run_crypto_cycle` as another module's.
+    The patch census was taken dynamically, by logging every patch over the full suite: no test patches
+    `attach_mining_legs`, a name it reads, or anything on `feed_assembly`. The only attach patches on
+    `cycle` drive `run_crypto_cycle`, which stays.
+
 - **The order's shape at the venue is pure and apart from what sends it** (crypto PR7e-4, 2026-09-21).
   - **Before:** `live_execution` held the adapters that sign and send (the egress, with the halt
     backstop), and also the order's shape both ways: the request built from an intent, a conditional
