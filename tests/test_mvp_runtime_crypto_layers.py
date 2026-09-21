@@ -82,10 +82,13 @@ LAYER: dict[str, str] = {
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
 
 
-_STATE_DIR = "PR7b: state_dir from state, which already has it"
-_VOCAB = "PR7b: the names move to a lower leaf and stay re-exported at the old one"
-_MATHS = "PR7b: the outcome maths moves to a lower leaf and stays re-exported by feedback"
-_CYCLE = "PR7b: LiveOrderLimits moves to the budget, which ends the cycle"
+_STATE_DIR = "PR7b-1: state_dir from state, which already has it"
+_VOCAB = "PR7b-2: the names move to a foundation leaf and stay re-exported at the old one"
+_MATHS = "PR7b-2: the outcome maths moves beside the cost model it reads (strategy); feedback re-exports it"
+_CYCLE = "PR7b-2: LiveOrderLimits moves to the budget, which ends the cycle"
+_RECONCILED = ("PR7b-2: the order status is defined where orders are reconciled (live_execution), and "
+               "live_promotion takes it from there. live_position and testnet_evidence spell their own "
+               "statuses the same way, and those stay theirs")
 _PAPER_MATHS = "PR7c: the trade-plan maths and paper's status names leave paper for strategy"
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
 _BOOK = "PR7d: the live book's reader and record builders leave the reconciliation module"
@@ -111,14 +114,15 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("cost", "live_pnl"): (_VOCAB + " (the R bases, the stop-exit reasons)",
                            frozenset({"R_BASES_NET_OF_COSTS", "R_BASIS_FILLED", "STOP_EXIT_REASONS"})),
     ("paper", "live_pnl"): (_VOCAB + " (the R bases)", frozenset({"R_BASIS_INTENT_NET"})),
-    ("live_execution", "live_promotion"): (_VOCAB + " (RECONCILED)", frozenset({"RECONCILED"})),
-    ("live_leg", "live_promotion"): (_VOCAB + " (RECONCILED)", frozenset({"RECONCILED"})),
-    ("live_filters", "live_sizing"): (_VOCAB + " (the SymbolFilters value type)", frozenset({"SymbolFilters"})),
+    ("live_execution", "live_promotion"): (_RECONCILED, frozenset({"RECONCILED"})),
+    ("live_leg", "live_promotion"): (_RECONCILED, frozenset({"RECONCILED"})),
+    ("live_filters", "live_sizing"): ("PR7b-2: SymbolFilters moves to live_filters, whose venue data it holds; "
+                                      "live_sizing re-exports it", frozenset({"SymbolFilters"})),
     ("guards", "feedback"): (_MATHS, frozenset({"net_result_r"})),
     ("lifecycle", "feedback"): (_MATHS, frozenset({"net_result_r"})),
     ("forward_confirmation", "feedback"): (_MATHS, frozenset({"net_result_r"})),
     ("factory", "feedback"): (_MATHS, frozenset({"summarize_outcomes"})),
-    ("breaker_watch", "feedback"): ("PR7b: an unused import, left when #414's report call was removed",
+    ("breaker_watch", "feedback"): ("PR7b-1: an unused import, left when #414's report call was removed",
                                     frozenset({_MODULE})),
     ("live_budget", "live_order"): (_CYCLE, frozenset({"LiveOrderLimits"})),
     ("factory", "paper"): (_PAPER_MATHS, frozenset({
@@ -142,7 +146,7 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("venue_contract", "account_store"): (_STORE + " (the account snapshot)", frozenset({"read_snapshot"})),
 }
 
-# Import cycles, anywhere in the lane and inside one layer too. The one that exists goes in PR7b.
+# Import cycles, anywhere in the lane and inside one layer too. The one that exists goes in PR7b-2.
 CYCLES: frozenset[frozenset[str]] = frozenset({frozenset({"live_budget", "live_order"})})
 
 
