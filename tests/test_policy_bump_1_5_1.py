@@ -76,7 +76,7 @@ def test_the_schedule_bump_applies_over_either_baseline():
     anchor it edits must survive the text 1.5.1 writes (review of H2: this used to assert only the
     constant, so a later edit could break 1.6.0 --check after 1.5.1 with this test still green)."""
     schedule = _script("policy_bump_1_6_0")
-    assert schedule.BASELINES == ("1.5.0", "1.5.1")
+    assert schedule.BASELINES == ("1.5.0", "1.5.1", "1.5.2")
     assert schedule.OLD in schedule.BASELINES
     soft = _script("policy_bump_1_5_1")
     if f"policy_version: {soft.OLD}\n" not in (ROOT / soft.POLICY_REL).read_text(encoding="utf-8"):

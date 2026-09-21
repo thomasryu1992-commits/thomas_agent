@@ -24,6 +24,38 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The assistant can ask for the emergency close, and only ask** (crypto PR6e-2, 2026-09-19, Thomas
+  decision 49; `switch_bridge.py`, Hermes shim 2.14, `scripts/ops/policy_bump_1_5_2.py`).
+  - **The verb:** the switch door's `emergency_close` mints the ask `scripts.emergency_close --request`
+    mints, with the assistant as the requester. It uses the same content, scope, risk and 15 minutes,
+    and refuses by the same codes. A retried `request_id` answers from the record.
+  - **It never spends.** An `approval_id` beside it is refused. Thomas approves on the control channel,
+    and the operator spends it once in the scheduler container.
+  - **Dormant until policy 1.5.2.** The door's verbs are closed in the policy, so the verb refuses by
+    name until `control_channel.assistant_switch.verbs` lists it (`control.granted_switch_verbs`), the
+    pattern `halt_trading` followed before 1.5.1. `policy_bump_1_5_2.py` is Thomas's to apply, and a
+    REBIND follows, because `assistant_switch` is a safety section.
+  - **Found on the way:** `policy_bump_1_6_0.py --check` refused over the committed 1.5.1 baseline. Two
+    test literals that pin nothing were not on its list, and the 1.5.1 test checked only anchors, not
+    the stray scan. Both scripts' scans are now tested, and 1.6.0 accepts the 1.5.2 baseline.
+  - **After review:**
+    - **The ask names who asked.** The control-channel text carries a 요청자 line and the requester's
+      own reason, labelled unverified when the assistant asked. The decision's authority reason no
+      longer says "Thomas asks" for an ask the assistant minted. Before this, the RED ask reached Thomas
+      looking exactly like one he had made.
+    - **One ask open at a time.** A new ask is refused while any emergency-close ask is PENDING or
+      APPROVED and unexpired (`EMERGENCY_CLOSE_ASK_OPEN`, naming it). This covers the two cases the
+      `request_id` could not:
+      - a reply that outlived the client's timeout, where the model had no id to retry with;
+      - a claim released after the ask was already stored.
+
+      The shim now answers a sent-but-unanswered frame with UNCONFIRMED and the id to retry. It no
+      longer points to the Telegram control channel, which has no close command.
+    - **The grant reads the value.** A switch verb counts as listed only under the disposition the
+      door implements for it (`control.SWITCH_VERB_DISPOSITIONS`). Key presence used to be enough.
+    - **The close is bound to its domain** (`DOMAIN_EFFECT_MISMATCH` if the door ever widens).
+    - A replay says what that call did, never what has happened since.
+
 - **The assistant can halt entries** (crypto PR6e-1, 2026-09-19; Hermes shim 2.13, `SOUL.md`).
   - **The tool:** `halt_trading(reason, hard=False)` sends the switch door's `disable mode=soft|hard`.
     The door has carried `soft` since policy 1.5.1 and `hard` since PR6a. No shim tool sent either, so

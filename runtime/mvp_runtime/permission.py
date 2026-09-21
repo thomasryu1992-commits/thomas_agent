@@ -49,6 +49,7 @@ from .authority import (
 from .errors import PlannerBlocked
 from .paths import repo_root as _repo_root
 from .naver_research import BRIEF_TOOL_ID
+from .socket_door import ASSISTANT_ACTOR
 from .tools import SEARCH_TOOL_ID
 from .workspace import WORKSPACE_REL, WRITE_TOOL_ID
 
@@ -1298,7 +1299,14 @@ def build_emergency_close_permission_decision(
             "and reported, never resized. A position the venue holds that this runtime did not book is "
             "not touched."
         ),
-        authority_reason="Thomas asks for the emergency close; only Thomas may authorize it.",
+        # Who asked is part of what Thomas decides (crypto PR6e review): the assistant reads the
+        # untrusted web, and an ask it minted must not be recorded as one he made himself.
+        authority_reason=(
+            f"The assistant ({ASSISTANT_ACTOR}) asks for the emergency close; its stated reason is its "
+            "own and unverified. Only Thomas may authorize it."
+            if normalized["requested_by"] == ASSISTANT_ACTOR else
+            "Thomas asks for the emergency close; only Thomas may authorize it."
+        ),
         decision_reason=(
             "Closing live positions at market outside the strategies' own rules requires exact Thomas "
             "approval on the verified control channel."

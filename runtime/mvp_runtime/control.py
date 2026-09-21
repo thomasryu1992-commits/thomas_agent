@@ -665,25 +665,58 @@ def _control_event(action: str, state: ControlState, *, now: str, task_id: str |
     )
 
 
+def _control_channel_clause(root: Path | None, door: str) -> Any:
+    """``control_channel.<door>`` of the committed policy, read now, or None when the policy cannot be
+    read or is malformed at any level. Every level is checked: a policy that parses to a list, or a
+    clause that is a string, is malformed, and malformed grants nothing (review of H2 — `.get` on a
+    non-mapping raised)."""
+    path = (root if root is not None else _repo_root()) / POLICY_REL
+    try:
+        policy = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):   # ValueError covers undecodable bytes
+        return None
+    channel = policy.get("control_channel") if isinstance(policy, dict) else None
+    return channel.get(door) if isinstance(channel, dict) else None
+
+
 def granted_emergency_controls(root: Path | None = None) -> frozenset[str]:
     """The verbs the committed policy grants the operator console, read now.
 
     Fail-closed: an unreadable or malformed policy grants nothing, so a policy-gated verb refuses.
     The verbs that are not policy-gated do not consult this at all — a policy read failing must
     never be able to take `/kill` away."""
-    path = (root if root is not None else _repo_root()) / POLICY_REL
-    try:
-        policy = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError):   # ValueError covers undecodable bytes
-        return frozenset()
-    # Every level is checked: a policy that parses to a list, or a clause that is a string, is
-    # malformed, and malformed grants nothing (review of H2 — `.get` on a non-mapping raised).
-    channel = policy.get("control_channel") if isinstance(policy, dict) else None
-    console = channel.get("local_operator_console") if isinstance(channel, dict) else None
+    console = _control_channel_clause(root, "local_operator_console")
     allowed = console.get("emergency_controls_allowed") if isinstance(console, dict) else None
     if not isinstance(allowed, list):
         return frozenset()
     return frozenset(v for v in allowed if isinstance(v, str))
+
+
+# What the switch door does with each verb, which is what the policy must say for the verb to count as
+# listed: a verb under any other disposition (``refused``, ``null``, a typo) grants nothing. Key presence
+# alone used to grant (crypto PR6e review), so the value the policy validators pin was never read.
+SWITCH_VERB_DISPOSITIONS: dict[str, str] = {
+    "status": "read_only",
+    "disable": "fail_safe_immediate",
+    "enable": "approval_required_always",
+    "emergency_close": "approval_required_always",
+}
+
+
+def granted_switch_verbs(root: Path | None = None) -> frozenset[str]:
+    """The verbs the committed policy lists for the assistant's switch door
+    (``control_channel.assistant_switch.verbs``), read now.
+
+    A verb counts only under the disposition :data:`SWITCH_VERB_DISPOSITIONS` names for it.
+    Fail-closed like :func:`granted_emergency_controls`, and consulted the same way: only by a verb
+    the door carries dormant until the policy names it (``switch_bridge.POLICY_GATED_COMMANDS``). A
+    policy read failing can never take ``disable`` away, because ``disable`` never asks."""
+    switch = _control_channel_clause(root, "assistant_switch")
+    verbs = switch.get("verbs") if isinstance(switch, dict) else None
+    if not isinstance(verbs, dict):
+        return frozenset()
+    return frozenset(v for v, disposition in verbs.items()
+                     if isinstance(v, str) and SWITCH_VERB_DISPOSITIONS.get(v) == disposition)
 
 
 def command_verb(head: str, *, slash_seen: bool) -> str:

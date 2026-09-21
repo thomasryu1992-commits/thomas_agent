@@ -551,7 +551,11 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   lost derives the same `stop_ref` each time. An ask made under such a state could therefore be
   spent under a later one that was recovered the same way. It is still ACTIVE under a HARD halt.
 
-  The assistant cannot ask for an emergency close yet: a door verb for it is a policy change.
+  **The assistant can only ask (PR6e).** The switch door's `emergency_close` (Hermes shim 2.14,
+  `request_emergency_close`) mints the same ask with the assistant as the requester, and refuses by
+  name (`CONTROL_VERB_NOT_GRANTED`) until policy 1.5.2 lists it under
+  `control_channel.assistant_switch.verbs`. It never spends: an `approval_id` beside it is refused,
+  and the spend stays the operator's `--confirm` in the scheduler container.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries

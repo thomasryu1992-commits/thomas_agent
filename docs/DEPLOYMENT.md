@@ -425,6 +425,7 @@ docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --r
 docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --show
 docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --request --requested-by thomas --reason "..."
 docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confirm --approval-id <id>
+# The assistant may ASK for one (switch door `emergency_close`, policy 1.5.2); the confirm above stays yours.
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and

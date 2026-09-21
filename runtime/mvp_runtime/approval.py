@@ -49,6 +49,7 @@ from .control import command_verb
 from .errors import ApprovalBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
+from .socket_door import ASSISTANT_ACTOR
 from .permission import (
     EMERGENCY_CLOSE_TARGET_PREFIX,
     EXECUTION_STAGE_TARGET_PREFIX,
@@ -496,6 +497,23 @@ def format_request(approval: Mapping[str, Any]) -> str:
     ]
     if snapshot.get("content_sha256"):
         lines.append(f"내용 해시: {snapshot['content_sha256']}")
+    if emergency_close:
+        # Who asked, and in whose words (crypto PR6e review). The assistant can mint this ask
+        # through the switch door, and without these two lines it reached Thomas looking exactly
+        # like one he minted himself. Its reason is the assistant's own text: shown as untrusted,
+        # because the assistant reads the web and cannot tell an injected request from his.
+        params = snapshot.get("normalized_parameters") or {}
+        requester = str(params.get("requested_by") or "—")
+        if requester == ASSISTANT_ACTOR:
+            lines += [
+                f"요청자: 어시스턴트({ASSISTANT_ACTOR}) — Thomas나 운영자가 만든 요청이 아닙니다",
+                f"어시스턴트가 적은 사유(검증되지 않은 입력): {params.get('reason') or '—'}",
+            ]
+        else:
+            lines += [
+                f"요청자: {requester} (운영자 요청, scripts/emergency_close.py --request)",
+                f"요청자가 적은 사유: {params.get('reason') or '—'}",
+            ]
     lines += [
         f"요청 이유: {'; '.join(permdec_reasons) if permdec_reasons else '—'}",
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
