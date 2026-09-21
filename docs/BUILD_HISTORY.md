@@ -24,6 +24,30 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **One context's market inputs are assembled outside the orchestrator** (crypto PR7e-2, 2026-09-21).
+  - **Before:** `cycle` (orchestration) ran the whole cycle and also assembled each context's market
+    inputs: the derivative legs, the higher timeframe, the reference symbol, the cross-sectional cohort
+    and the accumulated positioning rows. It also held the live entry door's judgement of those legs
+    (`optional_data_health`, PR2d-2).
+  - **`feed_assembly.py` (market, new)** takes 16 definitions: the five `attach_*` functions,
+    `_feed_readings`, `optional_data_health`, and the constants they use. Those are the degrade code
+    `HTF_DEGRADED`, the optional-leg code set and columns, the three feed age bounds (Thomas decision
+    28), and the two fetch depths read from `market_data`. It reads only `market_data`, the market
+    stores and the runtime's leaves.
+  - **`cycle` keeps** the cycle itself, the mining legs (`attach_mining_legs`), the cohort
+    accumulators, the pool fan-out and the status lines. It re-exports all 16 names as the same objects.
+    It keeps importing the optional legs' degrade codes, because readers name them as `cycle.<code>`,
+    and it drops `timeutil`, `Sequence` and three `market_data` names that only the assembly read.
+  - **Readers:** the three feed age bounds' `tunables` owners move with their literals, and `tunables` no
+    longer imports `cycle`. `scripts/rescore_stale_holdout_candidates.py` imports the `attach_*`
+    functions from their owner. `live_readiness` still reads the code set through `cycle`, which is a
+    downward import. Ten comments and docstrings that named a moved function as `cycle`'s now name
+    `feed_assembly`.
+  - **Nothing changed.** The 16 moved definitions are AST-identical. No test patches a moved name, or a
+    name a moved body reads, on `cycle`: the patched names (`run_live_leg`, `run_risk_guard`,
+    `run_paper_update`, `run_lifecycle`, `run_crypto_cycle`, `read_outcomes`) are the ones
+    `run_crypto_cycle` calls, and they stay in `cycle`.
+
 - **Candidate ranking is judged in strategy; the promotion door stays with the pool** (crypto PR7e-1,
   2026-09-21).
   - **Before:** `pool` (decision) held the candidate store and its doors, and also the ranking view:

@@ -43,12 +43,12 @@ from . import (
     account,
     candle_archive,
     cost,
-    cycle,
     dashboard,
     digest,
     distribution_gate,
     factory,
     features,
+    feed_assembly,
     feedback,
     forward_book,
     forward_confirmation,
@@ -241,21 +241,21 @@ TUNABLES: tuple[Tunable, ...] = (
             "and so is live_entry.MAX_ORDER_BOOK_AGE_SECONDS, bounding the book's age (decision 29)",
             "an entry pass whose ordinary read-to-decision time approaches a minute (fires measured "
             "a median 26 s for thirteen contexts), or a gate-to-send path that takes seconds"),
-    Tunable("FUNDING_MAX_AGE_HOURS", cycle.FUNDING_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("FUNDING_MAX_AGE_HOURS", feed_assembly.FUNDING_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): two settlement periods; the funding reading a bar "
             "carries, measured from the bar's open",
             "a venue changing its settlement interval, or a funding family whose edge needs a "
             "fresher reading than two periods"),
-    Tunable("DAILY_SERIES_MAX_AGE_HOURS", cycle.DAILY_SERIES_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("DAILY_SERIES_MAX_AGE_HOURS", feed_assembly.DAILY_SERIES_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): two days for the daily liquidation and open-interest "
             "series, whose forming day is dropped, so a sound reading is up to about 48 hours old "
             "at an intraday bar",
             "the vendor publishing the closed day late enough to refuse the first bars after "
             "midnight, or intraday series replacing the daily ones"),
-    Tunable("POSITIONING_MAX_AGE_HOURS", cycle.POSITIONING_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("POSITIONING_MAX_AGE_HOURS", feed_assembly.POSITIONING_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): three hours for the positioning readings this runtime "
             "accumulates hourly; a sound pair is at most 2.5 hours old at a 15m bar, so one "
             "missed accumulation late in the hour can hold a 15m context for a bar",

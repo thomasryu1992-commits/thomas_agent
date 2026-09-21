@@ -76,7 +76,7 @@ LAYER: dict[str, str] = {
     # market: what the venue and the vendors say
     "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
     "positioning_store": "market", "features": "market", "account": "market", "live_filters": "market",
-    "account_store": "market",
+    "account_store": "market", "feed_assembly": "market",
     # strategy: what a strategy is, and how one is generated and judged
     "strategy": "strategy", "strategy_artifact": "strategy", "cost": "strategy", "robustness": "strategy",
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",
