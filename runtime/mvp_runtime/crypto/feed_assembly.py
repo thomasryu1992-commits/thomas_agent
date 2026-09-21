@@ -8,10 +8,13 @@ cross-sectional cohort and the accumulated positioning rows. Every leg degrades 
 and names its failure with a degrade code. `optional_data_health` then judges those legs for the live
 entry door (PR2d-2, Thomas decision 28): a degrade code, or a reading older than its feed's bound,
 refuses the context for a live entry. Paper, the counterfactual shadow and the probe do not read it.
+`attach_mining_legs` (PR7e-5) attaches every one of those legs in one call, for the frame a spec is
+backtested or replayed on.
 
 This is market work: it reads the venue and the vendors through `market_data` and the market stores,
-and nothing above them. It lived in `cycle`, the orchestrator that calls it once per context, which
-re-exports every name here as the same object.
+and nothing above them. It lived in `cycle`, which re-exports every name here as the same object:
+`run_crypto_cycle` calls the five attaches and `optional_data_health` once per context, and the
+scheduler's factory dispatches reach `attach_mining_legs` through the re-export.
 """
 
 from __future__ import annotations
@@ -558,9 +561,8 @@ def attach_mining_legs(
     routing rather than mining.
 
     ``candle_target`` is ``market_data.factory_candle_target`` passed in rather than imported,
-    so this module keeps its current import surface and a caller mining at a different depth
-    stays able to say so. ``None`` means "live defaults", which is what a caller with no replay
-    span wants.
+    so a caller mining at a different depth can say so. ``None`` means "live defaults", which is
+    what a caller with no replay span wants.
 
     Every leg degrades rather than raises: a leg that cannot be read leaves its columns None,
     which is the state a caller who never called it would have had anyway.
@@ -585,7 +587,7 @@ def attach_mining_legs(
       no grant. Attached unconditionally because the columns are honest at any coverage
       (absent = None); whether a positioning family may be MINTED against them is the separate
       ``positioning_store.coverage_summary`` question, which the CALLER measures and passes to
-      ``run_factory``. This function does not answer it and must not be read as doing so.
+      ``factory.run_factory``. This function does not answer it and must not be read as doing so.
 
     ``candle_cache`` is a :class:`~.market_data.PeerCandleCache` for one fan-out, and a POOLED
     mint is a fan-out even though it produces one candidate. The two context legs read series
@@ -593,7 +595,7 @@ def attach_mining_legs(
     proxy, and ``attach_cross_section`` reads the same cohort universe every time. So a
     five-symbol cohort asks for the proxy five times to get one answer, and pages the universe
     five times over — at the factory's replay depth, which is the deepest window this runtime
-    reads. ``run_pool_cycle`` has threaded one cache through both legs since the fan-out
+    reads. ``cycle.run_pool_cycle`` has threaded one cache through both legs since the fan-out
     existed; this passes the same object down the mining path, which had no way to accept one.
     Optional, and absent means exactly the previous behaviour.
     """

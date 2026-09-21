@@ -33,9 +33,10 @@ from ..control import ControlStore
 from ..errors import MvpRuntimeError, ToolBlocked, ToolError
 from . import feedback, oi_store, orderbook_store, pool, positioning_store
 from .features import latest_feature_row
-# One context's market inputs are assembled in `feed_assembly` (market) since crypto PR7e-2; this
-# orchestrator calls them once per context, and re-exports every name, as the same object, for
-# the callers that read them as `cycle.<name>`.
+# One context's market inputs are assembled in `feed_assembly` (market) since crypto PR7e-2:
+# `run_crypto_cycle` calls the attaches and `optional_data_health` once per context. Every name is
+# re-exported, as the same object, for the callers that read them as `cycle.<name>`; the scheduler's
+# factory dispatches reach `attach_mining_legs` that way.
 from .feed_assembly import (  # noqa: F401
     DAILY_SERIES_MAX_AGE_HOURS, FUNDING_MAX_AGE_HOURS, HTF_DEGRADED, OPTIONAL_DATA_DEGRADED_CODES,
     OPTIONAL_FEED_MAX_AGE_HOURS, OPTIONAL_LEG_COLUMNS, POSITIONING_MAX_AGE_HOURS, _FUNDING_RECORDS,

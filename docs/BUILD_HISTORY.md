@@ -28,8 +28,11 @@ Append a new entry when a milestone ships, in the same PR.
   2026-09-21).
   - **What moved:** `attach_mining_legs` goes from `cycle` to `feed_assembly` (market). It is the one
     call that attaches every leg the factory mines on, and it reads only `feed_assembly`'s five attaches
-    and `market_data`. After PR7e-2 it was the last piece of market assembly left in the orchestrator,
-    and PR7e-2's review suggested it follow.
+    and `market_data`. After PR7e-2 it was the last piece of one context's market assembly left in the
+    orchestrator, and PR7e-2's review suggested it follow. The fan-out's cohort sweeps
+    (`accumulate_positioning_cohort`, `retention_cohort`, `accumulate_open_interest_cohort`,
+    `accumulate_orderbook_cohort`) also read only market stores. They stay in `cycle` for now, as
+    PR7's summary records.
   - **Readers:**
     - `cycle` re-exports it as the same object, so the scheduler's three call-time dispatches
       (`crypto_cycle.attach_mining_legs`, core) and the mining-frame tests are untouched.
