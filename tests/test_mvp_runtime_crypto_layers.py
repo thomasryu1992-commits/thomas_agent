@@ -19,6 +19,10 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **``live_entry`` sits in execution.** It decides the live entry and prepares it for the send: it runs
   the pre-order gate (risk), sizes the order (risk) and hands the intent to ``live_order``'s final guard,
   and ``live_leg`` sends it through the adapter. What it calls is risk below and execution beside.
+- **the live book (``live_position``) sits in execution.** The sender writes it (``live_leg``) and the
+  checks before a send read it (``live_order``, ``live_entry``, ``probe``); the comparison against the
+  venue that placed it in reconciliation is ``live_reconcile`` since PR7d-2. The four book pairs that
+  pointed up went with that move, not with the code that left.
 - **foundation holds only leaves with no role of their own.** Sizing (``live_sizing``) is risk, the
   distribution gate and limit-entry scoring are strategy, and outcome corrections are outcome.
 
@@ -66,7 +70,7 @@ LAYER: dict[str, str] = {
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
-    # execution: what is sent, and the front half that prepares it
+    # execution: what is sent, the front half that prepares it, and the book the sends keep
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
     "live_position": "execution",

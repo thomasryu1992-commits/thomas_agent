@@ -306,9 +306,17 @@ def test_capacity_allows_a_fresh_symbol_under_the_ceiling():
 # --- nothing here can send an order -------------------------------------------
 
 def test_module_exposes_no_order_capability():
-    """LP5.1 is state and reconciliation only: the order path is LP4's, and this module
-    must not become a second door to it."""
+    """LP5.1 is state only: the order path is LP4's, and this module must not become a second
+    door to it."""
     surface = " ".join(dir(lp)).lower()
+    for forbidden in ("submit", "cancel", "order_adapter", "post"):
+        assert forbidden not in surface
+
+
+def test_the_reconciliation_exposes_no_order_capability():
+    """The comparison against the venue left this module in crypto PR7d-2; it reads, and must not
+    become a door to the order path either."""
+    surface = " ".join(dir(lr)).lower()
     for forbidden in ("submit", "cancel", "order_adapter", "post"):
         assert forbidden not in surface
 

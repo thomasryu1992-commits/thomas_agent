@@ -31,14 +31,18 @@ Append a new entry when a milestone ships, in the same PR.
   - **`live_reconcile.py` (reconciliation, new)** takes `reconcile_positions`, the four drift reasons,
     the quantity tolerances and their comments.
   - **`live_position` keeps the rest and is placed in execution,** the layer whose state it is. It
-    keeps the book, its store, the capacity checks, and the three verdicts that `entry_allowed` reads
-    on the order path. `live_reconcile` imports those downward.
+    keeps the book, its store, the capacity checks, and the three verdicts: `entry_allowed` reads
+    `RECONCILED` and `ACCOUNT_UNREADABLE` on the order path, and `live_route` reads `DRIFT`.
+    `live_reconcile` imports them downward and stamps its records with the book's kernel version, as
+    before.
   - **No re-export.** `live_position` sits below `live_reconcile` and cannot re-export the drift
     names. Their readers now import them from `live_reconcile`: `live_route`, one script, and six
     test files, at the import line only.
   - **Nothing changed.** The moved definitions are AST-identical, and no test or script patched any
     of them.
   - **The count:** the four book pairs are gone, so 4 named upward pairs remain (PR7d-3 3, PR7e 1).
+    They went with the book's move to execution, not with the code that left: none of the four
+    importers read a moved name.
 
 - **The account snapshot store is placed with the other market stores** (crypto PR7d-4, 2026-09-21).
   - **What it is:** `account_store` holds what the venue said about the account. Its refresh reads the

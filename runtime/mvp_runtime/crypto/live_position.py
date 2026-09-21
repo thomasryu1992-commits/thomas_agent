@@ -1,9 +1,9 @@
-"""LP5.1 — live position state + venue reconciliation. **No orders, no network.**
+"""LP5.1 — live position state. **No orders, no network.**
 
 The live sibling of the paper position book, and deliberately *not* a copy of it. This
 increment holds only what can be built and tested with no venue: the record, its gated
-store, the reconciliation of that store against a real account snapshot, and the open
-exposure the guard must be told truthfully. Nothing here can place, amend, or cancel an
+store, the reconciliation of that store against a real account snapshot (``live_reconcile``
+since crypto PR7d-2), and the open exposure the guard must be told truthfully. Nothing here can place, amend, or cancel an
 order — that capability lives in ``live_execution`` (LP4) and is not reached from this
 module. Design: ``docs/runtime-contracts/LP5_POSITION_KERNEL_DESIGN_V0.1.md``.
 
@@ -32,8 +32,8 @@ that traps a losing position open is worse than the halt prevents.
 
 Since crypto PR7d-2 the comparison itself (``reconcile_positions`` and its drift reasons) lives in
 ``live_reconcile``, the reconciliation layer. This module keeps the book, which the order path reads
-and writes, and the verdicts (``RECONCILED``, ``DRIFT``, ``ACCOUNT_UNREADABLE``) that its entry check
-reads back.
+and writes, and the verdicts (``RECONCILED``, ``DRIFT``, ``ACCOUNT_UNREADABLE``): its entry check reads
+two of them back and ``live_route`` the third.
 """
 
 from __future__ import annotations
@@ -548,6 +548,5 @@ __all__ = [
     "local_open_notional_usdt",
     "position_risk_usdt",
     "unbooked_position_id",
-    "reconcile_positions",
     "select_live_position_store",
 ]

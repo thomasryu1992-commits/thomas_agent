@@ -224,7 +224,8 @@ understated maker rate reports an edge better than reality.
    quantity, notional, order ids, fill price), `LivePositionStore` (DryRun default, gated on
    the live-trading switch, locked, atomic), `reconcile_positions` against the account snapshot,
    `compute_open_notional_usdt`, and the fail-open `0.0` default closed. Fully testable with no
-   network and no venue.
+   network and no venue. *(Built this way; `reconcile_positions` moved to `live_reconcile.py` in
+   crypto PR7d-2, 2026-09-21.)*
 2. **LP5.2 — sizing:** `size_live_order` (min-of-two, venue rounding, refuse-not-default).
 3. **LP5.3 — the live leg:** `run_live_update` + cycle routing + the cycle record fields, still
    with LP4's real send stubbed, so no order can be sent.

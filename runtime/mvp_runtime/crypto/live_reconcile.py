@@ -3,13 +3,15 @@
 `reconcile_positions` compares the book this runtime keeps (`live_position`) with what the venue's
 account says, symbol by symbol, and names every disagreement: a position the venue no longer holds, one
 the book does not know, a side or a quantity that differs. The verdicts it returns (`RECONCILED`,
-`DRIFT`, `ACCOUNT_UNREADABLE`) stay in `live_position`, because the book's own entry check
-(`entry_allowed`) reads them on the order path.
+`DRIFT`, `ACCOUNT_UNREADABLE`) stay in `live_position` as one vocabulary: the book's own entry check
+(`entry_allowed`) reads `RECONCILED` and `ACCOUNT_UNREADABLE` on the order path, and `live_route`
+reads `DRIFT`.
 
 It lived in `live_position` beside the book, which placed the book in the reconciliation layer and made
 every order-path reader of the book import upward. The book is the execution layer's own state; this
 comparison is reconciliation. The drift names are imported from here: `live_position` sits below and
-cannot re-export them.
+cannot re-export them. The records are stamped with the book's kernel version
+(`LIVE_POSITION_KERNEL_VERSION`), as before the move, so a change to this comparison bumps it there.
 """
 
 from __future__ import annotations
@@ -24,22 +26,22 @@ from .live_position import ACCOUNT_UNREADABLE, DRIFT, LIVE_POSITION_KERNEL_VERSI
 # Drift reasons — each names exactly what disagreed, so an operator reading the record
 # does not have to diff two payloads by eye.
 DRIFT_MISSING_AT_VENUE = "POSITION_MISSING_AT_VENUE"
-
 DRIFT_UNTRACKED_AT_VENUE = "POSITION_UNTRACKED_AT_VENUE"
-
 DRIFT_SIDE_MISMATCH = "POSITION_SIDE_MISMATCH"
-
 DRIFT_QUANTITY_MISMATCH = "POSITION_QUANTITY_MISMATCH"
 
 # Quantity comparison tolerance. Venue quantities arrive as strings and round-trip through
 # float, so an exact == would report drift on a byte-identical position. Relative, with an
 # absolute floor for very small sizes; anything larger is real drift (a partial fill).
 _QTY_RELATIVE_TOLERANCE = 1e-6
-
 _QTY_ABSOLUTE_TOLERANCE = 1e-9
+
+
+# --- reconciliation: the venue is the truth ------------------------------------
 
 def _quantities_agree(local: float, venue: float) -> bool:
     return abs(local - venue) <= max(_QTY_ABSOLUTE_TOLERANCE, _QTY_RELATIVE_TOLERANCE * abs(venue))
+
 
 def reconcile_positions(
     local_positions: list[Mapping[str, Any]],
