@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The crypto lane's dependency direction is enforced** (crypto PR7a, 2026-09-21; directive §9, "역방향
+  dependency는 금지"; `tests/test_mvp_runtime_crypto_layers.py`, `scripts/ops/crypto_record_capture.py`).
+  - **The map:** every crypto module sits in one of eleven layers, and a module may import only its own
+    layer or a lower one. The layers are foundation, governance, market, strategy, decision, risk,
+    execution, reconciliation, outcome, orchestration and report; the middle seven are the directive's
+    order. The test reads every import, function-local included, because that is how the one cycle
+    (`live_budget` ↔ `live_order`) hides.
+  - **Placed by what a module does, not tuned to the count:**
+    - governance is the lowest package, the leaves every acting layer reads;
+    - `cycle` and `live_route` are orchestrators;
+    - `live_entry` and `venue_contract` sit in execution.
+  - **31 edges point up today.** Each is named with the step that removes it (PR7b–e). The list only
+    shrinks: a new upward import fails, and so does an exception whose import is gone. An edge whose
+    removal would change trading behaviour would stay as a permanent exception; none needs that today.
+  - **The replay evidence (the directive's CI-3/CI-4):** `crypto_record_capture.py` runs the lane's
+    tests twice with pytest's `--basetemp` and keeps every file they write. `compare` then checks two
+    trees record by record. It masks only the JSON fields a tree's own two runs disagree on, such as a
+    wall-clock `recorded_at` or an approval id. Every later PR7 step shows that nothing else moved, a
+    stronger claim than a green suite. It is a script, not a checked-in golden file, so other sessions'
+    intended behaviour changes do not break it.
+  - **Runtime change: none.** The plan, the measurements and the one question for Thomas (whether files
+    also move into sub-packages) are in the PR7 investigation, 2026-09-19.
+
 - **The assistant can ask for the emergency close, and only ask** (crypto PR6e-2, 2026-09-19, Thomas
   decision 49; `switch_bridge.py`, Hermes shim 2.14, `scripts/ops/policy_bump_1_5_2.py`).
   - **The verb:** the switch door's `emergency_close` mints the ask `scripts.emergency_close --request`
