@@ -45,7 +45,11 @@ Append a new entry when a milestone ships, in the same PR.
     `build_order_request` goes through `live_execution`, which is where its test patches it.
   - **Evidence:** the first compare made with PR7e-3's request log. Every order request built,
     conditional answer normalised and verdict given by the lane's tests compares equal, beside the
-    files on disk.
+    files on disk. The review's end-to-end harness (212 adapter scenarios and 67 bracket-leg scenarios,
+    with the socket faked) gave byte-identical transcripts at base and head.
+  - **Pinned:** a test holds each `live_execution` re-export to the object `order_request` defines. A
+    second test holds `order_request` to importing nothing that could reach a venue or read a key,
+    because the order-path tripwire and the safety-gate roster leave it out on exactly that ground.
 
 - **The record capture sees what the order path's pure seams produce** (crypto PR7e-3, 2026-09-21).
   - **Why:** PR7's evidence that a refactor changed nothing is the record capture, and it compared only

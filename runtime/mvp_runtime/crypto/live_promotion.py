@@ -12,7 +12,8 @@ cannot prove itself would vouch for it. The rows are read as they sit on disk â€
 by the evidence board below and by ``scripts/record_unreported_live_order.py``.
 
 Nothing here writes any more. The registry's only writer was the canary door, and it went with the
-door. ``RECONCILED`` is the reconcile vocabulary's, defined in ``live_execution`` and re-exported here.
+door. ``RECONCILED`` is the reconcile vocabulary's, defined in ``order_request`` and imported here
+through ``live_execution``, which re-exports it.
 """
 
 from __future__ import annotations

@@ -47,8 +47,8 @@ Since crypto PR7e-4 the order's shape at the venue (``build_order_request``, ``n
 ``reconcile_order``, ``fill_facts`` and the vocabulary they share, the ``reconcile_status`` verdicts
 among it) lives in ``order_request``, which is pure. This module keeps what reaches the venue: the
 adapters, their selection behind the live-trading switch, the halt backstop, and
-``submit_and_reconcile``, which joins the two. It re-exports every ``order_request`` name as the same
-object.
+``submit_and_reconcile``, which joins the two. It re-exports every definition in ``order_request`` as
+the same object.
 """
 
 from __future__ import annotations
@@ -119,9 +119,10 @@ ORDER_PATH = "/fapi/v1/order"
 # transport fact went stale, and every check this repo had pointed at its own model of the
 # venue: closed schemas, tick sizes, filters, request shape. All of them passed. None of them
 # could catch "the venue stopped accepting this type", because that fact lives only at the
-# venue. The `Verified against the venue's New Order contract (2026-07-25)` note below this is
-# the trap in miniature — the parameter table was read correctly, eight months after the type
-# had been moved off the endpoint the table described.
+# venue. The `Verified against the venue's New Order contract (2026-07-25)` note on the order
+# types (in `order_request` since crypto PR7e-4) is the trap in miniature — the parameter table
+# was read correctly, eight months after the type had been moved off the endpoint the table
+# described.
 #
 # It is NOT only a path change, which is why guessing would have produced a second broken
 # release: two request parameters and three response fields are renamed.
@@ -193,8 +194,8 @@ ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
 
-# The order, working and time-in-force types, the client-order-id charset and the reconcile verdicts
-# are `order_request`'s since crypto PR7e-4 (imported above).
+# The order, working and time-in-force types, `ALGO_TYPE_CONDITIONAL`, the client-order-id charset and
+# the reconcile verdicts are `order_request`'s since crypto PR7e-4 (imported above).
 
 GUARD_NOT_APPROVED = "GUARD_NOT_APPROVED"
 
@@ -207,8 +208,9 @@ class SubmitRefused(ToolError):
     refusal from a failure that may have happened after an order left (PR2b)."""
 
 
-# `MALFORMED_INTENT` and `ORDER_MALFORMED_RESULT` are raised by the request builder and the answer
-# reader, so they are `order_request`'s; these are the adapters' and the send loop's own.
+# `MALFORMED_INTENT` and `ORDER_MALFORMED_RESULT` are defined in `order_request`, whose code raises them;
+# the adapters below raise `ORDER_MALFORMED_RESULT` too, for a venue answer they cannot parse. These are
+# the adapters' and the send loop's own:
 NO_ORDER_API_KEY = "NO_ORDER_API_KEY"
 ORDER_REJECTED = "ORDER_REJECTED"
 # The venue answered with a code whose own documentation says the order's execution status is
@@ -949,5 +951,3 @@ def submit_and_reconcile(
         "submit_response": submit_response,
         "created_at": now,
     }
-
-

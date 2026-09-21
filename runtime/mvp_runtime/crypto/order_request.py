@@ -68,17 +68,20 @@ CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
 
 # reconcile_status vocabulary. RECONCILED is also what the historical canary rows derived `clean` from
 # (clean iff RECONCILED and no mismatch). It was defined in live_promotion, beside those rows, until
-# crypto PR7b-2 moved it here, below the ledger that reads it; live_promotion imports it from here, so
-# the rows and this vocabulary still agree by construction. The live leg reads it here, and
-# scripts/run_slippage_probe.py through live_promotion.
+# crypto PR7b-2 moved it into live_execution, below the ledger that reads it; since crypto PR7e-4 it is
+# defined here and live_execution re-exports it. live_promotion and the live leg import it through
+# live_execution, so the rows and this vocabulary still agree by construction, and
+# scripts/run_slippage_probe.py reads it through live_promotion.
 RECONCILED = "RECONCILED"
 MISMATCH = "MISMATCH"
 NOT_FOUND = "NOT_FOUND"
 UNRECONCILABLE = "UNRECONCILABLE"
 
-# The two refusals the request and its answer raise themselves: an intent the builder cannot turn
-# into a request (nothing is sent), and a venue answer this module cannot read. The adapters' and
-# the send loop's own refusals stay in `live_execution`.
+# The two refusals this module's code raises: an intent the builder cannot turn into a request
+# (nothing is sent), and an open-orders answer `_order_rows` cannot read. `ORDER_MALFORMED_RESULT` is
+# shared: the adapters in `live_execution` raise it too, for any venue answer they cannot parse. It is
+# defined here because `_order_rows` raises it and this module must not import `live_execution`, which
+# would be a cycle.
 MALFORMED_INTENT = "MALFORMED_LIVE_ORDER_INTENT"
 ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
 
@@ -219,8 +222,9 @@ def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any
     """An algo order in the field names the rest of this runtime already speaks.
 
     The Algo endpoints answer with ``algoId``/``algoStatus``/``triggerPrice`` where the order
-    endpoints answer with ``orderId``/``status``/``stopPrice``. Translated ONCE, here at the
-    wire boundary, so `reconcile_order`, `place_bracket_leg` and `read_bracket_legs` keep one
+    endpoints answer with ``orderId``/``status``/``stopPrice``. Translated ONCE, at the wire
+    boundary (the adapters in ``live_execution`` call this on every Algo answer), so
+    `reconcile_order`, `place_bracket_leg` and `read_bracket_legs` keep one
     vocabulary — teaching every caller two spellings is how one of them ends up checking the
     wrong field and reading a refused stop as a resting one.
 
