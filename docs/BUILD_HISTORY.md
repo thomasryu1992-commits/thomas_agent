@@ -36,7 +36,9 @@ Append a new entry when a milestone ships, in the same PR.
   - **Nothing changed.**
     - `live_order` re-exports all four names as the same objects.
     - The four definitions are AST-identical to the originals.
-    - No test or script patches any of them.
+    - No test or script patches any of them. The patch point for the id helpers is now
+      `order_identity`: `enrich_order_identity` reads them there, so a patch on `live_order`'s re-exported
+      copies would reach nothing. The comment at the re-export says so.
     - `live_order` imports `pre_order_gate` at module level. That is new, and the cycle test shows it
       closes no loop: the gate no longer imports the sender.
   - **The count:** `pre_order_gate → live_order` is gone, so 9 named upward pairs remain (PR7d 8,

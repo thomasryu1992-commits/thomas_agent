@@ -5,7 +5,8 @@ Derived from the intent itself, with no I/O, and read by every layer that names 
 pre-order gate (risk) records it, the order path (execution) sends it, and the book keys positions on
 it. It is the order's `candidate_identity`: an id computed from the thing, one leaf, below every
 reader. It lived in `live_order`, the sender, which put the gate's import of it upward. `live_order`
-re-exports all three functions as the same objects.
+re-exports all three functions as the same objects. A test that
+changes how an id is derived patches this module: `enrich_order_identity` reads its helpers here.
 """
 
 from __future__ import annotations

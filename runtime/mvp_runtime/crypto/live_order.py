@@ -1,4 +1,4 @@
-"""LP3 live order intent, idempotency, and the final guard (source L2).
+"""LP3 live order intent and the final guard (source L2); the intent's identity is ``order_identity``'s.
 
 The last thing that runs before a real order could ever be sent — and, for now, the last
 thing that exists at all: this module can refuse an order, but nothing here can send one.
@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-
 from .. import safety_gate, timeutil
 from ..errors import ToolError
 from ..filelock import locked
@@ -46,8 +45,10 @@ from . import live_budget
 from .state import VENUE_MAINNET, venue_state_dir
 # The order intent's identity lives in `order_identity` (foundation) and the account-age bound in
 # `pre_order_gate`, which enforces it, since crypto PR7d-1; both re-exported here as the same objects.
+# A test that means to change how an id is derived patches `order_identity`: `enrich_order_identity`
+# reads its helpers there, so a patch on this module's copies of them reaches nothing.
 from .order_identity import enrich_order_identity, make_client_order_id, make_idempotency_key  # noqa: F401
-from .pre_order_gate import MAX_ACCOUNT_AGE_SECONDS  # noqa: F401
+from .pre_order_gate import MAX_ACCOUNT_AGE_SECONDS
 from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,

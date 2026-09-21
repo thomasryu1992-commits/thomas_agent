@@ -89,8 +89,8 @@ _LEDGER = "PR7d: the outcome record builder leaves live_pnl"
 _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes through stores)"
 
 # (importer, imported) -> (the step that removes it, the names it may take). Both only shrink: a new
-# upward pair fails, and so does a new name on a named pair (a new upward import of `submit_live_order`
-# through `pre_order_gate -> live_order` is as new as any other).
+# upward pair fails, and so does a new name on a named pair (a new upward import of `live_risk_snapshot`
+# through `probe -> live_pnl` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
     ("live_entry", "live_position"): (_BOOK, frozenset({"compute_open_notional_usdt", "entry_allowed", "live_capacity"})),
