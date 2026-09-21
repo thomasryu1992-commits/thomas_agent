@@ -688,10 +688,10 @@ scopes at different levels, so nothing was owed to it.
         `crypto/live_position.py`. Live positions live in their own `live_positions/` namespace with
         `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same `binance_futures`
         venue string, so a shared book would let the paper cycle settle a *real* position). The venue,
-        not the store, is the truth: `reconcile_positions` returns RECONCILED / DRIFT /
-        ACCOUNT_UNREADABLE, and on anything but RECONCILED entries are refused while **closes stay
-        allowed** — being unable to see the account must never trap an open position. Concurrency
-        caps: 2 open live positions, 1 per symbol.
+        not the store, is the truth: `reconcile_positions` (in `crypto/live_reconcile.py` since crypto
+        PR7d-2) returns RECONCILED / DRIFT / ACCOUNT_UNREADABLE, and on anything but RECONCILED
+        entries are refused while **closes stay allowed** — being unable to see the account must
+        never trap an open position. Concurrency caps: 2 open live positions, 1 per symbol.
   - [x] **LP5.1c — the one fail-open closed** (same PR): `evaluate_live_order_guard`'s
         `current_open_notional_usdt=0.0` default asserted "the account is flat" on no evidence. The
         argument is now **required**, and unknown exposure is reported *at the cap*

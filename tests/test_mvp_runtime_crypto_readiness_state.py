@@ -915,7 +915,8 @@ def test_an_account_the_trading_process_cannot_read_is_refused_on_a_console(tmp_
     snapshot for up to two hours while every leg refused on the account. The leg's own reads at the
     last fire decide first."""
     from runtime.mvp_runtime.crypto import account as account_mod
-    from runtime.mvp_runtime.crypto.live_position import entry_allowed, reconcile_positions
+    from runtime.mvp_runtime.crypto.live_position import entry_allowed
+    from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions
 
     _ready_console_machine(tmp_path, monkeypatch)
     ninety_minutes_ago = "2026-07-23T10:30:00Z"

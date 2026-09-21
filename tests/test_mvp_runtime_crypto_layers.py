@@ -19,6 +19,10 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **``live_entry`` sits in execution.** It decides the live entry and prepares it for the send: it runs
   the pre-order gate (risk), sizes the order (risk) and hands the intent to ``live_order``'s final guard,
   and ``live_leg`` sends it through the adapter. What it calls is risk below and execution beside.
+- **the live book (``live_position``) sits in execution.** The sender writes it (``live_leg``) and the
+  checks before a send read it (``live_order``, ``live_entry``, ``probe``); the comparison against the
+  venue that placed it in reconciliation is ``live_reconcile`` since PR7d-2. The four book pairs that
+  pointed up went with that move, not with the code that left.
 - **foundation holds only leaves with no role of their own.** Sizing (``live_sizing``) is risk, the
   distribution gate and limit-entry scoring are strategy, and outcome corrections are outcome.
 
@@ -66,12 +70,13 @@ LAYER: dict[str, str] = {
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
-    # execution: what is sent, and the front half that prepares it
+    # execution: what is sent, the front half that prepares it, and the book the sends keep
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
+    "live_position": "execution",
     "probe": "execution",
     # reconciliation: what the venue says happened
-    "live_position": "reconciliation",
+    "live_reconcile": "reconciliation",
     # outcome: what it earned, and what that says
     "live_pnl": "outcome", "feedback": "outcome", "digest": "outcome", "counterfactual": "outcome",
     "live_promotion": "outcome", "live_correction": "outcome",
@@ -85,7 +90,6 @@ _MODULE = "<module>"      # the module object itself is bound, and nothing is re
 
 
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
-_BOOK = "PR7d: the live book's reader and record builders leave the reconciliation module"
 _LEDGER = "PR7d: the outcome record builder leaves live_pnl"
 _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes through stores)"
 
@@ -94,10 +98,6 @@ _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes thr
 # through `probe -> live_pnl` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
-    ("live_entry", "live_position"): (_BOOK, frozenset({"compute_open_notional_usdt", "entry_allowed", "live_capacity"})),
-    ("live_leg", "live_position"): (_BOOK, frozenset({"build_live_position", "position_risk_usdt", "unbooked_position_id"})),
-    ("live_order", "live_position"): (_BOOK, frozenset({"MAX_LIVE_CONCURRENT_POSITIONS", "list_open_live_positions"})),
-    ("probe", "live_position"): (_BOOK, frozenset({"entry_allowed"})),
     ("live_leg", "live_pnl"): (_LEDGER, frozenset({"build_live_outcome_record"})),
     ("breaker_watch", "live_pnl"): (_STORE + " (the live ledger)",
                                     frozenset({"live_outcomes_for_analysis", "read_live_outcomes"})),

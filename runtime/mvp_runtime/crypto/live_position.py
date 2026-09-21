@@ -1,9 +1,9 @@
-"""LP5.1 — live position state + venue reconciliation. **No orders, no network.**
+"""LP5.1 — live position state. **No orders, no network.**
 
 The live sibling of the paper position book, and deliberately *not* a copy of it. This
 increment holds only what can be built and tested with no venue: the record, its gated
-store, the reconciliation of that store against a real account snapshot, and the open
-exposure the guard must be told truthfully. Nothing here can place, amend, or cancel an
+store, the reconciliation of that store against a real account snapshot (``live_reconcile``
+since crypto PR7d-2), and the open exposure the guard must be told truthfully. Nothing here can place, amend, or cancel an
 order — that capability lives in ``live_execution`` (LP4) and is not reached from this
 module. Design: ``docs/runtime-contracts/LP5_POSITION_KERNEL_DESIGN_V0.1.md``.
 
@@ -29,6 +29,11 @@ fill, a venue-side stop, a liquidation, or a manual close on the phone all move 
 position without the runtime knowing. So a drifted book, or an account that cannot be
 read, **refuses new entries for that book** and says so. Closes stay permitted: a halt
 that traps a losing position open is worse than the halt prevents.
+
+Since crypto PR7d-2 the comparison itself (``reconcile_positions`` and its drift reasons) lives in
+``live_reconcile``, the reconciliation layer. This module keeps the book, which the order path reads
+and writes, and the verdicts (``RECONCILED``, ``DRIFT``, ``ACCOUNT_UNREADABLE``): its entry check reads
+two of them back and ``live_route`` the third.
 """
 
 from __future__ import annotations
@@ -72,19 +77,6 @@ MAX_LIVE_POSITIONS_PER_SYMBOL = 1
 RECONCILED = "RECONCILED"
 DRIFT = "DRIFT"
 ACCOUNT_UNREADABLE = "ACCOUNT_UNREADABLE"
-
-# Drift reasons — each names exactly what disagreed, so an operator reading the record
-# does not have to diff two payloads by eye.
-DRIFT_MISSING_AT_VENUE = "POSITION_MISSING_AT_VENUE"
-DRIFT_UNTRACKED_AT_VENUE = "POSITION_UNTRACKED_AT_VENUE"
-DRIFT_SIDE_MISMATCH = "POSITION_SIDE_MISMATCH"
-DRIFT_QUANTITY_MISMATCH = "POSITION_QUANTITY_MISMATCH"
-
-# Quantity comparison tolerance. Venue quantities arrive as strings and round-trip through
-# float, so an exact == would report drift on a byte-identical position. Relative, with an
-# absolute floor for very small sizes; anything larger is real drift (a partial fill).
-_QTY_RELATIVE_TOLERANCE = 1e-6
-_QTY_ABSOLUTE_TOLERANCE = 1e-9
 
 
 # --- the record ---------------------------------------------------------------
@@ -470,109 +462,6 @@ def select_live_position_store(
     )
 
 
-# --- reconciliation: the venue is the truth ------------------------------------
-
-def _quantities_agree(local: float, venue: float) -> bool:
-    return abs(local - venue) <= max(_QTY_ABSOLUTE_TOLERANCE, _QTY_RELATIVE_TOLERANCE * abs(venue))
-
-
-def reconcile_positions(
-    local_positions: list[Mapping[str, Any]],
-    snapshot: AccountSnapshot | None,
-    *,
-    now: str,
-) -> dict[str, Any]:
-    """Compare the local live book against the venue. Returns a reconciliation record.
-
-    Three outcomes, and the only one that permits a new entry is a clean match:
-
-    - ``RECONCILED`` — every local book matches a venue position on side and quantity, and
-      the venue holds nothing the runtime is not tracking.
-    - ``DRIFT`` — at least one disagreement. Each is named (missing at venue, untracked at
-      venue, side mismatch, quantity mismatch) per symbol.
-    - ``ACCOUNT_UNREADABLE`` — ``snapshot`` is None (the account read degraded). **Every**
-      symbol is refused for new entries, because with no venue read the runtime cannot
-      know what it holds.
-
-    Refusal is scoped to **new entries only**; closes are never gated on reconciliation
-    (the standing close-path exemption — a halt must not trap a position open). The caller
-    reads ``entry_allowed`` per symbol, or the top-level ``entries_allowed``.
-
-    Pure: it reads no file and opens no socket. The caller supplies both sides.
-    """
-    local_by_symbol: dict[str, Mapping[str, Any]] = {}
-    for position in local_positions:
-        local_by_symbol[position_symbol(position)] = position
-
-    if snapshot is None:
-        books = {
-            symbol: {
-                "symbol": symbol,
-                "status": ACCOUNT_UNREADABLE,
-                "reasons": [ACCOUNT_UNREADABLE],
-                "entry_allowed": False,
-                "local_quantity": _f(position.get("quantity")),
-                "venue_quantity": None,
-            }
-            for symbol, position in sorted(local_by_symbol.items())
-        }
-        return {
-            "reconcile_version": LIVE_POSITION_KERNEL_VERSION,
-            "status": ACCOUNT_UNREADABLE,
-            "entries_allowed": False,
-            "closes_allowed": True,
-            "books": books,
-            "reasons": [ACCOUNT_UNREADABLE],
-            "created_at": now,
-        }
-
-    venue_by_symbol = {p.symbol: p for p in snapshot.positions if p.symbol}
-    books: dict[str, dict[str, Any]] = {}
-
-    for symbol in sorted(set(local_by_symbol) | set(venue_by_symbol)):
-        local = local_by_symbol.get(symbol)
-        venue = venue_by_symbol.get(symbol)
-        reasons: list[str] = []
-
-        if local is not None and venue is None:
-            # The venue closed it (stop, liquidation, manual close) and the runtime still
-            # thinks it is open. Never silently cleared here: clearing a book is a write,
-            # and this function performs none.
-            reasons.append(DRIFT_MISSING_AT_VENUE)
-        elif local is None and venue is not None:
-            # Something is open that this runtime did not open, or opened and lost track
-            # of. Entering again on that symbol would stack onto an unknown position.
-            reasons.append(DRIFT_UNTRACKED_AT_VENUE)
-        elif local is not None and venue is not None:
-            if str(local.get("direction") or "").upper() != str(venue.side or "").upper():
-                reasons.append(DRIFT_SIDE_MISMATCH)
-            if not _quantities_agree(_f(local.get("quantity")), _f(venue.quantity)):
-                reasons.append(DRIFT_QUANTITY_MISMATCH)
-
-        books[symbol] = {
-            "symbol": symbol,
-            "status": RECONCILED if not reasons else DRIFT,
-            "reasons": reasons,
-            "entry_allowed": not reasons,
-            "local_quantity": _f(local.get("quantity")) if local is not None else None,
-            "venue_quantity": _f(venue.quantity) if venue is not None else None,
-        }
-
-    drifted = sorted(s for s, book in books.items() if book["reasons"])
-    return {
-        "reconcile_version": LIVE_POSITION_KERNEL_VERSION,
-        "status": RECONCILED if not drifted else DRIFT,
-        # A drifted book refuses entries for THAT symbol; the run-level flag is the
-        # conjunction, so a caller that only checks the top level still fails closed.
-        "entries_allowed": not drifted,
-        "closes_allowed": True,
-        "books": books,
-        "reasons": sorted({r for book in books.values() for r in book["reasons"]}),
-        "drifted_symbols": drifted,
-        "created_at": now,
-    }
-
-
 def entry_allowed(reconciliation: Mapping[str, Any], symbol: str) -> bool:
     """May a NEW entry be opened on this symbol, per this reconciliation? Fail-closed.
 
@@ -659,6 +548,5 @@ __all__ = [
     "local_open_notional_usdt",
     "position_risk_usdt",
     "unbooked_position_id",
-    "reconcile_positions",
     "select_live_position_store",
 ]
