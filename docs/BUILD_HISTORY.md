@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The order's shape at the venue is pure and apart from what sends it** (crypto PR7e-4, 2026-09-21).
+  - **Before:** `live_execution` held the adapters that sign and send (the egress, with the halt
+    backstop), and also the order's shape both ways: the request built from an intent, a conditional
+    order's answer normalised, the verdict on a venue order, the fill facts, and the vocabulary they
+    share.
+  - **`order_request.py` (execution, new)** takes 28 definitions:
+    - `build_order_request`, `is_algo_request` and `is_protective_request`;
+    - `normalize_algo_order` and `_order_rows`;
+    - `reconcile_order`, `fill_facts` and `_intended_price`;
+    - the order, working and time-in-force types, the client-order-id charset, and the four reconcile
+      verdicts;
+    - the two refusals this code raises itself (`MALFORMED_INTENT`, `ORDER_MALFORMED_RESULT`).
+    All of it is pure: no network, no clock, no state. Vocabulary blocks moved whole
+    (`RESTING_ORDER_TYPES`, `UNRECONCILABLE`), so none is split between two files.
+  - **`live_execution` keeps** what reaches the venue: the adapters and their selection behind the
+    live-trading switch (so the safety-gate roster and the order-path tripwire still name this module),
+    the halt backstop, and `submit_and_reconcile`, which joins the two sides. It re-exports all 28 names
+    as the same objects. No reader was repointed: `venue_contract`'s call-time import of
+    `build_order_request` goes through `live_execution`, which is where its test patches it.
+  - **Evidence:** the first compare made with PR7e-3's request log. Every order request built,
+    conditional answer normalised and verdict given by the lane's tests compares equal, beside the
+    files on disk.
+
 - **The record capture sees what the order path's pure seams produce** (crypto PR7e-3, 2026-09-21).
   - **Why:** PR7's evidence that a refactor changed nothing is the record capture, and it compared only
     what tests write to disk. The requests and verdicts the tests' scripted adapters exchange live in

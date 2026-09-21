@@ -99,7 +99,7 @@ LAYER: dict[str, str] = {
     # close settles
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
-    "live_position": "execution", "live_settlement": "execution",
+    "live_position": "execution", "live_settlement": "execution", "order_request": "execution",
     "probe": "execution",
     # reconciliation: what the venue says happened
     "live_reconcile": "reconciliation",
