@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.5.2
+policy_version: 1.6.0
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -340,8 +340,9 @@ control_channel:
   # switch: with dispatch and switch described, a policy-only reader concludes those are the
   # assistant's lanes — and misses the one that reads the approvals store. The verb list is
   # CLOSED and pinned by test to read_bridge.READ_VERB_AUTHORITY <-> _READS (both directions).
-  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and
-  # reach no socket; the approval read is a summary and never the record.
+  # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and,
+  # within assistant_schedule's delegated scope only, the dispatch door's
+  # schedule.propose_change (1.6.0); the approval read is a summary and never the record.
   assistant_read:
     actor: assistant_bridge
     authority:
@@ -379,6 +380,30 @@ control_channel:
     sink: assistant_bot_private_chat      # operator sends on HERMES_BOT_TOKEN, send-only
     decision_source: false
     mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals
+  # The assistant's schedule lane (sequence 2, P09; V0.2 §1.3 — the conditional amendment of
+  # invariant 3). Until this clause existed no door carried a schedule-changing verb and every
+  # schedule change was Thomas's, in the container (scheduler_cli). This clause DELEGATES a
+  # closed scope and nothing else: the dispatch door's `schedule.propose_change` applies a change
+  # only when every line below holds, records a PROPOSAL and applies nothing when one does not,
+  # and refuses a financial kind outright — no delegation reaches the money path's schedules,
+  # and no proposal record is written for them either. The code is the same with or without
+  # this clause; the clause is the switch (schedule_delegation.load_delegation).
+  assistant_schedule:
+    actor: assistant_bridge
+    authority:
+      - policy_dispositions.ALLOW.INTERNAL_ANALYSIS
+      - policy_dispositions.ALLOW.DRAFT_CREATION
+    mutation_allowed: true                # inside the scope below, and only there
+    delegated_kinds:                      # closed; every other kind is a proposal, every crypto kind a refusal
+      - analysis_task
+      - workflow_plan
+    min_interval_seconds: 3600            # no delegated cadence tighter than hourly
+    max_active: 3                         # enabled schedules created by the assistant, at once
+    max_validity_days: 30                 # a delegated schedule ends itself (expires_at); Thomas renews by hand
+    max_model_calls_per_run: 6            # a workflow_plan's budget per occurrence
+    financial_kinds_delegable: false      # crypto_* and candle_archive: refused, never proposed
+    out_of_scope: proposal_only           # recorded as a `proposed` scheduler event; nothing applied
+    gate_grants_authority: false          # same invariant as every gate in this file
 
 approval_lifetime:
   one_time_use_required: true
