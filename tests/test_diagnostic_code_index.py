@@ -124,12 +124,13 @@ def test_the_committed_index_matches_the_source():
 def test_a_code_named_by_a_module_constant_is_resolved():
     """`NAME = "LITERAL"` at module scope has exactly one value, readable without executing
     anything — so a raise that names it is not "built at runtime", which is how the index used to
-    report 79 of them. The three below are the live P&L ledger's and the canary registry's own
-    tamper codes: the codes an operator is most likely to be holding when they come here."""
+    report 79 of them. The three below are the live outcome ledger's (read in `live_ledger` since
+    crypto PR7d-3) and the canary registry's own tamper codes: the codes an operator is most likely
+    to be holding when they come here."""
     per_code = _modules_per_code()
     for code, module in (
-        ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_pnl.py"),
-        ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_pnl.py"),
+        ("LIVE_HISTORY_TAMPERED", "runtime/mvp_runtime/crypto/live_ledger.py"),
+        ("LIVE_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_ledger.py"),
         ("CANARY_HISTORY_UNREADABLE", "runtime/mvp_runtime/crypto/live_promotion.py"),
     ):
         assert module in per_code.get(code, set()), f"{code} is raised from {module} but not indexed"
