@@ -34,67 +34,31 @@ from . import live_correction
 from .. import jsonl, safety_gate, timeutil
 from ..errors import MvpRuntimeError, ToolError
 from ..filelock import locked
-from ..safety_gate import FILESYSTEM_WRITE, NETWORK_ACCESS, Authorization
+from ..safety_gate import Authorization
 
 LIVE_LEDGER_TOOL_ID = "crypto.live.pnl_ledger"
 LIVE_LEDGER_TOOL_VERSION = "0.1.0"
 
-# THE live-trading switch, and the only one: `MVP_LIVE_TRADING=real` in the process
-# environment (Thomas, 2026-07-28). It used to ALSO require a per-machine grant record minted
-# by the since-removed scripts/activate_safety_flag.py; Thomas removed that requirement because the
-# deployment already places these vars under operator-only control and the grant's expiry could
-# trap an open position — an expired grant closed the gate on the CLOSE path too. Under the
-# grant this was one switch across two mechanisms; now it is one switch, full stop.
-#
-# The provider id and flag pair survive the removal. They are what `assert_authorization`
-# re-checks at every egress and what each capable class declares, so they still keep the
-# capability from being half-enabled — network_access to reach the venue, filesystem_write to
-# record what happened, never one without the other. What changed is what opens the gate, not
-# what the gate covers.
-LIVE_TRADING_ENV = "MVP_LIVE_TRADING"
-REAL_LIVE_TRADING = "real"
-LIVE_TRADING_PROVIDER_ID = "live_trading"
-LIVE_TRADING_FLAGS = (NETWORK_ACCESS, FILESYSTEM_WRITE)
+# The live-trading opt-in's names, the R-basis labels, the stop-exit reasons and `utc_day` live in
+# `vocabulary` since crypto PR7b-2, below every layer that reads them. They are re-exported here, as
+# the same objects, for this module's importers.
+from .vocabulary import (  # noqa: E402,F401
+    LIVE_TRADING_ENV,
+    LIVE_TRADING_FLAGS,
+    LIVE_TRADING_PROVIDER_ID,
+    R_BASES_NET_OF_COSTS,
+    R_BASIS_FILLED,
+    R_BASIS_INTENT,
+    R_BASIS_INTENT_NET,
+    REAL_LIVE_TRADING,
+    STOP_EXIT_REASONS,
+    utc_day,
+)
 
 from .state import STATE_REL, VENUE_MAINNET, state_dir, venue_state_dir  # noqa: E402  (one root for both trading planes; re-exported for the live-plane importers)
 LIVE_OUTCOMES_FILENAME = "live_outcomes.jsonl"
 LIVE_PROVENANCE = "mvp_live_kernel"
 
-# How an outcome's `result_R` was measured. Recorded on every row so a consumer pooling
-# populations can see it is doing so — and, since 2026-07-30, so it can tell a paper row that
-# paid costs from one that did not.
-#
-# - `intent`             intended fills, NO costs. Every paper row written before 2026-07-30.
-# - `intent_net_of_costs` intended fills, fees + slippage charged (`cost.apply_cost_model`).
-#                        Paper rows written since. This is the basis the factory backtest has
-#                        always used, so a paper expectancy is finally comparable to the
-#                        backtest expectancy that scored the same strategy.
-# - `filled`             actual venue fills, slippage included, fees still excluded (`live_leg`).
-#
-# A window spanning the 2026-07-30 boundary mixes `intent` and `intent_net_of_costs`, and
-# therefore UNDER-states its losses by the legacy rows' unpaid costs. There is no backfill: the
-# stored outcome keeps `entry_price`/`exit_price`/`direction` but not `risk`, and the cost model
-# is denominated in risk-per-unit — so an old row cannot be re-priced, only labelled.
-R_BASIS_INTENT = "intent"
-R_BASIS_INTENT_NET = "intent_net_of_costs"
-R_BASIS_FILLED = "filled"
-
-# The bases that already carry costs. `filled` is deliberately absent: live R includes venue
-# slippage but not fees, so it is neither of the two paper bases and must not be read as one.
-R_BASES_NET_OF_COSTS = frozenset({R_BASIS_INTENT_NET})
-
-# The close reasons that leave through a triggered STOP — the leg whose market order races the
-# move that fired it, which is not the microstructure any other exit has. `cost.apply_cost_model`
-# prices this leg with its own slippage rate, and `build_live_outcome_record` measures the
-# realized figure against the trigger on exactly these rows.
-#
-# It lives HERE and not beside `cost.MAKER_EXIT_REASONS`, where symmetry says it belongs, because
-# the import can only run one way: `cost` already imports this module's R-basis labels (their
-# owner), and this module must not import `cost` back. Same ownership rule as those labels —
-# the outcome row's vocabulary is defined where the rows are built. A new close reason that
-# exits at market has to decide whether it is stop-shaped (a trigger chased through a moving
-# book) or merely immediate, and membership here is that decision.
-STOP_EXIT_REASONS = frozenset({"stop_loss"})
 
 LIVE_HISTORY_UNREADABLE = "LIVE_HISTORY_UNREADABLE"
 LIVE_HISTORY_TAMPERED = "LIVE_HISTORY_TAMPERED"
@@ -535,9 +499,6 @@ def live_analysis_summary(
     }
 
 
-def utc_day(stamp: str | None = None) -> str:
-    """The UTC calendar day a timestamp belongs to. The breaker resets at UTC midnight."""
-    return (stamp or timeutil.utc_now_iso())[:10]
 
 
 def daily_realized_pnl(outcomes: Iterable[Mapping[str, Any]], *, day: str | None = None) -> float:

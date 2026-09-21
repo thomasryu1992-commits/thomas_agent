@@ -63,7 +63,7 @@ from .. import safety_gate, timeutil
 from ..control import HALT_HARD, ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..safety_gate import Authorization
-from .live_pnl import (
+from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,

@@ -73,7 +73,7 @@ from typing import Any, Mapping
 # `R_BASIS_INTENT` from there.
 from ..errors import ToolError
 from . import market_data
-from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
+from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -146,9 +146,8 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
 #
-# Its stop-side counterpart is `live_pnl.STOP_EXIT_REASONS`, imported above rather than defined
-# beside this one: the outcome rows own that vocabulary and this module already imports their
-# labels, while an import the other way would be a cycle. A market exit that is in NEITHER set
+# Its stop-side counterpart is `vocabulary.STOP_EXIT_REASONS`, imported above rather than defined
+# beside this one: `live_pnl` reads it too, and must not import this module. A market exit that is in NEITHER set
 # pays taker plus the GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
@@ -340,7 +339,7 @@ def apply_cost_model(
       pays the maker rate. No adverse slippage: a resting limit order does not cross the spread,
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
-    - a stop exit (``live_pnl.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
+    - a stop exit (``vocabulary.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
       STOP leg's own slippage (``stop_slippage_bps``) — a DEARER rate since the 2026-08-11
       interim re-pricing; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
     - a KNOWN general market exit (``GENERAL_EXIT_REASONS``, i.e. the time exit) pays taker
@@ -512,7 +511,7 @@ def outcome_net_r(
     - **A basis that already carries costs opts out**, or the ladder sees one loss twice and
       demotes a strategy that was merely average, with nothing in the record saying why. Two
       qualify and they are not the same claim, which is why the membership test is
-      ``live_pnl``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
+      ``vocabulary``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
       inside, via ``R_BASES_NET_OF_COSTS``) and ``filled`` (live R on actual fills — slippage
       inside, fees still an open gap, and deliberately excluded from that set for exactly that
       reason). Skipping is right for both; conflating them is not.
