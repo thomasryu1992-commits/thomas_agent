@@ -6,12 +6,11 @@ Trading Soft Halt grant, `POLICY_1_5_1_DRAFT.md`) and **1.5.2** (the assistant's
 draft says 1.5.0 below, read "1.5.0, 1.5.1 or 1.5.2". Until PR6e its `--check` refused over 1.5.1 on two
 test literals that pin nothing; they are on its list now.
 
-**Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` stays at **1.5.1** (1.5.2 once that
-bump is applied) until
-Thomas applies the bump himself (decision Q2, 2026-09-03: policy edits are written together and
-applied by Thomas, at a zero-PENDING moment, atomically). The code this clause switches on is
-merged and **dormant**: without the clause the dispatch door refuses every schedule change
-(`SCHEDULE_DELEGATION_DISABLED`) and schedules stay Thomas's alone, exactly as under 1.5.0.
+**Status:** IMPLEMENTED — applied 2026-09-21 over 1.5.2 with `scripts/ops/policy_bump_1_6_0.py --apply` on
+Thomas's explicit instruction (he chose to ship it in the same image as 1.5.2, for one REBIND), at zero
+live PENDING and zero unspent APPROVED approvals. `governance/GOVERNANCE_POLICY.yaml` is at **1.6.0**.
+The clause acts once the image carrying it is deployed; until then the dispatch door refuses every
+schedule change (`SCHEDULE_DELEGATION_DISABLED`). The sections below are the draft as applied.
 **Owner:** Thomas.
 **Authority:** None. The committed policy, `schedule_delegation.py` and the tests named below are
 the authority for what the runtime does; this draft describes what 1.6.0 would *delegate*.
