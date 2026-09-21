@@ -96,7 +96,7 @@ from .live_order import (
 )
 from .live_pnl import build_live_outcome_record
 from .live_position import build_live_position, position_risk_usdt, unbooked_position_id
-from .live_promotion import RECONCILED
+from .live_execution import RECONCILED
 
 LIVE_LEG_VERSION = "live_leg.v0.1"
 

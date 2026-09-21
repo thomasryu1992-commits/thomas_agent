@@ -12,7 +12,7 @@ cannot prove itself would vouch for it. The rows are read as they sit on disk â€
 by the evidence board below and by ``scripts/record_unreported_live_order.py``.
 
 Nothing here writes any more. The registry's only writer was the canary door, and it went with the
-door. ``RECONCILED`` stays here because the live leg's reconcile vocabulary imports it.
+door. ``RECONCILED`` is the reconcile vocabulary's, defined in ``live_execution`` and re-exported here.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from runtime.read_only_kernel import integrity
 
 from .. import jsonl
 from ..errors import ToolError
+from .live_execution import RECONCILED  # noqa: F401  (re-exported: the canary rows derive `clean` from it)
 from .live_pnl import state_dir
 
 # The shape of the rows already on disk: their file and the provenance they carry. Kept after the
@@ -31,7 +32,6 @@ from .live_pnl import state_dir
 CANARY_ORDERS_FILENAME = "live_canary_orders.jsonl"
 CANARY_PROVENANCE = "mvp_live_canary"
 
-RECONCILED = "RECONCILED"
 
 CANARY_HISTORY_UNREADABLE = "CANARY_HISTORY_UNREADABLE"
 CANARY_HISTORY_TAMPERED = "CANARY_HISTORY_TAMPERED"
