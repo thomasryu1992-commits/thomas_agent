@@ -73,7 +73,7 @@ from .market_data import (
     POSITIONING_PERIOD_SECONDS,
     POSITIONING_SERIES,
 )
-from .paper import state_dir
+from .state import state_dir
 
 POSITIONING_FILENAME = "positioning_history.jsonl"
 RECORD_TYPE = "positioning_ratio.v0"

@@ -52,7 +52,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from . import refresh_marks
 from .market_data import FACTORY_DEPTH_DAYS
-from .paper import state_dir
+from .state import state_dir
 
 OI_1H_FILENAME = "open_interest_1h.jsonl"
 OI_1H_INTERVAL = "1hour"

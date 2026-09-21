@@ -82,7 +82,6 @@ LAYER: dict[str, str] = {
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
 
 
-_STATE_DIR = "PR7b-1: state_dir from state, which already has it"
 _VOCAB = "PR7b-2: the names move to a foundation leaf and stay re-exported at the old one"
 _MATHS = "PR7b-2: the outcome maths moves beside the cost model it reads (strategy); feedback re-exports it"
 _CYCLE = "PR7b-2: LiveOrderLimits moves to the budget, which ends the cycle"
@@ -101,15 +100,8 @@ _ENV = frozenset({"LIVE_TRADING_ENV", "LIVE_TRADING_FLAGS", "LIVE_TRADING_PROVID
 # upward pair fails, and so does a new name on a named pair (a new upward import of `submit_live_order`
 # through `pre_order_gate -> live_order` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
-    ("candle_archive", "paper"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("oi_store", "paper"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("orderbook_store", "paper"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("positioning_store", "paper"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("live_budget", "live_pnl"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("risk_limits", "live_pnl"): (_STATE_DIR, frozenset({"state_dir"})),
-    ("live_order", "live_pnl"): (_VOCAB + " (state_dir, utc_day, the live-trading env names)",
-                                 _ENV | {"state_dir", "utc_day"}),
-    ("live_position", "live_pnl"): (_VOCAB + " (state_dir, the live-trading env names)", _ENV | {"state_dir"}),
+    ("live_order", "live_pnl"): (_VOCAB + " (utc_day, the live-trading env names)", _ENV | {"utc_day"}),
+    ("live_position", "live_pnl"): (_VOCAB + " (the live-trading env names)", _ENV),
     ("live_execution", "live_pnl"): (_VOCAB + " (the live-trading env names)", _ENV),
     ("cost", "live_pnl"): (_VOCAB + " (the R bases, the stop-exit reasons)",
                            frozenset({"R_BASES_NET_OF_COSTS", "R_BASIS_FILLED", "STOP_EXIT_REASONS"})),
@@ -122,16 +114,14 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("lifecycle", "feedback"): (_MATHS, frozenset({"net_result_r"})),
     ("forward_confirmation", "feedback"): (_MATHS, frozenset({"net_result_r"})),
     ("factory", "feedback"): (_MATHS, frozenset({"summarize_outcomes"})),
-    ("breaker_watch", "feedback"): ("PR7b-1: an unused import, left when #414's report call was removed",
-                                    frozenset({_MODULE})),
     ("live_budget", "live_order"): (_CYCLE, frozenset({"LiveOrderLimits"})),
     ("factory", "paper"): (_PAPER_MATHS, frozenset({
         "ASSUMED_LEVERAGE", "COOLDOWN_BARS_AFTER_STOPLOSS", "MAINTENANCE_MARGIN_RATE", "liquidation_price",
         "settle_trade_plan", "stop_is_beyond_liquidation"})),
-    ("forward_book", "paper"): (_STATE_DIR + "; " + _PAPER_MATHS, frozenset({
+    ("forward_book", "paper"): (_PAPER_MATHS, frozenset({
         "COOLDOWN_BARS_AFTER_STOPLOSS", "OCCUPYING_STATUSES", "STATUS_ENTRY_CANDIDATE", "build_entry_plan",
         "build_outcome_record", "entry_cost_refusal", "open_position", "position_max_hold", "regime_admits",
-        "settle_trade_plan", "state_dir", "stop_beyond_liquidation_refusal"})),
+        "settle_trade_plan", "stop_beyond_liquidation_refusal"})),
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
     ("live_entry", "live_position"): (_BOOK, frozenset({"compute_open_notional_usdt", "entry_allowed", "live_capacity"})),
     ("live_leg", "live_position"): (_BOOK, frozenset({"build_live_position", "position_risk_usdt", "unbooked_position_id"})),
@@ -141,8 +131,7 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("pre_order_gate", "live_order"): (_IDENTITY, frozenset({"MAX_ACCOUNT_AGE_SECONDS", "enrich_order_identity"})),
     ("breaker_watch", "live_pnl"): (_STORE + " (the live ledger)",
                                     frozenset({"live_outcomes_for_analysis", "read_live_outcomes"})),
-    ("probe", "live_pnl"): (_STATE_DIR + "; " + _STORE + " (the slippage observations)",
-                            frozenset({"state_dir", "stop_slippage_observations"})),
+    ("probe", "live_pnl"): (_STORE + " (the slippage observations)", frozenset({"stop_slippage_observations"})),
     ("venue_contract", "account_store"): (_STORE + " (the account snapshot)", frozenset({"read_snapshot"})),
 }
 

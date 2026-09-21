@@ -70,7 +70,7 @@ from .market_data import (
     POSITIONING_PERIOD_SECONDS,
 )
 from . import refresh_marks
-from .paper import state_dir
+from .state import state_dir
 
 ORDERBOOK_FILENAME = "orderbook_depth.jsonl"
 RECORD_TYPE = "orderbook_depth.v0"
