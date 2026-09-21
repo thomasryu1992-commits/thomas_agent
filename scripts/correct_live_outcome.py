@@ -25,7 +25,7 @@ Design: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`. The refusing ha
 `runtime/mvp_runtime/crypto/live_correction.py`.
 
 **The ask is built here rather than in that module on purpose.** `live_correction` is imported
-by `live_pnl.read_live_outcomes`, which every consumer of the live history passes through;
+by `live_ledger.read_live_outcomes`, which every consumer of the live history passes through;
 putting the task/permission/approval machinery in it would pull `permission.py` and its graph
 into the breaker, the cycle and the promotion board, none of which ever ask for anything.
 Measured before writing it this way: that graph is not in the read path today.

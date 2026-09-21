@@ -1,7 +1,7 @@
 """Stop-slippage probe — buys the measurement sample without arming a strategy.
 
 Thomas approved ``docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md`` §5 as proposed on
-2026-08-11. The stop-slippage series (`live_pnl.stop_slippage_observations`) grows only
+2026-08-11. The stop-slippage series (`live_ledger.stop_slippage_observations`) grows only
 on live stop closes, live resumption sits behind the forward-confirmation gate, and the
 confirmation clock is 34-69 weeks — so the cost model's one unmeasured constant
 (`cost.DEFAULT_STOP_SLIPPAGE_BPS`) could not be measured without arming an unconfirmed
@@ -61,7 +61,7 @@ from ..filelock import locked
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_slippage_probe_permission_decision
-from .live_pnl import stop_slippage_observations
+from .live_ledger import stop_slippage_observations
 from .state import state_dir
 from .live_sizing import SymbolFilters, round_price_to_tick
 

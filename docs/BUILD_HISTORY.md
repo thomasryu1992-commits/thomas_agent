@@ -24,6 +24,32 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The live ledger is read from a store layer; the outcome row is built in execution** (crypto PR7d-3,
+  2026-09-21).
+  - **Before:** `live_pnl` (outcome) held the ledger's writer and the loss breaker, and also the
+    ledger's readers and the builder of the row it appends. The breakers (`breaker_watch`, risk), the
+    slippage probe (`probe`, execution) and the executing leg (`live_leg`, execution) imported those
+    upward: three named pairs.
+  - **`live_ledger.py` (store, new)** takes the read path: `read_live_outcomes_raw`,
+    `read_live_outcomes` with `_approvals_for` (the approvals it checks corrections against),
+    `live_outcomes_for_analysis`, `stop_slippage_observations`, `LIVE_OUTCOMES_FILENAME`, the three
+    `LIVE_HISTORY_*` reasons and `UNKNOWN_R`.
+  - **`live_settlement.py` (execution, new)** takes `build_live_outcome_record`,
+    `realized_stop_slippage_bps` and `LIVE_PROVENANCE`: arithmetic on a closed position's fills, with
+    no I/O, called by the leg that closes it.
+  - **The store layer (new, between governance and market)** holds the lane's own records of what it
+    did: the live outcome ledger read back, and its governed corrections (`live_correction`, moved
+    from outcome, because the read path applies them). Market keeps what the venue and the vendors say.
+    Store reads nothing above foundation, and risk, execution and outcome read it.
+  - **Re-exports:** `live_pnl` re-exports all 13 names as the same objects and keeps the writer
+    (`RealLiveLedger`), `live_risk_snapshot` and the loss checks, which read the moved names through its
+    own bindings. The three lane readers import from the new owners. `live_promotion` keeps its
+    function-local import from `live_pnl`, which the canary-evidence tests patch.
+  - **One patch moved:** a correction-door test patched `live_pnl._approvals_for`; the moved
+    `read_live_outcomes` reads `live_ledger`'s binding, so the test now patches that one.
+  - **Nothing changed.** The 13 moved definitions are AST-identical, and the records compare equal.
+  - **The count:** 1 named upward pair remains (`forward_confirmation -> pool`, PR7e).
+
 - **The live book and the drift check are two modules** (crypto PR7d-2, 2026-09-21).
   - **Before:** `live_position` held the live position book and `reconcile_positions`, the check of
     that book against the venue's account. So the whole module sat in reconciliation, and every

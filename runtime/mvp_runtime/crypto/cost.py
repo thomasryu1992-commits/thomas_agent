@@ -147,8 +147,8 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # decision about which side of the fee it lands on.
 #
 # Its stop-side counterpart is `vocabulary.STOP_EXIT_REASONS`, imported above rather than defined
-# beside this one: it labels outcome rows, and `live_pnl`, which builds them, reads it with the other
-# row labels without loading the cost model. A market exit that is in NEITHER set pays taker plus the
+# beside this one: it labels outcome rows, and `live_settlement`, which builds them, reads it with the
+# other row labels without loading the cost model. A market exit that is in NEITHER set pays taker plus the
 # GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
