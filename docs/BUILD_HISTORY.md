@@ -24,6 +24,36 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The record capture sees what the order path's pure seams produce** (crypto PR7e-3, 2026-09-21).
+  - **Why:** PR7's evidence that a refactor changed nothing is the record capture, and it compared only
+    what tests write to disk. The requests and verdicts the tests' scripted adapters exchange live in
+    memory, so a refactor of the order path could change them and pass every compare. This had to come
+    before `live_execution` is split.
+  - **`scripts/ops/crypto_request_log.py` (new)** is a pytest plugin that `capture` loads. It wraps the
+    order path's pure seams: `build_order_request`, `normalize_algo_order`, `reconcile_order` and the
+    venue contract's hand-built `legacy_conditional_probe`. It logs each call to
+    `_requests/<test>.jsonl`, beside the tests' temp directories and never inside one. Each line holds
+    the arguments, bound to parameter names, and then the result or the exception raised.
+  - **It cannot change what it observes, within this tree:**
+    - the wrapper returns the function's own result or re-raises its exception;
+    - a value JSON cannot spell becomes a marker line, not an error;
+    - every in-tree module binding of a seam holds one shared wrapper while a test runs, so identity
+      between modules holds;
+    - every binding is bound back afterwards, including in modules first imported during the test.
+  - **What it does not see:**
+    - the request as an adapter receives it, where a call site changes it after building;
+    - the arguments of reads and cancels;
+    - references kept outside module attributes.
+    Code on those paths is held to its AST.
+  - **Proof it sees what it is for:** a mutation of `normalize_algo_order` (one extra key in its
+    result) passes every order-path test, and it shows up as changed request logs with nothing else
+    changed. Without the plugin, the same mutation compares clean. A mutation of `build_order_request`'s
+    request is already caught by a field-for-field test.
+  - **Proof it stays on:** an end-to-end test runs pytest with the plugin and checks the log is written
+    and the bindings restored. Another test checks that `capture` passes `-p` on every run. Each fails
+    when its mutant is applied.
+  - **Runtime:** none. The plugin loads only under `capture`, and nothing in `runtime/` changed.
+
 - **One context's market inputs are assembled outside the orchestrator** (crypto PR7e-2, 2026-09-21).
   - **Before:** `cycle` (orchestration) ran the whole cycle and also assembled each context's market
     inputs: the derivative legs, the higher timeframe, the reference symbol, the cross-sectional cohort
