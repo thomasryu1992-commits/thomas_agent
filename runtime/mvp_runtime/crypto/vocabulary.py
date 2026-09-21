@@ -59,8 +59,8 @@ R_BASES_NET_OF_COSTS = frozenset({R_BASIS_INTENT_NET})
 # realized figure against the trigger on exactly these rows.
 #
 # It lives here, beside the R-basis labels, and not beside `cost.MAKER_EXIT_REASONS`, where
-# symmetry says it belongs, because it labels outcome rows: `live_pnl` builds the rows and measures
-# stop slippage on exactly these, and the cost model prices them. Kept with the other row labels,
+# symmetry says it belongs, because it labels outcome rows: `live_settlement` builds the rows and
+# measures stop slippage on exactly these, and the cost model prices them. Kept with the other row labels,
 # neither reader loads the other to name a stop. Until crypto PR7b-2 it and the labels lived in
 # `live_pnl`, which put the outcome row's vocabulary above every layer that reads it. A new close
 # reason that exits at market has to decide whether it is stop-shaped (a trigger chased through a

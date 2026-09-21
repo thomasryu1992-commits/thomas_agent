@@ -23,8 +23,19 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   checks before a send read it (``live_order``, ``live_entry``, ``probe``); the comparison against the
   venue that placed it in reconciliation is ``live_reconcile`` since PR7d-2. The four book pairs that
   pointed up went with that move, not with the code that left.
-- **foundation holds only leaves with no role of their own.** Sizing (``live_sizing``) is risk, the
-  distribution gate and limit-entry scoring are strategy, and outcome corrections are outcome.
+- **foundation holds only leaves with no role of their own.** Sizing (``live_sizing``) is risk, and the
+  distribution gate and limit-entry scoring are strategy.
+- **store holds the read path of a record that layers below its writer must read** (PR7d-3). Not
+  every record the lane keeps: the book, the counters, the marks and the evidence registry each sit
+  with the layer that owns them, because their readers sit at or above it. The live outcome ledger
+  is written in outcome (``live_pnl``) and read back by risk (``breaker_watch``) and execution
+  (``probe``), so its read path (``live_ledger``) is store, with the corrections that read path
+  applies (``live_correction``). Their only writer is the operator's correction door, outside the
+  lane, and they are that ledger's second file. The ledger's own writer and what its rows earned stay
+  outcome, and the row is built where the fill is (``live_settlement``, execution). Market holds what
+  the venue and the vendors say. Store reads only foundation, which is enforced below, so its place
+  among the bottom layers carries no edge: it sits with the leaves every acting layer reads, beside
+  governance. Nothing in governance or market reads it.
 
 The edges that point up today are named in ``EXCEPTIONS`` with the step that removes each, and with the
 names each may take. Both only shrink: a new upward pair fails, a new name on a named pair fails, and so
@@ -44,7 +55,7 @@ CRYPTO = Path(__file__).resolve().parents[1] / "runtime" / "mvp_runtime" / "cryp
 _PACKAGE = "runtime.mvp_runtime.crypto"
 
 LAYERS: tuple[str, ...] = (
-    "foundation", "governance", "market", "strategy", "decision", "risk", "execution",
+    "foundation", "governance", "store", "market", "strategy", "decision", "risk", "execution",
     "reconciliation", "outcome", "orchestration", "report",
 )
 
@@ -54,6 +65,8 @@ LAYER: dict[str, str] = {
     "indicators": "foundation", "vocabulary": "foundation", "order_identity": "foundation",
     # governance: what every layer allowed to act reads (the stage, its evidence, an order's record)
     "execution_stage": "governance", "testnet_evidence": "governance", "live_governance": "governance",
+    # store: the read path of a record written above the layers that read it, and what that read applies
+    "live_ledger": "store", "live_correction": "store",
     # market: what the venue and the vendors say
     "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
     "positioning_store": "market", "features": "market", "account": "market", "live_filters": "market",
@@ -70,16 +83,17 @@ LAYER: dict[str, str] = {
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
-    # execution: what is sent, the front half that prepares it, and the book the sends keep
+    # execution: what is sent, the front half that prepares it, the book the sends keep, and the row a
+    # close settles
     "live_order": "execution", "live_execution": "execution", "live_leg": "execution",
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
-    "live_position": "execution",
+    "live_position": "execution", "live_settlement": "execution",
     "probe": "execution",
     # reconciliation: what the venue says happened
     "live_reconcile": "reconciliation",
     # outcome: what it earned, and what that says
     "live_pnl": "outcome", "feedback": "outcome", "digest": "outcome", "counterfactual": "outcome",
-    "live_promotion": "outcome", "live_correction": "outcome",
+    "live_promotion": "outcome",
     # orchestration: runs the stages in order
     "cycle": "orchestration", "live_route": "orchestration",
     # report: reads everything, imported by nothing inside the lane
@@ -90,18 +104,12 @@ _MODULE = "<module>"      # the module object itself is bound, and nothing is re
 
 
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
-_LEDGER = "PR7d: the outcome record builder leaves live_pnl"
-_STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes through stores)"
 
 # (importer, imported) -> (the step that removes it, the names it may take). Both only shrink: a new
-# upward pair fails, and so does a new name on a named pair (a new upward import of `live_risk_snapshot`
-# through `probe -> live_pnl` is as new as any other).
+# upward pair fails, and so does a new name on a named pair (a second name taken through
+# `forward_confirmation -> pool` is as new as any other pair).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
-    ("live_leg", "live_pnl"): (_LEDGER, frozenset({"build_live_outcome_record"})),
-    ("breaker_watch", "live_pnl"): (_STORE + " (the live ledger)",
-                                    frozenset({"live_outcomes_for_analysis", "read_live_outcomes"})),
-    ("probe", "live_pnl"): (_STORE + " (the slippage observations)", frozenset({"stop_slippage_observations"})),
 }
 
 # Import cycles, anywhere in the lane and inside one layer too. None since crypto PR7b-2.
@@ -264,6 +272,18 @@ def test_every_named_exception_still_exists_name_by_name():
 def test_no_import_cycle_but_the_named_one():
     cycles = _problems()["cycles"]
     assert cycles == set(CYCLES), f"import cycles now: {sorted(sorted(c) for c in cycles)}"
+
+
+def test_the_store_reads_nothing_above_foundation():
+    """The store is read from above by risk, execution and outcome. Its rule is what keeps that honest:
+    a store module that read a layer above foundation would carry that layer's dependencies into every
+    reader, which is the upward edge the layer exists to remove."""
+    lane = set(_modules())
+    store = {name for name, layer in LAYER.items() if layer == "store"}
+    assert store, "no store modules: the map changed, not the rule"
+    reads = {(src, dst) for (src, dst) in _edges() if src in store and LAYER.get(dst) not in ("foundation", "store")}
+    assert reads == set(), f"store modules read above foundation: {sorted(reads)}"
+    assert store <= lane
 
 
 def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):

@@ -80,6 +80,12 @@ def module_string_constants(tree: ast.Module) -> dict[str, str]:
                 ambiguous.add(name)
             constants[name] = node.value.value
 
+    shadowed = _function_bound_names(tree)
+    return {n: v for n, v in constants.items() if n not in ambiguous and n not in shadowed}
+
+
+def _function_bound_names(tree: ast.Module) -> set[str]:
+    """Every name some function in the module binds as a parameter or by assignment."""
     shadowed: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -97,8 +103,89 @@ def module_string_constants(tree: ast.Module) -> dict[str, str]:
             elif isinstance(inner, (ast.AugAssign, ast.AnnAssign)):
                 if isinstance(inner.target, ast.Name):
                     shadowed.add(inner.target.id)
+    return shadowed
 
-    return {n: v for n, v in constants.items() if n not in ambiguous and n not in shadowed}
+
+def _import_target(path: pathlib.Path, level: int, module: str | None, root: pathlib.Path,
+                   known: Mapping[pathlib.Path, Any]) -> pathlib.Path | None:
+    """The parsed file a ``from X import NAME`` in ``path`` reads, or None if it is not one of ours."""
+    if level:
+        base = path.parent
+        for _ in range(level - 1):
+            base = base.parent
+    else:
+        base = root
+    parts = module.split(".") if module else []
+    stem = base.joinpath(*parts) if parts else base
+    for candidate in (stem.with_suffix(".py"), stem / "__init__.py") if parts else (stem / "__init__.py",):
+        if candidate in known:
+            return candidate
+    return None
+
+
+def resolve_string_constants(trees: Mapping[pathlib.Path, ast.Module],
+                             root: pathlib.Path = ROOT) -> dict[pathlib.Path, dict[str, str]]:
+    """Each module's resolvable string constants: its own (:func:`module_string_constants`), plus
+    the names it imports at module scope with ``from X import NAME [as ALIAS]`` from another
+    parsed module that resolves NAME the same way.
+
+    A raise that names an imported code is as certain as one that names a local constant — the
+    value is one assignment away, readable without executing anything — and missing it moved a raise
+    site out of this index whenever a code's definition moved to the module that owns it (crypto
+    PR7d-3: `live_pnl` kept a raise of `LIVE_HISTORY_TAMPERED` after the constant left for
+    `live_ledger`). The testnet order adapter's twelve raises of the live adapter's own codes were
+    missing the same way.
+
+    The same refusals as for a local constant apply, and more, all dropped rather than guessed:
+    an import nested under ``if``/``try`` (it may not run), a star import, and a name the module also
+    binds inside a function or imports inside a function (the raise may read that one). A name both
+    imported and assigned at module scope is dropped on both counts, because which binding wins
+    depends on their order. A name imported twice resolves only when both sources agree.
+    """
+    own = {path: module_string_constants(tree) for path, tree in trees.items()}
+    imports: dict[pathlib.Path, dict[str, list[tuple[int, str | None, str]]]] = {}
+    unsafe: dict[pathlib.Path, set[str]] = {}
+    for path, tree in trees.items():
+        bindings: dict[str, list[tuple[int, str | None, str]]] = defaultdict(list)
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name != "*":
+                        bindings[alias.asname or alias.name].append((node.level, node.module, alias.name))
+        assigned = {target.id for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                    for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                    if isinstance(target, ast.Name)}
+        local_imports = {alias.asname or alias.name.split(".")[0]
+                         for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         for node in ast.walk(fn) if isinstance(node, (ast.Import, ast.ImportFrom))
+                         for alias in node.names}
+        imports[path] = dict(bindings)
+        unsafe[path] = assigned | _function_bound_names(tree) | local_imports
+
+    def value(path: pathlib.Path, name: str, seen: frozenset[tuple[pathlib.Path, str]]) -> str | None:
+        if name in own[path] and name not in imports[path]:
+            return own[path][name]
+        if name not in imports[path] or name in unsafe[path] or (path, name) in seen:
+            return None
+        found: set[str] = set()
+        for level, module, imported in imports[path][name]:
+            target = _import_target(path, level, module, root, trees)
+            resolved = None if target is None else value(target, imported, seen | {(path, name)})
+            if resolved is None:
+                return None
+            found.add(resolved)
+        return found.pop() if len(found) == 1 else None
+
+    constants: dict[pathlib.Path, dict[str, str]] = {}
+    for path in trees:
+        table = {name: code for name, code in own[path].items() if name not in imports[path]}
+        for name in imports[path]:
+            if name not in own[path]:
+                resolved = value(path, name, frozenset())
+                if resolved is not None:
+                    table[name] = resolved
+        constants[path] = table
+    return constants
 
 
 def _string_value(node: ast.AST | None, constants: Mapping[str, str]) -> str | None:
@@ -193,12 +280,15 @@ def collect_sites(source_dir: pathlib.Path = SOURCE_DIR) -> tuple[list[Site], in
     sites: list[Site] = []
     skipped = 0
     messages = 0
+    trees: dict[pathlib.Path, ast.Module] = {}
     for path in sorted(source_dir.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            trees[path] = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - a file that does not parse is not indexable
             continue
-        constants = module_string_constants(tree)
+    resolved = resolve_string_constants(trees)
+    for path, tree in trees.items():
+        constants = resolved[path]
         parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):

@@ -28,7 +28,7 @@ with ``scripts/register_live_trading_budget.py``. It is deliberately the *record
   that re-registers with the old script, cannot bring a lapsed budget back into force.
 
 A read is *verified*: a tampered or unparseable budget raises rather than resolving, because
-every reader of a risk limit is a risk decision (the ``live_pnl`` verified-read posture).
+every reader of a risk limit is a risk decision (the ``live_ledger`` verified-read posture).
 """
 
 from __future__ import annotations

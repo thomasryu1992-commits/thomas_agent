@@ -25,7 +25,7 @@ Design: `docs/proposals/LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`. The refusing ha
 `runtime/mvp_runtime/crypto/live_correction.py`.
 
 **The ask is built here rather than in that module on purpose.** `live_correction` is imported
-by `live_pnl.read_live_outcomes`, which every consumer of the live history passes through;
+by `live_ledger.read_live_outcomes`, which every consumer of the live history passes through;
 putting the task/permission/approval machinery in it would pull `permission.py` and its graph
 into the breaker, the cycle and the promotion board, none of which ever ask for anything.
 Measured before writing it this way: that graph is not in the read path today.
@@ -48,7 +48,8 @@ from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.binding import bind_task_to_core  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, force_utf8_io  # noqa: E402
 from runtime.mvp_runtime.crypto import live_correction as LC  # noqa: E402
-from runtime.mvp_runtime.crypto.live_pnl import read_live_outcomes_raw, state_dir  # noqa: E402
+from runtime.mvp_runtime.crypto.live_ledger import read_live_outcomes_raw  # noqa: E402
+from runtime.mvp_runtime.crypto.state import state_dir  # noqa: E402
 from runtime.mvp_runtime.errors import ApprovalBlocked, MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.intake import build_task  # noqa: E402
 from runtime.mvp_runtime.permission import (  # noqa: E402
