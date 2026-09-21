@@ -146,20 +146,20 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
 CYCLES: frozenset[frozenset[str]] = frozenset({frozenset({"live_budget", "live_order"})})
 
 
-def _modules() -> list[str]:
+def _modules(root: Path = CRYPTO) -> list[str]:
     """Every module in the lane, a sub-package's too, as its dotted path below ``crypto``."""
     found = []
-    for path in sorted(CRYPTO.rglob("*.py")):
-        parts = path.relative_to(CRYPTO).with_suffix("").parts
+    for path in sorted(root.rglob("*.py")):
+        parts = path.relative_to(root).with_suffix("").parts
         if parts == ("__init__",):
             continue
         found.append(".".join(parts[:-1] if parts[-1] == "__init__" else parts))
     return found
 
 
-def _source(module: str) -> Path:
-    path = CRYPTO.joinpath(*module.split(".")).with_suffix(".py")
-    return path if path.is_file() else CRYPTO.joinpath(*module.split("."), "__init__.py")
+def _source(module: str, root: Path = CRYPTO) -> Path:
+    path = root.joinpath(*module.split(".")).with_suffix(".py")
+    return path if path.is_file() else root.joinpath(*module.split("."), "__init__.py")
 
 
 def _lane_module(absolute: str, lane: set[str]) -> str | None:
@@ -173,11 +173,11 @@ def _lane_module(absolute: str, lane: set[str]) -> str | None:
     return None
 
 
-def _imports(module: str, lane: set[str]) -> dict[str, set[str]]:
+def _imports(module: str, lane: set[str], root: Path = CRYPTO) -> dict[str, set[str]]:
     """Every lane module ``module`` imports, anywhere in the file, with the names it takes: the names
     of ``from X import a, b``, or, where the module object is bound (``from . import X``,
     ``import …crypto.X as y``), the attributes read from it (``_MODULE`` when none are)."""
-    source = _source(module)
+    source = _source(module, root)
     tree = ast.parse(source.read_text(encoding="utf-8"))
     package = (_PACKAGE + "." + module).rsplit(".", 1)[0] if source.name != "__init__.py" else _PACKAGE + "." + module
     names: dict[str, set[str]] = {}
@@ -209,64 +209,20 @@ def _imports(module: str, lane: set[str]) -> dict[str, set[str]]:
     return names
 
 
-def _edges() -> dict[tuple[str, str], set[str]]:
-    lane = set(_modules())
-    return {(src, dst): taken for src in sorted(lane) for dst, taken in _imports(src, lane).items()}
+def _edges(root: Path = CRYPTO) -> dict[tuple[str, str], set[str]]:
+    lane = set(_modules(root))
+    return {(src, dst): taken for src in sorted(lane) for dst, taken in _imports(src, lane, root).items()}
 
 
-def _upward_edges() -> dict[tuple[str, str], set[str]]:
-    rank = {layer: i for i, layer in enumerate(LAYERS)}
-    return {
-        (src, dst): taken for (src, dst), taken in _edges().items()
-        if src in LAYER and dst in LAYER and rank[LAYER[dst]] > rank[LAYER[src]]
-    }
-
-
-def test_every_crypto_module_has_exactly_one_layer():
-    modules = set(_modules())
-    assert modules, "no crypto modules found: the path broke, not the lane"
-    assert sorted(modules - set(LAYER)) == [], "place the new module in a layer (LAYER)"
-    assert sorted(set(LAYER) - modules) == [], "a module left the lane: drop it from LAYER"
-    assert set(LAYER.values()) <= set(LAYERS)
-
-
-def test_the_layers_keep_the_directives_order():
-    directive = ("market", "strategy", "decision", "risk", "execution", "reconciliation", "outcome")
-    assert [layer for layer in LAYERS if layer in directive] == list(directive)
-
-
-def test_no_crypto_import_points_up_a_layer_beyond_the_named_ones():
-    unexpected, widened = {}, {}
-    for edge, taken in _upward_edges().items():
-        if edge not in EXCEPTIONS:
-            unexpected[edge] = taken
-        elif taken - EXCEPTIONS[edge][1]:
-            widened[edge] = taken - EXCEPTIONS[edge][1]
-    assert unexpected == {} and widened == {}, (
-        "an import points up a layer (importer's layer < imported's). Move the shared name down, or "
-        "record a decision in EXCEPTIONS with the step that removes it. New pairs: "
-        + "; ".join(f"{s} ({LAYER[s]}) -> {d} ({LAYER[d]}): {sorted(n)}" for (s, d), n in sorted(unexpected.items()))
-        + ". New names on a named pair: "
-        + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in sorted(widened.items()))
-    )
-
-
-def test_every_named_exception_still_exists_name_by_name():
-    upward = _upward_edges()
-    stale = {edge: sorted(names - upward.get(edge, set())) for edge, (_step, names) in EXCEPTIONS.items()
-             if names - upward.get(edge, set())}
-    assert stale == {}, f"no longer imported upward: remove them from EXCEPTIONS (it only shrinks): {stale}"
-
-
-def test_no_import_cycle_but_the_named_one():
+def _cycles(edges) -> set[frozenset[str]]:
     """Tarjan over every lane import, module-level and function-local, within a layer or across."""
     graph: dict[str, set[str]] = {}
-    for src, dst in _edges():
+    for src, dst in edges:
         graph.setdefault(src, set()).add(dst)
     index: dict[str, int] = {}
     low: dict[str, int] = {}
     stack: list[str] = []
-    cycles: set[frozenset[str]] = set()
+    found: set[frozenset[str]] = set()
 
     def visit(node: str) -> None:
         index[node] = low[node] = len(index)
@@ -285,9 +241,101 @@ def test_no_import_cycle_but_the_named_one():
                 if member == node:
                     break
             if len(component) > 1:
-                cycles.add(frozenset(component))
+                found.add(frozenset(component))
 
     for node in sorted(graph):
         if node not in index:
             visit(node)
+    return found
+
+
+def _problems(root: Path = CRYPTO, layer=None, layers=LAYERS, exceptions=None) -> dict:
+    """What the lane at ``root`` breaks, against a layer map and a list of named exceptions."""
+    layer = LAYER if layer is None else layer
+    exceptions = EXCEPTIONS if exceptions is None else exceptions
+    modules, edges = set(_modules(root)), _edges(root)
+    rank = {name: i for i, name in enumerate(layers)}
+    upward = {(s, d): taken for (s, d), taken in edges.items()
+              if s in layer and d in layer and rank[layer[d]] > rank[layer[s]]}
+    return {
+        "unplaced": sorted(modules - set(layer)),
+        "gone": sorted(set(layer) - modules),
+        "unexpected": {edge: taken for edge, taken in upward.items() if edge not in exceptions},
+        "widened": {edge: taken - exceptions[edge][1] for edge, taken in upward.items()
+                    if edge in exceptions and taken - exceptions[edge][1]},
+        "stale": {edge: sorted(names - upward.get(edge, set())) for edge, (_step, names) in exceptions.items()
+                  if names - upward.get(edge, set())},
+        "cycles": _cycles(edges),
+    }
+
+
+def test_every_crypto_module_has_exactly_one_layer():
+    problems = _problems()
+    assert _modules(), "no crypto modules found: the path broke, not the lane"
+    assert problems["unplaced"] == [], "place the new module in a layer (LAYER)"
+    assert problems["gone"] == [], "a module left the lane: drop it from LAYER"
+    assert set(LAYER.values()) <= set(LAYERS)
+
+
+def test_the_layers_keep_the_directives_order():
+    directive = ("market", "strategy", "decision", "risk", "execution", "reconciliation", "outcome")
+    assert [layer for layer in LAYERS if layer in directive] == list(directive)
+
+
+def test_no_crypto_import_points_up_a_layer_beyond_the_named_ones():
+    problems = _problems()
+    assert problems["unexpected"] == {} and problems["widened"] == {}, (
+        "an import points up a layer (importer's layer < imported's). Move the shared name down, or "
+        "record a decision in EXCEPTIONS with the step that removes it. New pairs: "
+        + "; ".join(f"{s} ({LAYER[s]}) -> {d} ({LAYER[d]}): {sorted(n)}"
+                    for (s, d), n in sorted(problems["unexpected"].items()))
+        + ". New names on a named pair: "
+        + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in sorted(problems["widened"].items()))
+    )
+
+
+def test_every_named_exception_still_exists_name_by_name():
+    stale = _problems()["stale"]
+    assert stale == {}, f"no longer imported upward: remove them from EXCEPTIONS (it only shrinks): {stale}"
+
+
+def test_no_import_cycle_but_the_named_one():
+    cycles = _problems()["cycles"]
     assert cycles == set(CYCLES), f"import cycles now: {sorted(sorted(c) for c in cycles)}"
+
+
+def test_the_scanner_sees_every_import_form_and_every_breach(tmp_path):
+    """The checks above pass on a lane with nothing to find, which proves nothing about them. Here a
+    synthetic lane holds one of each: the import spellings, a sub-package, a name beyond its
+    exception, a stale exception, an unplaced module and a cycle."""
+    files = {
+        "low.py": (
+            "from __future__ import annotations\n"
+            "from typing import TYPE_CHECKING\n"
+            "from .high import a\n"
+            "from runtime.mvp_runtime.crypto.high import e\n"
+            "import runtime.mvp_runtime.crypto.high as hh\n"
+            "from runtime.mvp_runtime.crypto import high\n"
+            "if TYPE_CHECKING:\n"
+            "    from .high import F\n"
+            "def f():\n"
+            "    from . import high as h2\n"
+            "    return h2.b, hh.c, high.d\n"),
+        "high.py": "def g():\n    from .low import z\n",
+        "sub/__init__.py": "",
+        "sub/deep.py": "from ..low import g\nfrom .. import high\nx = high.h\n",
+        "stray.py": "",
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    layer = {"low": "l1", "high": "l2", "sub": "l1", "sub.deep": "l1"}
+    exceptions = {("low", "high"): ("x", frozenset({"a", "b", "c", "d", "e"})),
+                  ("sub.deep", "low"): ("x", frozenset({"g"}))}
+    assert _imports("low", set(_modules(tmp_path)), tmp_path) == {"high": {"a", "b", "c", "d", "e", "F"}}
+    problems = _problems(tmp_path, layer, ("l1", "l2"), exceptions)
+    assert problems["unplaced"] == ["stray"]
+    assert problems["unexpected"] == {("sub.deep", "high"): {"h"}}
+    assert problems["widened"] == {("low", "high"): {"F"}}
+    assert problems["stale"] == {("sub.deep", "low"): ["g"]}
+    assert problems["cycles"] == {frozenset({"low", "high"})}

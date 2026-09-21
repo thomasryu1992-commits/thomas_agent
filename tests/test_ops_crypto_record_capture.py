@@ -81,7 +81,7 @@ def test_a_field_that_starts_reading_the_wall_clock_is_a_difference(tmp_path, ca
     head = _capture(tmp_path / "head", {"t0/outcomes.jsonl": ([_outcome("10:00", 1.25)], [_outcome("10:02", 1.25)])})
     assert capture.diff(base, head)["unstable_in_one"] == ["t0/outcomes.jsonl"]
     assert capture.compare(base, head) == 1
-    assert "unstable_in_one: t0/outcomes.jsonl" in capsys.readouterr().out
+    assert "unstable_in_one: t0/outcomes.jsonl  [0.recorded_at]" in capsys.readouterr().out
 
 
 def test_a_file_written_in_only_one_of_the_heads_runs_is_a_difference(tmp_path):

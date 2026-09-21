@@ -14,6 +14,9 @@ writes under ``tmp_path``. ``compare`` reads two captures file by file:
 - What differs between one commit's own two runs is a wall clock or a random id, and is set aside, but
   only where both commits vary the same way. A field, or a file, that varies in one commit's runs and
   not the other's is a difference: that is how a refactor that starts reading the wall clock shows up.
+  ``compare`` names the fields. A measured duration (the scheduler's ``duration_ms``, and the event
+  hash over it) varies between some runs and not others, so it can show up here by chance. Read those
+  lines rather than trusting the exit code.
 - A record nested too deep to walk (the lane writes 5,000-deep records on purpose, to prove they are
   refused) is compared whole.
 
@@ -152,6 +155,7 @@ def diff(base: Path, head: Path) -> dict[str, Any]:
         # Varies between one commit's own runs and not the other's: new (or lost) nondeterminism.
         "unstable_in_one": sorted(wobbling["base"] ^ wobbling["head"]),
         "skipped_unstable": sorted(wobbling["base"] & wobbling["head"]),
+        "unstable_fields": {},   # file -> the paths that vary in one commit's runs only
         "masked_fields": 0,
         "files": len(either["base"]),
     }
@@ -159,6 +163,7 @@ def diff(base: Path, head: Path) -> dict[str, Any]:
         (b1, base_mask), (h1, head_mask) = _masks(runs["base"], rel), _masks(runs["head"], rel)
         if base_mask != head_mask:
             result["unstable_in_one"].append(rel)
+            result["unstable_fields"][rel] = sorted(".".join(map(str, p)) or "<file>" for p in base_mask ^ head_mask)
         elif () in base_mask:
             result["skipped_unstable"].append(rel)
         else:
@@ -226,7 +231,8 @@ def compare(base: Path, head: Path) -> int:
     keys = ("only_in_base", "only_in_head", "changed", "unstable_in_one")
     for key in keys:
         for path in result[key]:
-            print(f"{key}: {path}")
+            fields = result["unstable_fields"].get(path) if key == "unstable_in_one" else None
+            print(f"{key}: {path}" + (f"  [{', '.join(fields)}]" if fields else ""))
     differing = sum(len(result[k]) for k in keys)
     print(f"{differing} differing of {result['files']} files; set aside where both commits vary alike: "
           f"{len(result['skipped_unstable'])} files, {result['masked_fields']} fields")
