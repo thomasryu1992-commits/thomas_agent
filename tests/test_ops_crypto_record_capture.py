@@ -80,3 +80,12 @@ def test_two_captures_of_different_test_lists_are_not_compared(tmp_path):
     base = _capture(tmp_path / "base", {"t0/k.json": ({"a": 1}, {"a": 1})}, tests=("tests/test_a.py",))
     head = _capture(tmp_path / "head", {"t0/k.json": ({"a": 1}, {"a": 1})}, tests=("tests/test_b.py",))
     assert capture.compare(base, head) == 2
+
+
+def test_a_record_nested_too_deep_to_walk_is_compared_whole(tmp_path):
+    """The lane's tests write 5,000-deep records on purpose (they must be refused); the field walk
+    cannot descend that far, so such a file is compared as normalised bytes."""
+    deep = lambda leaf: json.loads("[" * 5000 + json.dumps(leaf) + "]" * 5000)  # noqa: E731
+    base = _capture(tmp_path / "base", {"t0/deep.json": (deep(1), deep(1)), "t0/same.json": (deep(2), deep(2))})
+    head = _capture(tmp_path / "head", {"t0/deep.json": (deep(3), deep(3)), "t0/same.json": (deep(2), deep(2))})
+    assert capture.diff(base, head)["changed"] == ["t0/deep.json"]

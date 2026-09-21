@@ -18,8 +18,12 @@ fields and files it set aside.
     python scripts/ops/crypto_record_capture.py capture OUT [TEST ...]
     python scripts/ops/crypto_record_capture.py compare BASE HEAD
 
-Run ``capture`` once on the base tree and once on the head, then ``compare``. A test that writes
-outside ``tmp_path`` is not seen. Nothing here reads or writes runtime state: the tests run on temp
+Run ``capture`` once on the base commit and once on the head, then ``compare`` — **in one worktree,
+switching commits between the two**. The Core activation is per worktree, and every id bound to it (a
+``core_context_binding_id``, and the approval ids and fingerprints derived from it) differs between two
+worktrees while staying fixed within one: measured on PR7a, two worktrees at the same code differed in
+121 files, one worktree in none. Give both captures the same test list. A test that writes outside
+``tmp_path`` is not seen. Nothing here reads or writes runtime state: the tests run on temp
 roots, as they do in the suite.
 """
 
@@ -119,13 +123,19 @@ def diff(base: Path, head: Path) -> dict[str, Any]:
                               "only_in_head": sorted(stable["head"] - _files(runs["base"][0]) - wobbling),
                               "changed": [], "skipped_unstable": sorted(wobbling), "masked_fields": 0}
     for rel in sorted(stable["base"] & stable["head"]):
-        (b1, b2), (h1, h2) = ([value(r / rel, r) for r in runs[name]] for name in ("base", "head"))
-        mask = unstable_paths(b1, b2) | unstable_paths(h1, h2)
+        try:
+            (b1, b2), (h1, h2) = ([value(r / rel, r) for r in runs[name]] for name in ("base", "head"))
+            mask = unstable_paths(b1, b2) | unstable_paths(h1, h2)
+        except RecursionError:
+            # Nested too deep to walk field by field (the lane's tests write 5,000-deep records on
+            # purpose, to prove they are refused): compared whole, as normalised bytes.
+            (b1, b2), (h1, h2) = ([normalise(r / rel, r) for r in runs[name]] for name in ("base", "head"))
+            mask = set() if b1 == b2 and h1 == h2 else {()}
         if () in mask:
             result["skipped_unstable"].append(rel)
             continue
         result["masked_fields"] += len(mask)
-        if masked(b1, mask) != masked(h1, mask):
+        if (b1 != h1) if isinstance(b1, bytes) else (masked(b1, mask) != masked(h1, mask)):
             result["changed"].append(rel)
     result["skipped_unstable"].sort()
     return result
