@@ -40,7 +40,7 @@ PERFORMANCE_REPORT_VERSION = "performance_report.v1-mvp"
 # --- what the paper record measures, and what Gate 0 needs it to ------------------------------
 #
 # Paper `result_R` is measured on INTENDED fills and carries no costs. That is deliberate and
-# stays that way: `paper.settle_trade_plan` is the same code the factory replays, the risk
+# stays that way: `trade_plan.settle_trade_plan` is the same code the factory replays, the risk
 # guard's thresholds (`guards.DAILY_MAX_LOSS_R` and friends) are calibrated on it, and the
 # imported crypto_AI_System history is gross too. Re-costing the durable store would move all
 # three at once and rewrite evidence that is meant to be append-only.
@@ -329,7 +329,7 @@ def build_performance_report(
         "independent_event_count": independent_event_count,
         "summary": summary,
         # The same rows at the venue's rates. Beside `summary` rather than replacing it: gross
-        # is what `paper.settle_trade_plan` measured and what the risk guard is calibrated on,
+        # is what `trade_plan.settle_trade_plan` measured and what the risk guard is calibrated on,
         # net is what a decision about real money has to read.
         "net_summary": net,
         "r_distribution": r_distribution(rows),

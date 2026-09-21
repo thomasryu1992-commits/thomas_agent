@@ -2,7 +2,7 @@
 
 After a position is settled by stop-loss, the cooldown prevents the same
 ``(venue, symbol, timeframe)`` context from opening a new position for
-:data:`paper.COOLDOWN_BARS_AFTER_STOPLOSS` bars.  This guards against whipsaw
+:data:`trade_plan.COOLDOWN_BARS_AFTER_STOPLOSS` bars.  This guards against whipsaw
 re-entries where a stop-out is immediately followed by a signal into the same
 direction on the next bar — a pattern that in aggregate costs more than it earns
 because the volatility regime that triggered the stop persists.

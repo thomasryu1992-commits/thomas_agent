@@ -243,7 +243,7 @@ def position_timing_context(position: Mapping[str, Any], *, default_timeframe: s
 
     The owner is the position's own timeframe: the one its `max_holding_bars` was backtested
     against. A **legacy** position that predates the field has no such number either
-    (`paper.position_max_hold` falls back to the timeframe table), so it is owned by the
+    (`trade_plan.position_max_hold` falls back to the timeframe table), so it is owned by the
     default context — an arbitrary but *single* owner, which is the whole property needed here.
     """
     stored = position.get("timeframe")
@@ -956,7 +956,7 @@ def _time_exit_or_hold(
 
     * **the count advances even when nothing closes** — that is what makes time pass at all,
       and it is why the store write below is unconditional rather than only on the exit;
-    * **one bar counts once**, deduped on the candle timestamp by ``paper.advance_holding``, so
+    * **one bar counts once**, deduped on the candle timestamp by ``trade_plan.advance_holding``, so
       a cycle that re-runs inside one interval cannot accelerate the exit;
     * **one context owns the clock** — the position's own timeframe
       (:func:`position_timing_context`). Paper gets this for free because its book is keyed by
@@ -969,7 +969,7 @@ def _time_exit_or_hold(
     A non-owning context still settles and protects (above); it just leaves the clock alone and
     says so with ``LIVE_HOLD_NOT_TIMED_HERE``.
 
-    ``max_holding_bars`` comes from ``paper.position_max_hold``, the same authority paper uses,
+    ``max_holding_bars`` comes from ``trade_plan.position_max_hold``, the same authority paper uses,
     which falls back to the timeframe table for a **legacy** position — one opened before this
     record shape existed — and says so, so the fallback is attributable rather than silent.
     """

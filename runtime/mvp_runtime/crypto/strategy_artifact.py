@@ -105,7 +105,7 @@ _RISK_DOORS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def admission_evidence(candidate: Mapping[str, Any]) -> dict[str, Any]:
     """The two admission-door inputs a promotion lifts off a candidate's backtest.
 
-    ``paper.regime_admits`` and ``distribution_gate.distribution_admits`` read these off the
+    ``trade_plan.regime_admits`` and ``distribution_gate.distribution_admits`` read these off the
     POOL ENTRY at route time, and a candidate row does not carry them — they are projected
     out of ``backtest_evidence`` when the entry is built. Both doors fail OPEN on a missing
     reference, so anything that replays a bare candidate through the entry path measures a

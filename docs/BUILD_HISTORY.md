@@ -24,6 +24,30 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Paper's trade-plan maths leaves the position kernel** (crypto PR7c, 2026-09-21). The factory
+  backtest and the forward book read the maths the paper book trades with: one set of rules for
+  backtest and paper, on purpose. To do that they imported `paper`, the stateful kernel above them.
+  - **`trade_plan.py` (strategy, new):** 26 definitions move with their comments. That covers the entry
+    plan, liquidation, the regime and cost refusals, the managed stop and the intrabar exit, settlement,
+    the outcome record, and their constants and reason codes. By what it does this is strategy work,
+    pure computation over a spec and the cost model, and it imports nothing from `paper`.
+  - **Record labels to `vocabulary`, only where two layers read them:** `PAPER_PROVENANCE`,
+    `DEFAULT_VENUE`, `STATUS_ENTRY_CANDIDATE` and `OCCUPYING_STATUSES`. `PAPER_KERNEL_VERSION`, which
+    only `open_position` stamps, went with the maths. The router's other statuses and its rule code stay
+    in `paper`, the only reader (review of #921).
+  - **Nothing changed:**
+    - `paper` re-exports every moved name as the same object;
+    - all 34 moved definitions are AST-identical to the originals;
+    - no test or script patches any moved name, or any name the moved bodies read.
+  - **`_touches` stays private.** The kernel reads it through a public alias (`touches`), so the moved
+    bodies stay byte-identical.
+  - **Tunables:** five owners move with their literals (`ASSUMED_LEVERAGE`, `MAINTENANCE_MARGIN_RATE`,
+    `DEFAULT_MAX_HOLD_BARS`, `MIN_VOL_SIZE_MULTIPLIER`, `MIN_REGIME_TRADES_TO_EXCLUDE`). The index test
+    reads the assignment site, not the name.
+  - **The count:** `factory → paper` and `forward_book → paper` are gone, so 10 named upward pairs remain
+    (PR7d 9, PR7e 1).
+  - **Records unchanged:** base and head, captured in one worktree from the same tests (numbers in the PR).
+
 - **Shared vocabulary moves below its readers, and the lane's one import cycle is gone** (crypto PR7b-2,
   2026-09-21). Each name moves to where the layer order allows and its meaning says. The old module
   re-exports it as the same object, so no importer outside the lane changes.

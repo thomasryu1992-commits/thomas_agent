@@ -68,6 +68,7 @@ from . import (
     robustness,
     strategy,
     testnet_execution,
+    trade_plan,
 )
 
 # --- provenance: how this number came to be what it is ----------------------------------------
@@ -404,11 +405,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("PROBE_LIQUIDATION_ADMIT_FRACTION", factory.PROBE_LIQUIDATION_ADMIT_FRACTION,
             "crypto/factory.py", MEASURED,
             "the probe's width is capped at what the median bar can carry past "
-            "`paper.stop_is_beyond_liquidation`: calibrated on the first harvest "
+            "`trade_plan.stop_is_beyond_liquidation`: calibrated on the first harvest "
             "(2026-08-31), where 4h probes at 2.62/2.96 closed 119/139 trades despite heavy "
             "refusal while 1d probes at 2.68/2.99 closed 2/1 — 0.7 would have forbidden both "
             "4h rows, 0.5 keeps them and drops 1d",
-            "the 1d tier becoming judgeable at all, which needs `paper.ASSUMED_LEVERAGE` "
+            "the 1d tier becoming judgeable at all, which needs `trade_plan.ASSUMED_LEVERAGE` "
             "revisited (at 20x the 1d admissible width is 0.46-0.94, under the generation "
             "space's own floor) — a money-path decision, not a search one"),
     Tunable("_EXIT_PROBE_SLOTS", factory._EXIT_PROBE_SLOTS, "crypto/factory.py", MEASURED,
@@ -429,19 +430,19 @@ TUNABLES: tuple[Tunable, ...] = (
             "the daily loss breaker moving — which is itself INHERITED and never re-decided"),
     Tunable("MAX_POSITIONS_PER_SYMBOL", paper.MAX_POSITIONS_PER_SYMBOL, "crypto/paper.py", DERIVED,
             "the per-symbol share of the concurrency cap above", "the cap above moving"),
-    Tunable("DEFAULT_MAX_HOLD_BARS", paper.DEFAULT_MAX_HOLD_BARS, "crypto/paper.py", INHERITED,
+    Tunable("DEFAULT_MAX_HOLD_BARS", trade_plan.DEFAULT_MAX_HOLD_BARS, "crypto/trade_plan.py", INHERITED,
             "the time exit a spec gets when it declares none",
             "the measured median hold, which is 5-27% of this on every timeframe"),
-    Tunable("MIN_VOL_SIZE_MULTIPLIER", paper.MIN_VOL_SIZE_MULTIPLIER, "crypto/paper.py", OPERATOR,
+    Tunable("MIN_VOL_SIZE_MULTIPLIER", trade_plan.MIN_VOL_SIZE_MULTIPLIER, "crypto/trade_plan.py", OPERATOR,
             "a floor on volatility down-scaling; below it the venue refuses the entry anyway",
             "the venue's minimum quantity or notional changing"),
-    Tunable("MIN_REGIME_TRADES_TO_EXCLUDE", paper.MIN_REGIME_TRADES_TO_EXCLUDE, "crypto/paper.py",
+    Tunable("MIN_REGIME_TRADES_TO_EXCLUDE", trade_plan.MIN_REGIME_TRADES_TO_EXCLUDE, "crypto/trade_plan.py",
             OPERATOR,
             "a per-regime sign read off three trades is the overfitting hazard wired into routing",
             "a measured relationship between per-regime sample size and forward sign"),
 
     # --- liquidation guard: stop-beyond-liquidation refusal ----------------------------------
-    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", MEASURED,
+    Tunable("ASSUMED_LEVERAGE", trade_plan.ASSUMED_LEVERAGE, "crypto/trade_plan.py", MEASURED,
             "what the account is actually set to, read off /fapi/v2/account on 2026-09-02: "
             "every traded symbol at 5x, and 880 of the 884 the venue lists. It was 20 — the "
             "venue's default, never a chosen posture — which refused 98.4% of the 1d tier's "
@@ -459,7 +460,7 @@ TUNABLES: tuple[Tunable, ...] = (
             "being wrong HIGH only refuses a good one",
             "a decision about what a DEGRADED account read deserves; it is deliberately not "
             "coupled to `ASSUMED_LEVERAGE`, so lowering that one must not drag this down"),
-    Tunable("MAINTENANCE_MARGIN_RATE", paper.MAINTENANCE_MARGIN_RATE, "crypto/paper.py", VENUE,
+    Tunable("MAINTENANCE_MARGIN_RATE", trade_plan.MAINTENANCE_MARGIN_RATE, "crypto/trade_plan.py", VENUE,
             "Binance USDM tier-1 MMR (0.4%); lowest tier is permissive for the guard",
             "trading positions large enough to cross into tier-2 (> $50K notional)"),
 

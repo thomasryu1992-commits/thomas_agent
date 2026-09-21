@@ -830,7 +830,7 @@ scopes at different levels, so nothing was owed to it.
           say so (`LIVE_ROUTING_MAX_HOLD_FALLBACK`), so that gap stays attributable.
           Two properties carried over deliberately, because the counter *is* the rule: it
           advances on cycles that close nothing (persisted unconditionally, so a failed close
-          cannot reset the clock), and one bar counts once — `paper.advance_holding` is now
+          cannot reset the clock), and one bar counts once — `trade_plan.advance_holding` is now
           shared by both legs rather than copied, so they cannot drift on what "a bar passed"
           means.
           **What still differs, and is not a defect:** paper models the exit at the bar's close,
@@ -2945,7 +2945,7 @@ leg where both prices exist. Building it found that **only one of the three legs
 `price: "0.00"` for a market order, so half of what the model charges had nothing to check it
 against. The value existed one layer up all along —
 `build_live_order_intent` carries `entry_price` from the plan, the same number
-`paper.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
+`trade_plan.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
 on `submit_and_reconcile`, the one function holding both the intent and the fill.
 
 **The canary is the instrument that works while live entries are held.** It is an entry-only

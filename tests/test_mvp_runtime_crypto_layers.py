@@ -58,7 +58,7 @@ LAYER: dict[str, str] = {
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",
     "data_review": "strategy", "forward_book": "strategy", "forward_confirmation": "strategy",
     "lifecycle": "strategy", "distribution_gate": "strategy", "limit_entry": "strategy",
-    "outcome_math": "strategy",
+    "outcome_math": "strategy", "trade_plan": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision",
@@ -83,7 +83,6 @@ LAYER: dict[str, str] = {
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
 
 
-_PAPER_MATHS = "PR7c: the trade-plan maths and paper's status names leave paper for strategy"
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
 _BOOK = "PR7d: the live book's reader and record builders leave the reconciliation module"
 _LEDGER = "PR7d: the outcome record builder leaves live_pnl"
@@ -94,13 +93,6 @@ _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes thr
 # upward pair fails, and so does a new name on a named pair (a new upward import of `submit_live_order`
 # through `pre_order_gate -> live_order` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
-    ("factory", "paper"): (_PAPER_MATHS, frozenset({
-        "ASSUMED_LEVERAGE", "COOLDOWN_BARS_AFTER_STOPLOSS", "MAINTENANCE_MARGIN_RATE", "liquidation_price",
-        "settle_trade_plan", "stop_is_beyond_liquidation"})),
-    ("forward_book", "paper"): (_PAPER_MATHS, frozenset({
-        "COOLDOWN_BARS_AFTER_STOPLOSS", "OCCUPYING_STATUSES", "STATUS_ENTRY_CANDIDATE", "build_entry_plan",
-        "build_outcome_record", "entry_cost_refusal", "open_position", "position_max_hold", "regime_admits",
-        "settle_trade_plan", "stop_beyond_liquidation_refusal"})),
     ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
     ("live_entry", "live_position"): (_BOOK, frozenset({"compute_open_notional_usdt", "entry_allowed", "live_capacity"})),
     ("live_leg", "live_position"): (_BOOK, frozenset({"build_live_position", "position_risk_usdt", "unbooked_position_id"})),

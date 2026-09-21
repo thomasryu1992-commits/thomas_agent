@@ -4,7 +4,8 @@ Each lived in `live_pnl`, the module that builds the records they label, which s
 the lane, so every lower reader imported upward (`cost`, `paper`, the order path). They carry no
 logic: the live-trading opt-in's names, the labels an outcome's R is measured on, the exits that
 leave through a stop, and the UTC day a record belongs to. `live_pnl` re-exports every one, so its
-importers keep their import lines and read the same objects.
+importers keep their import lines and read the same objects. Since crypto PR7c the paper plane's
+record labels that two layers read are here too, re-exported by `paper`.
 """
 
 from __future__ import annotations
@@ -70,3 +71,22 @@ STOP_EXIT_REASONS = frozenset({"stop_loss"})
 def utc_day(stamp: str | None = None) -> str:
     """The UTC calendar day a timestamp belongs to. The breaker resets at UTC midnight."""
     return (stamp or timeutil.utc_now_iso())[:10]
+
+
+# --- the paper plane's record labels (crypto PR7c) -----------------------------------------------------
+# Each is read by two layers: the trade-plan maths (`trade_plan`, strategy) stamps or tests it and the
+# paper kernel (`paper`, decision) reads it back, and the forward book (strategy) reads the entry status
+# and the occupying statuses. Kept here, below all of them; `paper` re-exports every one.
+
+PAPER_PROVENANCE = "mvp_paper_kernel"
+
+# The trading venue a position was opened on. One value today (the C2 collector is
+# Binance futures), carried explicitly so a later exchange adapter is a new context
+# rather than a second migration of every stored position.
+DEFAULT_VENUE = "binance_futures"
+
+# The router's entry status (source S7). The rest of the router's statuses and its rule code stay in
+# `paper`, the only module that reads them.
+STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
+
+OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
