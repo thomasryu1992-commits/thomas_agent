@@ -24,6 +24,40 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The crypto lane's dependency direction is enforced** (crypto PR7a, 2026-09-21; directive §9, "역방향
+  dependency는 금지"; `tests/test_mvp_runtime_crypto_layers.py`, `scripts/ops/crypto_record_capture.py`).
+  - **The map:** every crypto module, including any in a sub-package, sits in one of eleven layers. A
+    module may import only its own layer or a lower one. The layers are foundation, governance, market,
+    strategy, decision, risk, execution, reconciliation, outcome, orchestration and report; the middle
+    seven are the directive's order, with its Feedback stage inside outcome.
+  - **What the test reads:** every import, function-local included (that is where the one cycle,
+    `live_budget` ↔ `live_order`, hides), resolved to the module it lands in. A cycle anywhere in the lane,
+    even inside one layer, fails too.
+  - **Placed by what a module does, not tuned to the count:**
+    - governance is the lowest package, the leaves every acting layer reads;
+    - `cycle` and `live_route` are orchestrators;
+    - `live_entry` sits in execution;
+    - foundation keeps only leaves without a role (review of #917 moved sizing to risk, the distribution
+      gate and limit-entry scoring to strategy, and outcome corrections to outcome).
+  - **32 edges point up today.** Each is named with the step that removes it (PR7b 20, PR7c 2, PR7d 9,
+    PR7e 1) and with the names it may take. Both lists only shrink. A new upward pair fails, and so does
+    a new name on a named pair: the first version keyed exceptions by pair alone, and the review added
+    `submit_live_order` through `pre_order_gate → live_order` unseen. An edge whose removal would change
+    trading behaviour would stay as a permanent exception; none needs that today.
+  - **The record evidence:** `crypto_record_capture.py` runs every test file that imports the lane twice,
+    keeping what the tests write under `tmp_path`, and compares two commits record by record.
+    - It sets aside only what both commits vary alike, such as a wall-clock `recorded_at`. A field or file
+      that varies in one commit only is a difference. The first version masked the union, so a refactor
+      that started reading the wall clock passed with "0 differing".
+    - Values compare as JSON spells them (`true` ≠ `1`).
+    - Both captures run in one worktree, because the Core activation, and every id bound to it, differs
+      between worktrees. They also run the same test ids in the same order, because temp directories are
+      numbered by run order.
+    - It does not see what a test keeps in memory (the scripted adapters' order requests), files written
+      outside `tmp_path`, or byte layout. The `live_execution` split in PR7e has to make those requests
+      visible first.
+  - **Runtime change: none.**
+
 - **The assistant can ask for the emergency close, and only ask** (crypto PR6e-2, 2026-09-19, Thomas
   decision 49; `switch_bridge.py`, Hermes shim 2.14, `scripts/ops/policy_bump_1_5_2.py`).
   - **The verb:** the switch door's `emergency_close` mints the ask `scripts.emergency_close --request`

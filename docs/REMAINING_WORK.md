@@ -4244,9 +4244,16 @@ locking implementations, neither hand-rolled, and no document saying which is fo
 
 ### Considered and deliberately NOT recommended
 
+**Since 2026-09-21 the first two items are directive work** (crypto PR7; Thomas 2026-09-15, PR2–PR7 in
+the directive's order), done direction-first so the risk they name is priced per step. They stay
+listed here because the reasoning still holds for anything outside PR7.
+
 - **`live_*` decomposition** (14 modules, 7,142 LOC; `live_route` and `live_readiness` each import
   13 siblings). The boundaries look like PR order rather than responsibility — but this is the
-  money path, and re-cutting it buys tidiness against real risk.
+  money path, and re-cutting it buys tidiness against real risk. PR7a enforces the layer order by a
+  test (`tests/test_mvp_runtime_crypto_layers.py`, 32 named exceptions that only shrink). Each later
+  split must show, by `scripts/ops/crypto_record_capture.py`, that no record the lane's tests write
+  changed. Moving files into sub-packages is not planned; it is Thomas's call.
 - **The eight functions over 300 lines** (`run_crypto_cycle` 475, `handle_operator_message` 423,
   `run_task` 409, `scheduler._execute` 387, …). Same reasoning; `_execute` did get its missing
   final `else` in #434, which was the part that was actually a defect.
