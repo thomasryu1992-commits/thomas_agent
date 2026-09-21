@@ -30,7 +30,7 @@ has left it, and this header went on claiming otherwise:
 
   The zero it once returned uniformly is now the answer to one specific question, stated
   at :func:`_cost_robustness`: a record predating the carry has no ``total_net_r`` to
-  divide, and `pool.cost_basis_rank` refuses such evidence outright rather than letting
+  divide, and `candidate_ranking.cost_basis_rank` refuses such evidence outright rather than letting
   it read as merely slightly better than it was.
 """
 
@@ -153,8 +153,8 @@ MIN_HOLDOUT_TRADES = 25
 #
 # Two-sided 95%, and not the one-sided 1.645 that a "is it positive" gate would suggest on its
 # own. The correction this gate cannot make is for the number of candidates tried — 979 and
-# rising daily, `pool.rank_candidates` taking the maximum over all of them — so the stricter of
-# two defensible multipliers is the one that leaves the smaller unpaid debt. A1 in
+# rising daily, `candidate_ranking.rank_candidates` taking the maximum over all of them — so the
+# stricter of two defensible multipliers is the one that leaves the smaller unpaid debt. A1 in
 # `docs/TRADING_STRATEGY_REVIEW_RECORD.md` is the real fix and needs the attempt count on the
 # record; this is what can be charged without it.
 CONFIDENCE_Z = 1.96
@@ -185,7 +185,7 @@ SELECTION_ALPHA = 0.05
 # burden by the very choice that creates it.
 SELECTION_CONTEXT = "symbol_scope + timeframe"
 
-# The believability tiers `pool.rank_candidates` orders on, lower is better.
+# The believability tiers `candidate_ranking.rank_candidates` orders on, lower is better.
 SELECTION_CLEARS_CORRECTED = 0    # survives the attempt count it was drawn from
 SELECTION_CLEARS_UNCORRECTED = 1  # would pass on its own; not against its siblings
 SELECTION_BELOW = 2               # measured, and it does not clear
@@ -259,7 +259,8 @@ def count_free_parameters(spec: StrategySpec) -> int:
     **Still a floor, not the truth.** A4 in ``docs/TRADING_STRATEGY_REVIEW_RECORD.md`` remains
     open: which of the template families was chosen, which of four timeframes, which symbol, and
     how many attempts it took are all degrees of freedom and none of them are counted here.
-    ``pool.selection_rank`` charges the attempt count separately; the rest is unpaid."""
+    ``selection_rank``, applied in ``candidate_ranking``, charges the attempt count separately; the
+    rest is unpaid."""
     literals = sum(1 for c in spec.entry_rules.conditions if c.value is not None)
     lags = sum(1 for c in spec.entry_rules.conditions if c.lag)
     return literals + lags + EXIT_FREE_PARAMETERS
@@ -310,7 +311,7 @@ def _cost_robustness(metrics: Mapping[str, Any]) -> float:
     through the clamp. That is the honest reading: an edge that survives its costs completely
     is the best this component can say, and being paid to hold is not evidence of a better
     entry rule. Absent (a record predating the carry) reads as 0.0 and the score is then the
-    pre-2026-07-29 figure, which is why `pool.cost_basis_rank` refuses such evidence outright
+    pre-2026-07-29 figure, which is why `candidate_ranking.cost_basis_rank` refuses such evidence outright
     rather than leaving it to look merely slightly better than it was."""
     net = _f(metrics.get("total_net_r"))
     if net <= 0:

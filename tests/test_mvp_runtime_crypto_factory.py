@@ -1012,7 +1012,7 @@ def test_pooling_adds_the_legs_trades_and_its_holdout():
 
 
 def test_pooled_depth_is_per_symbol_and_never_the_sum():
-    """`pool.evidence_depth_of` reads `bars_replayed` as a CALENDAR span, so summing legs
+    """`candidate_ranking.evidence_depth_of` reads `bars_replayed` as a CALENDAR span, so summing legs
     would tier a pooled candidate as though shown history that does not exist."""
     spec = StrategySpec.from_dict(_spec_dict())
     pooled = factory.backtest_spec_pooled(spec, [_trending_snapshot(), _shifted_snapshot()])
@@ -1396,7 +1396,7 @@ def test_a_pooled_fire_with_no_cohort_parents_fuses_nothing_and_still_tops_up():
     # With fusion declined, the whole fusion budget re-fires as the seeded topup — the second
     # `generate_batch` call site. Its rows must carry the cohort too: a topup row scoped
     # `[symbol]` would wear pooled evidence over a single-symbol label (and split
-    # `pool.search_context_key` attempt counts).
+    # `candidate_ranking.search_context_key` attempt counts).
     assert result["seeded_topup_count"] > 0, "the topup path must actually fire here"
     for candidate in result["candidates"]:
         assert candidate["strategy_spec"]["symbol_scope"] == ["BTCUSDT", "ETHUSDT"]
@@ -2528,7 +2528,7 @@ def test_the_factory_builds_the_frame_once_however_many_specs_it_scores():
 def test_a_frame_from_a_different_cost_model_is_refused():
     """With no venue funding history the carry series spreads `funding_bps_per_interval` over
     each bar, so a frame built under one model and replayed under another would price trades at
-    rates they never faced — the failure `pool.cost_basis_rank` catches only after the fact."""
+    rates they never faced — the failure `candidate_ranking.cost_basis_rank` catches only after the fact."""
     from runtime.mvp_runtime.crypto.cost import CostModel
     from runtime.mvp_runtime.crypto.factory import backtest_spec, build_replay_frame
 

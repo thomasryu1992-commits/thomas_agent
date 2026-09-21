@@ -16,7 +16,7 @@ and pays taker plus adverse slippage on every path. The exit depends on how it l
 now rests as a maker LIMIT (``live_leg``), so it fills AT the target and pays the maker rate,
 while a stop, a time exit and a manual exit all still leave at market. ``apply_cost_model``
 therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
-so ``pool.expectancy_at`` can still rescale the taker portion exactly.
+so ``candidate_ranking.expectancy_at`` can still rescale the taker portion exactly.
 
 **Scope was "the backtest only", and that boundary was wrong.** The source confined cost
 application to backtest/factory scoring: paper trading measured pure signal quality on
@@ -39,7 +39,7 @@ in parallel and read as competing until you notice they cover different rows:
 - **Reading converts (:func:`outcome_net_r`).** The rows written BEFORE that day carry
   ``r_basis: intent`` or no basis at all, and there were 86 of them holding the entire track
   record the ladder and the breakers were judging. This converts them at read time at the
-  rates the venue charges *now* — the same choice ``pool.expectancy_at`` already makes for
+  rates the venue charges *now* — the same choice ``candidate_ranking.expectancy_at`` already makes for
   backtest expectancy, and the reason a demotion answers "does this lose money today".
 
 **Which means the basis label decides who charges, and double-charging is the failure mode.**
@@ -237,7 +237,7 @@ FUNDING_SOURCE_FALLBACK = "modelled_constant"
 # `market_data.DEFAULT_FUNDING_RECORDS` buys at three settlements a day — and load-bearing the
 # moment the window is deepened past it.
 FUNDING_SOURCE_PARTIAL = "venue_history_partial"
-# No funding accounted for at all. Not produced by this module — it is what `pool.cost_basis_of`
+# No funding accounted for at all. Not produced by this module — it is what `candidate_ranking.cost_basis_of`
 # reports for evidence minted before funding was charged, so the store can say which candidates
 # carry the omission rather than having it inferred from a rate that is simply missing.
 FUNDING_SOURCE_UNCHARGED = "uncharged"
@@ -282,7 +282,7 @@ class CostBreakdown:
     net_r: float         # after fees + slippage + funding — the honest simulated outcome
     fee_cost_r: float    # taker + maker together, the figure that comes off net_r
     slippage_cost_r: float
-    # The maker share of `fee_cost_r`, carried separately because `pool.expectancy_at` re-derives
+    # The maker share of `fee_cost_r`, carried separately because `candidate_ranking.expectancy_at` re-derives
     # an old candidate's expectancy at a different TAKER rate, and that rescale is only linear in
     # the taker portion. Zero on a taker exit, which is what every pre-2026-07-28 record is.
     maker_fee_cost_r: float = 0.0
@@ -360,7 +360,7 @@ def apply_cost_model(
     position was open, so any non-zero default would be a holding period invented here rather
     than measured by the caller that has the bars. The safety lives one level up instead, where
     it can be honest: ``factory.backtest_spec`` always passes a real sum, and a candidate scored
-    with no funding term at all is refused at the promotion door by ``pool.cost_basis_rank``.
+    with no funding term at all is refused at the promotion door by ``candidate_ranking.cost_basis_rank``.
     """
     cost = cost or CostModel()
     if risk <= 0:
@@ -499,7 +499,7 @@ def outcome_net_r(
     demoter and the risk breaker read a gross number against thresholds written as if it were
     net — a strategy at +0.02R gross and −0.30R net stays PAPER_ACTIVE forever. This is the
     conversion, applied at READ time at the CURRENT rates, the same choice
-    ``pool.expectancy_at`` makes and for the same reason: the question a demotion answers is
+    ``candidate_ranking.expectancy_at`` makes and for the same reason: the question a demotion answers is
     "does this lose money at what the venue charges *now*", not at whatever it charged when
     the row was written.
 

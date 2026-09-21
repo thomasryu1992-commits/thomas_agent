@@ -24,6 +24,33 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Candidate ranking is judged in strategy; the promotion door stays with the pool** (crypto PR7e-1,
+  2026-09-21).
+  - **Before:** `pool` (decision) held the candidate store and its doors, and also the ranking view:
+    `candidate_quality`, `rank_candidates`, the two comparability tiers (what a row paid, how much
+    market it was shown) and `expectancy_at`. The forward-confirmation gate (strategy) imported `pool`
+    to read the recomputed holdout status. That was the last named upward pair.
+  - **`candidate_ranking.py` (strategy, new)** takes 33 definitions:
+    - the ranking view and the promotion order, with the attempt counting behind the selection tier;
+    - the cost-basis and evidence-depth tiers, their formatters, and the two "what a row minted now
+      would carry" views;
+    - `expectancy_at`.
+    It keeps no state and has no refusal of its own.
+  - **`pool` keeps the door:** the promotable sets and `assert_promotable_cost_basis` /
+    `assert_promotable_evidence_depth`, which turn a tier into a refusal, and also the store, its
+    invariants, the backlog and the live tier. It re-exports all 33 names as the same objects, and it
+    drops the cost and robustness imports that only the ranking used.
+  - **Readers:** `forward_confirmation` reads `candidate_ranking.candidate_quality` through a
+    function-local import, as it read `pool`'s. The scripts and the promotion door still read through
+    `pool`.
+  - **Pins that followed the code:** the stored-snapshot tests pinned `pool.py` as the only file that
+    opens the stored robustness block and the one that reads `robustness_score`; both pins now name
+    `candidate_ranking.py`. The comments and docstrings that named a moved function as `pool`'s, and
+    three REMAINING_WORK lines, now name the new owner.
+  - **Nothing changed.** 32 moved definitions are AST-identical, and `search_context_key`'s docstring
+    now points at `pool._lineage_key`. The records compare equal.
+  - **The count:** no named upward pair remains, and `EXCEPTIONS` is empty.
+
 - **The live ledger is read from a store layer; the outcome row is built in execution** (crypto PR7d-3,
   2026-09-21).
   - **Before:** `live_pnl` (outcome) held the ledger's writer and the loss breaker, and also the

@@ -269,22 +269,22 @@ def assert_live_tier_confirmed(
     """Every lineage armed LIVE is confirmed somewhere unseen — holdout or forward.
 
     The condition #648 disarmed the pool for, as a door instead of a migration: a backtest
-    holdout CONFIRMED (recomputed, `pool.candidate_quality`) passes, a FORWARD_CONFIRMED
-    record passes, and everything else refuses with both statuses named. ``observed_lineages``
-    — how many lines were under observation when this judgment ran — is stamped into the
-    refusal text so the ask Thomas reads carries the attempt count a first confirmation
-    must be read against.
+    holdout CONFIRMED (recomputed, `candidate_ranking.candidate_quality`) passes, a
+    FORWARD_CONFIRMED record passes, and everything else refuses with both statuses named.
+    ``observed_lineages`` — how many lines were under observation when this judgment ran — is
+    stamped into the refusal text so the ask Thomas reads carries the attempt count a first
+    confirmation must be read against.
 
     Raises ``CANDIDATE_UNCONFIRMED_FOR_LIVE``.
     """
-    from . import pool  # local: pool is heavy and imports widely
+    from . import candidate_ranking  # local: it loads market_data, which nothing else here needs
 
     from .robustness import HOLDOUT_CONFIRMED
 
     outcome_rows = list(outcomes)
     unconfirmed: list[str] = []
     for record in records:
-        quality = pool.candidate_quality(record)
+        quality = candidate_ranking.candidate_quality(record)
         if quality["holdout_status"] == HOLDOUT_CONFIRMED:
             continue
         forward = judge_forward(record, outcome_rows)
