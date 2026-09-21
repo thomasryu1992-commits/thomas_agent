@@ -150,12 +150,15 @@ def test_a_pytest_run_with_the_plugin_writes_the_log_and_binds_everything_back(t
             venue_contract.legacy_conditional_probe("BTCUSDT", stop_price=1.5, client_id="TAI_x")
     '''), encoding="utf-8")
     basetemp = tmp_path / "bt"
+    # `--rootdir` keeps the inner node id relative, so the log this writes under the outer test's
+    # `tmp_path` has the same name in every capture instead of one carrying the capture's own path.
     run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          "-p", capture.REQUEST_LOG_PLUGIN, f"--basetemp={basetemp}", str(tests_dir)],
+                          "-p", capture.REQUEST_LOG_PLUGIN, f"--basetemp={basetemp}",
+                          f"--rootdir={tests_dir}", str(tests_dir)],
                          cwd=ROOT, capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
     logs = list((basetemp / request_log.LOG_DIR).glob("*.jsonl"))
-    assert len(logs) == 1
+    assert [log.name.split("-")[0] for log in logs] == ["test_inner.py_test_calls_a_seam"]
     entry = json.loads(logs[0].read_text(encoding="utf-8").splitlines()[0])
     assert entry["seam"] == "legacy_conditional_probe"
     assert entry["call"] == {"symbol": "BTCUSDT", "stop_price": 1.5, "client_id": "TAI_x"}
