@@ -45,7 +45,7 @@ from .execution_stage import (
     required_stage,
 )
 from . import live_budget
-from .state import VENUE_MAINNET, state_dir, venue_state_dir
+from .state import VENUE_MAINNET, venue_state_dir
 from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,

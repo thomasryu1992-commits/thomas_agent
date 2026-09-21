@@ -43,7 +43,7 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
-from .state import VENUE_MAINNET, state_dir, venue_state_dir
+from .state import VENUE_MAINNET, venue_state_dir
 
 LIVE_BUDGET_SCHEMA_VERSION = "live_trading_budget.v0.1"
 LIVE_BUDGET_SCHEMA_FILE = "live_trading_budget.v0.1.schema.json"
