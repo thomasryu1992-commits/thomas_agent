@@ -101,7 +101,7 @@ def unbooked_position_id(*, symbol: str, entry_client_order_id: Any, opened_at: 
     unaccounted round trip would make the whole live history unreadable, and every risk
     decision that reads it fails closed — on a duplicate this runtime minted itself.
 
-    Seeded from the entry's client order id, which ``live_order.make_client_order_id`` builds
+    Seeded from the entry's client order id, which ``order_identity.make_client_order_id`` builds
     over an idempotency key and is therefore unique per submitted order. Unique per trade, and
     still a pure function of recorded facts, so a replay derives the same id.
 

@@ -22,7 +22,6 @@ verdict is ``approved``.
 
 from __future__ import annotations
 
-import hashlib
 import http.client
 import json
 import math
@@ -31,7 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from runtime.read_only_kernel import integrity
 
 from .. import safety_gate, timeutil
 from ..errors import ToolError
@@ -46,6 +44,10 @@ from .execution_stage import (
 )
 from . import live_budget
 from .state import VENUE_MAINNET, venue_state_dir
+# The order intent's identity lives in `order_identity` (foundation) and the account-age bound in
+# `pre_order_gate`, which enforces it, since crypto PR7d-1; both re-exported here as the same objects.
+from .order_identity import enrich_order_identity, make_client_order_id, make_idempotency_key  # noqa: F401
+from .pre_order_gate import MAX_ACCOUNT_AGE_SECONDS  # noqa: F401
 from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
@@ -189,12 +191,6 @@ API_ERROR_HTTP_STATUSES = frozenset({418, 429})
 # channel's own timeout.
 API_BREAKER_NOTICE_RETRY_SECONDS = 900
 
-# How old the account read an entry is judged on may be when the entry is judged (Thomas decisions
-# 18 and 24, PR2c-1). A door reads the account once, then settles, protects and prices before it
-# decides — normally seconds, with no bound: each venue call in between may take its own timeout.
-# Past a minute the balance and the exposure the caps are judged on may no longer be the account's.
-MAX_ACCOUNT_AGE_SECONDS = 60
-
 
 def account_age_seconds(collected_at: Any, *, clock: Any) -> float | None:
     """How long before ``clock`` the account was read, or None when that cannot be said. Pure."""
@@ -296,45 +292,6 @@ def limits_from_budget(record: Mapping[str, Any]) -> LiveOrderLimits:
         max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
         daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
     )
-
-
-# --- idempotency -------------------------------------------------------------------
-
-def make_idempotency_key(payload: Mapping[str, Any]) -> str:
-    """Stable key over the order's identity. Two attempts at the same trade produce the
-    same key, so a retry after an ambiguous submit reuses the client order id instead of
-    opening a second position."""
-    blob = json.dumps(dict(payload), sort_keys=True, default=str)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
-
-
-def make_client_order_id(symbol: str, direction: str, idempotency_key: str) -> str:
-    """Venue-safe client order id (Binance caps these at 36 characters)."""
-    return f"TAI_{symbol}_{direction}_{idempotency_key[:18]}"[:36]
-
-
-def enrich_order_identity(intent: dict[str, Any]) -> dict[str, Any]:
-    """Attach the idempotency key and client order id derived from the intent itself."""
-    payload = {
-        "symbol": intent.get("symbol"),
-        "direction": intent.get("direction"),
-        "strategy_id": intent.get("strategy_id"),
-        "candle_time": intent.get("candle_time") or intent.get("created_at"),
-        "position_id": intent.get("position_id"),
-    }
-    # A bar time names a bar only together with its timeframe (PR2a review): a 4h bar and a 1d bar
-    # open at the same instant every day, and a display strategy id can be reused across
-    # generations, so without it two contexts mint the same client order id a day apart. Added
-    # only when present, so the probe's and the testnet cycle's ids — no timeframe — are unchanged.
-    if intent.get("timeframe"):
-        payload["timeframe"] = intent.get("timeframe")
-    key = make_idempotency_key(payload)
-    intent["idempotency_key"] = key
-    intent["client_order_id"] = make_client_order_id(
-        str(intent.get("symbol") or "UNKNOWN"), str(intent.get("direction") or "NONE"), key
-    )
-    intent["order_intent_id"] = integrity.short_id("live_intent", {"key": key})
-    return intent
 
 
 # --- intent ------------------------------------------------------------------------
