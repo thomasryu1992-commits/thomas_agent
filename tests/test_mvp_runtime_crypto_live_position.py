@@ -15,6 +15,7 @@ import pytest
 from tests._helpers import make_gate_authorization
 
 from runtime.mvp_runtime.crypto import live_position as lp
+from runtime.mvp_runtime.crypto import live_reconcile as lr
 from runtime.mvp_runtime.crypto import paper
 from runtime.mvp_runtime.crypto.account import AccountPosition, AccountSnapshot
 from runtime.mvp_runtime.crypto.live_pnl import (
@@ -169,27 +170,27 @@ def test_real_store_round_trips_and_clears(tmp_path):
 # --- reconciliation: the venue is the truth -----------------------------------
 
 def test_matching_book_reconciles_and_permits_entry():
-    record = lp.reconcile_positions([_position()], _snapshot(_venue()), now=NOW)
+    record = lr.reconcile_positions([_position()], _snapshot(_venue()), now=NOW)
     assert record["status"] == lp.RECONCILED
     assert record["entries_allowed"] is True
     assert lp.entry_allowed(record, "BTCUSDT") is True
 
 
 def test_flat_everywhere_reconciles():
-    record = lp.reconcile_positions([], _snapshot(), now=NOW)
+    record = lr.reconcile_positions([], _snapshot(), now=NOW)
     assert record["status"] == lp.RECONCILED and record["entries_allowed"] is True
     # An untouched symbol is enterable when the venue agrees the account is flat.
     assert lp.entry_allowed(record, "ETHUSDT") is True
 
 
 @pytest.mark.parametrize("local,venue,reason", [
-    ([_position()], [], lp.DRIFT_MISSING_AT_VENUE),
-    ([], [_venue()], lp.DRIFT_UNTRACKED_AT_VENUE),
-    ([_position(direction="LONG")], [_venue(side="SHORT")], lp.DRIFT_SIDE_MISMATCH),
-    ([_position(quantity=0.002)], [_venue(quantity=0.001)], lp.DRIFT_QUANTITY_MISMATCH),
+    ([_position()], [], lr.DRIFT_MISSING_AT_VENUE),
+    ([], [_venue()], lr.DRIFT_UNTRACKED_AT_VENUE),
+    ([_position(direction="LONG")], [_venue(side="SHORT")], lr.DRIFT_SIDE_MISMATCH),
+    ([_position(quantity=0.002)], [_venue(quantity=0.001)], lr.DRIFT_QUANTITY_MISMATCH),
 ])
 def test_every_drift_shape_refuses_entry_and_is_named(local, venue, reason):
-    record = lp.reconcile_positions(local, _snapshot(*venue), now=NOW)
+    record = lr.reconcile_positions(local, _snapshot(*venue), now=NOW)
     assert record["status"] == lp.DRIFT
     assert reason in record["reasons"]
     assert record["entries_allowed"] is False
@@ -201,14 +202,14 @@ def test_every_drift_shape_refuses_entry_and_is_named(local, venue, reason):
 def test_float_noise_is_not_drift():
     """Venue quantities round-trip through strings; an exact == would cry drift on a
     byte-identical position."""
-    record = lp.reconcile_positions(
+    record = lr.reconcile_positions(
         [_position(quantity=0.002)], _snapshot(_venue(quantity=0.002 + 1e-12)), now=NOW
     )
     assert record["status"] == lp.RECONCILED
 
 
 def test_unreadable_account_refuses_entries_but_permits_closes():
-    record = lp.reconcile_positions([_position()], None, now=NOW)
+    record = lr.reconcile_positions([_position()], None, now=NOW)
     assert record["status"] == lp.ACCOUNT_UNREADABLE
     assert record["entries_allowed"] is False
     assert record["closes_allowed"] is True
@@ -218,7 +219,7 @@ def test_unreadable_account_refuses_entries_but_permits_closes():
 
 
 def test_drift_on_one_symbol_does_not_silently_allow_the_run():
-    record = lp.reconcile_positions(
+    record = lr.reconcile_positions(
         [_position(symbol="BTCUSDT"), _position(symbol="ETHUSDT")],
         _snapshot(_venue(symbol="BTCUSDT")),   # ETH missing at the venue
         now=NOW,
@@ -239,7 +240,7 @@ def test_reconcile_writes_nothing(tmp_path):
     """It is pure: a drifted book is reported, never cleared behind the operator's back."""
     store = lp.RealLivePositionStore(root=tmp_path, authorization=_LIVE_AUTH)
     store.save_position(_position())
-    lp.reconcile_positions(lp.list_open_live_positions(tmp_path), _snapshot(), now=NOW)
+    lr.reconcile_positions(lp.list_open_live_positions(tmp_path), _snapshot(), now=NOW)
     assert lp.load_open_live_position("BTCUSDT", tmp_path) is not None
 
 

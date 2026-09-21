@@ -27,7 +27,7 @@ from runtime.mvp_runtime.crypto.live_order import (
     LIVE_CONFIRMATION_PHRASE,
     LiveOrderLimits,
 )
-from runtime.mvp_runtime.crypto.live_position import reconcile_positions
+from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions
 from runtime.mvp_runtime.crypto.live_sizing import SymbolFilters
 from tests._helpers import deep_order_book, healthy_optional_data, usable_venue_contract
 
