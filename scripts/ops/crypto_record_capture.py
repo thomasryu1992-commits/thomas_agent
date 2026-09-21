@@ -6,7 +6,11 @@ This says that every record the tests write to disk is still the same, including
 assertion reads.
 
 ``capture`` runs the tests twice with pytest's ``--basetemp`` inside OUT, keeping every file a test
-writes under ``tmp_path``. ``compare`` reads two captures file by file:
+writes under ``tmp_path``. It also loads ``crypto_request_log`` (crypto PR7e-3), which logs every call to
+the order path's pure seams (the request built from an intent, a conditional order's normalised answer,
+the verdict on a venue order) into ``_requests/`` beside the tests' temp directories, so an order request
+that lives only in a scripted adapter's memory is compared too. ``compare`` reads two captures file by
+file:
 
 - JSON and JSONL are compared value by value after sorting keys and replacing the capture's own temp
   root with ``<BASETEMP>``. A value is its JSON spelling, so ``true``, ``1`` and ``1.0`` differ, and so
@@ -36,9 +40,11 @@ Two rules make the comparison mean something:
   temp directories are numbered by the order tests run in, so one added test renumbers every
   directory after it.
 
-What it does not see: anything a test keeps in memory (the scripted adapters' order requests among
-them), anything written outside ``tmp_path``, tests outside the list, and byte-level layout (key order,
-whitespace, blank lines). The default list is every test file that imports the crypto lane. Nothing
+What it does not see: anything else a test keeps in memory (an order request is seen at the seam that
+built it, not where an adapter stored it), anything written outside ``tmp_path`` and ``_requests/``, the
+calls of a test that patches a seam itself, tests outside the list, and byte-level layout (key order,
+whitespace, blank lines). A capture of a commit from before PR7e-3 has no ``_requests/``, so a compare
+across that line reports every log as present in one capture only. The default list is every test file that imports the crypto lane. Nothing
 here reads or writes runtime state: the tests run on temp roots, as they do in the suite.
 """
 
@@ -52,6 +58,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 IDS_FILE = "test_ids.txt"
+REQUEST_LOG_PLUGIN = "scripts.ops.crypto_request_log"
 PLACEHOLDER = "<BASETEMP>"
 _MASK = "<UNSTABLE>"
 _LANE_MARKERS = ("mvp_runtime.crypto", "mvp_runtime import crypto")
@@ -209,6 +216,7 @@ def capture(out: Path, tests: Sequence[str], *, same_as: Path | None = None) -> 
     argfile.write_text("\n".join(ids) + "\n", encoding="utf-8")
     for run in ("run1", "run2"):
         code = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                               "-p", REQUEST_LOG_PLUGIN,
                                f"--basetemp={(out / run).resolve()}", f"@{argfile}"]).returncode
         if code != 0:
             print(f"the tests failed on {run} (exit {code}); a failing tree has no record to compare",

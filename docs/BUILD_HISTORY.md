@@ -24,6 +24,25 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The record capture sees the order requests** (crypto PR7e-3, 2026-09-21).
+  - **Why:** PR7's evidence that a refactor changed nothing is the record capture, and it compared only
+    what tests write to disk. The order requests the tests' scripted adapters receive live in memory,
+    so a refactor of the order path could change a request and pass every compare. This had to come
+    before `live_execution` is split.
+  - **`scripts/ops/crypto_request_log.py` (new)** is a pytest plugin that `capture` loads. It wraps the
+    order path's pure seams: `build_order_request`, `normalize_algo_order` and `reconcile_order`. It
+    logs each call's arguments and result to `_requests/<test>.jsonl`, beside the tests' temp
+    directories and never inside one.
+  - **It cannot change what it observes:**
+    - the wrapper returns the function's own result;
+    - every module binding of a seam holds one shared wrapper while a test runs, so identity between
+      modules holds;
+    - every binding is bound back afterwards, including in modules first imported during the test.
+    `inspect` still sees the function through the wrapper.
+  - **Proof it sees what it is for:** a mutation of `build_order_request` that every test passes shows up
+    as changed request logs, and without the plugin the same mutation compared clean.
+  - **Runtime:** none. The plugin loads only under `capture`, and nothing in `runtime/` changed.
+
 - **One context's market inputs are assembled outside the orchestrator** (crypto PR7e-2, 2026-09-21).
   - **Before:** `cycle` (orchestration) ran the whole cycle and also assembled each context's market
     inputs: the derivative legs, the higher timeframe, the reference symbol, the cross-sectional cohort
