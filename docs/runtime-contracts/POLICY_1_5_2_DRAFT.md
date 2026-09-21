@@ -1,7 +1,9 @@
 # Governance policy 1.5.2 — draft for Thomas to apply (the assistant's emergency-close ask)
 
-**Status:** DRAFT — not applied. `governance/GOVERNANCE_POLICY.yaml` is at **1.5.1**. Apply with
-`scripts/ops/policy_bump_1_5_2.py` (decision Q2: policy edits are written together and applied by Thomas).
+**Status:** IMPLEMENTED — applied 2026-09-21 with `scripts/ops/policy_bump_1_5_2.py --apply` on Thomas's
+explicit instruction (decision Q2 as amended for 1.5.0: "네가 해줄래"), at zero live PENDING and zero
+unspent APPROVED approvals (read-only check of the production store), and followed in the same image by
+1.6.0, so one REBIND covers both. The sections below are the draft as applied.
 **Owner:** Thomas.
 **Authority:** None. The committed policy, `runtime/mvp_runtime/switch_bridge.py` and the tests named
 below are the authority for what the runtime does.

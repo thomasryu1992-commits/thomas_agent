@@ -24,6 +24,23 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Policy 1.5.2 and 1.6.0 are applied, in one image** (2026-09-21, on Thomas's explicit instruction; both
+  bump scripts' `--apply`, then the two validators).
+  - **1.5.2** lists `emergency_close: approval_required_always` under
+    `control_channel.assistant_switch.verbs`. The assistant's switch-door verb (#916) stops refusing by
+    name and can mint the emergency-close ask. It still only asks: Thomas approves on the control bot, and
+    the operator spends the approval in the scheduler container.
+  - **1.6.0** adds `control_channel.assistant_schedule`, the bounded schedule delegation of sequence 2
+    P09. It covers `analysis_task` and `workflow_plan` only, no tighter than hourly, and at most 3 active;
+    every `crypto_*` kind is refused.
+  - **One REBIND.** The execution stage binds the policy version and the safety fingerprint, and both
+    move. After this image deploys, the stage reads READ_ONLY until Thomas approves a REBIND of PAPER.
+    Shipping the two bumps together means one REBIND instead of two.
+  - **Zero PENDING, checked read-only.** The scripts ran against a temporary state root, because a root
+    run against the real one is what the state-guard rule forbids. The production approval store was read
+    in a throwaway container with the state mounted read-only: 0 live PENDING, 0 unspent APPROVED.
+    `POLICY_1_5_2_DRAFT.md` and `POLICY_1_6_0_DRAFT.md` now say IMPLEMENTED.
+
 - **`state_dir` comes from `state`, and a dead import is gone** (crypto PR7b-1, 2026-09-21; the first
   code step under PR7a's layer test and record comparison).
   - **The repoints.** Ten modules took `state_dir` from `paper` or `live_pnl`, which sit above them:
