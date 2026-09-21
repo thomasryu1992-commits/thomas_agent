@@ -24,6 +24,23 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The account snapshot store is placed with the other market stores** (crypto PR7d-4, 2026-09-21).
+  - **What it is:** `account_store` holds what the venue said about the account. Its refresh reads the
+    venue through `account.read_account`, and the read door, the venue-contract sentinel and the
+    readiness board read it back. That is the shape of the market stores beside it (`orderbook_store`,
+    `oi_store`, `positioning_store`, `candle_archive`), which also hold venue observations and are read
+    back by several layers.
+  - **Why it moved:** it sat in reconciliation, so the sentinel's read of it
+    (`venue_contract → account_store`) pointed up.
+  - **What made the move legal:** `account_store` took `state_dir` through `paper`, which sits above
+    market. It now takes the same object from `state`; without that change the new placement would name
+    `account_store → paper` as a new upward import. Nothing else moves and no module is new.
+  - **What a lower placement allows:** a layer map lets every higher layer import a module. Placed in
+    market, the snapshot is importable from strategy up. Its staleness is guarded where it is read
+    (`STALE_AFTER_SECONDS`, the gate's account-age bound), not by the map.
+  - **The count:** one named pair is gone, so 8 remain (PR7d 7, PR7e 1). A store layer, for the lane's
+    own trade records rather than venue observations, is PR7d-3's to argue.
+
 - **The order intent's identity and the account-age bound move below the gate** (crypto PR7d-1,
   2026-09-21). The pre-order gate (risk) took both from `live_order`, the sender above it.
   - **`order_identity.py` (foundation, new)** takes `make_idempotency_key`, `make_client_order_id` and

@@ -53,6 +53,7 @@ LAYER: dict[str, str] = {
     # market: what the venue and the vendors say
     "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
     "positioning_store": "market", "features": "market", "account": "market", "live_filters": "market",
+    "account_store": "market",
     # strategy: what a strategy is, and how one is generated and judged
     "strategy": "strategy", "strategy_artifact": "strategy", "cost": "strategy", "robustness": "strategy",
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",
@@ -70,7 +71,7 @@ LAYER: dict[str, str] = {
     "live_entry": "execution", "venue_contract": "execution", "testnet_execution": "execution",
     "probe": "execution",
     # reconciliation: what the venue says happened
-    "live_position": "reconciliation", "account_store": "reconciliation",
+    "live_position": "reconciliation",
     # outcome: what it earned, and what that says
     "live_pnl": "outcome", "feedback": "outcome", "digest": "outcome", "counterfactual": "outcome",
     "live_promotion": "outcome", "live_correction": "outcome",
@@ -101,7 +102,6 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("breaker_watch", "live_pnl"): (_STORE + " (the live ledger)",
                                     frozenset({"live_outcomes_for_analysis", "read_live_outcomes"})),
     ("probe", "live_pnl"): (_STORE + " (the slippage observations)", frozenset({"stop_slippage_observations"})),
-    ("venue_contract", "account_store"): (_STORE + " (the account snapshot)", frozenset({"read_snapshot"})),
 }
 
 # Import cycles, anywhere in the lane and inside one layer too. None since crypto PR7b-2.
