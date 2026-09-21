@@ -53,7 +53,7 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
-from runtime.mvp_runtime.crypto.cycle import attach_mining_legs  # noqa: E402
+from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.lifecycle import outcome_attribution_key  # noqa: E402
 from runtime.mvp_runtime.crypto.paper import OCCUPYING_STATUSES  # noqa: E402

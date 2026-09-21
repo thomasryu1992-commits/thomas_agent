@@ -40,8 +40,9 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   ``feed_assembly`` attaches the legs a context is judged on and judges them for the live entry door
   (``optional_data_health``), reading only ``market_data``, the market stores and the leaves. The age
   bounds that judgement applies are operator tunables (Thomas decision 28); a rule that read beyond
-  market data would belong with the door's other checks, in risk, not here. ``attach_mining_legs``
-  stays in ``cycle`` for now: it reads only ``feed_assembly`` and could follow it.
+  market data would belong with the door's other checks, in risk, not here. ``attach_mining_legs``,
+  which builds the frame a spec is backtested on, followed in PR7e-5: it assembles the same legs and
+  reads nothing above market.
 - **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
