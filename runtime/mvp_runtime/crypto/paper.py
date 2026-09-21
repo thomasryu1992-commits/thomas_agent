@@ -63,9 +63,9 @@ _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 from .state import STATE_REL, state_dir  # noqa: E402  (one root for both trading planes; re-exported for this module's many importers)
 PAPER_PROVENANCE = "mvp_paper_kernel"
-# See live_pnl.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
+# See vocabulary.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
 from .cost import CostModel, apply_cost_model  # noqa: E402  (pure arithmetic; cost.py imports nothing)
-from .live_pnl import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
+from .vocabulary import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
 # THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
@@ -1271,7 +1271,7 @@ def build_outcome_record(
         "provenance": PAPER_PROVENANCE,
         # Intended fills, NET of costs. The value changed on 2026-07-30 and the label changed
         # with it, so a window spanning that day can SEE that it mixes two bases rather than
-        # silently averaging them (see live_pnl.R_BASIS_*). Rows written before keep `intent`
+        # silently averaging them (see vocabulary.R_BASIS_*). Rows written before keep `intent`
         # and cannot be re-priced: the stored row has no `risk`, and the cost model is
         # denominated in risk-per-unit.
         "r_basis": R_BASIS_INTENT_NET,

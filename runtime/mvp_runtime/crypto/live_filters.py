@@ -1,6 +1,6 @@
 """LP5.3 — the venue's own trading rules for one symbol. Read-only; nothing here trades.
 
-LP5.2 sized orders against a :class:`~.live_sizing.SymbolFilters` it could not obtain, so
+LP5.2 sized orders against a :class:`SymbolFilters` (defined below) it could not obtain, so
 every call refused: *"LP5.3 supplies real filters from a venue read; until then every call
 refuses, which is the honest state."* This is that read.
 
@@ -23,11 +23,40 @@ then refuses and the entry simply does not happen. That is the market-data postu
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..errors import ToolBlocked, ToolError
 from ..coerce import as_float as _f
-from .live_sizing import SymbolFilters
+
+
+@dataclass(frozen=True)
+class SymbolFilters:
+    """The venue's per-symbol trading rules, as read from ``exchangeInfo``.
+
+    Never constructed from constants in this repository. ``step_size`` is the LOT_SIZE
+    quantity increment, ``min_qty`` its floor, ``min_notional`` the MIN_NOTIONAL filter,
+    and ``tick_size`` the PRICE_FILTER increment (used for the LP5.3 bracket's stop and
+    target prices, which the venue rejects unrounded exactly as it rejects an unrounded
+    quantity). ``max_qty`` is the lot ceiling; ``0.0`` means the reader did not learn one,
+    so it is simply not checked rather than treated as a limit of zero.
+
+    The reader below folds MARKET_LOT_SIZE into these, taking the stricter of the two lot
+    filters, because LP5 entries and closes are MARKET orders. Defined here, beside that reader,
+    since crypto PR7b-2; ``live_sizing`` re-exports it for its importers.
+    """
+
+    step_size: float
+    min_qty: float
+    min_notional: float
+    tick_size: float = 0.0
+    max_qty: float = 0.0
+
+    def valid(self) -> bool:
+        """A filter set is usable only if the increments are positive. A zero step would
+        make ``floor_to_step`` a division by zero, and a zero minimum would let a dust
+        order through — both are "unknown", not "unrestricted"."""
+        return self.step_size > 0 and self.min_qty > 0 and self.min_notional > 0
 
 FILTERS_VERSION = "live_filters.v0.1"
 

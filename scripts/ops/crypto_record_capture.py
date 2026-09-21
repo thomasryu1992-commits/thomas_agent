@@ -14,9 +14,10 @@ writes under ``tmp_path``. ``compare`` reads two captures file by file:
 - What differs between one commit's own two runs is a wall clock or a random id, and is set aside, but
   only where both commits vary the same way. A field, or a file, that varies in one commit's runs and
   not the other's is a difference: that is how a refactor that starts reading the wall clock shows up.
-  ``compare`` names the fields. A measured duration (the scheduler's ``duration_ms``, and the event
-  hash over it) varies between some runs and not others, so it can show up here by chance. Read those
-  lines rather than trusting the exit code.
+  ``compare`` names the fields. Two kinds vary between some runs and not others, so they can show up
+  here by chance: a measured duration (the scheduler's ``duration_ms``, and the event hash over it)
+  and the winner of a concurrency test's race (``test_concurrent_claims_on_one_symbol…``'s
+  ``client_order_id``). Read those lines rather than trusting the exit code.
 - A record nested too deep to walk (the lane writes 5,000-deep records on purpose, to prove they are
   refused) is compared whole.
 

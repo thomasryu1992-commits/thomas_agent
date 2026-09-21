@@ -66,14 +66,14 @@ from typing import Any, Mapping
 # The bases whose costs are ALREADY inside the number, and which `outcome_net_r` must therefore
 # not charge again. Two of them, kept as two because they are different claims: the set holds
 # the paper basis that is fully net (`intent_net_of_costs`), while `filled` is live R on actual
-# fills — slippage inside, fees still missing — and `live_pnl` deliberately keeps it OUT of that
+# fills — slippage inside, fees still missing — and `vocabulary` deliberately keeps it OUT of that
 # set so it cannot be read as one of the paper bases. Imported from their owner rather than
-# respelled here: `live_pnl` defines what each basis means, and two spellings of one label is how
-# the two drift. Constants only — no I/O at import, the same reason `paper.py` takes
-# `R_BASIS_INTENT` from there.
+# respelled here: `vocabulary` defines what each basis means (they lived in `live_pnl`, where the
+# rows are built, until crypto PR7b-2), and two spellings of one label is how the two drift.
+# Constants only — no I/O at import, the same reason `paper.py` takes `R_BASIS_INTENT_NET` from there.
 from ..errors import ToolError
 from . import market_data
-from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
+from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -146,10 +146,10 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
 #
-# Its stop-side counterpart is `live_pnl.STOP_EXIT_REASONS`, imported above rather than defined
-# beside this one: the outcome rows own that vocabulary and this module already imports their
-# labels, while an import the other way would be a cycle. A market exit that is in NEITHER set
-# pays taker plus the GENERAL slippage — the pessimistic-by-default branch below is unchanged.
+# Its stop-side counterpart is `vocabulary.STOP_EXIT_REASONS`, imported above rather than defined
+# beside this one: it labels outcome rows, and `live_pnl`, which builds them, reads it with the other
+# row labels without loading the cost model. A market exit that is in NEITHER set pays taker plus the
+# GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
 # The market exits KNOWN to pay the general (non-stop) slippage: a time exit leaves on a
@@ -340,7 +340,7 @@ def apply_cost_model(
       pays the maker rate. No adverse slippage: a resting limit order does not cross the spread,
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
-    - a stop exit (``live_pnl.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
+    - a stop exit (``vocabulary.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
       STOP leg's own slippage (``stop_slippage_bps``) — a DEARER rate since the 2026-08-11
       interim re-pricing; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
     - a KNOWN general market exit (``GENERAL_EXIT_REASONS``, i.e. the time exit) pays taker
@@ -512,7 +512,7 @@ def outcome_net_r(
     - **A basis that already carries costs opts out**, or the ladder sees one loss twice and
       demotes a strategy that was merely average, with nothing in the record saying why. Two
       qualify and they are not the same claim, which is why the membership test is
-      ``live_pnl``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
+      ``vocabulary``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
       inside, via ``R_BASES_NET_OF_COSTS``) and ``filled`` (live R on actual fills — slippage
       inside, fees still an open gap, and deliberately excluded from that set for exactly that
       reason). Skipping is right for both; conflating them is not.
@@ -534,7 +534,7 @@ def outcome_net_r(
     optimistic side**, for the reason :func:`apply_cost_model` states: this function cannot see
     how long the position was open without knowing what a bar of its timeframe is worth, and a
     default invented here would be a holding period asserted rather than measured. The caller
-    that can measure it passes it — ``feedback.net_result_r`` derives it from
+    that can measure it passes it — ``outcome_math.net_result_r`` derives it from
     ``holding_candles × timeframe`` and does, and since 2026-08-11 the ladder
     (``lifecycle.outcome_judged_r``) and the loss breakers (``guards._judged_r``) read through
     that same function, so all three consumers of a settled row charge the same three terms.

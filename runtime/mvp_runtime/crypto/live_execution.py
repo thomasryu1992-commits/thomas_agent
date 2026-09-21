@@ -63,13 +63,12 @@ from .. import safety_gate, timeutil
 from ..control import HALT_HARD, ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..safety_gate import Authorization
-from .live_pnl import (
+from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
 )
-from .live_promotion import RECONCILED
 from . import pre_order_gate
 from .state import VENUE_MAINNET
 
@@ -217,9 +216,12 @@ TIMES_IN_FORCE = frozenset({TIME_IN_FORCE_GTC, "IOC", "FOK", "GTX"})
 # means a hand-built intent cannot get rejected at the venue for a character.
 CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
 
-# reconcile_status vocabulary. RECONCILED is reused from live_promotion, where the historical canary
-# rows derived `clean` from it (clean iff RECONCILED and no mismatch), so those rows and this
-# vocabulary agree by construction. The live leg and the probe import it from there too.
+# reconcile_status vocabulary. RECONCILED is also what the historical canary rows derived `clean` from
+# (clean iff RECONCILED and no mismatch). It was defined in live_promotion, beside those rows, until
+# crypto PR7b-2 moved it here, below the ledger that reads it; live_promotion imports it from here, so
+# the rows and this vocabulary still agree by construction. The live leg reads it here, and
+# scripts/run_slippage_probe.py through live_promotion.
+RECONCILED = "RECONCILED"
 MISMATCH = "MISMATCH"
 NOT_FOUND = "NOT_FOUND"
 UNRECONCILABLE = "UNRECONCILABLE"

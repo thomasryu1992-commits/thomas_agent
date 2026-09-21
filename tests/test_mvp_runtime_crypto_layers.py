@@ -5,8 +5,8 @@ and a module may import its own layer and the layers below it: Market → Strate
 Execution → Reconciliation → Outcome, the directive's order (its Feedback stage is part of outcome), with
 the leaves every layer reads at the bottom and the orchestrators and reports on top. The test reads
 every import, module-level and function-local alike, resolved to the module it lands in: a
-function-local import is still a dependency, and it is how the one cycle in the lane (``live_budget`` ↔
-``live_order``) hides. Nothing in the lane imports by string (``importlib``, ``__import__``) today; an
+function-local import is still a dependency, and it is how the lane's one cycle (``live_budget`` ↔
+``live_order``, gone since PR7b-2) hid. Nothing in the lane imports by string (``importlib``, ``__import__``) today; an
 import made that way would not be seen.
 
 Each module is placed by what it does, and the map is not tuned to shrink the list below:
@@ -47,7 +47,7 @@ LAYERS: tuple[str, ...] = (
 LAYER: dict[str, str] = {
     # foundation: leaves shared by every layer
     "state": "foundation", "candidate_identity": "foundation", "refresh_marks": "foundation",
-    "indicators": "foundation",
+    "indicators": "foundation", "vocabulary": "foundation",
     # governance: what every layer allowed to act reads (the stage, its evidence, an order's record)
     "execution_stage": "governance", "testnet_evidence": "governance", "live_governance": "governance",
     # market: what the venue and the vendors say
@@ -58,6 +58,7 @@ LAYER: dict[str, str] = {
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",
     "data_review": "strategy", "forward_book": "strategy", "forward_confirmation": "strategy",
     "lifecycle": "strategy", "distribution_gate": "strategy", "limit_entry": "strategy",
+    "outcome_math": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision",
@@ -82,39 +83,17 @@ LAYER: dict[str, str] = {
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
 
 
-_VOCAB = "PR7b-2: the names move to a foundation leaf and stay re-exported at the old one"
-_MATHS = "PR7b-2: the outcome maths moves beside the cost model it reads (strategy); feedback re-exports it"
-_CYCLE = "PR7b-2: LiveOrderLimits moves to the budget, which ends the cycle"
-_RECONCILED = ("PR7b-2: the order status is defined where orders are reconciled (live_execution), and "
-               "live_promotion takes it from there. live_position and testnet_evidence spell their own "
-               "statuses the same way, and those stay theirs")
 _PAPER_MATHS = "PR7c: the trade-plan maths and paper's status names leave paper for strategy"
 _RANKING = "PR7e: candidate ranking leaves pool for strategy"
 _BOOK = "PR7d: the live book's reader and record builders leave the reconciliation module"
 _LEDGER = "PR7d: the outcome record builder leaves live_pnl"
 _IDENTITY = "PR7d: the order intent's identity and its codes move below the gate and the sender"
 _STORE = "PR7d: a read-only reader leaf below risk (the feedback loop closes through stores)"
-_ENV = frozenset({"LIVE_TRADING_ENV", "LIVE_TRADING_FLAGS", "LIVE_TRADING_PROVIDER_ID", "REAL_LIVE_TRADING"})
 
 # (importer, imported) -> (the step that removes it, the names it may take). Both only shrink: a new
 # upward pair fails, and so does a new name on a named pair (a new upward import of `submit_live_order`
 # through `pre_order_gate -> live_order` is as new as any other).
 EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
-    ("live_order", "live_pnl"): (_VOCAB + " (utc_day, the live-trading env names)", _ENV | {"utc_day"}),
-    ("live_position", "live_pnl"): (_VOCAB + " (the live-trading env names)", _ENV),
-    ("live_execution", "live_pnl"): (_VOCAB + " (the live-trading env names)", _ENV),
-    ("cost", "live_pnl"): (_VOCAB + " (the R bases, the stop-exit reasons)",
-                           frozenset({"R_BASES_NET_OF_COSTS", "R_BASIS_FILLED", "STOP_EXIT_REASONS"})),
-    ("paper", "live_pnl"): (_VOCAB + " (the R bases)", frozenset({"R_BASIS_INTENT_NET"})),
-    ("live_execution", "live_promotion"): (_RECONCILED, frozenset({"RECONCILED"})),
-    ("live_leg", "live_promotion"): (_RECONCILED, frozenset({"RECONCILED"})),
-    ("live_filters", "live_sizing"): ("PR7b-2: SymbolFilters moves to live_filters, whose venue data it holds; "
-                                      "live_sizing re-exports it", frozenset({"SymbolFilters"})),
-    ("guards", "feedback"): (_MATHS, frozenset({"net_result_r"})),
-    ("lifecycle", "feedback"): (_MATHS, frozenset({"net_result_r"})),
-    ("forward_confirmation", "feedback"): (_MATHS, frozenset({"net_result_r"})),
-    ("factory", "feedback"): (_MATHS, frozenset({"summarize_outcomes"})),
-    ("live_budget", "live_order"): (_CYCLE, frozenset({"LiveOrderLimits"})),
     ("factory", "paper"): (_PAPER_MATHS, frozenset({
         "ASSUMED_LEVERAGE", "COOLDOWN_BARS_AFTER_STOPLOSS", "MAINTENANCE_MARGIN_RATE", "liquidation_price",
         "settle_trade_plan", "stop_is_beyond_liquidation"})),
@@ -135,8 +114,8 @@ EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
     ("venue_contract", "account_store"): (_STORE + " (the account snapshot)", frozenset({"read_snapshot"})),
 }
 
-# Import cycles, anywhere in the lane and inside one layer too. The one that exists goes in PR7b-2.
-CYCLES: frozenset[frozenset[str]] = frozenset({frozenset({"live_budget", "live_order"})})
+# Import cycles, anywhere in the lane and inside one layer too. None since crypto PR7b-2.
+CYCLES: frozenset[frozenset[str]] = frozenset()
 
 
 def _modules(root: Path = CRYPTO) -> list[str]:

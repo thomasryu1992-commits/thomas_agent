@@ -24,6 +24,31 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Shared vocabulary moves below its readers, and the lane's one import cycle is gone** (crypto PR7b-2,
+  2026-09-21). Each name moves to where the layer order allows and its meaning says. The old module
+  re-exports it as the same object, so no importer outside the lane changes.
+  - **`vocabulary.py` (foundation, new):** the live-trading opt-in's names, the R-basis labels, the stop
+    exits and `utc_day`. They move with their rationale comments. They lived in `live_pnl`, the outcome
+    ledger, above the order path, `cost` and `paper`, which all read them.
+  - **`RECONCILED` is defined in `live_execution`,** with the rest of the reconcile-status vocabulary.
+    The live leg reads it there, and `live_promotion` re-exports it for `scripts/run_slippage_probe.py`.
+    `live_position` and `testnet_evidence` spell their own statuses the same way; those are other
+    vocabularies and stay theirs.
+  - **`SymbolFilters` is defined in `live_filters`,** beside the reader that fills it. `live_sizing`
+    re-exports it.
+  - **`outcome_math.py` (strategy, new):** `net_result_r`, `summarize_outcomes` and their helpers leave
+    `feedback`. By what they do they are strategy work: pure maths over the cost model, used to score
+    strategies. They read nothing from `paper`.
+  - **`limits_from_budget` moves to `live_order`,** beside the class it builds. It has no runtime caller,
+    only two tests. In `live_budget` it was that module's only import of `live_order`, the import that
+    closed the cycle. `live_order` now imports `live_budget` at module level; the old lazy import existed
+    only for that cycle.
+  - **The count:** 13 more named pairs are gone, so 12 remain (PR7c 2, PR7d 9, PR7e 1), and the lane has
+    no import cycle. No test or script patched any moved name (grep over `setattr`, string paths and
+    `patch.object`).
+  - **Records unchanged:** the 7b-1 head and this one, captured in one worktree from the same tests,
+    compare with 0 files changed (numbers in the PR).
+
 - **Policy 1.5.2 and 1.6.0 are applied, in one image** (2026-09-21, on Thomas's explicit instruction; both
   bump scripts' `--apply`, then the two validators).
   - **1.5.2** lists `emergency_close: approval_required_always` under
