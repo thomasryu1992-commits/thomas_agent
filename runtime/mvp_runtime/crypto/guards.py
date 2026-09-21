@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from .. import timeutil
-from . import feedback
+from . import outcome_math
 from .candidate_identity import is_lineage_key, outcome_attribution_key
 
 # data-health defaults (source config/settings.py; TIMEFRAME_MINUTES there is the
@@ -269,7 +269,7 @@ _PROBE_STRATEGY_PREFIX = "PROBE-"
 def _closed_rows(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Closed outcomes in the source registry's shape, sorted by close time.
 
-    ``pnl_r`` is **net of costs wherever the row can price them** (``feedback.net_result_r`` —
+    ``pnl_r`` is **net of costs wherever the row can price them** (``outcome_math.net_result_r`` —
     fees, slippage and carry, the same figure the ladder and the performance report read),
     falling back to the stored ``result_R``. The breakers below are stated in R against a
     fixed risk fraction, i.e. they are a claim about equity, and paper ``result_R`` never had
@@ -303,7 +303,7 @@ def _judged_r(outcome: Mapping[str, Any]) -> float:
     (see ``live_outcomes_for_analysis``) precisely because a loss read as breakeven would
     SHORTEN a loss streak. Changing it here would move that decision into two places.
     """
-    net = feedback.net_result_r(outcome)
+    net = outcome_math.net_result_r(outcome)
     return float(net) if net is not None else float(outcome.get("result_R", 0.0) or 0.0)
 
 

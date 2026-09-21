@@ -73,7 +73,7 @@ from .cost import (
     apply_cost_model,
     round_trip_cost_r,
 )
-from .feedback import summarize_outcomes
+from .outcome_math import summarize_outcomes
 from .distribution_gate import compute_distribution_reference
 from .features import build_feature_rows
 from .paper import (

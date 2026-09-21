@@ -47,7 +47,7 @@ from typing import Any, Iterable, Mapping
 
 from .. import timeutil
 from ..errors import ToolError
-from .feedback import net_result_r
+from .outcome_math import net_result_r
 from .lifecycle import outcome_attribution_key
 from .robustness import CONFIDENCE_Z, MIN_HOLDOUT_PERIODS, MIN_HOLDOUT_TRADES, t_critical_95
 
