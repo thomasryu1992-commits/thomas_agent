@@ -31,8 +31,9 @@ Append a new entry when a milestone ships, in the same PR.
     exits and `utc_day`. They move with their rationale comments. They lived in `live_pnl`, the outcome
     ledger, above the order path, `cost` and `paper`, which all read them.
   - **`RECONCILED` is defined in `live_execution`,** with the rest of the reconcile-status vocabulary.
-    The live leg reads it there; `live_promotion` re-exports it for `scripts/run_slippage_probe.py`. `live_position` and `testnet_evidence` spell
-    their own statuses the same way; those are other vocabularies and stay theirs.
+    The live leg reads it there, and `live_promotion` re-exports it for `scripts/run_slippage_probe.py`.
+    `live_position` and `testnet_evidence` spell their own statuses the same way; those are other
+    vocabularies and stay theirs.
   - **`SymbolFilters` is defined in `live_filters`,** beside the reader that fills it. `live_sizing`
     re-exports it.
   - **`outcome_math.py` (strategy, new):** `net_result_r`, `summarize_outcomes` and their helpers leave
