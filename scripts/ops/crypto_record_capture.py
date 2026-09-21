@@ -64,17 +64,20 @@ def normalise(path: Path, basetemp: Path) -> bytes:
     except UnicodeDecodeError:
         return raw
     text = text.replace(str(basetemp), PLACEHOLDER)
+    # RecursionError too: how deep the JSON decoder may go depends on the platform's C stack (a
+    # 5,000-deep record parses on Linux and raises on the Windows runner), and such a file is
+    # compared as its text.
     if path.suffix == ".json":
         try:
             return json.dumps(json.loads(text), sort_keys=True, ensure_ascii=False).encode("utf-8")
-        except ValueError:
+        except (ValueError, RecursionError):
             return text.encode("utf-8")
     if path.suffix == ".jsonl":
         lines = []
         for line in text.splitlines():
             try:
                 lines.append(json.dumps(json.loads(line), sort_keys=True, ensure_ascii=False))
-            except ValueError:
+            except (ValueError, RecursionError):
                 lines.append(line)
         return "\n".join(lines).encode("utf-8")
     return text.encode("utf-8")

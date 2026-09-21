@@ -18,7 +18,9 @@ from scripts.ops import crypto_record_capture as capture
 def _write(root, rel, data):
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    if rel.endswith(".jsonl"):
+    if isinstance(data, str):      # written as it stands (a record too deep to build as Python data)
+        path.write_text(data, encoding="utf-8")
+    elif rel.endswith(".jsonl"):
         path.write_text("\n".join(json.dumps(line) for line in data) + "\n", encoding="utf-8")
     else:
         path.write_text(json.dumps(data), encoding="utf-8")
@@ -110,7 +112,7 @@ def test_a_nan_that_stays_nan_is_neither_unstable_nor_changed(tmp_path):
 def test_a_record_nested_too_deep_to_walk_is_compared_whole(tmp_path):
     """The lane's tests write 5,000-deep records on purpose (they must be refused); the field walk
     cannot descend that far, so such a file is compared as normalised bytes."""
-    deep = lambda leaf: json.loads("[" * 5000 + json.dumps(leaf) + "]" * 5000)  # noqa: E731
+    deep = lambda leaf: "[" * 5000 + json.dumps(leaf) + "]" * 5000  # noqa: E731  (as text: no parse)
     base = _capture(tmp_path / "base", {"t0/deep.json": (deep(1), deep(1)), "t0/same.json": (deep(2), deep(2))})
     head = _capture(tmp_path / "head", {"t0/deep.json": (deep(3), deep(3)), "t0/same.json": (deep(2), deep(2))})
     assert capture.diff(base, head)["changed"] == ["t0/deep.json"]
