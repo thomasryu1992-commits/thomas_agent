@@ -1309,7 +1309,7 @@ def realized_pnl_usdt(
     # +398.03 into the risk guard's weekly sum. `0.002 * 77708.50 - 0.001 * 77881.30` is that
     # number to the cent.
     #
-    # Both sibling exit paths already refuse this: `live_execution.reconcile_order` on
+    # Both sibling exit paths already refuse this: `order_request.reconcile_order` on
     # `abs(filled - wanted) > 1e-9` for a runtime-sent exit, and `exit_fill_from_history` on a
     # fill that overshoots the remaining quantity. The invariant is not new here — it was
     # present twice and absent once, and the once produced every `stop_loss` sample.

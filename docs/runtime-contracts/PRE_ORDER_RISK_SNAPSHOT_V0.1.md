@@ -200,7 +200,7 @@ The gate adds these to the door's checks:
 `approved` is true only when every check passed.
 
 **What the snapshot binds of the order** (`INTENT_BOUND_FIELDS`, hashed into `intent_fingerprint`):
-the order's identity, every field `live_execution.build_order_request` turns into the venue request,
+the order's identity, every field `order_request.build_order_request` turns into the venue request,
 the prices and the lineage, the artifact included (`pre_order_intent.v2`, PR3a-2). A structural test
 keeps the request fields and the bound fields in step. The artifact is not in the order's venue
 identity: the same bar under another artifact is the same order, so a pool re-stamped between two

@@ -182,7 +182,7 @@ VENUE_CONDITIONAL_MOVED = -4120
 def legacy_conditional_probe(symbol: str, *, stop_price: float, client_id: str) -> dict[str, Any]:
     """The 2026-08-03 diagnostic stop for ``symbol``: a SELL ``STOP_MARKET`` Close-All below the
     market, in the order API's pre-migration spelling. No ``algoType``, so the validator's own
-    routing (`live_execution.is_algo_request`) sends it to ``/order/test``."""
+    routing (`order_request.is_algo_request`) sends it to ``/order/test``."""
     return {"symbol": symbol, "side": "SELL", "type": "STOP_MARKET", "stopPrice": stop_price,
             "closePosition": "true", "workingType": "MARK_PRICE", "newClientOrderId": client_id}
 
