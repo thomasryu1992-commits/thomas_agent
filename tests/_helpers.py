@@ -118,7 +118,7 @@ def deep_order_book(mid=60000.0, *, received_at, levels=20, quantity=1_000_000.0
 
 def healthy_optional_data(bar_time=None):
     """The optional data of a context whose legs all answered and whose feeds are fresh (PR2d-2):
-    what `cycle.optional_data_health` returns for it at ``bar_time`` — the bar the decision is on,
+    what `feed_assembly.optional_data_health` returns for it at ``bar_time`` — the bar the decision is on,
     which the entry door checks — and what the door lets through."""
     return {"bar_time": bar_time, "bar_readable": bar_time is not None, "degraded": [], "stale": [],
             "missing": [], "feeds": {}}

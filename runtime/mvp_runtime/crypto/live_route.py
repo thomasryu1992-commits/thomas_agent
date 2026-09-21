@@ -306,7 +306,7 @@ def run_live_leg(
     # caller that does not say — leaves every entry's profile incomplete, which refuses it.
     live_arm_approvals: Mapping[str, str | None] | None = None,
     # PR2d-2, decision 28: the optional data this context was judged on
-    # (`cycle.optional_data_health`). None — a caller that does not say — refuses every entry;
+    # (`feed_assembly.optional_data_health`). None — a caller that does not say — refuses every entry;
     # closes are decided above the entry block and never read it.
     optional_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:

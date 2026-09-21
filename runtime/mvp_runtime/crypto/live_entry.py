@@ -453,7 +453,7 @@ def plan_live_entry(
     # PR2d-3: the order book the spread and the market impact are judged on, as the leg read it
     # (`market_data` stamps its `received_at`). No default, and None refuses.
     order_book: Mapping[str, Any] | None,
-    # PR2d-2: the optional data this context was judged on (`cycle.optional_data_health`): the
+    # PR2d-2: the optional data this context was judged on (`feed_assembly.optional_data_health`): the
     # legs' degrade codes this cycle, the feeds past their age, and the legs missing from the bar.
     # No default; None, or an account of another bar than `entry_bar_time`, refuses.
     optional_data: Mapping[str, Any] | None,
