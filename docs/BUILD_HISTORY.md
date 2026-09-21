@@ -43,10 +43,18 @@ Append a new entry when a milestone ships, in the same PR.
     functions from their owner. `live_readiness` still reads the code set through `cycle`, which is a
     downward import. Ten comments and docstrings that named a moved function as `cycle`'s now name
     `feed_assembly`.
-  - **Nothing changed.** The 16 moved definitions are AST-identical. No test patches a moved name, or a
-    name a moved body reads, on `cycle`: the patched names (`run_live_leg`, `run_risk_guard`,
-    `run_paper_update`, `run_lifecycle`, `run_crypto_cycle`, `read_outcomes`) are the ones
-    `run_crypto_cycle` calls, and they stay in `cycle`.
+  - **Nothing changed.** The 16 moved definitions are AST-identical. Tests patch ten names on `cycle`:
+    - seven that stay there and that `run_crypto_cycle` or `run_pool_cycle` calls (`run_live_leg`,
+      `run_pool_cycle`, `run_risk_guard`, `run_paper_update`, `run_lifecycle`, `run_crypto_cycle`,
+      `read_outcomes`);
+    - three moved ones (`attach_htf`, `attach_reference`, `attach_cross_section`), through an
+      attribute name held in a variable, which a search for literal names misses. They still reach:
+      `run_crypto_cycle` calls them through `cycle`'s own binding, the re-export the patch replaces.
+      With the patch removed, or moved to `feed_assembly`, the test fails.
+
+    A patch on `cycle` for an attach reaches the cycle's call, not a caller that imports it from
+    `feed_assembly`. The first census of this PR said no test patched a moved name, and the review
+    corrected it.
 
 - **Candidate ranking is judged in strategy; the promotion door stays with the pool** (crypto PR7e-1,
   2026-09-21).

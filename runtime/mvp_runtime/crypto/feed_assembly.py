@@ -213,7 +213,7 @@ def attach_feeds(
     liquidation feed that a caller must supply.
 
     **This covers only THIS call's symbol, and that is no longer where the store's scope is
-    decided.** It was, and what that cost is measured in :func:`accumulate_positioning_cohort`:
+    decided.** It was, and what that cost is measured in :func:`cycle.accumulate_positioning_cohort`:
     per-context accumulation records whatever the fan-out visited, so a cohort member the pool
     stopped routing stopped being recorded, permanently and silently. The fan-out now sweeps
     the declared cohort itself, and this flag covers what that sweep cannot reach — the
@@ -506,7 +506,7 @@ def attach_positioning(
     the ``PeerCandleCache`` shape for a store instead of a vendor. ``None`` means "no
     hand-down" and reads the store as before; a handed-down EMPTY list is an answer, not an
     absence, so it is used as-is. The caller owns freshness: a context whose own feed step
-    just appended must hand ``None`` (see ``run_crypto_cycle``).
+    just appended must hand ``None`` (see ``cycle.run_crypto_cycle``).
 
     A LOCAL read, unlike every other attach in this module: the rows come from the store this
     runtime has been filling since `positioning_store` shipped, not from a vendor. So there is no

@@ -130,11 +130,11 @@ def attach_mining_legs(
 ) -> None:
     """Every leg **the factory mines on**, in one place. Mutating, degrade-only, never raises.
 
-    The five attaches above are individually correct and were individually copied. That is the
-    defect this function exists to end rather than a tidiness preference: a caller that assembles
-    four of the five gets a frame where the fifth family's columns are None down the whole
-    window, and the failure is silent in the worst way — the spec does not error, it scores as a
-    no-trade spec and is judged for it. The same mistake has now been made twice on two different
+    The five attaches in ``feed_assembly`` are individually correct and were individually
+    copied. That is the defect this function exists to end rather than a tidiness preference: a
+    caller that assembles four of the five gets a frame where the fifth family's columns are None
+    down the whole window, and the failure is silent in the worst way — the spec does not error,
+    it scores as a no-trade spec and is judged for it. The same mistake has now been made twice on two different
     call sites (the null control, and the family proposer), both times by writing `attach_feeds`
     and stopping, and both times invisible until somebody counted the None columns.
 

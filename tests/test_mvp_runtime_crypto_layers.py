@@ -36,6 +36,12 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   the venue and the vendors say. Store reads only foundation, which is enforced below, so its place
   among the bottom layers carries no edge: it sits with the leaves every acting layer reads, beside
   governance. Nothing in governance or market reads it.
+- **one context's market inputs are market, the cycle that uses them is orchestration** (PR7e-2).
+  ``feed_assembly`` attaches the legs a context is judged on and judges them for the live entry door
+  (``optional_data_health``), reading only ``market_data``, the market stores and the leaves. The age
+  bounds that judgement applies are operator tunables (Thomas decision 28); a rule that read beyond
+  market data would belong with the door's other checks, in risk, not here. ``attach_mining_legs``
+  stays in ``cycle`` for now: it reads only ``feed_assembly`` and could follow it.
 - **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps

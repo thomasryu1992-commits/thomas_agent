@@ -275,7 +275,7 @@ DERIVATIVE_MAX_PAGES = 60
 
 # How much derivative history (liquidations, open interest) the runtime asks the feed for.
 #
-# Lived in `feed_assembly._LIQUIDATION_DAYS` until 2026-08-04, where it was one consumer's private
+# Lived in `cycle._LIQUIDATION_DAYS` until 2026-08-04, where it was one consumer's private
 # number. It is moved here because a SECOND consumer now needs it and they must not disagree:
 # `factory.templates_for_timeframe` gates the oi_* families on whether this depth reaches the
 # replay window, and a gate reading a different number than the fetch would either mint
