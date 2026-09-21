@@ -313,7 +313,7 @@ def run_promotion(
             # candidate line would stop routing. The pool is the authority on what trades; this
             # keeps it self-contained.
             #
-            # The raw numbers, never a derived exclusion list. `paper.regime_admits` owns the
+            # The raw numbers, never a derived exclusion list. `trade_plan.regime_admits` owns the
             # rule and applies it at read time, so moving its threshold later cannot leave stale
             # labels behind — the defect `pool.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.

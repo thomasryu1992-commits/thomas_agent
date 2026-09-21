@@ -4,7 +4,8 @@ Each lived in `live_pnl`, the module that builds the records they label, which s
 the lane, so every lower reader imported upward (`cost`, `paper`, the order path). They carry no
 logic: the live-trading opt-in's names, the labels an outcome's R is measured on, the exits that
 leave through a stop, and the UTC day a record belongs to. `live_pnl` re-exports every one, so its
-importers keep their import lines and read the same objects.
+importers keep their import lines and read the same objects. Since crypto PR7c the paper plane's
+record labels that two layers read are here too, re-exported by `paper`.
 """
 
 from __future__ import annotations
@@ -73,9 +74,9 @@ def utc_day(stamp: str | None = None) -> str:
 
 
 # --- the paper plane's record labels (crypto PR7c) -----------------------------------------------------
-# The trade-plan maths (`trade_plan`, strategy) stamps these into positions and outcome rows, the paper
-# kernel (`paper`, decision) reads them back, and the forward book reads the router statuses. Kept here,
-# below all three; `paper` re-exports every one.
+# Each is read by two layers: the trade-plan maths (`trade_plan`, strategy) stamps or tests it and the
+# paper kernel (`paper`, decision) reads it back, and the forward book (strategy) reads the entry status
+# and the occupying statuses. Kept here, below all of them; `paper` re-exports every one.
 
 PAPER_PROVENANCE = "mvp_paper_kernel"
 
@@ -84,15 +85,8 @@ PAPER_PROVENANCE = "mvp_paper_kernel"
 # rather than a second migration of every stored position.
 DEFAULT_VENUE = "binance_futures"
 
-# Router statuses/rules (source S7).
+# The router's entry status (source S7). The rest of the router's statuses and its rule code stay in
+# `paper`, the only module that reads them.
 STATUS_ENTRY_CANDIDATE = "ENTRY_CANDIDATE"
 
-STATUS_NO_ENTRY = "NO_ENTRY"
-
-STATUS_BLOCKED = "BLOCKED"
-
-BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
-
 OCCUPYING_STATUSES = frozenset({"PAPER_ACTIVE", "WARNING", "PROBATION"})
-
-PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker

@@ -70,7 +70,7 @@ from typing import Any, Mapping
 # set so it cannot be read as one of the paper bases. Imported from their owner rather than
 # respelled here: `vocabulary` defines what each basis means (they lived in `live_pnl`, where the
 # rows are built, until crypto PR7b-2), and two spellings of one label is how the two drift.
-# Constants only — no I/O at import, the same reason `paper.py` takes `R_BASIS_INTENT_NET` from there.
+# Constants only — no I/O at import, the same reason `trade_plan.py` takes `R_BASIS_INTENT_NET` from there.
 from ..errors import ToolError
 from . import market_data
 from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS

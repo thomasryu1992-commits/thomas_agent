@@ -8,8 +8,10 @@ it with. It lived in `paper`, beside the stateful position kernel (`run_paper_up
 strategy-layer work, pure computation over a strategy's spec and the cost model, and it imports nothing
 from `paper`. `paper` re-exports every name as the same object, so its importers keep their lines.
 
-The labels these functions stamp into records, and that the kernel reads back (`PAPER_PROVENANCE`,
-`PAPER_KERNEL_VERSION`, `DEFAULT_VENUE`, the router statuses), live in `vocabulary`.
+The labels these functions stamp into records and the kernel reads back (`PAPER_PROVENANCE`,
+`DEFAULT_VENUE`, the entry status) live in `vocabulary`. `PAPER_KERNEL_VERSION`, which only
+`open_position` stamps, lives here. The regime gate (`regime_admits`) is here too: the forward book
+applies it as the kernel does.
 """
 
 from __future__ import annotations
@@ -25,11 +27,12 @@ from .strategy import StrategySpec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
 from .vocabulary import (
     DEFAULT_VENUE,
-    PAPER_KERNEL_VERSION,
     PAPER_PROVENANCE,
     R_BASIS_INTENT_NET,
     STATUS_ENTRY_CANDIDATE,
 )
+
+PAPER_KERNEL_VERSION = "paper_position_kernel.v1"  # source-compatible marker
 
 
 # The planned stop sits beyond the isolated-margin liquidation price, so the position
@@ -96,8 +99,6 @@ ENTRY_COST_UNECONOMIC = "ENTRY_COST_UNECONOMIC"
 # exit-parity fix these are the LEGACY fallback only: a position normally carries its
 # spec's own max_holding_bars (the value its backtest evidence was built on).
 MAX_HOLD_BARS = {"15m": 96, "1h": 48, "4h": 30}
-
-
 DEFAULT_MAX_HOLD_BARS = 48
 
 

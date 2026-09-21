@@ -66,6 +66,7 @@ from .trade_plan import (  # noqa: F401
     MAX_HOLD_BARS,
     MIN_REGIME_TRADES_TO_EXCLUDE,
     MIN_VOL_SIZE_MULTIPLIER,
+    PAPER_KERNEL_VERSION,
     REGIME_EXCLUDED,
     STOP_BEYOND_LIQUIDATION,
     advance_holding,
@@ -85,14 +86,10 @@ from .trade_plan import (  # noqa: F401
     touches as _touches,
 )
 from .vocabulary import (  # noqa: F401
-    BLOCK_DIRECTION_CONFLICT,
     DEFAULT_VENUE,
     OCCUPYING_STATUSES,
-    PAPER_KERNEL_VERSION,
     PAPER_PROVENANCE,
-    STATUS_BLOCKED,
     STATUS_ENTRY_CANDIDATE,
-    STATUS_NO_ENTRY,
 )
 
 PAPER_TOOL_ID = "crypto.paper.kernel"
@@ -105,8 +102,6 @@ PAPER_PROVIDER_ID = "paper_trading"
 _WRITE_FLAGS = (FILESYSTEM_WRITE,)
 
 from .state import STATE_REL, state_dir  # noqa: E402  (one root for both trading planes; re-exported for this module's many importers)
-# See vocabulary.R_BASIS_* — paper R is measured on intended fills, now NET of fees and slippage.
-from .vocabulary import R_BASIS_INTENT_NET  # noqa: E402  (constant only; no I/O at import)
 # Outcomes carried in from the frozen crypto_AI_System (scripts/import_crypto_history.py).
 # They are REAL closed trades, but produced by different code, so anything reporting "how is
 # THIS runtime doing" must not silently blend them with its own (see split_by_provenance).
@@ -155,6 +150,12 @@ OUTCOMES_FILENAME = "paper_outcomes.jsonl"
 MAX_CONCURRENT_POSITIONS = 20
 MAX_POSITIONS_PER_SYMBOL = 4
 
+# Router statuses/rules (source S7). The entry status (`STATUS_ENTRY_CANDIDATE`) lives in `vocabulary`,
+# where the forward book reads it too; re-exported above.
+STATUS_NO_ENTRY = "NO_ENTRY"
+STATUS_BLOCKED = "BLOCKED"
+BLOCK_DIRECTION_CONFLICT = "BLOCK_STRATEGY_DIRECTION_CONFLICT"
+
 
 # Same-bar routing priority is decided on REALIZED evidence when there is enough of it.
 # The floor reuses `feedback.HEALTHY_TRADES_PER_PARAMETER`'s judgement (10, "under ~5 it
@@ -193,10 +194,9 @@ CANDLE_NOT_FRESH = "CANDLE_NOT_FRESH"
 STOP_LOSS_COOLDOWN = "STOP_LOSS_COOLDOWN"
 
 
+# Recorded when a position predates its own `max_holding_bars` and settles on the timeframe table
+# instead (`trade_plan.position_max_hold`; the limits and their rationale are `trade_plan.MAX_HOLD_BARS`).
 LEGACY_MAX_HOLD_FALLBACK = "LEGACY_POSITION_MAX_HOLD_FALLBACK"
-
-
-# --- entry routing (pure) -----------------------------------------------------
 
 
 # --- the portfolio's net directional bet --------------------------------------
@@ -614,7 +614,7 @@ def route_entries(
     return result
 
 
-# --- settlement (pure; source math verbatim) ----------------------------------
+# --- intrabar candles: what settlement reads (its maths is in trade_plan) ---------
 
 
 def intrabar_ambiguous(position: Mapping[str, Any], candle: Mapping[str, Any] | None) -> bool:

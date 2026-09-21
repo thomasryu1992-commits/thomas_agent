@@ -31,9 +31,10 @@ Append a new entry when a milestone ships, in the same PR.
     plan, liquidation, the regime and cost refusals, the managed stop and the intrabar exit, settlement,
     the outcome record, and their constants and reason codes. By what it does this is strategy work,
     pure computation over a spec and the cost model, and it imports nothing from `paper`.
-  - **Record labels to `vocabulary`:** `PAPER_PROVENANCE`, `PAPER_KERNEL_VERSION`, `DEFAULT_VENUE`,
-    `OCCUPYING_STATUSES`, and the router's statuses and rule code (moved as the block they were).
-    `trade_plan` stamps them and the kernel reads them back, two layers.
+  - **Record labels to `vocabulary`, only where two layers read them:** `PAPER_PROVENANCE`,
+    `DEFAULT_VENUE`, `STATUS_ENTRY_CANDIDATE` and `OCCUPYING_STATUSES`. `PAPER_KERNEL_VERSION`, which
+    only `open_position` stamps, went with the maths. The router's other statuses and its rule code stay
+    in `paper`, the only reader (review of #921).
   - **Nothing changed:**
     - `paper` re-exports every moved name as the same object;
     - all 34 moved definitions are AST-identical to the originals;
