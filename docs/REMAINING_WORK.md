@@ -752,7 +752,7 @@ scopes at different levels, so nothing was owed to it.
           rate. Unlike the taker figure it has never been measured on this account, because no
           maker fill has ever happened. If the real rate is higher the backtest reports an edge
           **better** than reality, which is the wrong way for evidence that gates real money.
-          Two of the three pieces are in place. `pool.expectancy_at` rescales the maker leg
+          Two of the three pieces are in place. `candidate_ranking.expectancy_at` rescales the maker leg
           independently of the taker one (#309), so the eventual measurement converts every
           maker-scored candidate exactly instead of splitting the store a fourth time — done
           while no candidate carried a maker term, which was the cheap moment to do it. And the
@@ -1788,7 +1788,7 @@ rung: 4h is the timeframe whose holdout holds a median of **23** closed trades a
 cannot be judged.
 
 **What binds instead: none of it reaches the door.** Of the 474, **zero** are ROBUST on the
-verdict `pool.candidate_quality` recomputes — the stored `ROBUST` labels (26 of them) are the
+verdict `candidate_ranking.candidate_quality` recomputes — the stored `ROBUST` labels (26 of them) are the
 stale kind `holdout_status` already documents, and every one recomputes to PROVISIONAL. The
 holdout gate is where they stop:
 
@@ -2620,7 +2620,7 @@ each candidate's evidence so `promotable_backlog` refuses to rank across bases. 
 |---|---|
 | `FUNDING_MAX_PAGES` 4 → 7 | **done** (8) |
 | `funding_fade_*` gate | **done** — the families and the timing comment are in `factory.py` |
-| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `pool.evidence_depth_rank` |
+| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `candidate_ranking.evidence_depth_rank` |
 | `FACTORY_DEPTH_DAYS` 500 → 2,000 | **half** (1,000) |
 | `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 | **half** (1,020) |
 

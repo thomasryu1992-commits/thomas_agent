@@ -146,8 +146,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- 2. discrimination: the metric against the holdout it never read --------------------
     # The grouping status is recomputed from the stored holdout block (`holdout_status`),
-    # exactly as `pool.candidate_quality` does — a mint-time label can be two rule vintages
-    # stale, and grouping on it would validate the metric against the wrong answer key.
+    # exactly as `candidate_ranking.candidate_quality` does — a mint-time label can be two rule
+    # vintages stale, and grouping on it would validate the metric against the wrong answer key.
     stability_by_status: dict[str, list[float]] = defaultdict(list)
     unjudgeable = 0
     for record in rows:

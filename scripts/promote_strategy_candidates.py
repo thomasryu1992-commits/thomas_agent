@@ -315,7 +315,7 @@ def run_promotion(
             #
             # The raw numbers, never a derived exclusion list. `trade_plan.regime_admits` owns the
             # rule and applies it at read time, so moving its threshold later cannot leave stale
-            # labels behind — the defect `pool.candidate_quality` already had to fix once, where
+            # labels behind — the defect `candidate_ranking.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.
             # Same argument, same shape, for the distribution reference beside it: the
             # backtest's per-feature mean/std, which `distribution_gate.distribution_admits`
@@ -612,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
         # scored over 500 bars and one scored over 2000 sat here looking equally examined —
         # while the verdict beside them is counted over trades, and a shorter window has
         # fewer. Reported rather than gated, because the error runs against the candidate:
-        # see `pool.EVIDENCE_DEPTH_RANK_*` for why this tier ranks instead of refusing.
+        # see `candidate_ranking.EVIDENCE_DEPTH_RANK_*` for why this tier ranks instead of refusing.
         depths: dict[tuple[int, str], int] = collections.Counter(
             (q["evidence_depth_rank"], q["evidence_depth"])
             for q in (pool_store.candidate_quality(c) for c in candidates)

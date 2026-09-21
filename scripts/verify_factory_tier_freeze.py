@@ -34,7 +34,7 @@ Enabled tiers carry no verdict. There is nothing to verify about a tier that is 
 to be minting; they are printed so the freeze is read against the whole rotation rather
 than a single line of it.
 
-Why the freeze matters enough to verify: ``pool.attempts_by_context`` counts every
+Why the freeze matters enough to verify: ``candidate_ranking.attempts_by_context`` counts every
 distinct candidate per ``(symbol_scope, timeframe)`` at READ time and never decays, so
 each mint raises ``robustness.selection_adjusted_z`` for every sibling in that context.
 A tier that was disabled but kept firing would go on charging that price silently —

@@ -125,11 +125,11 @@ def regime_admits(entry: Mapping[str, Any], regime: Any) -> tuple[bool, str | No
     """May this pool entry trade in ``regime``? Returns ``(admitted, reason)``.
 
     **Derived from the stored numbers, never from a stored verdict**, and that is the whole
-    reason this is a function rather than a field written at promotion time. `pool.
-    candidate_quality` already carries the scar: robustness verdicts were written once at mint
-    time, the rule that produced them changed, and twelve candidates kept a label the rule could
-    no longer produce — inverting the shortlist on exactly the property the new rule existed to
-    enforce. A baked `excluded: [...]` list would repeat that the first time
+    reason this is a function rather than a field written at promotion time.
+    `candidate_ranking.candidate_quality` already carries the scar: robustness verdicts were
+    written once at mint time, the rule that produced them changed, and twelve candidates kept a
+    label the rule could no longer produce — inverting the shortlist on exactly the property the
+    new rule existed to enforce. A baked `excluded: [...]` list would repeat that the first time
     :data:`MIN_REGIME_TRADES_TO_EXCLUDE` moved.
 
     The rule, and the direction it fails in:

@@ -36,14 +36,20 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   the venue and the vendors say. Store reads only foundation, which is enforced below, so its place
   among the bottom layers carries no edge: it sits with the leaves every acting layer reads, beside
   governance. Nothing in governance or market reads it.
+- **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
+  candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
+  gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
+  the store, its invariants, the doors that turn a tier into a refusal (``assert_promotable_*`` and the
+  sets they refuse on), the backlog and the live tier. The two "what a row minted now would carry"
+  views (``current_cost_basis``, ``current_evidence_depth``) went with the formatters they are built on.
 
-The edges that point up today are named in ``EXCEPTIONS`` with the step that removes each, and with the
-names each may take. Both only shrink: a new upward pair fails, a new name on a named pair fails, and so
-does an exception, or a name, that is no longer imported. An edge whose removal would change trading
-behaviour stays as a permanent exception, because the directive puts "no behaviour change" above the
-direction; none needs that today. Moving a module to a lower layer empties exceptions as surely as
-removing an import, so it is a design decision reviewed like one: the placement must say what the module
-does.
+No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
+``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
+new name on a named pair, or an exception or name that is no longer imported. The one reason an entry
+could ever be right is an edge whose removal would change trading behaviour, because the directive puts
+"no behaviour change" above the direction; such an entry would change the pin in the same PR, where a
+reviewer sees it. Moving a module to a lower layer removes an upward edge as surely as removing an
+import, so it is a design decision reviewed like one: the placement must say what the module does.
 """
 
 from __future__ import annotations
@@ -76,7 +82,7 @@ LAYER: dict[str, str] = {
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",
     "data_review": "strategy", "forward_book": "strategy", "forward_confirmation": "strategy",
     "lifecycle": "strategy", "distribution_gate": "strategy", "limit_entry": "strategy",
-    "outcome_math": "strategy", "trade_plan": "strategy",
+    "outcome_math": "strategy", "trade_plan": "strategy", "candidate_ranking": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision",
@@ -103,14 +109,9 @@ LAYER: dict[str, str] = {
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it
 
 
-_RANKING = "PR7e: candidate ranking leaves pool for strategy"
-
-# (importer, imported) -> (the step that removes it, the names it may take). Both only shrink: a new
-# upward pair fails, and so does a new name on a named pair (a second name taken through
-# `forward_confirmation -> pool` is as new as any other pair).
-EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {
-    ("forward_confirmation", "pool"): (_RANKING, frozenset({"candidate_quality"})),
-}
+# (importer, imported) -> (the step that removes it, the names it may take). Empty since crypto PR7e-1;
+# both only shrink, so a new upward pair fails and so does a new name on a named pair.
+EXCEPTIONS: dict[tuple[str, str], tuple[str, frozenset[str]]] = {}
 
 # Import cycles, anywhere in the lane and inside one layer too. None since crypto PR7b-2.
 CYCLES: frozenset[frozenset[str]] = frozenset()
@@ -262,6 +263,13 @@ def test_no_crypto_import_points_up_a_layer_beyond_the_named_ones():
         + ". New names on a named pair: "
         + "; ".join(f"{s} -> {d}: {sorted(n)}" for (s, d), n in sorted(problems["widened"].items()))
     )
+
+
+def test_no_upward_edge_is_excepted():
+    """Empty since PR7e-1. The directive forbids reverse dependencies, so an entry is a decision to
+    allow one, justified only where removing the edge would change trading behaviour; it changes this
+    pin in the same PR, where a reviewer sees it."""
+    assert EXCEPTIONS == {}
 
 
 def test_every_named_exception_still_exists_name_by_name():

@@ -8,9 +8,9 @@ PAPER_ACTIVE=25 while the pool says all 41 SUSPENDED; 34 pool entries carry
 ``robustness_verdict: ROBUST`` from an import two rule vintages ago.
 
 None of it reaches a decision, and that is the property here — held by nothing but habit until
-now. `pool.candidate_quality` recomputes from the stored COMPONENTS, membership comes from the
-pool rather than a candidate row, and the promotion door copies raw per-regime numbers onto an
-entry instead of a derived label.
+now. `candidate_ranking.candidate_quality` recomputes from the stored COMPONENTS, membership comes
+from the pool rather than a candidate row, and the promotion door copies raw per-regime numbers onto
+an entry instead of a derived label.
 
 The failure this refuses is one line: a router or a promotion filter reading
 ``entry.get("robustness_verdict")`` and getting a two-vintage-old ROBUST for a strategy the
@@ -43,8 +43,9 @@ def _string_constants(path: pathlib.Path) -> set[str]:
     these fields are only ever reached by name through a Mapping.
 
     The ``STORED_SNAPSHOT_FIELDS`` assignment is subtracted rather than the file that holds
-    it being skipped: `pool.py` declares the names AND owns the recompute, so exempting the
-    whole module would blind this to the one place most able to reintroduce the defect."""
+    it being skipped: `pool.py` declares the names and its doors read the pool entries that carry
+    them, so exempting the whole module would blind this to a place able to reintroduce the defect.
+    (The recompute lives in `candidate_ranking.py` since crypto PR7e-1.)"""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     declared: set[int] = set()
     for node in ast.walk(tree):
@@ -68,7 +69,7 @@ def test_no_decision_surface_names_a_stored_verdict():
     }
     assert not offenders, (
         f"{offenders} — a stored verdict is what a rule said once, and this runtime has "
-        "changed those rules twice. Recompute through pool.candidate_quality, or if the "
+        "changed those rules twice. Recompute through candidate_ranking.candidate_quality, or if the "
         "field genuinely belongs on a new record type, add its module to ALLOWED with the "
         "reason it is not a cached answer."
     )
@@ -96,9 +97,9 @@ def test_only_candidate_quality_reads_the_stored_robustness_block():
                 and node.args[0].value == "robustness"
             ):
                 readers.add(path.name)
-    assert readers == {"pool.py"}, (
+    assert readers == {"candidate_ranking.py"}, (
         f"the stored robustness block is opened in {sorted(readers)}; only "
-        "pool.candidate_quality may, and only to recompute from the components"
+        "candidate_ranking.candidate_quality may, and only to recompute from the components"
     )
 
 
@@ -108,5 +109,5 @@ def test_the_measurements_stay_readable():
     forbidding them would forbid the mechanism that makes the labels disposable."""
     assert not STORED_SNAPSHOT_FIELDS & {"robustness_score", "trades_per_parameter"}
     assert "robustness_score" in _string_constants(
-        ROOT / "runtime" / "mvp_runtime" / "crypto" / "pool.py"
+        ROOT / "runtime" / "mvp_runtime" / "crypto" / "candidate_ranking.py"
     ), "candidate_quality stopped reading the component it recomputes from"
