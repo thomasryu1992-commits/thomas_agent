@@ -85,10 +85,12 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **the backlog is decision, and ``pool`` imports it** (PR7e-11). ``promotion_backlog`` counts the
   lineages an operator could promote now and says why the rest cannot, applying the door's own chain;
   it reports and decides nothing. It reads the stored pool and the candidates through ``pool_state``
-  and the door's sets and window through ``pool_admission``, and nothing of ``pool``'s. Its reader,
-  ``dashboard`` through ``pool``, sits above decision. With it every role ``pool`` held has a module
-  of its own, and ``pool`` keeps the routing views, the resolution of an operator's candidate
-  selectors and the replay view of a candidate.
+  and the door's sets and window through ``pool_admission``, and nothing of ``pool``'s. Its readers,
+  ``dashboard`` through ``pool`` and ``tunables`` directly, sit above decision. It decides nothing, yet
+  it is decision rather than report because ``pool`` re-exports it: in report, ``pool``'s import of it
+  would point upward. With it every role ``pool`` held has a module of its own, and ``pool`` keeps the
+  routing views, the resolution of an operator's candidate selectors and the replay view of a
+  candidate.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a

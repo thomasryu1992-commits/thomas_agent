@@ -2,8 +2,8 @@
 rest cannot (crypto PR7e-11).
 
 :func:`promotable_backlog` applies the promotion door's own chain to the candidate store (the promotable
-sets and the lifecycle window from `pool_admission`, the ranking from `candidate_ranking`) and reports
-the lineages that would clear it today. Each refused row is charged to the first axis in
+sets from `pool_admission`, the ranking from `candidate_ranking`), then a filter of its own that the door
+does not apply, the lifecycle window (from `pool_admission`), and reports the lineages left. Each refused row is charged to the first axis in
 :data:`BACKLOG_REFUSAL_AXES` that drops it. The daily board (`dashboard`) reads it, and raises a line
 once the count reaches :data:`PROMOTION_BACKLOG_ALERT_THRESHOLD`. The backlog reads and reports; it
 refuses and decides nothing.

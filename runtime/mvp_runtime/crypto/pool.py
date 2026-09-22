@@ -58,11 +58,11 @@ from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 
 # `pool`'s many callers read the id rule as `pool.candidate_id`, and the rule itself
 # moved to a leaf so `factory` no longer needs a module-level edge into `pool`.
 # The ranking view and the two comparability tiers moved to `candidate_ranking` (strategy) in crypto
-# PR7e-1. This module's routing reads them, `pool_admission` and `promotion_backlog` import them
-# directly (PR7e-10, PR7e-11), and every public name is re-exported here, as the same object, for the
-# callers that read them as `pool.<name>`. Of the private helpers only `_as_float`, which the routing
-# views call, is imported: a patch on `pool` for any other would miss the ranking or the backlog that
-# reads it, and without the name here such a patch fails loudly instead.
+# PR7e-1. Nothing left in this module reads them: `pool_admission` and `promotion_backlog` import them
+# directly (PR7e-10, PR7e-11). Every public name is re-exported here, as the same object, for the
+# callers that read them as `pool.<name>`. Of the private helpers only `_as_float`, which
+# `context_scores` calls, is imported: a patch on `pool` for any other would miss the ranking or the
+# backlog that reads it, and without the name here such a patch fails loudly instead.
 from .candidate_ranking import (  # noqa: F401
     COST_BASIS_RANK_CONSERVATIVE, COST_BASIS_RANK_CURRENT, COST_BASIS_RANK_OPTIMISTIC,
     COST_BASIS_RANK_UNRECORDED, EDGE_COST_BASIS_NET, EDGE_COST_BASIS_UNRECORDED,

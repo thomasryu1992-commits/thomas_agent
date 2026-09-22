@@ -62,7 +62,6 @@ from . import (
     market_data,
     null_control,
     paper,
-    pool,
     pool_admission,
     pre_order_gate,
     probe,

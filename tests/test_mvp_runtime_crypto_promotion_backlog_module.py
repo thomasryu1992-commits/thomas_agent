@@ -43,3 +43,5 @@ def test_pool_re_exports_every_public_name_as_the_same_object():
 def test_the_private_key_is_not_on_pool():
     assert [name for name in _definitions() if name.startswith("_")] == ["_lineage_key"]
     assert not hasattr(pool, "_lineage_key")
+    # `candidate_ranking._is_number` was re-exported for the backlog alone, and left with it.
+    assert not hasattr(pool, "_is_number")
