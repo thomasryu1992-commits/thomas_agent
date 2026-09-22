@@ -24,6 +24,35 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The backlog leaves the pool, the last of its roles** (crypto PR7e-11, 2026-09-22).
+  - **What moved:** `promotion_backlog.py` (decision, new) takes the 6 definitions of the promotion
+    backlog: `promotable_backlog`, which applies the door's own chain to the candidate store and reports
+    what would clear it today; `BACKLOG_REFUSAL_AXES`, the axes it charges each refusal to;
+    `PROMOTION_BACKLOG_ALERT_THRESHOLD`, where the daily board raises a line; `MAX_DAYS_TO_LIFECYCLE_WINDOW`
+    and `days_to_lifecycle_window`; and the private `_lineage_key`. It reads the stored pool and the
+    candidates through `pool_state` and the door's sets and window through `pool_admission`, and nothing
+    of `pool`'s.
+  - **Readers:** `pool` re-exports the 5 public names as the same objects; the daily board and the tests
+    keep reading `pool.<name>`. `pool` keeps `_lineage_key` off, and drops `market_data`,
+    `HOLDOUT_CONFIRMED`, `ROBUST` and the private `_is_number`, which only the backlog used and nothing
+    read through `pool`. `candidate_ranking`'s note on who reads `_is_number`, its reference to
+    `_lineage_key`, and `lifecycle`'s reference to `days_to_lifecycle_window` name the new module.
+  - **Tunables:** `PROMOTION_BACKLOG_ALERT_THRESHOLD` and `MAX_DAYS_TO_LIFECYCLE_WINDOW` are indexed at
+    `crypto/promotion_backlog.py` and read from it, with their values unchanged. No tunable is owned by
+    `crypto/pool.py` any more, so `tunables` no longer imports `pool`.
+  - **Patches:** the census plugin, watching `pool` and `promotion_backlog`, found no call of a moved
+    function under a patch on `pool` for a name it reads. `promotable_backlog`, which reads
+    `load_active_pool` and `read_candidates`, is called by the same 48 tests as before the move, and
+    never while either is patched.
+  - **Nothing changed.** All 13 definitions `pool` had are AST-identical, docstrings included: 6 in
+    `promotion_backlog`, 7 still in `pool`.
+  - **Where `pool` stands.** It is 301 lines: 2,934 when PR7 began, 2,204 before PR7e-7. It keeps the
+    routing views (`routable_strategy_ids`, `routable_lineage_keys`, `routable_contexts`,
+    `context_scores`), `resolve_candidates`, `as_pool_entry_for_replay` and `STORED_SNAPSHOT_FIELDS`, and
+    re-exports every public name of the six modules its roles went to: `candidate_ranking` (PR7e-1), `pool_state`,
+    `live_tier`, `pool_transitions`, `pool_admission` and `promotion_backlog` (PR7e-7 to PR7e-11). A test
+    holds each re-export to `promotion_backlog`'s own object and keeps the private key off `pool`.
+
 - **The promotion door's gates leave the pool** (crypto PR7e-10, 2026-09-22).
   - **What moved:** `pool_admission.py` (decision, new) takes 35 definitions: what a candidate must
     satisfy to enter the pool, and how much the pool may hold.

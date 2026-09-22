@@ -16,7 +16,7 @@ may hold (crypto PR7e-10).
 - the size cap (:func:`assert_pool_within_size_cap`), with what it checks against: the per-context
   caps (``MAX_ROUTABLE_*``, ``FAST_ROUTING_TIMEFRAMES``, :func:`max_routable_per_context`), the slot
   each strategy competes for (:func:`routable_context_map`), and the lifecycle window
-  (:data:`LIFECYCLE_MIN_WINDOW_TRADES`), which `pool`'s backlog reads too;
+  (:data:`LIFECYCLE_MIN_WINDOW_TRADES`), which `promotion_backlog` reads too;
 - :func:`routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
   script report. Nothing refuses on it.
 

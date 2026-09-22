@@ -74,7 +74,7 @@ def outcome_judged_r(outcome: Mapping[str, Any]) -> tuple[float, bool]:
 
     A row it cannot price keeps ``result_R`` rather than being dropped: excluding it would
     shrink the rolling window, and a window that never fills escalates nothing — the same
-    "no verdict is reachable" failure `pool.days_to_lifecycle_window` exists to surface.
+    "no verdict is reachable" failure `promotion_backlog.days_to_lifecycle_window` exists to surface.
     The second element of the tuple is what makes the compromise legible instead of silent;
     :func:`compute_metrics` counts both populations onto the metrics.
     """

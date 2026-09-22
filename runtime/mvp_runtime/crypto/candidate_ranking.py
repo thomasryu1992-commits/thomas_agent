@@ -59,8 +59,8 @@ EDGE_COST_BASIS_NET = "net_of_fees_and_slippage"
 EDGE_COST_BASIS_UNRECORDED = "cost_model_unrecorded"
 
 
-# Also read by `pool`: `days_to_lifecycle_window` decides the lifecycle window with it, so an edit
-# here moves that too.
+# Also read by `promotion_backlog`: `days_to_lifecycle_window` decides the lifecycle window with it,
+# so an edit here moves that too.
 def _is_number(value: Any) -> bool:
     """A real number, not a bool — ``isinstance(True, int)`` is True and would rescale on it."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -454,7 +454,8 @@ def _designed_reward_risk(record: Mapping[str, Any]) -> float | None:
 def search_context_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     """What makes two candidates two ATTEMPTS at the same question: one market, one timeframe.
 
-    Coarser than :func:`pool._lineage_key` on purpose, and the difference is the whole correction.
+    Coarser than :func:`promotion_backlog._lineage_key` on purpose, and the difference is the whole
+    correction.
     A lineage key includes the family, but which of the 20 templates to mint is itself a
     searched degree of freedom — counting attempts per family would divide the multiple-testing
     burden by the very choice that creates it. Two candidates on BTCUSDT 1h were scored against

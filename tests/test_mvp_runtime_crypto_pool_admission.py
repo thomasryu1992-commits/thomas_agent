@@ -1,9 +1,9 @@
 """The promotion door's gates (`crypto/pool_admission.py`, crypto PR7e-10).
 
 `pool` stays the pool's public face: the promotion door's roster, the cycle, the dashboard, the scripts
-and the tests read these names as `pool.<name>`, and `pool`'s backlog reads the promotable sets and the
-lifecycle window through the same bindings. So every public name here must be re-exported there as the
-very object this module defines. Then there is one definition, and a same-named wrapper or copy in
+and the tests read these names as `pool.<name>` (`promotion_backlog` imports the promotable sets and the
+lifecycle window from here directly). So every public name here must be re-exported there as the very
+object this module defines. Then there is one definition, and a same-named wrapper or copy in
 `pool` could not drift from it unnoticed.
 
 Identity does not carry a patch from one module to the other: a patch on a name reaches only the code
