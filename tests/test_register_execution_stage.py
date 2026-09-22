@@ -187,6 +187,47 @@ def test_the_spend_rechecks_the_record_under_the_stage_lock(tmp_path, monkeypatc
 
 
 @requires_local_core
+def test_the_loser_of_two_confirms_of_one_grant_is_refused_already_consumed(tmp_path, monkeypatch):
+    """Two confirms of one grant (2026-09-22): the loser validated it APPROVED, then waited on the
+    stage lock while the winner spent it and wrote PAPER. Re-planned against the winner's record, it
+    was refused EXECUTION_STAGE_CHANGED "ask again" for a transition already made with a grant
+    already spent. It re-reads the grant under the lock first, and is refused as the loser.
+
+    Forced, not raced: the loser's validation runs the winner to completion before it returns. The
+    guard goes up BEFORE the nested call, or the winner's own validation recurses."""
+    import json
+
+    from runtime.mvp_runtime.store import CONTROL_FILE, LEDGER_REL
+
+    asked = door.run_request(root=tmp_path, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
+                             attestation="paper ledger")
+    _approve(tmp_path, asked["approval_id"])
+    real_validate = approval.validate_spendable_approval
+    raced = {}
+
+    def validate_then_let_the_winner_through(*args, **kwargs):
+        validated = real_validate(*args, **kwargs)        # the loser reads APPROVED here
+        if "winner" not in raced:
+            raced["winner"] = None                        # the guard, before the nested call
+            raced["winner"] = door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+        return validated
+
+    monkeypatch.setattr(approval, "validate_spendable_approval", validate_then_let_the_winner_through)
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=tmp_path, now=NOW, approval_id=asked["approval_id"])
+    assert exc.value.reason_code == "ALREADY_CONSUMED"
+    winner = raced["winner"]
+    assert (winner["status"]["stage"], winner["status"]["valid"]) == ("PAPER", True)
+    assert es.read_registered_stage(tmp_path)["stage_id"] == winner["record"]["stage_id"]
+    rows = [r for r in ApprovalStore.default(tmp_path).read_all() if r["approval_id"] == asked["approval_id"]]
+    assert [r["status"] for r in rows].count("CONSUMED") == 1
+    assert rows[-1]["consumption"]["consumption_ref"] == es.consumption_ref(winner["record"]["stage_id"])
+    lines = (tmp_path / LEDGER_REL / CONTROL_FILE).read_text(encoding="utf-8").splitlines()
+    events = [e for e in map(json.loads, lines) if e.get("record_type") == es.TRANSITION_EVENT_TYPE]
+    assert [e["transition"] for e in events] == [es.T_BOOTSTRAP]
+
+
+@requires_local_core
 def test_a_record_write_that_fails_after_the_spend_says_the_grant_is_gone(tmp_path, monkeypatch):
     asked = door.run_request(root=tmp_path, now=NOW, target="PAPER", registered_by="thomas", reason="initial",
                              attestation="paper ledger")
