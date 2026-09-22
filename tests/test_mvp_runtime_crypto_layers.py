@@ -42,7 +42,9 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   bounds that judgement applies are operator tunables (Thomas decision 28); a rule that read beyond
   market data would belong with the door's other checks, in risk, not here. ``attach_mining_legs``,
   which builds the frame a spec is backtested on, followed in PR7e-5: it assembles the same legs and
-  reads nothing above market.
+  reads nothing above market. The retention stores' cohort sweeps (``cohort_retention``) are market
+  too (PR7e-6): they record the declared cohort's positioning, open interest and order book on every
+  pass, writing only market stores, and the fan-out in ``cycle`` calls them.
 - **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
@@ -83,7 +85,7 @@ LAYER: dict[str, str] = {
     # market: what the venue and the vendors say
     "market_data": "market", "candle_archive": "market", "oi_store": "market", "orderbook_store": "market",
     "positioning_store": "market", "features": "market", "account": "market", "live_filters": "market",
-    "account_store": "market", "feed_assembly": "market",
+    "account_store": "market", "feed_assembly": "market", "cohort_retention": "market",
     # strategy: what a strategy is, and how one is generated and judged
     "strategy": "strategy", "strategy_artifact": "strategy", "cost": "strategy", "robustness": "strategy",
     "null_control": "strategy", "factory": "strategy", "proposer": "strategy", "proposer_cli": "strategy",

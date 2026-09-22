@@ -216,13 +216,13 @@ def attach_feeds(
     liquidation feed that a caller must supply.
 
     **This covers only THIS call's symbol, and that is no longer where the store's scope is
-    decided.** It was, and what that cost is measured in :func:`cycle.accumulate_positioning_cohort`:
-    per-context accumulation records whatever the fan-out visited, so a cohort member the pool
-    stopped routing stopped being recorded, permanently and silently. The fan-out now sweeps
-    the declared cohort itself, and this flag covers what that sweep cannot reach — the
-    operator's single-symbol cycle, which has one context and no fan-out. The overlap costs
-    nothing: the store's hourly throttle answers the second asker ``skipped_fresh`` without
-    opening a socket.
+    decided.** It was, and what that cost is measured in
+    :func:`cohort_retention.accumulate_positioning_cohort`: per-context accumulation records
+    whatever the fan-out visited, so a cohort member the pool stopped routing stopped being
+    recorded, permanently and silently. The fan-out now sweeps the declared cohort itself, and
+    this flag covers what that sweep cannot reach — the operator's single-symbol cycle, which
+    has one context and no fan-out. The overlap costs nothing: the store's hourly throttle
+    answers the second asker ``skipped_fresh`` without opening a socket.
 
     Funding comes from the market-data collector when it has the capability (the
     same grant); liquidations from the separately-gated feed. Semantics per feed:
@@ -293,8 +293,9 @@ def attach_feeds(
         status["positioning"] = str(positioning["status"])
         # The resting book, same flag and same reason, one difference: this vendor keeps no
         # history at all, so the accumulation is not merely ahead of the feature that will read
-        # it — it is the only copy that will ever exist. `accumulate_orderbook_cohort` is what
-        # covers the fan-out; this covers the operator's single-symbol cycle, which has one
+        # it — it is the only copy that will ever exist.
+        # `cohort_retention.accumulate_orderbook_cohort` is what covers the fan-out; this covers
+        # the operator's single-symbol cycle, which has one
         # context and no sweep. The overlap costs nothing — the store's period throttle answers
         # the second asker `skipped_fresh` without opening a socket.
         orderbook = orderbook_store.record_orderbook(

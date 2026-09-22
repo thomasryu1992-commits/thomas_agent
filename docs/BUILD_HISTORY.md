@@ -24,6 +24,32 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The retention stores' cohort sweeps leave the orchestrator** (crypto PR7e-6, 2026-09-22).
+  - **What moved:** `accumulate_positioning_cohort`, `accumulate_open_interest_cohort`,
+    `accumulate_orderbook_cohort` and `retention_cohort` go from `cycle` to a new `cohort_retention`
+    (market).
+    - They refresh the positioning, hourly open-interest and order-book stores for every member of the
+      declared cohort, unioned with the symbols the pool visited, on every fan-out pass.
+    - They share one rule: a retention store's scope cannot be a side effect of routing.
+    - They read only those three market stores and `CROSS_SECTION_UNIVERSE`, and they never raise.
+    - They are fan-out-level accumulation, not one context's inputs, so they get a module of their
+      own rather than `feed_assembly`.
+    - PR7e-5's summary had listed them as the one market-side piece still in `cycle`.
+  - **Readers:**
+    - `cycle` re-exports all four as the same objects. `run_pool_cycle` calls them where it always did,
+      and the positioning-store and order-book-store tests read them through `cycle` unchanged.
+    - `cycle` drops `oi_store`, `orderbook_store` and `CROSS_SECTION_UNIVERSE`, which only the sweeps
+      used. Nothing reads them through `cycle`.
+    - Two references in `feed_assembly` name the new owner.
+  - **Nothing changed.** The four definitions are AST-identical except for three docstrings. Those now
+    name `feed_assembly.attach_feeds` and `cycle.pool_cycle_contexts` as another module's.
+    - A patch census logged all 119,149 patches over the full suite. Nothing patches the four names or
+      anything through `cycle`'s store attributes.
+    - The one patch on a name they read, `market_data.CROSS_SECTION_UNIVERSE` in a cross-section test,
+      replaces `market_data`'s binding. The sweeps never read that binding: they bound the name at
+      import, in `cycle` before and in `cohort_retention` now.
+    - A test holds each re-export to `cohort_retention`'s own object.
+
 - **The frame a spec is backtested on is assembled with the rest of the market inputs** (crypto PR7e-5,
   2026-09-21).
   - **What moved:** `attach_mining_legs` goes from `cycle` to `feed_assembly` (market). It is the one
