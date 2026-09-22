@@ -48,9 +48,17 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
-  the store, its invariants, the doors that turn a tier into a refusal (``assert_promotable_*`` and the
-  sets they refuse on), the backlog and the live tier. The two "what a row minted now would carry"
-  views (``current_cost_basis``, ``current_evidence_depth``) went with the formatters they are built on.
+  the doors that turn a tier into a refusal (``assert_promotable_*`` and the sets they refuse on), the
+  promotion door's other gates, the backlog and the live tier. The two "what a row minted now would
+  carry" views (``current_cost_basis``, ``current_evidence_depth``) went with the formatters they are
+  built on.
+- **the pool's two files are decision state, and ``pool`` imports them** (PR7e-7). ``pool_state``
+  reads and writes the active pool and the candidate store, and checks what every read and write must
+  hold: each spec, the identity invariant, the artifact stamps, each stamped row's self-hash and a new
+  row's lineage. It is decision, not store: every module that reads the pool's state sits at or above
+  decision, and store holds only the read path of a record that layers below its writer must read.
+  ``pool`` re-exports every public name, so the pool's other roles, which all read the state, can
+  leave ``pool`` for modules that import ``pool_state`` rather than ``pool``.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
@@ -94,7 +102,7 @@ LAYER: dict[str, str] = {
     "outcome_math": "strategy", "trade_plan": "strategy", "candidate_ranking": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
-    "promotion": "decision", "retirement": "decision",
+    "promotion": "decision", "retirement": "decision", "pool_state": "decision",
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
