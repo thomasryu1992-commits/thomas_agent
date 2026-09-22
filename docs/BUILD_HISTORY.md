@@ -30,6 +30,11 @@ Append a new entry when a milestone ships, in the same PR.
     and `pool` must keep re-exporting whatever leaves it, so a role moved out while the state stayed
     would import `pool` while `pool` imported it. That cycle fails the layer test. The state moves
     first; the roles can then follow one at a time, importing `pool_state`.
+    - The roles also read each other, and that sets their order. The live tier and the status
+      transitions read no other role. The gates read the live tier's `_spec_rule_hash` and the
+      lifecycle window (`LIFECYCLE_MIN_WINDOW_TRADES`, kept in the backlog's section, which moves with
+      them). The backlog reads the gates' three promotable sets. So the live tier and the transitions
+      go next, then the gates, then the backlog.
   - **What moved:** `pool_state.py` (decision, new) takes 14 definitions:
     - the two file names and paths;
     - the pool's reads (`load_active_pool`, `read_pool_to_disarm` and the private `_read_active_pool`
@@ -39,7 +44,9 @@ Append a new entry when a milestone ships, in the same PR.
     - the lineage check that door applies (`validate_candidate_lineage`, `DERIVATION_TYPES` and the
       private parent-count rules).
     It reads nothing that stayed in `pool`, and it takes `state_dir` from `state`, the leaf `paper`
-    re-exports it from.
+    re-exports it from. The two writers that rewrite the stored pool in the cycle, the status
+    transitions and the live tier's disarm, stay in `pool` and move with their roles. Each re-reads
+    the pool under its lock and writes back only its own fields, without the install door's checks.
   - **Readers:** `pool` re-exports the 12 public names as the same objects, and every reader in the
     runtime, the scripts and the tests reads them as `pool.<name>`, unchanged. The code that stayed in
     `pool` reads them through those bindings too. `pool` drops the nine imports only the store used,
@@ -48,9 +55,11 @@ Append a new entry when a milestone ships, in the same PR.
   - **Patches, measured by what runs under them.** A census plugin watched every call of a `pool`
     function over the full suite and recorded which names it read from `pool` were patched at that
     moment.
-    - Only two calls ever ran under such a patch: `resolve_candidates` under `read_candidates` (5
-      tests) and `live_arm_approvals` under `live_arm_unsound` (1 test). Both callers stay in `pool`.
-    - The 83 patches on `load_active_pool` are untouched by the move: no moved function reads it, and
+    - Only two (caller, patched name) pairs ever ran that way: `resolve_candidates` under
+      `read_candidates` (7 calls in 5 tests) and `live_arm_approvals` under `live_arm_unsound` (1 call
+      in 1 test). Both callers stay in `pool`.
+    - The 83 patch applications on `load_active_pool` (in 79 tests, from 8 source sites) are
+      untouched by the move: no moved function reads it, and
       the calls they are meant for, outside `pool` and in the readers that stay in it, still read
       `pool`'s binding.
     - `append_candidates`, the one moved function that reads a patched name, never ran under that

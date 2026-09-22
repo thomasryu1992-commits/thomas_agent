@@ -6,9 +6,10 @@ defines. Then there is one definition, and a same-named wrapper or copy in `pool
 it unnoticed.
 
 Identity does not carry a patch from one module to the other: a patch on a name reaches only the code
-that reads that module's name. The suite patches the store on `pool` (`load_active_pool` 83 times,
-`read_candidates` 13, `install_active_pool` 4), and each of those patches is meant for code that reads
-through `pool`: the callers outside it, and the code that stayed in it. Of the code that moved here,
+that reads that module's name. The suite patches the store on `pool`: `load_active_pool` 83 times in
+79 tests (from 8 source sites, most of them through one `live_route` test helper), `read_candidates` 13
+times and `install_active_pool` 4 times. Each of those patches is meant for code that reads through
+`pool`: the callers outside it, and the code that stayed in it. Of the code that moved here,
 only `append_candidates` reads a patched name (`read_candidates`), and no test calls it while that
 patch is active (the PR7e-7 census). The private names stay off `pool`, so a patch on `pool` for one of
 them, which would reach nothing, fails loudly instead.

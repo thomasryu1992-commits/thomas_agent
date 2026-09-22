@@ -2,9 +2,10 @@
 candidate store the C8 promotion flow consumes: the promotion door's gates, the routing views, the
 live tier, the status transitions and the backlog.
 
-The two files themselves, their reads and writes, and what every read and write of them checks are
-:mod:`pool_state`'s since crypto PR7e-7. Every public name there is re-exported here as the same
-object, so callers keep reading them as ``pool.<name>``.
+The two files' paths and reads, the pool's install door, the candidates' append door, and what each
+of them checks are :mod:`pool_state`'s since crypto PR7e-7. Every public name there is re-exported
+here as the same object, so callers keep reading them as ``pool.<name>``. The two writers that rewrite
+the stored pool in the cycle stay here: the status transitions and the live tier's disarm.
 
 **Some fields on a stored row are SNAPSHOTS, not answers.** Both stores are append-only —
 a candidate row's ``record_sha256`` covers the whole row, so correcting a label in place
@@ -49,8 +50,8 @@ from ..filelock import locked
 from . import market_data
 from .candidate_identity import LINEAGE_FIELDS, entry_attribution_keys, lineage_of, outcome_attribution_key
 from .candidate_identity import candidate_id, derive_candidate_id  # noqa: F401 — re-exported:
-# this store's many callers read the id rule as `pool.candidate_id`, and the rule itself
-# moved to a leaf so `factory` no longer needs a module-level edge into this store.
+# `pool`'s many callers read the id rule as `pool.candidate_id`, and the rule itself
+# moved to a leaf so `factory` no longer needs a module-level edge into `pool`.
 # The ranking view and the two comparability tiers moved to `candidate_ranking` (strategy) in crypto
 # PR7e-1. This module's doors, backlog and routing read them, and every public name is re-exported
 # here, as the same object, for the callers that read them as `pool.<name>`. Of the private helpers,
@@ -67,13 +68,12 @@ from .candidate_ranking import (  # noqa: F401
     rank_candidates, search_context_key,
 )
 from .paper import OCCUPYING_STATUSES
-# The two files (the active pool and the candidate store), their reads and writes, and what every read
-# and write of them checks moved to `pool_state` (decision) in crypto PR7e-7, so that the roles still
-# here can move out without an import cycle. Every public name is re-exported here, as the same object,
-# for the callers that read them as `pool.<name>`, and the code below reads them through these
-# bindings too, so a patch on `pool` reaches it. Neither private name is imported: a patch on `pool`
-# for either would miss the code in `pool_state` that reads it, and without the name here it fails
-# loudly.
+# The two files' paths and reads, the install and append doors, and what each of them checks moved
+# to `pool_state` (decision) in crypto PR7e-7, so that the roles still here can move out without an
+# import cycle. Every public name is re-exported here, as the same object, for the callers that read
+# them as `pool.<name>`, and the code below reads them through these bindings too, so a patch on
+# `pool` reaches it. Neither private name is imported: a patch on `pool` for either would miss the
+# code in `pool_state` that reads it, and without the name here it fails loudly.
 from .pool_state import (  # noqa: F401
     CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_FILENAME, append_candidates, assert_pool_identity_unique,
     candidates_path, install_active_pool, load_active_pool, pool_path, read_candidates,
@@ -1119,15 +1119,15 @@ def assert_family_cap(
 
 
 # --- candidate identity (single source) ----------------------------------------
-# `candidate_identity.py` owns the id rule now — a leaf both this store and `factory`
+# `candidate_identity.py` owns the id rule now — a leaf both this module and `factory`
 # import, which is what dissolved their module cycle. Re-exported at the top of this file.
 
 
 # Which of the derivations the store admits (:data:`pool_state.DERIVATION_TYPES`) a candidate may be
 # PROMOTED on. Deliberately a separate literal rather than an alias of that set, and the difference
-# is the whole point of the constant: that set answers "may the store hold this row", this one answers "may this row
-# reach the live pool". Aliasing them would make every future addition to the closed set
-# promotable on the day it was added — and the addition `docs/REMAINING_WORK.md` §I2 is
+# is the whole point of the constant: that set answers "may the store hold this row", this one
+# answers "may this row reach the live pool". Aliasing them would make every future addition to the
+# closed set promotable on the day it was added — and the addition `docs/REMAINING_WORK.md` §I2 is
 # designed around is a TRIAL family, whose rows exist to accrue evidence and must never trade.
 # Widening the door is therefore its own edit here, in a diff that says so, rather than a side
 # effect of widening the store.

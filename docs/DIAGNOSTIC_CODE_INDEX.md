@@ -206,8 +206,8 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANARY_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 83 | `read_canary_orders` | `order_id in seen` |
 | `CANARY_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 79 | `read_canary_orders` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `CANARY_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/live_promotion.py` | 68 | `read_canary_orders` | `—` |
-| `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 247 | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 235 | `read_candidates` | `—` |
+| `CANDIDATES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 250 | `read_candidates` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `CANDIDATES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 238 | `read_candidates` | `—` |
 | `CANDIDATE_AMBIGUOUS` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1201 | `resolve_candidates` | `ambiguous` |
 | `CANDIDATE_BEHAVIOUR_CLUSTER_OCCUPIED` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 954 | `assert_no_cluster_siblings` | `—` |
 | `CANDIDATE_BELOW_OBSERVATION_ENTRY_BAR` | `ToolError` | `runtime/mvp_runtime/crypto/pool.py` | 1070 | `assert_observation_entry_bar` | `—` |
@@ -227,11 +227,11 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 106 | `_load_review_input` | `not path_str` |
 | `CANDIDATE_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 111 | `_load_review_input` | `—` |
 | `CANDIDATE_INPUT_INVALID` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization_cli.py` | 113 | `_load_review_input` | `not isinstance(loaded, dict)` |
-| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 72 | `validate_candidate_lineage` | `not has_type` |
-| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 74 | `validate_candidate_lineage` | `derivation not in DERIVATION_TYPES` |
-| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 77 | `validate_candidate_lineage` | `not isinstance(parents, list) or not all((isinstance(p, str) and p for p in parents))` |
-| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 79 | `validate_candidate_lineage` | `len(set(parents)) != len(parents)` |
-| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 82 | `validate_candidate_lineage` | `len(parents) < lo or (hi is not None and len(parents) > hi)` |
+| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 75 | `validate_candidate_lineage` | `not has_type` |
+| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 77 | `validate_candidate_lineage` | `derivation not in DERIVATION_TYPES` |
+| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 80 | `validate_candidate_lineage` | `not isinstance(parents, list) or not all((isinstance(p, str) and p for p in parents))` |
+| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 82 | `validate_candidate_lineage` | `len(set(parents)) != len(parents)` |
+| `CANDIDATE_LINEAGE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 85 | `validate_candidate_lineage` | `len(parents) < lo or (hi is not None and len(parents) > hi)` |
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/program_request.py` | 146 | `create_program_request` | `candidate is None` |
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 547 | `_require_candidate` | `latest is None` |
 | `CANDIDATE_NOT_FOUND` | `ProgramizationBlocked` | `runtime/mvp_runtime/registration.py` | 64 | `_lineage` | `candidate is None` |
@@ -1141,13 +1141,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 226 | `from_pool_entry` | `carried.get('version') != STRATEGY_ARTIFACT_VERSION` |
 | `STRATEGY_ARTIFACT_UNHASHABLE` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 245 | `_record_sha` | `—` |
 | `STRATEGY_POOL_ARTIFACT_MISMATCH` | `ToolError` | `runtime/mvp_runtime/crypto/strategy_artifact.py` | 293 | `assert_pool_artifacts` | `problem is not None` |
-| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 124 | `assert_pool_identity_unique` | `strategy_id in seen_strategy` |
-| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 129 | `assert_pool_identity_unique` | `candidate_id in seen_candidate` |
-| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 156 | `assert_pool_identity_unique` | `others` |
-| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 161 | `assert_pool_identity_unique` | `inherited_by.setdefault(key, index) != index` |
-| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 147 | `assert_pool_identity_unique` | `not isinstance(keys, list) or not all((is_lineage_key(key) for key in keys))` |
-| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 178 | `_read_active_pool` | `—` |
-| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 174 | `_read_active_pool` | `—` |
+| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 127 | `assert_pool_identity_unique` | `strategy_id in seen_strategy` |
+| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 132 | `assert_pool_identity_unique` | `candidate_id in seen_candidate` |
+| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 159 | `assert_pool_identity_unique` | `others` |
+| `STRATEGY_POOL_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 164 | `assert_pool_identity_unique` | `inherited_by.setdefault(key, index) != index` |
+| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 150 | `assert_pool_identity_unique` | `not isinstance(keys, list) or not all((is_lineage_key(key) for key in keys))` |
+| `STRATEGY_POOL_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 181 | `_read_active_pool` | `—` |
+| `STRATEGY_POOL_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 177 | `_read_active_pool` | `—` |
 | `SUBJECT_FINGERPRINT_FAILED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 49 | `_fingerprint` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 138 | `write` | `—` |
 | `TARGET_EXISTS` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 249 | `run_write` | `target.exists()` |
@@ -1210,7 +1210,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `UNKNOWN_KIND` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1962 | `_execute` | `schedule.kind != KIND_TASK` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 272 | `build_entry` | `origin not in ORIGINS` |
 | `UNKNOWN_ORIGIN` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 299 | `build_entry` | `attempt is not None and origin != WORKFLOW_ORIGIN` |
-| `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 88 | `validate_candidate_lineage` | `unknown` |
+| `UNKNOWN_PARENT_CANDIDATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_state.py` | 91 | `validate_candidate_lineage` | `unknown` |
 | `UNKNOWN_PROVIDER` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 322 | `select_env_gated_chain` | `unknown` |
 | `UNKNOWN_REQUEST_KIND` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 147 | `capabilities_for_request_kind` | `capabilities is None` |
 | `UNKNOWN_REQUEST_KIND` | `TaskRegistryBlocked` | `runtime/mvp_runtime/task_registry.py` | 292 | `build_entry` | `kind is not None and kind not in REQUEST_KIND_CAPABILITIES` |
