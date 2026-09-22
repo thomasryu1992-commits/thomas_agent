@@ -22,7 +22,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.control import ACTIVE, KILLED, PAUSED, ControlState, ControlStore
-from runtime.mvp_runtime.crypto import account_store, live_readiness
+from runtime.mvp_runtime.crypto import account_store, live_readiness, live_tier
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV
@@ -789,7 +789,14 @@ def test_a_tripped_c4_breaker_refuses(tmp_path, clean_env, monkeypatch):
 
 def test_an_armed_entry_the_gate_refuses_is_not_counted(tmp_path, clean_env, monkeypatch):
     _ready_console_machine(tmp_path, monkeypatch)
-    monkeypatch.setattr(pool_store, "live_arm_unsound", lambda entry: "spec")
+    # The verdict has two readers: the board reads it as `pool.live_arm_unsound`, and
+    # `live_arm_approvals` reads its own module's name (`live_tier`, since crypto PR7e-8). One fake
+    # in both names, so both readers see what one patch on `pool` gave them before the move.
+    def unsound(entry):
+        return "spec"
+
+    for module in (pool_store, live_tier):
+        monkeypatch.setattr(module, "live_arm_unsound", unsound)
     _, data = _board(tmp_path)
     assert data["readiness"]["components"]["armed_strategy_count"] == {
         "ok": False, "reason": "ARMED_CANNOT_TRADE", "count": 0, "armed": 1}
