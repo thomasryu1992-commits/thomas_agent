@@ -40,8 +40,8 @@ from .strategy_artifact import ARTIFACT_SHA256_FIELD
 # recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.py:292`). Had the observation
 # tier been a status, that recovery would move a strategy the operator deliberately kept off the
 # money path INTO it — an automatic promotion into real money, arriving through the one mechanism
-# this system says may only ever demote. The status write (`pool.apply_status_decisions`, which
-# `pool.update_statuses` wraps) writes **only** `status` and the `lifecycle_*` fields (see its
+# this system says may only ever demote. The status write (`pool_transitions.apply_status_decisions`,
+# which `update_statuses` wraps) writes **only** `status` and the `lifecycle_*` fields (see its
 # docstring), so a separate field cannot be reached by the ladder at all: the property
 # is structural rather than guarded, and there is no rank ordering anybody has to get right.
 #
