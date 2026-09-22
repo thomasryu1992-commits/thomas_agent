@@ -24,6 +24,51 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The promotion door's gates leave the pool** (crypto PR7e-10, 2026-09-22).
+  - **What moved:** `pool_admission.py` (decision, new) takes 35 definitions: what a candidate must
+    satisfy to enter the pool, and how much the pool may hold.
+    - the tier doors (`assert_promotable_cost_basis`, `assert_promotable_evidence_depth`) and the
+      derivation door, with the three promotable sets;
+    - the checks against the incumbents: semantic duplicates, behaviour-cluster siblings, and
+      `pool_candidate_records`, which reads the incumbents' rows for both;
+    - the observation tier's entry bar and family cap, with their two constants and the private
+      `_observation_holdout_term`;
+    - one routed rule per lineage (`assert_rule_not_routed` and the rule-hash helpers) and the
+      entries a promotion leaves behind (`reactivated_candidate_ids`, `silent_reactivations`,
+      `assert_no_silent_reactivation`);
+    - the size cap and what it checks against (`MAX_ROUTABLE_*`, `FAST_ROUTING_TIMEFRAMES`,
+      `max_routable_per_context`, `routable_context_map`), and the lifecycle window
+      `LIFECYCLE_MIN_WINDOW_TRADES`, which the backlog reads too;
+    - `routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
+      script report. Nothing refuses on it.
+    It reads the stored pool through `pool_state` and the live tier's rule hash through `live_tier`, and
+    nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the 34 public names as the same objects. The promotion door's roster,
+    `cycle`, `dashboard`, the scripts and the tests keep reading `pool.<name>`, and the backlog reads
+    the promotable sets and the window through those bindings.
+    - Two private names leave `pool`: `_observation_holdout_term`, and `_spec_rule_hash`, which `pool`
+      imported from `live_tier` only for `rule_hashes_of`. One test called the first through `pool`,
+      and it and a `robustness` comment now name `pool_admission`. The live tier's pin test now holds
+      `_spec_rule_hash` off `pool`.
+    - `pool` drops `json`, `Sequence`, `outcome_attribution_key` and `Direction`, which only the gates
+      used and nothing read through `pool`.
+  - **Tunables:** the six the gates own (`MAX_ROUTABLE_STRATEGIES`, `MAX_ROUTABLE_PER_CONTEXT`,
+    `MAX_ROUTABLE_PER_CONTEXT_FAST`, `OBSERVATION_MIN_BACKTEST_CLOSED`, `OBSERVATION_FAMILY_CAP`,
+    `LIFECYCLE_MIN_WINDOW_TRADES`) are indexed at `crypto/pool_admission.py` and read from it. Their
+    values are unchanged.
+  - **Patches:** the census plugin, watching `pool` and `pool_admission`, found no call of a moved
+    function under a patch on `pool` for a name it reads. All 24 moved functions ran, each called by
+    as many tests as before the move. The patches on the tier doors and on
+    `reactivated_candidate_ids` are meant for the promotion door, which reads them through `pool`.
+  - **Nothing changed.** Of the 48 definitions `pool` had, 45 are AST-identical, docstrings included,
+    and 3 differ only in a qualified reference: `routable_context_map` names `pool.routable_contexts`,
+    `routable_strategy_ids` names `pool_admission.routable_context_map`, and `promotable_backlog` names
+    the two promotable sets' module.
+  - **Prose:** `pool`'s docstring lists what it keeps and where the rest went. The comment on
+    `LIFECYCLE_MIN_WINDOW_TRADES` no longer says `lifecycle` imports `pool`, which it does not. The
+    backlog's comment on its window names the constant's module. A test holds each re-export to
+    `pool_admission`'s own object and keeps the private helper off `pool`.
+
 - **The status transitions leave the pool** (crypto PR7e-9, 2026-09-22).
   - **What moved:** `pool_transitions.py` (decision, new) takes the 4 definitions that write the
     lifecycle's decisions onto the stored pool: `apply_status_decisions`, its all-or-nothing form

@@ -14,8 +14,9 @@ This is judging, not holding: it reads candidate records and the cost model and 
 keeps no state and refuses nothing. It lived in `pool`, beside the store and its doors, which put
 `forward_confirmation`'s read of the recomputed holdout status upward into the decision layer. The
 doors that turn a tier into a refusal (`assert_promotable_cost_basis`,
-`assert_promotable_evidence_depth`) and the sets they refuse on stay in `pool`, which re-exports, as
-the same objects, the names its callers read here.
+`assert_promotable_evidence_depth`) and the sets they refuse on stayed decision: in `pool` then, in
+`pool_admission` since crypto PR7e-10. `pool` re-exports, as the same objects, the names its callers
+read here.
 """
 
 from __future__ import annotations
