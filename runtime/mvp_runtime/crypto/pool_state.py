@@ -9,7 +9,7 @@ Two files under the crypto state directory:
   empty (no strategies, no entries); a malformed or spec-invalid pool raises so the cycle
   can refuse to route on tampered data rather than trade on whatever half-parses.
   Two narrower writers do run in the cycle: the status transitions
-  (``pool.apply_status_decisions``) and the live tier's disarm
+  (``pool_transitions.apply_status_decisions``) and the live tier's disarm
   (``live_tier.disarm_live_tier``). Each re-reads the pool under its lock and writes it
   back with only its own fields changed. Neither re-runs the install door's checks on
   what it writes.

@@ -24,6 +24,26 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The status transitions leave the pool** (crypto PR7e-9, 2026-09-22).
+  - **What moved:** `pool_transitions.py` (decision, new) takes the 4 definitions that write the
+    lifecycle's decisions onto the stored pool: `apply_status_decisions`, its all-or-nothing form
+    `update_statuses`, the stale-decision rule (`_stale_decision`, private) and its reason code
+    `LIFECYCLE_DECISION_STALE`. It reads the stored pool through `pool_state`, and nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the three public names as the same objects. The cycle, the
+    retirement door and the tests keep reading `pool.<name>`. `pool` keeps the private rule off, so a
+    patch on `pool` for it fails loudly rather than reaching nothing, and it drops `locked`,
+    `LINEAGE_FIELDS` and `lineage_of`, which only the transitions used and nothing read through `pool`.
+  - **Patches:** the census plugin, watching `pool` and `pool_transitions`, found no call of a moved
+    function under a patch on `pool` for a name it reads. Each is called by as many tests as before
+    the move: `apply_status_decisions` 67, `_stale_decision` 66, `update_statuses` 22.
+  - **Nothing changed.** All 52 definitions `pool` had are AST-identical, docstrings included: 4 in
+    `pool_transitions`, 48 still in `pool`. The check that the status writers never name the live
+    tier's field reads the same function objects and passes unchanged.
+  - The prose that placed the transitions in `pool` now names their module: `pool`'s docstring and
+    comment, `pool_state`'s docstring, the live tier's header comment, the PR7e-1 layer bullet, and
+    the lists of the pool's writers in `strategy_artifact` and `CRYPTO_PIPELINE_V0.1.md`, which also
+    name the disarm door's module now. A test holds each re-export to `pool_transitions`' own object.
+
 - **The live tier leaves the pool** (crypto PR7e-8, 2026-09-22).
   - **What moved:** `live_tier.py` (decision, new) takes the 12 definitions of the section `pool` held
     since #610 Part 1:

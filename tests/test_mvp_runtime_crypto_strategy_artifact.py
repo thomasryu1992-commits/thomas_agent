@@ -454,7 +454,8 @@ def test_adding_to_a_pool_the_read_refuses_is_refused_as_blocked(tmp_path):
 
 
 def test_the_pool_s_other_writers_touch_no_hashed_field(tmp_path):
-    """`update_statuses` runs every cycle and `disarm_live_tier` on every allowance breach. Either
+    """The status write runs every cycle (`apply_status_decisions`; this drives it through its
+    all-or-nothing wrapper `update_statuses`), and `disarm_live_tier` on every allowance breach. Either
     touching a hashed field would refuse the pool on the next read (decision 34)."""
     installed = _stamped_pool(tmp_path)
     stamp = installed["active_strategies"][0][SHA]
