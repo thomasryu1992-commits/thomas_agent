@@ -7,8 +7,9 @@ the 5-1 gate's arithmetic did not change, only its source; (2) the book paces it
 off-by-nothing) so parallelism cannot become over-counting; (3) expiry is judged against
 POOL membership, never against "not this cycle's context"; (4) the store is
 tamper-evident end to end and a persist-side failure degrades instead of aborting the
-cycle; (5) seeding partitions the calendar against the live stream and is idempotent;
-(6) the no-signal marker names its own context's lineages and nothing more.
+cycle; (5) seeding partitions the calendar against the live stream, is idempotent, and
+starts each lineage at a mint the candidate store's verified read vouches for; (6) the
+no-signal marker names its own context's lineages and nothing more.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import pytest
 
 from runtime.mvp_runtime.crypto import forward_book as fb
 from runtime.mvp_runtime.crypto import forward_confirmation as fc
+from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto import promotion
 from runtime.mvp_runtime.crypto.feedback import net_result_r
 from runtime.mvp_runtime.crypto.paper import COOLDOWN_BARS_AFTER_STOPLOSS
@@ -520,3 +522,96 @@ def test_a_lineage_that_only_ever_fired_in_the_seed_span_is_not_called_signal_le
     past = _update(pool, ROW, _candle("2026-09-14T00:00:00Z"), tmp_path,
                    now="2026-09-14T12:00:01Z")
     assert past["no_signal"] == []
+
+
+# --- the mint: read through the candidate store's verified reader -----------------------
+
+MINT = "2026-07-01T00:00:00Z"
+
+
+def test_the_mint_is_the_earliest_row_of_each_rule_hash_as_before(tmp_path):
+    """The verified read changes what a DAMAGED store does and nothing else. On an intact one
+    the map is the one the script's private reader gave: the earliest ``created_at_utc`` per
+    rule hash whatever the file order, rows lacking either field ignored, and rows from
+    before the store stamped hashes still counted — they carry nothing to verify."""
+    import scripts.seed_forward_book as seeder
+    path = pool_store.candidates_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {"strategy_id": "S0", "strategy_rule_hash": "rh_legacy",
+              "created_at_utc": "2026-05-01T00:00:00Z"}
+    path.write_text(json.dumps(legacy) + "\n\n", encoding="utf-8")  # unstamped, then a blank
+    pool_store.append_candidates([
+        {"strategy_id": "S1", "strategy_rule_hash": "rh_a", "created_at_utc": "2026-07-10T00:00:00Z"},
+        {"strategy_id": "S1", "strategy_rule_hash": "rh_a", "created_at_utc": MINT},  # later line
+        {"strategy_id": "S2", "strategy_rule_hash": "rh_b", "created_at_utc": "2026-07-05T00:00:00Z"},
+        {"strategy_id": "S3", "created_at_utc": "2026-04-01T00:00:00Z"},
+        {"strategy_id": "S4", "strategy_rule_hash": "", "created_at_utc": "2026-04-01T00:00:00Z"},
+        {"strategy_id": "S5", "strategy_rule_hash": "rh_c"},
+    ], root=tmp_path)
+    assert seeder._first_seen_by_hash(tmp_path) == {
+        "rh_legacy": "2026-05-01T00:00:00Z", "rh_a": MINT, "rh_b": "2026-07-05T00:00:00Z"}
+    assert seeder._first_seen_by_hash(tmp_path / "elsewhere") == {}  # no store, no mints
+
+
+def _seeder_on(tmp_path, monkeypatch):
+    """``main`` run against ``tmp_path``: a one-entry pool whose ``promoted_at`` is later than
+    any mint below, and every step past the mint read replaced by a recorder, so a test sees
+    how far the run got and which mint it handed on."""
+    import scripts.seed_forward_book as seeder
+    spec = StrategySpec.from_dict(_spec_dict())
+    entry = _pool_entry(strategy_rule_hash=spec.strategy_rule_hash,
+                        promoted_at="2026-08-20T00:00:00Z")
+    pool_store.install_active_pool(_pool(entry), root=tmp_path)
+    reached = {"collector": 0, "seeded": []}
+
+    def collector(**_kwargs):
+        reached["collector"] += 1
+
+    def seed(entry, spec, symbol, *, mint, now, root, collector, apply):
+        reached["seeded"].append((symbol, mint, apply))
+        return {"strategy_id": entry.get("strategy_id"), "symbol": symbol,
+                "timeframe": spec.timeframe, "mint": mint[:10], "bars": 0, "opens": 0,
+                "settled": 0, "skipped": None}
+
+    monkeypatch.setattr(seeder, "ROOT", tmp_path)
+    monkeypatch.setattr(seeder, "assert_not_foreign_root_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(seeder.market_data, "select_market_data_collector", collector)
+    monkeypatch.setattr(seeder, "seed_lineage", seed)
+    return seeder, reached, spec.strategy_rule_hash
+
+
+def test_an_intact_store_hands_the_seed_its_verified_mint(tmp_path, monkeypatch):
+    seeder, reached, rule_hash = _seeder_on(tmp_path, monkeypatch)
+    pool_store.append_candidates([
+        {"strategy_id": "S1", "strategy_rule_hash": rule_hash, "created_at_utc": "2026-07-10T00:00:00Z"},
+        {"strategy_id": "S1", "strategy_rule_hash": rule_hash, "created_at_utc": MINT},
+    ], root=tmp_path)
+    assert seeder.main(["--list"]) == seeder.EXIT_OK
+    assert reached == {"collector": 1, "seeded": [("BTCUSDT", MINT, False)]}  # not promoted_at
+
+
+@pytest.mark.parametrize("damage, code", [("backdated", "CANDIDATES_TAMPERED"),
+                                          ("unparseable", "CANDIDATES_UNREADABLE")])
+@pytest.mark.parametrize("mode", ["--list", "--apply"])
+def test_a_damaged_candidate_store_refuses_the_seed_instead_of_moving_the_mint(
+        tmp_path, monkeypatch, capsys, damage, code, mode):
+    """Backdating a row is the attack on a forward clock: the private reader took the earlier
+    date at face value, and the seed would have walked bars from before the spec existed as
+    out-of-sample evidence. A line that does not parse it skipped, and that line may be the
+    true first row. Both now refuse the whole run, dry or not, before a bar is fetched."""
+    seeder, reached, rule_hash = _seeder_on(tmp_path, monkeypatch)
+    pool_store.append_candidates([{"strategy_id": "S1", "strategy_rule_hash": rule_hash,
+                                   "created_at_utc": MINT}], root=tmp_path)
+    path = pool_store.candidates_path(tmp_path)
+    if damage == "backdated":
+        row = json.loads(path.read_text(encoding="utf-8"))
+        row["created_at_utc"] = "2025-01-01T00:00:00Z"  # its stamped record_sha256 kept
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    else:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("{not json\n")  # terminated: an unfinished last line is waited for
+    assert seeder.main([mode]) == seeder.EXIT_BLOCKED
+    assert f"BLOCKED {code}:" in capsys.readouterr().err
+    assert reached == {"collector": 0, "seeded": []}
+    assert not fb._book_path(tmp_path).exists()
+    assert not fb._outcomes_path(tmp_path).exists()

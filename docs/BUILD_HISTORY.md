@@ -24,6 +24,31 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward-book seeder reads each lineage's mint through the candidate store's verified reader**
+  (`scripts/seed_forward_book.py`, 2026-09-22).
+  - **What changed:** `_first_seen_by_hash` used to open `strategy_candidates.jsonl` itself. It rebuilt the
+    path from its own copy of `CANDIDATES_FILENAME`, skipped lines that did not parse, and never checked
+    `record_sha256`. It now iterates `pool.read_candidates`, the reader every other consumer of the store
+    uses. On an intact store the map is unchanged: the earliest `created_at_utc` per rule hash, rows
+    missing either field ignored, and unstamped rows from before hashing still counted.
+  - **Why it matters:** that date is where a lineage's forward clock starts. The old reader took a
+    backdated row at face value: a fixture row minted 2026-07-01 and edited to 2025-01-01 came back as
+    2025-01-01. The seed would then walk bars from before the spec existed into the forward book as
+    out-of-sample evidence, and the promotion gate reads that book. The forward outcomes store is
+    append-only, so a later correct run does not remove rows seeded from a wrong mint.
+  - **The decision: a damaged store refuses the whole run.** `CANDIDATES_TAMPERED` or
+    `CANDIDATES_UNREADABLE` ends `main` with `EXIT_BLOCKED` and a `BLOCKED <code>` line on stderr, for
+    `--list` and `--apply` alike, before the market-data collector is selected or anything is written.
+    - The refusal is not narrowed to the lineages the bad row names, because its rule hash is one of the
+      fields that cannot be trusted.
+    - Falling back to `promoted_at` for a refused store was rejected as guessing a mint.
+    - It cannot newly strand a working store: every appender goes through `append_candidates`, which
+      runs this same read under the store lock, so a store the factory can still append to passes it.
+  - **Tests** (`test_mvp_runtime_crypto_forward_book.py`): the map on an intact store; `main` handing
+    the seed that mint rather than `promoted_at`; and a backdated row and an unparseable line, each
+    refusing both `--list` and `--apply`. Against the previous script the first two pass and the four
+    refusals fail.
+
 - **The pool's two files leave the pool's doors** (crypto PR7e-7, 2026-09-22).
   - **Why this first:** the user asked for `pool`'s remaining roles to be split (the promotion door's
     gates, the live tier, the status transitions, the backlog). Each of them reads the pool's state,
