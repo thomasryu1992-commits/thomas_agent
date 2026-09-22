@@ -47,10 +47,9 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   pass, writing only market stores, and the fan-out in ``cycle`` calls them.
 - **ranking is strategy, the promotion door is decision** (PR7e-1). ``candidate_ranking`` judges a
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
-  gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
-  the doors that turn a tier into a refusal (``assert_promotable_*`` and the sets they refuse on), the
-  promotion door's other gates, the routing views and the backlog; the live tier and the status
-  transitions left in PR7e-8 and PR7e-9. The two "what a row minted now would carry" views (``current_cost_basis``,
+  gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. The doors that
+  turn a tier into a refusal (``assert_promotable_*`` and the sets they refuse on) stayed decision: in
+  ``pool`` then, and in ``pool_admission`` with the promotion door's other gates since PR7e-10. The two "what a row minted now would carry" views (``current_cost_basis``,
   ``current_evidence_depth``) went with the formatters they are built on.
 - **the pool's two files are decision state, and ``pool`` imports them** (PR7e-7). ``pool_state``
   holds the two files' paths and reads, the pool's install door and the candidates' append door, and
@@ -64,8 +63,8 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **the live tier is decision, and ``pool`` imports it** (PR7e-8). ``live_tier`` says which pool
   entries may spend real money and what each LIVE arm stands on, and holds the disarm door, the one
   automatic writer of the tier, which can only take it away. It reads the stored pool through
-  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and imports its rule hash for
-  ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
+  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and ``pool_admission`` imports its
+  rule hash for ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
   report) sit at or above decision, and its own reads (``paper``'s occupying statuses, the strategy
   spec, the artifact field) sit at or below it.
 - **the status transitions are decision, and ``pool`` imports them** (PR7e-9). ``pool_transitions``
@@ -74,6 +73,15 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   ``pool_state`` and nothing of ``pool``'s. Its callers (the cycle and the retirement door) sit at or
   above decision, and what it reads sits at or below it: ``pool_state``, ``candidate_identity`` and
   ``lifecycle``'s terminal statuses (strategy).
+- **the promotion door's gates are decision, and ``pool`` imports them** (PR7e-10). ``pool_admission``
+  holds what a candidate must satisfy to enter the pool and how much the pool may hold: the tier and
+  derivation doors, the checks against the incumbents, the observation tier's bar and cap, one routed
+  rule per lineage, the entries a promotion leaves behind, and the size cap with the capacity and the
+  lifecycle window it stands on. ``promotion``'s roster calls them through ``pool``. It reads the
+  stored pool through ``pool_state`` and the live tier's rule hash through ``live_tier``, and nothing of
+  ``pool``'s. Its readers (``promotion``, ``cycle``, ``dashboard``, ``tunables``) sit at or above
+  decision. What ``pool`` keeps is the routing views, the resolution of an operator's candidate
+  selectors, and the backlog.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
@@ -118,7 +126,7 @@ LAYER: dict[str, str] = {
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
-    "pool_transitions": "decision",
+    "pool_transitions": "decision", "pool_admission": "decision",
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
