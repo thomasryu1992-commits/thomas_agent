@@ -81,9 +81,14 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   the lifecycle window it checks against, and the per-direction capacity that is only reported.
   ``promotion``'s roster calls them through ``pool``. It reads the stored pool through ``pool_state``
   and the live tier's rule hash through ``live_tier``, and nothing of ``pool``'s. Its readers
-  (``promotion``, ``cycle``, ``dashboard``, ``tunables``) sit at or above decision. What ``pool`` keeps
-  is the routing views, the resolution of an operator's candidate selectors, the replay view of a
-  candidate, and the backlog.
+  (``promotion``, ``cycle``, ``dashboard``, ``tunables``) sit at or above decision.
+- **the backlog is decision, and ``pool`` imports it** (PR7e-11). ``promotion_backlog`` counts the
+  lineages an operator could promote now and says why the rest cannot, applying the door's own chain;
+  it reports and decides nothing. It reads the stored pool and the candidates through ``pool_state``
+  and the door's sets and window through ``pool_admission``, and nothing of ``pool``'s. Its reader,
+  ``dashboard`` through ``pool``, sits above decision. With it every role ``pool`` held has a module
+  of its own, and ``pool`` keeps the routing views, the resolution of an operator's candidate
+  selectors and the replay view of a candidate.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
@@ -128,7 +133,7 @@ LAYER: dict[str, str] = {
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
-    "pool_transitions": "decision", "pool_admission": "decision",
+    "pool_transitions": "decision", "pool_admission": "decision", "promotion_backlog": "decision",
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
