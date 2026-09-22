@@ -2,14 +2,18 @@
 door, the one automatic writer of the tier, which can only take it away (crypto PR7e-8).
 
 The tier is a field on a pool entry, beside its status (the comment above :data:`LIVE_TIER_FIELD` says
-why). The promotion door writes it when an operator arms an entry at LIVE. Here it is read
+why). The promotion door writes it on every entry it installs, at LIVE or OBSERVATION, and the history
+import writes OBSERVATION. Here it is read
 (:func:`entry_live_tier`, :func:`live_routable_strategy_ids`, and :func:`live_arm_entries` with its
 two verdicts), and taken away (:func:`disarm_live_tier`).
 
 This was `pool`'s until crypto PR7e-8. It reads the stored pool through `pool_state`, and nothing else
 of `pool`'s, so `pool` can import it: `pool` re-exports every public name here as the same object, and
-its callers keep reading `pool.<name>`. `pool` also imports the private :func:`_spec_rule_hash`,
-because its rule-not-routed gate hashes a spec the same way.
+its callers keep reading `pool.<name>`. `pool` also imports the private :func:`_spec_rule_hash`, because
+its `rule_hashes_of`, which the rule-not-routed gate and `replaced_entries` stand on, hashes a spec the
+same way. A patch on `pool` does not reach the functions here, which read this module's names: a test
+that means to change what they see patches `live_tier` too, as the readiness test does for
+:func:`live_arm_unsound`.
 """
 
 from __future__ import annotations

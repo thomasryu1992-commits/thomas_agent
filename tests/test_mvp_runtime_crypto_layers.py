@@ -64,8 +64,8 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **the live tier is decision, and ``pool`` imports it** (PR7e-8). ``live_tier`` says which pool
   entries may spend real money and what each LIVE arm stands on, and holds the disarm door, the one
   automatic writer of the tier, which can only take it away. It reads the stored pool through
-  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and imports its rule hash for the
-  rule-not-routed gate. Its readers (the promotion door, the risk and live-route checks, the readiness
+  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and imports its rule hash for
+  ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
   report) sit at or above decision, and its own reads (``paper``'s occupying statuses, the strategy
   spec, the artifact field) sit at or below it.
 

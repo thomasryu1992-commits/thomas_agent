@@ -71,8 +71,10 @@ from .candidate_ranking import (  # noqa: F401
 # The live tier (which entries may spend real money, what each LIVE arm stands on, and the disarm door,
 # the one automatic writer of the tier) moved to `live_tier` (decision) in crypto PR7e-8. Every public
 # name is re-exported here, as the same object, for the callers that read them as `pool.<name>`. Of its
-# private helpers only `_spec_rule_hash` is imported, because the rule-not-routed gate below hashes a
-# spec the same way.
+# private helpers only `_spec_rule_hash` is imported: `rule_hashes_of` below, which the rule-not-routed
+# gate and `replaced_entries` stand on, hashes a spec the same way. A patch on `pool` for any of these
+# names reaches only the code that reads it through `pool`. The tier's own functions read `live_tier`'s
+# names, so a test that means to reach them patches `live_tier` too.
 from .live_tier import (  # noqa: F401
     LIVE_TIER_APPROVAL_FIELD, LIVE_TIER_FIELD, LIVE_TIER_LIVE, LIVE_TIER_OBSERVATION, LIVE_TIERS,
     _spec_rule_hash, disarm_live_tier, entry_live_tier, live_arm_approvals, live_arm_entries,
@@ -82,9 +84,11 @@ from .paper import OCCUPYING_STATUSES
 # The two files' paths and reads, the install and append doors, and what each of them checks moved
 # to `pool_state` (decision) in crypto PR7e-7, so that the roles still here can move out without an
 # import cycle. Every public name is re-exported here, as the same object, for the callers that read
-# them as `pool.<name>`, and the code below reads them through these bindings too, so a patch on
-# `pool` reaches it. Neither private name is imported: a patch on `pool` for either would miss the
-# code in `pool_state` that reads it, and without the name here it fails loudly.
+# them as `pool.<name>`, and the code still in this module reads them through these bindings, so a
+# patch on `pool` reaches that code. It does not reach the code that left: `pool_state`'s own functions
+# and the live tier's disarm door read their own modules' names. Neither private name is imported: a
+# patch on `pool` for either would miss the code in `pool_state` that reads it, and without the name
+# here it fails loudly.
 from .pool_state import (  # noqa: F401
     CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_FILENAME, append_candidates, assert_pool_identity_unique,
     candidates_path, install_active_pool, load_active_pool, pool_path, read_candidates,

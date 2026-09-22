@@ -3,8 +3,8 @@
 `pool` stays the pool's public face: the promotion door, the live route, the readiness report, the
 scripts and the tests read these names as `pool.<name>`. So every public name here must be re-exported
 there as the very object this module defines, and so must `_spec_rule_hash`, the one private helper
-`pool`'s rule-not-routed gate calls. Then there is one definition, and a same-named wrapper or copy in
-`pool` could not drift from it unnoticed.
+`pool` calls (in `rule_hashes_of`, which the rule-not-routed gate and `replaced_entries` stand on). Then
+there is one definition, and a same-named wrapper or copy in `pool` could not drift from it unnoticed.
 
 Identity does not carry a patch from one module to the other: a patch on a name reaches only the code
 that reads that module's name. One test patched the tier's verdict on `pool` and reached two readers,
