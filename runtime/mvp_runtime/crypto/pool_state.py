@@ -8,10 +8,11 @@ Two files under the crypto state directory:
   explicit ``--activate-pool``, and later C8's approval flow). A missing pool is honestly
   empty (no strategies, no entries); a malformed or spec-invalid pool raises so the cycle
   can refuse to route on tampered data rather than trade on whatever half-parses.
-  Two narrower writers do run in the cycle, and they stay in :mod:`pool`: the status
-  transitions (``pool.apply_status_decisions``) and the live-tier disarm. Each re-reads
-  the pool under its lock and writes it back with only its own fields changed. Neither
-  re-runs the install door's checks on what it writes.
+  Two narrower writers do run in the cycle: the status transitions
+  (``pool.apply_status_decisions``) and the live tier's disarm
+  (``live_tier.disarm_live_tier``). Each re-reads the pool under its lock and writes it
+  back with only its own fields changed. Neither re-runs the install door's checks on
+  what it writes.
 - ``strategy_candidates.jsonl`` — append-only candidates (C7 import provenance now,
   C8 factory output later). Candidates never route; only the active pool does.
 
@@ -20,10 +21,10 @@ and every artifact stamp too, except in the reader the disarm uses (:func:`read_
 install door checks all three before it writes. A read of the candidates verifies every stamped row's
 self-hash, and the append door stamps each row and checks its lineage under the store's lock.
 
-This was `pool`'s store until crypto PR7e-7. Every other role `pool` holds (the promotion door's
-gates, the live tier, the status transitions, the backlog) reads it, so none of them could leave
-`pool` while the store stayed there: `pool` re-exports them, and a module it imports cannot import it
-back. `pool` re-exports every public name here as the same object, and its callers keep reading
+This was `pool`'s store until crypto PR7e-7. Every other role `pool` held then (the promotion
+door's gates, the live tier, the status transitions, the backlog) reads it, so none of them could
+leave `pool` while the store stayed there: `pool` re-exports them, and a module it imports cannot
+import it back. `pool` re-exports every public name here as the same object, and its callers keep reading
 `pool.<name>`.
 """
 

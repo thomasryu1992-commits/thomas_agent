@@ -49,18 +49,25 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. ``pool`` keeps
   the doors that turn a tier into a refusal (``assert_promotable_*`` and the sets they refuse on), the
-  promotion door's other gates, the routing views, the live tier, the status transitions and the
-  backlog. The two "what a row minted now would carry" views (``current_cost_basis``,
+  promotion door's other gates, the routing views, the status transitions and the backlog; the live
+  tier left in PR7e-8. The two "what a row minted now would carry" views (``current_cost_basis``,
   ``current_evidence_depth``) went with the formatters they are built on.
 - **the pool's two files are decision state, and ``pool`` imports them** (PR7e-7). ``pool_state``
   holds the two files' paths and reads, the pool's install door and the candidates' append door, and
   what each of them checks: each spec, the identity invariant, the artifact stamps, each stamped row's
   self-hash and a new row's lineage. The two writers that rewrite the stored pool in the cycle (the
-  status transitions and the live tier's disarm) stay in ``pool``. ``pool_state`` is decision, not
+  status transitions and the live tier's disarm) are not here. ``pool_state`` is decision, not
   store: every module that reads the pool's state sits at or above decision, and store holds only the
   read path of a record that layers below its writer must read. ``pool`` re-exports every public name,
   so the pool's other roles, which all read the state, no longer need ``pool`` for it; what they read
   from each other decides the order in which they can leave.
+- **the live tier is decision, and ``pool`` imports it** (PR7e-8). ``live_tier`` says which pool
+  entries may spend real money and what each LIVE arm stands on, and holds the disarm door, the one
+  automatic writer of the tier, which can only take it away. It reads the stored pool through
+  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and imports its rule hash for
+  ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
+  report) sit at or above decision, and its own reads (``paper``'s occupying statuses, the strategy
+  spec, the artifact field) sit at or below it.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
@@ -104,7 +111,7 @@ LAYER: dict[str, str] = {
     "outcome_math": "strategy", "trade_plan": "strategy", "candidate_ranking": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
-    "promotion": "decision", "retirement": "decision", "pool_state": "decision",
+    "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",

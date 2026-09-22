@@ -24,6 +24,39 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The live tier leaves the pool** (crypto PR7e-8, 2026-09-22).
+  - **What moved:** `live_tier.py` (decision, new) takes the 12 definitions of the section `pool` held
+    since #610 Part 1:
+    - the tier field, its two values and the approval field;
+    - the readers: `entry_live_tier`, `live_routable_strategy_ids`, and `live_arm_entries` with its
+      two verdicts (`live_arm_unsound`, `live_arm_approvals`) and the private `_spec_rule_hash`;
+    - the disarm door (`disarm_live_tier`), the one automatic writer of the tier, which can only take
+      it away.
+    It reads the stored pool through `pool_state` and nothing of `pool`'s, so it could follow the store
+    (PR7e-7) without a cycle.
+  - **Readers:** `pool` re-exports the 11 public names and `_spec_rule_hash`, which its `rule_hashes_of`
+    calls, as the same objects. Every reader keeps reading `pool.<name>`. `pool` keeps importing
+    `ARTIFACT_SHA256_FIELD`, which only the tier used, because `live_route` and two tests read it
+    through `pool`.
+  - **One patch had to follow the code.** The census plugin from PR7e-7, watching `pool` and
+    `live_tier`, found one patch the move cut.
+    - `test_an_armed_entry_the_gate_refuses_is_not_counted` patched `pool.live_arm_unsound`. That
+      reached two readers: the readiness board, which reads `pool.live_arm_unsound`, and
+      `live_arm_approvals`, which after the move reads `live_tier`'s name.
+    - The test still passed with the patch missing its second reader, because the board refuses on the
+      first before the approvals matter. It now patches both names with one fake, and the census
+      finds 0 moved-function calls that see anything other than what a patch on `pool` put there.
+    - A patch on `pool` reaches only the code that reads through `pool`. The tier's own functions, and
+      `pool_state`'s, read their own modules' names, and `pool`'s comments now say so for both moves.
+  - **Nothing changed.** Of the 64 definitions `pool` had, 63 are AST-identical, docstrings included.
+    `live_routable_strategy_ids`'s docstring names `pool.routable_strategy_ids`, which stayed, and the
+    section's header comment names `pool.apply_status_decisions` and `pool.update_statuses`.
+  - The docstrings that placed the disarm in `pool` (`pool`'s, `pool_state`'s, the layer bullet) now say
+    where it went. The tests that read source take their functions from `pool`, so they read the same
+    objects and pass unchanged: `disarm_live_tier`'s one write of the field, and the check that the
+    ladder and the two status writers never name it. A test holds each re-export to
+    `live_tier`'s own object.
+
 - **The forward-book seeder reads each lineage's mint through the candidate store's verified reader**
   (`scripts/seed_forward_book.py`, 2026-09-22).
   - **What changed:** `_first_seen_by_hash` used to open `strategy_candidates.jsonl` itself. It rebuilt the
