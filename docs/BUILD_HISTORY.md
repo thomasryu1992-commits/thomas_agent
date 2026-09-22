@@ -24,6 +24,52 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The pool's two files leave the pool's doors** (crypto PR7e-7, 2026-09-22).
+  - **Why this first:** the user asked for `pool`'s remaining roles to be split (the promotion door's
+    gates, the live tier, the status transitions, the backlog). Each of them reads the pool's state,
+    and `pool` must keep re-exporting whatever leaves it, so a role moved out while the state stayed
+    would import `pool` while `pool` imported it. That cycle fails the layer test. The state moves
+    first; the roles can then follow one at a time, importing `pool_state`.
+    - The roles also read each other, and that sets their order. The live tier and the status
+      transitions read no other role. The gates read the live tier's `_spec_rule_hash` and the
+      lifecycle window (`LIFECYCLE_MIN_WINDOW_TRADES`, kept in the backlog's section, which moves with
+      them). The backlog reads the gates' three promotable sets. So the live tier and the transitions
+      go next, then the gates, then the backlog.
+  - **What moved:** `pool_state.py` (decision, new) takes 14 definitions:
+    - the two file names and paths;
+    - the pool's reads (`load_active_pool`, `read_pool_to_disarm` and the private `_read_active_pool`
+      they share) and the install door;
+    - the identity invariant both doors check (`assert_pool_identity_unique`);
+    - the candidate store's verified read and append door;
+    - the lineage check that door applies (`validate_candidate_lineage`, `DERIVATION_TYPES` and the
+      private parent-count rules).
+    It reads nothing that stayed in `pool`, and it takes `state_dir` from `state`, the leaf `paper`
+    re-exports it from. The two writers that rewrite the stored pool in the cycle, the status
+    transitions and the live tier's disarm, stay in `pool` and move with their roles. Each re-reads
+    the pool under its lock and writes back only its own fields, without the install door's checks.
+  - **Readers:** `pool` re-exports the 12 public names as the same objects, and every reader in the
+    runtime, the scripts and the tests reads them as `pool.<name>`, unchanged. The code that stayed in
+    `pool` reads them through those bindings too. `pool` drops the nine imports only the store used,
+    none of which anything read through `pool`, and the two private names, so a patch on `pool` for
+    either fails loudly rather than reaching nothing.
+  - **Patches, measured by what runs under them.** A census plugin watched every call of a `pool`
+    function over the full suite and recorded which names it read from `pool` were patched at that
+    moment.
+    - Only two (caller, patched name) pairs ever ran that way: `resolve_candidates` under
+      `read_candidates` (7 calls in 5 tests) and `live_arm_approvals` under `live_arm_unsound` (1 call
+      in 1 test). Both callers stay in `pool`.
+    - The 83 patch applications on `load_active_pool` (in 79 tests, from 8 source sites) are
+      untouched by the move: no moved function reads it, and
+      the calls they are meant for, outside `pool` and in the readers that stay in it, still read
+      `pool`'s binding.
+    - `append_candidates`, the one moved function that reads a patched name, never ran under that
+      patch.
+  - **Nothing changed.** All 78 definitions `pool` had are AST-identical, docstrings included: 14 in
+    `pool_state`, 64 still in `pool`. `pool`'s module docstring gave the two-file description to
+    `pool_state` and says what `pool` holds now.
+  - A test holds each re-export to `pool_state`'s own object and keeps the two private names off
+    `pool`.
+
 - **The retention stores' cohort sweeps leave the orchestrator** (crypto PR7e-6, 2026-09-22).
   - **What moved:** `accumulate_positioning_cohort`, `accumulate_open_interest_cohort`,
     `accumulate_orderbook_cohort` and `retention_cohort` go from `cycle` to a new `cohort_retention`
