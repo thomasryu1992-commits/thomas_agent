@@ -285,6 +285,36 @@ def test_concurrent_consumes_spend_the_grant_exactly_once(tmp_path):
 
 
 @requires_local_core
+def test_a_spend_that_wins_before_the_loser_locks_still_refuses_it_already_consumed(tmp_path, monkeypatch):
+    """The race above, pinned to the interleaving that made it flaky: the loser has read the
+    grant as APPROVED when the winner spends it start to finish — retiring the candidate on
+    the way. A loser that looked the candidate up before the compare-and-set found it gone and
+    was refused CANDIDATE_GONE for a grant another process had spent (39 of 1000 runs of the
+    threaded test under suite load, 2026-09-18; 26 of 1000 on 2026-09-22, before the fix landed).
+    The loser must stop at the re-read."""
+    astore, wm, ledger, approval_id, _ = _approved(tmp_path)
+    real = approval.validate_spendable_approval
+    winner: list = []
+
+    def racing(*args, **kwargs):
+        checked = real(*args, **kwargs)  # the loser has read the grant as APPROVED
+        if not winner:
+            winner.append(None)  # guard first: the winner's own ladder re-enters this wrapper
+            winner[0] = consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+        return checked
+
+    monkeypatch.setattr(approval, "validate_spendable_approval", racing)
+    with pytest.raises(ApprovalBlocked) as exc:
+        consume_approval(approval_id, approval_store=astore, working_memory_store=wm,
+                         ledger=ledger, now=LATER, consumer=_CapableConsumer(GRANT))
+    assert exc.value.reason_code == "ALREADY_CONSUMED"
+    assert winner[0]["approval"]["status"] == "CONSUMED"
+    assert len(wm.read_validated()) == 1  # one promotion, not two
+    assert astore.get(approval_id)["status"] == "CONSUMED"
+
+
+@requires_local_core
 def test_a_vanished_candidate_is_refused(tmp_path):
     """The approval is set up but the candidate was never stored (promoted/pruned already)."""
     astore, wm, ledger, approval_id, _ = _approved(tmp_path, store_candidate=False)
