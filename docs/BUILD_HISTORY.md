@@ -29,9 +29,12 @@ Append a new entry when a milestone ships, in the same PR.
     `accumulate_orderbook_cohort` and `retention_cohort` go from `cycle` to a new `cohort_retention`
     (market).
     - They refresh the positioning, hourly open-interest and order-book stores for every member of the
-      declared cohort, unioned with the symbols the pool visited, on every fan-out pass.
+      declared cohort, unioned with every context the pass planned to visit, on every fan-out pass. A
+      `live_halt` that cuts the context loop short does not narrow that.
     - They share one rule: a retention store's scope cannot be a side effect of routing.
-    - They read only those three market stores and `CROSS_SECTION_UNIVERSE`, and they never raise.
+    - They read only those three market stores and `CROSS_SECTION_UNIVERSE`. A vendor failure degrades
+      to a per-symbol status. A local failure (the refresh marks, a store write) still raises and fails
+      the fan-out after its context loop, as it did from `cycle`.
     - They are fan-out-level accumulation, not one context's inputs, so they get a module of their
       own rather than `feed_assembly`.
     - PR7e-5's summary had listed them as the one market-side piece still in `cycle`.
@@ -40,15 +43,19 @@ Append a new entry when a milestone ships, in the same PR.
       and the positioning-store and order-book-store tests read them through `cycle` unchanged.
     - `cycle` drops `oi_store`, `orderbook_store` and `CROSS_SECTION_UNIVERSE`, which only the sweeps
       used. Nothing reads them through `cycle`.
-    - Two references in `feed_assembly` name the new owner.
-  - **Nothing changed.** The four definitions are AST-identical except for three docstrings. Those now
-    name `feed_assembly.attach_feeds` and `cycle.pool_cycle_contexts` as another module's.
+    - Two references in `feed_assembly`, one in `orderbook_store` and `run_pool_cycle`'s docstring name
+      the new owner.
+  - **Nothing changed.** The four definitions are AST-identical except for their docstrings. Three now
+    name `feed_assembly.attach_feeds` and `cycle.pool_cycle_contexts` as another module's. Review
+    corrected what the cohort is unioned with: every planned context, not only the visited ones.
     - A patch census logged all 119,149 patches over the full suite. Nothing patches the four names or
       anything through `cycle`'s store attributes.
     - The one patch on a name they read, `market_data.CROSS_SECTION_UNIVERSE` in a cross-section test,
       replaces `market_data`'s binding. The sweeps never read that binding: they bound the name at
       import, in `cycle` before and in `cohort_retention` now.
-    - A test holds each re-export to `cohort_retention`'s own object.
+    - A test holds each re-export to `cohort_retention`'s own object. That keeps one definition. It
+      does not carry a patch across modules: since the move, a patch on `cycle.retention_cohort`
+      reaches no sweep, which reads its own module's name. No test makes one.
 
 - **The frame a spec is backtested on is assembled with the rest of the market inputs** (crypto PR7e-5,
   2026-09-21).

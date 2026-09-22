@@ -295,9 +295,9 @@ def attach_feeds(
         # history at all, so the accumulation is not merely ahead of the feature that will read
         # it — it is the only copy that will ever exist.
         # `cohort_retention.accumulate_orderbook_cohort` is what covers the fan-out; this covers
-        # the operator's single-symbol cycle, which has one
-        # context and no sweep. The overlap costs nothing — the store's period throttle answers
-        # the second asker `skipped_fresh` without opening a socket.
+        # the operator's single-symbol cycle, which has one context and no sweep. The overlap
+        # costs nothing — the store's period throttle answers the second asker `skipped_fresh`
+        # without opening a socket.
         orderbook = orderbook_store.record_orderbook(
             symbol=symbol, collector=collector, now=now, root=root,
         )

@@ -1,8 +1,10 @@
 """One context's market inputs (`crypto/feed_assembly.py`, crypto PR7e-2 and PR7e-5).
 
 The scheduler's factory dispatches (`crypto_cycle.attach_mining_legs`, in core) and many tests reach
-these names through `cycle`. So each re-export must be the very object `feed_assembly` defines: a
-same-named wrapper or copy in `cycle` would let a patch on one miss the other.
+these names through `cycle`. So each re-export must be the very object `feed_assembly` defines: what
+they run is then the one definition, and a same-named wrapper or copy in `cycle` could not drift from
+it unnoticed. Identity does not carry a patch across the two modules, since a patch reaches only the
+code that reads the patched module's name; that is why each move counted the patches on its names.
 """
 
 from __future__ import annotations

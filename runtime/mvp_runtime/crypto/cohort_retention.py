@@ -3,14 +3,20 @@ pass (crypto PR7e-6).
 
 `accumulate_positioning_cohort`, `accumulate_open_interest_cohort` and `accumulate_orderbook_cohort`
 refresh the positioning, hourly open-interest and order-book stores for every member of the
-cross-sectional cohort, unioned with the symbols the pool actually visited (`retention_cohort`). The
-rule they share: a retention store's scope cannot be a side effect of routing. A symbol the pool stops
-routing, or never routed, must still be recorded, because the vendors serve 30 or 84 days, the venue's
-book serves none, and an hour not recorded today is gone for good.
+cross-sectional cohort, unioned with the symbols of every context the pass planned to visit
+(`retention_cohort`). A `live_halt` that cuts the context loop short does not narrow that. The rule they
+share: a retention store's scope cannot be a side effect of routing. A symbol the pool stops routing, or
+never routed, must still be recorded, because the vendors serve 30 or 84 days, the venue's book serves
+none, and an hour not recorded today is gone for good.
 
-This is market work: each sweep writes a local append-only store through the store's own throttle,
-opens no order path, and never raises. It lived in `cycle`, whose fan-out (`run_pool_cycle`) calls these
-after its context loop, and which re-exports every name here as the same object.
+This is market work: each sweep writes a local append-only store through the store's own throttle and
+opens no order path. A vendor or collector failure degrades to a per-symbol status rather than raising.
+A local failure is not caught: the stores read and write their refresh marks outside their guards, and
+their writes catch only `ToolError`, so an `OSError` or a `PersistenceError` (a lock file a root run
+left behind, say) fails the fan-out after its context loop, as it did before these moved.
+
+These lived in `cycle`, whose fan-out (`run_pool_cycle`) calls them after its context loop, and which
+re-exports every name here as the same object.
 """
 
 from __future__ import annotations
@@ -49,9 +55,9 @@ def accumulate_positioning_cohort(
 
     The cohort is the right scope because :data:`CROSS_SECTION_UNIVERSE` is already declared
     for exactly this reason — "not whichever symbols the pool happens to route today" — and a
-    store that must cover the cohort was the one thing still following the pool. Visited
-    symbols are unioned in rather than assumed to be a subset, so a pool that grows past the
-    cohort keeps its own positioning rather than silently losing it.
+    store that must cover the cohort was the one thing still following the pool. The symbols of
+    the pass's contexts are unioned in rather than assumed to be a subset, so a pool that grows
+    past the cohort keeps its own positioning rather than silently losing it.
 
     Cost is bounded by the store's own hourly throttle, not by this call: at most one request
     per (symbol, series) per hour whoever asks, so a 15-minute fan-out over six symbols costs
@@ -75,11 +81,11 @@ def accumulate_positioning_cohort(
 
 
 def retention_cohort(contexts: list[tuple[str, str]]) -> list[str]:
-    """The symbols a retention store must cover: the declared cohort, unioned with what the
-    pool actually visited. Sorted, so a sweep is deterministic.
+    """The symbols a retention store must cover: the declared cohort, unioned with every
+    context the pass planned to visit. Sorted, so a sweep is deterministic.
 
-    One function because it is one rule. Both accumulating stores answer the same question and
-    got different answers when only one of them was fixed — see
+    One function because it is one rule. The accumulating stores answer the same question, and
+    the first two got different answers when only one of them was fixed — see
     :func:`accumulate_open_interest_cohort`."""
     symbols = {str(symbol).strip().upper() for symbol, _timeframe in contexts}
     symbols.update(CROSS_SECTION_UNIVERSE)

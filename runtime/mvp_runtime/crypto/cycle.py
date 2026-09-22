@@ -904,9 +904,10 @@ def run_pool_cycle(
     cycle reporting ``live_halt`` stops the fan-out, and the contexts that never ran
     are named in ``unvisited`` rather than silently missing.
 
-    The fan-out is also where the positioning store is accumulated, over the declared cohort
-    rather than over the contexts this fire visited — see
-    :func:`accumulate_positioning_cohort` for why that distinction was costing coverage."""
+    The fan-out is also where the three retention stores (positioning, hourly open interest,
+    the order book) are accumulated, over the declared cohort and not only the contexts this
+    fire visited — see :func:`cohort_retention.accumulate_positioning_cohort` for why that
+    distinction was costing coverage."""
     contexts = pool_cycle_contexts(root, default_timeframe=default_timeframe) or [
         (default_symbol, default_timeframe)
     ]

@@ -1,8 +1,14 @@
 """The retention stores' cohort sweeps (`crypto/cohort_retention.py`, crypto PR7e-6).
 
 The fan-out in `cycle` calls these after its context loop, and the store tests reach them through
-`cycle`. So each re-export must be the very object `cohort_retention` defines: a same-named wrapper or
-copy in `cycle` would let a patch on one miss the other.
+`cycle`. So each re-export must be the very object `cohort_retention` defines: what the fan-out runs and
+what those tests exercise is then the one definition, and a same-named wrapper or copy in `cycle` could
+not drift from it unnoticed.
+
+Identity does not carry a patch from one module to the other: a patch on a name reaches only the code
+that reads that module's name. `run_pool_cycle` reads the sweeps from `cycle`, and the sweeps read
+`retention_cohort` from `cohort_retention`, so since this move a patch on `cycle.retention_cohort` no
+longer narrows a sweep. No test patches any of the four names (the PR7e-6 census).
 """
 
 from __future__ import annotations
