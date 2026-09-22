@@ -40,8 +40,9 @@ Append a new entry when a milestone ships, in the same PR.
     `pool_transitions`, 48 still in `pool`. The check that the status writers never name the live
     tier's field reads the same function objects and passes unchanged.
   - The prose that placed the transitions in `pool` now names their module: `pool`'s docstring and
-    comment, `pool_state`'s docstring, the live tier's header comment and the PR7e-1 layer bullet. A
-    test holds each re-export to `pool_transitions`' own object.
+    comment, `pool_state`'s docstring, the live tier's header comment, the PR7e-1 layer bullet, and
+    the lists of the pool's writers in `strategy_artifact` and `CRYPTO_PIPELINE_V0.1.md`, which also
+    name the disarm door's module now. A test holds each re-export to `pool_transitions`' own object.
 
 - **The live tier leaves the pool** (crypto PR7e-8, 2026-09-22).
   - **What moved:** `live_tier.py` (decision, new) takes the 12 definitions of the section `pool` held

@@ -42,16 +42,16 @@ authenticate: whoever can write the pool file can recompute it, or strip it and 
 papers unbound. What authenticates money is the approval: a LIVE arm must be paired with its
 artifact by the approval Thomas answered, and an edited or stripped entry is not.
 
-**A later writer that touches any hashed field poisons the pool.** The pool's writers today are
-the promotion door (which stamps), the history import's ``--activate-pool`` (which installs
-unstamped entries), ``pool.apply_status_decisions`` (status and the ``lifecycle_*`` fields) and
-``pool.disarm_live_tier`` (the ``live_tier*`` fields); none of those touches a hashed field, and
-tests pin that. **A change to this module's hash format is such a writer too**, for every stamp
-already on disk: each read recomputes with the code deployed then. So the v1 format depends only
-on things that are already frozen — the rule fingerprint (every stored rule hash depends on it),
-the candidate-id rule (every stored id does), and field names — and a golden test pins the result.
-A later ``strategy_artifact.v2`` must keep writing the v1 stamp beside its own, or a rollback to
-this code refuses the pool: this code does not know v2 and treats it as a stamp that does not hold.
+**A later writer that touches any hashed field poisons the pool.** The pool's writers today are the
+promotion door (which stamps), the history import's ``--activate-pool`` (which installs unstamped
+entries), ``pool_transitions.apply_status_decisions`` (status and the ``lifecycle_*`` fields) and
+``live_tier.disarm_live_tier`` (the ``live_tier*`` fields); none of those touches a hashed field,
+and tests pin that. **A change to this module's hash format is such a writer too**, for every stamp
+already on disk: each read recomputes with the code deployed then. So the v1 format depends only on
+things that are already frozen — the rule fingerprint (every stored rule hash depends on it), the
+candidate-id rule (every stored id does), and field names — and a golden test pins the result. A
+later ``strategy_artifact.v2`` must keep writing the v1 stamp beside its own, or a rollback to this
+code refuses the pool: this code does not know v2 and treats it as a stamp that does not hold.
 
 **Not everything the runtime reads off an entry is hashed.** ``status``, the ``live_tier`` and, since
 PR3c, ``candidate_identity.PREDECESSOR_KEYS_FIELD`` (the lineages an entry replaced, whose record the

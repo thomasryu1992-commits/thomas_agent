@@ -37,7 +37,7 @@ from .strategy_artifact import ARTIFACT_SHA256_FIELD
 # remaining live gate asks whether this RUNTIME may trade, never whether this STRATEGY may.
 #
 # **Why a field and not a status, which is what the proposal first said.** The lifecycle ladder
-# recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.py:292`). Had the observation
+# recovers a WARNING strategy back to `PAPER_ACTIVE` (`lifecycle.evaluate_lifecycle`). Had the observation
 # tier been a status, that recovery would move a strategy the operator deliberately kept off the
 # money path INTO it — an automatic promotion into real money, arriving through the one mechanism
 # this system says may only ever demote. The status write (`pool_transitions.apply_status_decisions`,

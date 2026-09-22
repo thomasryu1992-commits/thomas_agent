@@ -5,7 +5,8 @@ backlog.
 The two files' paths and reads, the pool's install door, the candidates' append door, and what each
 of them checks are :mod:`pool_state`'s since crypto PR7e-7. The live tier, its disarm door included,
 is :mod:`live_tier`'s since PR7e-8, and the status transitions are :mod:`pool_transitions`' since
-PR7e-9. Those are the two writers that rewrite the stored pool in the cycle. Every public name in the
+PR7e-9. The status transitions and the live tier's disarm door are the two writers that rewrite the
+stored pool in the cycle. Every public name in the
 three is re-exported here as the same object, so callers keep reading them as ``pool.<name>``.
 
 **Some fields on a stored row are SNAPSHOTS, not answers.** Both stores are append-only —
@@ -85,9 +86,9 @@ from .paper import OCCUPYING_STATUSES
 # import cycle. Every public name is re-exported here, as the same object, for the callers that read
 # them as `pool.<name>`, and the code still in this module reads them through these bindings, so a
 # patch on `pool` reaches that code. It does not reach the code that left: `pool_state`'s own functions,
-# the live tier's disarm door and the status transitions read their own modules' names. Neither private name is imported: a
-# patch on `pool` for either would miss the code in `pool_state` that reads it, and without the name
-# here it fails loudly.
+# the live tier's disarm door and the status transitions read their own modules' names. Neither private
+# name is imported: a patch on `pool` for either would miss the code in `pool_state` that reads it, and
+# without the name here it fails loudly.
 from .pool_state import (  # noqa: F401
     CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_FILENAME, append_candidates, assert_pool_identity_unique,
     candidates_path, install_active_pool, load_active_pool, pool_path, read_candidates,
@@ -423,7 +424,7 @@ def reactivated_candidate_ids(
       retired lineage the rule comes back from. Read off the candidate rows (``candidates``),
       which carry the rule; the two doors pass them.
     """
-    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+    from .lifecycle import TERMINAL_STATUSES  # local: it once avoided a module cycle; none remains
 
     entries = load_active_pool(root).get("active_strategies") or []
     returned: set[str] = set()
@@ -451,7 +452,7 @@ def silent_reactivations(
     other lineages: the rule returns to trading, and the entry replaces them. Its row carries
     ``replaces`` — each replaced entry's display id, candidate id, status and lineage key — and
     ``from_status`` names their statuses."""
-    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+    from .lifecycle import TERMINAL_STATUSES  # local: it once avoided a module cycle; none remains
 
     on_disk = load_active_pool(root).get("active_strategies") or []
     current = {e.get("candidate_id"): e for e in on_disk if e.get("candidate_id")}
@@ -588,7 +589,7 @@ def replaced_entries(
     the way replace mode has always taken what it does not re-list. Naming it would put a return
     that is not happening in the approval, and in front of the ask's real-money warning, while the
     reactivation guard rightly saw none (review of PR3c-2)."""
-    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+    from .lifecycle import TERMINAL_STATUSES  # local: it once avoided a module cycle; none remains
 
     own = record.get("candidate_id")
     if own and any(isinstance(entry, Mapping) and entry.get("candidate_id") == own
@@ -607,7 +608,7 @@ def assert_rule_not_routed(candidates: Sequence[Mapping[str, Any]], *, root: Pat
     routed lineage and lists its twin is the same rule changing lineage without a retirement.
 
     Raises :data:`POOL_RULE_ALREADY_ROUTED`."""
-    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+    from .lifecycle import TERMINAL_STATUSES  # local: it once avoided a module cycle; none remains
 
     entries = load_active_pool(root).get("active_strategies") or []
     for index, candidate in enumerate(candidates):

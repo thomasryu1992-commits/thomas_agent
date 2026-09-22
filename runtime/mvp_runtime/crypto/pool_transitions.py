@@ -2,12 +2,13 @@
 
 :func:`apply_status_decisions` applies a batch of status decisions to the active pool under its lock.
 A decision moves an entry only while the pool still holds what it judged, the lineage in that status
-(:func:`_stale_decision`); otherwise it is stale (:data:`LIFECYCLE_DECISION_STALE`). The cycle's
-lifecycle skips a stale decision and applies the rest; the operator's retirement door
-(``all_or_nothing``) refuses the whole batch. :func:`update_statuses` is that all-or-nothing form,
-returning only the count. The write changes an
-entry's ``status`` and ``lifecycle_*`` fields and stamps the pool header, nothing else: never a spec,
-a hash, a score, membership or the live tier, which is why the lifecycle ladder cannot arm a strategy.
+(:func:`_stale_decision`). The cycle calls it in its default mode, which skips a stale decision and
+applies the rest. The operator's retirement door calls it with ``all_or_nothing``, which refuses the
+whole batch: ``LIFECYCLE_UNKNOWN_STRATEGY`` for an id no entry holds, :data:`LIFECYCLE_DECISION_STALE`
+for the rest. :func:`update_statuses` wraps that mode and returns only the count; only tests call it.
+The write changes an entry's ``status`` and ``lifecycle_*`` fields and stamps the pool header, nothing
+else: never a spec, a hash, a score, membership or the live tier, which is why the lifecycle ladder
+cannot arm a strategy.
 
 This was `pool`'s until crypto PR7e-9. It reads the stored pool through `pool_state` and nothing of
 `pool`'s, so `pool` can import it: `pool` re-exports the three public names as the same objects, and
@@ -108,7 +109,7 @@ def apply_status_decisions(
     override. The stamp lands on every write, like ``updated_by`` — "when was this file last
     written, and by whom" is the question the pair answers, and per-entry
     ``lifecycle_updated_at`` remains the one that says when a given strategy last moved."""
-    from .lifecycle import TERMINAL_STATUSES  # local: avoids a module cycle
+    from .lifecycle import TERMINAL_STATUSES  # local: it once avoided a module cycle; none remains
 
     if not decisions:
         return {"changed": 0, "stale": []}
