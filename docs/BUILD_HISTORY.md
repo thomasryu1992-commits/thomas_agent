@@ -36,9 +36,11 @@ Append a new entry when a milestone ships, in the same PR.
     - one routed rule per lineage (`assert_rule_not_routed` and the rule-hash helpers) and the
       entries a promotion leaves behind (`reactivated_candidate_ids`, `silent_reactivations`,
       `assert_no_silent_reactivation`);
-    - the size cap and the routing capacity it stands on (`MAX_ROUTABLE_*`, `FAST_ROUTING_TIMEFRAMES`,
-      `max_routable_per_context`, `routable_context_map`, `routable_directional_capacity`), and the
-      lifecycle window `LIFECYCLE_MIN_WINDOW_TRADES`, which the backlog reads too.
+    - the size cap and what it checks against (`MAX_ROUTABLE_*`, `FAST_ROUTING_TIMEFRAMES`,
+      `max_routable_per_context`, `routable_context_map`), and the lifecycle window
+      `LIFECYCLE_MIN_WINDOW_TRADES`, which the backlog reads too;
+    - `routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
+      script report. Nothing refuses on it.
     It reads the stored pool through `pool_state` and the live tier's rule hash through `live_tier`, and
     nothing of `pool`'s.
   - **Readers:** `pool` re-exports the 34 public names as the same objects. The promotion door's roster,

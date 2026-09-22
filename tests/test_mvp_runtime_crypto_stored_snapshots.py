@@ -43,7 +43,7 @@ def _string_constants(path: pathlib.Path) -> set[str]:
     these fields are only ever reached by name through a Mapping.
 
     The ``STORED_SNAPSHOT_FIELDS`` assignment is subtracted rather than the file that holds
-    it being skipped: `pool.py` declares the names and its doors read the pool entries that carry
+    it being skipped: `pool.py` declares the names and its routing views read the pool entries that carry
     them, so exempting the whole module would blind this to a place able to reintroduce the defect.
     (The recompute lives in `candidate_ranking.py` since crypto PR7e-1.)"""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

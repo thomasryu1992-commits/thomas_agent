@@ -11,9 +11,9 @@ This was `pool`'s until crypto PR7e-8. It reads the stored pool through `pool_st
 of `pool`'s, so `pool` can import it: `pool` re-exports every public name here as the same object, and
 its callers keep reading `pool.<name>`. The promotion door's gates (`pool_admission`, PR7e-10) import
 the private :func:`_spec_rule_hash`, because their `rule_hashes_of`, which the rule-not-routed gate and
-`replaced_entries` stand on, hashes a spec the same way. A patch on `pool` does not reach the functions here, which read this module's names: a test
-that means to change what they see patches `live_tier` too, as the readiness test does for
-:func:`live_arm_unsound`.
+`replaced_entries` stand on, hashes a spec the same way. A patch on `pool` does not reach the functions
+here, which read this module's names: a test that means to change what they see patches `live_tier`
+too, as the readiness test does for :func:`live_arm_unsound`.
 """
 
 from __future__ import annotations

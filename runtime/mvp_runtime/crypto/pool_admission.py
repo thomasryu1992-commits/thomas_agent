@@ -6,15 +6,19 @@ may hold (crypto PR7e-10).
 - the two tier doors (:func:`assert_promotable_cost_basis`, :func:`assert_promotable_evidence_depth`)
   and the derivation door (:func:`assert_promotable_derivation`), with the sets they refuse on;
 - the checks against the pool's incumbents: semantic duplicates and behaviour-cluster siblings
-  (:func:`assert_no_semantic_duplicates`, :func:`assert_no_cluster_siblings`, which read the
-  incumbents' rows through :func:`pool_candidate_records`);
+  (:func:`assert_no_semantic_duplicates`, :func:`assert_no_cluster_siblings`). They take the
+  incumbents' rows as an argument; the promotion door reads those rows with
+  :func:`pool_candidate_records`, and only when a batch adds to the pool;
 - the observation tier's entry bar and family cap (:func:`assert_observation_entry_bar`,
   :func:`assert_family_cap`);
 - one routed rule per lineage (:func:`assert_rule_not_routed`) and the entries a promotion leaves
   behind (:func:`assert_no_silent_reactivation`);
-- the size cap (:func:`assert_pool_within_size_cap`), with the routing capacity it stands on
-  (``MAX_ROUTABLE_*``, :func:`max_routable_per_context`, :func:`routable_directional_capacity`) and
-  the lifecycle window (:data:`LIFECYCLE_MIN_WINDOW_TRADES`), which `pool`'s backlog reads too.
+- the size cap (:func:`assert_pool_within_size_cap`), with what it checks against: the per-context
+  caps (``MAX_ROUTABLE_*``, ``FAST_ROUTING_TIMEFRAMES``, :func:`max_routable_per_context`), the slot
+  each strategy competes for (:func:`routable_context_map`), and the lifecycle window
+  (:data:`LIFECYCLE_MIN_WINDOW_TRADES`), which `pool`'s backlog reads too;
+- :func:`routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
+  script report. Nothing refuses on it.
 
 This was `pool`'s until crypto PR7e-10. It reads the stored pool through `pool_state` and the live
 tier's rule hash through `live_tier`, and nothing of `pool`'s, so `pool` can import it: `pool`
@@ -679,7 +683,7 @@ def routable_directional_capacity(entries: Sequence[Mapping[str, Any]]) -> dict[
     cap's own: opposing positions buy back a slot each, so the reachable book is
     ``2 * min(long + flexible, short + flexible) + cap``, bounded by the context count.
     """
-    from .paper import MAX_DIRECTIONAL_SKEW  # local: pool is imported by paper's callers
+    from .paper import MAX_DIRECTIONAL_SKEW  # local, as it was in `pool`; `paper` is imported above too
 
     directions_by_context: dict[tuple[str, str], set[str]] = {}
     for entry in entries:

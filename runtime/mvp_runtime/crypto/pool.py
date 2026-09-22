@@ -1,6 +1,7 @@
 """C7 strategy pool — the public face of the active pool the cycle routes against and of the
-candidate store the C8 promotion flow consumes. What is decided here: the routing views, the
-resolution of an operator's candidate selectors, and the backlog.
+candidate store the C8 promotion flow consumes. What stays here: the routing views, the resolution of
+an operator's candidate selectors, a candidate seen as the entry it would become (for replay), and the
+backlog, which reports and decides nothing.
 
 The pool's other roles live beside it, and every public name of theirs is re-exported here as the same
 object, so callers keep reading them as ``pool.<name>``:
@@ -88,8 +89,9 @@ from .live_tier import (  # noqa: F401
 from .paper import OCCUPYING_STATUSES
 # The promotion door's gates (the tier and derivation doors, the checks against the incumbents, the
 # observation tier's bar and cap, one routed rule per lineage, the entries a promotion leaves behind)
-# and the size cap with the capacity it stands on moved to `pool_admission` (decision) in crypto
-# PR7e-10, with the lifecycle window the backlog below reads too. Every public name is re-exported
+# and the size cap with the caps and slot map it checks against moved to `pool_admission` (decision) in
+# crypto PR7e-10, with the per-direction capacity the dashboard reports and the lifecycle window the
+# backlog below reads too. Every public name is re-exported
 # here, as the same object, for the callers that read them as `pool.<name>`; the backlog reads the
 # promotable sets and the window through these bindings. The private `_observation_holdout_term` is
 # not imported: nothing here calls it, and a patch on `pool` for it would miss the entry bar.
@@ -106,14 +108,16 @@ from .pool_admission import (  # noqa: F401
     routable_directional_capacity, rule_hashes_of, same_rule_entries, semantic_duplicate_groups,
     silent_reactivations,
 )
-# The two files' paths and reads, the install and append doors, and what each of them checks moved
-# to `pool_state` (decision) in crypto PR7e-7, so that the roles still here can move out without an
+# The two files' paths and reads, the install and append doors, and what each of them checks moved to
+# `pool_state` (decision) in crypto PR7e-7, so that the roles still here can move out without an
 # import cycle. Every public name is re-exported here, as the same object, for the callers that read
 # them as `pool.<name>`, and the code still in this module reads them through these bindings, so a
-# patch on `pool` reaches that code. It does not reach the code that left: `pool_state`'s own functions,
-# the live tier's disarm door and the status transitions read their own modules' names. Neither private
-# name is imported: a patch on `pool` for either would miss the code in `pool_state` that reads it, and
-# without the name here it fails loudly.
+# patch on `pool` reaches that code. It does not reach the code that left: `pool_state`'s own
+# functions, the live tier's disarm door, the status transitions, and the gates that read the pool or
+# the candidates (`reactivated_candidate_ids`, `silent_reactivations`, `assert_rule_not_routed`,
+# `pool_candidate_records`) read their own modules' names. Neither private name is imported: a patch
+# on `pool` for either would miss the code in `pool_state` that reads it, and without the name here it
+# fails loudly.
 from .pool_state import (  # noqa: F401
     CANDIDATES_FILENAME, DERIVATION_TYPES, POOL_FILENAME, append_candidates, assert_pool_identity_unique,
     candidates_path, install_active_pool, load_active_pool, pool_path, read_candidates,

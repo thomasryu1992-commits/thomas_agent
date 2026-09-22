@@ -49,8 +49,9 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   candidate's evidence and orders the store; it keeps no state and refuses nothing. The confirmation
   gate (``forward_confirmation``, strategy) reads the recomputed holdout status from it. The doors that
   turn a tier into a refusal (``assert_promotable_*`` and the sets they refuse on) stayed decision: in
-  ``pool`` then, and in ``pool_admission`` with the promotion door's other gates since PR7e-10. The two "what a row minted now would carry" views (``current_cost_basis``,
-  ``current_evidence_depth``) went with the formatters they are built on.
+  ``pool`` then, and in ``pool_admission`` with the promotion door's other gates since PR7e-10. The two
+  "what a row minted now would carry" views (``current_cost_basis``, ``current_evidence_depth``) went
+  with the formatters they are built on.
 - **the pool's two files are decision state, and ``pool`` imports them** (PR7e-7). ``pool_state``
   holds the two files' paths and reads, the pool's install door and the candidates' append door, and
   what each of them checks: each spec, the identity invariant, the artifact stamps, each stamped row's
@@ -60,11 +61,11 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
   read path of a record that layers below its writer must read. ``pool`` re-exports every public name,
   so the pool's other roles, which all read the state, no longer need ``pool`` for it; what they read
   from each other decides the order in which they can leave.
-- **the live tier is decision, and ``pool`` imports it** (PR7e-8). ``live_tier`` says which pool
-  entries may spend real money and what each LIVE arm stands on, and holds the disarm door, the one
-  automatic writer of the tier, which can only take it away. It reads the stored pool through
-  ``pool_state`` and nothing of ``pool``'s; ``pool`` re-exports it, and ``pool_admission`` imports its
-  rule hash for ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
+- **the live tier is decision, and ``pool`` imports it** (PR7e-8). ``live_tier`` says which pool entries
+  may spend real money and what each LIVE arm stands on, and holds the disarm door, the one automatic
+  writer of the tier, which can only take it away. It reads the stored pool through ``pool_state`` and
+  nothing of ``pool``'s; ``pool`` re-exports it, and ``pool_admission`` imports its rule hash for
+  ``rule_hashes_of``. Its readers (the promotion door, the cycle, the live route and the readiness
   report) sit at or above decision, and its own reads (``paper``'s occupying statuses, the strategy
   spec, the artifact field) sit at or below it.
 - **the status transitions are decision, and ``pool`` imports them** (PR7e-9). ``pool_transitions``
@@ -76,12 +77,13 @@ Each module is placed by what it does, and the map is not tuned to shrink the li
 - **the promotion door's gates are decision, and ``pool`` imports them** (PR7e-10). ``pool_admission``
   holds what a candidate must satisfy to enter the pool and how much the pool may hold: the tier and
   derivation doors, the checks against the incumbents, the observation tier's bar and cap, one routed
-  rule per lineage, the entries a promotion leaves behind, and the size cap with the capacity and the
-  lifecycle window it stands on. ``promotion``'s roster calls them through ``pool``. It reads the
-  stored pool through ``pool_state`` and the live tier's rule hash through ``live_tier``, and nothing of
-  ``pool``'s. Its readers (``promotion``, ``cycle``, ``dashboard``, ``tunables``) sit at or above
-  decision. What ``pool`` keeps is the routing views, the resolution of an operator's candidate
-  selectors, and the backlog.
+  rule per lineage, the entries a promotion leaves behind, the size cap with the caps, the slot map and
+  the lifecycle window it checks against, and the per-direction capacity that is only reported.
+  ``promotion``'s roster calls them through ``pool``. It reads the stored pool through ``pool_state``
+  and the live tier's rule hash through ``live_tier``, and nothing of ``pool``'s. Its readers
+  (``promotion``, ``cycle``, ``dashboard``, ``tunables``) sit at or above decision. What ``pool`` keeps
+  is the routing views, the resolution of an operator's candidate selectors, the replay view of a
+  candidate, and the backlog.
 
 No edge points up today: the last one (``forward_confirmation -> pool``) went with PR7e-1, and
 ``EXCEPTIONS`` is empty, which a test pins. Both only shrink: a new upward pair fails, and so would a
