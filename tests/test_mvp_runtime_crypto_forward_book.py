@@ -642,3 +642,122 @@ def test_a_damaged_candidate_store_refuses_the_seed_instead_of_moving_the_mint(
     assert reached == {"collector": 0, "seeded": []}
     assert not fb._book_path(tmp_path).exists()
     assert not fb._outcomes_path(tmp_path).exists()
+
+
+# --- the book is checked, not trusted (2026-09-23) ------------------------------------------------
+
+_T0, _T1, _T2 = "2026-09-20T23:59:59Z", "2026-09-21T23:59:59Z", "2026-09-22T23:59:59Z"
+
+
+def _seen_state(lineage="cand:cand_a", symbol="BTCUSDT", timeframe="1d"):
+    state = fb._fresh_state(lineage, symbol, timeframe, "S001", _T0)
+    state.update(first_seen_candle=_T0, last_seen_candle=_T1)
+    return state
+
+
+def _write(tmp_path, raw):
+    path = fb._book_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _good_book(**state_kw):
+    state = _seen_state(**state_kw)
+    return {"forward_book_version": fb.FORWARD_BOOK_VERSION, "updated_at_utc": _T1,
+            "entries": {fb.book_key(state["lineage"], state["symbol"], state["timeframe"]): state}}
+
+
+def _refused(tmp_path, raw):
+    _write(tmp_path, raw)
+    with pytest.raises(ToolError) as exc:
+        fb.load_book(tmp_path)
+    assert exc.value.reason_code == fb.FORWARD_BOOK_UNVERIFIABLE
+    return exc.value
+
+
+@pytest.mark.parametrize("lineage", ["cand:cand_a", "gen:GEN-001:hash-a"])
+def test_a_book_this_version_wrote_loads(tmp_path, lineage):
+    raw = _good_book(lineage=lineage)
+    _write(tmp_path, raw)
+    assert fb.load_book(tmp_path)["entries"] == raw["entries"]
+
+
+def test_a_book_of_another_version_is_refused(tmp_path):
+    _refused(tmp_path, {**_good_book(), "forward_book_version": "forward_book.v0"})
+
+
+def test_an_entry_that_is_not_a_mapping_is_refused_not_dropped(tmp_path):
+    """Dropped, the lineage would start a fresh live stream and re-open bars already settled."""
+    raw = _good_book()
+    (key,) = raw["entries"]
+    raw["entries"][key] = ["garbled"]
+    _refused(tmp_path, raw)
+
+
+def test_an_entry_filed_under_another_key_is_refused(tmp_path):
+    raw = _good_book()
+    (state,) = raw["entries"].values()
+    raw["entries"] = {fb.book_key("cand:cand_a", "ETHUSDT", "1d"): state}
+    _refused(tmp_path, raw)
+
+
+@pytest.mark.parametrize("lineage", ["sid:S001", "", "cand:", None])
+def test_a_lineage_the_judge_cannot_attribute_is_refused(tmp_path, lineage):
+    state = _seen_state()
+    state["lineage"] = lineage
+    raw = {"forward_book_version": fb.FORWARD_BOOK_VERSION,
+           "entries": {f"{lineage}|BTCUSDT|1d": state}}
+    _refused(tmp_path, raw)
+
+
+def test_an_unknown_timeframe_is_refused(tmp_path):
+    state = _seen_state()
+    state["timeframe"] = "7m"
+    _refused(tmp_path, {"forward_book_version": fb.FORWARD_BOOK_VERSION,
+                        "entries": {fb.book_key("cand:cand_a", "BTCUSDT", "7m"): state}})
+
+
+@pytest.mark.parametrize("marks", [
+    {"first_seen_candle": _T2, "last_seen_candle": _T1},
+    {"last_seen_candle": "not a time"},
+    {"first_seen_candle": None, "last_seen_candle": _T1},
+])
+def test_candle_marks_that_do_not_parse_or_run_backward_are_refused(tmp_path, marks):
+    raw = _good_book()
+    next(iter(raw["entries"].values())).update(marks)
+    _refused(tmp_path, raw)
+
+
+def test_a_mutation_that_moves_a_mark_back_writes_nothing(tmp_path):
+    """Both writers (the cycle and the seeder) go through `mutate_book`, so the check is there."""
+    raw = _good_book()
+    _write(tmp_path, raw)
+    before = fb._book_path(tmp_path).read_text(encoding="utf-8")
+    (key,) = raw["entries"]
+
+    def rewind(book):
+        book["entries"][key]["last_seen_candle"] = _T0
+
+    with pytest.raises(ToolError) as exc:
+        fb.mutate_book(tmp_path, _T2, rewind)
+    assert exc.value.reason_code == fb.FORWARD_BOOK_UNVERIFIABLE
+    assert fb._book_path(tmp_path).read_text(encoding="utf-8") == before
+
+
+def test_a_mutation_that_clears_a_mark_is_refused_but_removing_the_entry_is_not(tmp_path):
+    """Removing an entry is the cycle winding down a context the pool no longer routes."""
+    raw = _good_book()
+    _write(tmp_path, raw)
+    (key,) = raw["entries"]
+    with pytest.raises(ToolError):
+        fb.mutate_book(tmp_path, _T2, lambda book: book["entries"][key].update(last_seen_candle=None))
+    fb.mutate_book(tmp_path, _T2, lambda book: book["entries"].pop(key))
+    assert fb.load_book(tmp_path)["entries"] == {}
+
+
+def test_a_mutation_that_moves_a_mark_forward_is_written(tmp_path):
+    raw = _good_book()
+    _write(tmp_path, raw)
+    (key,) = raw["entries"]
+    fb.mutate_book(tmp_path, _T2, lambda book: book["entries"][key].update(last_seen_candle=_T2))
+    assert fb.load_book(tmp_path)["entries"][key]["last_seen_candle"] == _T2
