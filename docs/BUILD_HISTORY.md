@@ -24,6 +24,30 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward book is checked, not trusted** (`forward_book._parse_book` / `mutate_book`, 2026-09-23;
+  the gap the entry below left for a change of its own).
+  - **Why:** the forward book decides where each lineage's live stream resumes, and the rows it
+    settles feed the LIVE door (`forward_confirmation`). Its loader had the cohort book's two gaps:
+    - no version check;
+    - a silent drop of a non-mapping entry. A dropped lineage starts a fresh live stream and re-opens
+      bars the settlement dedup cannot catch.
+  - **Now refused with the existing `FORWARD_BOOK_UNVERIFIABLE`:**
+    - a book of another version;
+    - an entry that is not a mapping;
+    - an entry filed under a key that is not its own `(lineage, symbol, timeframe)`;
+    - a lineage the judge cannot attribute: not `cand:` or `gen:` (`sid:` is refused, as the judge
+      refuses it);
+    - an unknown timeframe;
+    - candle marks that do not parse or run backward.
+  - **In `mutate_book`, which both writers (the cycle and the seeder) go through:** the write is
+    refused if a lineage-context still held would have its `last_seen_candle` moved back or cleared.
+    Removing an entry stays allowed; that is how the cycle winds down a context the pool no longer
+    routes.
+  - **No membership check, unlike the cohort's.** Stale entries of lineages the pool no longer holds
+    are kept by design.
+  - **The cycle already degrades on this code:** it writes nothing and reports `degraded`.
+  - **Effect today: none.** The live book's 30 entries load unchanged.
+
 - **The forward cohort's positions book is checked, not trusted** (`forward_cohort.load_positions`,
   2026-09-23; item PR-LIVE-11 of an external follow-up plan).
   - **Why:** the walker's outcomes are sealed rows, but `forward_cohort_positions.json` is mutable
