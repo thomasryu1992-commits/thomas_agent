@@ -22,7 +22,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime.control import ACTIVE, KILLED, PAUSED, ControlState, ControlStore
-from runtime.mvp_runtime.crypto import account_store, live_readiness
+from runtime.mvp_runtime.crypto import account_store, live_readiness, live_tier
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV
@@ -168,6 +168,13 @@ _FLIPS = {
                "runtime_control", False, "RUNTIME_PAUSED"),
     "disarmed": (dict(inputs={"runtime_control": {"trading_armed": False}}),
                  "runtime_control", False, "TRADING_DISARMED"),
+    # PR6: a named halt reads before the arm, as `ControlState.trading_allowed` refuses on either.
+    "soft_halt": (dict(inputs={"runtime_control": {"trading_armed": False, "halt_level": "SOFT"}}),
+                  "runtime_control", False, "SOFT_HALT"),
+    "hard_halt": (dict(inputs={"runtime_control": {"trading_armed": False, "halt_level": "HARD"}}),
+                  "runtime_control", False, "HARD_HALT"),
+    "halt_whatever_the_arm": (dict(inputs={"runtime_control": {"trading_armed": True, "halt_level": "HARD"}}),
+                              "runtime_control", False, "HARD_HALT"),
     "control_fail_closed": (dict(inputs={"runtime_control": {"mode": KILLED, "fail_closed": True}}),
                             "runtime_control", False, "CONTROL_FAIL_CLOSED"),
     "control_unreadable": (dict(inputs={"runtime_control": {"mode": None, "error": "CONTROL_X"}}),
@@ -717,6 +724,18 @@ def test_a_disarm_is_read_while_the_runtime_keeps_cycling(tmp_path, clean_env, m
     assert data["readiness"]["blocking"] == ["runtime_control:TRADING_DISARMED"]
 
 
+@pytest.mark.parametrize("level", ["SOFT", "HARD"])
+def test_a_halt_is_named_on_the_board(tmp_path, clean_env, monkeypatch, level):
+    """PR6: the halt the operator placed is its own reason, apart from a disarm nobody named."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="halt",
+                                             trading_armed=False, halt_level=level))
+    _write_fire(tmp_path, created_at=NOW, statuses=("HELD", "BLOCKED", "HELD"))
+    _, data = _board(tmp_path)
+    assert data["live_entry_possible"] is False
+    assert data["readiness"]["blocking"] == [f"runtime_control:{level}_HALT"]
+
+
 def test_a_stale_record_on_a_console_is_not_live_trading_off(tmp_path, clean_env, monkeypatch):
     _ready_console_machine(tmp_path, monkeypatch)
     from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
@@ -770,7 +789,14 @@ def test_a_tripped_c4_breaker_refuses(tmp_path, clean_env, monkeypatch):
 
 def test_an_armed_entry_the_gate_refuses_is_not_counted(tmp_path, clean_env, monkeypatch):
     _ready_console_machine(tmp_path, monkeypatch)
-    monkeypatch.setattr(pool_store, "live_arm_unsound", lambda entry: "spec")
+    # The verdict has two readers: the board reads it as `pool.live_arm_unsound`, and
+    # `live_arm_approvals` reads its own module's name (`live_tier`, since crypto PR7e-8). One fake
+    # in both names, so both readers see what one patch on `pool` gave them before the move.
+    def unsound(entry):
+        return "spec"
+
+    for module in (pool_store, live_tier):
+        monkeypatch.setattr(module, "live_arm_unsound", unsound)
     _, data = _board(tmp_path)
     assert data["readiness"]["components"]["armed_strategy_count"] == {
         "ok": False, "reason": "ARMED_CANNOT_TRADE", "count": 0, "armed": 1}
@@ -896,7 +922,8 @@ def test_an_account_the_trading_process_cannot_read_is_refused_on_a_console(tmp_
     snapshot for up to two hours while every leg refused on the account. The leg's own reads at the
     last fire decide first."""
     from runtime.mvp_runtime.crypto import account as account_mod
-    from runtime.mvp_runtime.crypto.live_position import entry_allowed, reconcile_positions
+    from runtime.mvp_runtime.crypto.live_position import entry_allowed
+    from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions
 
     _ready_console_machine(tmp_path, monkeypatch)
     ninety_minutes_ago = "2026-07-23T10:30:00Z"
@@ -1155,3 +1182,280 @@ def test_an_undated_snapshot_speaks_for_no_now(tmp_path, clean_env, monkeypatch)
     _write_snapshot(tmp_path, as_of=None, net=-3.0)
     _, data = _board(tmp_path)
     assert data["readiness"]["unknown"] == ["risk_ready:DAILY_LOSS_UNMEASURED", "account_ready:SNAPSHOT_STALE"]
+
+
+# === the text board leads and ends with the answer (PR5b) =====================================
+
+def _text(root):
+    status = live_readiness.build_readiness(root=root, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+    text.encode("ascii")
+    return status, text
+
+
+def _verdict(text):
+    """The board's last line, which carries the whole verdict: it is never wrapped (review of #907)."""
+    last = text.splitlines()[-1]
+    assert last.startswith("LIVE ENTRY POSSIBLE:"), last
+    return last
+
+
+def test_a_ready_machine_says_yes_first_and_last_while_the_console_is_not_ready(tmp_path, clean_env, monkeypatch):
+    """The console is never READY — it carries no live-trading environment — and that verdict is
+    printed as this process's. The answer a reader keeps is the system's, at both ends."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    _, text = _text(tmp_path)
+    lines = text.splitlines()
+    assert lines[1] == "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"
+    assert lines[-1] == "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"
+    assert "THIS PROCESS: NOT READY (THIS PROCESS ONLY)" in text
+    # The head says which verdict is this process's by its name, not by where it sits: the board no
+    # longer ends with it.
+    assert "and so is the THIS PROCESS line" in "\n".join(lines[:12])
+    assert not any(line in ("READY", "NOT READY") for line in lines), "a bare READY/NOT READY line is back"
+
+
+def test_a_kill_is_named_at_both_ends_of_the_board(tmp_path, clean_env, monkeypatch):
+    _ready_console_machine(tmp_path, monkeypatch)
+    ControlStore(tmp_path).save(ControlState(mode=KILLED, updated_by="op", updated_at=NOW, reason="stop",
+                                             trading_armed=False))
+    _, text = _text(tmp_path)
+    head = text.splitlines()[1:3]
+    assert head == ["LIVE ENTRY POSSIBLE: NO - no autonomous entry can open now",
+                    "  blocked by : runtime_control (RUNTIME_KILLED)"]
+    assert _verdict(text) == "LIVE ENTRY POSSIBLE: NO - blocked by runtime_control (RUNTIME_KILLED)"
+
+
+def test_what_cannot_be_seen_is_named_and_never_read_as_yes(tmp_path, clean_env, monkeypatch):
+    """A fire recorded before the leg stamped its switches: nothing refuses, one fact is unseen."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    _write_fire(tmp_path, created_at=NOW, gate=False)
+    _, text = _text(tmp_path)
+    # It leads with what cannot be seen, not with "nothing refuses" (review of #907).
+    assert text.splitlines()[1] == "LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see every fact it needs"
+    assert "  unknown    : live_gate_open (SWITCHES_NOT_RECORDED)" in text
+    assert _verdict(text) == ("LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see live_gate_open "
+                              "(SWITCHES_NOT_RECORDED)")
+
+
+def test_every_component_appears_once_in_the_head(tmp_path, clean_env, monkeypatch):
+    _ready_console_machine(tmp_path, monkeypatch)
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="halt",
+                                             trading_armed=False))
+    _write_snapshot(tmp_path, as_of=THREE_HOURS_AGO, net=0.0)
+    _, text = _text(tmp_path)
+    head = text[:text.index("  The rows below are THIS process's own checks")]
+    for name in live_readiness.READINESS_COMPONENTS:
+        assert head.count(name) == 1, name
+    assert "  blocked by : runtime_control (TRADING_DISARMED)" in head
+    assert "account_ready (SNAPSHOT_STALE)" in head and "risk_ready (DAILY_LOSS_UNMEASURED)" in head
+
+
+def test_the_trading_process_board_still_ends_with_the_system_answer(tmp_path, clean_env, monkeypatch):
+    """Where the environment is present the rows are the gate, and THIS PROCESS is the machine
+    that trades — READY there still is not the answer to "can an entry open"."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    monkeypatch.setenv(LIVE_TRADING_ENV, "real")
+    monkeypatch.setenv(CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE)
+    monkeypatch.setenv(MARKET_DATA_ENV, BINANCE_FUTURES)
+    status, text = _text(tmp_path)
+    assert "THIS PROCESS CANNOT SEE" not in text
+    assert "THIS PROCESS: NOT READY - every FAIL above must clear first" in text
+    # No account feed in this test process: the trading process's leg would refuse without one.
+    assert "account_ready (ACCOUNT_FEED_NOT_CONFIGURED)" in _verdict(text)
+    assert status["ready"] is False
+
+
+def test_a_ready_process_is_named_as_this_process_and_the_answer_still_ends_the_board():
+    status = _status(opted=True)
+    text = live_readiness.render_readiness_text(status)
+    text.encode("ascii")
+    assert status["ready"] is True
+    assert "THIS PROCESS: READY - every check above passes" in text
+    assert text.splitlines()[-1] == "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position"
+
+
+def test_an_old_closed_record_does_not_speak_for_now_either(tmp_path, clean_env):
+    """Only a FRESH record of a closed gate lets this container's env rows say "off" for the system;
+    an old one is no statement about now, whichever way it pointed."""
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = tmp_path / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / RECORDS_FILE).write_text(json.dumps({"kind": "crypto_cycle", "record": {
+        "live_route_status": "DISABLED", "created_at": THREE_HOURS_AGO}}) + "\n", encoding="utf-8")
+    status, text = _text(tmp_path)
+    assert live_readiness.env_out_of_scope(status) is True
+    opt_in = next(line for line in text.splitlines() if line.startswith("[") and "live_trading_opt_in" in line)
+    assert opt_in.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), opt_in
+    assert "is over two hours old - not a statement about now" in text
+    (ledger / RECORDS_FILE).write_text(json.dumps({"kind": "crypto_cycle", "record": {
+        "live_route_status": "DISABLED", "created_at": FIVE_MINUTES_AGO}}) + "\n", encoding="utf-8")
+    status, _ = _text(tmp_path)
+    assert live_readiness.env_out_of_scope(status) is False
+
+
+def test_the_cli_json_carries_the_readiness_state_and_the_exit_code_stays_this_process(monkeypatch, capsys):
+    status = _status(opted=True, inputs={"runtime_control": {"mode": KILLED}})
+    monkeypatch.setattr(live_readiness, "build_readiness", lambda *a, **kw: status)
+    assert live_readiness.main(["--json"]) == 0          # every check of THIS process passes
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    # The [data] line's shape: the answer at the top level, the state under `readiness` (review of #907).
+    assert payload["live_entry_possible"] is False
+    assert payload["readiness"]["blocking"] == ["runtime_control:RUNTIME_KILLED"]
+    assert set(payload["readiness"]) == {"model", "blocking", "unknown", "components"}
+    data = live_readiness.readiness_data(status)
+    assert {key: payload[key] for key in ("live_entry_possible", "readiness")} == {
+        key: data[key] for key in ("live_entry_possible", "readiness")}
+
+
+def test_the_text_cli_exit_code_is_this_process_too(monkeypatch, capsys):
+    """The exit code follows THIS process's `ready` on the text path as on `--json` — a script
+    precondition run where trading runs — and the text still ends with the system's answer."""
+    status = _status(opted=True, inputs={"runtime_control": {"mode": KILLED}})
+    monkeypatch.setattr(live_readiness, "build_readiness", lambda *a, **kw: status)
+    assert live_readiness.main([]) == 0
+    assert _verdict(capsys.readouterr().out.rstrip("\n")) == (
+        "LIVE ENTRY POSSIBLE: NO - blocked by runtime_control (RUNTIME_KILLED)")
+    blind = _status()                                     # a console: its env rows fail
+    monkeypatch.setattr(live_readiness, "build_readiness", lambda *a, **kw: blind)
+    assert live_readiness.main([]) == 1
+    assert _verdict(capsys.readouterr().out.rstrip("\n")) == (
+        "LIVE ENTRY POSSIBLE: YES - the next cycle may open a REAL position")
+
+
+# === review of #907 ===========================================================================
+
+def test_the_last_line_carries_the_answer_however_many_facts_it_names(tmp_path, clean_env, monkeypatch):
+    """Wrapped, the verdict ended the board on a bare item — on production, `armed_strategy_count
+    (NONE_ARMED)` — and a reader keeping the last line kept no answer."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    _write_snapshot(tmp_path, as_of=THREE_HOURS_AGO, net=0.0)
+    _, text = _text(tmp_path)
+    assert _verdict(text) == ("LIVE ENTRY POSSIBLE: UNKNOWN - this process cannot see risk_ready "
+                              "(DAILY_LOSS_UNMEASURED), account_ready (SNAPSHOT_STALE)")
+    ControlStore(tmp_path).save(ControlState(mode=KILLED, updated_by="op", updated_at=NOW, reason="stop",
+                                             trading_armed=False))
+    # A fire later than the fixture's, alone at its instant: two of three legs refused whole.
+    _write_fire(tmp_path, created_at="2026-07-23T11:56:00Z", statuses=("HELD",) * 3,
+                blocked={0: "X", 1: "Y"})
+    _write_snapshot(tmp_path, as_of=FIVE_MINUTES_AGO, net=0.0)
+    _, text = _text(tmp_path)
+    assert _verdict(text) == ("LIVE ENTRY POSSIBLE: NO - blocked by runtime_control (RUNTIME_KILLED), "
+                              "reconciliation_ready (LEG_BLOCKED_X)")
+
+
+def test_the_head_lists_wrap_between_items_and_never_inside_one(tmp_path, clean_env, monkeypatch):
+    """The head's lists wrap at 80 columns; an item wider than the room left keeps a line of its own."""
+    _ready_console_machine(tmp_path, monkeypatch)
+    _, text = _text(tmp_path)
+    lines = text.splitlines()
+    head = lines[1:lines.index("")]
+    admitting = [line for line in head if line.startswith(("  admitting  : ", " " * 15))]
+    assert len(admitting) > 1, head
+    assert all(len(line) <= 80 for line in head), [len(line) for line in head]
+    assert ", ".join(line[15:].rstrip(",") for line in admitting).split(", ") == [
+        name for name in live_readiness.READINESS_COMPONENTS]
+    wide = "reconciliation_ready (LEG_BLOCKED_LIVE_POSITION_STATE_UNREADABLE+AND_A_LONG_TAIL_OF_REASONS)"
+    assert live_readiness._wrap("  blocked by : ", ["risk_ready (C4_BREAKER)", wide]) == [
+        "  blocked by : risk_ready (C4_BREAKER),", " " * 15 + wide]
+
+
+# The flips the stall rule decides (`_majority`): False for most of the last fire's contexts, while a
+# minority may still enter. Every other False refuses every entry.
+_STALL_RULE_FLIPS = {"account_unreadable_at_the_fire", "majority_degraded", "majority_synthetic",
+                     "majority_data_health", "majority_optional", "leg_blocked"}
+
+
+@pytest.mark.parametrize("flip", sorted(name for name, flip in _FLIPS.items() if flip[2] is False))
+def test_only_the_stall_rule_leaves_a_minority_that_may_still_enter(flip):
+    """7 of 13 contexts refused on their candles is False by the stall rule, and the other 6 may open
+    REAL positions at the next cycle: "no autonomous entry can open now" was false there."""
+    overrides, component, _, reason = _FLIPS[flip]
+    status = _status(**overrides)
+    minority = flip in _STALL_RULE_FLIPS
+    assert live_readiness.minority_may_enter(live_readiness.readiness_state(status)) is minority
+    text = live_readiness.render_readiness_text(status)
+    text.encode("ascii")
+    lines = text.splitlines()
+    assert lines[1] == ("LIVE ENTRY POSSIBLE: NO - for most contexts; a minority may still enter" if minority
+                        else "LIVE ENTRY POSSIBLE: NO - no autonomous entry can open now")
+    assert lines[-1] == (f"LIVE ENTRY POSSIBLE: NO - blocked by {component} ({reason})"
+                         + ("; a minority of contexts may still enter" if minority else ""))
+
+
+def test_a_stall_rule_refusal_beside_a_hard_one_leaves_no_minority():
+    status = _status(inputs={"recorded_fire": {"data_health": 7},
+                             "runtime_control": {"mode": KILLED, "trading_armed": False}})
+    state = live_readiness.readiness_state(status)
+    assert state["blocking"] == ["runtime_control:RUNTIME_KILLED", "market_data_ready:MAJORITY_DATA_HEALTH"]
+    assert live_readiness.minority_may_enter(state) is False
+    lines = live_readiness.render_readiness_text(status).splitlines()
+    assert lines[1] == "LIVE ENTRY POSSIBLE: NO - no autonomous entry can open now"
+    assert "minority" not in lines[-1]
+
+
+def test_the_trading_process_own_failed_account_read_refuses_every_entry():
+    """Its own read failing is not the stall rule: the leg reads the account before every entry."""
+    state = live_readiness.readiness_state(
+        _status(opted=True, inputs={"account": {"readable": False, "error": "ACCOUNT_TIMEOUT"}}))
+    assert state["blocking"] == ["account_ready:ACCOUNT_UNREADABLE"]
+    assert live_readiness.minority_may_enter(state) is False
+
+
+def test_a_majority_refusal_on_a_real_board_is_named_as_one(tmp_path, clean_env, monkeypatch):
+    _ready_console_machine(tmp_path, monkeypatch)
+    _write_fire(tmp_path, created_at="2026-07-23T11:56:00Z", statuses=("HELD",) * 13, unhealthy=range(7))
+    status, text = _text(tmp_path)
+    assert live_readiness.readiness_state(status)["blocking"] == ["market_data_ready:MAJORITY_DATA_HEALTH"]
+    assert text.splitlines()[1] == "LIVE ENTRY POSSIBLE: NO - for most contexts; a minority may still enter"
+    assert _verdict(text) == ("LIVE ENTRY POSSIBLE: NO - blocked by market_data_ready (MAJORITY_DATA_HEALTH); "
+                              "a minority of contexts may still enter")
+
+
+def _write_gate_record(root, created_at, status="HELD"):
+    from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
+
+    ledger = root / LEDGER_REL
+    ledger.mkdir(parents=True, exist_ok=True)
+    (ledger / RECORDS_FILE).write_text(json.dumps({"kind": "crypto_cycle", "record": {
+        "live_route_status": status, "created_at": created_at}}) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("created_at, kind", [
+    (THREE_HOURS_AGO, "is over two hours old"),
+    ("2026-07-23T12:30:00Z", "is dated ahead of this clock"),     # 30 minutes AHEAD of NOW
+    ("not-a-timestamp", "cannot be dated"),
+], ids=["old", "future", "undatable"])
+def test_an_old_record_is_named_by_its_kind_at_both_places_it_is_quoted(tmp_path, clean_env, created_at, kind):
+    """Every record the gate's two-hour rule sets aside was called "over two hours old" — one dated
+    half an hour ahead of this clock, and one with no date at all, among them."""
+    _write_gate_record(tmp_path, created_at)
+    status, text = _text(tmp_path)
+    assert status["recorded_gate"]["stale"] is True
+    lines = text.splitlines()
+    banner = lines.index("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
+    assert lines[banner + 1:banner + 3] == [f"   the trading process's last record ({created_at})",
+                                            f"   {kind} - not a statement about now"]
+    verdict = lines.index("THIS PROCESS: NOT READY (THIS PROCESS ONLY) - no live-trading environment here;")
+    assert lines[verdict + 1:verdict + 3] == [f"           the system's last record of its gate ({created_at})",
+                                              f"           {kind}"]
+    assert ("over two hours old" in text) is (kind == "is over two hours old")
+    assert "was recorded OPEN" not in text and "no record of" not in text
+
+
+@pytest.mark.parametrize("record", [FIVE_MINUTES_AGO, THREE_HOURS_AGO, None], ids=["fresh", "old", "none"])
+def test_what_the_board_says_about_the_answer_fits_80_columns(tmp_path, clean_env, record):
+    """The head, the banner's account of the record and the THIS PROCESS lines fit an 80-column
+    console in every banner variant. The verdict is one line however long, by design."""
+    if record is not None:
+        _write_gate_record(tmp_path, record)
+    _, text = _text(tmp_path)
+    lines = text.splitlines()
+    said = lines[1:lines.index("")]
+    banner = lines.index("!! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT")
+    said += lines[banner:lines.index("   authoritative board:")]
+    verdict = next(i for i, line in enumerate(lines) if line.startswith("THIS PROCESS:"))
+    said += [lines[verdict]] + [line for line in lines[verdict + 1:verdict + 3] if line.startswith(" " * 11)]
+    assert all(len(line) <= 80 for line in said), [line for line in said if len(line) > 80]

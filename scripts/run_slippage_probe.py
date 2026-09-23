@@ -113,9 +113,9 @@ from runtime.mvp_runtime.crypto.live_position import (  # noqa: E402
     list_open_live_positions,
     live_capacity,
     load_open_live_position,
-    reconcile_positions,
     select_live_position_store,
 )
+from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions  # noqa: E402
 from runtime.mvp_runtime.crypto.market_data import (  # noqa: E402
     ORDER_BOOK_LEVELS,
     collect_market_data,
@@ -918,7 +918,8 @@ def run_fire(
             risk_snapshot=snapshot_record, snapshot_store=snapshot_store,
         )
     except live_execution.SubmitRefused as exc:
-        # Raised only before the adapter was called: nothing left, so the cell and the symbol go back.
+        # Raised only before anything was sent (PR6b: the adapter's own refusal included): nothing
+        # left, so the cell and the symbol go back.
         unwritten = None
         try:
             probe.write_plan(

@@ -1881,7 +1881,8 @@ def test_an_unprotected_drifted_position_is_closed_but_keeps_its_legs():
 
 
 def _halting_pass(tmp_path, monkeypatch, *, legs_left):
-    from runtime.mvp_runtime.crypto.live_position import DRIFT, DRIFT_QUANTITY_MISMATCH
+    from runtime.mvp_runtime.crypto.live_position import DRIFT
+    from runtime.mvp_runtime.crypto.live_reconcile import DRIFT_QUANTITY_MISMATCH
 
     monkeypatch.setenv("MVP_LIVE_TRADING", "real")
     monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))

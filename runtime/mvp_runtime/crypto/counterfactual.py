@@ -146,7 +146,7 @@ def holding_budget_elapsed(plan: Mapping[str, Any], *, now: str) -> bool:
     advances in the cycle owning the shadow's context, so a shadow outside the fan-out is
     frozen short of ``max_holding_bars`` forever. The budget is that same limit read as a
     span — bars × the timeframe's minutes — so a shadow is judged by exactly the number its
-    spec was backtested with (the :func:`paper.position_max_hold` parity rule), never by a
+    spec was backtested with (the :func:`trade_plan.position_max_hold` parity rule), never by a
     fixed timeout invented here.
 
     Unreadable inputs return False: a shadow that cannot state its own budget is left alone

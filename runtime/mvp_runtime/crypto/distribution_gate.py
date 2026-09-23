@@ -2,7 +2,7 @@
 diverge from the backtest training distribution.
 
 A strategy backtested in a trending, moderate-volatility market has no evidence
-for a regime its numbers were never trained on.  The regime gate (``paper.regime_admits``)
+for a regime its numbers were never trained on.  The regime gate (``trade_plan.regime_admits``)
 catches the discrete label; this gate catches the *continuous* shift that happens
 within a label — volatility doubling while the label stays "TREND_UP", or ADX
 falling to a level the backtest window never saw.

@@ -32,7 +32,6 @@ size.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping
 
@@ -64,32 +63,9 @@ EXCEEDS_BUDGET = "SIZING_EXCEEDS_BUDGET_CAP"
 ABOVE_MAX_QTY = "SIZING_ABOVE_VENUE_MAX_QTY"
 
 
-@dataclass(frozen=True)
-class SymbolFilters:
-    """The venue's per-symbol trading rules, as read from ``exchangeInfo``.
-
-    Never constructed from constants in this repository. ``step_size`` is the LOT_SIZE
-    quantity increment, ``min_qty`` its floor, ``min_notional`` the MIN_NOTIONAL filter,
-    and ``tick_size`` the PRICE_FILTER increment (used for the LP5.3 bracket's stop and
-    target prices, which the venue rejects unrounded exactly as it rejects an unrounded
-    quantity). ``max_qty`` is the lot ceiling; ``0.0`` means the reader did not learn one,
-    so it is simply not checked rather than treated as a limit of zero.
-
-    LP5.3's reader (``live_filters``) folds MARKET_LOT_SIZE into these, taking the
-    stricter of the two lot filters, because LP5 entries and closes are MARKET orders.
-    """
-
-    step_size: float
-    min_qty: float
-    min_notional: float
-    tick_size: float = 0.0
-    max_qty: float = 0.0
-
-    def valid(self) -> bool:
-        """A filter set is usable only if the increments are positive. A zero step would
-        make ``floor_to_step`` a division by zero, and a zero minimum would let a dust
-        order through — both are "unknown", not "unrestricted"."""
-        return self.step_size > 0 and self.min_qty > 0 and self.min_notional > 0
+# The venue's filter data is defined where it is read, in `live_filters` (crypto PR7b-2); re-exported
+# here, as the same class, for this module's importers.
+from .live_filters import SymbolFilters  # noqa: E402,F401
 
 
 def _exact_multiple(count: int, increment: float) -> float:
@@ -165,7 +141,7 @@ def size_live_order(
 ) -> dict[str, Any]:
     """Decide the quantity for one live entry, or refuse. Pure.
 
-    ``plan`` is an entry plan as ``paper.build_entry_plan`` produces it: ``entry_price``
+    ``plan`` is an entry plan as ``trade_plan.build_entry_plan`` produces it: ``entry_price``
     and ``risk``, where ``risk`` is the per-unit entry↔stop distance in quote terms. The
     two candidates:
 
@@ -230,7 +206,7 @@ def size_live_order(
     # while the cap binds the notional is fixed, so the risk actually taken is
     # `cap × stop_distance / price` and therefore RISES with volatility. Scaling `risk_fraction`
     # would leave that untouched; scaling the final quantity does not. See
-    # `paper.volatility_size_multiplier` for the measurement and for why the multiplier is
+    # `trade_plan.volatility_size_multiplier` for the measurement and for why the multiplier is
     # capped at 1.0 (it may shrink an order, never widen one past what was registered).
     #
     # Read off the plan rather than recomputed here: the plan is what the execution step is

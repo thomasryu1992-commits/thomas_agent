@@ -48,7 +48,7 @@ from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_OK, EXIT_USAGE  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
-from runtime.mvp_runtime.crypto.cycle import attach_mining_legs  # noqa: E402
+from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.forward_confirmation import (  # noqa: E402
     MIN_HOLDOUT_PERIODS, forward_slice_width_days, min_forward_trades,

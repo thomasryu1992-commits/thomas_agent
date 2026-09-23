@@ -42,6 +42,13 @@ That switch was a per-machine grant record until 2026-07-28, when Thomas removed
 ``MVP_LIVE_TRADING=real`` the whole gate. The trade is real and recorded in
 ``docs/BUILD_HISTORY.md``: what a machine can do is now decided entirely by the environment the
 operator hands the container, with no artifact on disk to inspect afterwards.
+
+Since crypto PR7e-4 the order's shape at the venue (``build_order_request``, ``normalize_algo_order``,
+``reconcile_order``, ``fill_facts`` and the vocabulary they share, the ``reconcile_status`` verdicts
+among it) lives in ``order_request``, which is pure. This module keeps what reaches the venue: the
+adapters, their selection behind the live-trading switch, the halt backstop, and
+``submit_and_reconcile``, which joins the two. It re-exports every definition in ``order_request`` as
+the same object.
 """
 
 from __future__ import annotations
@@ -51,7 +58,6 @@ import hmac
 import http.client
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -60,16 +66,29 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from .. import safety_gate, timeutil
+from ..control import HALT_HARD, ControlStore
 from ..errors import MvpRuntimeError, ToolError
 from ..safety_gate import Authorization
-from .live_pnl import (
+from .vocabulary import (
     LIVE_TRADING_ENV,
     LIVE_TRADING_FLAGS,
     LIVE_TRADING_PROVIDER_ID,
     REAL_LIVE_TRADING,
 )
-from .live_promotion import RECONCILED
 from . import pre_order_gate
+# The order's shape at the venue (the request built from an intent, the venue's answer normalised, the
+# verdict on it, and the vocabulary they share) is `order_request`'s since crypto PR7e-4. This module
+# keeps the egress and the send-and-reconcile loop, and re-exports every name, as the same object, for
+# the callers that read them as `live_execution.<name>`.
+from .order_request import (  # noqa: F401
+    ALGO_TYPE_CONDITIONAL, CLIENT_ORDER_ID_PATTERN, CONDITIONAL_ORDER_TYPES, MALFORMED_INTENT,
+    MISMATCH, NOT_FOUND, ORDER_MALFORMED_RESULT, ORDER_TYPE_LIMIT, ORDER_TYPE_MARKET,
+    ORDER_TYPE_STOP_MARKET, ORDER_TYPE_TAKE_PROFIT_MARKET, RECONCILED, RESTING_ORDER_TYPES,
+    SUPPORTED_ORDER_TYPES, TIMES_IN_FORCE, TIME_IN_FORCE_GTC, UNRECONCILABLE, WORKING_TYPES,
+    WORKING_TYPE_CONTRACT_PRICE, WORKING_TYPE_MARK_PRICE, _intended_price, _order_rows,
+    build_order_request, fill_facts, is_algo_request, is_protective_request, normalize_algo_order,
+    reconcile_order,
+)
 from .state import VENUE_MAINNET
 
 ORDER_ADAPTER_TOOL_ID = "crypto.live.order_adapter"
@@ -100,9 +119,10 @@ ORDER_PATH = "/fapi/v1/order"
 # transport fact went stale, and every check this repo had pointed at its own model of the
 # venue: closed schemas, tick sizes, filters, request shape. All of them passed. None of them
 # could catch "the venue stopped accepting this type", because that fact lives only at the
-# venue. The `Verified against the venue's New Order contract (2026-07-25)` note below this is
-# the trap in miniature — the parameter table was read correctly, eight months after the type
-# had been moved off the endpoint the table described.
+# venue. The `Verified against the venue's New Order contract (2026-07-25)` note on the order
+# types (in `order_request` since crypto PR7e-4) is the trap in miniature — the parameter table
+# was read correctly, eight months after the type had been moved off the endpoint the table
+# described.
 #
 # It is NOT only a path change, which is why guessing would have produced a second broken
 # release: two request parameters and three response fields are renamed.
@@ -116,10 +136,6 @@ ORDER_PATH = "/fapi/v1/order"
 #   order id orderId                    ->  algoId
 #   state    status                     ->  algoStatus
 ALGO_ORDER_PATH = "/fapi/v1/algoOrder"
-# The only `algoType` the venue defines for these; sent on every place, and the discriminator
-# `is_algo_request` reads to pick the endpoint. Using the venue's own field rather than a local
-# flag means the request cannot say one thing and be routed by another.
-ALGO_TYPE_CONDITIONAL = "CONDITIONAL"
 # The venue's own validator: identical parameters and signing, **no order is ever created**.
 #
 # It exists here because on 2026-08-02 the runtime's first two autonomous entries had their
@@ -178,60 +194,23 @@ ALLOWED_ORDER_HOSTS = frozenset({"fapi.binance.com"})
 # Venue cap is 60000; mirror account.py's conservative value.
 RECV_WINDOW_MS = 5000
 
-# Order types LP4 can express. MARKET is the entry/close; the two conditional types are the
-# LP5 protective bracket. Verified against the venue's New Order contract (2026-07-25):
-# a conditional type carries a ``stopPrice``, and ``workingType`` selects the trigger price.
-#
-# LIMIT joined them on 2026-07-28, for the take-profit leg only. A ``TAKE_PROFIT_MARKET``
-# triggers into a market order and therefore always pays the TAKER rate plus adverse
-# slippage, while a target is by construction a price the market has to come TO — the one
-# exit that can rest as a maker. See ``cost.DEFAULT_MAKER_FEE_BPS`` for what that is worth
-# and ``live_leg`` for the shape change it forces (a target leg can no longer be Close-All).
-ORDER_TYPE_MARKET = "MARKET"
-ORDER_TYPE_LIMIT = "LIMIT"
-ORDER_TYPE_STOP_MARKET = "STOP_MARKET"
-ORDER_TYPE_TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
-CONDITIONAL_ORDER_TYPES = frozenset({ORDER_TYPE_STOP_MARKET, ORDER_TYPE_TAKE_PROFIT_MARKET})
-SUPPORTED_ORDER_TYPES = frozenset({ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT}) | CONDITIONAL_ORDER_TYPES
-# Types that REST at the venue rather than executing on submission. A conditional order waits
-# for its trigger; a LIMIT waits for the market to reach its price. Neither reconciles as
-# FILLED at placement time, which is what ``place_bracket_leg`` and the dry-run echo both
-# depend on.
-RESTING_ORDER_TYPES = frozenset({ORDER_TYPE_LIMIT}) | CONDITIONAL_ORDER_TYPES
-WORKING_TYPE_MARK_PRICE = "MARK_PRICE"
-WORKING_TYPE_CONTRACT_PRICE = "CONTRACT_PRICE"
-WORKING_TYPES = frozenset({WORKING_TYPE_MARK_PRICE, WORKING_TYPE_CONTRACT_PRICE})
-
-# ``timeInForce``, mandatory on a LIMIT at this venue. GTC is what the take-profit leg uses:
-# it rests as a maker while the target is away from the market, and if the market is already
-# through the target it crosses and pays taker — which is exactly what the
-# ``TAKE_PROFIT_MARKET`` it replaces would have done, so this branch is never WORSE than the
-# order it replaces. GTX (post-only) would guarantee the maker rate but adds a rejection
-# branch on a target that is already through, so it is deliberately not the default.
-TIME_IN_FORCE_GTC = "GTC"
-TIMES_IN_FORCE = frozenset({TIME_IN_FORCE_GTC, "IOC", "FOK", "GTX"})
-
-# The venue's own charset rule for newClientOrderId, verified from its New Order contract:
-# ``^[\.A-Z\:/a-z0-9_-]{1,36}$``. ``make_client_order_id`` already complies; validating here
-# means a hand-built intent cannot get rejected at the venue for a character.
-CLIENT_ORDER_ID_PATTERN = re.compile(r"\A[.A-Z:/a-z0-9_-]{1,36}\Z")
-
-# reconcile_status vocabulary. RECONCILED is reused from live_promotion, where the historical canary
-# rows derived `clean` from it (clean iff RECONCILED and no mismatch), so those rows and this
-# vocabulary agree by construction. The live leg and the probe import it from there too.
-MISMATCH = "MISMATCH"
-NOT_FOUND = "NOT_FOUND"
-UNRECONCILABLE = "UNRECONCILABLE"
+# The order, working and time-in-force types, `ALGO_TYPE_CONDITIONAL`, the client-order-id charset and
+# the reconcile verdicts are `order_request`'s since crypto PR7e-4 (imported above).
 
 GUARD_NOT_APPROVED = "GUARD_NOT_APPROVED"
 
 
 class SubmitRefused(ToolError):
-    """Raised by :func:`submit_and_reconcile` only BEFORE the adapter is called: nothing was sent.
+    """Raised by :func:`submit_and_reconcile` only before anything is sent: before the adapter is
+    called, or when the adapter refused before its send (`ORDER_HALTED`, PR6b).
 
     A ``ToolError`` so every existing catch still holds; its own class so a caller can tell a
     refusal from a failure that may have happened after an order left (PR2b)."""
-MALFORMED_INTENT = "MALFORMED_LIVE_ORDER_INTENT"
+
+
+# `MALFORMED_INTENT` and `ORDER_MALFORMED_RESULT` are defined in `order_request`, whose code raises them;
+# the adapters below raise `ORDER_MALFORMED_RESULT` too, for a venue answer they cannot parse. These are
+# the adapters' and the send loop's own:
 NO_ORDER_API_KEY = "NO_ORDER_API_KEY"
 ORDER_REJECTED = "ORDER_REJECTED"
 # The venue answered with a code whose own documentation says the order's execution status is
@@ -239,7 +218,10 @@ ORDER_REJECTED = "ORDER_REJECTED"
 # (PR2c-0 review).
 ORDER_OUTCOME_UNKNOWN = "ORDER_OUTCOME_UNKNOWN"
 ORDER_TRANSPORT = "ORDER_TRANSPORT"
-ORDER_MALFORMED_RESULT = "ORDER_MALFORMED_RESULT"
+# The runtime control state refused an order that could add exposure, at the adapter, before the
+# send (PR6b, Thomas decision 47): see `control_refusal`. Nothing left, so there is nothing to
+# reconcile, and it carries no venue code, so the API error breaker does not count it.
+ORDER_HALTED = "ORDER_HALTED"
 
 # Venue error codes, verified from its error-code reference (2026-07-25).
 VENUE_ORDER_DOES_NOT_EXIST = -2013      # a queried order is genuinely absent => NOT_FOUND
@@ -249,7 +231,41 @@ VENUE_UNKNOWN_ORDER = -2011             # a cancelled/filled/never-placed order 
 # unknown; execution status unknown"): none of them says the order was not applied.
 VENUE_UNKNOWN_OUTCOME_CODES = frozenset({-1000, -1001, -1006, -1007})
 # Refusals that happen before anything is sent, whatever the adapter.
-NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED"})
+NOTHING_SENT_ERRORS = frozenset({MALFORMED_INTENT, NO_ORDER_API_KEY, "ORDER_HOST_NOT_ALLOWED", ORDER_HALTED})
+
+
+def control_refusal(order_request: Mapping[str, Any], *, root: Path | None = None) -> str | None:
+    """Why the runtime control state refuses this order at egress, or None (PR6b).
+
+    **An exit or a protection is never refused here, and the control state is not even read for
+    one** — a halt that traps an open position is worse than what the halt prevents, and a store
+    that cannot be read must not be able to strand one. Every other order could add exposure, and
+    is refused under a HARD halt (Thomas decision 47) or while the runtime is PAUSED or KILLED —
+    a stop refuses at least what a HARD halt does. A corrupt store reads KILLED under a HARD halt,
+    so it refuses too.
+
+    The SOFT halt and a bare disarm are not refused here: the entry gate refuses the entry
+    (`ControlState.trading_allowed`, which the leg and the probe read), and the signed testnet
+    rehearsal runs under them, as it always has. That is the line between the two levels: SOFT
+    stops new entries where they are decided; HARD also stops every order that could add exposure
+    where it leaves, whoever sends it — mainnet and testnet alike.
+
+    Read at every call, never cached: an adapter built before a halt must see it. Anything that
+    goes wrong reading the state refuses, which is safe only because exits never get here."""
+    if is_protective_request(order_request):
+        return None
+    try:
+        state = (ControlStore(root) if root is not None else ControlStore.default()).load()
+    except Exception as exc:  # noqa: BLE001 — uncertainty about a safety state is not permission
+        return f"the control state could not be read ({type(exc).__name__})"
+    # The stop first: a corrupt store reads KILLED under a HARD halt, and KILLED is what to name.
+    if not state.execution_allowed:
+        return (f"the runtime is {state.mode}, which sends no order that could add exposure "
+                f"(stated reason: {state.reason})")
+    if state.halt_level == HALT_HARD:
+        return ("a HARD halt is in effect: only reduceOnly and closePosition orders may be sent "
+                f"(stated reason: {state.reason})")
+    return None
 
 
 def submit_refused_outright(error: Any, detail: Any) -> bool:
@@ -263,212 +279,6 @@ def submit_may_have_landed(error: Any, detail: Any) -> bool:
     """Whether a submit that raised may still have reached the venue. Only a refusal before the
     send and an outright venue refusal say it did not."""
     return error is not None and error not in NOTHING_SENT_ERRORS and not submit_refused_outright(error, detail)
-
-
-def build_order_request(intent: Mapping[str, Any]) -> dict[str, Any]:
-    """The venue order params from a guard-approved intent. Fail-closed on a malformed intent.
-
-    ``reduceOnly`` is set **from the intent** — the structural boundary the close guard relies
-    on: a "close" that dropped this flag could open a position, so LP4 carries it faithfully.
-
-    Supported types (``order_type_exchange``): ``MARKET`` for an entry or a close, ``STOP_MARKET``
-    / ``TAKE_PROFIT_MARKET`` for a conditional bracket leg, and ``LIMIT`` for the resting
-    take-profit leg. A conditional type **requires** a positive ``stop_price``: the venue lists
-    ``stopPrice`` as optional across all types, but a conditional order without one is
-    meaningless, so it is required here rather than sent empty and rejected at the venue. A
-    ``LIMIT`` likewise requires a positive ``price`` and an explicit ``time_in_force`` — the
-    venue makes both mandatory, and defaulting a time-in-force would be this module choosing how
-    long real money rests at a price.
-
-    Three venue constraints are enforced rather than discovered at run time (verified against
-    the New Order contract, 2026-07-25):
-
-    - ``closePosition=true`` is **mutually exclusive with both ``quantity`` and ``reduceOnly``**,
-      and is only valid on a conditional type. So a close-all bracket leg sends neither.
-    - ``closePosition`` is documented for ``STOP_MARKET``/``TAKE_PROFIT_MARKET`` **only**, so a
-      ``LIMIT`` take-profit leg cannot be Close-All and must carry an explicit quantity. That is
-      not a detail: it is why ``live_leg`` sizes the target leg from the actual entry fill.
-    - ``newClientOrderId`` must match the venue's charset (``CLIENT_ORDER_ID_PATTERN``).
-    """
-    symbol = intent.get("symbol")
-    side = intent.get("side")
-    client_order_id = intent.get("client_order_id")
-    order_type = intent.get("order_type_exchange")
-    close_position = bool(intent.get("close_position"))
-
-    if not (isinstance(symbol, str) and symbol):
-        raise ToolError(MALFORMED_INTENT, "order intent is missing a symbol")
-    if side not in ("BUY", "SELL"):
-        raise ToolError(MALFORMED_INTENT, f"order intent side must be BUY or SELL, got {side!r}")
-    if not (isinstance(client_order_id, str) and CLIENT_ORDER_ID_PATTERN.match(client_order_id)):
-        raise ToolError(
-            MALFORMED_INTENT,
-            "order intent needs a client_order_id matching the venue charset "
-            "(1-36 of A-Z a-z 0-9 . : / _ -); run enrich_order_identity",
-        )
-    if order_type not in SUPPORTED_ORDER_TYPES:
-        raise ToolError(
-            MALFORMED_INTENT,
-            f"order_type_exchange must be one of {sorted(SUPPORTED_ORDER_TYPES)}, got {order_type!r}",
-        )
-
-    algo = order_type in CONDITIONAL_ORDER_TYPES
-    request: dict[str, Any] = {
-        "symbol": symbol,
-        "side": side,
-        "type": order_type,
-    }
-    # The identity field is named differently on the two endpoints, and it is the SAME id: the
-    # idempotency key the caller already minted. Only the spelling changes with the endpoint.
-    request["clientAlgoId" if algo else "newClientOrderId"] = client_order_id
-
-    if algo:
-        request["algoType"] = ALGO_TYPE_CONDITIONAL
-        stop_price = intent.get("stop_price")
-        if not (isinstance(stop_price, (int, float)) and stop_price > 0):
-            raise ToolError(
-                MALFORMED_INTENT,
-                f"{order_type} needs a positive stop_price (a conditional order without a "
-                "trigger is meaningless)",
-            )
-        # `stopPrice` on the old endpoint, `triggerPrice` on this one. The intent field keeps its
-        # name — it describes the strategy's stop, not the venue's spelling of it.
-        request["triggerPrice"] = float(stop_price)
-        working_type = intent.get("working_type")
-        if working_type is not None:
-            if working_type not in WORKING_TYPES:
-                raise ToolError(
-                    MALFORMED_INTENT,
-                    f"working_type must be one of {sorted(WORKING_TYPES)}, got {working_type!r}",
-                )
-            request["workingType"] = working_type
-    elif close_position:
-        # closePosition is a Close-All conditional-order behaviour; on a MARKET or LIMIT order it
-        # is not a thing the venue accepts, so refuse rather than send something that would be
-        # rejected. A LIMIT take-profit leg therefore carries a real quantity, which is the whole
-        # reason ``live_leg`` has to know the filled size before it can build one.
-        raise ToolError(
-            MALFORMED_INTENT,
-            f"close_position is only valid on {sorted(CONDITIONAL_ORDER_TYPES)}, not {order_type}",
-        )
-
-    if order_type == ORDER_TYPE_LIMIT:
-        price = intent.get("price")
-        if not (isinstance(price, (int, float)) and price > 0):
-            raise ToolError(
-                MALFORMED_INTENT,
-                "LIMIT needs a positive price (a resting order without one is meaningless)",
-            )
-        request["price"] = float(price)
-        time_in_force = intent.get("time_in_force")
-        if time_in_force not in TIMES_IN_FORCE:
-            raise ToolError(
-                MALFORMED_INTENT,
-                f"time_in_force must be one of {sorted(TIMES_IN_FORCE)}, got {time_in_force!r}",
-            )
-        request["timeInForce"] = time_in_force
-
-    if close_position:
-        # Mutually exclusive with quantity AND reduceOnly — send neither.
-        request["closePosition"] = "true"
-    else:
-        quantity = intent.get("quantity")
-        if not (isinstance(quantity, (int, float)) and quantity > 0):
-            raise ToolError(MALFORMED_INTENT, "order intent needs a positive quantity")
-        request["quantity"] = float(quantity)
-        request["reduceOnly"] = bool(intent.get("reduce_only"))
-    return request
-
-
-def is_algo_request(order_request: Mapping[str, Any]) -> bool:
-    """Whether this request belongs on the Algo Order endpoints.
-
-    Reads the venue's own ``algoType`` rather than a flag this repo invented, so a request
-    cannot be shaped one way and routed the other — the failure that would turn a fixed stop
-    into a silently-refused one all over again."""
-    return bool(order_request.get("algoType"))
-
-
-def normalize_algo_order(venue_order: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """An algo order in the field names the rest of this runtime already speaks.
-
-    The Algo endpoints answer with ``algoId``/``algoStatus``/``triggerPrice`` where the order
-    endpoints answer with ``orderId``/``status``/``stopPrice``. Translated ONCE, here at the
-    wire boundary, so `reconcile_order`, `place_bracket_leg` and `read_bracket_legs` keep one
-    vocabulary — teaching every caller two spellings is how one of them ends up checking the
-    wrong field and reading a refused stop as a resting one.
-
-    **The fill facts are here too, and that half was missing.** A CONDITIONAL algo order that
-    triggered reports what actually executed under ``actualPrice``/``actualQty`` — the child
-    order's average price and filled quantity — where the order endpoint says
-    ``avgPrice``/``executedQty``. Those two were not translated, so ``fill_facts`` read an algo
-    fill as all-``None`` and `live_leg` could not price an exit the venue had already made.
-
-    Measured 2026-08-05T17:38Z on ETHUSDT: the stop triggered, the venue answered
-    ``algoStatus: FINISHED, actualPrice: 1904.96, actualQty: 0.022``, and settlement refused for
-    42 consecutive cycles because the numbers it needed were sitting in fields nothing read.
-    The position stayed OPEN in the local book against a venue that no longer had it, which
-    held every ETHUSDT entry behind a reconciliation DRIFT.
-
-    ``cumQuote`` is deliberately NOT synthesised from the two. ``realized_pnl_usdt`` already
-    falls back to ``qty * price`` when the quote is absent, and a computed value written into a
-    field the venue names would be indistinguishable from one the venue sent — which is exactly
-    the confusion the "never lossy" rule below exists to prevent.
-
-    **Additive, never lossy.** The venue's own keys are kept alongside the aliases, because the
-    raw response is what lands in the ledger and an incident is reconstructed from it — this
-    session reconstructed the 2026-08-02 request byte-for-byte only because nothing had been
-    helpfully tidied away first. An alias is written only when the venue supplied the source
-    field, so a missing value stays missing rather than becoming a confident default."""
-    if venue_order is None:
-        return None
-    out = dict(venue_order)
-    for source, alias in (("algoId", "orderId"), ("algoStatus", "status"),
-                          ("triggerPrice", "stopPrice"),
-                          ("actualPrice", "avgPrice"), ("actualQty", "executedQty")):
-        if source in out and alias not in out:
-            out[alias] = out[source]
-    return out
-
-
-def _order_rows(body: Any, label: str) -> list[dict[str, Any]]:
-    """A venue order list, or ``ORDER_MALFORMED_RESULT``. A body that is not a list of objects is
-    not "nothing is resting": a caller deciding whether an entry may go must not read it as empty
-    (review of #888)."""
-    if not (isinstance(body, list) and all(isinstance(row, dict) for row in body)):
-        raise ToolError(ORDER_MALFORMED_RESULT, f"the {label} query returned something other than a list of orders")
-    return list(body)
-
-
-def reconcile_order(
-    intent: Mapping[str, Any], venue_order: Mapping[str, Any] | None
-) -> tuple[str, list[str]]:
-    """Compare the venue's order state against the intent → ``(reconcile_status, mismatches)``.
-
-    ``NOT_FOUND`` when the venue has no such order (the submit did not land). Otherwise
-    ``RECONCILED`` iff symbol, side, filled quantity, the reduceOnly flag, and ``status ==
-    FILLED`` all match; else ``MISMATCH`` with each divergence named. A wrong-size or wrong-side
-    fill is a stop-everything signal, so it is surfaced, never smoothed over."""
-    if venue_order is None:
-        return NOT_FOUND, ["venue has no order for this client_order_id"]
-    problems: list[str] = []
-    if str(venue_order.get("symbol")) != str(intent.get("symbol")):
-        problems.append(f"symbol {venue_order.get('symbol')!r} != {intent.get('symbol')!r}")
-    if str(venue_order.get("side")) != str(intent.get("side")):
-        problems.append(f"side {venue_order.get('side')!r} != {intent.get('side')!r}")
-    status = str(venue_order.get("status"))
-    if status != "FILLED":
-        problems.append(f"status {status!r} != FILLED")
-    try:
-        filled = float(venue_order.get("executedQty"))
-        wanted = float(intent.get("quantity"))
-        if abs(filled - wanted) > 1e-9:
-            problems.append(f"executedQty {filled} != intent quantity {wanted}")
-    except (TypeError, ValueError):
-        problems.append("executedQty missing or non-numeric")
-    if bool(venue_order.get("reduceOnly")) != bool(intent.get("reduce_only")):
-        problems.append("reduceOnly flag does not match the intent")
-    return (RECONCILED if not problems else MISMATCH), problems
 
 
 class OrderAdapter(Protocol):
@@ -644,13 +454,16 @@ class BinanceFuturesOrderAdapter:
     provider_id = LIVE_TRADING_PROVIDER_ID
     network_egress = True
 
-    def __init__(self, *, base_url: str = ORDER_BASE_URL, authorization: Authorization | None = None):
+    def __init__(self, *, base_url: str = ORDER_BASE_URL, authorization: Authorization | None = None,
+                 root: Path | None = None):
         host = (urllib.parse.urlparse(base_url).hostname or "").lower()
         if host not in ALLOWED_ORDER_HOSTS:
             # A URL typo must fail loudly rather than sign a request to an unexpected host.
             raise ToolError("ORDER_HOST_NOT_ALLOWED", "order base URL is not an allowed live host")
         self._base_url = base_url.rstrip("/")
         self._authorization = authorization
+        # Where the control state is read at every submit (`control_refusal`); None is this checkout.
+        self._root = root
 
     def _assert(self) -> None:
         safety_gate.assert_authorization(
@@ -730,7 +543,14 @@ class BinanceFuturesOrderAdapter:
         A rejection is raised rather than returned because a rejected submit is not an outcome the
         caller can act on directly — ``submit_and_reconcile`` catches it and asks the venue what
         actually happened. The one rejection that is *informative* is a duplicate client order id:
-        it means this exact order already landed, so the reconcile read will find it."""
+        it means this exact order already landed, so the reconcile read will find it.
+
+        Before anything is signed, the runtime control state is asked whether this order may leave
+        (`control_refusal`): an order that could add exposure is refused with ``ORDER_HALTED`` while
+        entries are not allowed. Exits and protection are never refused there."""
+        refusal = control_refusal(order_request, root=self._root)
+        if refusal is not None:
+            raise ToolError(ORDER_HALTED, f"order not sent: {refusal}")
         body, code = answer = self._signed_request(
             "POST",
             ALGO_ORDER_PATH if is_algo_request(order_request) else ORDER_PATH,
@@ -969,16 +789,17 @@ def select_order_adapter(*, now: str | None = None, root: Path | None = None) ->
     ``Authorization``, so it still cannot exist before the gate opens, and it still re-verifies at
     every egress. See the block comment above ``select_env_gated`` for the decision and its cost.
 
-    ``now``/``root`` are kept in the signature and unused: every caller passes them, they cost
-    nothing, and restoring the grant should be a one-line change here rather than a change at
-    each call site."""
+    ``root`` is where the capable adapter reads the control state at every submit
+    (`control_refusal`, PR6b). ``now`` is kept in the signature and unused: every caller passes it,
+    it costs nothing, and restoring the grant should be a one-line change here rather than a change
+    at each call site."""
     return safety_gate.select_env_gated(
         env_var=LIVE_TRADING_ENV,
         opt_in_value=REAL_LIVE_TRADING,
         flags=LIVE_TRADING_FLAGS,
         provider_id=LIVE_TRADING_PROVIDER_ID,
         default_factory=DryRunOrderAdapter,
-        gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization),
+        gated_factory=lambda authorization: BinanceFuturesOrderAdapter(authorization=authorization, root=root),
     )
 
 
@@ -1062,6 +883,11 @@ def submit_and_reconcile(
     try:
         submit_response = adapter.submit(request, timeout_seconds=timeout_seconds)
     except ToolError as exc:
+        if exc.reason_code == ORDER_HALTED:
+            # The adapter refused before its send (PR6b): nothing left, so there is nothing to ask
+            # the venue about. The entry leg gives the symbol back; the day's slot, the bar claim and
+            # the pre-order snapshot stay spent, as for any refusal after they were taken (PR2a).
+            raise SubmitRefused(ORDER_HALTED, getattr(exc, "reason", str(exc))) from exc
         # A rejected OR ambiguous submit: do not assume nothing landed and do not blind-retry.
         # Reconcile by client_order_id below to learn the truth from the venue.
         submit_error = exc.reason_code
@@ -1124,45 +950,4 @@ def submit_and_reconcile(
         "submit_error_detail": submit_error_detail,
         "submit_response": submit_response,
         "created_at": now,
-    }
-
-
-def _intended_price(intent: Mapping[str, Any]) -> float | None:
-    """The plan's own entry price, or None. Never a substitute figure.
-
-    A plan that carried no entry price makes its fill unmeasurable, and that is the honest
-    record — filling in the venue's own fill would make every such row read as zero slippage,
-    which is the flattering direction and exactly the shape `cost.outcome_net_r` refuses in its
-    own domain. A non-positive value is treated as absent for the same reason.
-    """
-    value = intent.get("entry_price")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value) if value > 0 else None
-
-
-def fill_facts(venue_order: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The venue's own fill numbers, coerced to floats where they parse.
-
-    Public because LP5.3's cycle routing settles a position the venue's own bracket closed:
-    the exit facts then come from querying the *bracket leg*, not from a submit this runtime
-    made, and reading them through anything but this one coercion would be a second opinion
-    about what the venue said.
-
-    ``avgPrice`` is the real average fill price and ``cumQuote`` the filled notional — the two
-    figures a truthful ``realized_pnl_usdt`` has to come from. A field that will not parse is
-    reported as ``None`` rather than zero: a missing fill price must not read as a free trade."""
-    if not isinstance(venue_order, Mapping):
-        return {"avg_price": None, "executed_qty": None, "cum_quote": None}
-
-    def _num(key: str) -> float | None:
-        try:
-            return float(venue_order.get(key))
-        except (TypeError, ValueError):
-            return None
-
-    return {
-        "avg_price": _num("avgPrice"),
-        "executed_qty": _num("executedQty"),
-        "cum_quote": _num("cumQuote"),
     }

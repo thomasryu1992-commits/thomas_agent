@@ -1,7 +1,7 @@
 """Stop-slippage probe — buys the measurement sample without arming a strategy.
 
 Thomas approved ``docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md`` §5 as proposed on
-2026-08-11. The stop-slippage series (`live_pnl.stop_slippage_observations`) grows only
+2026-08-11. The stop-slippage series (`live_ledger.stop_slippage_observations`) grows only
 on live stop closes, live resumption sits behind the forward-confirmation gate, and the
 confirmation clock is 34-69 weeks — so the cost model's one unmeasured constant
 (`cost.DEFAULT_STOP_SLIPPAGE_BPS`) could not be measured without arming an unconfirmed
@@ -61,7 +61,8 @@ from ..filelock import locked
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_slippage_probe_permission_decision
-from .live_pnl import state_dir, stop_slippage_observations
+from .live_ledger import stop_slippage_observations
+from .state import state_dir
 from .live_sizing import SymbolFilters, round_price_to_tick
 
 PROBE_ACTION_TYPE = "crypto.probe.stop_slippage_batch"
@@ -708,7 +709,7 @@ def gate_probe_order(
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
-    account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
+    account (readable, and read at most ``pre_order_gate.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
     the symbol being free, the four breakers, the order book (fresh, a spread short of the
     dislocation bound, deep enough to fill the order at no more than the cost model's slippage,
     PR2d-3), the notional the approval priced, and the order
@@ -1001,7 +1002,7 @@ def decision_readiness(observations: list[Mapping[str, Any]]) -> dict[str, Any]:
     (`stop_slippage_observations` over the whole ledger) — the probe buys rows for that
     series, it does not own a private one. Reports only; nothing here rewrites
     `cost.DEFAULT_STOP_SLIPPAGE_BPS` (a held PR owns that constant)."""
-    from . import cost  # local: cost imports live_pnl labels; keep this module light to import
+    from . import cost  # local, as when cost imported live_pnl's labels (vocabulary's since PR7b-2)
 
     values = sorted(
         float(o["stop_slippage_bps"]) for o in observations

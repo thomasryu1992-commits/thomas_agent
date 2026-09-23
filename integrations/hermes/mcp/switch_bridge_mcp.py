@@ -41,7 +41,120 @@ CONTROL_BOT_ID = "8732952898"
 ASSISTANT_BOT_ID = "8950942278"
 
 
+# What a stop leaves behind. `kill` and `pause` stop the runtime, and with it the crypto cycle.
+_STOP_NOTE = (
+    " This stop ALSO disarmed live entries, and it dropped the scheduler's due "
+    "cycles: while stopped, the crypto cycle does not run, so open positions are "
+    "NOT being settled or protected by the runtime — only whatever protective "
+    "order already rests at the venue. Do not say positions will close on their "
+    "own. The disarm is sticky: resume_runtime_only brings the runtime back with "
+    "trading still off, and re-arming needs a separate start_trading approval."
+)
+# The modes `halt_trading` sends. A halt stops entries only and never stops the runtime.
+_HALT_MODES = frozenset({"soft", "hard"})
+# What a stopped runtime does not do, said wherever a disable leaves one in effect.
+_STOPPED = ("While stopped the crypto cycle does not run, so open positions are NOT being settled or "
+            "protected by the runtime (only whatever protective order already rests at the venue).")
+
+
+def _halt_note(src: dict, *, level: str) -> str:
+    """What a halt that changed the state left behind (shim 2.13). The stop note above is false for it:
+    on an ACTIVE runtime a halt leaves it ACTIVE, so positions keep being managed; on a stopped runtime
+    this door cannot release the stop, and the halt is recorded under it (PR6d). ``level`` is the one
+    sent, which is the one applied when the state changed."""
+    if src.get("mode") == "ACTIVE":
+        return (f" New live entries are refused under the {level} halt and the runtime stays ACTIVE, so open "
+                "positions keep being settled, protected, time-exited and reconciled — say that; do not say "
+                "trading or position management stopped."
+                + (" At HARD the order adapter also refuses every order that could add exposure; closes and "
+                   "protective orders still go out." if level == "HARD" else "")
+                + " The halt is sticky: resume_runtime_only keeps it, and lifting it needs Thomas's "
+                "start_trading approval.")
+    return (f" The runtime is still {src.get('mode')} — this tool cannot release a stop. {_STOPPED} The "
+            f"{level} halt is recorded under the stop, so resume_runtime_only comes back to that halt, not "
+            "to live entries.")
+
+
+def _disable_text(src: dict, *, payload: dict, reply: str) -> str:
+    """A stop's or a halt's answer (review of #915). A disable spends no grant, so the enable path's
+    grant-scope line and trailer are not about it; and one that changed nothing must not open with
+    "applied". The runtime's own reply comes last, after what the model must say."""
+    mode = src.get("mode")
+    if src.get("changed"):
+        head = (f"DONE: {src.get('action')} applied to {src.get('domain')}. Runtime mode is now {mode} "
+                f"(changed=True, actor={src.get('actor')}).")
+        note = (_halt_note(src, level=str(payload.get("mode")).upper()) if payload.get("mode") in _HALT_MODES
+                else _STOP_NOTE)
+    else:
+        head = (f"NOT CHANGED: {src.get('action')} left {src.get('domain')} as it was. Runtime mode is "
+                f"{mode} (changed=False, actor={src.get('actor')}).")
+        note = (" Nothing changed. The runtime's reply below says why and what is in effect; call "
+                "trading_switch_status before saying whether live entries are halted."
+                + (f" The runtime is {mode}: a stop is in effect. {_STOPPED}" if mode != "ACTIVE" else ""))
+    return f"{head}{note}\nRuntime reply: {reply}"
+
+
+def _emergency_close_text(src: dict, *, replayed: bool, request_id: str | None = None) -> str:
+    """The emergency-close ask (shim 2.14, crypto PR6e; Thomas decision 49: the assistant only asks).
+    Two steps follow and neither is the model's: Thomas approves on the control bot, and the operator
+    spends the approval in the scheduler container. Nothing has closed when this is read."""
+    positions = src.get("positions") or []
+    listing = ", ".join(f"{p.get('symbol')} {p.get('direction')} {p.get('quantity')}"
+                        for p in positions if isinstance(p, dict)) or "(not in this reply)"
+    # A replay answers from the record for 24 hours, by which time Thomas may have approved and the
+    # operator confirmed: it can say what THIS call did, never what has happened since.
+    head = ("NOT DONE (REPLAYED) — this request_id already minted the emergency-close ask; no new ask "
+            "was minted and this call sent nothing. Whether Thomas has answered, or the operator has "
+            "confirmed, is not in this reply: approval_status(<id>) says." if replayed else
+            "NOT DONE — nothing has been closed and no order was sent. This minted Thomas's approval "
+            "ask for the emergency close.")
+    return (
+        f"{head}\n"
+        f"  approval id : {src.get('approval_id')}\n"
+        + (f"  request id  : {request_id}\n" if request_id else "")
+        + f"  expires at  : {src.get('expires_at')}\n"
+        f"  would close : {listing} — every booked live position, at market, reduceOnly\n"
+        + (f"  bound to    : {src.get('halt')}\n" if src.get("halt") else "")
+        + "Two steps follow, and neither is yours:\n"
+        f"  1) Thomas approves on the CONTROL bot ({CONTROL_BOT_ID}): {src.get('approve_with')}\n"
+        "  2) then the OPERATOR runs, in the scheduler container:\n"
+        f"     {src.get('confirm_with')}\n"
+        "You cannot approve it and you cannot confirm it. Never say positions are closing or closed. "
+        "Nothing moves until both steps are done, and the confirm refuses, spending nothing, if the HARD "
+        "halt it was asked under is no longer the one in effect: any control change voids the ask. Ask "
+        "again only if Thomas still wants the close. Convert `expires at` into the minutes remaining and "
+        "say it; the ask dies 15 minutes after it is minted. approval_status(<id>) shows whether Thomas "
+        "has answered."
+        + (" If it reads EXPIRED and Thomas still wants the close, call request_emergency_close again with "
+           "a NEW request_id." if replayed else "")
+    )
+
+
+def _emergency_close_unanswered(answer: door.Answer, *, request_id: str | None) -> str:
+    """The emergency-close frame failed in transport. Sent without an answer, the ask may exist: the
+    door can have minted it after the client stopped waiting, and a retry under a fresh id put a second
+    RED ask in front of Thomas (crypto PR6e review). The same id is the retry that cannot, and the door
+    refuses any new ask while one is open. The control channel has no emergency-close command, so the
+    fallback is the operator's own tool, never the Telegram advice the other verbs give."""
+    if answer.sent:
+        return (
+            "UNCONFIRMED: the emergency-close frame was sent and no reply arrived; the ask MAY HAVE BEEN "
+            "MINTED. This call closed nothing and sent no order either way. Do NOT call again under a new "
+            f"id — call request_emergency_close again with request_id=\"{request_id}\": the door answers a "
+            "minted ask from its record and never mints it twice. If the door stays unreachable, tell "
+            "Thomas; the operator can see and make the ask in the scheduler container "
+            "(scripts.emergency_close --show / --request)."
+        )
+    return (
+        f"UNAVAILABLE: could not reach the switch door ({answer.failure}). No ask was minted, nothing was "
+        "closed and no order was sent. Tell Thomas; the operator can ask for the close in the scheduler "
+        "container (scripts.emergency_close --request)."
+    )
+
+
 def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: str | None) -> str:
+    if answer.failure and payload.get("command") == "emergency_close":
+        return _emergency_close_unanswered(answer, request_id=request_id)
     if answer.failure:
         return f"{answer.failure_text()} Nothing was changed."
     if answer.ok:
@@ -54,6 +167,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
         # `data` (and `outcome`), not in the top-level keys a fresh reply has. Measured on the
         # 2026-09-04 drill: reading the top level rendered "DONE: None applied to None".
         src = answer.data if answer.replayed else (answer.frame or {})
+        if answer.replayed and payload.get("command") == "emergency_close":
+            return _emergency_close_text(src, replayed=True, request_id=request_id)
         if answer.replayed and ("approve_with" in src or "expires_at" in src):
             # The ask itself was the effect the first time; nothing new is minted on a repeat.
             return (
@@ -67,6 +182,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
                 "Check approval_status(<id>) first: if it reads EXPIRED, the id is dead — call "
                 f"{retry_tool} again with a NEW request_id to mint a fresh ask."
             )
+        if payload.get("command") == "disable" and not answer.replayed:
+            return _disable_text(src, payload=payload, reply=answer.reply)
         armed = src.get("trading_armed")
         spent_scope = src.get("scope")
         armed_note = ""
@@ -89,15 +206,6 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
                 "positions still close on their own. Say this plainly; do not report that "
                 "trading is running."
             )
-        if payload.get("command") == "disable":
-            armed_note = (
-                " This stop ALSO disarmed live entries, and it dropped the scheduler's due "
-                "cycles: while stopped, the crypto cycle does not run, so open positions are "
-                "NOT being settled or protected by the runtime — only whatever protective "
-                "order already rests at the venue. Do not say positions will close on their "
-                "own. The disarm is sticky: resume_runtime_only brings the runtime back with "
-                "trading still off, and re-arming needs a separate start_trading approval."
-            )
         replay_note = (
             " (REPLAYED: this request_id was already applied earlier — the door did not apply "
             "it again; what follows is the state from that first application.)"
@@ -116,6 +224,8 @@ def _render(answer: door.Answer, *, payload: dict, retry_tool: str, request_id: 
             "that left mode and arm exactly as they were; it does not prove anything moved."
         )
 
+    if answer.reason_code == "APPROVAL_REQUIRED" and payload.get("command") == "emergency_close":
+        return _emergency_close_text(answer.frame or {}, replayed=False, request_id=request_id)
     if answer.reason_code == "APPROVAL_REQUIRED":
         scope = answer.get("scope")
         what = ("resume the runtime WITHOUT re-arming live trading" if scope == "runtime"
@@ -189,6 +299,37 @@ def pause_trading(reason: str, domain: str = "crypto") -> str:
     entirely and live entries are disarmed, sticky); it only reads softer in the ledger.
     Only when Thomas asks."""
     return _ask({"command": "disable", "mode": "pause", "reason": reason, "domain": domain})
+
+
+@mcp.tool()
+def halt_trading(reason: str, hard: bool = False, domain: str = "crypto") -> str:
+    """Halt NEW live entries and keep managing open positions. On an ACTIVE runtime it stays ACTIVE, so
+    open positions keep being settled, protected, time-exited and reconciled; prefer it to stop_trading
+    when the point is to stop opening positions. No approval, applied at once: grade B in SOUL, like
+    the stops (on evidence that a loss is in progress, or when Thomas asks), and say at once why you
+    pressed it. Soft is the default. hard=True also has the order adapter refuse every order that could
+    add exposure, the signed testnet rehearsal included; closes and protective orders still go out.
+    From here it only tightens: a soft halt never loosens a hard one, and on a stopped runtime
+    (KILLED/PAUSED) it cannot release the stop. At most it records the halt under the stop (not under a
+    stop derived by failing closed, nor under one that already has the same or a tighter halt). Lifting
+    a halt needs Thomas's start_trading approval; resume_runtime_only keeps it. Like any control change,
+    it voids a pending start_trading/resume ask (STOP_CHANGED)."""
+    return _ask({"command": "disable", "mode": "hard" if hard else "soft", "reason": reason, "domain": domain})
+
+
+@mcp.tool()
+def request_emergency_close(reason: str, domain: str = "crypto", request_id: str = "") -> str:
+    """ASK Thomas for the emergency close: every booked live position closed at market, reduceOnly.
+    You can only ask. This sends no order and closes nothing: it mints one approval Thomas answers on
+    the CONTROL bot, and then the operator runs the close in the scheduler container. It needs the
+    HARD halt with the runtime ACTIVE (halt_trading with hard=True first) and refuses otherwise. Only
+    when Thomas asks for it. It refuses by name until the governance policy grants it, and while
+    another emergency-close ask is still open. `request_id`: leave it EMPTY; pass one back only to
+    retry this same call after a timeout or an unclear reply (the reply names it), which is what stops
+    a second ask being minted."""
+    rid = request_id.strip() or door.new_request_id()
+    return _ask({"command": "emergency_close", "reason": reason, "domain": domain},
+                retry_tool="request_emergency_close", request_id=rid)
 
 
 @mcp.tool()

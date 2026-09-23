@@ -67,6 +67,9 @@ Failure directions, each chosen once:
   rather than spent on an assumption.
 - An approval whose named stop is no longer the one in effect -> ``STOP_CHANGED``, nothing
   applied. Re-asking is one round trip; clearing an unapproved stop is not recoverable by one.
+- ``emergency_close`` while the committed policy does not list it -> ``CONTROL_VERB_NOT_GRANTED``,
+  nothing asked. Granted, it only ever mints the ask; an ``approval_id`` beside it is refused, and so
+  is a new ask while an emergency-close ask is still open (``EMERGENCY_CLOSE_ASK_OPEN``, naming it).
 """
 
 from __future__ import annotations
@@ -79,13 +82,16 @@ from . import bridge_idempotency, control, socket_door, timeutil
 from .approval_store import ApprovalStore
 from .binding import bind_task_to_core
 from .control import ControlStore
-from .errors import ControlBlocked
+from .errors import ControlBlocked, MvpRuntimeError
 from .filelock import locked
 from .intake import build_task
+from .audit import build_approval_request_audit
 from .permission import (
+    EMERGENCY_CLOSE_TARGET_PREFIX,
     NONFINANCIAL_RESUME_TARGET_PREFIX,
     TRADING_SWITCH_PERMISSION_SCOPE,
     TRADING_SWITCH_TARGET_PREFIX,
+    build_emergency_close_permission_decision,
     build_nonfinancial_resume_permission_decision,
     build_trading_switch_permission_decision,
 )
@@ -105,16 +111,29 @@ ASSISTANT_ACTOR = socket_door.ASSISTANT_ACTOR
 CMD_STATUS = "status"
 CMD_ENABLE = "enable"
 CMD_DISABLE = "disable"
+CMD_EMERGENCY_CLOSE = "emergency_close"
 
 # The whole permission surface of this module. `control.CMD_RESUME` is deliberately NOT a verb
 # a caller can name — `enable` is the only route to it, and it goes through an approval. A test
 # asserts the raw control verbs stay unnameable here.
-_ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISABLE})
+_ALLOWED_COMMANDS: frozenset[str] = frozenset({CMD_STATUS, CMD_ENABLE, CMD_DISABLE, CMD_EMERGENCY_CLOSE})
+
+# The verbs this door carries dormant: each refuses by name until the committed policy lists it under
+# `control_channel.assistant_switch.verbs` (`control.granted_switch_verbs`), the pattern `halt_trading`
+# followed before policy 1.5.1. The other verbs never read the policy, so a policy that cannot be read
+# can never take `disable` away.
+#
+# `emergency_close` (crypto PR6e, Thomas decision 49: the assistant may only request). It mints the
+# ask `scripts.emergency_close --request` mints — every booked live position, closed at market and
+# reduceOnly, under the HARD halt in effect — and nothing more. Thomas answers it on the control
+# channel, and the operator spends it once in the scheduler container, the only one with the order key
+# (`--confirm`). This door has no path to the spend.
+POLICY_GATED_COMMANDS: frozenset[str] = frozenset({CMD_EMERGENCY_CLOSE})
 
 # Every key this door will act on. An unexpected key is refused rather than ignored: a frame
 # carrying something this module does not understand must not be treated as a frame that means
 # what the understood subset says. `request_id` is optional and carries no authority — see
-# `_ENABLE_DOOR` for which verb actually uses it and why the other two do not.
+# `_ENABLE_DOOR` for which verbs actually use it (`enable`, `emergency_close`) and why the other two do not.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {"command", "domain", "reason", "mode", "approval_id", "scope",
      bridge_idempotency.REQUEST_ID_KEY}
@@ -141,7 +160,7 @@ SCOPE_RUNTIME = "runtime"
 _ALLOWED_SCOPES: frozenset[str] = frozenset({SCOPE_TRADING, SCOPE_RUNTIME})
 _DEFAULT_SCOPE = SCOPE_TRADING
 
-# `enable` is the only verb here with a duplicate worth preventing, and it has two of them. The
+# `enable` was the first verb here with a duplicate worth preventing, and it has two of them. The
 # ask shape mints an APPROVAL_REQUIRED record, so a retried frame puts a SECOND pending approval
 # in front of Thomas for one intent — the failure mode where he answers one and the other sits
 # there spendable. The spend shape is already single-use through the approval itself, but a
@@ -153,16 +172,29 @@ _DEFAULT_SCOPE = SCOPE_TRADING
 # for a stop to block. An emergency control you must first acquire a lock for is a worse trade
 # than the duplicate it would prevent.
 _ENABLE_DOOR = "switch.enable"
+# The emergency-close ask dedups for the enable ask's reason: two pending asks for one intent. It
+# also refuses while any emergency-close ask is still open (`EMERGENCY_CLOSE_ASK_OPEN`), which is what
+# holds when a retry comes under a new id: a reply that outlived the client's timeout, or a claim
+# released after the ask was stored.
+_EMERGENCY_CLOSE_DOOR = "switch.emergency_close"
+EMERGENCY_CLOSE_ASK_OPEN = "EMERGENCY_CLOSE_ASK_OPEN"
+# The one domain the close has an effect in: it closes the crypto lane's booked live positions.
+_EMERGENCY_CLOSE_DOMAIN = "crypto"
 
-# Stopping has three shapes and the caller picks. `kill` and `pause` are in the policy's
+# Stopping has four shapes and the caller picks. `kill` and `pause` are in the policy's
 # `emergency_controls_allowed`; `soft` is the Trading Soft Halt (Thomas decision 7, 2026-09-15) —
-# entries off, positions still managed — and refuses by name until the policy grants
-# `halt_trading` (control.POLICY_GATED_COMMANDS). This door never passes
-# `halt_may_release_stop`: `soft` on a PAUSED or KILLED runtime leaves the stop in place. Built
-# from control's own constants so a rename there cannot silently widen this.
+# entries off, positions still managed — and `hard` the same verb's tighter level (decision 47,
+# 2026-09-19). Both refuse by name until the policy grants `halt_trading`
+# (control.POLICY_GATED_COMMANDS). This door never passes `halt_may_release_stop`: `soft` or `hard`
+# on a PAUSED or KILLED runtime leaves the stop in place and records the halt under it (PR6d), and
+# `soft` under a hard halt leaves it hard — halting is this door's to do without an approval,
+# loosening is not. Built from control's own constants so a rename there cannot silently widen this.
 _DISABLE_MODES: dict[str, str] = {
     "kill": control.CMD_KILL, "pause": control.CMD_PAUSE, "soft": control.CMD_HALT_TRADING,
+    "hard": control.CMD_HALT_TRADING,
 }
+# The level each halt mode names; `kill` and `pause` name none.
+_DISABLE_HALT_LEVELS: dict[str, str] = {"soft": control.HALT_SOFT, "hard": control.HALT_HARD}
 _DEFAULT_DISABLE_MODE = "kill"
 
 # Domains this door switches. `crypto` is the only trading domain that exists; `prediction`
@@ -220,16 +252,21 @@ def stop_ref(state: control.ControlState) -> str:
     grant. That costs a re-ask. It is the direction to be wrong in — the other one clears a stop
     nobody approved — and this door's whole asymmetry is that starting is the expensive verb.
     """
-    return integrity.short_id(
-        "stop",
-        {
-            "mode": state.mode,
-            "updated_at": state.updated_at,
-            "updated_by": state.updated_by,
-            "reason": state.reason,
-            "fail_closed": bool(state.fail_closed),
-        },
-    )
+    seed = {
+        "mode": state.mode,
+        "updated_at": state.updated_at,
+        "updated_by": state.updated_by,
+        "reason": state.reason,
+        "fail_closed": bool(state.fail_closed),
+    }
+    # The halt level too (PR6), but only when one is placed: a grant minted against a soft halt must
+    # not spend against a hard one placed in the same second by the same actor with the same words.
+    # A state with no halt keeps the id it had before levels existed. The fail-closed states now carry
+    # a HARD halt, so a grant minted against one of those before the deploy lapses (STOP_CHANGED; the
+    # safe direction, and a re-ask).
+    if state.halt_level is not None:
+        seed["halt_level"] = state.halt_level
+    return integrity.short_id("stop", seed)
 
 
 def stop_summary(state: control.ControlState) -> str:
@@ -242,9 +279,10 @@ def stop_summary(state: control.ControlState) -> str:
         # The soft halt (or a runtime-only resume). The runtime is running; what a trading grant
         # would change is the arm, and saying "resumes nothing" here would misprice a re-arm.
         placed_at = state.updated_at or "an unrecorded time"
+        halt = f"a {state.halt_level} halt, " if state.halt_level else ""
         return (
-            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down (set by "
-            f"{state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
+            f"no scheduler stop — the runtime is ACTIVE and only the live-entry arm is down ({halt}set "
+            f"by {state.updated_by} at {placed_at}, stated reason: {state.reason}). A trading grant "
             "RE-ARMS live entries and resumes nothing else; a runtime grant changes nothing"
         )
     if state.mode == control.ACTIVE:
@@ -254,9 +292,12 @@ def stop_summary(state: control.ControlState) -> str:
         )
     derived = " (derived by failing closed, not written by an operator)" if state.fail_closed else ""
     placed_at = state.updated_at or "an unrecorded time"
+    # A halt carried under the stop is what a runtime grant comes back to; a trading grant clears it.
+    kept = (f"; a {state.halt_level} halt is kept under it, which a runtime grant leaves in place"
+            if state.halt_level else "")
     return (
         f"the {state.mode} placed by {state.updated_by} at {placed_at}{derived}, "
-        f"whose stated reason is: {state.reason}"
+        f"whose stated reason is: {state.reason}{kept}"
     )
 
 
@@ -404,6 +445,169 @@ def _open_ask(
         "clears": stop_summary(state),
         "mode": state.mode,
     }
+
+
+def _open_emergency_close(approval_store: ApprovalStore, *, now: str) -> dict[str, Any] | None:
+    """An emergency-close ask still open: minted, not expired, and not yet rejected or spent.
+
+    PENDING waits for Thomas and APPROVED waits for the operator's confirm; either way one ask is in
+    front of him for this intent, whoever minted it. The operator's own ``--request`` does not consult
+    this, only this door."""
+    for approval in approval_store.current().values():
+        snapshot = approval.get("approved_action_snapshot") or {}
+        if (approval.get("status") in (approval_mod.STATUS_PENDING, approval_mod.STATUS_APPROVED)
+                and str(snapshot.get("target_ref") or "").startswith(EMERGENCY_CLOSE_TARGET_PREFIX)
+                and not approval_mod.is_expired(approval, now=now)):
+            return approval
+    return None
+
+
+def _open_emergency_close_ask(
+    domain: str,
+    reason: str,
+    *,
+    approval_store: ApprovalStore,
+    control_store: ControlStore,
+    ledger: LedgerStore,
+    now: str,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """Create the emergency-close ask, with the assistant as the requester, and return it.
+
+    The content is ``live_route.emergency_close_content``'s, exactly as for the operator's
+    ``--request``: the HARD halt in effect (its ``stop_ref``) and every booked position. It refuses,
+    by that function's codes, when no HARD halt is in effect with the runtime ACTIVE, when nothing is
+    booked, or when a book record is incomplete. Reading the book and the control state changes
+    nothing; the ask is still not an action."""
+    # The lane, entered at its dispatch site: the core loads no domain module at import
+    # (tests/test_mvp_runtime_domain_isolation.py).
+    from .crypto import live_route
+
+    content = live_route.emergency_close_content(
+        root=repo_root, requested_by=ASSISTANT_ACTOR, reason=reason, control_store=control_store,
+    )
+    standing = _open_emergency_close(approval_store, now=now)
+    if standing is not None:
+        standing_id = standing["approval_id"]
+        raise ControlBlocked(
+            EMERGENCY_CLOSE_ASK_OPEN,
+            f"an emergency-close ask is already open ({standing_id}, {standing['status']}, expires "
+            f"{standing['validity']['expires_at']}); Thomas answers that one, and this door mints no second "
+            f"ask while it stands. approval_status({standing_id}) shows where it is",
+        )
+    rows = content["positions"]
+    task = build_task(
+        f"긴급 청산 검토 (비서 요청): 장부의 라이브 포지션 {len(rows)}개"
+        f"({', '.join(r['symbol'] for r in rows)})를 시장가 reduceOnly로 청산 - {reason}",
+        now=now, channel="agent", requester_type="agent", requester_id=ASSISTANT_ACTOR,
+        authenticated=True,
+    )
+    _, bound = bind_task_to_core(task, now=now)
+    decision = build_emergency_close_permission_decision(bound, content=content, now=now)
+    request = approval_mod.build_approval_request(decision, now=now)
+    approval_store.append_permission_decision(decision)
+    approval_store.append([request])
+    warnings: list[str] = []
+    # From here on the ask exists, so nothing may propagate as if it did not: an exception reaching the
+    # caller releases the request_id and reads "nothing was changed" (crypto PR6e review). Any failure
+    # of the audit write is a warning beside the ask, typed or not.
+    try:
+        ledger.append_audit_events(build_approval_request_audit(
+            request, now=now, genesis_previous_hash=ledger.last_audit_hash(),
+        ))
+    except Exception as exc:  # noqa: BLE001 - the ask stands either way; say what was not written
+        code = exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+        warnings.append(f"the request audit was not written ({code}); the ask stands")
+    approval_id = request["approval_id"]
+    reply: dict[str, Any] = {
+        "ok": False,
+        "reason_code": "APPROVAL_REQUIRED",
+        "reason": ("closing every booked live position needs Thomas's approval on the control channel, "
+                   "then the operator's confirm in the scheduler container; nothing has been closed "
+                   "and no order was sent"),
+        "action": CMD_EMERGENCY_CLOSE,
+        "domain": domain,
+        "approval_id": approval_id,
+        "expires_at": request["validity"]["expires_at"],
+        "approve_with": f"/approve {approval_id}",
+        "confirm_with": ("docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close "
+                         f"--confirm --approval-id {approval_id}"),
+        "positions": rows,
+        "halt": content["halt_summary"],
+        "halt_ref": content["halt_ref"],
+        "requested_reason": reason,
+    }
+    if warnings:
+        reply["warnings"] = warnings
+    return reply
+
+
+def _emergency_close_ask(
+    request: dict[str, Any],
+    reason: str,
+    *,
+    approval_store: ApprovalStore,
+    control_store: ControlStore,
+    ledger: LedgerStore,
+    now: str,
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """The ``emergency_close`` verb: mint the ask, once per ``request_id``, and never spend it.
+
+    Keys this verb does not use are refused rather than ignored, the door's rule everywhere else, and
+    ``approval_id`` above all: a caller that sends one believes this door can close positions, and it
+    cannot. A retried frame answers from the record instead of minting a second ask."""
+    unexpected = {"approval_id", "mode", "scope"} & set(request)
+    if unexpected:
+        raise ControlBlocked(
+            "ARGUMENT_NOT_ACCEPTED",
+            f"{CMD_EMERGENCY_CLOSE} only asks, and takes no {sorted(unexpected)}: Thomas's approval is "
+            "spent by the operator in the scheduler container (scripts.emergency_close --confirm), "
+            "never through this door",
+        )
+    domain = _require_domain(request)
+    if domain != _EMERGENCY_CLOSE_DOMAIN:
+        # Unreachable while the door carries one domain; it fires the moment the set widens, before
+        # a `prediction` request could mint the crypto close under that name (`_spend` has the twin).
+        raise ControlBlocked(
+            "DOMAIN_EFFECT_MISMATCH",
+            f"the emergency close closes the {_EMERGENCY_CLOSE_DOMAIN} lane's booked live positions; it has "
+            f"no {domain!r} effect to ask for",
+        )
+    request_id = bridge_idempotency.request_id_of(request)
+    fingerprint = bridge_idempotency.fingerprint(request) if request_id is not None else ""
+    if request_id is not None:
+        prior = bridge_idempotency.claim(
+            ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+        )
+        if prior is not None:
+            return socket_door.envelope(
+                bridge_idempotency.replay_reply(prior), request=request,
+                data=dict(prior.get("outcome") or {}),
+            )
+    try:
+        reply = _open_emergency_close_ask(
+            domain, reason, approval_store=approval_store, control_store=control_store,
+            ledger=ledger, now=now, repo_root=repo_root,
+        )
+    except BaseException:
+        if request_id is not None:
+            bridge_idempotency.release(
+                ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+                request_fingerprint=fingerprint, now=now,
+            )
+        raise
+    if request_id is not None:
+        # `positions` rides in the outcome although `complete` records identity, not payload: the
+        # replay has to list what the ask would close, and the book may have moved since.
+        bridge_idempotency.complete(
+            ledger, door=_EMERGENCY_CLOSE_DOOR, request_id=request_id,
+            request_fingerprint=fingerprint, now=now,
+            outcome={key: reply.get(key) for key in ("action", "approval_id", "expires_at", "approve_with",
+                                                     "confirm_with", "domain", "halt_ref", "positions")},
+        )
+    return _enveloped(request, _echo_request_id(request, reply))
 
 
 def _spend(
@@ -557,6 +761,10 @@ def _spend(
             control_store, control.CMD_RESUME, actor=ASSISTANT_ACTOR, now=now,
             reason=f"{reason} [approval {approval_id}]", ledger=ledger,
             resume_arms=resume_arms,
+            # The state `stop_ref` was just checked against. Operator writes do not take this lock,
+            # so the resume refuses (CONTROL_STATE_CHANGED, nothing spent) unless the state is still
+            # exactly this one when it writes — a hard halt landing now must not be re-armed away.
+            expected_state=current,
         )
         consumed = approval_mod.build_consumed_record(
             fresh, decision, consumed_at=now,
@@ -620,6 +828,14 @@ def apply_switch(
             f"{command!r} is not permitted here; this door carries "
             f"{sorted(_ALLOWED_COMMANDS)} only",
         )
+    if command in POLICY_GATED_COMMANDS and command not in control.granted_switch_verbs():
+        raise ControlBlocked(
+            control.VERB_NOT_GRANTED,
+            f"{command} is not granted by the committed Governance Policy yet "
+            "(control_channel.assistant_switch.verbs); nothing was asked and nothing changed"
+            + (". Thomas can ask for the close himself in the scheduler container "
+               "(scripts.emergency_close --request)" if command == CMD_EMERGENCY_CLOSE else ""),
+        )
 
     now = now or timeutil.utc_now_iso()
     approval_store = approval_store or ApprovalStore.default(repo_root)
@@ -636,6 +852,12 @@ def apply_switch(
         }))
 
     reason = _require_reason(request)
+
+    if command == CMD_EMERGENCY_CLOSE:
+        return _emergency_close_ask(
+            request, reason, approval_store=approval_store, control_store=control_store,
+            ledger=ledger, now=now, repo_root=repo_root,
+        )
 
     if command == CMD_DISABLE:
         raw_mode = request.get("mode")
@@ -654,7 +876,7 @@ def apply_switch(
         domain = _require_domain(request)
         outcome = control.apply_command(
             control_store, _DISABLE_MODES[mode], actor=ASSISTANT_ACTOR, now=now,
-            reason=reason, ledger=ledger,
+            reason=reason, ledger=ledger, halt_level=_DISABLE_HALT_LEVELS.get(mode),
         )
         return _enveloped(request, _echo_request_id(request, {
             "ok": True, "reply": outcome["reply"], "mode": outcome["mode"],

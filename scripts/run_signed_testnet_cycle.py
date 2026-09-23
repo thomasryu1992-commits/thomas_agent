@@ -42,7 +42,7 @@ from runtime.mvp_runtime.cli_common import (  # noqa: E402
     force_utf8_io,
     gate_banners,
 )
-from runtime.mvp_runtime.control import ControlStore  # noqa: E402
+from runtime.mvp_runtime.control import HALT_HARD, ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import pre_order_gate, testnet_evidence  # noqa: E402
 from runtime.mvp_runtime.crypto import testnet_execution as testnet  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
@@ -130,6 +130,7 @@ def plan_cycle(*, symbol: str, quantity: float, root: Path | None, now: str,
             manual_kill_switch=limits.manual_kill_switch,
             submitted_today=testnet.count_testnet_today(root),
             execution_stage=stage,
+            hard_halt=control.halt_level == HALT_HARD,
         )
         posture["blocks"] = [*posture["blocks"], f"no usable reference price for {symbol} ({price_error})"]
         posture["approved"] = False
@@ -146,6 +147,8 @@ def plan_cycle(*, symbol: str, quantity: float, root: Path | None, now: str,
         manual_kill_switch=limits.manual_kill_switch,
         submitted_today=testnet.count_testnet_today(root),
         execution_stage=stage,
+        # A HARD halt refuses the rehearsal's entry; a SOFT one does not (PR6b).
+        hard_halt=control.halt_level == HALT_HARD,
     )
     verdict = testnet.evaluate_testnet_order_guard(intent, **guard_kwargs)
     return {"adapter": adapter, "stage": stage, "intent": intent, "price": price,

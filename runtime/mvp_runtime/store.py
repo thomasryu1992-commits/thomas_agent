@@ -99,6 +99,9 @@ _RECORD_KINDS = (
     "crypto_strategy_proposal",
     "crypto_data_review",
     "crypto_null_control",
+    # The operator's emergency close (crypto PR6c): one report per spent grant, naming every order it
+    # sent, beside the audit events and the outcomes it produced (review of #913).
+    "crypto_emergency_close",
     # The blog content lane's package (Phase 2). A ledger row rather than a file: the workspace
     # writer is behind `filesystem_write`, which is unset on this deployment, so the record IS
     # the artefact until that opens.

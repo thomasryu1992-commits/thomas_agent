@@ -30,6 +30,7 @@ from runtime.mvp_runtime.operator import (
     InboundMessage,
     MockOperatorChannel,
     OperatorIdentity,
+    handle_operator_message,
     peek_for_halt,
     run_operator_once,
 )
@@ -189,6 +190,32 @@ def test_ordinary_messages_are_ignored_by_the_peek(tmp_path):
 
     assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) is None
     assert store.load().execution_allowed is True
+
+
+def test_a_verb_without_its_slash_is_conversation_to_the_peek_too(tmp_path):
+    """Review of PR6d: the channel refuses a bare state-changing verb (SLASH_REQUIRED), and the peek
+    applied it anyway — "kill 스위치가 뭐야?" asked during an analysis killed the runtime, while the
+    reply told the operator nothing had happened."""
+    store = _control(tmp_path)
+    channel = MockOperatorChannel(inbound=[_msg("kill 스위치가 뭐야?"), _msg("pause"), _msg("KILL now")])
+
+    assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) is None
+    assert store.load().execution_allowed is True
+    reply = handle_operator_message(_msg("kill 스위치가 뭐야?"), registration=REG, control_store=store)
+    assert reply.reason_code == "SLASH_REQUIRED" and store.load().execution_allowed is True
+    assert peek_for_halt(MockOperatorChannel(inbound=[_msg("  /kill 급변")]), registration=REG,
+                         control_store=store, now=NOW) == control.CMD_KILL
+
+
+def test_a_halt_trading_waits_for_the_normal_handling(tmp_path):
+    """PR6d let `/halt_trading` into the peek and its review took it out again: the next poll replays
+    the same text with release rights against a state that later messages have already moved (see
+    `PEEKABLE_HALT_VERBS`). Skipped, it hides nothing queued behind it."""
+    store = _control(tmp_path)
+    channel = MockOperatorChannel(inbound=[_msg("/halt_trading hard"), _msg("/kill")])
+
+    assert peek_for_halt(channel, registration=REG, control_store=store, now=NOW) == control.CMD_KILL
+    assert (store.load().mode, store.load().halt_level) == (control.KILLED, None)
 
 
 # --- failure directions: the run wins ----------------------------------------

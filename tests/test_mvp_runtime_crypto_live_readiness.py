@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from runtime.mvp_runtime.crypto import execution_stage as es
-from runtime.mvp_runtime.crypto import live_promotion, live_readiness
+from runtime.mvp_runtime.crypto import live_promotion, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
@@ -865,14 +865,18 @@ def test_an_unreadable_pool_fails_the_row_and_never_reads_as_zero(
 
 
 def test_the_render_qualifies_the_wired_note_when_nothing_is_armed(tmp_path, clean_env):
-    """The WIRED note promises "REAL positions once every FAIL clears" — the sentence a reader
-    believed on 2026-08-10 while the armed set was empty. The qualification must appear where
-    the promise is made, not only in a PASS row further up."""
+    """The WIRED note promises REAL positions — "once every FAIL clears" until PR5b, the sentence a
+    reader believed on 2026-08-10 while the armed set was empty; "while LIVE ENTRY POSSIBLE reads
+    YES" since. The qualification must appear where the promise is made, not only in a PASS row
+    further up."""
     _write_pool(tmp_path, _pool_entry("S1"))
     text = live_readiness.render_readiness_text(
         live_readiness.build_readiness(root=tmp_path, now=NOW))
     text.encode("ascii")
     if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        # The promise is conditioned on the system's answer, never on this process's rows (PR5b).
+        assert "opens and closes REAL positions while LIVE ENTRY POSSIBLE\n        reads YES" in text
+        assert "once every FAIL clears" not in text
         assert "0 strategies are armed" in text
         assert "no autonomous entry will OPEN" in text
         assert "--live-tier LIVE" in text
@@ -893,14 +897,17 @@ def test_the_render_does_not_cry_zero_when_a_strategy_is_armed(tmp_path, clean_e
 # system whose scheduler held an open gate. These lock the fix: the board reports what the
 # trading process recorded, and refuses a bare "off" its own env cannot support.
 
-def _write_cycle(root, *, status: str, created_at: str):
-    """One crypto_cycle ledger row — the trading process's own record of its live gate."""
+def _write_cycle(root, *, status: str, created_at: str, live_gate=None):
+    """One crypto_cycle ledger row — the trading process's own record of its live gate, and of its
+    two switches when ``live_gate`` is given (the leg stamps them since PR5a)."""
     from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
 
     ledger = root / LEDGER_REL
     ledger.mkdir(parents=True, exist_ok=True)
-    row = {"kind": "crypto_cycle",
-           "record": {"live_route_status": status, "created_at": created_at}}
+    record = {"live_route_status": status, "created_at": created_at}
+    if live_gate is not None:
+        record["live_gate"] = live_gate
+    row = {"kind": "crypto_cycle", "record": record}
     with (ledger / RECORDS_FILE).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
 
@@ -963,22 +970,79 @@ def test_a_blind_process_still_says_FAIL_for_a_failure_it_can_see(tmp_path, clea
 
     own_detail = next(c["detail"] for c in status["checks"]
                       if c["check"] == "daily_loss_breaker" and not c["ok"])
+    # No budget, so no limit: BREACHED, a fact about the limit that holds on every machine.
+    assert own_detail.startswith("BREACHED")
     breaker = next(line for line in text.splitlines() if "daily_loss_breaker" in line)
     assert breaker.startswith("[FAIL]"), breaker
     assert own_detail in breaker      # its own finding, verbatim — not the scoped stand-in
     assert live_readiness.OUT_OF_SCOPE_DETAIL not in breaker
+    assert live_readiness.OUT_OF_SCOPE_LOSS_DETAIL not in breaker
 
 
-def test_env_rows_read_FAIL_when_nothing_says_the_system_is_trading(tmp_path, clean_env):
-    """No record, no downgrade. Absence of evidence about the gate is not permission to soften
-    the rows — the ordinary machine with no live env must still read a plain FAIL."""
+def test_a_loss_breaker_without_an_account_feed_describes_only_this_container(tmp_path, clean_env):
+    """NO DATA SOURCE because this process reads no account said "the limit currently bounds
+    nothing" — a claim about the system — on a console whose readiness state reads the trading
+    process's snapshot for the same figure (review of #907). Scoped on the row, as the env rows are;
+    `ready` and the check row are untouched, and where the rows speak for the system it still FAILs."""
+    _register_budget(tmp_path)
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False and row["detail"].startswith("NO DATA SOURCE") and row["env_scoped"] is True
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker == (f"[{live_readiness.OUT_OF_SCOPE_MARK}] {'daily_loss_breaker':24} "
+                       f"{live_readiness.OUT_OF_SCOPE_LOSS_DETAIL}")
+    assert "bounds nothing" not in text
+    assert status["ready"] is False
+    # A fresh record of a closed gate: the rows speak for the system, and this one says what it saw.
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:58:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]") and "NO DATA SOURCE" in breaker, breaker
+
+
+def test_a_loss_breaker_with_an_account_feed_is_never_scoped(tmp_path, clean_env, monkeypatch):
+    """A process holding the account feed measured the loss itself: its NO DATA SOURCE (a read that
+    failed) is its own finding about the account, and reads FAIL."""
+    from runtime.mvp_runtime.crypto import account
+
+    _register_budget(tmp_path)
+    monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
+    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setattr(
+        live_readiness, "read_account",
+        lambda **kw: (_ for _ in ()).throw(ToolError("ACCOUNT_DATA_DEGRADED", "down")),
+    )
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False and row["env_scoped"] is False
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]"), breaker
+
+
+def test_with_no_record_the_env_rows_still_describe_only_this_container(tmp_path, clean_env):
+    """No record, and still no "live trading off" (crypto PR5b, FC-10). This test pinned the
+    opposite until PR5b — "absence of evidence is not permission to soften the rows" — which was
+    right while the rows were the board's conclusion. The conclusion is the readiness state now,
+    at the top and in the last line, so the rows no longer carry it; what they did carry was the
+    one sentence a summariser lifts. A process without the environment says what it knows: it
+    cannot see the environment, and no record of the system's gate is readable here."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     text = live_readiness.render_readiness_text(status)
 
     opt_in = next(line for line in text.splitlines() if "live_trading_opt_in" in line)
-    assert opt_in.startswith("[FAIL]"), opt_in
-    assert live_readiness.OUT_OF_SCOPE_MARK not in text
-    assert "SCOPE  : dry-run" not in text
+    assert opt_in.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), opt_in
+    assert "live trading off" not in text and "MVP_LIVE_TRADING is not" not in text
+    assert "no record of the trading process's gate is readable here" in text
+    assert "no record of the system's own gate is readable here" in text
+    # Still not READY, and still no entry: this decides what the board says, never what it permits.
+    assert status["ready"] is False
+    assert text.splitlines()[-1].startswith("LIVE ENTRY POSSIBLE: NO - blocked by ")
+    assert live_readiness.readiness_data(status)["env_out_of_scope"] is True
 
 
 def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
@@ -988,20 +1052,38 @@ def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
 
     assert status["recorded_gate"]["open"] is False
     assert live_readiness.contradicts_recorded_gate(status) is False
+    # The one case the env rows speak for the system too: its own fresh record says closed.
+    assert live_readiness.env_out_of_scope(status) is False
     text = live_readiness.render_readiness_text(status)
     assert "THIS PROCESS CANNOT SEE" not in text
     assert "NOT READY - every FAIL above must clear first" in text
+    opt_in = next(line for line in text.splitlines() if line.startswith("[") and "live_trading_opt_in" in line)
+    assert opt_in.startswith("[FAIL]"), opt_in
+    assert "live_gate_open (GATE_DISABLED)" in text.splitlines()[-1]
 
 
 def test_a_stale_record_is_not_evidence_about_now(tmp_path, clean_env):
     """An old open gate must not manufacture a warning: that trades one false claim for
-    another, in the more alarming direction."""
+    another, in the more alarming direction. Nor may the console's own empty environment speak
+    instead (FC-10): a kill writes no more cycles, so this is the state a kill leaves, and the
+    board used to print "live trading off" here off the console's env — right by accident, for the
+    wrong reason."""
     _write_cycle(tmp_path, status="HELD", created_at="2026-07-20T00:00:00Z")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
 
     assert status["recorded_gate"]["stale"] is True
     assert live_readiness.contradicts_recorded_gate(status) is False
-    assert "STALE" in live_readiness.render_readiness_text(status)
+    text = live_readiness.render_readiness_text(status)
+    assert "STALE" in text
+    # The gate row keeps its dated, STALE-marked reading; no banner or verdict claims it as now.
+    assert "   the trading process recorded the gate OPEN" not in text
+    assert "was recorded OPEN" not in text
+    assert "is over two hours old - not a statement about now" in text
+    assert "live trading off" not in text
+    for check in live_readiness.ENV_SCOPED_CHECKS:
+        row = next(line for line in text.splitlines() if line.startswith("[") and check in line)
+        assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), row
+    assert live_readiness.env_out_of_scope(status) is True
 
 
 def test_the_newest_cycle_decides(tmp_path, clean_env):
@@ -1150,6 +1232,19 @@ def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
     row = next(c for c in live_readiness.build_readiness(root=tmp_path, now=NOW)["checks"]
                if c["check"] == "trading_armed")
     assert "management is stopped too" in row["detail"]
+
+
+def test_the_arm_row_names_the_halt_level(tmp_path):
+    """PR6: the row says which halt holds the arm down, and the readiness input carries it."""
+    from runtime.mvp_runtime.control import ACTIVE, HALT_HARD, ControlState, ControlStore
+
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="청산만",
+                                             trading_armed=False, halt_level=HALT_HARD))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "trading_armed")
+    assert row["ok"] is False and "DISARMED (HARD halt: 청산만)" in row["detail"]
+    assert "still managed" in row["detail"]
+    assert status["readiness_inputs"]["runtime_control"]["halt_level"] == HALT_HARD
 
 
 def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
@@ -1344,3 +1439,59 @@ def test_an_unexpected_reader_exception_fails_the_row_and_never_the_board(tmp_pa
     assert status["ready"] is False
     assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW)["reason_code"] \
         == vc.ENTRY_CONTRACT_UNREADABLE
+
+
+# --- the manual kill switch row (decision 50) ---------------------------------------
+
+def _kill_row(text):
+    return next(line for line in text.splitlines() if line.startswith("[") and "manual_kill_switch" in line)
+
+
+@pytest.mark.parametrize("engaged", [False, True])
+def test_a_console_shows_the_manual_kill_switch_the_trading_process_recorded(tmp_path, clean_env, engaged):
+    """Decision 50: the row read PASS "clear" off a console with no live-trading environment. It now
+    shows the trading process's own record of the switch, and says it is the secondary control."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z",
+                 live_gate={"confirmation_present": True, "manual_kill_switch": engaged})
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _kill_row(live_readiness.render_readiness_text(status))
+    seen = "as the trading process recorded it at 2026-07-23T11:55:00Z"
+    if engaged:
+        assert row.startswith("[FAIL]") and "MVP_LIVE_MANUAL_KILL_SWITCH is engaged" in row, row
+    else:
+        assert row.startswith("[PASS]") and "clear, " in row, row
+    assert seen in row and live_readiness.MANUAL_KILL_SECONDARY in row
+    # Rendering only: the check record every machine consumer reads is this process's, untouched.
+    check = next(c for c in status["checks"] if c["check"] == "manual_kill_switch")
+    assert (check["ok"], check["detail"]) == (True, "clear")
+
+
+@pytest.mark.parametrize("created_at,live_gate", [
+    ("2026-07-23T11:55:00Z", None),                                                     # not stamped
+    ("2026-07-23T08:00:00Z", {"confirmation_present": True, "manual_kill_switch": False}),  # stale
+])
+def test_a_console_without_a_usable_record_says_it_cannot_see_the_switch(tmp_path, clean_env, created_at,
+                                                                      live_gate):
+    _write_cycle(tmp_path, status="HELD", created_at=created_at, live_gate=live_gate)
+    row = _kill_row(live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW)))
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and live_readiness.OUT_OF_SCOPE_DETAIL in row
+    assert "clear" not in row and live_readiness.MANUAL_KILL_SECONDARY in row
+
+
+def test_a_console_whose_trading_process_recorded_a_closed_gate_points_at_no_missing_banner(tmp_path,
+                                                                                         clean_env):
+    """Review of PR6d: a fresh record of a CLOSED gate takes the banner down, and a gate that never
+    opened stamped no switches, so the n/a row pointed at a banner that was not there."""
+    _write_cycle(tmp_path, status=live_route.ROUTE_DISABLED, created_at="2026-07-23T11:55:00Z")
+    text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    row = _kill_row(text)
+    assert "CANNOT SEE THE LIVE-TRADING ENVIRONMENT" not in text
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and "banner" not in row
+    assert "recorded its gate closed" in row and live_readiness.MANUAL_KILL_SECONDARY in row
+
+
+def test_the_trading_process_shows_its_own_switch_as_the_secondary_control():
+    opted = {"checks": [{"check": "live_trading_opt_in", "ok": True, "detail": "real"}]}
+    for ok, detail, mark in ((True, "clear", "PASS"), (False, "MVP_LIVE_MANUAL_KILL_SWITCH is engaged", "FAIL")):
+        got = live_readiness._manual_kill_row({"check": "manual_kill_switch", "ok": ok, "detail": detail}, opted)
+        assert got == (mark, f"{detail} ({live_readiness.MANUAL_KILL_SECONDARY})")

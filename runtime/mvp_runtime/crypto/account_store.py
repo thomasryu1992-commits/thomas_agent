@@ -37,7 +37,7 @@ from typing import Any, Mapping
 from ..errors import ToolError
 from ..filelock import locked
 from .. import timeutil
-from . import paper
+from .state import state_dir
 
 SNAPSHOT_FILENAME = "account_snapshot.json"
 REFRESH_MARK_FILENAME = "account_refresh.json"
@@ -77,11 +77,11 @@ __all__ = [
 
 
 def snapshot_path(root: Path | None = None) -> Path:
-    return paper.state_dir(root) / SNAPSHOT_FILENAME
+    return state_dir(root) / SNAPSHOT_FILENAME
 
 
 def refresh_mark_path(root: Path | None = None) -> Path:
-    return paper.state_dir(root) / REFRESH_MARK_FILENAME
+    return state_dir(root) / REFRESH_MARK_FILENAME
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

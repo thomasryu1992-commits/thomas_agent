@@ -1320,7 +1320,8 @@ def test_fire_refuses_below_the_execution_stage_a_real_order_needs(tmp_path, mon
 
 def _gate_facts(plan, **overrides):
     """Everything `gate_probe_order` re-derives from, as `--fire` holds it just before the send."""
-    from runtime.mvp_runtime.crypto.live_position import live_capacity, reconcile_positions
+    from runtime.mvp_runtime.crypto.live_position import live_capacity
+    from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions
     from runtime.mvp_runtime.crypto.live_order import build_live_order_intent
 
     limits = LiveOrderLimits(

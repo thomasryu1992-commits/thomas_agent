@@ -504,7 +504,7 @@ def handle_operator_message(
         # without its store wired) silently becoming a full pipeline run — model call
         # included — is the fail-open direction.
         return OperatorReply(
-            text=("Unknown command. Available: /status /pause /kill /resume /halt_trading /stop <task_id> "
+            text=("Unknown command. Available: /status /pause /kill /resume /halt_trading [soft|hard] /stop <task_id> "
                   "/audit /recovery /approve <id> [reason] /reject <id> [reason] "
                   "/feedback <good|bad|한줄평> /memory /promote <id> <사유> "
                   "/tasks /history [n] /result <id> /cancel <id> "
@@ -1052,7 +1052,9 @@ def announce_pending_approvals(
     imported from ``permission`` which mints it, because these asks share ``RUNTIME_GOVERNANCE``
     with strategy promotion and only the target says what is being started. A workflow-step ask
     is announced on the control channel and **never mirrored** to the assistant's window
-    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``).
+    (policy 1.5.0 ``approval_notification_mirror.mirrored_asks: switch_door_only``), and so are the
+    execution-stage asks (crypto PR1a) and the emergency-close asks (crypto PR6c): the operator
+    spends both from the console, and Thomas answers them here.
 
     Expired asks are never announced: a dead id cannot be approved, and sending one invites
     Thomas to answer something that will refuse him.
@@ -1069,7 +1071,8 @@ def announce_pending_approvals(
     switch_asks = [
         a for a in pending
         if str((a.get("approved_action_snapshot") or {}).get("target_ref") or "").startswith(
-            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX)
+            switch_prefixes + (permission.WORKFLOW_STEP_TARGET_PREFIX, permission.EXECUTION_STAGE_TARGET_PREFIX,
+                               permission.EMERGENCY_CLOSE_TARGET_PREFIX)
         )
         and not approval.is_expired(a, now=now)
     ]
@@ -1589,8 +1592,13 @@ class ProgressNotice:
 # the next poll sends again is noise the peek has no reason to create. `halt_trading` is absent for
 # `resume`'s reason (from a stop it releases one), and for a second one: the peek returns at the
 # first match without claiming, so a /halt_trading queued ahead of a /kill would be re-applied on
-# every peek and hide the kill for the whole analysis (review of H2). During a long analysis the
-# entries-only halt that lands at once is `console_cli halt_trading`; over Telegram, /kill.
+# every peek and hide the kill for the whole analysis (review of H2). PR6d let it in as a door that
+# only tightens, reading the whole batch, and its review found a third reason: the next poll replays
+# the same text WITH release rights against a state later messages have already moved, which
+# writes a halt's event twice or out of order and can loosen HARD to SOFT for one send. Doing it
+# properly needs the peek to know which messages it applied (Telegram's update id), which
+# `InboundMessage` does not carry. During a long analysis the entries-only halt that lands at once
+# is `console_cli halt_trading`; over Telegram, /kill.
 PEEKABLE_HALT_VERBS = frozenset({control.CMD_KILL, control.CMD_PAUSE})
 
 
@@ -1647,6 +1655,11 @@ def peek_for_halt(
                 verify_control_channel(message, registration)
             except OperatorBlocked:
                 continue          # not the registered operator; the normal path drops it too
+            # The channel's slash rule (`handle_operator_message`, SLASH_REQUIRED), and every
+            # peekable verb changes state. Without it the peek killed the runtime on "kill 스위치가
+            # 뭐야?", which the normal handling then refused as conversation (review of PR6d).
+            if not (isinstance(message.text, str) and message.text.strip().startswith("/")):
+                continue
             command = control.parse_command(message.text)
             if command is None or command[0] not in PEEKABLE_HALT_VERBS:
                 continue

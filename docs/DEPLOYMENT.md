@@ -130,7 +130,9 @@ docker compose -p thomas_agent --env-file /root/thomas_agent/.env \
   -f /root/thomas-deploy-<PR#>/docker-compose.yml up -d
 ```
 
-The mounted state volume is untouched, so no history is lost. If a name conflict is reported, an out-of-band container exists —
+The mounted state volume is untouched, so no history is lost. A rollback across PR6 is read-safe but
+not write-safe for a HARD halt: "Emergency controls on a running service" below says what to check
+after rolling forward. If a name conflict is reported, an out-of-band container exists —
 `docker rm -f thomas-operator thomas-scheduler thomas-scheduler-maint` and re-run compose (their state is on the
 bind mount, not in the container). Confirm the commit you are on is a superset of whatever
 the running image carried before removing anything.
@@ -411,11 +413,19 @@ either path halts the loop's next task immediately:
 ```bash
 # From the host (works even if Telegram is unreachable):
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli halt_trading --reason "entries off, keep managing"
+docker exec thomas-operator python -m runtime.mvp_runtime.console_cli halt_trading hard --reason "only exits from here"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli kill --reason "halt now"
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli status
 docker exec thomas-operator python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
 
-# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading, /stop <id>.
+# Over Telegram: the registered operator texts /kill, /status, /resume, /pause, /halt_trading [soft|hard], /stop <id>.
+
+# Emergency close (PR6c): every booked live position at market, reduceOnly, under the HARD halt.
+# Ask, Thomas answers /approve <id> on the control channel within 15 minutes, then spend it once:
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --show
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --request --requested-by thomas --reason "..."
+docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confirm --approval-id <id>
+# The assistant may ASK for one (switch door `emergency_close`, policy 1.5.2); the confirm above stays yours.
 ```
 
 A `KILLED` state blocks all new/pending execution; only `/status` and audit reads remain, and
@@ -423,9 +433,16 @@ only the authenticated operator can `/resume`. A corrupt control file fails clos
 **A `KILLED` or `PAUSED` crypto runtime also stops managing open live positions** (no settlement,
 protection re-check, time exit or reconciliation until `/resume`; the brackets resting at the venue
 are what holds them). `halt_trading` is the halt that refuses new entries and keeps that management
-running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. Over Telegram it
-lands when a running analysis finishes (the mid-run peek acts only on /kill and /pause); for an
-immediate entries-only halt during one, use the console command. A missing control
+running; it is policy-gated and refuses by name until the 1.5.1 policy grants it. It has two levels
+(PR6): SOFT, the default, and `hard`, which only the authenticated operator loosens (by naming
+`soft`) and `/resume` clears; `CRYPTO_LIVE_EXECUTION_V0.1.md`, "Standing controls", has the rules.
+**Rolling back across PR6 loses a HARD halt on the old image's next control write** — it reads the
+halt as the soft one but writes no level. After rolling forward again, check the `halt:` line in
+`console_cli status` and place `halt_trading hard` again if it was in effect. Over Telegram it
+lands when a running analysis finishes (the mid-run peek acts only on /kill and /pause; PR6d tried
+adding the halt and its review took it out again); for an immediate entries-only halt during one,
+use the console command. The control store is the primary control; `MVP_LIVE_MANUAL_KILL_SWITCH` is
+a secondary one (entries only, read at restart; decision 50). A missing control
 file reads ACTIVE with live entries **unarmed** (Thomas decision 10) — `/resume` arms them.
 `docker stop` halts the process; the mounted state (including any kill) survives a restart.
 

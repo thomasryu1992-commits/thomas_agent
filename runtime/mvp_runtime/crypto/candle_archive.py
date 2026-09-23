@@ -49,7 +49,7 @@ from .. import timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from .market_data import FACTORY_DEPTH_DAYS, TIMEFRAMES, TOOL_RATE_LIMITED
-from .paper import state_dir
+from .state import state_dir
 
 ARCHIVE_DIRNAME = "candle_archive"
 RECORD_TYPE = "archived_candle.v0"

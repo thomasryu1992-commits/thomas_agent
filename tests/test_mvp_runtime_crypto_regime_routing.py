@@ -128,8 +128,8 @@ def test_an_unreadable_regime_admits(regime):
 
 def test_the_rule_is_derived_not_stored():
     """No ``excluded`` list is written anywhere: the threshold is applied at read time so moving
-    it cannot leave stale labels behind. That is the defect ``pool.candidate_quality`` already had
-    to fix once, where verdicts written at mint time outlived the rule that produced them."""
+    it cannot leave stale labels behind. That is the defect ``candidate_ranking.candidate_quality``
+    already had to fix once, where verdicts written at mint time outlived the rule that produced them."""
     evidence = {"RANGE": {"trades": ENOUGH, "total_r": -3.0}}
     entry = _entry(evidence)
     assert "excluded" not in entry["regime_evidence"]

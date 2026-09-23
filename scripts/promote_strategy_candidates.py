@@ -313,9 +313,9 @@ def run_promotion(
             # candidate line would stop routing. The pool is the authority on what trades; this
             # keeps it self-contained.
             #
-            # The raw numbers, never a derived exclusion list. `paper.regime_admits` owns the
+            # The raw numbers, never a derived exclusion list. `trade_plan.regime_admits` owns the
             # rule and applies it at read time, so moving its threshold later cannot leave stale
-            # labels behind — the defect `pool.candidate_quality` already had to fix once, where
+            # labels behind — the defect `candidate_ranking.candidate_quality` already had to fix once, where
             # verdicts written at mint time survived the rule that produced them.
             # Same argument, same shape, for the distribution reference beside it: the
             # backtest's per-feature mean/std, which `distribution_gate.distribution_admits`
@@ -612,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
         # scored over 500 bars and one scored over 2000 sat here looking equally examined —
         # while the verdict beside them is counted over trades, and a shorter window has
         # fewer. Reported rather than gated, because the error runs against the candidate:
-        # see `pool.EVIDENCE_DEPTH_RANK_*` for why this tier ranks instead of refusing.
+        # see `candidate_ranking.EVIDENCE_DEPTH_RANK_*` for why this tier ranks instead of refusing.
         depths: dict[tuple[int, str], int] = collections.Counter(
             (q["evidence_depth_rank"], q["evidence_depth"])
             for q in (pool_store.candidate_quality(c) for c in candidates)
@@ -722,15 +722,22 @@ def main(argv: list[str] | None = None) -> int:
         # M4a: robustness stays the first-pass filter; within a verdict tier the
         # ranking then orders by win-rate + realized reward:risk, so the strongest
         # believable edges surface first for the promotion decision.
-        # Counted once over the population being listed, and handed to every row — the same
-        # number `rank_candidates` just sorted on. Reading it per row would count a store the
-        # order did not use.
-        attempts = pool_store.attempts_by_context(candidates)
-        for c in pool_store.rank_candidates(candidates):
+        # Counted once and handed to every row — the number `rank_candidates` just sorted on,
+        # which takes both of its halves. The POPULATION is the ranking's own output: its
+        # latest-wins collapse of re-appends, where counting the raw store would keep each
+        # lineage's first row. The KEY is the evidence-aware one: an F9 topup row (single-symbol
+        # scope, evidence scored pooled) charges its cohort's context, and the stored key would
+        # print another context's count beside it — 64 rows on 2026-09-21, every one shown a
+        # lower bar than the one it was ranked against. Neither helper depends on row order, so
+        # reading them off the sorted list gives exactly what the ranking read.
+        ranked = pool_store.rank_candidates(candidates)
+        attempts = pool_store.attempts_by_context(ranked)
+        pooled_keys = pool_store.pooled_context_keys(ranked)
+        for c in ranked:
             spec = c.get("strategy_spec") or {}
             evidence = c.get("backtest_evidence") or {}
             q = pool_store.candidate_quality(
-                c, attempts=attempts.get(pool_store.search_context_key(spec))
+                c, attempts=attempts.get(pool_store.attempt_context_key(c, pooled_keys=pooled_keys))
             )
             rr = "inf" if q["all_wins"] else ("-" if q["reward_risk"] is None else f"{q['reward_risk']:.2f}")
             at_now = q["expectancy_at_current_costs"]

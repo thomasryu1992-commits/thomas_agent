@@ -31,8 +31,11 @@ provenance. Nothing ever legitimately writes a foreign row HERE — this store f
 door that arms real money — so a row that is not this book's, or cannot prove it is,
 fails the read rather than passing around the hash check.
 
-**Seeding.** A spec is frozen at mint, so every bar that closed after it is genuine
-out-of-sample data for the lineage. :func:`walk_seed_span` replays those bars through the
+**Seeding.** Every bar that closed after the row that SELECTED a lineage was made is
+out-of-sample data for it — for its parameters, frozen at the first mint, and for the choice,
+made on that row's evidence (``forward_confirmation.selection_cutoff``; a re-scored lineage's
+first mint is earlier than its selection, and the bars between sit inside the re-score's own
+holdout). :func:`walk_seed_span` replays those bars through the
 SAME transition the live cycle runs, stamping HISTORICAL times into the rows — slices
 spread across real calendar, ids are deterministic, and re-seeding is idempotent through
 the settlement-id dedup every append runs. The walk stops at the live stream's
@@ -59,10 +62,8 @@ from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from .market_data import TIMEFRAMES
-from .paper import (
+from .trade_plan import (
     COOLDOWN_BARS_AFTER_STOPLOSS,
-    OCCUPYING_STATUSES,
-    STATUS_ENTRY_CANDIDATE,
     build_entry_plan,
     build_outcome_record,
     entry_cost_refusal,
@@ -70,9 +71,10 @@ from .paper import (
     position_max_hold,
     regime_admits,
     settle_trade_plan,
-    state_dir,
     stop_beyond_liquidation_refusal,
 )
+from .vocabulary import OCCUPYING_STATUSES, STATUS_ENTRY_CANDIDATE
+from .state import state_dir
 from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD

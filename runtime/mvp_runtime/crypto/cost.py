@@ -16,7 +16,7 @@ and pays taker plus adverse slippage on every path. The exit depends on how it l
 now rests as a maker LIMIT (``live_leg``), so it fills AT the target and pays the maker rate,
 while a stop, a time exit and a manual exit all still leave at market. ``apply_cost_model``
 therefore takes the ``close_reason``, and ``CostBreakdown`` carries the maker share separately
-so ``pool.expectancy_at`` can still rescale the taker portion exactly.
+so ``candidate_ranking.expectancy_at`` can still rescale the taker portion exactly.
 
 **Scope was "the backtest only", and that boundary was wrong.** The source confined cost
 application to backtest/factory scoring: paper trading measured pure signal quality on
@@ -31,7 +31,7 @@ against a statistic that omits a term that size.
 **Two changes closed it from opposite ends, and both are load-bearing.** They were authored
 in parallel and read as competing until you notice they cover different rows:
 
-- **Settlement charges (2026-07-30).** ``paper.build_outcome_record`` applies this model as it
+- **Settlement charges (2026-07-30).** ``trade_plan.build_outcome_record`` applies this model as it
   writes, so ``result_R`` is net from that day on and says so: ``r_basis:
   intent_net_of_costs``. A paper expectancy and a backtest expectancy became the same kind of
   number. It cannot reach backwards — the rows already on disk stay as written, which is the
@@ -39,7 +39,7 @@ in parallel and read as competing until you notice they cover different rows:
 - **Reading converts (:func:`outcome_net_r`).** The rows written BEFORE that day carry
   ``r_basis: intent`` or no basis at all, and there were 86 of them holding the entire track
   record the ladder and the breakers were judging. This converts them at read time at the
-  rates the venue charges *now* — the same choice ``pool.expectancy_at`` already makes for
+  rates the venue charges *now* — the same choice ``candidate_ranking.expectancy_at`` already makes for
   backtest expectancy, and the reason a demotion answers "does this lose money today".
 
 **Which means the basis label decides who charges, and double-charging is the failure mode.**
@@ -66,14 +66,14 @@ from typing import Any, Mapping
 # The bases whose costs are ALREADY inside the number, and which `outcome_net_r` must therefore
 # not charge again. Two of them, kept as two because they are different claims: the set holds
 # the paper basis that is fully net (`intent_net_of_costs`), while `filled` is live R on actual
-# fills — slippage inside, fees still missing — and `live_pnl` deliberately keeps it OUT of that
+# fills — slippage inside, fees still missing — and `vocabulary` deliberately keeps it OUT of that
 # set so it cannot be read as one of the paper bases. Imported from their owner rather than
-# respelled here: `live_pnl` defines what each basis means, and two spellings of one label is how
-# the two drift. Constants only — no I/O at import, the same reason `paper.py` takes
-# `R_BASIS_INTENT` from there.
+# respelled here: `vocabulary` defines what each basis means (they lived in `live_pnl`, where the
+# rows are built, until crypto PR7b-2), and two spellings of one label is how the two drift.
+# Constants only — no I/O at import, the same reason `trade_plan.py` takes `R_BASIS_INTENT_NET` from there.
 from ..errors import ToolError
 from . import market_data
-from .live_pnl import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
+from .vocabulary import R_BASES_NET_OF_COSTS, R_BASIS_FILLED, STOP_EXIT_REASONS
 
 # The taker rate this venue actually charges, measured — not the source default.
 #
@@ -146,10 +146,10 @@ DEFAULT_MAKER_FEE_BPS = 2.0
 # set rather than an `== "take_profit"` check means a new close reason has to make an explicit
 # decision about which side of the fee it lands on.
 #
-# Its stop-side counterpart is `live_pnl.STOP_EXIT_REASONS`, imported above rather than defined
-# beside this one: the outcome rows own that vocabulary and this module already imports their
-# labels, while an import the other way would be a cycle. A market exit that is in NEITHER set
-# pays taker plus the GENERAL slippage — the pessimistic-by-default branch below is unchanged.
+# Its stop-side counterpart is `vocabulary.STOP_EXIT_REASONS`, imported above rather than defined
+# beside this one: it labels outcome rows, and `live_settlement`, which builds them, reads it with the
+# other row labels without loading the cost model. A market exit that is in NEITHER set pays taker plus the
+# GENERAL slippage — the pessimistic-by-default branch below is unchanged.
 MAKER_EXIT_REASONS = frozenset({"take_profit"})
 
 # The market exits KNOWN to pay the general (non-stop) slippage: a time exit leaves on a
@@ -237,7 +237,7 @@ FUNDING_SOURCE_FALLBACK = "modelled_constant"
 # `market_data.DEFAULT_FUNDING_RECORDS` buys at three settlements a day — and load-bearing the
 # moment the window is deepened past it.
 FUNDING_SOURCE_PARTIAL = "venue_history_partial"
-# No funding accounted for at all. Not produced by this module — it is what `pool.cost_basis_of`
+# No funding accounted for at all. Not produced by this module — it is what `candidate_ranking.cost_basis_of`
 # reports for evidence minted before funding was charged, so the store can say which candidates
 # carry the omission rather than having it inferred from a rate that is simply missing.
 FUNDING_SOURCE_UNCHARGED = "uncharged"
@@ -282,7 +282,7 @@ class CostBreakdown:
     net_r: float         # after fees + slippage + funding — the honest simulated outcome
     fee_cost_r: float    # taker + maker together, the figure that comes off net_r
     slippage_cost_r: float
-    # The maker share of `fee_cost_r`, carried separately because `pool.expectancy_at` re-derives
+    # The maker share of `fee_cost_r`, carried separately because `candidate_ranking.expectancy_at` re-derives
     # an old candidate's expectancy at a different TAKER rate, and that rescale is only linear in
     # the taker portion. Zero on a taker exit, which is what every pre-2026-07-28 record is.
     maker_fee_cost_r: float = 0.0
@@ -340,7 +340,7 @@ def apply_cost_model(
       pays the maker rate. No adverse slippage: a resting limit order does not cross the spread,
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
-    - a stop exit (``live_pnl.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
+    - a stop exit (``vocabulary.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
       STOP leg's own slippage (``stop_slippage_bps``) — a DEARER rate since the 2026-08-11
       interim re-pricing; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
     - a KNOWN general market exit (``GENERAL_EXIT_REASONS``, i.e. the time exit) pays taker
@@ -360,7 +360,8 @@ def apply_cost_model(
     position was open, so any non-zero default would be a holding period invented here rather
     than measured by the caller that has the bars. The safety lives one level up instead, where
     it can be honest: ``factory.backtest_spec`` always passes a real sum, and a candidate scored
-    with no funding term at all is refused at the promotion door by ``pool.cost_basis_rank``.
+    with no funding term at all is refused at the promotion door (``pool.assert_promotable_cost_basis``,
+    on the tier ``candidate_ranking.cost_basis_rank`` gives it).
     """
     cost = cost or CostModel()
     if risk <= 0:
@@ -499,11 +500,11 @@ def outcome_net_r(
     demoter and the risk breaker read a gross number against thresholds written as if it were
     net — a strategy at +0.02R gross and −0.30R net stays PAPER_ACTIVE forever. This is the
     conversion, applied at READ time at the CURRENT rates, the same choice
-    ``pool.expectancy_at`` makes and for the same reason: the question a demotion answers is
+    ``candidate_ranking.expectancy_at`` makes and for the same reason: the question a demotion answers is
     "does this lose money at what the venue charges *now*", not at whatever it charged when
     the row was written.
 
-    **It is the backlog's half of the fix, not the whole fix.** ``paper.build_outcome_record``
+    **It is the backlog's half of the fix, not the whole fix.** ``trade_plan.build_outcome_record``
     charges the same model at settlement from 2026-07-30 on, so rows minted since then are
     already net and label themselves ``intent_net_of_costs``. That change could not reach the
     rows already on disk — which is precisely the population this function exists for. The two
@@ -512,7 +513,7 @@ def outcome_net_r(
     - **A basis that already carries costs opts out**, or the ladder sees one loss twice and
       demotes a strategy that was merely average, with nothing in the record saying why. Two
       qualify and they are not the same claim, which is why the membership test is
-      ``live_pnl``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
+      ``vocabulary``'s and not a literal here: ``intent_net_of_costs`` (fees and slippage both
       inside, via ``R_BASES_NET_OF_COSTS``) and ``filled`` (live R on actual fills — slippage
       inside, fees still an open gap, and deliberately excluded from that set for exactly that
       reason). Skipping is right for both; conflating them is not.
@@ -534,7 +535,7 @@ def outcome_net_r(
     optimistic side**, for the reason :func:`apply_cost_model` states: this function cannot see
     how long the position was open without knowing what a bar of its timeframe is worth, and a
     default invented here would be a holding period asserted rather than measured. The caller
-    that can measure it passes it — ``feedback.net_result_r`` derives it from
+    that can measure it passes it — ``outcome_math.net_result_r`` derives it from
     ``holding_candles × timeframe`` and does, and since 2026-08-11 the ladder
     (``lifecycle.outcome_judged_r``) and the loss breakers (``guards._judged_r``) read through
     that same function, so all three consumers of a settled row charge the same three terms.

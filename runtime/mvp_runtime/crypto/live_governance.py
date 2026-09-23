@@ -55,6 +55,11 @@ LIVE_TRADER_ROLE_CEILING = "P5"
 # reader of the audit trail must be able to tell which capability was exercised.
 PURPOSE_CANARY = "canary"
 PURPOSE_AUTONOMOUS = "autonomous"
+# The operator's emergency close (PR6c, Thomas decision 49): reduceOnly market closes spent from one
+# single-use approval under the HARD halt. Neither of the two above — no strategy decided it and no
+# probe phrase authorized it — so the audit trail names it.
+PURPOSE_EMERGENCY_CLOSE = "emergency_close"
+_PURPOSES = (PURPOSE_CANARY, PURPOSE_AUTONOMOUS, PURPOSE_EMERGENCY_CLOSE)
 
 
 def order_fingerprint(intent: Mapping[str, Any]) -> str:
@@ -99,8 +104,8 @@ def prepare_live_order_governance(
     returning a partial record — a live order whose governance could not be prepared must not
     proceed, which is why callers run this *before* the adapter.
     """
-    if purpose not in (PURPOSE_CANARY, PURPOSE_AUTONOMOUS):
-        raise ValueError(f"live order purpose must be one of {(PURPOSE_CANARY, PURPOSE_AUTONOMOUS)}")
+    if purpose not in _PURPOSES:
+        raise ValueError(f"live order purpose must be one of {_PURPOSES}")
 
     fingerprint = order_fingerprint(intent)
     symbol = str(intent.get("symbol") or "")
@@ -230,6 +235,7 @@ __all__ = [
     "LIVE_TRADER_ROLE_CEILING",
     "PURPOSE_AUTONOMOUS",
     "PURPOSE_CANARY",
+    "PURPOSE_EMERGENCY_CLOSE",
     "order_fingerprint",
     "prepare_live_order_governance",
     "prepare_unreported_order_recording",

@@ -364,7 +364,14 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 
 ## C. Crypto live execution — the governance packet + the order code
 
-> ### ⚠️ LIVE TRADING IS ARMED, AND AS OF 2026-08-04 IT HOLDS A POSITION WITH BOTH PROTECTIVE LEGS RESTING
+> ⚠️ **Historical since 2026-09-16 — this banner does not say what the machine may do today.** It is
+> the 2026-08-04 to 08-06 observation, kept for its evidence. Since PR1b the execution stage decides:
+> the entry guard refuses every new live entry below `LIVE_AUTONOMOUS`, and closing is never gated.
+> Ask the machine, not this page: `python -m scripts.register_execution_stage --show` (run in
+> `thomas-scheduler`) for the stage, and the readiness board's `LIVE ENTRY POSSIBLE` line
+> (`python -m runtime.mvp_runtime.crypto.live_readiness`) for whether an entry could open.
+>
+> ### LIVE TRADING WAS ARMED, AND AS OF 2026-08-04 IT HELD A POSITION WITH BOTH PROTECTIVE LEGS RESTING
 >
 > **Read this before anything else in this section.** Live trading is armed and reachable and has
 > placed real orders without a person present. **The stop refusal that opened this section is
@@ -688,10 +695,10 @@ scopes at different levels, so nothing was owed to it.
         `crypto/live_position.py`. Live positions live in their own `live_positions/` namespace with
         `stage: "live"` (paper keys on `(venue, symbol, timeframe)` with the same `binance_futures`
         venue string, so a shared book would let the paper cycle settle a *real* position). The venue,
-        not the store, is the truth: `reconcile_positions` returns RECONCILED / DRIFT /
-        ACCOUNT_UNREADABLE, and on anything but RECONCILED entries are refused while **closes stay
-        allowed** — being unable to see the account must never trap an open position. Concurrency
-        caps: 2 open live positions, 1 per symbol.
+        not the store, is the truth: `reconcile_positions` (in `crypto/live_reconcile.py` since crypto
+        PR7d-2) returns RECONCILED / DRIFT / ACCOUNT_UNREADABLE, and on anything but RECONCILED
+        entries are refused while **closes stay allowed** — being unable to see the account must
+        never trap an open position. Concurrency caps: 2 open live positions, 1 per symbol.
   - [x] **LP5.1c — the one fail-open closed** (same PR): `evaluate_live_order_guard`'s
         `current_open_notional_usdt=0.0` default asserted "the account is flat" on no evidence. The
         argument is now **required**, and unknown exposure is reported *at the cap*
@@ -752,7 +759,7 @@ scopes at different levels, so nothing was owed to it.
           rate. Unlike the taker figure it has never been measured on this account, because no
           maker fill has ever happened. If the real rate is higher the backtest reports an edge
           **better** than reality, which is the wrong way for evidence that gates real money.
-          Two of the three pieces are in place. `pool.expectancy_at` rescales the maker leg
+          Two of the three pieces are in place. `candidate_ranking.expectancy_at` rescales the maker leg
           independently of the taker one (#309), so the eventual measurement converts every
           maker-scored candidate exactly instead of splitting the store a fourth time — done
           while no candidate carried a maker term, which was the cheap moment to do it. And the
@@ -830,7 +837,7 @@ scopes at different levels, so nothing was owed to it.
           say so (`LIVE_ROUTING_MAX_HOLD_FALLBACK`), so that gap stays attributable.
           Two properties carried over deliberately, because the counter *is* the rule: it
           advances on cycles that close nothing (persisted unconditionally, so a failed close
-          cannot reset the clock), and one bar counts once — `paper.advance_holding` is now
+          cannot reset the clock), and one bar counts once — `trade_plan.advance_holding` is now
           shared by both legs rather than copied, so they cannot drift on what "a bar passed"
           means.
           **What still differs, and is not a defect:** paper models the exit at the bar's close,
@@ -988,7 +995,7 @@ scopes at different levels, so nothing was owed to it.
       was meant to improve. There is no partial-coverage escape: depth is global, not per family.
 
       **So the only path is to become the retainer, and that store now exists**
-      (`crypto/oi_store.py`, wired into `cycle.attach_feeds`): seeded from the days the vendor
+      (`crypto/oi_store.py`, wired into `feed_assembly.attach_feeds`): seeded from the days the vendor
       still has, appended every cycle thereafter, keyed `(symbol, hour)` with latest-wins so a
       re-fetch is idempotent and a gap shorter than the vendor's window self-heals on the next
       read. The vendor request is throttled to **once per symbol per hour** inside the store, so
@@ -1048,7 +1055,8 @@ nothing** — the code says so directly: for an env-gated authorization there is
 re-read, so "stopping a live scheduler means restarting it". That property is unchanged by this
 and is worth knowing on its own.
 
-**What this leaves open:** the board still has no row that says live trading is armed. It reports
+**What this leaves open** (closed 2026-09-19 by crypto PR5a/5b: the board now opens and closes with
+`LIVE ENTRY POSSIBLE`, computed from the readiness state)**:** the board still has no row that says live trading is armed. It reports
 grants, and live trading is not one, so its status is now absent rather than wrong — an
 improvement, and not the fix. That belongs with the readiness board, which already learned this
 lesson once (#382, process-scoped readings).
@@ -1788,7 +1796,7 @@ rung: 4h is the timeframe whose holdout holds a median of **23** closed trades a
 cannot be judged.
 
 **What binds instead: none of it reaches the door.** Of the 474, **zero** are ROBUST on the
-verdict `pool.candidate_quality` recomputes — the stored `ROBUST` labels (26 of them) are the
+verdict `candidate_ranking.candidate_quality` recomputes — the stored `ROBUST` labels (26 of them) are the
 stale kind `holdout_status` already documents, and every one recomputes to PROVISIONAL. The
 holdout gate is where they stop:
 
@@ -2620,7 +2628,7 @@ each candidate's evidence so `promotable_backlog` refuses to rank across bases. 
 |---|---|
 | `FUNDING_MAX_PAGES` 4 → 7 | **done** (8) |
 | `funding_fade_*` gate | **done** — the families and the timing comment are in `factory.py` |
-| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `pool.evidence_depth_rank` |
+| replay window on evidence | **done** — `backtest_evidence.bars_replayed`, read by `candidate_ranking.evidence_depth_rank` |
 | `FACTORY_DEPTH_DAYS` 500 → 2,000 | **half** (1,000) |
 | `DERIVATIVE_HISTORY_DAYS` 520 → 2,000 | **half** (1,020) |
 
@@ -2945,7 +2953,7 @@ leg where both prices exist. Building it found that **only one of the three legs
 `price: "0.00"` for a market order, so half of what the model charges had nothing to check it
 against. The value existed one layer up all along —
 `build_live_order_intent` carries `entry_price` from the plan, the same number
-`paper.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
+`trade_plan.settle_trade_plan` settles at — and simply never reached anything durable. #585 lands it
 on `submit_and_reconcile`, the one function holding both the intent and the fill.
 
 **The canary is the instrument that works while live entries are held.** It is an entry-only
@@ -3117,7 +3125,7 @@ It also lifts F7's ceiling directly, since the ceiling is per frame: 5 symbols t
 ~115 without touching the hold at all.
 
 **The fetch objection is backwards — the data is already bought and thrown away.**
-`cycle.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
+`feed_assembly.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
 `factory_candle_target(timeframe)` depth so the `xs_*` families can be ranked, and the factory
 branch of `scheduler.py` calls it **without a `PeerCandleCache`** — the only one ever constructed
 is at `cycle.py:1135`, in the trading fan-out. So a factory fire pages **5 peers × replay depth ×
@@ -4244,9 +4252,16 @@ locking implementations, neither hand-rolled, and no document saying which is fo
 
 ### Considered and deliberately NOT recommended
 
+**Since 2026-09-21 the first two items are directive work** (crypto PR7; Thomas 2026-09-15, PR2–PR7 in
+the directive's order), done direction-first so the risk they name is priced per step. They stay
+listed here because the reasoning still holds for anything outside PR7.
+
 - **`live_*` decomposition** (14 modules, 7,142 LOC; `live_route` and `live_readiness` each import
   13 siblings). The boundaries look like PR order rather than responsibility — but this is the
-  money path, and re-cutting it buys tidiness against real risk.
+  money path, and re-cutting it buys tidiness against real risk. PR7a enforces the layer order by a
+  test (`tests/test_mvp_runtime_crypto_layers.py`, 32 named exceptions that only shrink). Each later
+  split must show, by `scripts/ops/crypto_record_capture.py`, that no record the lane's tests write
+  changed. Moving files into sub-packages is not planned; it is Thomas's call.
 - **The eight functions over 300 lines** (`run_crypto_cycle` 475, `handle_operator_message` 423,
   `run_task` 409, `scheduler._execute` 387, …). Same reasoning; `_execute` did get its missing
   final `else` in #434, which was the part that was actually a defect.

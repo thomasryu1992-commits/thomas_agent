@@ -302,7 +302,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         warnings.append(f"position state unreadable ({exc.reason_code})")
     open_position = open_positions[0] if open_positions else None
     # How far the book leans, and how far it is allowed to. Derived at read time from the
-    # positions above — never stored — for the `pool.candidate_quality` reason: a lean written
+    # positions above — never stored — for the `candidate_ranking.candidate_quality` reason: a lean written
     # once would outlive the cap that produced it, and `paper.MAX_DIRECTIONAL_SKEW` is derived
     # from a constant that has already moved once. Belongs on the BOARD and not only on the
     # per-fire status line, because the gate declines on STANDING book state: an operator who

@@ -49,7 +49,7 @@ from runtime.mvp_runtime import timeutil
 from runtime.mvp_runtime.errors import ToolBlocked
 from runtime.mvp_runtime.paths import repo_root as _repo_root
 from runtime.mvp_runtime.crypto import market_data, pool as pool_store, robustness
-from runtime.mvp_runtime.crypto.cycle import (
+from runtime.mvp_runtime.crypto.feed_assembly import (
     attach_cross_section,
     attach_feeds,
     attach_htf,
