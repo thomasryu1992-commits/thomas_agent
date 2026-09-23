@@ -155,6 +155,7 @@ LAYER: dict[str, str] = {
     "cycle": "orchestration", "live_route": "orchestration",
     # report: reads everything, imported by nothing inside the lane
     "dashboard": "report", "live_readiness": "report", "route_watch": "report", "tunables": "report",
+    "strategy_funnel": "report",
 }
 
 _MODULE = "<module>"      # the module object itself is bound, and nothing is read from it

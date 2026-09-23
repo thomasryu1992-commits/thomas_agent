@@ -24,6 +24,32 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The strategy funnel: where lineages stop, split by timeframe, family and direction**
+  (`crypto/strategy_funnel.py`, `scripts/strategy_funnel.py`, 2026-09-23; item PR-LIVE-2 of an external
+  follow-up plan). Report only.
+  - **Why:** the backlog's partition and the board's cohort line say how many lineages are waiting and
+    why the rest are not. They do not say where in the search the loss sits: discovery, validation or
+    the forward clock.
+  - **Pool funnel:** every lineage is charged to the first axis of `promotable_backlog`'s chain that
+    drops it, or counted `promotable`.
+    - The chain is not copied. Its per-row judgment was extracted, unchanged, into
+      `promotion_backlog.refusal_axis`, which the backlog loop and the funnel both call. The backlog's
+      docstring records why a second copy of that chain is the failure mode.
+    - Evidence for the extraction: the backlog suites pass unchanged, and the live store's backlog
+      serialises byte-identical before and after.
+  - **Forward funnel:** every frozen cohort member, through `cohort_report`, is counted by priced rows,
+    by whether it reached its timeframe's trade floor, and by the judge's status.
+  - **Vocabulary:** the backlog's axes and the judge's statuses. The plan's own stage names are not
+    introduced.
+  - **Measured on the live store, read-only, 1.7 s:**
+    - The pool funnel equals the backlog's `refused` and `count` exactly: 3,244 lineages, 1 promotable.
+      The losses are mostly at the holdout: 920 insufficient, 1,133 contradicted, 431 underpowered or
+      other.
+    - The forward funnel's statuses equal the board's. Of 115 members, 76 have outcomes, 4 are at their
+      floor, 4 are CONTRADICTED and 111 are INSUFFICIENT.
+  - **Not in this change:** a section on the daily board. The `dashboard` render tests pin line shapes,
+    and the board already carries the backlog and the cohort summary.
+
 - **The forward book is checked, not trusted** (`forward_book._parse_book` / `mutate_book`, 2026-09-23;
   the gap the entry below left for a change of its own).
   - **Why:** the forward book decides where each lineage's live stream resumes, and the rows it
