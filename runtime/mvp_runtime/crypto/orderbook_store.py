@@ -425,8 +425,8 @@ def record_orderbook(
 ) -> dict[str, Any]:
     """One throttled snapshot for one symbol. Never raises.
 
-    Called from the cycle's cohort sweep, and from the operator's single-symbol cycle when it opts
-    into accumulation. The throttle is what makes that safe: only the first caller after the period
+    Called from the fan-out's cohort sweep (``cohort_retention.accumulate_orderbook_cohort``), and
+    from the operator's single-symbol cycle when it opts into accumulation. The throttle is what makes that safe: only the first caller after the period
     turns reaches the venue, and the rest return ``skipped_fresh`` having opened no socket.
 
     A collector without the capability is ``skipped_no_feed``, not a failure — that is how a mock

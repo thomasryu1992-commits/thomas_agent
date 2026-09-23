@@ -111,7 +111,7 @@ HOLDOUT_UNCONFIRMED = "UNCONFIRMED"      # no holdout was evaluated at all
 # stream (`forward_confirmation` over `forward_book` rows since 2026-08-29), and
 # `classify_verdict` awards ROBUST only on CONFIRMED — UNDERPOWERED is neither, so it lands
 # exactly where CONTRADICTED did on both. The one door that moves is the paper OBSERVATION
-# entry bar (`pool._observation_holdout_term`), which already admits a THIN tail on the
+# entry bar (`pool_admission._observation_holdout_term`), which already admits a THIN tail on the
 # argument that forward evidence is what an OBSERVATION slot exists to buy. An underpowered
 # tail is that same case with more trades behind it.
 

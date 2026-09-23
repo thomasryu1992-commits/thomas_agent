@@ -24,6 +24,288 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Forward evidence starts at the row that selected a lineage, not at its first mint**
+  (`forward_confirmation.selection_cutoff`, `scripts/seed_forward_book.py`, 2026-09-23).
+  - **The defect:** the seeder started every lineage at the earliest `created_at_utc` among rows sharing
+    its rule hash, on the argument that a re-score re-measures an unchanged spec. That holds for the
+    spec's parameters and fails for the choice. A `mvp_rescore` row replays the frozen spec on a snapshot
+    taken at re-score time, and its holdout is that snapshot's tail. A lineage promoted on its re-score
+    row was admitted on the bars between the first mint and the re-score, and the seed counted those same
+    bars again as forward evidence. Measured on the live book: **31 of 141 forward rows** opened before
+    the row that selected their lineage, all under the 2026-08-24 re-scores. The two best forward
+    records carried the most (`cand_c80d741fa05422d8be68` 8 of 17, `cand_0ab780971198521358ff` 6 of 13).
+    No lineage had reached the trade floor, so no arming read them.
+  - **What changed, two halves:**
+    - The seeder keys the start by the `candidate_id` the pool entry names (`_selection_times`, latest
+      `created_at_utc` per id, the row the promotion door resolves to). An entry whose row the store
+      lacks starts at `promoted_at`, which is later than any selection.
+    - The judge's input (`forward_outcomes_for`) keeps only rows that OPENED at or after the record's own
+      `created_at_utc`. The rows already written stay in the append-only store and stop counting. A
+      record with no readable time, or a row with no readable open, counts nothing: the INSUFFICIENT
+      side, like every branch of the judge that cannot be computed.
+  - **Opened, not settled:** an entry taken on a bar the selecting snapshot held was decided on
+    selection data, however late it closed.
+  - **Effect on the live book, read-only:** 141 rows → 110; the 31 dropped are exactly the measured ones,
+    across seven re-scored lineages; every verdict stays FORWARD_INSUFFICIENT. It only narrows what the
+    arming door counts.
+  - **Tests:** the cutoff drops the pre-selection rows of a record that otherwise confirms; open vs
+    settle at the boundary; unplaceable opens; a timeless record confirmed by nothing and refused at the
+    gate; the start keyed by id rather than hash; a re-scored lineage seeding from its re-score; the
+    `promoted_at` fallback. Mutants that drop the cutoff (3 failures) or restore the earliest-row start
+    (2 failures) are caught.
+
+- **The patch-reach census moves into the repository** (crypto PR7, 2026-09-23).
+  - **Why:** when a function moves out of a module, it reads the new module's globals from then on, and
+    a test's patch on the old home stops reaching it without failing anything. Patch counts cannot tell:
+    `pool.load_active_pool` was patched 83 times, and no function in `pool` that reads it ever ran under
+    that patch. PR7e-7 to PR7e-11 measured this with a scratch plugin kept outside the repository. In
+    PR7e-8 it caught a readiness test whose patch no longer reached `live_arm_unsound` but still passed.
+  - **`scripts/ops/patch_reach.py` (new)** is that plugin, loaded only with `-p scripts.ops.patch_reach`.
+    It takes the modules to watch as options instead of hard-coding `pool`: `--patch-reach-old`,
+    `--patch-reach-new` (can be repeated) and `--patch-reach-out`. For every call of a top-level function
+    in a watched module, it writes which of the names the function reads are patched at that moment:
+    `own` when the patch is in the function's own module, and `missed` when the function moved and only
+    its old home is patched with an object its new module does not hold. It also writes, for each
+    watched function, how many tests called it, including those called by none.
+  - **It cannot change what it observes:** it listens to `sys.monitoring` events on the watched code
+    objects and replaces nothing. Under it, the full suite passes as it does without it. Loaded without
+    its options, or with its monitoring tool id taken, it stops the run instead of measuring nothing.
+  - **Proof:** a fake split in `tests/test_ops_patch_reach.py`, where only the patch cut off by the move
+    is a miss and a test that patches both homes with one object is not. On main, watching `pool` and
+    `promotion_backlog`, the plugin writes the same hits and call counts as the scratch plugin did for
+    PR7e-11.
+
+- **The backlog leaves the pool, the last of its roles** (crypto PR7e-11, 2026-09-22).
+  - **What moved:** `promotion_backlog.py` (decision, new) takes the 6 definitions of the promotion
+    backlog: `promotable_backlog`, which applies the door's own chain to the candidate store and reports
+    what would clear it today; `BACKLOG_REFUSAL_AXES`, the axes it charges each refusal to;
+    `PROMOTION_BACKLOG_ALERT_THRESHOLD`, where the daily board raises a line; `MAX_DAYS_TO_LIFECYCLE_WINDOW`
+    and `days_to_lifecycle_window`; and the private `_lineage_key`. It reads the stored pool and the
+    candidates through `pool_state` and the door's sets and window through `pool_admission`, and nothing
+    of `pool`'s.
+  - **Readers:** `pool` re-exports the 5 public names as the same objects; the daily board and the tests
+    keep reading `pool.<name>`. `pool` keeps `_lineage_key` off, and drops `market_data`,
+    `HOLDOUT_CONFIRMED`, `ROBUST` and the private `_is_number`, which only the backlog used and nothing
+    read through `pool`. `candidate_ranking`'s note on who reads `_is_number`, its reference to
+    `_lineage_key`, and `lifecycle`'s reference to `days_to_lifecycle_window` name the new module.
+  - **Tunables:** `PROMOTION_BACKLOG_ALERT_THRESHOLD` and `MAX_DAYS_TO_LIFECYCLE_WINDOW` are indexed at
+    `crypto/promotion_backlog.py` and read from it, with their values unchanged. No tunable is owned by
+    `crypto/pool.py` any more, so `tunables` no longer imports `pool`.
+  - **Patches:** the census plugin, watching `pool` and `promotion_backlog`, found no call of a moved
+    function under a patch on `pool` for a name it reads. `promotable_backlog`, which reads
+    `load_active_pool` and `read_candidates`, is called by the same 48 tests as before the move, and
+    never while either is patched.
+  - **Nothing changed.** All 13 definitions `pool` had are AST-identical, docstrings included: 6 in
+    `promotion_backlog`, 7 still in `pool`.
+  - **Where `pool` stands.** It is 301 lines: 2,934 when PR7 began, 2,204 before PR7e-7. It keeps the
+    routing views (`routable_strategy_ids`, `routable_lineage_keys`, `routable_contexts`,
+    `context_scores`), `resolve_candidates`, `as_pool_entry_for_replay` and `STORED_SNAPSHOT_FIELDS`, and
+    re-exports every public name of the six modules its roles went to: `candidate_ranking` (PR7e-1), `pool_state`,
+    `live_tier`, `pool_transitions`, `pool_admission` and `promotion_backlog` (PR7e-7 to PR7e-11). A test
+    holds each re-export to `promotion_backlog`'s own object and keeps the private key off `pool`.
+
+- **The promotion door's gates leave the pool** (crypto PR7e-10, 2026-09-22).
+  - **What moved:** `pool_admission.py` (decision, new) takes 35 definitions: what a candidate must
+    satisfy to enter the pool, and how much the pool may hold.
+    - the tier doors (`assert_promotable_cost_basis`, `assert_promotable_evidence_depth`) and the
+      derivation door, with the three promotable sets;
+    - the checks against the incumbents: semantic duplicates, behaviour-cluster siblings, and
+      `pool_candidate_records`, which reads the incumbents' rows for both;
+    - the observation tier's entry bar and family cap, with their two constants and the private
+      `_observation_holdout_term`;
+    - one routed rule per lineage (`assert_rule_not_routed` and the rule-hash helpers) and the
+      entries a promotion leaves behind (`reactivated_candidate_ids`, `silent_reactivations`,
+      `assert_no_silent_reactivation`);
+    - the size cap and what it checks against (`MAX_ROUTABLE_*`, `FAST_ROUTING_TIMEFRAMES`,
+      `max_routable_per_context`, `routable_context_map`), and the lifecycle window
+      `LIFECYCLE_MIN_WINDOW_TRADES`, which the backlog reads too;
+    - `routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
+      script report. Nothing refuses on it.
+    It reads the stored pool through `pool_state` and the live tier's rule hash through `live_tier`, and
+    nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the 34 public names as the same objects. The promotion door's roster,
+    `cycle`, `dashboard`, the scripts and the tests keep reading `pool.<name>`, and the backlog reads
+    the promotable sets and the window through those bindings.
+    - Two private names leave `pool`: `_observation_holdout_term`, and `_spec_rule_hash`, which `pool`
+      imported from `live_tier` only for `rule_hashes_of`. One test called the first through `pool`,
+      and it and a `robustness` comment now name `pool_admission`. The live tier's pin test now holds
+      `_spec_rule_hash` off `pool`.
+    - `pool` drops `json`, `Sequence`, `outcome_attribution_key` and `Direction`, which only the gates
+      used and nothing read through `pool`.
+  - **Tunables:** the six the gates own (`MAX_ROUTABLE_STRATEGIES`, `MAX_ROUTABLE_PER_CONTEXT`,
+    `MAX_ROUTABLE_PER_CONTEXT_FAST`, `OBSERVATION_MIN_BACKTEST_CLOSED`, `OBSERVATION_FAMILY_CAP`,
+    `LIFECYCLE_MIN_WINDOW_TRADES`) are indexed at `crypto/pool_admission.py` and read from it. Their
+    values are unchanged.
+  - **Patches:** the census plugin, watching `pool` and `pool_admission`, found no call of a moved
+    function under a patch on `pool` for a name it reads. All 24 moved functions ran, each called by
+    as many tests as before the move. The patches on the tier doors and on
+    `reactivated_candidate_ids` are meant for the promotion door, which reads them through `pool`.
+  - **Nothing changed.** Of the 48 definitions `pool` had, 45 are AST-identical, docstrings included,
+    and 3 differ only in a qualified reference: `routable_context_map` names `pool.routable_contexts`,
+    `routable_strategy_ids` names `pool_admission.routable_context_map`, and `promotable_backlog` names
+    the two promotable sets' module.
+  - **Prose:** `pool`'s docstring lists what it keeps and where the rest went. The comment on
+    `LIFECYCLE_MIN_WINDOW_TRADES` no longer says `lifecycle` imports `pool`, which it does not. The
+    backlog's comment on its window names the constant's module. A test holds each re-export to
+    `pool_admission`'s own object and keeps the private helper off `pool`.
+
+- **The status transitions leave the pool** (crypto PR7e-9, 2026-09-22).
+  - **What moved:** `pool_transitions.py` (decision, new) takes the 4 definitions that write the
+    lifecycle's decisions onto the stored pool: `apply_status_decisions`, its all-or-nothing form
+    `update_statuses`, the stale-decision rule (`_stale_decision`, private) and its reason code
+    `LIFECYCLE_DECISION_STALE`. It reads the stored pool through `pool_state`, and nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the three public names as the same objects. The cycle, the
+    retirement door and the tests keep reading `pool.<name>`. `pool` keeps the private rule off, so a
+    patch on `pool` for it fails loudly rather than reaching nothing, and it drops `locked`,
+    `LINEAGE_FIELDS` and `lineage_of`, which only the transitions used and nothing read through `pool`.
+  - **Patches:** the census plugin, watching `pool` and `pool_transitions`, found no call of a moved
+    function under a patch on `pool` for a name it reads. Each is called by as many tests as before
+    the move: `apply_status_decisions` 67, `_stale_decision` 66, `update_statuses` 22.
+  - **Nothing changed.** All 52 definitions `pool` had are AST-identical, docstrings included: 4 in
+    `pool_transitions`, 48 still in `pool`. The check that the status writers never name the live
+    tier's field reads the same function objects and passes unchanged.
+  - The prose that placed the transitions in `pool` now names their module: `pool`'s docstring and
+    comment, `pool_state`'s docstring, the live tier's header comment, the PR7e-1 layer bullet, and
+    the lists of the pool's writers in `strategy_artifact` and `CRYPTO_PIPELINE_V0.1.md`, which also
+    name the disarm door's module now. A test holds each re-export to `pool_transitions`' own object.
+
+- **The live tier leaves the pool** (crypto PR7e-8, 2026-09-22).
+  - **What moved:** `live_tier.py` (decision, new) takes the 12 definitions of the section `pool` held
+    since #610 Part 1:
+    - the tier field, its two values and the approval field;
+    - the readers: `entry_live_tier`, `live_routable_strategy_ids`, and `live_arm_entries` with its
+      two verdicts (`live_arm_unsound`, `live_arm_approvals`) and the private `_spec_rule_hash`;
+    - the disarm door (`disarm_live_tier`), the one automatic writer of the tier, which can only take
+      it away.
+    It reads the stored pool through `pool_state` and nothing of `pool`'s, so it could follow the store
+    (PR7e-7) without a cycle.
+  - **Readers:** `pool` re-exports the 11 public names and `_spec_rule_hash`, which its `rule_hashes_of`
+    calls, as the same objects. Every reader keeps reading `pool.<name>`. `pool` keeps importing
+    `ARTIFACT_SHA256_FIELD`, which only the tier used, because `live_route` and two tests read it
+    through `pool`.
+  - **One patch had to follow the code.** The census plugin from PR7e-7, watching `pool` and
+    `live_tier`, found one patch the move cut.
+    - `test_an_armed_entry_the_gate_refuses_is_not_counted` patched `pool.live_arm_unsound`. That
+      reached two readers: the readiness board, which reads `pool.live_arm_unsound`, and
+      `live_arm_approvals`, which after the move reads `live_tier`'s name.
+    - The test still passed with the patch missing its second reader, because the board refuses on the
+      first before the approvals matter. It now patches both names with one fake, and the census
+      finds 0 moved-function calls that see anything other than what a patch on `pool` put there.
+    - A patch on `pool` reaches only the code that reads through `pool`. The tier's own functions, and
+      `pool_state`'s, read their own modules' names, and `pool`'s comments now say so for both moves.
+  - **Nothing changed.** Of the 64 definitions `pool` had, 63 are AST-identical, docstrings included.
+    `live_routable_strategy_ids`'s docstring names `pool.routable_strategy_ids`, which stayed, and the
+    section's header comment names `pool.apply_status_decisions` and `pool.update_statuses`.
+  - The docstrings that placed the disarm in `pool` (`pool`'s, `pool_state`'s, the layer bullet) now say
+    where it went. The tests that read source take their functions from `pool`, so they read the same
+    objects and pass unchanged: `disarm_live_tier`'s one write of the field, and the check that the
+    ladder and the two status writers never name it. A test holds each re-export to
+    `live_tier`'s own object.
+
+- **The forward-book seeder reads each lineage's mint through the candidate store's verified reader**
+  (`scripts/seed_forward_book.py`, 2026-09-22).
+  - **What changed:** `_first_seen_by_hash` used to open `strategy_candidates.jsonl` itself. It rebuilt the
+    path from its own copy of `CANDIDATES_FILENAME`, skipped lines that did not parse, and never checked
+    `record_sha256`. It now iterates `pool.read_candidates`, the reader every other consumer of the store
+    uses. On an intact store the map is unchanged: the earliest `created_at_utc` per rule hash, rows
+    missing either field ignored, and unstamped rows from before hashing still counted.
+  - **Why it matters:** that date is where a lineage's forward clock starts. The old reader took a
+    backdated row at face value: a fixture row minted 2026-07-01 and edited to 2025-01-01 came back as
+    2025-01-01. The seed would then walk bars from before the spec existed into the forward book as
+    out-of-sample evidence, and the promotion gate reads that book. The forward outcomes store is
+    append-only, so a later correct run does not remove rows seeded from a wrong mint.
+  - **The decision: a damaged store refuses the whole run.** `CANDIDATES_TAMPERED` or
+    `CANDIDATES_UNREADABLE` ends `main` with `EXIT_BLOCKED` and a `BLOCKED <code>` line on stderr, for
+    `--list` and `--apply` alike, before the market-data collector is selected or anything is written.
+    - The refusal is not narrowed to the lineages the bad row names, because its rule hash is one of the
+      fields that cannot be trusted.
+    - Falling back to `promoted_at` for a refused store was rejected as guessing a mint.
+    - It cannot newly strand a working store: every appender goes through `append_candidates`, which
+      runs this same read under the store lock, so a store the factory can still append to passes it.
+  - **Tests** (`test_mvp_runtime_crypto_forward_book.py`): the map on an intact store; `main` handing
+    the seed that mint rather than `promoted_at`; and a backdated row and an unparseable line, each
+    refusing both `--list` and `--apply`. Against the previous script the first two pass and the four
+    refusals fail.
+
+- **The pool's two files leave the pool's doors** (crypto PR7e-7, 2026-09-22).
+  - **Why this first:** the user asked for `pool`'s remaining roles to be split (the promotion door's
+    gates, the live tier, the status transitions, the backlog). Each of them reads the pool's state,
+    and `pool` must keep re-exporting whatever leaves it, so a role moved out while the state stayed
+    would import `pool` while `pool` imported it. That cycle fails the layer test. The state moves
+    first; the roles can then follow one at a time, importing `pool_state`.
+    - The roles also read each other, and that sets their order. The live tier and the status
+      transitions read no other role. The gates read the live tier's `_spec_rule_hash` and the
+      lifecycle window (`LIFECYCLE_MIN_WINDOW_TRADES`, kept in the backlog's section, which moves with
+      them). The backlog reads the gates' three promotable sets. So the live tier and the transitions
+      go next, then the gates, then the backlog.
+  - **What moved:** `pool_state.py` (decision, new) takes 14 definitions:
+    - the two file names and paths;
+    - the pool's reads (`load_active_pool`, `read_pool_to_disarm` and the private `_read_active_pool`
+      they share) and the install door;
+    - the identity invariant both doors check (`assert_pool_identity_unique`);
+    - the candidate store's verified read and append door;
+    - the lineage check that door applies (`validate_candidate_lineage`, `DERIVATION_TYPES` and the
+      private parent-count rules).
+    It reads nothing that stayed in `pool`, and it takes `state_dir` from `state`, the leaf `paper`
+    re-exports it from. The two writers that rewrite the stored pool in the cycle, the status
+    transitions and the live tier's disarm, stay in `pool` and move with their roles. Each re-reads
+    the pool under its lock and writes back only its own fields, without the install door's checks.
+  - **Readers:** `pool` re-exports the 12 public names as the same objects, and every reader in the
+    runtime, the scripts and the tests reads them as `pool.<name>`, unchanged. The code that stayed in
+    `pool` reads them through those bindings too. `pool` drops the nine imports only the store used,
+    none of which anything read through `pool`, and the two private names, so a patch on `pool` for
+    either fails loudly rather than reaching nothing.
+  - **Patches, measured by what runs under them.** A census plugin watched every call of a `pool`
+    function over the full suite and recorded which names it read from `pool` were patched at that
+    moment.
+    - Only two (caller, patched name) pairs ever ran that way: `resolve_candidates` under
+      `read_candidates` (7 calls in 5 tests) and `live_arm_approvals` under `live_arm_unsound` (1 call
+      in 1 test). Both callers stay in `pool`.
+    - The 83 patch applications on `load_active_pool` (in 79 tests, from 8 source sites) are
+      untouched by the move: no moved function reads it, and
+      the calls they are meant for, outside `pool` and in the readers that stay in it, still read
+      `pool`'s binding.
+    - `append_candidates`, the one moved function that reads a patched name, never ran under that
+      patch.
+  - **Nothing changed.** All 78 definitions `pool` had are AST-identical, docstrings included: 14 in
+    `pool_state`, 64 still in `pool`. `pool`'s module docstring gave the two-file description to
+    `pool_state` and says what `pool` holds now.
+  - A test holds each re-export to `pool_state`'s own object and keeps the two private names off
+    `pool`.
+
+- **The retention stores' cohort sweeps leave the orchestrator** (crypto PR7e-6, 2026-09-22).
+  - **What moved:** `accumulate_positioning_cohort`, `accumulate_open_interest_cohort`,
+    `accumulate_orderbook_cohort` and `retention_cohort` go from `cycle` to a new `cohort_retention`
+    (market).
+    - They refresh the positioning, hourly open-interest and order-book stores for every member of the
+      declared cohort, unioned with every context the pass planned to visit, on every fan-out pass. A
+      `live_halt` that cuts the context loop short does not narrow that.
+    - They share one rule: a retention store's scope cannot be a side effect of routing.
+    - They read only those three market stores and `CROSS_SECTION_UNIVERSE`. A vendor failure degrades
+      to a per-symbol status. A local failure (the refresh marks, a store write) still raises and fails
+      the fan-out after its context loop, as it did from `cycle`.
+    - They are fan-out-level accumulation, not one context's inputs, so they get a module of their
+      own rather than `feed_assembly`.
+    - PR7e-5's summary had listed them as the one market-side piece still in `cycle`.
+  - **Readers:**
+    - `cycle` re-exports all four as the same objects. `run_pool_cycle` calls them where it always did,
+      and the positioning-store and order-book-store tests read them through `cycle` unchanged.
+    - `cycle` drops `oi_store`, `orderbook_store` and `CROSS_SECTION_UNIVERSE`, which only the sweeps
+      used. Nothing reads them through `cycle`.
+    - Two references in `feed_assembly`, one in `orderbook_store` and `run_pool_cycle`'s docstring name
+      the new owner.
+  - **Nothing changed.** The four definitions are AST-identical except for their docstrings. Three now
+    name `feed_assembly.attach_feeds` and `cycle.pool_cycle_contexts` as another module's. Review
+    corrected what the cohort is unioned with: every planned context, not only the visited ones.
+    - A patch census logged all 119,149 patches over the full suite. Nothing patches the four names or
+      anything through `cycle`'s store attributes.
+    - The one patch on a name they read, `market_data.CROSS_SECTION_UNIVERSE` in a cross-section test,
+      replaces `market_data`'s binding. The sweeps never read that binding: they bound the name at
+      import, in `cycle` before and in `cohort_retention` now.
+    - A test holds each re-export to `cohort_retention`'s own object. That keeps one definition. It
+      does not carry a patch across modules: since the move, a patch on `cycle.retention_cohort`
+      reaches no sweep, which reads its own module's name. No test makes one.
+
 - **The frame a spec is backtested on is assembled with the rest of the market inputs** (crypto PR7e-5,
   2026-09-21).
   - **What moved:** `attach_mining_legs` goes from `cycle` to `feed_assembly` (market). It is the one

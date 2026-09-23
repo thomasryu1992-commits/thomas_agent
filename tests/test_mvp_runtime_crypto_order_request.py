@@ -2,8 +2,9 @@
 
 Two properties the split rests on, pinned where a later change would break them. `live_execution` is
 still the order path's public face, so every name its readers and their tests use through it must be the
-very object `order_request` defines: a copy would let a patch on one miss the other. And
-`order_request` must stay pure. The order-path tripwire (`LIVE_ORDER_MODULES`) and the safety-gate roster
+very object `order_request` defines. Then there is one definition, and the record capture's request log,
+which finds its seams by identity, logs the calls through every module that binds them: a copy would
+hide one module's callers from it. And `order_request` must stay pure. The order-path tripwire (`LIVE_ORDER_MODULES`) and the safety-gate roster
 leave it out because it cannot reach a venue, so nothing else would notice if it started to.
 """
 

@@ -62,9 +62,10 @@ from . import (
     market_data,
     null_control,
     paper,
-    pool,
+    pool_admission,
     pre_order_gate,
     probe,
+    promotion_backlog,
     proposer,
     robustness,
     strategy,
@@ -282,10 +283,12 @@ TUNABLES: tuple[Tunable, ...] = (
             "a backtest window short enough that 30 is a binding constraint"),
 
     # --- the promotion door and the ladder ---------------------------------------------------
-    Tunable("MAX_ROUTABLE_STRATEGIES", pool.MAX_ROUTABLE_STRATEGIES, "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_STRATEGIES", pool_admission.MAX_ROUTABLE_STRATEGIES, "crypto/pool_admission.py",
+            OPERATOR,
             "pool sizing cap: the grid-implied sum of the per-context caps (5 * (2+2+1+1))",
             "the symbol set or a per-context cap changing"),
-    Tunable("MAX_ROUTABLE_PER_CONTEXT", pool.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_PER_CONTEXT", pool_admission.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool_admission.py",
+            OPERATOR,
             "Thomas 2026-09-02: slow contexts (4h/1d) hold two, on the condition that both agree "
             "on direction (`POOL_CONTEXT_DIRECTION_SPLIT`). The exclusive slot of 2026-08-24 "
             "bought judgeability, which the shadow book and #807's per-lineage forward stream "
@@ -294,8 +297,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "pooled minting: 13/14 then 4/4 entry-bar passers refused on the cap alone",
             "the router resolving an unbacked opposing pair on slow bars (then the condition "
             "can go), or the slow tiers' outcome rate changing"),
-    Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool.MAX_ROUTABLE_PER_CONTEXT_FAST,
-            "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool_admission.MAX_ROUTABLE_PER_CONTEXT_FAST,
+            "crypto/pool_admission.py", OPERATOR,
             "Thomas 2026-08-24: fast contexts (15m/1h) hold two — the window refills in weeks "
             "even split, and the shadow book keeps the benched lineage judgeable",
             "the fast timeframes' outcome rate, or the supporting-shadow book, changing shape"),
@@ -304,8 +307,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "realized trades before the router ranks on measured expectancy instead of "
             "champion_score; reuses HEALTHY_TRADES_PER_PARAMETER's noise floor",
             "the noise-floor argument in `feedback.py` changing"),
-    Tunable("PROMOTION_BACKLOG_ALERT_THRESHOLD", pool.PROMOTION_BACKLOG_ALERT_THRESHOLD,
-            "crypto/pool.py", OPERATOR,
+    Tunable("PROMOTION_BACKLOG_ALERT_THRESHOLD", promotion_backlog.PROMOTION_BACKLOG_ALERT_THRESHOLD,
+            "crypto/promotion_backlog.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
     Tunable("FORWARD_NO_SIGNAL_DAYS", forward_book.FORWARD_NO_SIGNAL_DAYS,
@@ -324,21 +327,22 @@ TUNABLES: tuple[Tunable, ...] = (
             "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
             "10 closes is the t-test minimum that still prices dispersion honestly",
             "a 1d strategy reaching forward confirmation or the inflation table re-measured at 1d"),
-    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool.OBSERVATION_MIN_BACKTEST_CLOSED,
-            "crypto/pool.py", MEASURED,
+    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool_admission.OBSERVATION_MIN_BACKTEST_CLOSED,
+            "crypto/pool_admission.py", MEASURED,
             "where the store's own expectancy-vs-sample table stops being inflated "
             "(<20 closes +0.114R, 50-199 -0.003R); below it a positive pick is the lottery",
             "the inflation table re-measured on a store with a different mint geometry"),
-    Tunable("OBSERVATION_FAMILY_CAP", pool.OBSERVATION_FAMILY_CAP,
-            "crypto/pool.py", OPERATOR,
+    Tunable("OBSERVATION_FAMILY_CAP", pool_admission.OBSERVATION_FAMILY_CAP,
+            "crypto/pool_admission.py", OPERATOR,
             "Thomas 5-3 (2026-08-11): a third sibling's forward record is correlated with the "
             "first two, not independent — F1 has no correlation control to price it",
             "correlation control landing (F1), which would price diversity instead of capping it"),
-    Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool.LIFECYCLE_MIN_WINDOW_TRADES, "crypto/pool.py",
+    Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool_admission.LIFECYCLE_MIN_WINDOW_TRADES,
+            "crypto/pool_admission.py",
             DERIVED, "`lifecycle.DEFAULT_WINDOWS[0]`, restated; a test pins the two equal",
             "the ladder's smallest window moving"),
-    Tunable("MAX_DAYS_TO_LIFECYCLE_WINDOW", pool.MAX_DAYS_TO_LIFECYCLE_WINDOW, "crypto/pool.py",
-            OPERATOR,
+    Tunable("MAX_DAYS_TO_LIFECYCLE_WINDOW", promotion_backlog.MAX_DAYS_TO_LIFECYCLE_WINDOW,
+            "crypto/promotion_backlog.py", OPERATOR,
             "the slowest horizon the operator actually promoted at (five lineages, 2026-07-31)",
             "another promotion round at a different horizon — decide again, do not re-derive"),
     Tunable("LIVE_CANDIDATE_MIN_SAMPLE", feedback.LIVE_CANDIDATE_MIN_SAMPLE, "crypto/feedback.py",
