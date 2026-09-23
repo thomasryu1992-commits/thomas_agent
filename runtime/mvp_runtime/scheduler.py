@@ -214,10 +214,17 @@ KIND_WORKFLOW = "workflow_plan"
 # the ledger and never touches money — the threshold is dormant on free tiers by the
 # proposal's own recorded caveat, and `dispatch_spend`'s docstring carries the details.
 KIND_DISPATCH_SPEND = "dispatch_spend_watch"
+# The forward cohort's walk (`crypto/forward_cohort.py`; Thomas 2026-09-23, Phase 1 under option
+# A). One fire advances every frozen cohort's members to the newest closed bar, writing only the
+# cohort's own store. Maintenance, not risk: it is a measurement, "no pool, no orders", and a day
+# that fires late costs freshness — the walker catches up over every bar it missed. Financial for
+# delegation by its `crypto_` prefix, so the assistant can never change it.
+KIND_FORWARD_COHORT = "crypto_forward_cohort"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW})
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
+                   KIND_FORWARD_COHORT})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -276,7 +283,7 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
+    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW, KIND_FORWARD_COHORT,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1384,6 +1391,21 @@ def _execute(
             return f"breaker_changed_not_sent:{type(exc).__name__}"
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
+    if schedule.kind == KIND_FORWARD_COHORT:
+        # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
+        # book, no candidates, no orders. A context that fails costs that context (named in the
+        # status line); a walk in which EVERY context failed fails the fire, so the failure
+        # notifier says so once instead of a quiet line saying nothing moved.
+        from .crypto import forward_cohort
+
+        summary = forward_cohort.run_cohort_walk(
+            repo_root, now=now, frame_for=forward_cohort.collector_frames(repo_root, now=now))
+        if summary["contexts"] and not summary["walked"]:
+            raise SchedulerBlocked(
+                "FORWARD_COHORT_WALK_FAILED",
+                "no cohort context could be fetched: " + "; ".join(summary["failed"]),
+            )
+        return forward_cohort.status_line(summary)
     if schedule.kind == KIND_DISPATCH_SPEND:
         # §6-3's alert rides the failure-transition notifier the way the data review's stall
         # does: past the threshold this fire FAILS, the operator gets the transition message,

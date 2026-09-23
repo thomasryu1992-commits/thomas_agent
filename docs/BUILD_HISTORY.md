@@ -24,6 +24,23 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort walks daily and shows on the board** (`scheduler.KIND_FORWARD_COHORT`,
+  `forward_cohort.board_summary`, 2026-09-23; Phase 1 under option A, second PR).
+  - **The fire:** `crypto_forward_cohort` is a MAINTENANCE kind, and a financial one for delegation by
+    its `crypto_` prefix, so the assistant can never change it. One fire advances every frozen cohort's
+    members to the newest closed bar through the venue collector, writing only the cohort's store. A
+    context that fails is named in the status line; a walk in which every context failed fails the
+    fire (`FORWARD_COHORT_WALK_FAILED`) so the failure notifier says so once. A late or missed day
+    costs nothing but freshness: the walker catches up over every bar since its last.
+  - **The board:** `build_status` carries `forward_cohort` (members, with rows, at the trade floor,
+    per judge status, the last walk) and the text board renders one line plus the three members an
+    operator would read first (CONFIRMED first, then most rows), marked 선별 전용 (screen only). An
+    unreadable cohort store is a warning, as the candidate store is.
+  - **Operator step after deploy:** register one daily schedule —
+    `docker exec thomas-scheduler python -m runtime.mvp_runtime.scheduler_cli add --kind crypto_forward_cohort --interval-seconds 86400`.
+  - **Tests:** 6 more in `test_mvp_runtime_crypto_forward_cohort.py`; removing the all-failed refusal
+    or the board field is caught.
+
 - **The forward cohort, Phase 1 under option A** (`crypto/forward_cohort.py`, `scripts/forward_cohort.py`,
   2026-09-23; design `docs/proposals/FORWARD_COHORT_OFF_POOL_V0.1.md`, decided by Thomas the same day).
   - **Why:** `forward_book` advances only occupying pool entries, so forward clocks equal occupied
