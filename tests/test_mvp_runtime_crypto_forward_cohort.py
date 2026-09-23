@@ -27,6 +27,7 @@ from runtime.mvp_runtime.crypto.cost import (
     DEFAULT_TAKER_FEE_BPS,
     FUNDING_SOURCE_VENUE,
 )
+from runtime.mvp_runtime.crypto.outcome_math import net_result_r
 from runtime.mvp_runtime.crypto.strategy import StrategySpec
 from runtime.mvp_runtime.errors import ToolError
 from runtime.read_only_kernel import integrity
@@ -311,6 +312,22 @@ def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     (line,) = cohort["members"]
     assert line["candidate_id"] == "cand_a" and line["closed_count"] == 1
     assert line["context_size"] == 1 and line["status"] == "FORWARD_INSUFFICIENT"
+    # below the floor the verdict has no mean; the display bounds still read the one row
+    (row,) = fco.read_cohort_outcomes(tmp_path)
+    assert line["trade_mean_r"] == pytest.approx(net_result_r(row), abs=1e-6)
+    assert line["trade_lower_bound_r"] is None  # one trade has no spread
+
+
+def test_the_trade_lower_bound_is_the_judges_interval(monkeypatch):
+    rows = [{"created_at_utc": NOW, "net": n} for n in (1.0, -0.5, 2.0, 0.5)]
+    monkeypatch.setattr(fco, "forward_outcomes_for", lambda record, outcomes: rows)
+    monkeypatch.setattr(fco, "net_result_r", lambda row: row["net"])
+    bounds = fco.trade_bounds({}, [])
+    assert bounds["trade_mean_r"] == pytest.approx(0.75)
+    # mean - 1.96 * stdev / sqrt(n): stdev of (1, -.5, 2, .5) is 1.0408
+    assert bounds["trade_lower_bound_r"] == pytest.approx(0.75 - 1.96 * 1.040833 / 2, abs=1e-5)
+    monkeypatch.setattr(fco, "net_result_r", lambda row: 0.5)
+    assert fco.trade_bounds({}, [])["trade_lower_bound_r"] is None  # no spread, no bound
 
 
 # --- (5) option A at the pool's seeder --------------------------------------------------------
@@ -449,7 +466,47 @@ def test_the_board_shows_the_cohort_and_says_it_opens_no_door(tmp_path):
     assert board["last_walk_utc"] == NOW
     text = render_status_text(status)
     assert "forward 코호트 2계보 · 기록 2 · 문턱 도달 0 · CONFIRMED 0 (선별 전용" in text
-    assert "상위 cand_a 1d n=1" in text
+    assert "상위 cand_a 1d n=1 평균 " in text
+    assert "하한 ?R [판정 전] · cand_b 1d n=1" in text  # n=1 each: no bound, so by id
+
+
+def _board_of(monkeypatch, *members):
+    monkeypatch.setattr(fco, "read_cohorts", lambda root: [{"cohort_id": "c1"}])
+    monkeypatch.setattr(fco, "cohort_report", lambda root: [{"members": list(members)}])
+    return fco.board_summary(None)
+
+
+def _line(cid, status, n, *, mean=None, bound=None, timeframe="4h"):
+    return {"candidate_id": cid, "timeframe": timeframe, "status": status, "priceable_count": n,
+            "trade_mean_r": mean, "trade_lower_bound_r": bound}
+
+
+def test_a_contradicted_member_with_the_most_rows_is_never_a_leader(monkeypatch):
+    from runtime.mvp_runtime.crypto.dashboard import render_status_text
+    board = _board_of(
+        monkeypatch,
+        # the 2026-09-23 board: CONTRADICTED 4h shorts held the most rows and led it
+        _line("short_a", "FORWARD_CONTRADICTED", 40, mean=-0.23, bound=-0.6),
+        _line("short_b", "FORWARD_CONTRADICTED", 38, mean=-0.55, bound=-0.9),
+        _line("young", "FORWARD_INSUFFICIENT", 3, mean=0.4, bound=0.1),
+    )
+    assert [m["candidate_id"] for m in board["leaders"]] == ["young"]
+    assert board["status_counts"] == {"FORWARD_CONTRADICTED": 2, "FORWARD_INSUFFICIENT": 1}
+    text = render_status_text({"forward_cohort": board})
+    assert "상위 young 4h n=3 평균 +0.40R 하한 +0.10R [판정 전]" in text
+    assert "short_a" not in text and "short_b" not in text
+
+
+def test_leaders_rank_confirmed_then_the_lower_bound_not_the_rows_or_the_mean(monkeypatch):
+    board = _board_of(
+        monkeypatch,
+        _line("many_rows", "FORWARD_INSUFFICIENT", 20, mean=0.3, bound=-0.1),
+        _line("one_lucky", "FORWARD_INSUFFICIENT", 1, mean=2.0),
+        _line("tight", "FORWARD_INSUFFICIENT", 8, mean=0.2, bound=0.05),
+        _line("confirmed", "FORWARD_CONFIRMED", 30, mean=0.1, bound=0.02, timeframe="1d"),
+        _line("no_rows", "FORWARD_INSUFFICIENT", 0),
+    )
+    assert [m["candidate_id"] for m in board["leaders"]] == ["confirmed", "tight", "many_rows"]
 
 
 def test_an_unreadable_cohort_store_is_a_board_warning(tmp_path):
