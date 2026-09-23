@@ -492,16 +492,9 @@ def run_cohort_walk(
 
 # --- the report -------------------------------------------------------------------------------
 
-def trade_bounds(record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """The lineage's per-trade net mean and its lower bound ``mean - CONFIDENCE_Z * sd / sqrt(n)``,
-    for display. Reads only; the judge never sees these.
-
-    The same rows ``judge_forward`` prices — ``forward_outcomes_for`` at the record's cutoff, a
-    row that cannot price itself or place itself in time dropped — and the bound is the judge's
-    own interval, the one whose failure at the trade floor is FORWARD_CONTRADICTED. Unlike the
-    verdict, both are given below the floor, which is where every member sits in a young cohort.
-    The bound is None where the judge could not compute it either: fewer than two trades, or
-    no spread."""
+def priced_nets(record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]]) -> list[float]:
+    """The per-trade net R of the rows ``judge_forward`` prices: ``forward_outcomes_for`` at the
+    record's cutoff, a row that cannot price itself or place itself in time dropped."""
     nets: list[float] = []
     for row in forward_outcomes_for(record, outcomes):
         net = net_result_r(row)
@@ -512,10 +505,38 @@ def trade_bounds(record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]
         except (ValueError, TypeError):
             continue
         nets.append(float(net))
+    return nets
+
+
+def pooled_spread(nets_by_member: Iterable[Sequence[float]]) -> float | None:
+    """The standard deviation of every priced trade across the given members, pooled; None
+    below two trades. The scale one trade of this cohort actually moves by."""
+    pooled = [n for nets in nets_by_member for n in nets]
+    return round(statistics.stdev(pooled), 6) if len(pooled) >= 2 else None
+
+
+def trade_bounds(nets: Sequence[float], *, spread_floor: float | None) -> dict[str, Any]:
+    """The lineage's per-trade net mean and its lower bound
+    ``mean - CONFIDENCE_Z * max(sd, spread_floor) / sqrt(n)``, for display. The judge never
+    sees these.
+
+    **Why the spread has a floor.** A lineage with a fixed take-profit that has won every trade
+    so far has a spread of cost noise: on 2026-09-23 the board's top three were n=4 at
+    ``[1.73, 1.74, 1.76, 1.73]`` and two n=2 pairs, sd 0.016 each, so the bound sat 0.02R under
+    the mean and charged a four-trade record almost nothing. A t critical value instead of z did
+    not help — measured on the live cohort it left the top six unchanged, because it multiplies
+    the same near-zero spread. The sample spread of a handful of trades is the number not to
+    trust, so it is floored at the cohort's pooled spread (:func:`pooled_spread`, 1.39R that
+    day): a short record is charged at least the noise the cohort's trades actually show. With
+    the floor, n=4 at +1.74R bounds at +0.38R and n=2 at +1.54R goes negative.
+
+    Given below the trade floor too, where the verdict has no mean. The bound is None at one
+    trade — the floor would otherwise let a single +5R trade lead — and where no spread exists
+    at all."""
     mean = statistics.mean(nets) if nets else None
     bound = None
     if len(nets) >= 2:
-        spread = statistics.stdev(nets)
+        spread = max(statistics.stdev(nets), spread_floor or 0.0)
         if spread > 0:
             bound = round(mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)), 6)
     return {"trade_mean_r": None if mean is None else round(mean, 6), "trade_lower_bound_r": bound}
@@ -526,29 +547,40 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
 
     ``judge_forward`` is handed the member's row with ``created_at_utc`` set to the frozen
     selection time, so its cutoff is the cohort's, whatever was appended to the store since.
-    The status is the judge's arithmetic and nothing more: under option A it opens no door."""
+    The status is the judge's arithmetic and nothing more: under option A it opens no door.
+    The display bounds (:func:`trade_bounds`) floor every member's spread at the one spread
+    pooled over every member of every frozen cohort, carried on each line as
+    ``trade_spread_floor_r``."""
     latest: dict[str, dict[str, Any]] = {}
     for record in read_candidates(root):
         latest[candidate_id(record)] = record
     rows = read_cohort_outcomes(root)
-    report: list[dict[str, Any]] = []
+    # Two passes: the floor pools every member's trades, so it exists only once all are priced.
+    priced: list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], Any, list[float]]]]] = []
     for cohort in read_cohorts(root):
-        lines = []
+        members = []
         for member in cohort.get("members") or []:
             record = latest.get(str(member.get("candidate_id")))
-            if record is None:
+            judged = None if record is None else {**record, "created_at_utc": member.get("selected_at_utc")}
+            members.append((member, judged, [] if judged is None else priced_nets(judged, rows)))
+        priced.append((cohort, members))
+    floor = pooled_spread(nets for _, members in priced for _, _, nets in members)
+    report: list[dict[str, Any]] = []
+    for cohort, members in priced:
+        lines = []
+        for member, judged, nets in members:
+            if judged is None:
                 lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED"})
                 continue
-            judged = {**record, "created_at_utc": member.get("selected_at_utc")}
-            verdict = judge_forward(judged, rows)
             lines.append({
                 "candidate_id": member.get("candidate_id"),
                 "strategy_family": member.get("strategy_family"),
                 "timeframe": member.get("timeframe"),
                 "context": _context_key(member),
                 "context_size": (cohort.get("context_sizes") or {}).get(_context_key(member)),
-                **verdict,
-                **trade_bounds(judged, rows),
+                **judge_forward(judged, rows),
+                **trade_bounds(nets, spread_floor=floor),
+                "trade_spread_floor_r": floor,
             })
         report.append({
             "cohort_id": cohort.get("cohort_id"), "frozen_at_utc": cohort.get("frozen_at_utc"),
@@ -572,8 +604,9 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
     - **Then CONFIRMED first, then the trade-level lower bound, highest first**
       (:func:`trade_bounds`), not the mean. The mean has the mirror failure of row count: one
       +2R trade at n=1 outranks +0.3R over twenty. The bound charges a short record for its
-      noise, and it is the judge's own interval — the number the judge will read when the
-      member reaches its floor — so the board sorts by no statistic of its own. A member whose
+      noise. It is the judge's interval with one departure the board owns and says so: the
+      spread is floored at the cohort's pooled spread (``spread_floor_r``), because a few
+      same-sized wins measure almost no spread (see :func:`trade_bounds`). A member whose
       bound cannot be computed yet (one trade, or no spread) ranks after every member with one."""
     cohorts = read_cohorts(root)
     if not cohorts:
@@ -605,6 +638,8 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
         "leaders": [{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
                                            "trade_mean_r", "trade_lower_bound_r", "status")}
                     for m in ranked[:3]],
+        "spread_floor_r": next((m.get("trade_spread_floor_r") for m in members
+                                if "trade_spread_floor_r" in m), None),
         "last_walk_utc": last_walk,
     }
 
