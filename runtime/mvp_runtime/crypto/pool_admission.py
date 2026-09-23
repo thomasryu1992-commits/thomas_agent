@@ -5,6 +5,8 @@ may hold (crypto PR7e-10).
 
 - the two tier doors (:func:`assert_promotable_cost_basis`, :func:`assert_promotable_evidence_depth`)
   and the derivation door (:func:`assert_promotable_derivation`), with the sets they refuse on;
+- the record-stamp door (:func:`assert_promotable_record_stamp`, 2026-09-23), which `promotion`
+  imports from here directly rather than through `pool`;
 - the checks against the pool's incumbents: semantic duplicates and behaviour-cluster siblings
   (:func:`assert_no_semantic_duplicates`, :func:`assert_no_cluster_siblings`). They take the
   incumbents' rows as an argument; the promotion door reads those rows with
@@ -1101,6 +1103,51 @@ def assert_promotable_derivation(records: list[Mapping[str, Any]]) -> None:
             f"--allow-quarantined-derivation escape.",
         )
 
+
+
+# The field the candidate store stamps on every row it appends (`pool_state.append_candidates`), and
+# that `pool_state.read_candidates` recomputes on every read. Named here, where the door reads it.
+RECORD_STAMP_FIELD = "record_sha256"
+
+
+def assert_promotable_record_stamp(records: list[Mapping[str, Any]]) -> None:
+    """Refuse a promotion of rows that carry no self-hash.
+
+    ``read_candidates`` checks a stamped row's hash and refuses one that does not recompute
+    (``CANDIDATES_TAMPERED``), but it cannot check a row that has no stamp: such a row reads as
+    legacy and passes. That is also what a stamped row looks like once its ``record_sha256`` is
+    removed. This door makes the missing stamp a refusal at the one place a row becomes a pool
+    entry, so that removing the field buys nothing there.
+
+    **Why absence is refused here, when :func:`assert_promotable_derivation` lets it pass.** A
+    missing ``derivation_type`` is a schema vintage: 402 rows predate that field, and it says
+    nothing about the row's integrity. A missing stamp is different. ``append_candidates`` has
+    stamped every row it has written since the store began stamping, and the rows without one
+    are a closed set that cannot grow through the store's own door: on this machine, measured
+    2026-09-23, the first 41 of 3,243 lines, one import batch (``crypto_ai_system_import``,
+    2026-07-16), every one of them already an active pool member and also refused on its
+    unrecorded cost basis. A new unstamped row means a writer went around the append door or a
+    stamp was removed.
+
+    **Today this refuses nothing a promotion could reach**: the 41 are already in the pool (the
+    backlog counts them as ``already_active``). A legacy rule that must come back (a retired one,
+    say) can be passed with the explicit ``--allow-unstamped-record`` escape, which the ledger
+    records, or re-minted through the factory, which stamps it.
+
+    **What it does not do.** The self-hash carries no secret, so a writer who can edit the store
+    can also recompute a stamp; this closes the downgrade that needs no recomputation, and no more.
+    An explicit ``record_sha256: null`` is refused like an absent one: ``read_candidates`` skips
+    verification on null, so null is exactly the downgrade case.
+
+    Raises `CANDIDATE_RECORD_UNSTAMPED`, naming every offending candidate."""
+    refused = [candidate_id(record) for record in records if record.get(RECORD_STAMP_FIELD) is None]
+    if refused:
+        raise ToolError(
+            "CANDIDATE_RECORD_UNSTAMPED",
+            f"carry no {RECORD_STAMP_FIELD}, so the store cannot say they are the rows it wrote: "
+            f"{', '.join(refused)}. Re-mint the lineage through the factory (every appended row is "
+            f"stamped), or pass the explicit --allow-unstamped-record escape.",
+        )
 
 # The smallest rolling window any lifecycle rule can act on (`lifecycle.DEFAULT_WINDOWS[0]`).
 # Restated rather than imported. The reason recorded here was that `lifecycle` reached back into

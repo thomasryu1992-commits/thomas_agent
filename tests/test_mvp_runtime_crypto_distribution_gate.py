@@ -6,6 +6,7 @@ import math
 
 import pytest
 
+from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto.distribution_gate import (
     DI_FEATURES,
     DI_THRESHOLD,
@@ -251,7 +252,9 @@ def test_backtest_result_carries_a_reference_for_every_di_feature():
 def _promote(monkeypatch, tmp_path, candidate):
     from scripts import promote_strategy_candidates as prom
 
-    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [candidate])
+    # Stamped as the append door stamps every row, so the record-stamp gate passes it.
+    monkeypatch.setattr(prom.pool_store, "read_candidates",
+                        lambda root: [{**candidate, "record_sha256": integrity.sha256_record(candidate)}])
     monkeypatch.setattr(prom.pool_store, "assert_promotable_cost_basis", lambda records: None)
     monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
     installed: dict = {}

@@ -40,7 +40,7 @@ from tests.test_mvp_runtime_crypto_promotion import (  # noqa: F401 — the auto
 EVERY_ESCAPE = dict(allow_stale_cost_basis=True, allow_unrecorded_evidence_depth=True, allow_duplicates=True,
                     allow_cluster_siblings=True, allow_below_entry_bar=True, allow_family_overflow=True,
                     allow_unconfirmed_holdout=True, allow_oversized_pool=True,
-                    allow_quarantined_derivation=True, allow_reactivation=True)
+                    allow_quarantined_derivation=True, allow_unstamped_record=True, allow_reactivation=True)
 
 
 def _seed(tmp_path, *, generation, spec=None):
