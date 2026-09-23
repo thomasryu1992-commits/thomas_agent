@@ -24,6 +24,36 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The promotion door refuses a candidate row with no self-hash** (2026-09-23, Thomas's decision
+  after a review of an external refactor roadmap).
+  - **Why:** `read_candidates` recomputes every `record_sha256` it finds and refuses a mismatch, but a
+    row without the field reads as legacy and passes. A stamped row looks exactly like that once its
+    stamp is removed, so an edit plus a deleted field reached the door unverified.
+  - **What exists today:** on this machine the unstamped rows are the first 41 of 3,243 lines. They are
+    one import batch (`crypto_ai_system_import`, 2026-07-16), all active pool members, and all also
+    refused on their unrecorded cost basis. The append door stamps every row it writes, so the set
+    cannot grow through it.
+  - **The gate:** `pool_admission.assert_promotable_record_stamp` refuses a missing or null stamp
+    (`CANDIDATE_RECORD_UNSTAMPED`). `read_candidates` already checks a present stamp's value. The gate
+    sits on `PROMOTION_GATES` next to the derivation gate, runs at both the ask and the install, and is
+    called from `pool_admission` directly, not through `pool`.
+    - The backlog gains an `unstamped` axis after `derivation`, so the partition still sums.
+    - `--list` names unstamped rows outside the pool, and stays silent on today's store.
+    - The install ledger records `unstamped_records`, `unstamped_record_escape`, and `record_stamp` in
+      `reviews_skipped`.
+  - **Escapable** (`--allow-unstamped-record`), on the derivation gate's precedent. The self-hash
+    carries no secret, so a writer who can edit the store can also recompute a stamp. An unescapable
+    gate would claim more than the mechanism gives. A retired legacy rule that must come back still
+    has a way through, and the ledger records it.
+  - **Why absence is refused here and not at the derivation gate:** a missing `derivation_type` is a
+    schema vintage. A missing stamp, after the store began stamping, means a writer went around the
+    append door or a stamp was removed.
+  - **Effect today: none.** Read-only on the live store with this code:
+    - the backlog's `unstamped` axis is 0, because the 41 count as `already_active`;
+    - the partition sums;
+    - the one promotable lineage is stamped;
+    - `--list` prints no new line.
+
 - **The cohort board's lower bound floors its spread at the cohort's pooled spread**
   (`forward_cohort.trade_bounds`, `forward_cohort.pooled_spread`, 2026-09-23; display only, option A).
   - **Why:** after #950 the leaders were n=4 at `[1.73, 1.74, 1.76, 1.73]` and two n=2 pairs —

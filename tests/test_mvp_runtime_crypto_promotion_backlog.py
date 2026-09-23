@@ -20,6 +20,7 @@ import json
 import pytest
 
 from runtime.mvp_runtime import operator, timeutil
+from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import paper, pool
 from runtime.mvp_runtime.crypto.cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
@@ -53,6 +54,7 @@ def _candidate(
     rule_hash=None,
     bars_replayed=_MISSING,
     derivation=None,
+    stamped=True,
 ):
     """One candidate row. Defaults describe a lineage the door would accept today.
 
@@ -89,7 +91,7 @@ def _candidate(
     # arrived with lineage and 402 rows predate it. A case that means to exercise the
     # derivation axis says which derivation it means.
     lineage = {"derivation_type": derivation} if derivation is not None else {}
-    return {
+    row = {
         **lineage,
         "candidate_id": cid,
         "strategy_id": "S001",
@@ -117,6 +119,11 @@ def _candidate(
                               if bars_replayed is _MISSING else bars_replayed),
         },
     }
+    # Stamped by default, as every row the append door writes is: the record-stamp axis refuses
+    # a row without one. `_write_candidates` re-stamps, so a case may still edit a row after this.
+    if stamped:
+        row["record_sha256"] = integrity.sha256_record(row)
+    return row
 
 
 def _backlog(candidates, active=(), active_specs=()):
@@ -298,6 +305,11 @@ def _write_candidates(root, candidates):
     state.mkdir(parents=True, exist_ok=True)
     with open(state / pool.CANDIDATES_FILENAME, "w", encoding="utf-8") as handle:
         for row in candidates:
+            # Re-stamped over the row as it is now, since a case may edit a row after `_candidate`
+            # stamped it; `read_candidates` recomputes every stamp it finds.
+            if "record_sha256" in row:
+                row = {k: v for k, v in row.items() if k != "record_sha256"}
+                row["record_sha256"] = integrity.sha256_record(row)
             handle.write(json.dumps(row) + "\n")
 
 
@@ -516,6 +528,21 @@ def test_the_backlog_does_not_count_what_the_derivation_gate_refuses():
     ])
     assert result["candidate_ids"] == ["cand_seeded"]
     assert result["refused"]["derivation"] == 1
+    assert sum(result["refused"].values()) + result["count"] == result["candidates_read"]
+
+
+def test_the_backlog_does_not_count_what_the_record_stamp_gate_refuses():
+    """The door's other axis about the row rather than its evidence, counted in the same change.
+    An unstamped row the pool already holds is `already_active` first, which is why the axis reads
+    zero on the real store, where all 41 unstamped rows are members."""
+    result = _backlog([
+        _candidate("cand_stamped"),
+        _candidate("cand_bare", family="breakout", stamped=False),
+        _candidate("cand_member", family="mean_reversion", stamped=False, rule_hash="hash-member"),
+    ], active=("hash-member",))
+    assert result["candidate_ids"] == ["cand_stamped"]
+    assert result["refused"]["unstamped"] == 1
+    assert result["refused"]["already_active"] == 1
     assert sum(result["refused"].values()) + result["count"] == result["candidates_read"]
 
 

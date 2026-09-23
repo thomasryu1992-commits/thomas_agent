@@ -28,7 +28,7 @@ from .candidate_ranking import (
 )
 from .pool_admission import (
     LIFECYCLE_MIN_WINDOW_TRADES, PROMOTABLE_COST_BASIS_RANKS, PROMOTABLE_DERIVATION_TYPES,
-    PROMOTABLE_EVIDENCE_DEPTH_RANKS,
+    PROMOTABLE_EVIDENCE_DEPTH_RANKS, RECORD_STAMP_FIELD,
 )
 from .pool_state import load_active_pool, read_candidates
 from .robustness import HOLDOUT_CONFIRMED, ROBUST
@@ -54,6 +54,7 @@ PROMOTION_BACKLOG_ALERT_THRESHOLD = 5
 BACKLOG_REFUSAL_AXES = (
     "already_active",
     "derivation",
+    "unstamped",
     "cost_basis",
     "evidence_depth",
     "holdout_insufficient",
@@ -262,6 +263,13 @@ def promotable_backlog(
         if ("derivation_type" in record
                 and record.get("derivation_type") not in PROMOTABLE_DERIVATION_TYPES):
             refused["derivation"] += 1
+            continue
+        # The door's other axis about the row rather than its evidence
+        # (`pool_admission.assert_promotable_record_stamp`), counted here on the same rule: a row
+        # the ask will refuse must not be advertised. Zero on today's store, where the 41
+        # unstamped rows are all `already_active`.
+        if record.get(RECORD_STAMP_FIELD) is None:
+            refused["unstamped"] += 1
             continue
         quality = candidate_quality(
             record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))

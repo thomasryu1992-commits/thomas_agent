@@ -57,6 +57,7 @@ from runtime.mvp_runtime.audit import build_approval_request_audit  # noqa: E402
 from runtime.mvp_runtime.control import ControlStore  # noqa: E402
 from runtime.mvp_runtime.crypto import cost as cost_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import pool as pool_store  # noqa: E402
+from runtime.mvp_runtime.crypto import pool_admission, pool_state  # noqa: E402
 from runtime.mvp_runtime.crypto.execution_stage import resolve_execution_stage  # noqa: E402
 from runtime.mvp_runtime.crypto import promotion as promotion_mod  # noqa: E402
 from runtime.mvp_runtime.crypto import strategy_artifact as artifact_mod  # noqa: E402
@@ -81,6 +82,7 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
                 allow_unconfirmed_holdout: bool = False,
                 allow_unrecorded_evidence_depth: bool = False,
                 allow_quarantined_derivation: bool = False,
+                allow_unstamped_record: bool = False,
                 allow_oversized_pool: bool = False,
                 allow_reactivation: bool = False) -> dict:
     """Build + store + audit the R9 ask for this promotion (the trial_cli pattern)."""
@@ -95,6 +97,7 @@ def run_request(*, selectors: list[str], keep_active: bool, live_tier: str, root
         allow_family_overflow=allow_family_overflow,
         allow_unconfirmed_holdout=allow_unconfirmed_holdout,
         allow_quarantined_derivation=allow_quarantined_derivation,
+        allow_unstamped_record=allow_unstamped_record,
         allow_oversized_pool=allow_oversized_pool,
         allow_reactivation=allow_reactivation,
     )
@@ -121,7 +124,8 @@ def run_promotion(
     allow_below_entry_bar: bool = False, allow_family_overflow: bool = False,
     allow_unconfirmed_holdout: bool = False,
     allow_oversized_pool: bool = False,
-    allow_quarantined_derivation: bool = False, allow_reactivation: bool = False,
+    allow_quarantined_derivation: bool = False, allow_unstamped_record: bool = False,
+    allow_reactivation: bool = False,
 ) -> dict:
     """Install the selected candidates into the active pool. Fail-closed.
 
@@ -142,7 +146,10 @@ def run_promotion(
     ``pool.assert_no_semantic_duplicates``. A candidate minted by a derivation the live pool
     does not take refuses with ``CANDIDATE_DERIVATION_NOT_PROMOTABLE`` unless
     ``allow_quarantined_derivation`` says otherwise; a row that names no derivation at all is
-    legacy and passes — see ``pool.assert_promotable_derivation``. A promotion that would leave the pool with more
+    legacy and passes — see ``pool.assert_promotable_derivation``. A candidate row that carries
+    no ``record_sha256`` refuses with ``CANDIDATE_RECORD_UNSTAMPED`` unless
+    ``allow_unstamped_record`` says otherwise — see
+    ``pool_admission.assert_promotable_record_stamp``. A promotion that would leave the pool with more
     routable strategies than the lifecycle can ever judge refuses with
     ``POOL_SIZE_CAP_EXCEEDED`` / ``POOL_CONTEXT_CAP_EXCEEDED`` / ``POOL_CONTEXT_DIRECTION_SPLIT``
     unless ``allow_oversized_pool`` says otherwise — see ``pool.assert_pool_within_size_cap``. Every escape stays out of
@@ -371,6 +378,7 @@ def run_promotion(
                 "allow_family_overflow": allow_family_overflow,
                 "allow_unconfirmed_holdout": allow_unconfirmed_holdout,
                 "allow_quarantined_derivation": allow_quarantined_derivation,
+                "allow_unstamped_record": allow_unstamped_record,
                 "allow_oversized_pool": allow_oversized_pool,
                 "allow_reactivation": allow_reactivation,
             },
@@ -446,6 +454,11 @@ def run_promotion(
         # leaves no trace is indistinguishable, a month later, from a door that never refused.
         "derivations": [c.get("derivation_type") for c in candidates],
         "quarantined_derivation_escape": bool(allow_quarantined_derivation),
+        # Whether each promoted row carried the store's self-hash, and whether the door that reads
+        # it was stepped around: an unstamped row that entered the pool must say so here.
+        "unstamped_records": [pool_store.candidate_id(c) for c in candidates
+                              if c.get(pool_admission.RECORD_STAMP_FIELD) is None],
+        "unstamped_record_escape": bool(allow_unstamped_record),
         # Who came back from a terminal status, and from which. Recorded whether or not the
         # escape fired, like the bases and depths above: the approval names it when there is one,
         # and the ledger is the install's own account of it.
@@ -486,6 +499,7 @@ def run_promotion(
                 # skipped review.
                 ("pool_size_cap", allow_oversized_pool),
                 ("quarantined_derivation", allow_quarantined_derivation),
+                ("record_stamp", allow_unstamped_record),
                 ("silent_reactivation", allow_reactivation and bool(reactivations)),
             ) if skipped
         ],
@@ -551,6 +565,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicit escape: promote a candidate minted by a derivation the "
                              "live pool does not take (recorded as such). Refuses nothing on "
                              "today's store — every derivation minted so far is promotable.")
+    parser.add_argument("--allow-unstamped-record", action="store_true",
+                        help="explicit escape: promote a candidate row that carries no record_sha256, "
+                             "so the store cannot vouch that it is the row it wrote (recorded as "
+                             "such). The only such rows are a 2026-07-16 import, all already in the pool.")
     parser.add_argument("--allow-reactivation", action="store_true",
                         help="explicit escape: let this install return terminally SUSPENDED / "
                              "ARCHIVED members to trading (recorded, with who and from what). "
@@ -680,6 +698,26 @@ def main(argv: list[str] | None = None) -> int:
                   "these rows exist to")
             print("      accrue evidence, not to trade. Pass --allow-quarantined-derivation "
                   "only deliberately.")
+        # The other axis about the row rather than its evidence: rows with no self-hash. The 41 on
+        # this machine are all pool members already, so they are left out and the line stays
+        # silent on today's store; an unreadable pool counts every unstamped row, so the line
+        # errs toward showing.
+        try:
+            active_hashes = {e.get("strategy_rule_hash") for e in
+                             pool_state.load_active_pool(None).get("active_strategies") or []}
+        except MvpRuntimeError:
+            active_hashes = set()
+        unstamped = [
+            pool_store.candidate_id(c) for c in candidates
+            if c.get(pool_admission.RECORD_STAMP_FIELD) is None
+            and c.get("strategy_rule_hash") not in active_hashes
+        ]
+        if unstamped:
+            print(f"      {len(unstamped)} row(s) outside the pool carry no record_sha256 and are "
+                  "REFUSED at the promotion door")
+            print("      (CANDIDATE_RECORD_UNSTAMPED): the store cannot vouch that they are the rows "
+                  "it wrote. Re-mint through")
+            print("      the factory, or pass --allow-unstamped-record only deliberately.")
         # The mixing is reported, but it is also fixable for the number that matters most:
         # the fee term is linear in the rate, so a candidate's expectancy at the CURRENT rate
         # is exactly derivable from what its evidence already records. `exp@` below is that
@@ -805,6 +843,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_family_overflow=args.allow_family_overflow,
                 allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
                 allow_quarantined_derivation=args.allow_quarantined_derivation,
+                allow_unstamped_record=args.allow_unstamped_record,
                 allow_oversized_pool=args.allow_oversized_pool,
                 allow_reactivation=args.allow_reactivation)
         except MvpRuntimeError as exc:
@@ -839,6 +878,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_unconfirmed_holdout=args.allow_unconfirmed_holdout,
         allow_oversized_pool=args.allow_oversized_pool,
         allow_quarantined_derivation=args.allow_quarantined_derivation,
+        allow_unstamped_record=args.allow_unstamped_record,
         allow_reactivation=args.allow_reactivation,
     )
     door = summary["approval_id"] or "WITHOUT-APPROVAL ESCAPE"

@@ -38,6 +38,7 @@ from . import forward_book, forward_confirmation
 from . import paper as paper_store
 from .execution_stage import StageStatus, resolve_execution_stage
 from . import pool as pool_store
+from . import pool_admission
 from . import strategy_artifact as artifact_mod
 
 PROMOTION_ACTION_TYPE = "crypto.strategy_pool.promotion"
@@ -288,6 +289,13 @@ def _gate_derivation(g: _GateInput) -> None:
     pool_store.assert_promotable_derivation(g.candidates)
 
 
+def _gate_record_stamp(g: _GateInput) -> None:
+    # Also about the ROW rather than its evidence: whether the store can vouch that it is the row
+    # it wrote. Late for the derivation gate's reason: on today's store it refuses nothing a
+    # promotion can reach (the 41 unstamped rows are already pool members).
+    pool_admission.assert_promotable_record_stamp(g.candidates)
+
+
 def _gate_pool_size_cap(g: _GateInput) -> None:
     # A pool whose routable set outgrows what the lifecycle can judge; judged on the
     # MERGED result, since in add mode the incumbents are what make a batch oversized.
@@ -344,6 +352,7 @@ PROMOTION_GATES: tuple[PromotionGate, ...] = (
     PromotionGate("", _gate_execution_stage),
     PromotionGate("allow_unconfirmed_holdout", _gate_live_confirmation),
     PromotionGate("allow_quarantined_derivation", _gate_derivation),
+    PromotionGate("allow_unstamped_record", _gate_record_stamp),
     PromotionGate("allow_oversized_pool", _gate_pool_size_cap),
     PromotionGate("allow_reactivation", _gate_silent_reactivation),
 )
@@ -474,6 +483,7 @@ def request_promotion(
     allow_family_overflow: bool = False,
     allow_unconfirmed_holdout: bool = False,
     allow_quarantined_derivation: bool = False,
+    allow_unstamped_record: bool = False,
     allow_oversized_pool: bool = False,
     allow_reactivation: bool = False,
 ) -> dict[str, Any]:
@@ -516,6 +526,7 @@ def request_promotion(
             "allow_family_overflow": allow_family_overflow,
             "allow_unconfirmed_holdout": allow_unconfirmed_holdout,
             "allow_quarantined_derivation": allow_quarantined_derivation,
+            "allow_unstamped_record": allow_unstamped_record,
             "allow_oversized_pool": allow_oversized_pool,
             "allow_reactivation": allow_reactivation,
         },

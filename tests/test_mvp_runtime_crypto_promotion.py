@@ -19,6 +19,7 @@ import runtime.mvp_runtime.crypto.promotion as promotion_mod
 import scripts.promote_strategy_candidates as promote_door
 from runtime.mvp_runtime.approval_store import STORE_REL as APPROVAL_STORE_REL
 from runtime.mvp_runtime.approval_store import ApprovalStore
+from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import cost, paper, pool
 from runtime.mvp_runtime.crypto.factory import run_factory
 from runtime.mvp_runtime.crypto.promotion import (
@@ -468,6 +469,9 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
         "evidence_input_sha256": "sha256:test", "provenance": "mvp_factory",
         "derivation_type": "trial_family",
     }
+    # Stamped as the append door would, so this reaches the derivation gate rather than stopping
+    # at the record-stamp gate (which reads the stamp's presence; the reader checks its value).
+    row["record_sha256"] = integrity.sha256_record(row)
     monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
     approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
     summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
@@ -475,6 +479,48 @@ def test_an_approved_promotion_can_still_use_the_quarantined_derivation_escape(t
                             approval_id=approval_id, allow_quarantined_derivation=True)
     assert summary["approval_verified"] is True
     assert summary["quarantined_derivation_escape"] is True
+    assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
+
+
+def _unstamped_row():
+    spec = StrategySpec.from_dict(_spec_dict())
+    return {
+        "strategy_id": spec.strategy_id, "strategy_rule_hash": spec.strategy_rule_hash,
+        "generation_id": "GEN-001", "status": "BACKTESTED", "champion_score": 0.5,
+        "strategy_spec": spec.to_dict(),
+        "backtest_evidence": {"closed_count": 60, "expectancy": 0.5,
+                              "robustness": {"verdict": "PROVISIONAL",
+                                             "holdout_status": "CONFIRMED"},
+                              "bars_replayed": _current_bars_replayed(spec),
+                              "cost_summary": _current_cost_summary()},
+        "evidence_input_sha256": "sha256:test", "provenance": "crypto_ai_system_import",
+    }
+
+
+def test_an_approved_promotion_refuses_an_unstamped_row(tmp_path, monkeypatch):
+    """A row with no self-hash is refused at the install door, approval or not: the store cannot
+    say it is the row it wrote. Reached through the reader, since the append door stamps every
+    row it writes."""
+    row = _unstamped_row()
+    monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r", keep_active=False,
+                      live_tier="LIVE", root=tmp_path, now=NOW, approval_id=approval_id)
+    assert "CANDIDATE_RECORD_UNSTAMPED" in str(exc.value)
+    assert pool.load_active_pool(tmp_path).get("active_strategies") in (None, [])
+
+
+def test_an_approved_promotion_can_use_the_unstamped_record_escape(tmp_path, monkeypatch):
+    row = _unstamped_row()
+    monkeypatch.setattr(pool, "read_candidates", lambda root=None: [row])
+    approval_id = _store_approval(tmp_path, _fake_approval(tmp_path))
+    summary = run_promotion(selectors=["S1"], promoted_by="Thomas", reason="r",
+                            keep_active=False, live_tier="LIVE", root=tmp_path, now=NOW,
+                            approval_id=approval_id, allow_unstamped_record=True)
+    assert summary["unstamped_record_escape"] is True
+    assert summary["unstamped_records"] == summary["promoted_candidate_ids"]
+    assert "record_stamp" in summary["reviews_skipped"]
     assert len(pool.load_active_pool(tmp_path)["active_strategies"]) == 1
 
 
