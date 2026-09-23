@@ -539,3 +539,98 @@ def test_an_unreadable_cohort_store_is_a_board_warning(tmp_path):
     status = build_status(tmp_path, now=NOW)
     assert status["forward_cohort"] is None
     assert "forward cohort store unreadable (FORWARD_COHORT_UNREADABLE)" in status["warnings"]
+
+
+# --- (3) the positions book is checked, not trusted (2026-09-23) -------------------------------
+
+def _walked_book(tmp_path):
+    """A positions book the walker wrote for one member, and the path it sits at."""
+    _install_cohort(tmp_path, _record("cand_a"))
+    _walk(tmp_path, _frame(range(1, 5)), now=_day(4))
+    path = fco._positions_path(tmp_path)
+    return json.loads(path.read_text(encoding="utf-8")), path
+
+
+def _refused_after(tmp_path, edit):
+    raw, path = _walked_book(tmp_path)
+    edit(raw)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        fco.load_positions(tmp_path)
+    assert exc.value.reason_code == fco.FORWARD_COHORT_POSITIONS_INVALID
+    return exc.value
+
+
+def _only_entry(raw):
+    (key,) = raw["entries"]
+    return key, raw["entries"][key]
+
+
+def test_a_book_the_walker_wrote_loads(tmp_path):
+    raw, _ = _walked_book(tmp_path)
+    assert set(fco.load_positions(tmp_path)["entries"]) == set(raw["entries"])
+
+
+def test_a_book_of_another_version_is_refused(tmp_path):
+    _refused_after(tmp_path, lambda raw: raw.update(forward_cohort_positions_version="forward_cohort_positions.v0"))
+
+
+def test_an_entry_that_is_not_a_mapping_is_refused_not_dropped(tmp_path):
+    """Dropped, the member would restart from its selection and re-open trades already settled."""
+    def edit(raw):
+        key, _ = _only_entry(raw)
+        raw["entries"][key] = "garbled"
+    _refused_after(tmp_path, edit)
+
+
+def test_an_entry_filed_under_another_key_is_refused(tmp_path):
+    def edit(raw):
+        key, entry = _only_entry(raw)
+        raw["entries"] = {fb.book_key("cand:cand_a", "ETHUSDT", "1d"): entry}
+    _refused_after(tmp_path, edit)
+
+
+def test_an_unknown_timeframe_is_refused(tmp_path):
+    def edit(raw):
+        key, entry = _only_entry(raw)
+        entry["timeframe"] = "7m"
+        raw["entries"] = {fb.book_key(entry["lineage"], entry["symbol"], "7m"): entry}
+    _refused_after(tmp_path, edit)
+
+
+def test_a_lineage_no_frozen_cohort_holds_is_refused(tmp_path):
+    def edit(raw):
+        key, entry = _only_entry(raw)
+        entry["lineage"] = "cand:cand_stranger"
+        raw["entries"] = {fb.book_key("cand:cand_stranger", entry["symbol"], entry["timeframe"]): entry}
+    assert "cand_stranger" in _refused_after(tmp_path, edit).reason
+
+
+@pytest.mark.parametrize("marks", [
+    {"first_seen_candle": _day(4), "last_seen_candle": _day(2)},
+    {"last_seen_candle": "not a time"},
+    {"first_seen_candle": None, "last_seen_candle": _day(3)},
+])
+def test_candle_marks_that_do_not_parse_or_run_backward_are_refused(tmp_path, marks):
+    _refused_after(tmp_path, lambda raw: _only_entry(raw)[1].update(marks))
+
+
+def test_a_walk_that_would_move_a_mark_back_writes_nothing(tmp_path, monkeypatch):
+    """The replay skips bars at or before `last_seen_candle`; a mark moved back re-opens settled
+    trades. The walk refuses before it writes, so the book and the outcomes stay as they were."""
+    _walked_book(tmp_path)
+    path = fco._positions_path(tmp_path)
+    before = path.read_text(encoding="utf-8")
+    real = fco.advance_member
+
+    def advance_then_rewind(state, *args, **kwargs):
+        rows = real(state, *args, **kwargs)
+        state["last_seen_candle"] = _day(1)
+        return rows
+
+    monkeypatch.setattr(fco, "advance_member", advance_then_rewind)
+    with pytest.raises(ToolError) as exc:
+        _walk(tmp_path, _frame(range(1, 7), stop_on={5}), now=_day(6))
+    assert exc.value.reason_code == fco.FORWARD_COHORT_POSITIONS_INVALID
+    assert path.read_text(encoding="utf-8") == before
+    assert fco.read_cohort_outcomes(tmp_path) == []
