@@ -865,11 +865,12 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"문턱 도달 {cohort.get('at_floor')} · CONFIRMED {counts.get('FORWARD_CONFIRMED', 0)} "
             f"(선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
         )
-        # Never a CONTRADICTED member (board_summary drops them); ranked by the lower bound, and
-        # each carries its judge status, so a lineage merely short of its floor reads as such.
+        # Never a CONTRADICTED member (board_summary drops them); ranked by the lower bound, whose
+        # spread is floored at the cohort's pooled spread (σ≥), and each carries its judge
+        # status, so a lineage merely short of its floor reads as such.
         leaders = cohort.get("leaders") or []
         if leaders:
-            lines.append("         상위 " + " · ".join(
+            lines.append(f"         상위(σ≥{_r(cohort.get('spread_floor_r'), signed=False)}R) " + " · ".join(
                 f"{m['candidate_id']} {m.get('timeframe')} n={m.get('priceable_count')} "
                 f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
                 f"{_COHORT_STATUS_MARKS.get(str(m.get('status')), m.get('status'))}"

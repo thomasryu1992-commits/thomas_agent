@@ -315,19 +315,41 @@ def test_the_report_judges_at_the_frozen_selection_time(tmp_path):
     # below the floor the verdict has no mean; the display bounds still read the one row
     (row,) = fco.read_cohort_outcomes(tmp_path)
     assert line["trade_mean_r"] == pytest.approx(net_result_r(row), abs=1e-6)
-    assert line["trade_lower_bound_r"] is None  # one trade has no spread
+    assert line["trade_lower_bound_r"] is None  # one trade is never bounded
+    assert line["trade_spread_floor_r"] is None  # nor pooled: one trade in the whole cohort
 
 
-def test_the_trade_lower_bound_is_the_judges_interval(monkeypatch):
-    rows = [{"created_at_utc": NOW, "net": n} for n in (1.0, -0.5, 2.0, 0.5)]
-    monkeypatch.setattr(fco, "forward_outcomes_for", lambda record, outcomes: rows)
-    monkeypatch.setattr(fco, "net_result_r", lambda row: row["net"])
-    bounds = fco.trade_bounds({}, [])
+def test_the_trade_lower_bound_floors_the_spread_at_the_pooled_one():
+    nets = (1.0, -0.5, 2.0, 0.5)  # stdev 1.0408
+    bounds = fco.trade_bounds(nets, spread_floor=None)
     assert bounds["trade_mean_r"] == pytest.approx(0.75)
-    # mean - 1.96 * stdev / sqrt(n): stdev of (1, -.5, 2, .5) is 1.0408
     assert bounds["trade_lower_bound_r"] == pytest.approx(0.75 - 1.96 * 1.040833 / 2, abs=1e-5)
-    monkeypatch.setattr(fco, "net_result_r", lambda row: 0.5)
-    assert fco.trade_bounds({}, [])["trade_lower_bound_r"] is None  # no spread, no bound
+    # a floor under the sample spread changes nothing; one over it is what is charged
+    assert fco.trade_bounds(nets, spread_floor=0.5) == bounds
+    assert fco.trade_bounds(nets, spread_floor=2.0)["trade_lower_bound_r"] == pytest.approx(0.75 - 1.96)
+    # one trade is never bounded, floor or not; no spread and no floor is no bound
+    assert fco.trade_bounds([5.2], spread_floor=1.4) == {"trade_mean_r": 5.2, "trade_lower_bound_r": None}
+    assert fco.trade_bounds([0.5, 0.5], spread_floor=None)["trade_lower_bound_r"] is None
+    assert fco.pooled_spread([[1.0], []]) is None
+    assert fco.pooled_spread([[1.0], [3.0]]) == pytest.approx(1.414214)
+
+
+def test_a_few_same_sized_wins_do_not_lead_a_longer_noisier_record(tmp_path, monkeypatch):
+    # the 2026-09-23 board after #950: fixed-take-profit winners with a spread of cost noise
+    nets = {"win4": [1.73, 1.74, 1.76, 1.73], "pair": [1.55, 1.53],
+            "steady": [1.98, -1.05, 1.93, 1.9, 1.96, 1.94], "loser": [-1.0, 1.8, -1.0]}
+    _install_cohort(tmp_path, *(_record(cid, family=cid) for cid in nets))
+    monkeypatch.setattr(fco, "priced_nets", lambda judged, rows: nets[judged["candidate_id"]])
+    monkeypatch.setattr(fco, "judge_forward", lambda judged, rows: {
+        "status": "FORWARD_INSUFFICIENT", "priceable_count": len(nets[judged["candidate_id"]])})
+    (cohort,) = fco.cohort_report(tmp_path)
+    lines = {m["candidate_id"]: m for m in cohort["members"]}
+    floor = lines["pair"]["trade_spread_floor_r"]
+    assert floor == pytest.approx(1.172322, abs=1e-5)  # every member's trades, pooled
+    assert lines["pair"]["trade_lower_bound_r"] < 0 < lines["steady"]["trade_lower_bound_r"]
+    board = fco.board_summary(tmp_path)
+    assert [m["candidate_id"] for m in board["leaders"]] == ["win4", "steady", "pair"]
+    assert board["spread_floor_r"] == floor
 
 
 # --- (5) option A at the pool's seeder --------------------------------------------------------
@@ -466,7 +488,7 @@ def test_the_board_shows_the_cohort_and_says_it_opens_no_door(tmp_path):
     assert board["last_walk_utc"] == NOW
     text = render_status_text(status)
     assert "forward 코호트 2계보 · 기록 2 · 문턱 도달 0 · CONFIRMED 0 (선별 전용" in text
-    assert "상위 cand_a 1d n=1 평균 " in text
+    assert "상위(σ≥" in text and "R) cand_a 1d n=1 평균 " in text
     assert "하한 ?R [판정 전] · cand_b 1d n=1" in text  # n=1 each: no bound, so by id
 
 
@@ -478,7 +500,7 @@ def _board_of(monkeypatch, *members):
 
 def _line(cid, status, n, *, mean=None, bound=None, timeframe="4h"):
     return {"candidate_id": cid, "timeframe": timeframe, "status": status, "priceable_count": n,
-            "trade_mean_r": mean, "trade_lower_bound_r": bound}
+            "trade_mean_r": mean, "trade_lower_bound_r": bound, "trade_spread_floor_r": 1.2}
 
 
 def test_a_contradicted_member_with_the_most_rows_is_never_a_leader(monkeypatch):
@@ -493,7 +515,7 @@ def test_a_contradicted_member_with_the_most_rows_is_never_a_leader(monkeypatch)
     assert [m["candidate_id"] for m in board["leaders"]] == ["young"]
     assert board["status_counts"] == {"FORWARD_CONTRADICTED": 2, "FORWARD_INSUFFICIENT": 1}
     text = render_status_text({"forward_cohort": board})
-    assert "상위 young 4h n=3 평균 +0.40R 하한 +0.10R [판정 전]" in text
+    assert "상위(σ≥1.20R) young 4h n=3 평균 +0.40R 하한 +0.10R [판정 전]" in text
     assert "short_a" not in text and "short_b" not in text
 
 

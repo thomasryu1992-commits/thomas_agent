@@ -24,6 +24,24 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The cohort board's lower bound floors its spread at the cohort's pooled spread**
+  (`forward_cohort.trade_bounds`, `forward_cohort.pooled_spread`, 2026-09-23; display only, option A).
+  - **Why:** after #950 the leaders were n=4 at `[1.73, 1.74, 1.76, 1.73]` and two n=2 pairs —
+    fixed-take-profit winners whose sample spread is cost noise (sd 0.016), so the bound sat 0.02R
+    under the mean and charged a four-trade record almost nothing. A t critical value in place of z
+    was measured first on the live cohort and left the top six unchanged: it multiplies the same
+    near-zero spread. The spread of a handful of trades is the number not to trust.
+  - **What changed:** the bound is `mean - CONFIDENCE_Z * max(sd, pooled) / sqrt(n)`, where `pooled`
+    is the standard deviation of every priced trade of every frozen cohort's members (1.39R over
+    519 trades that day); one trade is still never bounded, or a single +5.2R trade would lead.
+    On that day's store the leaders become n=4 +0.38R, n=6 +0.34R, n=3 +0.02R. The board line
+    shows the floor (`상위(σ≥1.39R)`), and `cohort_report` carries it as `trade_spread_floor_r`.
+  - **What it gives up, on the record:** #950's entry says the bound is the judge's own interval and
+    the board adds no statistic of its own. That no longer holds: the pooled floor is the board's,
+    and the judge's arithmetic is unchanged.
+  - **Tests:** 2 new, 3 extended in `test_mvp_runtime_crypto_forward_cohort.py`; removing the
+    floor is caught.
+
 - **The forward cohort board never leads with a refuted lineage** (`forward_cohort.board_summary`,
   `forward_cohort.trade_bounds`, 2026-09-23; display only, option A).
   - **Why:** the leaders were ranked CONFIRMED first, then most rows. With nothing CONFIRMED, most
