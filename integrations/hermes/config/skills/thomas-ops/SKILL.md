@@ -1,7 +1,7 @@
 ---
 name: thomas-ops
 description: "Thomas Agent 런타임 운영 절차 — 브리핑 형식, 이상 판정 기준, 상신 양식, 지표 해석"
-version: 1.5.6
+version: 1.5.7
 author: Thomas
 license: MIT
 platforms: [linux]
@@ -21,7 +21,7 @@ SOUL.md는 **판단 기준**을 담고, 이 스킬은 **절차**를 담는다. �
 
 1. `trading_switch_status` — 런타임이 실행 가능 상태인가
 2. `trading_status` — 편중, 마지막 사이클, 게이트 섀도우, **페이퍼** 포지션
-3. `trading_readiness` — **실주문이 나갈 수 있는가 / 실제로 무장된 전략이 있는가**
+3. `trading_readiness` — **새 라이브 진입이 가능한가(`LIVE ENTRY POSSIBLE`) / 실제로 무장된 전략이 있는가**
 4. `paper_performance` — 순기대값, 승률, 최대낙폭
 5. `task_list` — 진행 중 작업
 
@@ -81,10 +81,11 @@ cron 실행에는 thomas-switch 도구가 주어지지 않으므로 그때는 �
 
 **`HELD`는 이상이 아니다.** "끝까지 돌았고 이번에 낼 주문이 없었다"는 뜻이다. 정상 상태다.
 
-**`live entries: armed`도 "정상"이 아니다.** 그건 건강 지표가 아니라 **"실주문이 나갈 수
-있음"** 이라는 상태다. 판정표의 정상 열에 넣지 말고 사실 그대로 한 줄로 전해라. `DISARMED`
-역시 고장이 아니라 "신규 진입만 막힘, 열린 포지션은 종료됨, 페이퍼는 무관"이라는 뜻이다 —
-둘 다 이상 판정 대상이 아니다.
+**`live entries: armed`도 "정상"이 아니다.** 그건 건강 지표가 아니라 **"런타임이 신규 진입을
+막지 않음"** 이라는 상태다. 새 진입이 실제로 열리는지는 단계·무장 전략·게이트·거래소 계약까지
+모두 걸려 있고, 그 답은 `trading_readiness`의 `LIVE ENTRY POSSIBLE`이다(§4). 판정표의 정상 열에
+넣지 말고 사실 그대로 한 줄로 전해라. `DISARMED` 역시 고장이 아니라 "신규 진입만 막힘, 열린
+포지션은 종료됨, 페이퍼는 무관"이라는 뜻이다 — 둘 다 이상 판정 대상이 아니다.
 
 ### 권한 만료를 "차단됐다"로 읽지 마라
 
@@ -93,22 +94,31 @@ cron 실행에는 thomas-switch 도구가 주어지지 않으므로 그때는 �
 환경변수다. 그래서 `live_trading` 만료를 보고 "실주문은 막혀 있을 것"이라고 말하면 **정반대로
 틀린다.**
 
-> **그런데 그 환경변수를 네 보드에서 읽지 마라.** `trading_readiness` 의
-> `[FAIL] live_trading_opt_in MVP_LIVE_TRADING is not 'real'` 행은 **네가 도는 컨테이너**
-> 얘기이고 거기서는 **항상 FAIL** 이다. 게이트가 그 변수라는 것과, 그 변수의 값을 네가 볼 수
-> 있다는 것은 다른 얘기다. 이 혼동으로 2026-08-10 같은 날 97분 간격으로 "거래 가능"과
-> "실주문은 나가지 않습니다"를 둘 다 단정한 기록이 있다.
-> 보드에 `!!` 배너가 붙어 오면 `live_trading_opt_in` / `confirmation_phrase` /
-> `account_visibility` / `market_data_visibility` 네 행과 `guard dry-run: BLOCKED` 줄은
-> **인용조차 하지 마라.** 라이브 진입이 가능한지의 답은 `[data]` 줄의
-> **`live_entry_possible`** 하나다(`null`은 "알 수 없음"). 그 값이 무엇으로 정해지는지,
-> `false`·`null`일 때 무엇을 인용할지는 `trading_readiness` 도구 설명을 그대로 따라라.
-> `live_gate_recorded`·`live_armed_strategies` 줄은 그 조건 중 일부일 뿐 결론이 아니다.
+> **그런데 그 환경변수를 네 보드에서 읽지 마라.** `trading_readiness` 의 env 행
+> (`live_trading_opt_in` / `confirmation_phrase` / `account_visibility` /
+> `market_data_visibility`)은 **네가 도는 컨테이너** 얘기다. 거기서는 `n/a` 로 나오고, 거래
+> 프로세스의 새 기록이 게이트가 닫혔다고 할 때만 `FAIL` 로 나온다 — 어느 쪽이든 네 컨테이너의
+> 값이다. 게이트가 그 변수라는 것과, 그 변수의 값을 네가 볼 수 있다는 것은 다른 얘기다. 이
+> 혼동으로 2026-08-10 같은 날 97분 간격으로 "거래 가능"과 "실주문은 나가지 않습니다"를 둘 다
+> 단정한 기록이 있다.
+> 보드에 `!!` 배너가 붙어 오면 `n/a` 행과 `guard dry-run: BLOCKED` 줄은 **인용조차 하지
+> 마라.** 새 라이브 진입이 가능한가의 답은 **`LIVE ENTRY POSSIBLE` 한 줄**이다 — 보드의 첫 줄과
+> 마지막 줄, `[data]` 의 `live_entry_possible` 이 같은 답이다(`null`은 "알 수 없음"). 그 값이
+> 무엇으로 정해지는지, `false`·`null`일 때 무엇을 인용할지는 `trading_readiness` 도구 설명과
+> §4를 그대로 따라라. `live_gate_recorded`·`live_armed_strategies` 줄은 그 조건 중 일부일 뿐
+> 결론이 아니다.
 
-**"실주문이 나갈 수 있는가"의 유일한 권위 있는 답은 `trading_readiness`다.** 권한 목록에서
-추론하지 마라. 만료를 발견하면 "권한 기록이 만료돼 있다"까지만 말하고, 차단 여부는
-`trading_readiness`를 불러서 `live_entry_possible`로 확인해라. 보드의 `READY`는 그 보드를
-그린 프로세스의 점검 결과일 뿐이다 — **`READY`만 보고 "실주문이 나갈 수 있다"고 말하지 마라.**
+**"새 라이브 진입이 가능한가"의 유일한 권위 있는 답은 `trading_readiness`의 `LIVE ENTRY
+POSSIBLE`이다.** 권한 목록에서 추론하지 마라. 만료를 발견하면 "권한 기록이 만료돼 있다"까지만
+말하고, 차단 여부는 `trading_readiness`를 불러서 확인해라. **`THIS PROCESS: READY` / `NOT READY`
+는 그 보드를 돌린 컨테이너의 점검 결과일 뿐 답이 아니다** — `READY` 를 보고 "실주문이 나갈 수
+있다"고, `NOT READY` 를 보고 "라이브가 꺼져 있다"고 말하지 마라. `[data]` 의
+`infrastructure_ready` 도 같다.
+
+**`NO` 는 "주문이 하나도 안 나간다"가 아니다.** 막히는 것은 **새 진입**이다. 열린 라이브
+포지션의 청산(reduceOnly)·보호 주문 확인·시간 청산은 단계와 무관하게 계속 나간다 — 보드의
+`NOTE` 가 "open positions still close"라고 적는 이유다. "실주문이 나가지 않는다"고 말하지 말고
+"새 라이브 진입이 열리지 않는다"고 말해라.
 
 ## 3. 지표 해석
 
@@ -134,18 +144,39 @@ cron 실행에는 thomas-switch 도구가 주어지지 않으므로 그때는 �
 
 ## 4. 라이브 여부를 물었을 때
 
-readiness 보드는 **자기가 실행되는 컨테이너 기준**으로 답한다. 관측용 컨테이너에는 거래
-환경변수가 없으므로, 거기서 나온 보드는 `live_trading_opt_in FAIL`을 보일 수 있다.
+답은 **`LIVE ENTRY POSSIBLE`** 이다. 보드는 이 줄로 시작하고, 마지막 줄에서 같은 답을 이유와
+함께 한 줄로 되풀이한다:
 
-그 경우 보드 상단에 이런 경고가 붙는다:
+    === live trading readiness ===
+    LIVE ENTRY POSSIBLE: NO - no autonomous entry can open now
+      blocked by : execution_stage (STAGE_PAPER), armed_strategy_count (NONE_ARMED)
+      ...
+    LIVE ENTRY POSSIBLE: NO - blocked by execution_stage (STAGE_PAPER), armed_strategy_count (NONE_ARMED)
+
+- **`YES`** — 다음 사이클이 **실제 포지션을 새로 열 수 있다.** 그대로 전해라.
+- **`NO`** — `blocked by` 의 항목(`component (REASON)`)을 **모두** 원문 그대로 인용해라.
+  첫 줄이 `NO - for most contexts; a minority may still enter` 이거나 마지막 줄 끝에
+  `; a minority of contexts may still enter` 가 붙어 있으면 막힌 것은 대부분의 컨텍스트이고
+  **일부는 여전히 실제 포지션을 새로 열 수 있다** — "진입 불가"로 줄이지 마라.
+- **`UNKNOWN`** — 이 컨테이너가 볼 수 없는 사실이 있다. `unknown` 목록을 인용하고, "꺼져
+  있다"도 "켜져 있다"도 말하지 마라.
+
+어느 경우든 열린 포지션의 청산은 이 답과 무관하게 계속된다(§2).
+
+`[data]` 줄로 답할 때도 같다: `live_entry_possible` 이 `true` / `false` / `null` 이고,
+`false` 면 `readiness.blocking`, `null` 이면 `readiness.unknown` 을 인용한다.
+
+보드의 행(`[PASS]` / `[FAIL]` / `[n/a ]`)과 `THIS PROCESS:` 줄은 **이 보드를 돌린 컨테이너**의
+점검이다. 관측용 컨테이너에는 거래 환경변수가 없으므로 그 답 아래, 행 위에 이런 경고가 붙는다:
 
     !! THIS PROCESS CANNOT SEE THE LIVE-TRADING ENVIRONMENT
        the trading process recorded the gate OPEN at ...
 
-**이 경고가 있으면 "라이브가 꺼져 있다"고 말하면 안 된다.** `live_gate_recorded` 줄이
-거래 프로세스가 실제로 기록한 게이트 값이다. 그것을 전하되, 진입이 가능한지는
-`live_entry_possible`로 답해라 — 게이트가 OPEN이어도 다른 조건 때문에 `false`일 수 있고,
-`null`이면 "알 수 없다"고 말해라.
+둘째 줄은 거래 프로세스의 기록이 어떤지 말한다 — 게이트를 OPEN으로 기록한 시각, 지금에 대한
+말이 아닌 오래된 기록(`the trading process's last record (...)` 다음 줄에 두 시간 넘음 / 이
+시계보다 앞선 날짜 / 날짜를 읽을 수 없음), 또는 `no record of the trading process's gate is
+readable here`. **이 경고가 있으면 어느 경우에도 "라이브가 꺼져 있다"고 말하면 안 된다.** 답은
+위의 `LIVE ENTRY POSSIBLE` 이다.
 
 ## 5. 상신 양식 (C등급)
 
