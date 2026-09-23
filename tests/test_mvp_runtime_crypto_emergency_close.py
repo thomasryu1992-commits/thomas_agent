@@ -402,6 +402,80 @@ def test_the_approved_positions_close_reduce_only_and_the_grant_is_spent_once(tm
     assert wired.control.load().halt_level == HALT_HARD
 
 
+def _race(monkeypatch, wired, approval_id, *, between=None):
+    """Two confirms of one grant, forced rather than raced: the loser's validation reads APPROVED, then
+    runs the winner to completion before it returns. ``between`` runs after the winner, to put the
+    machine where the loser would find it mid-close. The guard goes up BEFORE the nested call, or the
+    winner's own validation recurses."""
+    real_validate = approval.validate_spendable_approval
+    raced: dict[str, Any] = {}
+
+    def validate_then_let_the_winner_through(*args, **kwargs):
+        validated = real_validate(*args, **kwargs)
+        if "winner" not in raced:
+            raced["winner"] = None
+            raced["winner"] = door.run_confirm(root=wired.root, now=NOW, approval_id=approval_id)
+            if between is not None:
+                between()
+        return validated
+
+    monkeypatch.setattr(approval, "validate_spendable_approval", validate_then_let_the_winner_through)
+    with pytest.raises(MvpRuntimeError) as exc:
+        door.run_confirm(root=wired.root, now=NOW, approval_id=approval_id)
+    return raced["winner"], exc.value
+
+
+def _spent_once(root, approval_id):
+    rows = [r for r in ApprovalStore.default(root).read_all() if r["approval_id"] == approval_id]
+    assert [r["status"] for r in rows].count("CONSUMED") == 1
+
+
+@requires_local_core
+def test_the_loser_of_two_confirms_is_refused_already_consumed_not_nothing_booked(tmp_path, monkeypatch):
+    """The winner closed both positions, so the loser met an empty book. It was refused
+    EMERGENCY_CLOSE_NOTHING_BOOKED "nothing was spent", which hid that the grant was already spent."""
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+    winner, refused = _race(monkeypatch, wired, approval_id)
+    assert refused.reason_code == "ALREADY_CONSUMED"
+    assert live_route.EMERGENCY_CLOSE_NOTHING_BOOKED in refused.reason
+    assert winner["report"]["status"] == "COMPLETE"
+    assert len(wired.venue.submitted) == 2, "the loser sends nothing"
+    _spent_once(tmp_path, approval_id)
+
+
+@requires_local_core
+def test_a_loser_that_arrives_mid_close_is_refused_already_consumed_not_nothing_closable(tmp_path, monkeypatch):
+    """Mid-close: the book still lists the positions and the venue is already flat, so the loser was
+    refused EMERGENCY_CLOSE_NOTHING_CLOSABLE after its account read."""
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+
+    def book_not_yet_cleared_and_venue_flat():
+        store = live_route.select_live_position_store(now=NOW, root=tmp_path)
+        for position in (_BTC, _ETH):
+            store.save_position(position)
+        monkeypatch.setattr(live_route, "read_account", lambda **kw: (_snapshot(), {}))
+
+    winner, refused = _race(monkeypatch, wired, approval_id, between=book_not_yet_cleared_and_venue_flat)
+    assert refused.reason_code == "ALREADY_CONSUMED"
+    assert live_route.EMERGENCY_CLOSE_NOTHING_CLOSABLE in refused.reason
+    assert len(wired.venue.submitted) == 2
+    _spent_once(tmp_path, approval_id)
+
+
+@requires_local_core
+def test_a_single_confirm_with_nothing_booked_still_says_nothing_booked(tmp_path, monkeypatch):
+    """The relabel reads the grant: while it is still APPROVED, the refusal is the door's own."""
+    wired = _wire(tmp_path, monkeypatch)
+    approval_id = _granted(wired)
+    store = live_route.select_live_position_store(now=NOW, root=tmp_path)
+    for position in (_BTC, _ETH):
+        store.clear_position(position["symbol"], position_id=position["position_id"])
+    refused = _refused(wired, approval_id, live_route.EMERGENCY_CLOSE_NOTHING_BOOKED)
+    assert "ALREADY_CONSUMED" not in refused.reason
+
+
 @requires_local_core
 @pytest.mark.parametrize("held,reason", [
     ((_held(_BTC), _held(_ETH, quantity=0.04)), "POSITION_QUANTITY_MISMATCH"),
