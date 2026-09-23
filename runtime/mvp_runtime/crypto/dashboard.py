@@ -520,6 +520,11 @@ _GATE_UNDECIDED = "판단 불가"
 # (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
 
 
+# The judge status a forward-cohort leader carries on the board. CONTRADICTED is absent on
+# purpose: such a member is never a leader.
+_COHORT_STATUS_MARKS = {"FORWARD_CONFIRMED": "[확정]", "FORWARD_INSUFFICIENT": "[판정 전]"}
+
+
 def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
     """R-values to two decimals. ``-0.30682667R`` is not more truthful than ``-0.31R``, it
     is only harder to scan, and this board is read on a phone. Signed by default because
@@ -860,11 +865,15 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"문턱 도달 {cohort.get('at_floor')} · CONFIRMED {counts.get('FORWARD_CONFIRMED', 0)} "
             f"(선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
         )
+        # Never a CONTRADICTED member (board_summary drops them); ranked by the lower bound, and
+        # each carries its judge status, so a lineage merely short of its floor reads as such.
         leaders = cohort.get("leaders") or []
         if leaders:
             lines.append("         상위 " + " · ".join(
                 f"{m['candidate_id']} {m.get('timeframe')} n={m.get('priceable_count')} "
-                f"{_r(m.get('mean_net_r'))}R" for m in leaders))
+                f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
+                f"{_COHORT_STATUS_MARKS.get(str(m.get('status')), m.get('status'))}"
+                for m in leaders))
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"

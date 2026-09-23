@@ -27,7 +27,8 @@ clock without a slot.
   which ``forward_book.read_forward_outcomes`` refuses as tampering — the arming door never
   reads a cohort row.
 - **A report** (:func:`cohort_report`): each member's ``judge_forward`` numbers over its cohort
-  rows, and the cohort's K. Display only.
+  rows, its trade-level mean and lower bound (:func:`trade_bounds`), and the cohort's K. Display
+  only; :func:`board_summary` never lists a FORWARD_CONTRADICTED member among its leaders.
 
 **What option A decides, and where that lives in code.** Cohort evidence never reaches the LIVE
 door; it may inform which lineage an operator promotes into the pool, and then the pool's
@@ -53,7 +54,9 @@ the pool's files.
 from __future__ import annotations
 
 import json
+import math
 import os
+import statistics
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -66,8 +69,9 @@ from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality, rank_candidates
-from .forward_confirmation import judge_forward, selection_cutoff
+from .forward_confirmation import forward_outcomes_for, judge_forward, selection_cutoff
 from .market_data import TIMEFRAMES
+from .outcome_math import net_result_r
 from .pool_admission import (
     OBSERVATION_MIN_BACKTEST_CLOSED,
     PROMOTABLE_COST_BASIS_RANKS,
@@ -77,6 +81,7 @@ from .pool_admission import (
 )
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import _lineage_key
+from .robustness import CONFIDENCE_Z
 from .state import state_dir
 from .strategy import StrategySpec
 from .strategy_artifact import admission_evidence
@@ -487,6 +492,35 @@ def run_cohort_walk(
 
 # --- the report -------------------------------------------------------------------------------
 
+def trade_bounds(record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """The lineage's per-trade net mean and its lower bound ``mean - CONFIDENCE_Z * sd / sqrt(n)``,
+    for display. Reads only; the judge never sees these.
+
+    The same rows ``judge_forward`` prices — ``forward_outcomes_for`` at the record's cutoff, a
+    row that cannot price itself or place itself in time dropped — and the bound is the judge's
+    own interval, the one whose failure at the trade floor is FORWARD_CONTRADICTED. Unlike the
+    verdict, both are given below the floor, which is where every member sits in a young cohort.
+    The bound is None where the judge could not compute it either: fewer than two trades, or
+    no spread."""
+    nets: list[float] = []
+    for row in forward_outcomes_for(record, outcomes):
+        net = net_result_r(row)
+        if net is None:
+            continue
+        try:
+            timeutil.parse_iso(str(row.get("created_at_utc") or ""))
+        except (ValueError, TypeError):
+            continue
+        nets.append(float(net))
+    mean = statistics.mean(nets) if nets else None
+    bound = None
+    if len(nets) >= 2:
+        spread = statistics.stdev(nets)
+        if spread > 0:
+            bound = round(mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)), 6)
+    return {"trade_mean_r": None if mean is None else round(mean, 6), "trade_lower_bound_r": bound}
+
+
 def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     """Per cohort, each member's forward numbers over the cohort's own rows. Reads only.
 
@@ -505,7 +539,8 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
             if record is None:
                 lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED"})
                 continue
-            verdict = judge_forward({**record, "created_at_utc": member.get("selected_at_utc")}, rows)
+            judged = {**record, "created_at_utc": member.get("selected_at_utc")}
+            verdict = judge_forward(judged, rows)
             lines.append({
                 "candidate_id": member.get("candidate_id"),
                 "strategy_family": member.get("strategy_family"),
@@ -513,6 +548,7 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 "context": _context_key(member),
                 "context_size": (cohort.get("context_sizes") or {}).get(_context_key(member)),
                 **verdict,
+                **trade_bounds(judged, rows),
             })
         report.append({
             "cohort_id": cohort.get("cohort_id"), "frozen_at_utc": cohort.get("frozen_at_utc"),
@@ -525,22 +561,34 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
     """What the daily board shows of the cohort; None before any cohort is frozen. Reads only.
 
     Counts over every frozen cohort's members — with any settled row, at their timeframe's
-    trade floor, and per judge status — and the three members an operator would read first:
-    judged CONFIRMED before anything else, then the most rows. Under option A none of this opens
-    a door; it is the record an operator may choose a promotion from."""
+    trade floor, and per judge status — and the three members an operator would read first.
+    Under option A none of this opens a door, but the leaders ARE the list an operator may
+    choose a pool promotion from, so:
+
+    - **A FORWARD_CONTRADICTED member is never a leader.** Its own record refuted it. Until
+      2026-09-23 the key was CONFIRMED, then most rows — and with nothing CONFIRMED, most rows
+      meant the oldest trading lineages, whose record was long enough to be judged and fail:
+      that day's line was three CONTRADICTED 4h shorts at -0.23R, -0.55R and -0.44R.
+    - **Then CONFIRMED first, then the trade-level lower bound, highest first**
+      (:func:`trade_bounds`), not the mean. The mean has the mirror failure of row count: one
+      +2R trade at n=1 outranks +0.3R over twenty. The bound charges a short record for its
+      noise, and it is the judge's own interval — the number the judge will read when the
+      member reaches its floor — so the board sorts by no statistic of its own. A member whose
+      bound cannot be computed yet (one trade, or no spread) ranks after every member with one."""
     cohorts = read_cohorts(root)
     if not cohorts:
         return None
-    from .forward_confirmation import FORWARD_CONFIRMED, min_forward_trades
+    from .forward_confirmation import FORWARD_CONFIRMED, FORWARD_CONTRADICTED, min_forward_trades
 
     members = [m for cohort in cohort_report(root) for m in cohort["members"]]
     status_counts: dict[str, int] = {}
     for m in members:
         status_counts[str(m.get("status"))] = status_counts.get(str(m.get("status")), 0) + 1
     ranked = sorted(
-        (m for m in members if (m.get("priceable_count") or 0) > 0),
-        key=lambda m: (m.get("status") != FORWARD_CONFIRMED, -(m.get("priceable_count") or 0),
-                       -(m.get("mean_net_r") or 0.0), str(m.get("candidate_id"))),
+        (m for m in members
+         if (m.get("priceable_count") or 0) > 0 and m.get("status") != FORWARD_CONTRADICTED),
+        key=lambda m: (m.get("status") != FORWARD_CONFIRMED, m.get("trade_lower_bound_r") is None,
+                       -(m.get("trade_lower_bound_r") or 0.0), str(m.get("candidate_id"))),
     )
     last_walk = None
     try:
@@ -555,7 +603,8 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
                         if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
         "status_counts": dict(sorted(status_counts.items())),
         "leaders": [{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
-                                           "mean_net_r", "status")} for m in ranked[:3]],
+                                           "trade_mean_r", "trade_lower_bound_r", "status")}
+                    for m in ranked[:3]],
         "last_walk_utc": last_walk,
     }
 

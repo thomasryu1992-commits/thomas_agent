@@ -24,6 +24,23 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort board never leads with a refuted lineage** (`forward_cohort.board_summary`,
+  `forward_cohort.trade_bounds`, 2026-09-23; display only, option A).
+  - **Why:** the leaders were ranked CONFIRMED first, then most rows. With nothing CONFIRMED, most
+    rows meant the oldest trading lineages — long enough to be judged and fail — so the first board
+    showed three FORWARD_CONTRADICTED 4h shorts (-0.23R, -0.55R, -0.44R) as 상위. Under option A that
+    line is what an operator may choose a pool promotion from.
+  - **What changed:** a CONTRADICTED member is never a leader. The rest rank CONFIRMED first, then by
+    the trade-level lower bound `mean - CONFIDENCE_Z * sd / sqrt(n)`, highest first; a member with no
+    bound yet (one trade, or no spread) ranks after every member with one. The bound, not the mean:
+    the mean has the mirror failure of row count (one +2R trade outranks +0.3R over twenty), and the
+    bound is the judge's own interval, so the board adds no statistic of its own. `cohort_report`
+    carries `trade_mean_r` / `trade_lower_bound_r` over the rows `judge_forward` prices, below the
+    floor too, where the verdict has no mean. Each leader shows its status (`[확정]` / `[판정 전]`).
+  - **Not changed:** `judge_forward`, its verdict, every door and every promotion path.
+  - **Tests:** 3 more and 2 extended in `test_mvp_runtime_crypto_forward_cohort.py`; restoring the
+    CONTRADICTED member to the leaders is caught.
+
 - **The forward cohort walks daily and shows on the board** (`scheduler.KIND_FORWARD_COHORT`,
   `forward_cohort.board_summary`, 2026-09-23; Phase 1 under option A, second PR).
   - **The fire:** `crypto_forward_cohort` is a MAINTENANCE kind, and a financial one for delegation by
