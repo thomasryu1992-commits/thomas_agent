@@ -101,6 +101,7 @@ FORWARD_COHORT_UNREADABLE = "FORWARD_COHORT_UNREADABLE"
 FORWARD_COHORT_TAMPERED = "FORWARD_COHORT_TAMPERED"
 FORWARD_COHORT_EMPTY = "FORWARD_COHORT_EMPTY"
 FORWARD_COHORT_LOCKED = "FORWARD_COHORT_LOCKED"
+FORWARD_COHORT_POSITIONS_INVALID = "FORWARD_COHORT_POSITIONS_INVALID"
 
 # Pre-cutoff bars fetched so every indicator is warm by the first counted bar — the seeder's
 # figure, for the seeder's reason (the deepest consumer is a 100-bar percentile window).
@@ -355,7 +356,15 @@ def read_cohort_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def load_positions(root: Path | None = None) -> dict[str, Any]:
-    """The walker's per-member-context state. Missing is empty; unreadable refuses."""
+    """The walker's per-member-context state. Missing is empty; unreadable refuses; so does a book
+    this version did not write or an entry that does not say which member it walks.
+
+    The outcomes the walker settles are sealed rows, but this file is mutable state, and what it
+    holds decides where each member's replay resumes. So an entry is checked, not trusted
+    (2026-09-23): its key is its own ``(lineage, symbol, timeframe)``, the lineage names a
+    candidate a frozen cohort holds, the timeframe is one the market data knows, and its candle
+    marks parse and run forward. A malformed entry is refused rather than dropped, since dropping
+    it would restart that member from its selection and re-open trades already settled."""
     path = _positions_path(root)
     if not path.is_file():
         return {"entries": {}}
@@ -365,7 +374,65 @@ def load_positions(root: Path | None = None) -> dict[str, Any]:
         raise ToolError(FORWARD_COHORT_UNREADABLE, f"forward cohort positions unreadable: {exc}") from exc
     if not isinstance(raw, Mapping) or not isinstance(raw.get("entries"), Mapping):
         raise ToolError(FORWARD_COHORT_UNREADABLE, "forward cohort positions are not a book-shaped mapping")
-    return {"entries": {str(k): dict(v) for k, v in raw["entries"].items() if isinstance(v, Mapping)}}
+    if raw.get("forward_cohort_positions_version") != POSITIONS_VERSION:
+        raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
+                        f"forward cohort positions carry version "
+                        f"{raw.get('forward_cohort_positions_version')!r}, not {POSITIONS_VERSION!r}")
+    entries = {str(key): _checked_entry(str(key), value) for key, value in raw["entries"].items()}
+    members = member_candidate_ids(root) if entries else frozenset()
+    strangers = sorted(key for key, entry in entries.items()
+                       if entry["lineage"].removeprefix("cand:") not in members)
+    if strangers:
+        raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
+                        f"forward cohort positions walk lineages no frozen cohort holds: {', '.join(strangers[:5])}"
+                        + (f" and {len(strangers) - 5} more" if len(strangers) > 5 else ""))
+    return {"entries": entries}
+
+
+def _checked_entry(key: str, value: Any) -> dict[str, Any]:
+    """One entry of the positions book, or FORWARD_COHORT_POSITIONS_INVALID naming what is wrong."""
+    def invalid(why: str) -> ToolError:
+        return ToolError(FORWARD_COHORT_POSITIONS_INVALID, f"forward cohort position {key!r}: {why}")
+
+    if not isinstance(value, Mapping):
+        raise invalid("is not a mapping")
+    entry = dict(value)
+    lineage, symbol, timeframe = entry.get("lineage"), entry.get("symbol"), entry.get("timeframe")
+    if not (isinstance(lineage, str) and lineage.startswith("cand:") and len(lineage) > len("cand:")):
+        raise invalid(f"lineage {lineage!r} is not a cohort candidate lineage")
+    if timeframe not in TIMEFRAMES:
+        raise invalid(f"timeframe {timeframe!r} is not one the market data knows")
+    if not (isinstance(symbol, str) and symbol) or key != forward_book.book_key(lineage, symbol, timeframe):
+        raise invalid("its key is not its own (lineage, symbol, timeframe)")
+    marks = {}
+    for field in ("first_seen_candle", "last_seen_candle"):
+        mark = entry.get(field)
+        if mark is None:
+            continue
+        try:
+            marks[field] = timeutil.parse_iso(str(mark))
+        except (ValueError, TypeError):
+            raise invalid(f"{field} {mark!r} does not parse") from None
+    if len(marks) == 2 and marks["first_seen_candle"] > marks["last_seen_candle"]:
+        raise invalid("first_seen_candle is after last_seen_candle")
+    if "last_seen_candle" in marks and "first_seen_candle" not in marks:
+        raise invalid("has a last_seen_candle but no first_seen_candle")
+    return entry
+
+
+def _assert_marks_run_forward(before: Mapping[str, Any], after: Mapping[str, Any]) -> None:
+    """Refuse to write a book in which a member's last seen candle moved back or disappeared: the
+    replay skips bars at or before that mark, so moving it back would re-open settled trades."""
+    for key, old in before.items():
+        old_mark = old.get("last_seen_candle")
+        if old_mark is None:
+            continue
+        new = after.get(key)
+        new_mark = None if new is None else new.get("last_seen_candle")
+        if new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark)):
+            raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
+                            f"forward cohort position {key!r}: last_seen_candle would move from "
+                            f"{old_mark} to {new_mark}; nothing was written")
 
 
 def _write_positions(book: Mapping[str, Any], *, root: Path | None, now: str) -> None:
@@ -477,7 +544,10 @@ def run_cohort_walk(
         path.parent.mkdir(parents=True, exist_ok=True)
         with locked(path.with_suffix(".lock"), code=FORWARD_COHORT_LOCKED, label="forward cohort positions"):
             book = load_positions(root)
+            marks_before = {key: {"last_seen_candle": entry.get("last_seen_candle")}
+                            for key, entry in book["entries"].items()}
             _advance(book)
+            _assert_marks_run_forward(marks_before, book["entries"])
             forward_book.append_sealed_rows(
                 settled_rows, path=_outcomes_path(root), read=lambda: read_cohort_outcomes(root))
             _write_positions(book, root=root, now=now)

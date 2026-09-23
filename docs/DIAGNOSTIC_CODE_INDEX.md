@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **622** distinct codes across **1201** raise sites
+- **623** distinct codes across **1205** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **134** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -391,12 +391,16 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FORWARDED_MESSAGE` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 243 | `verify_control_channel` | `message.is_forwarded` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 157 | `_parse_book` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 174 | `load_book` | `—` |
-| `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 271 | `freeze_cohort` | `not members` |
-| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 149 | `read_cohorts` | `not isinstance(record, dict) or record.get('forward_cohort_version') != FORWARD_COHORT_VERSION` |
-| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 154 | `read_cohorts` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 144 | `read_cohorts` | `—` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 365 | `load_positions` | `—` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 367 | `load_positions` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
+| `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 272 | `freeze_cohort` | `not members` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 378 | `load_positions` | `raw.get('forward_cohort_positions_version') != POSITIONS_VERSION` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 386 | `load_positions` | `strangers` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 395 | `invalid` | `—` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 433 | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |
+| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 150 | `read_cohorts` | `not isinstance(record, dict) or record.get('forward_cohort_version') != FORWARD_COHORT_VERSION` |
+| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 155 | `read_cohorts` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 145 | `read_cohorts` | `—` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 374 | `load_positions` | `—` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 376 | `load_positions` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
 | `FORWARD_COHORT_WALK_FAILED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1404 | `_execute` | `summary['contexts'] and (not summary['walked'])` |
 | `FORWARD_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 251 | `read_sealed_rows` | `settlement_id in seen_settlements` |
 | `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 238 | `read_sealed_rows` | `record.get('provenance') != provenance` |

@@ -24,6 +24,29 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort's positions book is checked, not trusted** (`forward_cohort.load_positions`,
+  2026-09-23; item PR-LIVE-11 of an external follow-up plan).
+  - **Why:** the walker's outcomes are sealed rows, but `forward_cohort_positions.json` is mutable
+    state, and it decides where each member's replay resumes. The loader:
+    - never checked the version it wrote;
+    - silently dropped an entry that was not a mapping. A dropped member restarts from its selection
+      and re-opens trades already settled.
+  - **Now refused with `FORWARD_COHORT_POSITIONS_INVALID`:**
+    - a book of another version;
+    - an entry that is not a mapping;
+    - an entry filed under a key that is not its own `(lineage, symbol, timeframe)`;
+    - a lineage that is not `cand:<id>`, or names a candidate no frozen cohort holds;
+    - a timeframe the market data does not know;
+    - candle marks that do not parse, run backward, or give a last mark with no first.
+  - **At write time**, the walk refuses before writing anything if a member's `last_seen_candle`
+    would move back or vanish. The book and the outcomes are left as they were.
+  - **Unchanged:** an unreadable file is still `FORWARD_COHORT_UNREADABLE`, and a missing file is
+    still an empty book.
+  - **Effect today: none.** The live book's 279 entries load unchanged. Only the walker reads the
+    book, so a refusal stops the walk and leaves the damaged file for inspection.
+  - **Not in scope:** `forward_book.load_book` has the same two gaps (no version check, silent drop),
+    and it feeds the LIVE door's forward evidence. That is left for a change of its own.
+
 - **The promotion door refuses a candidate row with no self-hash** (2026-09-23, Thomas's decision
   after a review of an external refactor roadmap).
   - **Why:** `read_candidates` recomputes every `record_sha256` it finds and refuses a mismatch, but a
