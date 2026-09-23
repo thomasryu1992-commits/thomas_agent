@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 
+from runtime.read_only_kernel import integrity
 from runtime.mvp_runtime.crypto import factory
 from runtime.mvp_runtime.crypto.paper import (
     MIN_REGIME_TRADES_TO_EXCLUDE,
@@ -253,7 +254,9 @@ def test_promotion_copies_the_regime_evidence_onto_the_entry(monkeypatch, tmp_pa
                                  "per_regime": per_regime},
         },
     }
-    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [candidate])
+    # Stamped as the append door stamps every row, so the record-stamp gate passes it.
+    monkeypatch.setattr(prom.pool_store, "read_candidates",
+                        lambda root: [{**candidate, "record_sha256": integrity.sha256_record(candidate)}])
     monkeypatch.setattr(prom.pool_store, "assert_promotable_cost_basis", lambda records: None)
     monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
 
@@ -289,7 +292,9 @@ def test_a_candidate_without_the_block_promotes_with_no_evidence(monkeypatch, tm
         "backtest_evidence": {"closed_count": 24, "expectancy": 0.2, "bars_replayed": 12000,
                               "robustness": {"holdout_status": "CONFIRMED"}},
     }
-    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [candidate])
+    # Stamped as the append door stamps every row, so the record-stamp gate passes it.
+    monkeypatch.setattr(prom.pool_store, "read_candidates",
+                        lambda root: [{**candidate, "record_sha256": integrity.sha256_record(candidate)}])
     monkeypatch.setattr(prom.pool_store, "assert_promotable_cost_basis", lambda records: None)
     monkeypatch.setattr(prom.pool_store, "assert_promotable_evidence_depth", lambda records: None)
     installed: dict = {}

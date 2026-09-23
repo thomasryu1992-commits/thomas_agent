@@ -36,7 +36,9 @@ def _definitions() -> list[str]:
 
 def test_pool_re_exports_every_public_name_as_the_same_object():
     public = [name for name in _definitions() if not name.startswith("_")]
-    assert len(public) == 34
+    # 34 after PR7e-10; 36 since the record-stamp door (2026-09-23) added RECORD_STAMP_FIELD and
+    # assert_promotable_record_stamp. New code imports them from pool_admission (the facade test).
+    assert len(public) == 36
     assert [name for name in public if getattr(pool, name, None) is not getattr(pool_admission, name)] == []
 
 
