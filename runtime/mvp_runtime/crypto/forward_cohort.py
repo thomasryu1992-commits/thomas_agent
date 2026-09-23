@@ -521,6 +521,56 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     return report
 
 
+def board_summary(root: Path | None = None) -> dict[str, Any] | None:
+    """What the daily board shows of the cohort; None before any cohort is frozen. Reads only.
+
+    Counts over every frozen cohort's members — with any settled row, at their timeframe's
+    trade floor, and per judge status — and the three members an operator would read first:
+    judged CONFIRMED before anything else, then the most rows. Under option A none of this opens
+    a door; it is the record an operator may choose a promotion from."""
+    cohorts = read_cohorts(root)
+    if not cohorts:
+        return None
+    from .forward_confirmation import FORWARD_CONFIRMED, min_forward_trades
+
+    members = [m for cohort in cohort_report(root) for m in cohort["members"]]
+    status_counts: dict[str, int] = {}
+    for m in members:
+        status_counts[str(m.get("status"))] = status_counts.get(str(m.get("status")), 0) + 1
+    ranked = sorted(
+        (m for m in members if (m.get("priceable_count") or 0) > 0),
+        key=lambda m: (m.get("status") != FORWARD_CONFIRMED, -(m.get("priceable_count") or 0),
+                       -(m.get("mean_net_r") or 0.0), str(m.get("candidate_id"))),
+    )
+    last_walk = None
+    try:
+        last_walk = json.loads(_positions_path(root).read_text(encoding="utf-8")).get("updated_at_utc")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {
+        "cohorts": len(cohorts),
+        "members": len(members),
+        "with_rows": sum(1 for m in members if (m.get("priceable_count") or 0) > 0),
+        "at_floor": sum(1 for m in members
+                        if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
+        "status_counts": dict(sorted(status_counts.items())),
+        "leaders": [{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
+                                           "mean_net_r", "status")} for m in ranked[:3]],
+        "last_walk_utc": last_walk,
+    }
+
+
+def status_line(summary: Mapping[str, Any]) -> str:
+    """One walk, as the scheduler's status column carries it."""
+    line = ("forward_cohort members=%s contexts=%s walked=%s opened=%s settled=%s" % (
+        summary.get("members"), summary.get("contexts"), summary.get("walked"),
+        summary.get("opened"), summary.get("settled")))
+    failed = summary.get("failed") or []
+    if failed:
+        line += " failed=" + ";".join(failed)
+    return line
+
+
 # --- the collector-backed frame ---------------------------------------------------------------
 
 def collector_frames(root: Path | None = None, *, now: str) -> Any:
