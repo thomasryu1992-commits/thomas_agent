@@ -39,8 +39,10 @@ the honest start of its out-of-sample span". That holds for the spec and fails f
 selection: a re-score's holdout is the tail of a snapshot taken at re-score time, so a lineage
 promoted on its re-score row was admitted on exactly the bars between the first mint and the
 re-score, and seeding them counted the admitting evidence again as forward evidence (31 of
-141 live rows). The store is read through ``pool.read_candidates``, so a tampered or
-unreadable store refuses the run (``EXIT_BLOCKED``) before anything is fetched or written.
+141 live rows). A lineage a forward cohort held starts at its ``promoted_at`` instead (option A,
+Thomas 2026-09-23: the cohort period was the evidence it was promoted on). The candidate store
+and the cohort store are read through their verified readers, so a tampered or unreadable one
+refuses the run (``EXIT_BLOCKED``) before anything is fetched or written.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
-from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_book, forward_cohort, market_data, pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
@@ -240,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     # for a store known to be wrong.
     try:
         selected_at = _selection_times(root)
+        screened = forward_cohort.member_candidate_ids(root)
     except MvpRuntimeError as exc:
         print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
         return EXIT_BLOCKED
@@ -258,6 +261,15 @@ def main(argv: list[str] | None = None) -> int:
         # An entry whose row the store does not hold starts at its promotion: later than any
         # selection, so it can only walk fewer bars than the judge would count, never more.
         mint = selected_at.get(str(entry.get("candidate_id"))) or str(entry.get("promoted_at") or now)
+        # Option A (Thomas 2026-09-23): a lineage a forward cohort held was chosen for the pool
+        # on its cohort record, so the bars from its selection to its promotion were the
+        # selection data. Its pool clock starts at the promotion; without one, it does not seed.
+        if str(entry.get("candidate_id")) in screened:
+            promoted = str(entry.get("promoted_at") or "")
+            if not promoted:
+                print("%-16s  cohort member without promoted_at: not seeded" % entry.get("strategy_id"))
+                continue
+            mint = max(mint, promoted)
         for symbol in spec.symbol_scope:
             try:
                 r = seed_lineage(entry, spec, symbol, mint=mint, now=now, root=root,
