@@ -93,7 +93,8 @@ announced on the control channel and never mirrored. It binds the whole transiti
 asked against (`stage_ref`) and the policy identity. The spend (`--confirm`), under the stage lock,
 re-plans the transition against the running machine and refuses unless it yields the same content —
 writing nothing and keeping the grant APPROVED — and otherwise spends it once (CONSUMED before the record
-is written). A write that fails after the spend says the grant is gone and a new ask is needed; a ledger
+is written). The grant is re-read under that lock before the re-plan, so the loser of two confirms of one
+grant is refused `ALREADY_CONSUMED` rather than told the record changed and to ask again. A write that fails after the spend says the grant is gone and a new ask is needed; a ledger
 event that fails after the write is a warning beside WRITTEN. There is no `--without-approval`.
 
 ## 4. Operating it

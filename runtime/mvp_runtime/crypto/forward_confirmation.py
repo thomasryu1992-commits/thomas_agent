@@ -202,7 +202,12 @@ def selection_cutoff(record: Mapping[str, Any]) -> datetime | None:
 
     The promotion door resolves a candidate to the LATEST row of its id, so this is that
     row's time — a re-append of the same evidence only moves the cutoff later, the refusing
-    direction. None when the row cannot say when it was made: then nothing counts."""
+    direction. None when the row cannot say when it was made: then nothing counts.
+
+    A lineage a forward cohort held starts later still, at its promotion (option A, Thomas
+    2026-09-23): the cohort period was the evidence it was promoted on. That start is applied
+    where its forward rows are seeded (``scripts/seed_forward_book``), not here — this store
+    never holds a cohort row, and a cohort member's live rows begin at the promotion anyway."""
     return _instant(record.get("created_at_utc"))
 
 
