@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import pool
+from runtime.mvp_runtime.crypto import pool, pool_admission
 from runtime.mvp_runtime.crypto.cost import (
     DEFAULT_FUNDING_BPS_PER_INTERVAL,
     DEFAULT_MAKER_FEE_BPS,
@@ -203,7 +203,7 @@ def test_a_tail_that_leans_with_the_edge_but_cannot_resolve_it_is_admitted():
 
     block = _tail(0.10)
     assert holdout_status(block) == HOLDOUT_UNDERPOWERED
-    assert pool._observation_holdout_term(_entrant("c1", holdout_block=block)) is None
+    assert pool_admission._observation_holdout_term(_entrant("c1", holdout_block=block)) is None
     pool.assert_observation_entry_bar([_entrant("c1", holdout_block=block)])
 
 

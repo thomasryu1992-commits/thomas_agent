@@ -15,12 +15,13 @@ from runtime.mvp_runtime.crypto import forward_confirmation as fc
 from runtime.mvp_runtime.errors import ToolError
 
 DAY = "2026-07-{:02d}T12:00:00Z"
+SELECTED = "2025-06-01T00:00:00Z"  # before every fixture outcome: the cutoff tests move it
 
 
 def _record(cid="cand_f", timeframe="1d"):
     return {
         "candidate_id": cid, "strategy_id": "S1", "generation_id": "GEN-001",
-        "strategy_rule_hash": "hash-f",
+        "strategy_rule_hash": "hash-f", "created_at_utc": SELECTED,
         "strategy_spec": {"strategy_family": "breakout", "symbol_scope": ["BTCUSDT"],
                           "timeframe": timeframe},
         "backtest_evidence": {
@@ -33,7 +34,7 @@ def _record(cid="cand_f", timeframe="1d"):
 def _outcome(when, net, *, cid="cand_f"):
     """A settled forward row that prices itself exactly: already-net basis, no carry."""
     return {"outcome_closed": True, "candidate_id": cid, "result_R": net,
-            "r_basis": "intent_net_of_costs", "created_at_utc": when}
+            "r_basis": "intent_net_of_costs", "created_at_utc": when, "opened_at_utc": when}
 
 
 def _spread_outcomes(*, slices=9, per_slice=3, base=0.3, cid="cand_f", width_days=60.0,
@@ -191,10 +192,64 @@ def test_display_name_history_can_never_confirm():
 def test_an_unpriceable_row_is_not_evidence():
     rows = _spread_outcomes()
     rows.append({"outcome_closed": True, "candidate_id": "cand_f", "result_R": 99.0,
-                 "r_basis": "intent_net_of_costs", "created_at_utc": "not a time"})
+                 "r_basis": "intent_net_of_costs", "created_at_utc": "not a time",
+                 "opened_at_utc": "2026-03-01T00:00:00Z"})
     verdict = fc.judge_forward(_record(), rows)
     assert verdict["closed_count"] == 28
     assert verdict["priceable_count"] == 27
+
+
+# --- the selection cutoff: forward means after the row that SELECTED the lineage -------------
+
+def test_rows_opened_before_the_selecting_row_are_not_forward_evidence():
+    """The 2026-09-23 defect in miniature. A re-scored lineage is selected on a row whose
+    holdout ends at the re-score; the seeder used to start it at the FIRST mint, so the bars
+    between were counted twice — once to admit it, once to confirm it. The same rows that
+    confirm from an early cutoff are, from a cutoff inside them, only what came after."""
+    rows = _spread_outcomes()  # nine 60-day slices from 2026-01-01
+    assert fc.judge_forward(_record(), rows)["status"] == fc.FORWARD_CONFIRMED
+
+    record = _record()
+    record["created_at_utc"] = "2026-11-05T00:00:00Z"  # the re-score, late in the record
+    kept = fc.forward_outcomes_for(record, rows)
+    assert len(kept) == 9  # the last three clusters: one short of the 1d floor
+    assert all(row["opened_at_utc"] >= "2026-11-05T00:00:00Z" for row in kept)
+    verdict = fc.judge_forward(record, rows)
+    assert verdict["closed_count"] == len(kept)
+    assert verdict["status"] == fc.FORWARD_INSUFFICIENT
+
+
+def test_the_cutoff_is_on_the_open_not_the_settlement():
+    """An entry taken on a bar the selecting snapshot held was decided on selection data,
+    however late it closed; an entry opened exactly at the cutoff was not."""
+    record = _record()
+    record["created_at_utc"] = "2026-07-01T00:00:00Z"
+    straddling = {**_outcome("2026-07-05T00:00:00Z", 1.0),
+                  "opened_at_utc": "2026-06-30T20:00:00Z"}
+    at_cutoff = {**_outcome("2026-07-02T00:00:00Z", 1.0),
+                 "opened_at_utc": "2026-07-01T00:00:00Z"}
+    assert fc.forward_outcomes_for(record, [straddling, at_cutoff]) == [at_cutoff]
+
+
+def test_a_row_that_cannot_place_its_open_is_not_evidence():
+    rows = _spread_outcomes()
+    for bad in (None, "", "not a time"):
+        rows.append({**_outcome("2026-03-01T00:00:00Z", 9.0), "opened_at_utc": bad})
+    assert len(fc.forward_outcomes_for(_record(), rows)) == 27
+
+
+@pytest.mark.parametrize("created", [None, "", "not a time"])
+def test_a_record_that_cannot_say_when_it_was_made_is_confirmed_by_nothing(created):
+    """No cutoff, no forward evidence — the INSUFFICIENT side, as every branch of the judge
+    that cannot be computed reads. The arming door then refuses on it."""
+    record = _record()
+    record["created_at_utc"] = created
+    rows = _spread_outcomes()
+    assert fc.forward_outcomes_for(record, rows) == []
+    assert fc.judge_forward(record, rows)["status"] == fc.FORWARD_INSUFFICIENT
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([record], outcomes=rows, observed_lineages=1)
+    assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
 
 
 # --- the LIVE gate ----------------------------------------------------------------------------

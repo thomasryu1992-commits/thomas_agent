@@ -364,7 +364,14 @@ M5b (a standing habit) and a provider key that is not the live operator's (a thi
 
 ## C. Crypto live execution — the governance packet + the order code
 
-> ### ⚠️ LIVE TRADING IS ARMED, AND AS OF 2026-08-04 IT HOLDS A POSITION WITH BOTH PROTECTIVE LEGS RESTING
+> ⚠️ **Historical since 2026-09-16 — this banner does not say what the machine may do today.** It is
+> the 2026-08-04 to 08-06 observation, kept for its evidence. Since PR1b the execution stage decides:
+> the entry guard refuses every new live entry below `LIVE_AUTONOMOUS`, and closing is never gated.
+> Ask the machine, not this page: `python -m scripts.register_execution_stage --show` (run in
+> `thomas-scheduler`) for the stage, and the readiness board's `LIVE ENTRY POSSIBLE` line
+> (`python -m runtime.mvp_runtime.crypto.live_readiness`) for whether an entry could open.
+>
+> ### LIVE TRADING WAS ARMED, AND AS OF 2026-08-04 IT HELD A POSITION WITH BOTH PROTECTIVE LEGS RESTING
 >
 > **Read this before anything else in this section.** Live trading is armed and reachable and has
 > placed real orders without a person present. **The stop refusal that opened this section is
@@ -1048,7 +1055,8 @@ nothing** — the code says so directly: for an env-gated authorization there is
 re-read, so "stopping a live scheduler means restarting it". That property is unchanged by this
 and is worth knowing on its own.
 
-**What this leaves open:** the board still has no row that says live trading is armed. It reports
+**What this leaves open** (closed 2026-09-19 by crypto PR5a/5b: the board now opens and closes with
+`LIVE ENTRY POSSIBLE`, computed from the readiness state)**:** the board still has no row that says live trading is armed. It reports
 grants, and live trading is not one, so its status is now absent rather than wrong — an
 improvement, and not the fix. That belongs with the readiness board, which already learned this
 lesson once (#382, process-scoped readings).

@@ -31,15 +31,21 @@ in the container as uid 10001, in module form::
     docker exec thomas-scheduler python -m scripts.seed_forward_book --list
     docker exec thomas-scheduler python -m scripts.seed_forward_book --apply
 
-The mint date is the EARLIEST ``created_at_utc`` across candidate-store rows sharing the
-lineage's rule hash — a re-score re-measures an unchanged spec, so the original mint is
-the honest start of its out-of-sample span.
+The walk starts at the ``created_at_utc`` of the candidate row the pool entry names by
+``candidate_id`` — the row that SELECTED the lineage (``forward_confirmation.selection_cutoff``,
+the judge's own boundary). Until 2026-09-23 it started at the earliest row sharing the rule
+hash, on the argument that "a re-score re-measures an unchanged spec, so the original mint is
+the honest start of its out-of-sample span". That holds for the spec and fails for the
+selection: a re-score's holdout is the tail of a snapshot taken at re-score time, so a lineage
+promoted on its re-score row was admitted on exactly the bars between the first mint and the
+re-score, and seeding them counted the admitting evidence again as forward evidence (31 of
+141 live rows). The store is read through ``pool.read_candidates``, so a tampered or
+unreadable store refuses the run (``EXIT_BLOCKED``) before anything is fetched or written.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -55,9 +61,9 @@ from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa:
 from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
 from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
+from runtime.mvp_runtime.crypto.candidate_identity import candidate_id  # noqa: E402
 from runtime.mvp_runtime.crypto.lifecycle import outcome_attribution_key  # noqa: E402
 from runtime.mvp_runtime.crypto.paper import OCCUPYING_STATUSES  # noqa: E402
-from runtime.mvp_runtime.crypto.state import state_dir  # noqa: E402
 from runtime.mvp_runtime.crypto.strategy import StrategySpec  # noqa: E402
 
 # Enough pre-mint bars that every indicator the entry rules can read is warm by the first
@@ -69,24 +75,27 @@ _MAX_SEED_BARS = 4000
 _MIN_SEED_BARS = 30
 
 
-def _first_seen_by_hash(root: Path) -> dict[str, str]:
-    first: dict[str, str] = {}
-    path = state_dir(root) / "strategy_candidates.jsonl"
-    if not path.is_file():
-        return first
-    for line in path.open(encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        h = row.get("strategy_rule_hash")
-        c = str(row.get("created_at_utc") or "")
-        if isinstance(h, str) and h and c and (h not in first or c < first[h]):
-            first[h] = c
-    return first
+def _selection_times(root: Path) -> dict[str, str]:
+    """``created_at_utc`` per ``candidate_id``, read through the store's VERIFIED reader.
+
+    This date is where a lineage's forward clock starts, and a backdated one passes in-sample
+    bars off as out-of-sample evidence. So a row that fails its self-hash raises
+    ``CANDIDATES_TAMPERED`` and a line that does not parse raises ``CANDIDATES_UNREADABLE``,
+    as they do for every other reader of the store. Neither is caught here: :func:`main`
+    refuses the run.
+
+    Keyed by the id the pool entry carries, never by rule hash: a re-score shares its source's
+    rule hash and has its own id, and the hash is what made the first mint look like the
+    start. A re-append of one id (same evidence, appended again) resolves to its LATEST time,
+    the row the promotion door resolves to and the judge cuts at — the seed never walks a bar
+    the judge would then refuse to count."""
+    times: dict[str, str] = {}
+    for row in pool_store.read_candidates(root):
+        cid = candidate_id(row)
+        created = str(row.get("created_at_utc") or "")
+        if created and (cid not in times or created > times[cid]):
+            times[cid] = created
+    return times
 
 
 def _merge_seed_state(
@@ -225,7 +234,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.strategy_ids:
         wanted = set(args.strategy_ids)
         occupying = [e for e in occupying if str(e.get("strategy_id")) in wanted]
-    first_seen = _first_seen_by_hash(root)
+    # The whole run, dry or not, and before anything is fetched or written: a tampered row's
+    # own id and time are fields that cannot be trusted, so the refusal cannot be narrowed to
+    # the lineages it seems to name, and falling back to `promoted_at` would be guessing a start
+    # for a store known to be wrong.
+    try:
+        selected_at = _selection_times(root)
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return EXIT_BLOCKED
     collector = market_data.select_market_data_collector(now=now, root=root)
 
     apply = bool(args.apply and not args.list)
@@ -238,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print("%-16s  spec unparseable: %s" % (entry.get("strategy_id"), exc))
             continue
-        mint = first_seen.get(str(entry.get("strategy_rule_hash"))) or str(entry.get("promoted_at") or now)
+        # An entry whose row the store does not hold starts at its promotion: later than any
+        # selection, so it can only walk fewer bars than the judge would count, never more.
+        mint = selected_at.get(str(entry.get("candidate_id"))) or str(entry.get("promoted_at") or now)
         for symbol in spec.symbol_scope:
             try:
                 r = seed_lineage(entry, spec, symbol, mint=mint, now=now, root=root,
