@@ -265,7 +265,8 @@ def test_the_request_message_says_the_close_cannot_be_undone(tmp_path, monkeypat
     store = ApprovalStore.default(tmp_path)
     record = store.get(asked["approval_id"])
     text = approval.request_message(record, store.get_permission_decision(record["permission_decision_id"]))
-    assert "되돌릴 수 있는가: 아니오 — 청산된 포지션은 되돌릴 수 없습니다" in text
+    assert "되돌릴 수 있는가: 아니오 — 청산 주문이 나가면 시장가로 확정된 손익은 되돌릴 수 없습니다" in text
+    assert "HARD 정지를 푸는 재개(/resume, Thomas)" in text
     assert "scripts/emergency_close.py --confirm --approval-id" in text
     assert "EMERGENCY_CLOSE_HALT_CHANGED" in text and "예상 비용: 시장가 청산" in text
     assert "BTCUSDT LONG 0.002" in text
