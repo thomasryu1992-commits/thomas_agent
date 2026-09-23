@@ -24,7 +24,9 @@ layer:
   file lock (:mod:`filelock`): the stored status is re-read and the CONSUMED record appended
   inside one exclusion, so two concurrent consumes — the operator loop and a ``docker exec``
   CLI share these stores — cannot both pass the check (``ALREADY_CONSUMED`` for the loser).
-  The store is append-only, so the spend is itself tamper-evident evidence.
+  The candidate is looked up only after that re-read, so the loser is refused as the loser
+  however far the winner got. The store is append-only, so the spend is itself tamper-evident
+  evidence.
 
 Everything here fails closed: any doubt about identity, freshness, content, or single-use
 refuses rather than performs an action Thomas did not exactly authorize.
@@ -110,6 +112,38 @@ def select_consumer(*, now: str, root: Path) -> Any:
     )
 
 
+def _revalidated_candidate(
+    store: WorkingMemoryStore, candidate_id: str, snapshot: Mapping[str, Any], *, now: str
+) -> dict[str, Any]:
+    """The live candidate the grant names, still holding exactly the content Thomas approved,
+    or a fail-closed BLOCK. Called under the spend lock (see :func:`consume_approval`)."""
+    candidate = find_candidate(store, candidate_id)
+    if candidate is None:
+        raise ApprovalBlocked(
+            "CANDIDATE_GONE",
+            f"working-memory candidate {candidate_id} is not on record (promoted or pruned)",
+        )
+    # Retention (§12.4) must hold on the one write path that makes content permanent, not
+    # only on reads: an expired-but-not-yet-pruned candidate is refused, exactly as if the
+    # prune had already run.
+    if memory_is_expired(candidate, now=now):
+        raise ApprovalBlocked(
+            "CANDIDATE_EXPIRED",
+            f"working-memory candidate {candidate_id} expired at {candidate.get('expires_at')}; "
+            "an expired candidate cannot be promoted",
+        )
+    content = candidate.get("content")
+    if not (isinstance(content, str) and content.strip()):
+        raise ApprovalBlocked("CANDIDATE_EMPTY", "candidate has no content to promote")
+    # Hot-path revalidation 2: the candidate's current content must still match what was approved.
+    if integrity.sha256_record({"content": content}) != snapshot.get("content_sha256"):
+        raise ApprovalBlocked(
+            "CONTENT_CHANGED",
+            "candidate content changed since the approval was granted; consuming is refused",
+        )
+    return candidate
+
+
 def consume_approval(
     approval_id: str,
     *,
@@ -159,31 +193,6 @@ def consume_approval(
         raise ApprovalBlocked("TARGET_NOT_CANDIDATE", f"approval target {target_ref!r} is not a memory candidate")
     candidate_id = target_ref[len(_CANDIDATE_TARGET_PREFIX):]
 
-    candidate = find_candidate(working_memory_store, candidate_id)
-    if candidate is None:
-        raise ApprovalBlocked(
-            "CANDIDATE_GONE",
-            f"working-memory candidate {candidate_id} is not on record (promoted or pruned)",
-        )
-    # Retention (§12.4) must hold on the one write path that makes content permanent, not
-    # only on reads: an expired-but-not-yet-pruned candidate is refused, exactly as if the
-    # prune had already run.
-    if memory_is_expired(candidate, now=now):
-        raise ApprovalBlocked(
-            "CANDIDATE_EXPIRED",
-            f"working-memory candidate {candidate_id} expired at {candidate.get('expires_at')}; "
-            "an expired candidate cannot be promoted",
-        )
-    content = candidate.get("content")
-    if not (isinstance(content, str) and content.strip()):
-        raise ApprovalBlocked("CANDIDATE_EMPTY", "candidate has no content to promote")
-    # Hot-path revalidation 2: the candidate's current content must still match what was approved.
-    if integrity.sha256_record({"content": content}) != snapshot.get("content_sha256"):
-        raise ApprovalBlocked(
-            "CONTENT_CHANGED",
-            "candidate content changed since the approval was granted; consuming is refused",
-        )
-
     # Select the gated consumer. Fail-closed: the inert consumer refuses, and an opt-in without
     # a valid activation makes the gate raise SafetyGateBlocked before any consumer is built.
     if consumer is None:
@@ -193,6 +202,13 @@ def consume_approval(
     # concurrent consumes both read APPROVED, both pass every guard, and one single-use grant
     # promotes twice.
     with approval_mod.spend_lock(approval_store, approval_id):
+        # The candidate is read only AFTER the status re-read. The winner of a concurrent spend
+        # retires it (mark_promoted) inside this same lock, so a loser that looked it up before
+        # the compare-and-set found it gone and was refused CANDIDATE_GONE for a grant another
+        # process had spent — its answer depended on how far the winner had got (2026-09-18:
+        # 39 of 1000 runs of the race test under suite load; seen again 2026-09-21 while this
+        # fix sat unmerged). Read here, the loser always stops at the re-read with ALREADY_CONSUMED.
+        candidate = _revalidated_candidate(working_memory_store, candidate_id, snapshot, now=now)
         promoted_by = (approval_rec.get("approver", {}) or {}).get("approved_by") or approval_mod.REQUIRED_APPROVER
         reason = (
             f"Consumed approval {approval_id} — "
