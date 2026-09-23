@@ -34,6 +34,10 @@ The account is read once, just before the spend. After the spend, each position 
 before its close, against that read and a fresh read of the halt and the book. It is skipped when the
 halt, the book or the venue moved, and the report says which. The report is also kept on the record
 ledger under the approval id. The skip rules are in ``live_route.run_emergency_close``.
+
+Two confirms of one grant close once: the spend is a single-use compare-and-set before any close. The
+loser is refused ``ALREADY_CONSUMED``, including when it meets the book or the venue the winner has
+already emptied (2026-09-23).
 """
 
 from __future__ import annotations
@@ -139,6 +143,11 @@ def run_request(*, root: Path | None, now: str, requested_by: str, reason: str) 
             "content": content, "warnings": warnings}
 
 
+# The refusals a losing confirm meets when the winner has already closed the positions: raised
+# before this confirm's spend, so they say "nothing was spent", which is true of this confirm alone.
+_LOSER_REFUSALS = frozenset({live_route.EMERGENCY_CLOSE_NOTHING_BOOKED, live_route.EMERGENCY_CLOSE_NOTHING_CLOSABLE})
+
+
 def run_confirm(*, root: Path | None, now: str, approval_id: str, clock=None) -> dict:
     """Spend the APPROVED emergency-close grant once and close what it names.
 
@@ -181,8 +190,24 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str, clock=None) ->
             )
             approvals.append([consumed])
 
-    report = live_route.run_emergency_close(positions, halt_ref=halt_ref, spend=spend, now=now, root=root,
-                                            control_store=control)
+    try:
+        report = live_route.run_emergency_close(positions, halt_ref=halt_ref, spend=spend, now=now, root=root,
+                                                control_store=control)
+    except ToolError as exc:
+        # Two confirms of one grant (2026-09-23, Thomas: option B). The loser validated the grant
+        # APPROVED above; if the winner then closed the positions, the loser met an empty book or a
+        # flat venue and was refused "nothing was spent" - true of the loser, but it hid that the
+        # grant was already spent. Only the CODE of those two refusals changes: whether to refuse,
+        # the order of the checks, the spend and the closes are live_route's, untouched here.
+        if exc.reason_code in _LOSER_REFUSALS:
+            latest = approvals.get(approval_id)
+            if latest is not None and latest.get("status") == approval_mod.STATUS_CONSUMED:
+                raise ApprovalBlocked(
+                    "ALREADY_CONSUMED",
+                    f"approval {approval_id} was spent by a concurrent --confirm, which closed what it "
+                    f"could; this one sent nothing ({exc.reason_code}; --show says what is booked now)",
+                ) from exc
+        raise
     report = {**report, "approval_id": approval["approval_id"], "target_ref": target_ref}
     # The report is kept, not only printed (review of #913): one row per spent grant beside the audit
     # events and the outcomes, naming every order it sent. The closes stand whether or not it lands.
