@@ -32,7 +32,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from tests._helpers import gate_stage, make_gate_authorization, stamped_pool_entry
+from tests._helpers import gate_stage, make_gate_authorization, stamped_pool_entry, usable_venue_contract
 
 from runtime.mvp_runtime import timeutil
 
@@ -61,8 +61,8 @@ from runtime.mvp_runtime.crypto.live_position import (
     RealLivePositionStore,
     list_open_live_positions,
     live_capacity,
-    reconcile_positions,
 )
+from runtime.mvp_runtime.crypto.live_reconcile import reconcile_positions
 from runtime.mvp_runtime.crypto.live_sizing import usable_equity_usdt
 from runtime.mvp_runtime.crypto.paper import build_entry_plan, route_entries
 from runtime.mvp_runtime.safety_gate import Authorization
@@ -285,6 +285,8 @@ def _decision_kwargs(plan, *, local_positions=None, snapshot=FLAT_ACCOUNT, marks
         daily_loss_breached=False,
         bracket_failures_consecutive=0,
         api_breaker_tripped=False,
+        # PR4b: the venue contract sentinel's PASS, verified at the decision's own moment.
+        venue_contract=usable_venue_contract([SYMBOL], verified_at=clock),
         optional_data={"bar_time": ROW["timestamp"], "degraded": [], "stale": [], "missing": [],
                        "feeds": {}},
         submitted_today=0,

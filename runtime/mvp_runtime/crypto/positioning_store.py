@@ -11,7 +11,7 @@ headcount leans the other is a situation no existing column can distinguish from
 **What holds it back — and this paragraph used to say something stronger that has stopped being
 true.** It read "it feeds nothing: no feature reads it, no family mints against it, ``snapshot``
 is never touched", which was the whole shape of the increment at ship time. Two thirds of that
-is now false: :func:`cycle.attach_positioning` reads :func:`read_rows` onto ``snapshot``, and
+is now false: :func:`feed_assembly.attach_positioning` reads :func:`read_rows` onto ``snapshot``, and
 :func:`features._positioning_columns` computes ``POSITIONING_NUMERIC_COLUMNS`` from it — columns
 that are in the mintable vocabulary. What survives is the **minting** half, and only that:
 :data:`~.factory.POSITIONING_FAMILIES` stay unoffered until
@@ -73,7 +73,7 @@ from .market_data import (
     POSITIONING_PERIOD_SECONDS,
     POSITIONING_SERIES,
 )
-from .paper import state_dir
+from .state import state_dir
 
 POSITIONING_FILENAME = "positioning_history.jsonl"
 RECORD_TYPE = "positioning_ratio.v0"

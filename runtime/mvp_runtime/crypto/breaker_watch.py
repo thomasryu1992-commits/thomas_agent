@@ -65,8 +65,7 @@ from ..store import LEDGER_REL, RECORDS_FILE
 from ..errors import ToolError
 from ..filelock import locked
 from . import guards, pool
-from .live_pnl import live_outcomes_for_analysis, read_live_outcomes
-from . import feedback
+from .live_ledger import live_outcomes_for_analysis, read_live_outcomes
 from .paper import read_outcomes, split_by_provenance, state_dir
 from .risk_limits import resolve_risk_limits
 
@@ -236,6 +235,36 @@ def transitions_since(
     return transitions, coverage
 
 
+def _judge_live(root: Path | None, *, now: str) -> tuple[dict[str, Any], list, list]:
+    """The C4 verdict on the live outcomes, with the outcomes it judged and the ones it excluded — the
+    composition `evaluate` reports and `live_risk_verdict` hands out, written once."""
+    live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
+    limits = resolve_risk_limits(root, now=now)
+    # The routable set the drawdown baseline is re-checked against, read the way the cycle reads
+    # it — including the distinction that carries the fail-closed property: an unreadable pool is
+    # `None` (cannot verify, so no lineage leaves the window), never the empty set (every named
+    # lineage confirmed retired). A watch that collapsed those two would announce a released
+    # breaker on the strength of a failed read.
+    try:
+        active = pool.load_active_pool(root)
+        routable = pool.routable_strategy_ids(active)
+        routable_lineages = pool.routable_lineage_keys(active)
+    except ToolError:
+        routable = routable_lineages = None
+    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable,
+                                    routable_lineages=routable_lineages)
+    return verdict, live, live_excluded
+
+
+def live_risk_verdict(root: Path | None = None, *, now: str) -> dict[str, Any]:
+    """The C4 breakers' verdict on a live entry now — `evaluate`'s door without the watch's
+    bookkeeping. For a reader that must judge exactly this composition rather than assemble a second
+    one: the readiness board (crypto PR5a). ``allow_new_position`` is the door; an unusable limits
+    record propagates as a ``ToolError``, as it does from `evaluate`."""
+    verdict, _live, _excluded = _judge_live(root, now=now)
+    return verdict
+
+
 def evaluate(
     root: Path | None = None, *, now: str, since: str | None = None,
 ) -> dict[str, Any]:
@@ -264,21 +293,7 @@ def evaluate(
     # breakers judge live outcomes only now, so a watch that still blended the two would report
     # a state the runtime is not in — the exact failure this module's docstring forbids.
     own, _imported = split_by_provenance(read_outcomes(root))
-    live, live_excluded = live_outcomes_for_analysis(read_live_outcomes(root))
-    limits = resolve_risk_limits(root, now=now)
-    # The routable set the drawdown baseline is re-checked against, read the way the cycle reads
-    # it — including the distinction that carries the fail-closed property: an unreadable pool is
-    # `None` (cannot verify, so no lineage leaves the window), never the empty set (every named
-    # lineage confirmed retired). A watch that collapsed those two would announce a released
-    # breaker on the strength of a failed read.
-    try:
-        active = pool.load_active_pool(root)
-        routable = pool.routable_strategy_ids(active)
-        routable_lineages = pool.routable_lineage_keys(active)
-    except ToolError:
-        routable = routable_lineages = None
-    verdict = guards.run_risk_guard(live, now=now, limits=limits, routable_strategy_ids=routable,
-                                    routable_lineages=routable_lineages)
+    verdict, live, live_excluded = _judge_live(root, now=now)
 
     # Gate 0 was read here until 2026-08-03, as the second lock on this door. It is gone — see
     # `live_entry`'s docstring and `docs/proposals/GATE0_CANNOT_BE_SATISFIED_V0.1.md` — so this
@@ -368,14 +383,20 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # branch became unreachable. Removed rather than left: an unreachable branch reads as a
     # state the system can be in, and the next person to touch this would have to prove it is
     # not. The two door lines below carry every transition the old four did.
+    #
+    # And the door is THIS watch's door: the loss breakers. "OPEN - real orders can now be placed"
+    # said more than the watch knows — the stage, the arm, the gate and the venue contract each
+    # refuse entries too, and on 2026-09-19 the machine this was sent from was at PAPER with nothing
+    # armed. The headline keeps its name (runbooks and the ops skill quote it) and says what moved;
+    # whether an entry can open is the readiness board's `LIVE ENTRY POSSIBLE` (crypto PR5b).
     was_open = bool(previous.get("live_entry_open")) if previous is not None else None
     now_open = bool(current.get("live_entry_open"))
     if previous is None:
         headline = "CRYPTO LIVE ENTRY - first report"
     elif now_open and not was_open:
-        headline = "CRYPTO LIVE ENTRY OPEN - real orders can now be placed"
+        headline = "CRYPTO LIVE ENTRY OPEN - the loss breakers no longer refuse live entries"
     elif was_open and not now_open:
-        headline = "CRYPTO LIVE ENTRY CLOSED - real orders refused again"
+        headline = "CRYPTO LIVE ENTRY CLOSED - the loss breakers refuse live entries again"
     else:
         headline = "CRYPTO LIVE ENTRY - reasons changed"
 
@@ -393,7 +414,10 @@ def render_text(current: Mapping[str, Any], previous: Mapping[str, Any] | None) 
     # The door, unconditionally. It used to print only when a Gate 0 reading existed, which was
     # right while the door had two locks and would now hide it whenever the one lock is the
     # whole answer.
-    lines.append(f"  DOOR     : live entries {'OPEN' if current.get('live_entry_open') else 'REFUSED'}")
+    lines.append(f"  DOOR     : live entries {'OPEN' if current.get('live_entry_open') else 'REFUSED'}"
+                 " at the loss breakers")
+    lines.append("  entry    : the stage, the arm, the gate and the venue decide too - whether one")
+    lines.append("             can open is LIVE ENTRY POSSIBLE on `crypto readiness`")
     own_closed, live_closed = current.get("own_closed"), current.get("live_closed")
     if own_closed is not None and live_closed is not None:
         # Both counts, and only one of them is the ruling. The breakers judge the LIVE rows; the

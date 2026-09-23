@@ -118,10 +118,35 @@ def deep_order_book(mid=60000.0, *, received_at, levels=20, quantity=1_000_000.0
 
 def healthy_optional_data(bar_time=None):
     """The optional data of a context whose legs all answered and whose feeds are fresh (PR2d-2):
-    what `cycle.optional_data_health` returns for it at ``bar_time`` — the bar the decision is on,
+    what `feed_assembly.optional_data_health` returns for it at ``bar_time`` — the bar the decision is on,
     which the entry door checks — and what the door lets through."""
     return {"bar_time": bar_time, "bar_readable": bar_time is not None, "degraded": [], "stale": [],
             "missing": [], "feeds": {}}
+
+
+def usable_venue_contract(symbols=("BTCUSDT",), *, verified_at):
+    """A venue contract PASS as `venue_contract.entry_fact` reads one (PR4b): this code's contract
+    version, verified at ``verified_at``, covering ``symbols``. What the entry doors' tests hand every
+    door by default, so each test still closes exactly one; the contract door has its own tests."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    return {"recorded": True, "status": vc.STATUS_PASS, "contract_version": vc.CONTRACT_VERSION,
+            "verified_at": verified_at, "symbols": list(symbols), "failed_checks": [],
+            "record_sha256": "sha256:" + "c" * 64}
+
+
+def record_venue_contract(root, symbols=("BTCUSDT",), *, verified_at, failed=()):
+    """A real decided verification in ``root``, as the sentinel writes it (PR4b): PASS, or FAIL on the
+    judged checks named in ``failed``. For the tests that read the record through the doors' own
+    reader rather than hand the doors a fact."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    checks = [vc._check(check, vc.STATUS_FAIL if check in failed else vc.STATUS_PASS, expected="test")
+              for check in vc.JUDGED_CHECKS]
+    record = vc.build_record(status=vc.STATUS_FAIL if failed else vc.STATUS_PASS, checks=checks,
+                             symbols=list(symbols), now=verified_at)
+    vc._write_json(vc.contract_path(root), record, code="VENUE_CONTRACT_LOCKED", label="test record")
+    return record
 
 
 def gate_stage():

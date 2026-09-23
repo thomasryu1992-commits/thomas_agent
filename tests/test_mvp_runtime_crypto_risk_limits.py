@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from runtime.mvp_runtime.crypto import guards, risk_limits as rl
-from runtime.mvp_runtime.crypto.live_pnl import state_dir
+from runtime.mvp_runtime.crypto.state import state_dir
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.paths import repo_root as _repo_root
 

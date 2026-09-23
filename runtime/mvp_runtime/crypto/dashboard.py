@@ -33,8 +33,8 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
-    account, counterfactual, digest, feedback, lifecycle, oi_store, orderbook_store, paper, pool,
-    positioning_store,
+    account, counterfactual, digest, feedback, forward_cohort, lifecycle, oi_store, orderbook_store,
+    paper, pool, positioning_store,
 )
 # "Can this sample tell the sign of its own edge" is one question with one answer in this
 # runtime. `robustness` owns the multiplier because it is the module that judges whether an
@@ -186,6 +186,14 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             f"승격 대기 {backlog['count']}건 (임계 {backlog['threshold']}) — "
             f"scripts/promote_strategy_candidates.py --list"
         )
+    # The forward cohort (option A, Thomas 2026-09-23): evidence for lineages the pool does not
+    # hold, which an operator may choose a promotion from. A field, not a warning — it opens no
+    # door and asks for nothing — except when its store cannot be read.
+    try:
+        cohort_board = forward_cohort.board_summary(root)
+    except MvpRuntimeError as exc:
+        cohort_board = None
+        warnings.append(f"forward cohort store unreadable ({exc.reason_code})")
 
     # Imported inside the function, the way `live_route` reaches the same module: the
     # operator package pulls in the whole console/pipeline tree, and the board is imported
@@ -302,7 +310,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         warnings.append(f"position state unreadable ({exc.reason_code})")
     open_position = open_positions[0] if open_positions else None
     # How far the book leans, and how far it is allowed to. Derived at read time from the
-    # positions above — never stored — for the `pool.candidate_quality` reason: a lean written
+    # positions above — never stored — for the `candidate_ranking.candidate_quality` reason: a lean written
     # once would outlive the cap that produced it, and `paper.MAX_DIRECTIONAL_SKEW` is derived
     # from a constant that has already moved once. Belongs on the BOARD and not only on the
     # per-fire status line, because the gate declines on STANDING book state: an operator who
@@ -348,6 +356,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # Work waiting on a human, carried as data as well as a warning so a reader past the
         # threshold can see the queue shrink instead of only learning when it crosses back.
         "promotion_backlog": backlog,
+        "forward_cohort": cohort_board,
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
@@ -509,6 +518,11 @@ _GATE_EARNING = "이익"
 # returned. A gate here is not "fine" — it is unmeasured, which is a different instruction.
 _GATE_UNDECIDED = "판단 불가"
 # (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
+
+
+# The judge status a forward-cohort leader carries on the board. CONTRADICTED is absent on
+# purpose: such a member is never a leader.
+_COHORT_STATUS_MARKS = {"FORWARD_CONFIRMED": "[확정]", "FORWARD_INSUFFICIENT": "[판정 전]"}
 
 
 def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
@@ -843,6 +857,23 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"       판정 불가 보류 {len(deferred)} "
             f"({backlog.get('max_days_to_lifecycle_window')}일 내 lifecycle 창 미달)"
         )
+    cohort = status.get("forward_cohort") or {}
+    if cohort.get("members"):
+        counts = cohort.get("status_counts") or {}
+        lines.append(
+            f"       forward 코호트 {cohort['members']}계보 · 기록 {cohort.get('with_rows')} · "
+            f"문턱 도달 {cohort.get('at_floor')} · CONFIRMED {counts.get('FORWARD_CONFIRMED', 0)} "
+            f"(선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
+        )
+        # Never a CONTRADICTED member (board_summary drops them); ranked by the lower bound, and
+        # each carries its judge status, so a lineage merely short of its floor reads as such.
+        leaders = cohort.get("leaders") or []
+        if leaders:
+            lines.append("         상위 " + " · ".join(
+                f"{m['candidate_id']} {m.get('timeframe')} n={m.get('priceable_count')} "
+                f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
+                f"{_COHORT_STATUS_MARKS.get(str(m.get('status')), m.get('status'))}"
+                for m in leaders))
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"

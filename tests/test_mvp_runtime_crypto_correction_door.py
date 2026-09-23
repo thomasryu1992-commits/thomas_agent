@@ -124,7 +124,7 @@ def test_confirm_writes_a_correction_the_read_path_then_applies(tmp_path, monkey
     _confirm(monkeypatch, tmp_path, store, outcome_id="live_out_ghost",
              disposition=LC.SUPERSEDE, reason="x", approval_id="approval_a",
              corrected_by="thomas")
-    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_pnl._approvals_for",
+    monkeypatch.setattr("runtime.mvp_runtime.crypto.live_ledger._approvals_for",
                         lambda corrections, root: {"approval_a": _approval(record)})
     ghost = next(r for r in read_live_outcomes(tmp_path) if r["outcome_id"] == "live_out_ghost")
     assert ghost["result_R"] == pytest.approx(-0.8871, abs=1e-4)

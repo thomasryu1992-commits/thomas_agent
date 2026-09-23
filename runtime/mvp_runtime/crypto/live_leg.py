@@ -44,7 +44,7 @@ The three rules this leg owes, each implemented as a branch you can point at:
   market order, so it pays the taker rate plus adverse slippage to exit at a price the market
   had to come to anyway. A resting LIMIT at the same price earns the maker rate and fills at
   the target exactly — which is also what the backtest has always assumed the target does
-  (``paper.settle_trade_plan`` returns the target price itself as the exit), so this closes a
+  (``trade_plan.settle_trade_plan`` returns the target price itself as the exit), so this closes a
   model-versus-reality gap rather than opening one.
 
 The cost of that asymmetry is stated rather than hidden: ``closePosition`` is documented for
@@ -82,6 +82,7 @@ from .live_execution import (
     TIME_IN_FORCE_GTC,
     SubmitRefused,
     fill_facts,
+    is_protective_request,
     submit_and_reconcile,
     submit_may_have_landed,
     submit_refused_outright,
@@ -93,9 +94,9 @@ from .live_order import (
     make_client_order_id,
     make_idempotency_key,
 )
-from .live_pnl import build_live_outcome_record
+from .live_settlement import build_live_outcome_record
 from .live_position import build_live_position, position_risk_usdt, unbooked_position_id
-from .live_promotion import RECONCILED
+from .live_execution import RECONCILED
 
 LIVE_LEG_VERSION = "live_leg.v0.1"
 
@@ -256,7 +257,7 @@ BRACKET_CONFIRM_ATTEMPTS = 3
 BRACKET_CONFIRM_BACKOFF_SECONDS = (0.5, 1.0)
 
 # Close reasons written onto the outcome record. The first two deliberately reuse paper's
-# vocabulary (`paper.settle_trade_plan`) so a live result and a paper result of the same shape
+# vocabulary (`trade_plan.settle_trade_plan`) so a live result and a paper result of the same shape
 # read identically to every consumer — the R statistics are compared across the two.
 CLOSE_REASON_NAKED = "naked_position_close"
 CLOSE_REASON_STOP = "stop_loss"
@@ -275,6 +276,11 @@ CLOSE_REASON_TIME_EXIT = "time_exit"
 # decision into the population the R statistics use to judge a strategy. It is a real outcome
 # and it is recorded as one; it is simply not the strategy's.
 CLOSE_REASON_VENUE_EXTERNAL = "venue_external_close"
+# An operator's emergency close (PR6c, Thomas decision 49): every booked position closed at market
+# under the HARD halt, on a single-use approval. A human decision again, so it is kept out of the
+# strategy rules' names for the reason above; its own name, not `venue_external_close`, because this
+# runtime sent it and knows exactly why.
+CLOSE_REASON_EMERGENCY = "emergency_close"
 
 # Whether this position's protective legs are still where the entry left them.
 PROTECTED = "PROTECTED"
@@ -299,7 +305,7 @@ def _exit_terms(decision: Mapping[str, Any]) -> Mapping[str, Any]:
 
     Empty is a legitimate answer, not a defect: a decision built before `exit_terms` existed
     carries none, and `build_live_position` stores `None` for both. What that produces is a
-    *legacy* position, which `paper.position_max_hold` already knows how to judge — timeframe
+    *legacy* position, which `trade_plan.position_max_hold` already knows how to judge — timeframe
     table fallback, with the fallback reported so the gap stays attributable.
     """
     terms = decision.get("exit_terms")
@@ -533,7 +539,7 @@ def place_bracket_leg(
     }
     try:
         request = build_order_request(intent)
-        if not (request.get("reduceOnly") is True or request.get("closePosition") == "true"):
+        if not is_protective_request(request):
             # Nothing was sent, so nothing can be resting: `placed` stays False and the caller
             # closes the position this leg was meant to protect.
             result["status"] = BRACKET_LEG_NOT_PROTECTIVE
@@ -816,7 +822,8 @@ def execute_live_entry(
             risk_snapshot=risk_snapshot, snapshot_store=snapshot_store,
         )
     except SubmitRefused as exc:
-        # Raised only before the adapter is called: nothing left.
+        # Raised only before anything is sent (a refusal before the adapter, or the adapter's own
+        # refusal before its send, PR6b): nothing left.
         result["reason_codes"] = [exc.reason_code]
         _give_back_symbol(result, entry_marks, sent=False, **claim)
         return result
@@ -1302,7 +1309,7 @@ def realized_pnl_usdt(
     # +398.03 into the risk guard's weekly sum. `0.002 * 77708.50 - 0.001 * 77881.30` is that
     # number to the cent.
     #
-    # Both sibling exit paths already refuse this: `live_execution.reconcile_order` on
+    # Both sibling exit paths already refuse this: `order_request.reconcile_order` on
     # `abs(filled - wanted) > 1e-9` for a runtime-sent exit, and `exit_fill_from_history` on a
     # fill that overshoots the remaining quantity. The invariant is not new here — it was
     # present twice and absent once, and the once produced every `stop_loss` sample.
@@ -1912,6 +1919,7 @@ __all__ = [
     "place_bracket_leg",
     "read_bracket_legs",
     "CLOSE_REASON_VENUE_EXTERNAL",
+    "CLOSE_REASON_EMERGENCY",
     "EXIT_SOURCE_BRACKET_LEG",
     "EXIT_SOURCE_FILL_HISTORY",
     "EXIT_SOURCE_RUNTIME_CLOSE",

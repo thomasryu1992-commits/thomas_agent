@@ -38,9 +38,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 NEW = "1.6.0"
-# The baselines this bump applies over. 1.5.1 (the Trading Soft Halt grant, POLICY_1_5_1_DRAFT.md)
-# touches none of the anchors below, so the schedule clause lands the same way on either.
-BASELINES = ("1.5.0", "1.5.1")
+# The baselines this bump applies over. 1.5.1 (the Trading Soft Halt grant, POLICY_1_5_1_DRAFT.md) and
+# 1.5.2 (the assistant's emergency-close ask, POLICY_1_5_2_DRAFT.md) touch none of the anchors below, so
+# the schedule clause lands the same way on any of them.
+BASELINES = ("1.5.0", "1.5.1", "1.5.2")
 
 
 def _baseline() -> str:
@@ -61,8 +62,12 @@ COMMENT_SITES = ("runtime/mvp_runtime/policy_fingerprint.py",)      # cites the 
 # Literals that are NOT pins of the committed policy and must not move with it: the operator CLI
 # test's stubbed policy-check result and its self-contained "1.4.0 -> 1.5.0" announcement
 # fixture, and the Hermes manifest, which records what the HOST was measured with (the host
-# stays at the old version until the runtime that reads the new policy is deployed).
-NOT_PINS = ("tests/test_mvp_runtime_operator_cli.py", "integrations/hermes/MANIFEST.yaml")
+# stays at the old version until the runtime that reads the new policy is deployed). Since 1.5.1, the
+# 1.5.1 bump's own test (it asserts what THAT bump writes) and the readiness-state size test (a sample
+# stage record whose version is any string of that length) — without them --check over the 1.5.1
+# baseline refused (PR6e).
+NOT_PINS = ("tests/test_mvp_runtime_operator_cli.py", "integrations/hermes/MANIFEST.yaml",
+            "tests/test_policy_bump_1_5_1.py", "tests/test_mvp_runtime_crypto_readiness_state.py")
 BUNDLES = (
     "examples/read_only_runtime/input/read_only_runtime_input_bundle_v0.1.yaml",
     "examples/read_only_runtime/input/read_only_runtime_input_bundle_tool_request_blocked_v0.1.yaml",
@@ -71,7 +76,7 @@ LITERAL_ROOTS = ("examples", "tests/fixtures")
 PIN_TEST_REL = "tests/test_policy_assistant_schedule_clause.py"
 SELF_REL = "scripts/ops/policy_bump_1_6_0.py"
 PREVIOUS_BUMP_REL = "scripts/ops/policy_bump_1_5_0.py"
-SIBLING_BUMP_REL = "scripts/ops/policy_bump_1_5_1.py"
+SIBLING_BUMPS_REL = ("scripts/ops/policy_bump_1_5_1.py", "scripts/ops/policy_bump_1_5_2.py")
 FINGERPRINT_SCHEMA = "read_only_runtime_input_bundle_fingerprint_payload.v0.1"
 
 MIRROR_TAIL = "    mirrored_asks: switch_door_only       # the same filter as announce_pending_approvals\n"
@@ -167,7 +172,7 @@ def _stray_sites(known: set[Path]) -> list[Path]:
     """Every tracked text file mentioning the old version outside the known classes."""
     stray: list[Path] = []
     skip_dirs = {".git", ".venv", "node_modules", "__pycache__", ".runtime_governance_state"}
-    skip_rel = {POLICY_REL, VALIDATOR_REL, SELF_REL, PREVIOUS_BUMP_REL, SIBLING_BUMP_REL, *COMMENT_SITES, *NOT_PINS}
+    skip_rel = {POLICY_REL, VALIDATOR_REL, SELF_REL, PREVIOUS_BUMP_REL, *SIBLING_BUMPS_REL, *COMMENT_SITES, *NOT_PINS}
     for path in ROOT.rglob("*"):
         if any(part in skip_dirs for part in path.parts) or not path.is_file():
             continue

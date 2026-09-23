@@ -30,7 +30,7 @@ with the canary door on 2026-09-15.)*
 
 | Piece | Module | What it gives the executing leg |
 |---|---|---|
-| Position state + reconciliation | `live_position.py` | `reconcile_positions` (RECONCILED / DRIFT / ACCOUNT_UNREADABLE), the `live_positions/` book with `stage: "live"`, `live_capacity` (2 open / 1 per symbol), `compute_open_notional_usdt` |
+| Position state + reconciliation | `live_position.py`, `live_reconcile.py` (the comparison, since crypto PR7d-2) | `reconcile_positions` (RECONCILED / DRIFT / ACCOUNT_UNREADABLE), the `live_positions/` book with `stage: "live"`, `live_capacity` (2 open / 1 per symbol), `compute_open_notional_usdt` |
 | Sizing | `live_sizing.py` | `size_live_order` — `min(risk-based, budget cap)`, venue-filter floored, refuses rather than defaults |
 | The decision | `live_entry.py` | `plan_live_entry(...) -> {status, intent, sizing, bracket, guard}`; `READY` only when the final guard approved. **Holds no adapter and imports none** |
 | The send | `live_execution.py` | `submit_and_reconcile` (entry MARKET + the conditional bracket types), reconcile-first |

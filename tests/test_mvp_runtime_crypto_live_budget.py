@@ -14,7 +14,8 @@ import json
 import pytest
 
 from runtime.mvp_runtime.crypto import live_budget as lb
-from runtime.mvp_runtime.crypto.live_pnl import state_dir
+from runtime.mvp_runtime.crypto import live_order
+from runtime.mvp_runtime.crypto.state import state_dir
 from runtime.mvp_runtime.errors import ToolError
 from runtime.mvp_runtime.paths import repo_root
 
@@ -249,7 +250,7 @@ def test_a_legacy_record_carrying_the_retired_cap_still_verifies_and_resolves(tm
     assert lb.read_registered_budget(tmp_path)["caps"]["min_clean_canary_orders"] == 4
     st = lb.budget_status(tmp_path, now="2026-08-01T00:00:00Z")
     assert st["valid"] is True and st["error"] is None
-    lim = lb.limits_from_budget(lb.read_registered_budget(tmp_path))
+    lim = live_order.limits_from_budget(lb.read_registered_budget(tmp_path))
     assert lim.max_order_notional_usdt == 60.0 and lim.max_daily_order_count == 2
 
 
@@ -437,7 +438,7 @@ def test_stripping_the_window_from_a_legacy_record_breaks_its_hash(tmp_path):
 # --- loader ------------------------------------------------------------------
 
 def test_limits_from_budget_maps_caps_and_leaves_confirmation_to_the_operator():
-    lim = lb.limits_from_budget(_build())
+    lim = live_order.limits_from_budget(_build())
     assert lim.max_order_notional_usdt == 60.0 and lim.max_daily_order_count == 2
     assert lim.absolute_max_notional_usdt == 200.0
     assert not hasattr(lim, "min_clean_canary_orders")

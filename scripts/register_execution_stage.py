@@ -139,6 +139,15 @@ def run_confirm(*, root: Path | None, now: str, approval_id: str) -> dict:
     # One writer at a time: a --demote landing between the re-check and the write would otherwise be
     # overwritten by this climb, and the stop would be lost.
     with es.stage_lock(base):
+        # The grant BEFORE the stage. A concurrent confirm of this grant spends it and writes its record
+        # under this lock, so a loser that re-planned first met the winner's record and was refused
+        # EXECUTION_STAGE_CHANGED "ask again" for a transition already made (2026-09-22). spend_lock's
+        # re-read below stays the single-use compare-and-set; this one makes the loser say it lost.
+        latest = approvals.get(approval_id)
+        if latest is None or latest.get("status") != approval_mod.STATUS_APPROVED:
+            raise ApprovalBlocked("ALREADY_CONSUMED",
+                                  f"approval {approval_id} is no longer APPROVED - a concurrent --confirm spent it; "
+                                  "this one changes nothing (--show says what the machine reads)")
         status_now = es.resolve_execution_stage(base, now=now, approval_store=approvals)
         # Built (and refused) BEFORE anything is spent: a grant that cannot write its record stays APPROVED.
         record = es.record_from_approved(content, status_now=status_now, approval_id=approval_id,

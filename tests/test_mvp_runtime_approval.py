@@ -716,6 +716,16 @@ _ASKS = {
         permission.build_program_registration_permission_decision, program_id="p.x", program_version="0.1.0",
         definition_sha256="sha256:d", candidate_id="progcand_1", program_request_id="progreq_1",
     ),
+    # The operator's emergency close (crypto PR6c): the one irreversible money-path ask, so its
+    # answer leads with no. The real builder's ask is rendered in test_mvp_runtime_crypto_emergency_close.
+    "emergency_close": lambda: {
+        "approval_id": "approval_x", "task_id": "task_x",
+        "validity": {"expires_at": LATER}, "action_fingerprint": "sha256:f",
+        "approved_action_snapshot": {"action_type": "crypto.live.emergency_close",
+                                     "permission_scope": "RUNTIME_GOVERNANCE",
+                                     "target_ref": permission.EMERGENCY_CLOSE_TARGET_PREFIX + "x",
+                                     "normalized_parameters": {"requested_by": "thomas", "reason": "r"}},
+    },
     # A kind this renderer has never heard of: it must say so, not borrow another kind's answer.
     "unregistered": lambda: {
         "approval_id": "approval_x", "task_id": "task_x",
@@ -745,6 +755,10 @@ _UNDO = {
               "이미 나간 프로브 주문은 실주문이라 그 손익은 되돌릴 수 없습니다"),
     "registration": ("되돌릴 수 있는가: 예 — 작업 트리에 후보 항목(enabled false)만 쓰고 반영은 Thomas의 "
                      "PR이므로, 그 PR을 머지하지 않거나 되돌리면 됩니다"),
+    "emergency_close": ("되돌릴 수 있는가: 아니오 — 청산 주문이 나가면 시장가로 확정된 손익은 되돌릴 수 없습니다. "
+                        "소비(--confirm) 전에는 아무것도 나가지 않으며(15분 뒤 만료, 그 사이 HARD 정지를 바꾸면 "
+                        "무효), 다시 진입하려면 HARD 정지를 푸는 재개(/resume, Thomas)와 정상 진입 경로를 "
+                        "처음부터 거쳐야 합니다"),
     "unregistered": ("되돌릴 수 있는가: 확인되지 않음 — 이 요청 종류에는 등록된 답이 없습니다"
                      "(되돌릴 수 없다고 보고 판단해 주세요)"),
 }

@@ -214,10 +214,17 @@ KIND_WORKFLOW = "workflow_plan"
 # the ledger and never touches money — the threshold is dormant on free tiers by the
 # proposal's own recorded caveat, and `dispatch_spend`'s docstring carries the details.
 KIND_DISPATCH_SPEND = "dispatch_spend_watch"
+# The forward cohort's walk (`crypto/forward_cohort.py`; Thomas 2026-09-23, Phase 1 under option
+# A). One fire advances every frozen cohort's members to the newest closed bar, writing only the
+# cohort's own store. Maintenance, not risk: it is a measurement, "no pool, no orders", and a day
+# that fires late costs freshness — the walker catches up over every bar it missed. Financial for
+# delegation by its `crypto_` prefix, so the assistant can never change it.
+KIND_FORWARD_COHORT = "crypto_forward_cohort"
 KINDS = frozenset({KIND_TASK, KIND_PRUNE, KIND_CRYPTO, KIND_FACTORY, KIND_REPORT,
                    KIND_PROPOSER, KIND_DATA_REVIEW, KIND_ROTATE,
                    KIND_BREAKER_WATCH, KIND_ROUTE_WATCH, KIND_CANDLE_ARCHIVE,
-                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW})
+                   KIND_NULL_CONTROL, KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
+                   KIND_FORWARD_COHORT})
 
 # The kinds whose lateness costs money rather than freshness.
 #
@@ -276,7 +283,7 @@ RISK_KINDS: frozenset[str] = frozenset({KIND_CRYPTO, KIND_BREAKER_WATCH, KIND_RO
 MAINTENANCE_KINDS: frozenset[str] = frozenset({
     KIND_TASK, KIND_PRUNE, KIND_FACTORY, KIND_REPORT, KIND_PROPOSER,
     KIND_DATA_REVIEW, KIND_ROTATE, KIND_CANDLE_ARCHIVE, KIND_NULL_CONTROL,
-    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW,
+    KIND_CONTENT_IDEATION, KIND_DISPATCH_SPEND, KIND_WORKFLOW, KIND_FORWARD_COHORT,
 })
 
 # How much of one pass the non-risk kinds may spend before it stops STARTING more of them.
@@ -1384,6 +1391,21 @@ def _execute(
             return f"breaker_changed_not_sent:{type(exc).__name__}"
         breaker_watch.write_mark(result["state"], root=repo_root)
         return breaker_watch.status_line(result)
+    if schedule.kind == KIND_FORWARD_COHORT:
+        # ALLOW-tier venue read, and writes to the cohort's own store alone: no pool, no forward
+        # book, no candidates, no orders. A context that fails costs that context (named in the
+        # status line); a walk in which EVERY context failed fails the fire, so the failure
+        # notifier says so once instead of a quiet line saying nothing moved.
+        from .crypto import forward_cohort
+
+        summary = forward_cohort.run_cohort_walk(
+            repo_root, now=now, frame_for=forward_cohort.collector_frames(repo_root, now=now))
+        if summary["contexts"] and not summary["walked"]:
+            raise SchedulerBlocked(
+                "FORWARD_COHORT_WALK_FAILED",
+                "no cohort context could be fetched: " + "; ".join(summary["failed"]),
+            )
+        return forward_cohort.status_line(summary)
     if schedule.kind == KIND_DISPATCH_SPEND:
         # §6-3's alert rides the failure-transition notifier the way the data review's stall
         # does: past the threshold this fire FAILS, the operator gets the transition message,
@@ -1452,6 +1474,53 @@ def _execute(
                 return line
             return f"{line} {account_store.refresh_snapshot(now=now, root=repo_root)}"
 
+        # The venue contract sentinel (PR4a, Thomas decisions 43-44): about hourly (every fire while
+        # the decided record refuses entries the next ask can let through: a FAIL, another contract
+        # version, a budget symbol it does not name), asks the exchange whether what this runtime
+        # assumes about it still holds. Here for the account refresh's reason — this lane holds the
+        # venue keys — and after it, so the leverage check reads the snapshot as fresh as this lane
+        # keeps it; after the cycles, so no entry, settlement or protective re-assert of this fire
+        # waits on it. Handed the fire's own collector, so a fire the venue already rate limited asks
+        # it nothing more. Never raises; a no-op when not due.
+        def _refresh_venue_contract(line: str) -> str:
+            from .crypto import venue_contract
+
+            if not venue_contract.refresh_due(repo_root, now):
+                return line
+            return f"{line} {venue_contract.refresh_verification(collector=collector, now=now, root=repo_root)}"
+
+        # The venue contract notice (PR4b-2): the doors refuse on the record quietly, so the fire tells
+        # the operator once, on the edge — after this fire's own ask, so it says what the doors read
+        # from here on. The breaker watch's posture: channel selected at fire time, a transport failure
+        # reported and never raised, the told reading moved only once the message is delivered, and one
+        # the channel did not take kept on the mark as undelivered, so the next message says it even when
+        # the reading has returned by then.
+        def _announce_venue_contract(line: str) -> str:
+            result: dict[str, Any] = {}
+            try:
+                from . import operator as operator_mod
+                from .crypto import venue_contract
+
+                result = venue_contract.notice(repo_root, now=now)
+                if not result["changed"]:
+                    return line
+                channel = operator_mod.select_operator_channel(now=now, root=repo_root)
+                operator_mod.notify_operator(channel, result["text"], repo_root=repo_root)
+            except Exception as exc:  # noqa: BLE001 — a notice must not stop the fire
+                why = exc.reason_code if isinstance(exc, MvpRuntimeError) else type(exc).__name__
+                if result.get("changed"):
+                    try:
+                        venue_contract.note_undelivered(result, root=repo_root)
+                    except Exception as kept:  # noqa: BLE001 — told again only while the reading differs
+                        return f"{line} venue contract notice not sent ({why}), not kept ({type(kept).__name__})"
+                return f"{line} venue contract notice not sent ({why})"
+            reading = (result.get("state") or {}).get("reading")
+            try:
+                venue_contract.write_notice_mark(result["state"], root=repo_root)
+            except Exception as exc:  # noqa: BLE001 — sent; sent again every fire until it is marked
+                return f"{line} venue contract notice sent ({reading}), mark not written ({type(exc).__name__})"
+            return f"{line} venue contract notice sent ({reading})"
+
         from .crypto.cycle import (
             PIPELINE_STALLED,
             cycle_is_stalled,
@@ -1496,7 +1565,7 @@ def _execute(
             )
             if ledger is not None:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-            status = _refresh_funds(cycle_status_line(record))
+            status = _announce_venue_contract(_refresh_venue_contract(_refresh_funds(cycle_status_line(record))))
             if cycle_is_stalled(record, schedule.last_status):
                 raise SchedulerBlocked(PIPELINE_STALLED, (
                     f"crypto pipeline has degraded for two consecutive fires; "
@@ -1513,7 +1582,7 @@ def _execute(
         if ledger is not None:
             for record in summary["cycles"]:
                 ledger.append_records(record["cycle_id"], {"crypto_cycle": record})
-        status = _refresh_funds(pool_cycle_status_line(summary))
+        status = _announce_venue_contract(_refresh_venue_contract(_refresh_funds(pool_cycle_status_line(summary))))
         if pool_cycle_is_stalled(summary, schedule.last_status):
             raise SchedulerBlocked(PIPELINE_STALLED, (
                 f"crypto pipeline has degraded across all contexts for two consecutive fires; "

@@ -1,7 +1,7 @@
 """One vendor read per symbol per fan-out, because forty to read ten broke the last symbols.
 
 Both Coinalyze series are per-SYMBOL — `liquidation_history` and `open_interest_history` take
-a symbol and a day count and nothing else. But `cycle.attach_feeds` runs once per (symbol,
+a symbol and a day count and nothing else. But `feed_assembly.attach_feeds` runs once per (symbol,
 TIMEFRAME), so the shipped 20-context fan-out asked for each symbol's series four times. The
 redundancy was invisible downstream: the series is aligned onto each timeframe's candles after
 the fetch, so four identical responses produced four correct frames.

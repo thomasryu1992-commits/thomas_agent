@@ -24,6 +24,1100 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort board never leads with a refuted lineage** (`forward_cohort.board_summary`,
+  `forward_cohort.trade_bounds`, 2026-09-23; display only, option A).
+  - **Why:** the leaders were ranked CONFIRMED first, then most rows. With nothing CONFIRMED, most
+    rows meant the oldest trading lineages — long enough to be judged and fail — so the first board
+    showed three FORWARD_CONTRADICTED 4h shorts (-0.23R, -0.55R, -0.44R) as 상위. Under option A that
+    line is what an operator may choose a pool promotion from.
+  - **What changed:** a CONTRADICTED member is never a leader. The rest rank CONFIRMED first, then by
+    the trade-level lower bound `mean - CONFIDENCE_Z * sd / sqrt(n)`, highest first; a member with no
+    bound yet (one trade, or no spread) ranks after every member with one. The bound, not the mean:
+    the mean has the mirror failure of row count (one +2R trade outranks +0.3R over twenty), and the
+    bound is the judge's own interval, so the board adds no statistic of its own. `cohort_report`
+    carries `trade_mean_r` / `trade_lower_bound_r` over the rows `judge_forward` prices, below the
+    floor too, where the verdict has no mean. Each leader shows its status (`[확정]` / `[판정 전]`).
+  - **Not changed:** `judge_forward`, its verdict, every door and every promotion path.
+  - **Tests:** 3 more and 2 extended in `test_mvp_runtime_crypto_forward_cohort.py`; restoring the
+    CONTRADICTED member to the leaders is caught.
+
+- **The forward cohort walks daily and shows on the board** (`scheduler.KIND_FORWARD_COHORT`,
+  `forward_cohort.board_summary`, 2026-09-23; Phase 1 under option A, second PR).
+  - **The fire:** `crypto_forward_cohort` is a MAINTENANCE kind, and a financial one for delegation by
+    its `crypto_` prefix, so the assistant can never change it. One fire advances every frozen cohort's
+    members to the newest closed bar through the venue collector, writing only the cohort's store. A
+    context that fails is named in the status line; a walk in which every context failed fails the
+    fire (`FORWARD_COHORT_WALK_FAILED`) so the failure notifier says so once. A late or missed day
+    costs nothing but freshness: the walker catches up over every bar since its last.
+  - **The board:** `build_status` carries `forward_cohort` (members, with rows, at the trade floor,
+    per judge status, the last walk) and the text board renders one line plus the three members an
+    operator would read first (CONFIRMED first, then most rows), marked 선별 전용 (screen only). An
+    unreadable cohort store is a warning, as the candidate store is.
+  - **Operator step after deploy:** register one daily schedule —
+    `docker exec thomas-scheduler python -m runtime.mvp_runtime.scheduler_cli add --kind crypto_forward_cohort --interval-seconds 86400`.
+  - **Tests:** 6 more in `test_mvp_runtime_crypto_forward_cohort.py`; removing the all-failed refusal
+    or the board field is caught.
+
+- **The forward cohort, Phase 1 under option A** (`crypto/forward_cohort.py`, `scripts/forward_cohort.py`,
+  2026-09-23; design `docs/proposals/FORWARD_COHORT_OFF_POOL_V0.1.md`, decided by Thomas the same day).
+  - **Why:** `forward_book` advances only occupying pool entries, so forward clocks equal occupied
+    slots — 15 — while 115 lineages clear the OBSERVATION entry bar on today's store (read-only
+    dry freeze: 17 selection contexts, the largest K 23, the five-symbol 1d scope).
+  - **What it is:** a frozen, sealed `forward_cohort.v1` record whose membership is the door's own
+    chain minus the slot terms (derivation, cost basis, depth, the entry bar; one member per
+    family + scope + timeframe; no rule the pool routes; no lineage the forward book ever settled a
+    row for). A walker advances each member-context through `forward_book.replay_entry_bar` from its
+    selecting row (#945's cutoff), keeping an open position across runs, into its own store under
+    provenance `mvp_forward_cohort`. A report runs `judge_forward` over those rows. Display only.
+  - **Option A in code:** `forward_book.read_forward_outcomes` refuses a cohort row as tampering,
+    and `seed_forward_book` starts a lineage a cohort held at its `promoted_at` (not seeded without
+    one), because the cohort period was the evidence it was promoted on.
+  - **Two parity traps closed:** the synthesized entry carries `admission_evidence` (both entry doors
+    fail open without it), and its `strategy_id` is the member's `candidate_id`, since candidate rows
+    share template ids and `position_id` hashes the id — siblings on one bar would otherwise share a
+    settlement id and one would be dropped by the dedup.
+  - **Also:** the forward book's strict reader and dedup append are parameterized by path and
+    provenance (`read_sealed_rows`, `append_sealed_rows`) so the cohort store reuses them; the money
+    store's behavior is unchanged. `MAX_WALK_BARS` is recorded as mechanics (the venue's page window).
+  - **Not in this PR:** the scheduled fire and the board section (next PR), the null arm, any door.
+    Nothing is frozen or walked until an operator runs `scripts.forward_cohort freeze --apply`.
+  - **Tests:** 20 in `test_mvp_runtime_crypto_forward_cohort.py`; six mutants (no admission
+    evidence, template id as position identity, no start cutoff, no seeder guard, dropped boundary
+    position, no pool-clock exclusion) are each caught.
+
+- **Forward evidence starts at the row that selected a lineage, not at its first mint**
+  (`forward_confirmation.selection_cutoff`, `scripts/seed_forward_book.py`, 2026-09-23).
+  - **The defect:** the seeder started every lineage at the earliest `created_at_utc` among rows sharing
+    its rule hash, on the argument that a re-score re-measures an unchanged spec. That holds for the
+    spec's parameters and fails for the choice. A `mvp_rescore` row replays the frozen spec on a snapshot
+    taken at re-score time, and its holdout is that snapshot's tail. A lineage promoted on its re-score
+    row was admitted on the bars between the first mint and the re-score, and the seed counted those same
+    bars again as forward evidence. Measured on the live book: **31 of 141 forward rows** opened before
+    the row that selected their lineage, all under the 2026-08-24 re-scores. The two best forward
+    records carried the most (`cand_c80d741fa05422d8be68` 8 of 17, `cand_0ab780971198521358ff` 6 of 13).
+    No lineage had reached the trade floor, so no arming read them.
+  - **What changed, two halves:**
+    - The seeder keys the start by the `candidate_id` the pool entry names (`_selection_times`, latest
+      `created_at_utc` per id, the row the promotion door resolves to). An entry whose row the store
+      lacks starts at `promoted_at`, which is later than any selection.
+    - The judge's input (`forward_outcomes_for`) keeps only rows that OPENED at or after the record's own
+      `created_at_utc`. The rows already written stay in the append-only store and stop counting. A
+      record with no readable time, or a row with no readable open, counts nothing: the INSUFFICIENT
+      side, like every branch of the judge that cannot be computed.
+  - **Opened, not settled:** an entry taken on a bar the selecting snapshot held was decided on
+    selection data, however late it closed.
+  - **Effect on the live book, read-only:** 141 rows → 110; the 31 dropped are exactly the measured ones,
+    across seven re-scored lineages; every verdict stays FORWARD_INSUFFICIENT. It only narrows what the
+    arming door counts.
+  - **Tests:** the cutoff drops the pre-selection rows of a record that otherwise confirms; open vs
+    settle at the boundary; unplaceable opens; a timeless record confirmed by nothing and refused at the
+    gate; the start keyed by id rather than hash; a re-scored lineage seeding from its re-score; the
+    `promoted_at` fallback. Mutants that drop the cutoff (3 failures) or restore the earliest-row start
+    (2 failures) are caught.
+
+- **The patch-reach census moves into the repository** (crypto PR7, 2026-09-23).
+  - **Why:** when a function moves out of a module, it reads the new module's globals from then on, and
+    a test's patch on the old home stops reaching it without failing anything. Patch counts cannot tell:
+    `pool.load_active_pool` was patched 83 times, and no function in `pool` that reads it ever ran under
+    that patch. PR7e-7 to PR7e-11 measured this with a scratch plugin kept outside the repository. In
+    PR7e-8 it caught a readiness test whose patch no longer reached `live_arm_unsound` but still passed.
+  - **`scripts/ops/patch_reach.py` (new)** is that plugin, loaded only with `-p scripts.ops.patch_reach`.
+    It takes the modules to watch as options instead of hard-coding `pool`: `--patch-reach-old`,
+    `--patch-reach-new` (can be repeated) and `--patch-reach-out`. For every call of a top-level function
+    in a watched module, it writes which of the names the function reads are patched at that moment:
+    `own` when the patch is in the function's own module, and `missed` when the function moved and only
+    its old home is patched with an object its new module does not hold. It also writes, for each
+    watched function, how many tests called it, including those called by none.
+  - **It cannot change what it observes:** it listens to `sys.monitoring` events on the watched code
+    objects and replaces nothing. Under it, the full suite passes as it does without it. Loaded without
+    its options, or with its monitoring tool id taken, it stops the run instead of measuring nothing.
+  - **Proof:** a fake split in `tests/test_ops_patch_reach.py`, where only the patch cut off by the move
+    is a miss and a test that patches both homes with one object is not. On main, watching `pool` and
+    `promotion_backlog`, the plugin writes the same hits and call counts as the scratch plugin did for
+    PR7e-11.
+
+- **The backlog leaves the pool, the last of its roles** (crypto PR7e-11, 2026-09-22).
+  - **What moved:** `promotion_backlog.py` (decision, new) takes the 6 definitions of the promotion
+    backlog: `promotable_backlog`, which applies the door's own chain to the candidate store and reports
+    what would clear it today; `BACKLOG_REFUSAL_AXES`, the axes it charges each refusal to;
+    `PROMOTION_BACKLOG_ALERT_THRESHOLD`, where the daily board raises a line; `MAX_DAYS_TO_LIFECYCLE_WINDOW`
+    and `days_to_lifecycle_window`; and the private `_lineage_key`. It reads the stored pool and the
+    candidates through `pool_state` and the door's sets and window through `pool_admission`, and nothing
+    of `pool`'s.
+  - **Readers:** `pool` re-exports the 5 public names as the same objects; the daily board and the tests
+    keep reading `pool.<name>`. `pool` keeps `_lineage_key` off, and drops `market_data`,
+    `HOLDOUT_CONFIRMED`, `ROBUST` and the private `_is_number`, which only the backlog used and nothing
+    read through `pool`. `candidate_ranking`'s note on who reads `_is_number`, its reference to
+    `_lineage_key`, and `lifecycle`'s reference to `days_to_lifecycle_window` name the new module.
+  - **Tunables:** `PROMOTION_BACKLOG_ALERT_THRESHOLD` and `MAX_DAYS_TO_LIFECYCLE_WINDOW` are indexed at
+    `crypto/promotion_backlog.py` and read from it, with their values unchanged. No tunable is owned by
+    `crypto/pool.py` any more, so `tunables` no longer imports `pool`.
+  - **Patches:** the census plugin, watching `pool` and `promotion_backlog`, found no call of a moved
+    function under a patch on `pool` for a name it reads. `promotable_backlog`, which reads
+    `load_active_pool` and `read_candidates`, is called by the same 48 tests as before the move, and
+    never while either is patched.
+  - **Nothing changed.** All 13 definitions `pool` had are AST-identical, docstrings included: 6 in
+    `promotion_backlog`, 7 still in `pool`.
+  - **Where `pool` stands.** It is 301 lines: 2,934 when PR7 began, 2,204 before PR7e-7. It keeps the
+    routing views (`routable_strategy_ids`, `routable_lineage_keys`, `routable_contexts`,
+    `context_scores`), `resolve_candidates`, `as_pool_entry_for_replay` and `STORED_SNAPSHOT_FIELDS`, and
+    re-exports every public name of the six modules its roles went to: `candidate_ranking` (PR7e-1), `pool_state`,
+    `live_tier`, `pool_transitions`, `pool_admission` and `promotion_backlog` (PR7e-7 to PR7e-11). A test
+    holds each re-export to `promotion_backlog`'s own object and keeps the private key off `pool`.
+
+- **The promotion door's gates leave the pool** (crypto PR7e-10, 2026-09-22).
+  - **What moved:** `pool_admission.py` (decision, new) takes 35 definitions: what a candidate must
+    satisfy to enter the pool, and how much the pool may hold.
+    - the tier doors (`assert_promotable_cost_basis`, `assert_promotable_evidence_depth`) and the
+      derivation door, with the three promotable sets;
+    - the checks against the incumbents: semantic duplicates, behaviour-cluster siblings, and
+      `pool_candidate_records`, which reads the incumbents' rows for both;
+    - the observation tier's entry bar and family cap, with their two constants and the private
+      `_observation_holdout_term`;
+    - one routed rule per lineage (`assert_rule_not_routed` and the rule-hash helpers) and the
+      entries a promotion leaves behind (`reactivated_candidate_ids`, `silent_reactivations`,
+      `assert_no_silent_reactivation`);
+    - the size cap and what it checks against (`MAX_ROUTABLE_*`, `FAST_ROUTING_TIMEFRAMES`,
+      `max_routable_per_context`, `routable_context_map`), and the lifecycle window
+      `LIFECYCLE_MIN_WINDOW_TRADES`, which the backlog reads too;
+    - `routable_directional_capacity`, the per-direction capacity the dashboard and the promotion
+      script report. Nothing refuses on it.
+    It reads the stored pool through `pool_state` and the live tier's rule hash through `live_tier`, and
+    nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the 34 public names as the same objects. The promotion door's roster,
+    `cycle`, `dashboard`, the scripts and the tests keep reading `pool.<name>`, and the backlog reads
+    the promotable sets and the window through those bindings.
+    - Two private names leave `pool`: `_observation_holdout_term`, and `_spec_rule_hash`, which `pool`
+      imported from `live_tier` only for `rule_hashes_of`. One test called the first through `pool`,
+      and it and a `robustness` comment now name `pool_admission`. The live tier's pin test now holds
+      `_spec_rule_hash` off `pool`.
+    - `pool` drops `json`, `Sequence`, `outcome_attribution_key` and `Direction`, which only the gates
+      used and nothing read through `pool`.
+  - **Tunables:** the six the gates own (`MAX_ROUTABLE_STRATEGIES`, `MAX_ROUTABLE_PER_CONTEXT`,
+    `MAX_ROUTABLE_PER_CONTEXT_FAST`, `OBSERVATION_MIN_BACKTEST_CLOSED`, `OBSERVATION_FAMILY_CAP`,
+    `LIFECYCLE_MIN_WINDOW_TRADES`) are indexed at `crypto/pool_admission.py` and read from it. Their
+    values are unchanged.
+  - **Patches:** the census plugin, watching `pool` and `pool_admission`, found no call of a moved
+    function under a patch on `pool` for a name it reads. All 24 moved functions ran, each called by
+    as many tests as before the move. The patches on the tier doors and on
+    `reactivated_candidate_ids` are meant for the promotion door, which reads them through `pool`.
+  - **Nothing changed.** Of the 48 definitions `pool` had, 45 are AST-identical, docstrings included,
+    and 3 differ only in a qualified reference: `routable_context_map` names `pool.routable_contexts`,
+    `routable_strategy_ids` names `pool_admission.routable_context_map`, and `promotable_backlog` names
+    the two promotable sets' module.
+  - **Prose:** `pool`'s docstring lists what it keeps and where the rest went. The comment on
+    `LIFECYCLE_MIN_WINDOW_TRADES` no longer says `lifecycle` imports `pool`, which it does not. The
+    backlog's comment on its window names the constant's module. A test holds each re-export to
+    `pool_admission`'s own object and keeps the private helper off `pool`.
+
+- **The status transitions leave the pool** (crypto PR7e-9, 2026-09-22).
+  - **What moved:** `pool_transitions.py` (decision, new) takes the 4 definitions that write the
+    lifecycle's decisions onto the stored pool: `apply_status_decisions`, its all-or-nothing form
+    `update_statuses`, the stale-decision rule (`_stale_decision`, private) and its reason code
+    `LIFECYCLE_DECISION_STALE`. It reads the stored pool through `pool_state`, and nothing of `pool`'s.
+  - **Readers:** `pool` re-exports the three public names as the same objects. The cycle, the
+    retirement door and the tests keep reading `pool.<name>`. `pool` keeps the private rule off, so a
+    patch on `pool` for it fails loudly rather than reaching nothing, and it drops `locked`,
+    `LINEAGE_FIELDS` and `lineage_of`, which only the transitions used and nothing read through `pool`.
+  - **Patches:** the census plugin, watching `pool` and `pool_transitions`, found no call of a moved
+    function under a patch on `pool` for a name it reads. Each is called by as many tests as before
+    the move: `apply_status_decisions` 67, `_stale_decision` 66, `update_statuses` 22.
+  - **Nothing changed.** All 52 definitions `pool` had are AST-identical, docstrings included: 4 in
+    `pool_transitions`, 48 still in `pool`. The check that the status writers never name the live
+    tier's field reads the same function objects and passes unchanged.
+  - The prose that placed the transitions in `pool` now names their module: `pool`'s docstring and
+    comment, `pool_state`'s docstring, the live tier's header comment, the PR7e-1 layer bullet, and
+    the lists of the pool's writers in `strategy_artifact` and `CRYPTO_PIPELINE_V0.1.md`, which also
+    name the disarm door's module now. A test holds each re-export to `pool_transitions`' own object.
+
+- **The live tier leaves the pool** (crypto PR7e-8, 2026-09-22).
+  - **What moved:** `live_tier.py` (decision, new) takes the 12 definitions of the section `pool` held
+    since #610 Part 1:
+    - the tier field, its two values and the approval field;
+    - the readers: `entry_live_tier`, `live_routable_strategy_ids`, and `live_arm_entries` with its
+      two verdicts (`live_arm_unsound`, `live_arm_approvals`) and the private `_spec_rule_hash`;
+    - the disarm door (`disarm_live_tier`), the one automatic writer of the tier, which can only take
+      it away.
+    It reads the stored pool through `pool_state` and nothing of `pool`'s, so it could follow the store
+    (PR7e-7) without a cycle.
+  - **Readers:** `pool` re-exports the 11 public names and `_spec_rule_hash`, which its `rule_hashes_of`
+    calls, as the same objects. Every reader keeps reading `pool.<name>`. `pool` keeps importing
+    `ARTIFACT_SHA256_FIELD`, which only the tier used, because `live_route` and two tests read it
+    through `pool`.
+  - **One patch had to follow the code.** The census plugin from PR7e-7, watching `pool` and
+    `live_tier`, found one patch the move cut.
+    - `test_an_armed_entry_the_gate_refuses_is_not_counted` patched `pool.live_arm_unsound`. That
+      reached two readers: the readiness board, which reads `pool.live_arm_unsound`, and
+      `live_arm_approvals`, which after the move reads `live_tier`'s name.
+    - The test still passed with the patch missing its second reader, because the board refuses on the
+      first before the approvals matter. It now patches both names with one fake, and the census
+      finds 0 moved-function calls that see anything other than what a patch on `pool` put there.
+    - A patch on `pool` reaches only the code that reads through `pool`. The tier's own functions, and
+      `pool_state`'s, read their own modules' names, and `pool`'s comments now say so for both moves.
+  - **Nothing changed.** Of the 64 definitions `pool` had, 63 are AST-identical, docstrings included.
+    `live_routable_strategy_ids`'s docstring names `pool.routable_strategy_ids`, which stayed, and the
+    section's header comment names `pool.apply_status_decisions` and `pool.update_statuses`.
+  - The docstrings that placed the disarm in `pool` (`pool`'s, `pool_state`'s, the layer bullet) now say
+    where it went. The tests that read source take their functions from `pool`, so they read the same
+    objects and pass unchanged: `disarm_live_tier`'s one write of the field, and the check that the
+    ladder and the two status writers never name it. A test holds each re-export to
+    `live_tier`'s own object.
+
+- **The forward-book seeder reads each lineage's mint through the candidate store's verified reader**
+  (`scripts/seed_forward_book.py`, 2026-09-22).
+  - **What changed:** `_first_seen_by_hash` used to open `strategy_candidates.jsonl` itself. It rebuilt the
+    path from its own copy of `CANDIDATES_FILENAME`, skipped lines that did not parse, and never checked
+    `record_sha256`. It now iterates `pool.read_candidates`, the reader every other consumer of the store
+    uses. On an intact store the map is unchanged: the earliest `created_at_utc` per rule hash, rows
+    missing either field ignored, and unstamped rows from before hashing still counted.
+  - **Why it matters:** that date is where a lineage's forward clock starts. The old reader took a
+    backdated row at face value: a fixture row minted 2026-07-01 and edited to 2025-01-01 came back as
+    2025-01-01. The seed would then walk bars from before the spec existed into the forward book as
+    out-of-sample evidence, and the promotion gate reads that book. The forward outcomes store is
+    append-only, so a later correct run does not remove rows seeded from a wrong mint.
+  - **The decision: a damaged store refuses the whole run.** `CANDIDATES_TAMPERED` or
+    `CANDIDATES_UNREADABLE` ends `main` with `EXIT_BLOCKED` and a `BLOCKED <code>` line on stderr, for
+    `--list` and `--apply` alike, before the market-data collector is selected or anything is written.
+    - The refusal is not narrowed to the lineages the bad row names, because its rule hash is one of the
+      fields that cannot be trusted.
+    - Falling back to `promoted_at` for a refused store was rejected as guessing a mint.
+    - It cannot newly strand a working store: every appender goes through `append_candidates`, which
+      runs this same read under the store lock, so a store the factory can still append to passes it.
+  - **Tests** (`test_mvp_runtime_crypto_forward_book.py`): the map on an intact store; `main` handing
+    the seed that mint rather than `promoted_at`; and a backdated row and an unparseable line, each
+    refusing both `--list` and `--apply`. Against the previous script the first two pass and the four
+    refusals fail.
+
+- **The pool's two files leave the pool's doors** (crypto PR7e-7, 2026-09-22).
+  - **Why this first:** the user asked for `pool`'s remaining roles to be split (the promotion door's
+    gates, the live tier, the status transitions, the backlog). Each of them reads the pool's state,
+    and `pool` must keep re-exporting whatever leaves it, so a role moved out while the state stayed
+    would import `pool` while `pool` imported it. That cycle fails the layer test. The state moves
+    first; the roles can then follow one at a time, importing `pool_state`.
+    - The roles also read each other, and that sets their order. The live tier and the status
+      transitions read no other role. The gates read the live tier's `_spec_rule_hash` and the
+      lifecycle window (`LIFECYCLE_MIN_WINDOW_TRADES`, kept in the backlog's section, which moves with
+      them). The backlog reads the gates' three promotable sets. So the live tier and the transitions
+      go next, then the gates, then the backlog.
+  - **What moved:** `pool_state.py` (decision, new) takes 14 definitions:
+    - the two file names and paths;
+    - the pool's reads (`load_active_pool`, `read_pool_to_disarm` and the private `_read_active_pool`
+      they share) and the install door;
+    - the identity invariant both doors check (`assert_pool_identity_unique`);
+    - the candidate store's verified read and append door;
+    - the lineage check that door applies (`validate_candidate_lineage`, `DERIVATION_TYPES` and the
+      private parent-count rules).
+    It reads nothing that stayed in `pool`, and it takes `state_dir` from `state`, the leaf `paper`
+    re-exports it from. The two writers that rewrite the stored pool in the cycle, the status
+    transitions and the live tier's disarm, stay in `pool` and move with their roles. Each re-reads
+    the pool under its lock and writes back only its own fields, without the install door's checks.
+  - **Readers:** `pool` re-exports the 12 public names as the same objects, and every reader in the
+    runtime, the scripts and the tests reads them as `pool.<name>`, unchanged. The code that stayed in
+    `pool` reads them through those bindings too. `pool` drops the nine imports only the store used,
+    none of which anything read through `pool`, and the two private names, so a patch on `pool` for
+    either fails loudly rather than reaching nothing.
+  - **Patches, measured by what runs under them.** A census plugin watched every call of a `pool`
+    function over the full suite and recorded which names it read from `pool` were patched at that
+    moment.
+    - Only two (caller, patched name) pairs ever ran that way: `resolve_candidates` under
+      `read_candidates` (7 calls in 5 tests) and `live_arm_approvals` under `live_arm_unsound` (1 call
+      in 1 test). Both callers stay in `pool`.
+    - The 83 patch applications on `load_active_pool` (in 79 tests, from 8 source sites) are
+      untouched by the move: no moved function reads it, and
+      the calls they are meant for, outside `pool` and in the readers that stay in it, still read
+      `pool`'s binding.
+    - `append_candidates`, the one moved function that reads a patched name, never ran under that
+      patch.
+  - **Nothing changed.** All 78 definitions `pool` had are AST-identical, docstrings included: 14 in
+    `pool_state`, 64 still in `pool`. `pool`'s module docstring gave the two-file description to
+    `pool_state` and says what `pool` holds now.
+  - A test holds each re-export to `pool_state`'s own object and keeps the two private names off
+    `pool`.
+
+- **The retention stores' cohort sweeps leave the orchestrator** (crypto PR7e-6, 2026-09-22).
+  - **What moved:** `accumulate_positioning_cohort`, `accumulate_open_interest_cohort`,
+    `accumulate_orderbook_cohort` and `retention_cohort` go from `cycle` to a new `cohort_retention`
+    (market).
+    - They refresh the positioning, hourly open-interest and order-book stores for every member of the
+      declared cohort, unioned with every context the pass planned to visit, on every fan-out pass. A
+      `live_halt` that cuts the context loop short does not narrow that.
+    - They share one rule: a retention store's scope cannot be a side effect of routing.
+    - They read only those three market stores and `CROSS_SECTION_UNIVERSE`. A vendor failure degrades
+      to a per-symbol status. A local failure (the refresh marks, a store write) still raises and fails
+      the fan-out after its context loop, as it did from `cycle`.
+    - They are fan-out-level accumulation, not one context's inputs, so they get a module of their
+      own rather than `feed_assembly`.
+    - PR7e-5's summary had listed them as the one market-side piece still in `cycle`.
+  - **Readers:**
+    - `cycle` re-exports all four as the same objects. `run_pool_cycle` calls them where it always did,
+      and the positioning-store and order-book-store tests read them through `cycle` unchanged.
+    - `cycle` drops `oi_store`, `orderbook_store` and `CROSS_SECTION_UNIVERSE`, which only the sweeps
+      used. Nothing reads them through `cycle`.
+    - Two references in `feed_assembly`, one in `orderbook_store` and `run_pool_cycle`'s docstring name
+      the new owner.
+  - **Nothing changed.** The four definitions are AST-identical except for their docstrings. Three now
+    name `feed_assembly.attach_feeds` and `cycle.pool_cycle_contexts` as another module's. Review
+    corrected what the cohort is unioned with: every planned context, not only the visited ones.
+    - A patch census logged all 119,149 patches over the full suite. Nothing patches the four names or
+      anything through `cycle`'s store attributes.
+    - The one patch on a name they read, `market_data.CROSS_SECTION_UNIVERSE` in a cross-section test,
+      replaces `market_data`'s binding. The sweeps never read that binding: they bound the name at
+      import, in `cycle` before and in `cohort_retention` now.
+    - A test holds each re-export to `cohort_retention`'s own object. That keeps one definition. It
+      does not carry a patch across modules: since the move, a patch on `cycle.retention_cohort`
+      reaches no sweep, which reads its own module's name. No test makes one.
+
+- **The frame a spec is backtested on is assembled with the rest of the market inputs** (crypto PR7e-5,
+  2026-09-21).
+  - **What moved:** `attach_mining_legs` goes from `cycle` to `feed_assembly` (market). It is the one
+    call that attaches every leg the factory mines on, and it reads only `feed_assembly`'s five attaches
+    and `market_data`. After PR7e-2 it was the last piece of one context's market assembly left in the
+    orchestrator, and PR7e-2's review suggested it follow. The fan-out's cohort sweeps
+    (`accumulate_positioning_cohort`, `retention_cohort`, `accumulate_open_interest_cohort`,
+    `accumulate_orderbook_cohort`) also read only market stores. They stay in `cycle` for now, as
+    PR7's summary records.
+  - **Readers:**
+    - `cycle` re-exports it as the same object, so the scheduler's three call-time dispatches
+      (`crypto_cycle.attach_mining_legs`, core) and the mining-frame tests are untouched.
+    - The two scripts that imported it at module level (`seed_forward_book`, `probe_signal_rate`) import
+      it from its owner.
+    - `cycle` drops its now-unused `HIGHER_TIMEFRAME` import. Nothing reads it through `cycle`.
+  - **Nothing changed.** The function is AST-identical except its docstring. It says "the five attaches
+    above" again, as it did before PR7e-2, and names `cycle.run_crypto_cycle` as another module's.
+    The patch census was taken dynamically, by logging every patch over the full suite: no test patches
+    `attach_mining_legs`, a name it reads, or anything on `feed_assembly`. The only attach patches on
+    `cycle` drive `run_crypto_cycle`, which stays.
+
+- **The order's shape at the venue is pure and apart from what sends it** (crypto PR7e-4, 2026-09-21).
+  - **Before:** `live_execution` held the adapters that sign and send (the egress, with the halt
+    backstop), and also the order's shape both ways: the request built from an intent, a conditional
+    order's answer normalised, the verdict on a venue order, the fill facts, and the vocabulary they
+    share.
+  - **`order_request.py` (execution, new)** takes 28 definitions:
+    - `build_order_request`, `is_algo_request` and `is_protective_request`;
+    - `normalize_algo_order` and `_order_rows`;
+    - `reconcile_order`, `fill_facts` and `_intended_price`;
+    - the order, working and time-in-force types, the client-order-id charset, and the four reconcile
+      verdicts;
+    - the two refusals this code raises itself (`MALFORMED_INTENT`, `ORDER_MALFORMED_RESULT`).
+    All of it is pure: no network, no clock, no state. Vocabulary blocks moved whole
+    (`RESTING_ORDER_TYPES`, `UNRECONCILABLE`), so none is split between two files.
+  - **`live_execution` keeps** what reaches the venue: the adapters and their selection behind the
+    live-trading switch (so the safety-gate roster and the order-path tripwire still name this module),
+    the halt backstop, and `submit_and_reconcile`, which joins the two sides. It re-exports all 28 names
+    as the same objects. No reader was repointed: `venue_contract`'s call-time import of
+    `build_order_request` goes through `live_execution`, which is where its test patches it.
+  - **Evidence:** the first compare made with PR7e-3's request log. Every order request built,
+    conditional answer normalised and verdict given by the lane's tests compares equal, beside the
+    files on disk. The review's end-to-end harness (212 adapter scenarios and 67 bracket-leg scenarios,
+    with the socket faked) gave byte-identical transcripts at base and head.
+  - **Pinned:** a test holds each `live_execution` re-export to the object `order_request` defines. A
+    second test holds `order_request` to importing nothing that could reach a venue or read a key,
+    because the order-path tripwire and the safety-gate roster leave it out on exactly that ground.
+
+- **The record capture sees what the order path's pure seams produce** (crypto PR7e-3, 2026-09-21).
+  - **Why:** PR7's evidence that a refactor changed nothing is the record capture, and it compared only
+    what tests write to disk. The requests and verdicts the tests' scripted adapters exchange live in
+    memory, so a refactor of the order path could change them and pass every compare. This had to come
+    before `live_execution` is split.
+  - **`scripts/ops/crypto_request_log.py` (new)** is a pytest plugin that `capture` loads. It wraps the
+    order path's pure seams: `build_order_request`, `normalize_algo_order`, `reconcile_order` and the
+    venue contract's hand-built `legacy_conditional_probe`. It logs each call to
+    `_requests/<test>.jsonl`, beside the tests' temp directories and never inside one. Each line holds
+    the arguments, bound to parameter names, and then the result or the exception raised.
+  - **It cannot change what it observes, within this tree:**
+    - the wrapper returns the function's own result or re-raises its exception;
+    - a value JSON cannot spell becomes a marker line, not an error;
+    - every in-tree module binding of a seam holds one shared wrapper while a test runs, so identity
+      between modules holds;
+    - every binding is bound back afterwards, including in modules first imported during the test.
+  - **What it does not see:**
+    - the request as an adapter receives it, where a call site changes it after building;
+    - the arguments of reads and cancels;
+    - references kept outside module attributes.
+    Code on those paths is held to its AST.
+  - **Proof it sees what it is for:** a mutation of `normalize_algo_order` (one extra key in its
+    result) passes every order-path test, and it shows up as changed request logs with nothing else
+    changed. Without the plugin, the same mutation compares clean. A mutation of `build_order_request`'s
+    request is already caught by a field-for-field test.
+  - **Proof it stays on:** an end-to-end test runs pytest with the plugin and checks the log is written
+    and the bindings restored. Another test checks that `capture` passes `-p` on every run. Each fails
+    when its mutant is applied.
+  - **Runtime:** none. The plugin loads only under `capture`, and nothing in `runtime/` changed.
+
+- **One context's market inputs are assembled outside the orchestrator** (crypto PR7e-2, 2026-09-21).
+  - **Before:** `cycle` (orchestration) ran the whole cycle and also assembled each context's market
+    inputs: the derivative legs, the higher timeframe, the reference symbol, the cross-sectional cohort
+    and the accumulated positioning rows. It also held the live entry door's judgement of those legs
+    (`optional_data_health`, PR2d-2).
+  - **`feed_assembly.py` (market, new)** takes 16 definitions: the five `attach_*` functions,
+    `_feed_readings`, `optional_data_health`, and the constants they use. Those are the degrade code
+    `HTF_DEGRADED`, the optional-leg code set and columns, the three feed age bounds (Thomas decision
+    28), and the two fetch depths read from `market_data`. It reads only `market_data`, the market
+    stores and the runtime's leaves.
+  - **`cycle` keeps** the cycle itself, the mining legs (`attach_mining_legs`), the cohort
+    accumulators, the pool fan-out and the status lines. It re-exports all 16 names as the same objects.
+    It keeps importing the optional legs' degrade codes, because readers name them as `cycle.<code>`,
+    and it drops `timeutil`, `Sequence` and three `market_data` names that only the assembly read.
+  - **Readers:** the three feed age bounds' `tunables` owners move with their literals, and `tunables` no
+    longer imports `cycle`. `scripts/rescore_stale_holdout_candidates.py` imports the `attach_*`
+    functions from their owner. `live_readiness` still reads the code set through `cycle`, which is a
+    downward import. Ten comments and docstrings that named a moved function as `cycle`'s now name
+    `feed_assembly`.
+  - **Nothing changed.** The 16 moved definitions are AST-identical. Tests patch ten names on `cycle`:
+    - seven that stay there and that `run_crypto_cycle` or `run_pool_cycle` calls (`run_live_leg`,
+      `run_pool_cycle`, `run_risk_guard`, `run_paper_update`, `run_lifecycle`, `run_crypto_cycle`,
+      `read_outcomes`);
+    - three moved ones (`attach_htf`, `attach_reference`, `attach_cross_section`), through an
+      attribute name held in a variable, which a search for literal names misses. They still reach:
+      `run_crypto_cycle` calls them through `cycle`'s own binding, the re-export the patch replaces.
+      With the patch removed, or moved to `feed_assembly`, the test fails.
+
+    A patch on `cycle` for an attach reaches the cycle's call, not a caller that imports it from
+    `feed_assembly`. The first census of this PR said no test patched a moved name, and the review
+    corrected it.
+
+- **Candidate ranking is judged in strategy; the promotion door stays with the pool** (crypto PR7e-1,
+  2026-09-21).
+  - **Before:** `pool` (decision) held the candidate store and its doors, and also the ranking view:
+    `candidate_quality`, `rank_candidates`, the two comparability tiers (what a row paid, how much
+    market it was shown) and `expectancy_at`. The forward-confirmation gate (strategy) imported `pool`
+    to read the recomputed holdout status. That was the last named upward pair.
+  - **`candidate_ranking.py` (strategy, new)** takes 33 definitions:
+    - the ranking view and the promotion order, with the attempt counting behind the selection tier;
+    - the cost-basis and evidence-depth tiers, their formatters, and the two "what a row minted now
+      would carry" views;
+    - `expectancy_at`.
+    It keeps no state and has no refusal of its own.
+  - **`pool` keeps the door:** the promotable sets and `assert_promotable_cost_basis` /
+    `assert_promotable_evidence_depth`, which turn a tier into a refusal, and also the store, its
+    invariants, the backlog and the live tier. The argument for which depth tier the door refuses
+    moved beside it; the premise it rests on stays with the tiers. `pool` re-exports the 26 public
+    names and the two private helpers it calls (`_as_float` orders the live leg's context visits,
+    `_is_number` decides the lifecycle window), and those two say so where they are defined. It drops
+    the five other private helpers, so a patch left on `pool` fails loudly, and the cost and robustness
+    imports that only the ranking used.
+  - **Readers:** `forward_confirmation` reads `candidate_ranking.candidate_quality` through a
+    function-local import, as it read `pool`'s. The scripts and the promotion door still read through
+    `pool`.
+  - **Pins that followed the code:** the stored-snapshot tests pinned `pool.py` as the only file that
+    opens the stored robustness block and the one that reads `robustness_score`; both pins now name
+    `candidate_ranking.py`. The comments and docstrings that named a moved function as `pool`'s, and
+    three REMAINING_WORK lines, now name the new owner.
+  - **Nothing changed.** 32 moved definitions are AST-identical, and `search_context_key`'s docstring
+    now points at `pool._lineage_key`. The records compare equal.
+  - **The count:** no named upward pair remains. `EXCEPTIONS` is empty, and a test pins it empty, so
+    an entry is a visible decision.
+
+- **The live ledger is read from a store layer; the outcome row is built in execution** (crypto PR7d-3,
+  2026-09-21).
+  - **Before:** `live_pnl` (outcome) held the ledger's writer and the loss breaker, and also the
+    ledger's readers and the builder of the row it appends. The breakers (`breaker_watch`, risk), the
+    slippage probe (`probe`, execution) and the executing leg (`live_leg`, execution) imported those
+    upward: three named pairs.
+  - **`live_ledger.py` (store, new)** takes the read path: `read_live_outcomes_raw`,
+    `read_live_outcomes` with `_approvals_for` (the approvals it checks corrections against),
+    `live_outcomes_for_analysis`, `stop_slippage_observations`, `LIVE_OUTCOMES_FILENAME`, the three
+    `LIVE_HISTORY_*` reasons and `UNKNOWN_R`.
+  - **`live_settlement.py` (execution, new)** takes `build_live_outcome_record`,
+    `realized_stop_slippage_bps` and `LIVE_PROVENANCE`: arithmetic on a closed position's fills, with
+    no I/O, called by the leg that closes it.
+  - **The store layer (new, between governance and market)** holds the read path of a record that
+    layers below its writer must read. It does not hold every record the lane keeps: the book, the
+    counters, the marks and the evidence registry each sit with the layer whose readers are at or above
+    them. The ledger is written in outcome and read back by risk and execution, so its read path is
+    store, together with the governed corrections that read path applies (`live_correction`, moved from
+    outcome; its only writer is the operator's correction door, outside the lane). Market keeps what the
+    venue and the vendors say. A test enforces that store reads only foundation.
+  - **Re-exports:** `live_pnl` re-exports the 12 public names as the same objects. It keeps the writer
+    (`RealLiveLedger`), `live_risk_snapshot` and the loss checks, which read the moved names through its
+    own bindings. The private `_approvals_for` is not re-exported: the corrected read looks it up in
+    `live_ledger`, so a patch left on `live_pnl` fails loudly instead of missing. The three lane
+    readers, and the correction script, import from the new owners. `live_promotion` keeps its
+    function-local import from `live_pnl`, which the canary-evidence tests patch.
+  - **One patch moved:** a correction-door test patched `live_pnl._approvals_for`. The moved
+    `read_live_outcomes` reads `live_ledger`'s binding, so the test now patches that one.
+  - **The diagnostic index follows imported codes.** `live_pnl`'s P&L sum still raises
+    `LIVE_HISTORY_TAMPERED`, now through a constant it imports, and the builder resolved only
+    constants defined in the raising module, so that site dropped out of the index. It now follows
+    module-scope `from X import NAME` to a certain value, with the same refusals as before plus those
+    only an import has. The fix also brought in the testnet adapter's twelve raises of the live
+    adapter's codes, which had been missing since PR1d-1: 1,180 → 1,193 sites, and 147 → 134 sites
+    whose code is built at runtime. The seven codes that became visibly shared are declared.
+  - **Nothing changed.** The 13 moved definitions are AST-identical except three docstrings, which now
+    name `live_pnl`'s writer and readers from the new module's side. The records compare equal.
+  - **The count:** 1 named upward pair remains (`forward_confirmation -> pool`, PR7e).
+
+- **The live book and the drift check are two modules** (crypto PR7d-2, 2026-09-21).
+  - **Before:** `live_position` held the live position book and `reconcile_positions`, the check of
+    that book against the venue's account. So the whole module sat in reconciliation, and every
+    order-path reader of the book (the entry, the leg, the sender, the probe) imported upward.
+  - **`live_reconcile.py` (reconciliation, new)** takes `reconcile_positions`, the four drift reasons,
+    the quantity tolerances and their comments.
+  - **`live_position` keeps the rest and is placed in execution,** the layer whose state it is. It
+    keeps the book, its store, the capacity checks, and the three verdicts: `entry_allowed` reads
+    `RECONCILED` and `ACCOUNT_UNREADABLE` on the order path, and `live_route` reads `DRIFT`.
+    `live_reconcile` imports them downward and stamps its records with the book's kernel version, as
+    before.
+  - **No re-export.** `live_position` sits below `live_reconcile` and cannot re-export the drift
+    names. Their readers now import them from `live_reconcile`: `live_route`, one script, and six
+    test files, at the import line only.
+  - **Nothing changed.** The moved definitions are AST-identical, and no test or script patched any
+    of them.
+  - **The count:** the four book pairs are gone, so 4 named upward pairs remain (PR7d-3 3, PR7e 1).
+    They went with the book's move to execution, not with the code that left: none of the four
+    importers read a moved name.
+
+- **The account snapshot store is placed with the other market stores** (crypto PR7d-4, 2026-09-21).
+  - **What it is:** `account_store` holds what the venue said about the account. Its refresh reads the
+    venue through `account.read_account`, and the read door, the venue-contract sentinel and the
+    readiness board read it back. That is the shape of the market stores beside it (`orderbook_store`,
+    `oi_store`, `positioning_store`, `candle_archive`), which also hold venue observations and are read
+    back by several layers.
+  - **Why it moved:** it sat in reconciliation, so the sentinel's read of it
+    (`venue_contract → account_store`) pointed up.
+  - **What made the move legal:** `account_store` took `state_dir` through `paper`, which sits above
+    market. It now takes the same object from `state`; without that change the new placement would name
+    `account_store → paper` as a new upward import. Nothing else moves and no module is new.
+  - **What a lower placement allows:** a layer map lets every higher layer import a module. Placed in
+    market, the snapshot is importable from strategy up. Its staleness is guarded where it is read
+    (`STALE_AFTER_SECONDS`, the gate's account-age bound), not by the map.
+  - **The count:** one named pair is gone, so 8 remain (PR7d 7, PR7e 1). A store layer, for the lane's
+    own trade records rather than venue observations, is PR7d-3's to argue.
+
+- **The order intent's identity and the account-age bound move below the gate** (crypto PR7d-1,
+  2026-09-21). The pre-order gate (risk) took both from `live_order`, the sender above it.
+  - **`order_identity.py` (foundation, new)** takes `make_idempotency_key`, `make_client_order_id` and
+    `enrich_order_identity`. They derive an id from the intent itself, with no I/O, and every layer
+    that names an order reads them: the gate records the id, the sender sends it, and the book keys on
+    it. That is the order's `candidate_identity`, and so foundation.
+  - **`MAX_ACCOUNT_AGE_SECONDS` moves to `pre_order_gate`,** the gate that enforces it, with its
+    rationale. `live_order`'s freshness helpers read it downward. The tunables owner moves with the
+    literal.
+  - **Nothing changed.**
+    - `live_order` re-exports all four names as the same objects.
+    - The four definitions are AST-identical to the originals.
+    - No test or script patches any of them. The patch point for the id helpers is now
+      `order_identity`: `enrich_order_identity` reads them there, so a patch on `live_order`'s re-exported
+      copies would reach nothing. The comment at the re-export says so.
+    - `live_order` imports `pre_order_gate` at module level. That is new, and the cycle test shows it
+      closes no loop: the gate no longer imports the sender.
+  - **The count:** `pre_order_gate → live_order` is gone, so 9 named upward pairs remain (PR7d 8,
+    PR7e 1).
+
+- **Paper's trade-plan maths leaves the position kernel** (crypto PR7c, 2026-09-21). The factory
+  backtest and the forward book read the maths the paper book trades with: one set of rules for
+  backtest and paper, on purpose. To do that they imported `paper`, the stateful kernel above them.
+  - **`trade_plan.py` (strategy, new):** 26 definitions move with their comments. That covers the entry
+    plan, liquidation, the regime and cost refusals, the managed stop and the intrabar exit, settlement,
+    the outcome record, and their constants and reason codes. By what it does this is strategy work,
+    pure computation over a spec and the cost model, and it imports nothing from `paper`.
+  - **Record labels to `vocabulary`, only where two layers read them:** `PAPER_PROVENANCE`,
+    `DEFAULT_VENUE`, `STATUS_ENTRY_CANDIDATE` and `OCCUPYING_STATUSES`. `PAPER_KERNEL_VERSION`, which
+    only `open_position` stamps, went with the maths. The router's other statuses and its rule code stay
+    in `paper`, the only reader (review of #921).
+  - **Nothing changed:**
+    - `paper` re-exports every moved name as the same object;
+    - all 34 moved definitions are AST-identical to the originals;
+    - no test or script patches any moved name, or any name the moved bodies read.
+  - **`_touches` stays private.** The kernel reads it through a public alias (`touches`), so the moved
+    bodies stay byte-identical.
+  - **Tunables:** five owners move with their literals (`ASSUMED_LEVERAGE`, `MAINTENANCE_MARGIN_RATE`,
+    `DEFAULT_MAX_HOLD_BARS`, `MIN_VOL_SIZE_MULTIPLIER`, `MIN_REGIME_TRADES_TO_EXCLUDE`). The index test
+    reads the assignment site, not the name.
+  - **The count:** `factory → paper` and `forward_book → paper` are gone, so 10 named upward pairs remain
+    (PR7d 9, PR7e 1).
+  - **Records unchanged:** base and head, captured in one worktree from the same tests (numbers in the PR).
+
+- **Shared vocabulary moves below its readers, and the lane's one import cycle is gone** (crypto PR7b-2,
+  2026-09-21). Each name moves to where the layer order allows and its meaning says. The old module
+  re-exports it as the same object, so no importer outside the lane changes.
+  - **`vocabulary.py` (foundation, new):** the live-trading opt-in's names, the R-basis labels, the stop
+    exits and `utc_day`. They move with their rationale comments. They lived in `live_pnl`, the outcome
+    ledger, above the order path, `cost` and `paper`, which all read them.
+  - **`RECONCILED` is defined in `live_execution`,** with the rest of the reconcile-status vocabulary.
+    The live leg reads it there, and `live_promotion` re-exports it for `scripts/run_slippage_probe.py`.
+    `live_position` and `testnet_evidence` spell their own statuses the same way; those are other
+    vocabularies and stay theirs.
+  - **`SymbolFilters` is defined in `live_filters`,** beside the reader that fills it. `live_sizing`
+    re-exports it.
+  - **`outcome_math.py` (strategy, new):** `net_result_r`, `summarize_outcomes` and their helpers leave
+    `feedback`. By what they do they are strategy work: pure maths over the cost model, used to score
+    strategies. They read nothing from `paper`.
+  - **`limits_from_budget` moves to `live_order`,** beside the class it builds. It has no runtime caller,
+    only two tests. In `live_budget` it was that module's only import of `live_order`, the import that
+    closed the cycle. `live_order` now imports `live_budget` at module level; the old lazy import existed
+    only for that cycle.
+  - **The count:** 13 more named pairs are gone, so 12 remain (PR7c 2, PR7d 9, PR7e 1), and the lane has
+    no import cycle. No test or script patched any moved name (grep over `setattr`, string paths and
+    `patch.object`).
+  - **Records unchanged:** the 7b-1 head and this one, captured in one worktree from the same tests,
+    compare with 0 files changed (numbers in the PR).
+
+- **Policy 1.5.2 and 1.6.0 are applied, in one image** (2026-09-21, on Thomas's explicit instruction; both
+  bump scripts' `--apply`, then the two validators).
+  - **1.5.2** lists `emergency_close: approval_required_always` under
+    `control_channel.assistant_switch.verbs`. The assistant's switch-door verb (#916) stops refusing by
+    name and can mint the emergency-close ask. It still only asks: Thomas approves on the control bot, and
+    the operator spends the approval in the scheduler container.
+  - **1.6.0** adds `control_channel.assistant_schedule`, the bounded schedule delegation of sequence 2
+    P09. It covers `analysis_task` and `workflow_plan` only, no tighter than hourly, and at most 3 active;
+    every `crypto_*` kind is refused.
+  - **One REBIND.** The execution stage binds the policy version and the safety fingerprint, and both
+    move. After this image deploys, the stage reads READ_ONLY until Thomas approves a REBIND of PAPER.
+    Shipping the two bumps together means one REBIND instead of two.
+  - **Zero PENDING, checked read-only.** The scripts ran against a temporary state root, because a root
+    run against the real one is what the state-guard rule forbids. The production approval store was read
+    in a throwaway container with the state mounted read-only: 0 live PENDING, 0 unspent APPROVED.
+    `POLICY_1_5_2_DRAFT.md` and `POLICY_1_6_0_DRAFT.md` now say IMPLEMENTED.
+
+- **`state_dir` comes from `state`, and a dead import is gone** (crypto PR7b-1, 2026-09-21; the first
+  code step under PR7a's layer test and record comparison).
+  - **The repoints.** Ten modules took `state_dir` from `paper` or `live_pnl`, which sit above them:
+    `candle_archive`, `oi_store`, `orderbook_store`, `positioning_store`, `live_budget`, `risk_limits`,
+    `live_order`, `live_position`, `forward_book` and `probe`. They now take it from `state`, the leaf
+    both of those already re-export (`paper.state_dir is state.state_dir`, and the same for `live_pnl`).
+    The same object reaches the same call sites. No test or script patches `state_dir` on any of these
+    modules, so no patch is orphaned by the move.
+  - **The dead import.** `breaker_watch` no longer imports `feedback`. #414 added it for a report call, and
+    #473 removed that call's last use without the import.
+  - **The count.** 7 named upward pairs are gone and 4 more lose a name, so 25 remain. Pinning names in
+    PR7a is what makes the second half visible.
+  - **Records unchanged:** base `e4d9bbda` and this head, captured in one worktree from the same 6,107
+    tests, compare with 0 files changed (the numbers are in the PR).
+
+- **The crypto lane's dependency direction is enforced** (crypto PR7a, 2026-09-21; directive §9, "역방향
+  dependency는 금지"; `tests/test_mvp_runtime_crypto_layers.py`, `scripts/ops/crypto_record_capture.py`).
+  - **The map:** every crypto module, including any in a sub-package, sits in one of eleven layers. A
+    module may import only its own layer or a lower one. The layers are foundation, governance, market,
+    strategy, decision, risk, execution, reconciliation, outcome, orchestration and report; the middle
+    seven are the directive's order, with its Feedback stage inside outcome.
+  - **What the test reads:** every import, function-local included (that is where the one cycle,
+    `live_budget` ↔ `live_order`, hides), resolved to the module it lands in. A cycle anywhere in the lane,
+    even inside one layer, fails too.
+  - **Placed by what a module does, not tuned to the count:**
+    - governance is the lowest package, the leaves every acting layer reads;
+    - `cycle` and `live_route` are orchestrators;
+    - `live_entry` sits in execution;
+    - foundation keeps only leaves without a role (review of #917 moved sizing to risk, the distribution
+      gate and limit-entry scoring to strategy, and outcome corrections to outcome).
+  - **32 edges point up today.** Each is named with the step that removes it (PR7b 20, PR7c 2, PR7d 9,
+    PR7e 1) and with the names it may take. Both lists only shrink. A new upward pair fails, and so does
+    a new name on a named pair: the first version keyed exceptions by pair alone, and the review added
+    `submit_live_order` through `pre_order_gate → live_order` unseen. An edge whose removal would change
+    trading behaviour would stay as a permanent exception; none needs that today.
+  - **The record evidence:** `crypto_record_capture.py` runs every test file that imports the lane twice,
+    keeping what the tests write under `tmp_path`, and compares two commits record by record.
+    - It sets aside only what both commits vary alike, such as a wall-clock `recorded_at`. A field or file
+      that varies in one commit only is a difference. The first version masked the union, so a refactor
+      that started reading the wall clock passed with "0 differing".
+    - Values compare as JSON spells them (`true` ≠ `1`).
+    - Both captures run in one worktree, because the Core activation, and every id bound to it, differs
+      between worktrees. They also run the same test ids in the same order, because temp directories are
+      numbered by run order.
+    - It does not see what a test keeps in memory (the scripted adapters' order requests), files written
+      outside `tmp_path`, or byte layout. The `live_execution` split in PR7e has to make those requests
+      visible first.
+  - **Runtime change: none.**
+
+- **The assistant can ask for the emergency close, and only ask** (crypto PR6e-2, 2026-09-19, Thomas
+  decision 49; `switch_bridge.py`, Hermes shim 2.14, `scripts/ops/policy_bump_1_5_2.py`).
+  - **The verb:** the switch door's `emergency_close` mints the ask `scripts.emergency_close --request`
+    mints, with the assistant as the requester. It uses the same content, scope, risk and 15 minutes,
+    and refuses by the same codes. A retried `request_id` answers from the record.
+  - **It never spends.** An `approval_id` beside it is refused. Thomas approves on the control channel,
+    and the operator spends it once in the scheduler container.
+  - **Dormant until policy 1.5.2.** The door's verbs are closed in the policy, so the verb refuses by
+    name until `control_channel.assistant_switch.verbs` lists it (`control.granted_switch_verbs`), the
+    pattern `halt_trading` followed before 1.5.1. `policy_bump_1_5_2.py` is Thomas's to apply, and a
+    REBIND follows, because `assistant_switch` is a safety section.
+  - **Found on the way:** `policy_bump_1_6_0.py --check` refused over the committed 1.5.1 baseline. Two
+    test literals that pin nothing were not on its list, and the 1.5.1 test checked only anchors, not
+    the stray scan. Both scripts' scans are now tested, and 1.6.0 accepts the 1.5.2 baseline.
+  - **After review:**
+    - **The ask names who asked.** The control-channel text carries a 요청자 line and the requester's
+      own reason, labelled unverified when the assistant asked. The decision's authority reason no
+      longer says "Thomas asks" for an ask the assistant minted. Before this, the RED ask reached Thomas
+      looking exactly like one he had made.
+    - **One ask open at a time.** A new ask is refused while any emergency-close ask is PENDING or
+      APPROVED and unexpired (`EMERGENCY_CLOSE_ASK_OPEN`, naming it). This covers the two cases the
+      `request_id` could not:
+      - a reply that outlived the client's timeout, where the model had no id to retry with;
+      - a claim released after the ask was already stored.
+
+      The shim now answers a sent-but-unanswered frame with UNCONFIRMED and the id to retry. It no
+      longer points to the Telegram control channel, which has no close command.
+    - **The grant reads the value.** A switch verb counts as listed only under the disposition the
+      door implements for it (`control.SWITCH_VERB_DISPOSITIONS`). Key presence used to be enough.
+    - **The close is bound to its domain** (`DOMAIN_EFFECT_MISMATCH` if the door ever widens).
+    - A replay says what that call did, never what has happened since.
+
+- **The assistant can halt entries** (crypto PR6e-1, 2026-09-19; Hermes shim 2.13, `SOUL.md`).
+  - **The tool:** `halt_trading(reason, hard=False)` sends the switch door's `disable mode=soft|hard`.
+    The door has carried `soft` since policy 1.5.1 and `hard` since PR6a. No shim tool sent either, so
+    the assistant's only stops also stopped position management.
+  - **Its authority is written out:** grade B in SOUL, like the stops (on evidence that a loss is in
+    progress, or when Thomas asks). The stop tools' docstrings say "never on your own judgement" and
+    SOUL's closing list says the same, against its grade B; that contradiction predates this PR and is
+    Thomas's to settle.
+  - **The note (F11 from the review of PR6a):** every `disable` was rendered with the stop's note,
+    "dropped the scheduler's due cycles ... NOT being settled". That is false for a halt, which leaves
+    the runtime ACTIVE. A halt now says positions are still managed, and names its level; one on a
+    stopped runtime says the stop stays and the halt is recorded under it. A disable that changed
+    nothing opens with NOT CHANGED instead of "applied", and warns when a stop is in effect (review of
+    #915). A contract test renders the door's real frames.
+  - **What it cannot do:** loosen HARD to SOFT, or release a stop. Lifting a halt needs Thomas's
+    `start_trading` approval, and `resume_runtime_only` keeps it, as for a stop.
+  - **Not in this PR:** the skill's wording (§5 lists the stops). It rides the next skill version,
+    because the 1.5.6 bump is still open in two PRs (#909, #910).
+
+- **The console board stops guessing the manual kill switch, and a halt under a stop is recorded**
+  (crypto PR6d, 2026-09-19; `crypto/live_readiness.py`, `control.py`, `operator.py`).
+  - **The manual kill switch row** (decision 50). A board without the live-trading environment
+    printed `[PASS] manual_kill_switch clear` off its own empty environment. It now shows the
+    trading process's last record of the switch, the same record `live_gate_open` decides on, or n/a.
+    Every board says the switch is secondary: entries only, read at restart, with the control store
+    as the primary control. This changes rendering only; `checks` and `ready` are untouched.
+  - **A halt under a stop** (review of PR6a, F12). The assistant's `disable mode=soft|hard` cannot
+    release a stop, and on a stopped runtime it used to leave nothing behind, so an approved resume
+    that did not re-arm came back as a bare disarm. It now records the halt under the stop;
+    tightening needs nothing (decision 47), and SOFT never replaces HARD there. The stop keeps who
+    placed it and when, because the next resume ask Thomas signs names that stop. Who recorded the
+    halt, and when, is noted in the reason (one note, which a tighter halt replaces) and on the
+    event. A stop derived by failing closed is left as it is.
+  - **The mid-run peek keeps the channel's slash rule.** It applied a bare `kill` that the channel
+    refuses as conversation (SLASH_REQUIRED), so "kill 스위치가 뭐야?" asked during an analysis killed
+    the runtime while the reply said nothing had happened.
+  - **Withdrawn after review: `/halt_trading` in the peek.** This PR first let the peek apply the
+    halt, as a tightening, and read the whole batch. Its review (#914) found that the next poll
+    replays the same text with release rights against a state that later messages have already
+    moved. That wrote a halt's event twice or out of order, lost a pause's event, left a HARD halt
+    without one when the peek's ledger write failed, and could loosen HARD to SOFT for one send. So
+    the peek is back to `/kill` and `/pause`, first match, state only. Doing it properly needs the peek
+    to know which messages it applied (Telegram's update id), which `InboundMessage` does not carry;
+    that is its own PR if Thomas wants it. Until then a Telegram halt waits for the analysis to
+    finish, and `/kill` or `/pause` still land during one.
+
+- **The emergency close** (crypto PR6c, 2026-09-19, Thomas decision 49; `scripts/emergency_close.py`,
+  `crypto/live_route.py`, `permission.py`).
+  - **The change:** the operator can close every booked live position at market, reduceOnly, under
+    the HARD halt, on one single-use approval Thomas gives on the control channel. `--request` binds
+    the halt in effect and the book, `--confirm` spends the approval once, and the two are never one
+    invocation.
+  - **Where it lives:** in the chokepoint, `live_route.run_emergency_close`. Its close is
+    `live_leg.execute_live_exit`, the leg every runtime exit uses, behind the same gate, API breaker
+    recording and post-order audit. The "one module starts a live order" tests are unchanged, and
+    so is the daily-counter gate, because it adds no `submit_and_reconcile` caller.
+  - **Everything that can refuse without the venue refuses before the spend.** That covers another
+    halt, a closed gate (a dry-run adapter would spend the grant and close nothing), no confirmation
+    phrase (the close guard would refuse every close), nothing still booked, and an unreadable
+    account. The halt is checked again inside the spend lock. After the spend, each position is
+    judged again just before its close and skipped, never resized, when anything moved. A venue
+    position the book does not hold is never closed, but the report names it.
+  - **Why the grant binds the halt's `stop_ref`:** any control write moves it. A kill, a resume, a
+    loosening or a re-placed halt after the ask refuses the spend, so Thomas's approval never closes
+    positions under a state he did not see.
+  - **Why it is not a control-ledger event:** that would need a new record schema. The trail is the
+    CONSUMED approval (it names the set), one outcome per position (`close_reason: emergency_close`)
+    and one audit event per order (purpose `emergency_close`).
+  - **Not in this PR:** the assistant asking for one. The switch door's verbs are closed in the
+    policy (`control_channel.assistant_switch.verbs`), so a door verb is a policy change Thomas
+    applies.
+  - **Review of #913.** Nothing could open or add exposure, and the single use and the halt binding
+    held. The fixes:
+    - (MEDIUM) A close that reached the venue but was not confirmed, such as a partial fill or an
+      unanswered status query, left no trace but a printed line. Every sent order is now audited with
+      what the venue answered. The report names each order and is kept on the record ledger under the
+      approval id.
+    - An audit failure no longer stops the closes behind it.
+    - A grant whose every position would be skipped is refused before the spend.
+    - The expiry is re-checked at the spend on a fresh clock.
+    - A position booked after the ask, and an incomplete book record, are named rather than silently
+      skipped or generically refused.
+    - The docs now say the account is read once, before the spend. They also describe both
+      directions of the race with the scheduler and the halt binding's one limit (a HARD halt
+      recovered from the ledger).
+
+- **The HARD halt refuses at the order adapter** (crypto PR6b, 2026-09-19;
+  `crypto/live_execution.py`, `crypto/testnet_execution.py`, `scripts/run_signed_testnet_cycle.py`).
+  - **The change:** both order adapters — mainnet `BinanceFuturesOrderAdapter` and the signed testnet
+    one — ask the control state at every `submit`, before anything is signed, whether an order that
+    is neither `reduceOnly` nor `closePosition` may leave (`control_refusal`). Under a HARD halt, a
+    PAUSED or KILLED runtime, or a control state that cannot be read, it may not: `ORDER_HALTED`,
+    nothing sent. It is the one chokepoint every sender shares; the entry leg and the probe already
+    refuse an entry under any halt before they get there, so what this adds is the backstop for a
+    halt that lands between their read and the send, and for a sender that does not read.
+  - **Exits are never refused, and never read the state:** a halt that traps an open position is
+    worse than what the halt prevents, and a store that cannot be read must not strand one. The
+    reduce-only close under a corrupt store is the first test. `/order/test` and cancels are not
+    refused either. One spelling of the protective shape, `is_protective_request`, serves this and
+    the bracket leg's own check.
+  - **Nothing sent, and said so:** `ORDER_HALTED` is in `NOTHING_SENT_ERRORS`, carries no venue code
+    (the API error breaker does not count it), and `submit_and_reconcile` turns it into a
+    `SubmitRefused` without asking the venue about an order that never left, so the entry leg gives
+    the symbol back as for any refusal before the venue.
+  - **SOFT is not refused at the adapter:** it stops entries where they are decided, and the signed
+    testnet rehearsal keeps running under it (arming real trading to earn the evidence for arming it
+    is the loop the testnet door exists to avoid). HARD stops the rehearsal too; its guard says so
+    before the cycle starts, under the existing `runtime_active` check.
+  - **Read at every submit:** the adapter takes the machine's root from its selector and reads the
+    state per order, so one built before a halt sees it.
+
+- **The trading halt has two levels, SOFT and HARD** (crypto PR6a, 2026-09-19; `control.py`,
+  `switch_bridge.py`, `console_cli.py`, `crypto/live_readiness.py`).
+  - **The change:** `halt_trading` takes a level. Alone, or with `soft`, it is the halt it always
+    was. `halt_trading hard` (`/halt_trading hard <reason>`; switch door `disable mode=hard`) is the
+    HARD halt. Both keep the runtime ACTIVE, so settlement, protection, the time exit and
+    reconciliation keep running, and both refuse new entries. Tightening needs nothing; loosening
+    HARD to SOFT is a release, the authenticated operator's alone, like releasing a pause or kill
+    through the same verb; `/resume` clears either. What HARD adds at the order adapter is the entry
+    above (PR6b); the EMERGENCY_CLOSE it gates is next (decision 49).
+  - **Representation:** a `halt_level` field beside `mode`, not a fourth mode. An older image reads
+    an unknown mode as corrupt, i.e. KILLED, which stops position management on a rollback; it ignores
+    an unknown field and reads either level as the soft halt. That makes a rollback read-safe, not
+    write-safe: the old image's next control write drops the level (DEPLOYMENT.md says what to check
+    after rolling forward). Absent is no halt (a file from before levels); present and unreadable is
+    HARD. `trading_allowed` refuses on any halt, whatever the arm, and the record never holds a halt
+    with the arm up (the field an older image reads).
+  - **Carried, never lost:** `/kill`, `/pause` and `/stop` carry the level, and a resume that does not
+    re-arm keeps it, so the assistant's runtime-only resume cannot come back looser. Every control
+    event records `resulting_halt_level`, and a lost state file recovers it from the ledger (until now
+    a lost file came back as a bare disarm, which the assistant's door could have loosened). A corrupt
+    file still reads KILLED (decision 48), with a HARD halt under it.
+  - **A halt over a bare disarm now names it** (it was a no-op): `/status` shows a `halt:` line, and
+    the board says `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`.
+  - **Found on the way:** a state file whose `mode` was a list raised `TypeError` out of
+    `ControlStore.load` instead of reading KILLED, because `in` on a frozenset hashes; the ledger
+    recovery had the same fault. Both check the type first now.
+  - **Review of #911** — four ways a HARD halt could come back looser without anyone loosening it:
+    - A halt that named no level was SOFT, so `/halt_trading <reason>` — and the console command the
+      incident notices print — turned HARD into SOFT from the operator's own doors. A halt that names
+      no level now keeps the one in effect (under a stop too); only an explicit `soft` loosens HARD.
+      The level word is read before any whitespace, a newline included.
+    - `pause`, `kill` and `stop` carried the level they read before a concurrent HARD landed, and
+      erased it. Each now re-reads just before it writes and builds on that — a stop still always
+      goes through. `/stop <id>` had the older form of the same race: it kept the mode it had read,
+      so it could write ACTIVE over a kill that landed in between.
+    - A resume judged on a state that moved wrote anyway. It now compares before it writes and refuses
+      (`CONTROL_STATE_CHANGED`); the switch door's spend passes the state it checked `stop_ref`
+      against, so a HARD placed during the spend is never re-armed away and nothing is spent.
+    - The record could hold a halt with the arm up, which `load` clamped and an older image would read
+      as armed; `as_record` now writes the arm down under any halt.
+    - Also: a HARD kept from a fail-closed state says so on the state a runtime-only resume writes,
+      and `/recovery` says when a halt was not read from a state file; an unhashable `halt_level=` is
+      a typed refusal.
+    - The second round found nothing that loosens HARD. It corrected the provenance note: a lost
+      file's halt is the ledger's last event, an operator's, so "no operator placed it" was false
+      there. The note now names both sources, and releasing a corrupt-file kill with a halt that
+      names no level carries the same note. A reason that begins with `soft` is read as the level;
+      that is documented, and the reply names the change.
+  - **Not in this PR:** the policy comment on the grant still describes the soft halt; it is a byte
+    of the fingerprinted policy and changes with the next bump Thomas applies. The Hermes shim has no
+    halt tool yet, and Telegram's `/halt_trading` still waits for a running analysis to finish (the
+    mid-run peek acts on `/kill` and `/pause` only); both are PR6's last part.
+
+- **The readiness board opens and closes with whether a live entry can open**
+  (crypto PR5b, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
+  `integrations/hermes/mcp/read_bridge_mcp.py`).
+  - **The change:** the text board starts with `LIVE ENTRY POSSIBLE: YES / NO / UNKNOWN` and what
+    blocks it, what cannot be seen and what admits, and its last line repeats the answer with its
+    reasons. This process's own verdict is printed as `THIS PROCESS: READY / NOT READY`, which is
+    what the CLI's exit code follows. `--json` carries `live_entry_possible` and `readiness` as the
+    `[data]` line does.
+  - **FC-10:** a process without the live-trading environment marks its env rows `n/a` unless a
+    fresh record of the trading process says the gate was closed. Until now only a fresh OPEN record
+    did, so a console whose record had gone stale printed "MVP_LIVE_TRADING is not 'real' (live
+    trading off)" from its own empty environment. A kill leaves exactly that state, because a killed
+    runtime writes no more cycles. That statement was right by accident, for the wrong reason, and
+    it is the sentence a summariser lifts (2026-08-10). The banner says which case it is: a fresh
+    OPEN record, an old record, or none.
+  - **Why the rows could stop carrying it:** the old rule was that absence of evidence is no
+    licence to soften a row. That was right while the rows were the board's conclusion. The
+    conclusion is now the readiness state; `ready` and `checks` are unchanged.
+  - **The breaker watch** said "CRYPTO LIVE ENTRY OPEN - real orders can now be placed" when only
+    its own door, the loss breakers, had opened. It now says the loss breakers no longer refuse
+    entries, and points at `LIVE ENTRY POSSIBLE`. The headline keeps its name, because runbooks and
+    the ops skill quote it.
+  - **Review of #907:**
+    - The last line is one line, never wrapped. Wrapped, the board ended on a bare item — on
+      production, `armed_strategy_count (NONE_ARMED)` — and a reader keeping the last line kept no
+      answer. The head's lists still wrap at 80 columns, between items.
+    - A NO decided only by the stall rule — most of the last fire's contexts refused on their data,
+      their account read or a leg refused whole — says a minority may still enter, at both ends
+      (`minority_may_enter`). "No autonomous entry can open now" is kept for every other refusal.
+    - An old record is named by its kind: over two hours old, dated ahead of this clock, or undatable.
+      All three were "over two hours old".
+    - The loss breaker's NO DATA SOURCE on a process without an account feed ("the limit currently
+      bounds nothing") reads `n/a` beside the env rows: the readiness state reads that figure from the
+      trading process's snapshot. `manual_kill_switch` reads PASS "clear" from the same empty
+      environment, and is left for PR6, which replaces the env kill switch as the primary control.
+- **`live_entry_possible` is the readiness state's answer: every fact an entry needs, each true,
+  false or unknown** (crypto PR5a, 2026-09-19; `crypto/live_readiness.py`, `crypto/breaker_watch.py`,
+  `crypto/live_route.py`, `crypto/cycle.py`, `integrations/hermes/mcp/read_bridge_mcp.py`).
+  - **The change:** the board's view carries `readiness`: eleven components (`live_capability_installed`,
+    `execution_stage`, `live_gate_open`, `runtime_control`, `armed_strategy_count`, `venue_ready`,
+    `risk_ready`, `account_ready`, `trading_cycle_recent`, `market_data_ready`, `reconciliation_ready`), each
+    `{ok: true|false|null, reason}`. `live_entry_possible` is their three-valued AND, and `blocking`
+    and `unknown` name each false and each null component with its reason. The live leg stamps the
+    gate's two operator switches on its record (`live_gate`). The C4 verdict the board reads is
+    `breaker_watch.live_risk_verdict`, the same composition the watch reports.
+  - **Why:** the value was four facts: armed, the recorded gate, the stage and the contract.
+    - It read True under a kill for the two hours the last record stayed fresh, because a kill drops
+      every later fire.
+    - It read True under a disarm indefinitely, because a disarmed runtime keeps cycling and HELD
+      reads as an open gate (FO-10).
+    - It missed every breaker.
+  - **Why three values:**
+    - False only where an entry door refuses on the fact. An unreadable pool is now False, not
+      unknown: the door refuses on it.
+    - None where the reading process cannot see the fact: no cycle on record, an unreadable ledger,
+      an account snapshot over two hours old. None is never read as possible.
+    - A process carrying the live-trading environment answers from its own switches and its own
+      account read. Every other process answers from what the trading process recorded, dated.
+    - Two judgements are coarser than a door, and say so. A refusal the last fire recorded per
+      context — data the door refuses (a synthetic feed, a degraded collection, candles the health
+      check refused, optional data per PR2d-2), an account the leg could not read, a leg refused whole
+      (BLOCKED) — counts when half or more of the contexts were refused, the pipeline's stall rule; a
+      minority may still enter. And `trading_cycle_recent` (below).
+  - **Why a quiet pipeline is False, under one component:** entries happen only inside a cycle. No
+    enabled `crypto_pipeline` schedule, or no fire within three of its intervals (45 minutes on this
+    host), is `trading_cycle_recent:PIPELINE_DISABLED` or `NO_RECENT_CYCLE`. What that fire saw is
+    unknown; its gate stays readable for two hours, the recorded gate's window, then is unknown too —
+    the console's env rows never spoke for it (#382). A stopped scheduler reads True for up to three
+    intervals: the heartbeat stall alarm is the instrument for that, not this board.
+  - **Why the switches are stamped:** the confirmation phrase and the manual kill switch are
+    environment in the trading process only. The recorded gate was the opt-in alone, so a console
+    could not tell a missing phrase from an open gate. Records written before this change read
+    `SWITCHES_NOT_RECORDED` (unknown) until the first fire after the deploy. A console reads them as
+    of the last fire, so an env change on the trading process shows one interval late.
+  - **Why the daily loss comes from the account snapshot on a console:** the scheduler stores the
+    account every fifteen minutes. The figure is judged with the door's own rule
+    (`venue_daily_realized_net`, `live_risk_snapshot` with the venue figure required). Past two hours
+    it is unknown.
+  - **Review of #906** — the board read True where a door refused, and False where one admitted:
+    - The account store keeps its previous snapshot when a read fails, so a console saw a fresh one
+      while every leg refused on the account. The leg's own reads at the last fire now decide first
+      (`LIVE_ROUTING_ACCOUNT_UNREADABLE`, `account_ready:ACCOUNT_UNREADABLE`).
+    - A fire whose legs were refused whole (BLOCKED — a damaged position file, say) read as a clean
+      fire: `reconciliation_ready:LEG_BLOCKED_<code>`. The live book is also read now, as the leg
+      reads it first (`POSITION_BOOK_UNREADABLE`).
+    - Candles the health check refused (stale, gapped) were not counted: `DATA_HEALTH`, read off
+      `paper_verdict_status`, the health verdict alone — not `verdict_status`, which carries the loss
+      breakers `risk_ready` names.
+    - Arms the gate cannot verify were counted as tradable: the count now runs the gate's own check
+      (`live_route.verify_live_arm`) and leaves out a lineage the live allowance held back.
+    - One budget symbol the venue contract did not cover, and a snapshot row that fails its seal, read
+      False while the doors admit: the door judges each entry's own symbol (`USABLE_PARTIAL`, naming
+      `uncovered`), and the entry path appends past a sealed row (`snapshots_status.appendable`). Both
+      check rows still fail, as before.
+    - A fresh snapshot without the realized figure read unknown where the door trips:
+      `DAILY_LOSS_FIGURE_MISSING`. Whose word the loss is follows who read the account, not the opt-in.
+    - A record dated ahead of the clock read as current, and a damaged newest record handed "the last
+      fire" to an older one. Both are now unknown.
+  - **Not here:**
+    - Per-order capacity (open exposure, the concurrency caps, a symbol in flight, a stop-loss
+      cooldown). The guard decides those for the order at hand.
+    - The text board, which is PR5b.
+    - Removing `infrastructure_ready`. An installed shim names it.
+    - The thomas-ops skill's §2 wording ("the live answer is two lines"). That is a governance change,
+      installed by hand.
+- **The operator is told when the venue contract stops or starts backing entries**
+  (crypto PR4b-2, 2026-09-19; `crypto/venue_contract.py`, `scheduler.py`).
+  - **The change:** after the sentinel's own ask, the pipeline fire compares what the doors would
+    answer about the decided record (usable, or the refusal's code) with what the operator was last
+    told, and sends one message when it moved (`venue_contract.notice`, mark
+    `venue_contract_notice.json`). The sentinel's entry-id query asks for an id that could name an
+    order: the first symbol whose entry test was accepted, else the first left unanswered.
+  - **Why on the edge, in the pipeline fire:** PR4b made a FAIL, a stale or a damaged record refuse
+    every mainnet entry, and nothing told an operator — the board showed it, each refused decision
+    recorded it. The fire that asks the venue is the one that knows first, and a notice after its
+    ask says what the doors read from there on. A new schedule kind would have needed a registration
+    on the host before it said anything.
+  - **Why the told reading moves only after delivery, and what the channel did not take waits on the
+    mark:** the breaker watch's posture, missed transitions included. Without the waiting list, a FAIL
+    whose send failed and whose next ask came back PASS would never be told, though it refused the
+    entries of the fire between (review of #904). One that was sent and could not be marked is sent
+    again every fire until it can be: the loud error, not the silent one.
+  - **Why a FAIL naming other checks is a change:** the operator who fixed what the last FAIL named
+    is told what the next one names, as the breaker watch re-announces when its problems change.
+  - **Why the id asked for is one that could name an order:** the query asked for the first budget
+    symbol's id even when that symbol's test had been skipped, refused by the venue, or refused by the
+    builder before it left, and read "not found" as a PASS while the next symbol's accepted MARKET BUY
+    — the one a path that drifted to the order endpoint would have filled — was never asked about
+    (review of #904). A builder refusal is now recorded as not sent.
+  - **Not done, on the record:** recording the algo query's raw venue code. `fetch_order` reads both
+    -2013 and a body that is not an object as "not found", and so does the money path that relies on
+    the answer; the observed check asks exactly that question. Making `fetch_order` raise on a
+    non-object body was withdrawn: in `read_bracket_legs` it would turn NOT_FOUND → close into
+    PROTECTION_UNKNOWN → hold.
+- **A mainnet entry is decided on the venue contract: no usable PASS, no entry**
+  (crypto PR4b, Thomas decision 46, 2026-09-19; `crypto/venue_contract.py`, `crypto/live_entry.py`,
+  `crypto/live_route.py`, `crypto/probe.py`, `scripts/run_slippage_probe.py`,
+  `crypto/live_readiness.py`).
+  - **The change:** the autonomous decision takes the sentinel's last decided verification as a
+    required fact with no default (`venue_contract`), and refuses without a PASS under this code's
+    contract version, at most six hours old at the decision, naming the symbol — door
+    `venue_contract_verified`, six codes, one per thing an operator does about it. The probe refuses
+    on the same rule before any signed call (`PROBE_VENUE_CONTRACT`) and at its gate. The board's
+    informational line became a `venue_contract` check row, and `live_entry_possible` needs it.
+  - **Why one judge:** `venue_contract.entry_refusal` is pure and is what the door, the probe gate,
+    the board and `verification_status` all call, so none of them can disagree about "usable" or
+    about which reason comes first; which symbols a verification covers is `venue_contract.covers`,
+    shared by the judge, the board's row and the refresh cadence.
+  - **Why a record that refuses is asked again at the next fire:** a FAIL already was (PR4a review).
+    A record under another contract version (a deploy that bumped it) or one that does not name a
+    symbol the budget gained would otherwise hold entries for up to an hour when the next ask could
+    let them through. A run that decides nothing keeps the hour (decision 44).
+  - **Why it is judged at `clock` and read twice:** every freshness door here is judged at the moment
+    of the decision, not the fire's start, and the gate's re-read exists because another writer (the
+    fire, `--run`) can replace the record in between. The gate judges the re-read unless the first
+    read already refused, so an entry needs both.
+  - **Why a FAIL blocks every symbol:** the conservative reading of decision 46. The record says which
+    symbol a listing or leverage FAIL was about (`symbol_failures`), so narrowing it is possible — but
+    it is a relaxation, and Thomas's to decide.
+  - **Why closing never reads it:** a venue that changed is a reason to stop opening positions, never
+    to strand the open ones. Settle and protect run before the read; the testnet door is exempt, its
+    cycle being a venue answer with real orders.
+  - **What the host showed first** (candidate-902, 2026-09-19 08:43Z): PASS — -4120 with HTTP 400,
+    one-way, 5x on all five symbols, the MARKET entry accepted at `/order/test` for all five, nothing
+    left. Both take-profit LIMITs twice the band away were **accepted** while flat: the -2022
+    hypothesis was wrong (`/order/test` does not judge account state), and whether the band binds a
+    favourable-side LIMIT at all stays open. The observed checks stay observed; the algo query's
+    answer was recorded without its raw code, so it cannot become FAIL-capable yet.
+
+- **The venue contract sentinel: the exchange is asked what the runtime assumes about it**
+  (crypto PR4a, Thomas decisions 43-46, 2026-09-19; `crypto/venue_contract.py`,
+  `scripts/venue_contract.py`, `schemas/venue_contract_verification.v0.1.schema.json`).
+  - **The gap:** every pre-order check validated the runtime's own model of the venue, which is how
+    2026-08-02 passed them all while the venue refused both protective stops. Measured 2026-09-19:
+    `exchangeInfo` still lists `STOP_MARKET`/`TAKE_PROFIT_MARKET` for every traded symbol, so it
+    cannot see that migration; the order API's -4120 is the only order-free observable. Position mode
+    was never queried, although no request carries a `positionSide`.
+  - **What it does:** about hourly, from the pipeline fire after its cycles, it asks through a
+    public GET, a signed GET and `/order/test` only (decision 43). Six judged checks decide PASS or
+    FAIL: `exchangeInfo`, the -4120 on the frozen 2026-08-03 request, one-way mode, leverage ≤ 5x
+    from a snapshot at most 45 minutes old, the entry test's own id naming no order, and nothing the
+    sentinel sent resting. Three observed checks record the host's answers to hypotheses —
+    including a reduce-only LIMIT twice the `PERCENT_PRICE` band away, because 360 of 778 shadow trades
+    planned a target beyond the ±5% band and whether the band binds a favourable-side LIMIT is the
+    venue's to say.
+  - **Why it asks for its own entry test by id:** the entry test is an executable MARKET BUY in all
+    but its path, and a filled order rests nowhere — a path re-pointed at the order endpoint would
+    otherwise send five real BUYs an hour with nothing noticing (review of #902).
+  - **Why it stops at the first "could not ask":** continuing to knock after a rate limit is how this
+    venue's throttling becomes an IP ban, and a ban refuses the money path's closes too (review of
+    #902). A fire the venue already rate limited is not run at all.
+  - **Why two files:** as `account_store`, a run that could not decide must not erase a good
+    verification; a violation is FAIL at once, and is asked again on the next fire rather than an
+    hour later; a PASS stands six hours (decision 44).
+  - **Why "could not ask" is never a verdict:** a rate-limit, clock, key or venue-failure code, a
+    418/429 or any 5xx at the -4120 probe is UNVERIFIED — so, once 4b enforces, a venue hiccup
+    leaves the last PASS standing rather than shutting entries. What can still shut them is an answer
+    the venue gives: a symbol that is not TRADING fails its listing (recorded per symbol, for 4b to
+    scope), and is re-asked on every fire until it clears.
+  - **Enforced since PR4b** (the mainnet autonomous entry and the probe, decision 46; above), not stage
+    evidence (decision 3), and not counted by the API breaker (decision 27's scope).
+
 - **One rule, one entry: a retired rule returns only as an approved reactivation** (crypto PR3c-2,
   Thomas decisions 40 and 42, 2026-09-19; `crypto/pool.py`, `crypto/promotion.py`,
   `permission.py`, `scripts/promote_strategy_candidates.py`).

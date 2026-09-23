@@ -10,13 +10,14 @@ verified reader of the frozen registry is tested in `test_mvp_runtime_canary_evi
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
 import pytest
 
 from runtime.mvp_runtime.crypto import execution_stage as es
-from runtime.mvp_runtime.crypto import live_promotion, live_readiness
+from runtime.mvp_runtime.crypto import live_promotion, live_readiness, live_route
 from runtime.mvp_runtime.crypto import pool as pool_store
 from runtime.mvp_runtime.crypto.live_pnl import LIVE_TRADING_ENV, state_dir
 from runtime.mvp_runtime.crypto.live_order import CONFIRMATION_ENV, LIVE_CONFIRMATION_PHRASE
@@ -92,7 +93,7 @@ def test_board_reports_every_gate(tmp_path, clean_env):
         "manual_kill_switch", "runtime_active", "trading_armed", "live_armed_strategies",
         "daily_loss_breaker", "bracket_breaker", "api_breaker", "entry_marks", "pre_order_snapshots",
         "account_visibility", "market_data_visibility", "order_path_implemented",
-        "autonomous_routing_wired", "execution_stage",
+        "autonomous_routing_wired", "execution_stage", "venue_contract",
     }
 
 
@@ -789,12 +790,19 @@ def test_the_armed_set_is_a_row(tmp_path, clean_env):
 
 
 def test_an_arm_that_can_trade_is_not_called_one_that_cannot(tmp_path, clean_env):
+    from runtime.mvp_runtime.approval_store import ApprovalStore
     from runtime.mvp_runtime.crypto.strategy import StrategySpec
-    from tests._helpers import stamped_pool_entry
+    from tests._helpers import live_arm_approval, stamped_pool_entry
 
     entry = _pool_entry("S1", live_tier=pool_store.LIVE_TIER_LIVE)
     entry["strategy_rule_hash"] = StrategySpec.from_dict(entry["strategy_spec"]).strategy_rule_hash
+    entry["promoted_at"] = "2026-07-27T23:55:00Z"
     armed = stamped_pool_entry(entry)
+    # The approval Thomas answered to arm it, which the gate verifies at order time (review of #906).
+    approval = live_arm_approval(("c_S1",), (armed["strategy_rule_hash"],),
+                                 artifacts=(armed[pool_store.ARTIFACT_SHA256_FIELD],))
+    ApprovalStore.default(tmp_path).append([approval])
+    armed[pool_store.LIVE_TIER_APPROVAL_FIELD] = approval["approval_id"]
     _write_pool(tmp_path, armed, _pool_entry("S2"))
     row = _armed_row(live_readiness.build_readiness(root=tmp_path, now=NOW))
     assert "1 armed of 2 occupying" in row["detail"] and "cannot trade" not in row["detail"]
@@ -857,14 +865,18 @@ def test_an_unreadable_pool_fails_the_row_and_never_reads_as_zero(
 
 
 def test_the_render_qualifies_the_wired_note_when_nothing_is_armed(tmp_path, clean_env):
-    """The WIRED note promises "REAL positions once every FAIL clears" — the sentence a reader
-    believed on 2026-08-10 while the armed set was empty. The qualification must appear where
-    the promise is made, not only in a PASS row further up."""
+    """The WIRED note promises REAL positions — "once every FAIL clears" until PR5b, the sentence a
+    reader believed on 2026-08-10 while the armed set was empty; "while LIVE ENTRY POSSIBLE reads
+    YES" since. The qualification must appear where the promise is made, not only in a PASS row
+    further up."""
     _write_pool(tmp_path, _pool_entry("S1"))
     text = live_readiness.render_readiness_text(
         live_readiness.build_readiness(root=tmp_path, now=NOW))
     text.encode("ascii")
     if live_readiness.AUTONOMOUS_ROUTING_WIRED:
+        # The promise is conditioned on the system's answer, never on this process's rows (PR5b).
+        assert "opens and closes REAL positions while LIVE ENTRY POSSIBLE\n        reads YES" in text
+        assert "once every FAIL clears" not in text
         assert "0 strategies are armed" in text
         assert "no autonomous entry will OPEN" in text
         assert "--live-tier LIVE" in text
@@ -885,14 +897,17 @@ def test_the_render_does_not_cry_zero_when_a_strategy_is_armed(tmp_path, clean_e
 # system whose scheduler held an open gate. These lock the fix: the board reports what the
 # trading process recorded, and refuses a bare "off" its own env cannot support.
 
-def _write_cycle(root, *, status: str, created_at: str):
-    """One crypto_cycle ledger row — the trading process's own record of its live gate."""
+def _write_cycle(root, *, status: str, created_at: str, live_gate=None):
+    """One crypto_cycle ledger row — the trading process's own record of its live gate, and of its
+    two switches when ``live_gate`` is given (the leg stamps them since PR5a)."""
     from runtime.mvp_runtime.store import LEDGER_REL, RECORDS_FILE
 
     ledger = root / LEDGER_REL
     ledger.mkdir(parents=True, exist_ok=True)
-    row = {"kind": "crypto_cycle",
-           "record": {"live_route_status": status, "created_at": created_at}}
+    record = {"live_route_status": status, "created_at": created_at}
+    if live_gate is not None:
+        record["live_gate"] = live_gate
+    row = {"kind": "crypto_cycle", "record": record}
     with (ledger / RECORDS_FILE).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
 
@@ -955,22 +970,79 @@ def test_a_blind_process_still_says_FAIL_for_a_failure_it_can_see(tmp_path, clea
 
     own_detail = next(c["detail"] for c in status["checks"]
                       if c["check"] == "daily_loss_breaker" and not c["ok"])
+    # No budget, so no limit: BREACHED, a fact about the limit that holds on every machine.
+    assert own_detail.startswith("BREACHED")
     breaker = next(line for line in text.splitlines() if "daily_loss_breaker" in line)
     assert breaker.startswith("[FAIL]"), breaker
     assert own_detail in breaker      # its own finding, verbatim — not the scoped stand-in
     assert live_readiness.OUT_OF_SCOPE_DETAIL not in breaker
+    assert live_readiness.OUT_OF_SCOPE_LOSS_DETAIL not in breaker
 
 
-def test_env_rows_read_FAIL_when_nothing_says_the_system_is_trading(tmp_path, clean_env):
-    """No record, no downgrade. Absence of evidence about the gate is not permission to soften
-    the rows — the ordinary machine with no live env must still read a plain FAIL."""
+def test_a_loss_breaker_without_an_account_feed_describes_only_this_container(tmp_path, clean_env):
+    """NO DATA SOURCE because this process reads no account said "the limit currently bounds
+    nothing" — a claim about the system — on a console whose readiness state reads the trading
+    process's snapshot for the same figure (review of #907). Scoped on the row, as the env rows are;
+    `ready` and the check row are untouched, and where the rows speak for the system it still FAILs."""
+    _register_budget(tmp_path)
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False and row["detail"].startswith("NO DATA SOURCE") and row["env_scoped"] is True
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker == (f"[{live_readiness.OUT_OF_SCOPE_MARK}] {'daily_loss_breaker':24} "
+                       f"{live_readiness.OUT_OF_SCOPE_LOSS_DETAIL}")
+    assert "bounds nothing" not in text
+    assert status["ready"] is False
+    # A fresh record of a closed gate: the rows speak for the system, and this one says what it saw.
+    _write_cycle(tmp_path, status="DISABLED", created_at="2026-07-23T11:58:00Z")
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]") and "NO DATA SOURCE" in breaker, breaker
+
+
+def test_a_loss_breaker_with_an_account_feed_is_never_scoped(tmp_path, clean_env, monkeypatch):
+    """A process holding the account feed measured the loss itself: its NO DATA SOURCE (a read that
+    failed) is its own finding about the account, and reads FAIL."""
+    from runtime.mvp_runtime.crypto import account
+
+    _register_budget(tmp_path)
+    monkeypatch.setenv(account.ACCOUNT_FEED_ENV, account.BINANCE_ACCOUNT)
+    monkeypatch.setenv(account.ACCOUNT_API_KEY_ENV, "k")
+    monkeypatch.setenv(account.ACCOUNT_API_SECRET_ENV, "s")
+    monkeypatch.setattr(
+        live_readiness, "read_account",
+        lambda **kw: (_ for _ in ()).throw(ToolError("ACCOUNT_DATA_DEGRADED", "down")),
+    )
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "daily_loss_breaker")
+    assert row["ok"] is False and row["env_scoped"] is False
+    text = live_readiness.render_readiness_text(status)
+    breaker = next(line for line in text.splitlines() if line.startswith("[") and "daily_loss_breaker" in line)
+    assert breaker.startswith("[FAIL]"), breaker
+
+
+def test_with_no_record_the_env_rows_still_describe_only_this_container(tmp_path, clean_env):
+    """No record, and still no "live trading off" (crypto PR5b, FC-10). This test pinned the
+    opposite until PR5b — "absence of evidence is not permission to soften the rows" — which was
+    right while the rows were the board's conclusion. The conclusion is the readiness state now,
+    at the top and in the last line, so the rows no longer carry it; what they did carry was the
+    one sentence a summariser lifts. A process without the environment says what it knows: it
+    cannot see the environment, and no record of the system's gate is readable here."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     text = live_readiness.render_readiness_text(status)
 
     opt_in = next(line for line in text.splitlines() if "live_trading_opt_in" in line)
-    assert opt_in.startswith("[FAIL]"), opt_in
-    assert live_readiness.OUT_OF_SCOPE_MARK not in text
-    assert "SCOPE  : dry-run" not in text
+    assert opt_in.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), opt_in
+    assert "live trading off" not in text and "MVP_LIVE_TRADING is not" not in text
+    assert "no record of the trading process's gate is readable here" in text
+    assert "no record of the system's own gate is readable here" in text
+    # Still not READY, and still no entry: this decides what the board says, never what it permits.
+    assert status["ready"] is False
+    assert text.splitlines()[-1].startswith("LIVE ENTRY POSSIBLE: NO - blocked by ")
+    assert live_readiness.readiness_data(status)["env_out_of_scope"] is True
 
 
 def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
@@ -980,20 +1052,38 @@ def test_a_recorded_disabled_gate_is_reported_as_off(tmp_path, clean_env):
 
     assert status["recorded_gate"]["open"] is False
     assert live_readiness.contradicts_recorded_gate(status) is False
+    # The one case the env rows speak for the system too: its own fresh record says closed.
+    assert live_readiness.env_out_of_scope(status) is False
     text = live_readiness.render_readiness_text(status)
     assert "THIS PROCESS CANNOT SEE" not in text
     assert "NOT READY - every FAIL above must clear first" in text
+    opt_in = next(line for line in text.splitlines() if line.startswith("[") and "live_trading_opt_in" in line)
+    assert opt_in.startswith("[FAIL]"), opt_in
+    assert "live_gate_open (GATE_DISABLED)" in text.splitlines()[-1]
 
 
 def test_a_stale_record_is_not_evidence_about_now(tmp_path, clean_env):
     """An old open gate must not manufacture a warning: that trades one false claim for
-    another, in the more alarming direction."""
+    another, in the more alarming direction. Nor may the console's own empty environment speak
+    instead (FC-10): a kill writes no more cycles, so this is the state a kill leaves, and the
+    board used to print "live trading off" here off the console's env — right by accident, for the
+    wrong reason."""
     _write_cycle(tmp_path, status="HELD", created_at="2026-07-20T00:00:00Z")
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
 
     assert status["recorded_gate"]["stale"] is True
     assert live_readiness.contradicts_recorded_gate(status) is False
-    assert "STALE" in live_readiness.render_readiness_text(status)
+    text = live_readiness.render_readiness_text(status)
+    assert "STALE" in text
+    # The gate row keeps its dated, STALE-marked reading; no banner or verdict claims it as now.
+    assert "   the trading process recorded the gate OPEN" not in text
+    assert "was recorded OPEN" not in text
+    assert "is over two hours old - not a statement about now" in text
+    assert "live trading off" not in text
+    for check in live_readiness.ENV_SCOPED_CHECKS:
+        row = next(line for line in text.splitlines() if line.startswith("[") and check in line)
+        assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]"), row
+    assert live_readiness.env_out_of_scope(status) is True
 
 
 def test_the_newest_cycle_decides(tmp_path, clean_env):
@@ -1033,10 +1123,10 @@ def test_an_unreadable_ledger_reports_unknown_rather_than_off(tmp_path, clean_en
 #
 # One word cannot carry what this board says. The 2026-09-13 review found `ready: true` beside
 # zero armed strategies read through the assistant door as "live trading is on". The view keeps
-# the four facts apart as fields, so a consumer never derives one from the prose of another.
+# the facts apart as fields, so a consumer never derives one from the prose of another.
 
 def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, gate_open=True,
-                     gate_stale=False, stage_admits=True):
+                     gate_stale=False, stage_admits=True, contract_usable=True):
     return {
         "created_at": NOW,
         "ready": ready,
@@ -1058,42 +1148,50 @@ def _status_for_view(*, ready=True, armed=0, armed_known=True, gate_known=True, 
         "execution_stage": {"stage": "LIVE_AUTONOMOUS" if stage_admits else "READ_ONLY",
                             "valid": stage_admits, "reason_code": None if stage_admits else "X",
                             "enforced": True, "admits_entry": stage_admits},
+        "venue_contract": {"error": None, "recorded": True, "status": "PASS" if contract_usable else "FAIL",
+                           "usable": contract_usable, "symbols": ["BTCUSDT"]},
     }
 
 
-def test_ready_infrastructure_with_no_armed_strategy_is_not_live_entry_possible():
-    data = live_readiness.readiness_data(_status_for_view(ready=True, armed=0))
-    assert data["infrastructure_ready"] is True
-    assert data["live_armed_strategies"] == {"known": True, "armed": 0, "occupying": 15, "error": None}
-    assert data["live_entry_possible"] is False
+# What `live_entry_possible` is made of, and each fact that decides it, is the readiness state's:
+# tests/test_mvp_runtime_crypto_readiness_state.py (model v2, PR5a). The four-fact answer these
+# tests pinned read True under a kill or a disarm (FO-10).
 
 
-def test_an_armed_strategy_behind_an_open_fresh_gate_is_live_entry_possible():
-    data = live_readiness.readiness_data(_status_for_view(armed=1))
-    assert data["live_entry_possible"] is True
-    assert data["recorded_gate"]["open"] is True and data["recorded_gate"]["stale"] is False
-
-
-def test_a_stage_below_the_rung_the_doors_admit_means_no_entry(tmp_path):
-    """PR1b: however armed and open the machine is, a stage that admits nothing cannot enter."""
-    data = live_readiness.readiness_data(_status_for_view(armed=1, stage_admits=False))
-    assert data["live_entry_possible"] is False
-    assert data["execution_stage"]["admits_entry"] is False
-
-
-def test_a_stale_or_closed_recorded_gate_means_no_entry_and_says_which():
-    stale = live_readiness.readiness_data(_status_for_view(armed=1, gate_stale=True))
-    assert stale["live_entry_possible"] is False and stale["recorded_gate"]["stale"] is True
-    closed = live_readiness.readiness_data(_status_for_view(armed=1, gate_open=False))
-    assert closed["live_entry_possible"] is False and closed["recorded_gate"]["open"] is False
-
-
-def test_an_unknown_fact_answers_none_never_a_guess():
-    pool_unreadable = live_readiness.readiness_data(_status_for_view(armed_known=False))
-    assert pool_unreadable["live_entry_possible"] is None
-    assert pool_unreadable["live_armed_strategies"]["error"] == "POOL_UNREADABLE"
-    no_cycle = live_readiness.readiness_data(_status_for_view(armed=1, gate_known=False))
-    assert no_cycle["live_entry_possible"] is None and no_cycle["recorded_gate"]["known"] is False
+def test_live_entry_possible_is_what_the_read_shim_says_it_is(tmp_path, clean_env):
+    """The assistant is told `live_entry_possible` is `true` only when every entry of
+    `readiness.components` is ok, and to quote `readiness.blocking` or `readiness.unknown` otherwise
+    (`trading_readiness` in integrations/hermes/mcp/read_bridge_mcp.py, shims 2.12). 2.11 listed the
+    four fields the value was made of and said "nothing else", which stopped being true the day the
+    readiness state added the kill, the disarm and the breakers (PR5a) — as a list of members had gone
+    stale twice before. The description names the lists now, so a joining component needs no new
+    sentence; this pins that the value IS those lists, on hand-made statuses and on the real board, and
+    that the description says so."""
+    four_fields_of_2_11 = {
+        "live_armed_strategies": {"known": True, "armed": 1},
+        "recorded_gate": {"known": True, "open": True, "stale": False},
+        "execution_stage": {"admits_entry": True},
+        "venue_contract": {"usable": True},
+    }
+    for status in ({}, four_fields_of_2_11, _status_for_view(),
+                   live_readiness.build_readiness(root=tmp_path, now=NOW)):
+        data = live_readiness.readiness_data(status)
+        components = data["readiness"]["components"]
+        assert list(components) == list(live_readiness.READINESS_COMPONENTS)
+        values = [component["ok"] for component in components.values()]
+        expected = False if False in values else (None if None in values else True)
+        assert data["live_entry_possible"] is expected
+        assert data["readiness"]["blocking"] == [
+            f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is False]
+        assert data["readiness"]["unknown"] == [
+            f"{name}:{c['reason']}" for name, c in components.items() if c["ok"] is None]
+    shim = Path(__file__).resolve().parents[1] / "integrations" / "hermes" / "mcp" / "read_bridge_mcp.py"
+    tool = next(node for node in ast.parse(shim.read_text(encoding="utf-8")).body
+                if isinstance(node, ast.FunctionDef) and node.name == "trading_readiness")
+    description = ast.get_docstring(tool) or ""
+    for field in ("live_entry_possible", "readiness.components", "readiness.blocking",
+                  "readiness.unknown"):
+        assert f"`{field}`" in description, field
 
 
 def test_the_view_carries_the_boards_instant_and_is_json_safe():
@@ -1104,12 +1202,15 @@ def test_the_view_carries_the_boards_instant_and_is_json_safe():
 
 
 def test_the_real_board_on_a_fresh_machine_has_the_view(tmp_path, clean_env):
-    """Built from the real board, not a hand-made status: a fresh machine is not ready and
-    knows neither its pool nor a recorded gate, so entry is unknown — not False."""
+    """Built from the real board, not a hand-made status: a fresh machine is not ready, and no entry
+    can open on it — it reads READ_ONLY and comes up disarmed (decision 10), and the doors refuse on
+    both. Until the readiness state (PR5a) this read None, for want of a pool and a recorded gate."""
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
     data = live_readiness.readiness_data(status)
     assert data["infrastructure_ready"] is False
-    assert data["live_entry_possible"] is None
+    assert data["live_entry_possible"] is False
+    assert {"execution_stage:EXECUTION_STAGE_RECORD_MISSING",
+            "runtime_control:TRADING_DISARMED"} <= set(data["readiness"]["blocking"])
     assert {c["check"] for c in data["checks"]} == {c["check"] for c in status["checks"]}
     json.dumps(data)
 
@@ -1133,6 +1234,19 @@ def test_the_arm_row_says_why_and_whether_positions_are_still_managed(tmp_path):
     assert "management is stopped too" in row["detail"]
 
 
+def test_the_arm_row_names_the_halt_level(tmp_path):
+    """PR6: the row says which halt holds the arm down, and the readiness input carries it."""
+    from runtime.mvp_runtime.control import ACTIVE, HALT_HARD, ControlState, ControlStore
+
+    ControlStore(tmp_path).save(ControlState(mode=ACTIVE, updated_by="op", updated_at=NOW, reason="청산만",
+                                             trading_armed=False, halt_level=HALT_HARD))
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = next(c for c in status["checks"] if c["check"] == "trading_armed")
+    assert row["ok"] is False and "DISARMED (HARD halt: 청산만)" in row["detail"]
+    assert "still managed" in row["detail"]
+    assert status["readiness_inputs"]["runtime_control"]["halt_level"] == HALT_HARD
+
+
 def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
     """PR2b: the mainnet snapshot record is a check row. The first version reported it beside the
     checks; the review made the store refuse to append past a damaged line, which refuses every
@@ -1140,7 +1254,7 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
     from runtime.mvp_runtime.crypto import pre_order_gate
 
     status = live_readiness.build_readiness(root=tmp_path, now=NOW)
-    assert status["pre_order_snapshots"] == {"readable": True, "error": None, "count": 0,
+    assert status["pre_order_snapshots"] == {"readable": True, "appendable": True, "error": None, "count": 0,
                                              "last_created_at": None}
     row = {c["check"]: c for c in status["checks"]}["pre_order_snapshots"]
     assert row["ok"] is True and "none recorded" in row["detail"]
@@ -1154,6 +1268,7 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
                     encoding="utf-8")
     damaged = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert damaged["pre_order_snapshots"]["readable"] is False
+    assert damaged["pre_order_snapshots"]["appendable"] is False
     row = {c["check"]: c for c in damaged["checks"]}["pre_order_snapshots"]
     assert row["ok"] is False and pre_order_gate.RISK_SNAPSHOT_STORE_TAMPERED in row["detail"]
     assert damaged["ready"] is False
@@ -1164,6 +1279,8 @@ def test_the_board_judges_the_pre_order_snapshot_record(tmp_path, clean_env):
                     encoding="utf-8")
     edited = live_readiness.build_readiness(root=tmp_path, now=NOW)
     assert {c["check"]: c for c in edited["checks"]}["pre_order_snapshots"]["ok"] is False
+    # ...and refuses no entry: the append still takes rows, which the readiness state reads (review of #906).
+    assert edited["pre_order_snapshots"]["appendable"] is True
 
 
 # === the API error breaker row (PR2d-1) ============================================
@@ -1227,3 +1344,154 @@ def test_an_unreadable_api_breaker_turns_the_board_red(tmp_path, clean_env):
     row = _api_row(tmp_path)
     assert row["ok"] is False
     assert "UNREADABLE (LIVE_API_BREAKER_UNREADABLE)" in row["detail"]
+
+
+# --- the venue contract row (PR4b, Thomas decision 46) -------------------------------------------
+
+def _contract_row(root):
+    status = live_readiness.build_readiness(root=root, now=NOW)
+    return next(c for c in status["checks"] if c["check"] == "venue_contract"), status
+
+
+def test_a_usable_pass_covering_the_budget_passes_the_row(tmp_path, clean_env):
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT", "ETHUSDT"))
+    record_venue_contract(tmp_path, ["BTCUSDT", "ETHUSDT"], verified_at=NOW)
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is True and "PASS at 2026-07-23T12:00:00Z, 0m old - usable" in row["detail"]
+    assert status["venue_contract"]["usable"] is True
+
+
+def test_a_budget_symbol_the_pass_did_not_cover_fails_the_row_and_names_it(tmp_path, clean_env):
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT", "ETHUSDT"))
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is False and "but not for ETHUSDT" in row["detail"]
+
+
+@pytest.mark.parametrize("state,text", [
+    ("fail", "FAIL (failed: position_mode)"),
+    ("stale", "STALE"),
+    ("damaged", "UNREADABLE (VENUE_CONTRACT_UNREADABLE)"),
+    ("missing", "none recorded"),
+], ids=["fail", "stale", "damaged", "missing"])
+def test_a_contract_the_doors_refuse_on_fails_the_row_and_says_entries_are_refused(tmp_path, clean_env, state, text):
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path)
+    if state == "fail":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW, failed=("position_mode",))
+    elif state == "stale":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-23T05:59:59Z")
+    elif state == "damaged":
+        record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+        vc.contract_path(tmp_path).write_text("{", encoding="utf-8")
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is False and status["ready"] is False
+    assert text in row["detail"] and "every mainnet entry is refused" in row["detail"]
+
+
+def test_the_row_and_the_doors_agree_about_coverage_however_a_symbol_is_spelled(tmp_path, clean_env, monkeypatch):
+    """One rule (`venue_contract.covers`): the schemas keep both lists upper case today, and the row must
+    not start disagreeing with the doors the day one of them does not."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path, symbol_allowlist=("BTCUSDT",))
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at=NOW)
+    real = vc.read_verification(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", lambda root=None: {**real, "symbols": [" btcusdt "]})
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW) is None
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is True, row["detail"]
+
+
+def test_the_row_names_the_reason_the_doors_give_first(tmp_path, clean_env, monkeypatch):
+    """Review of #903: a stale record under another contract version reads as the doors refuse it —
+    the version first, in the judge's order, not STALE."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+    from tests._helpers import record_venue_contract
+
+    _register_budget(tmp_path)
+    record_venue_contract(tmp_path, ["BTCUSDT"], verified_at="2026-07-23T05:59:59Z")
+    monkeypatch.setattr(vc, "CONTRACT_VERSION", "binance_futures_contract.v9")     # the deploy that bumps it
+    row, _ = _contract_row(tmp_path)
+    assert row["ok"] is False and "- other contract version -" in row["detail"] and "STALE" not in row["detail"]
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol=None, at=NOW)["reason_code"] == vc.ENTRY_CONTRACT_VERSION
+
+
+def test_an_unexpected_reader_exception_fails_the_row_and_never_the_board(tmp_path, clean_env, monkeypatch):
+    """Review of #903: the doors refuse on any exception the reader raises (UNREADABLE); the board names
+    it the same way instead of raising."""
+    from runtime.mvp_runtime.crypto import venue_contract as vc
+
+    def boom(root=None):
+        raise PermissionError("scripted: Path.is_file on 3.12")
+
+    _register_budget(tmp_path)
+    monkeypatch.setattr(vc, "read_verification", boom)
+    row, status = _contract_row(tmp_path)
+    assert row["ok"] is False and "UNREADABLE (PermissionError)" in row["detail"]
+    assert status["ready"] is False
+    assert vc.entry_refusal(vc.entry_fact(tmp_path), symbol="BTCUSDT", at=NOW)["reason_code"] \
+        == vc.ENTRY_CONTRACT_UNREADABLE
+
+
+# --- the manual kill switch row (decision 50) ---------------------------------------
+
+def _kill_row(text):
+    return next(line for line in text.splitlines() if line.startswith("[") and "manual_kill_switch" in line)
+
+
+@pytest.mark.parametrize("engaged", [False, True])
+def test_a_console_shows_the_manual_kill_switch_the_trading_process_recorded(tmp_path, clean_env, engaged):
+    """Decision 50: the row read PASS "clear" off a console with no live-trading environment. It now
+    shows the trading process's own record of the switch, and says it is the secondary control."""
+    _write_cycle(tmp_path, status="HELD", created_at="2026-07-23T11:55:00Z",
+                 live_gate={"confirmation_present": True, "manual_kill_switch": engaged})
+    status = live_readiness.build_readiness(root=tmp_path, now=NOW)
+    row = _kill_row(live_readiness.render_readiness_text(status))
+    seen = "as the trading process recorded it at 2026-07-23T11:55:00Z"
+    if engaged:
+        assert row.startswith("[FAIL]") and "MVP_LIVE_MANUAL_KILL_SWITCH is engaged" in row, row
+    else:
+        assert row.startswith("[PASS]") and "clear, " in row, row
+    assert seen in row and live_readiness.MANUAL_KILL_SECONDARY in row
+    # Rendering only: the check record every machine consumer reads is this process's, untouched.
+    check = next(c for c in status["checks"] if c["check"] == "manual_kill_switch")
+    assert (check["ok"], check["detail"]) == (True, "clear")
+
+
+@pytest.mark.parametrize("created_at,live_gate", [
+    ("2026-07-23T11:55:00Z", None),                                                     # not stamped
+    ("2026-07-23T08:00:00Z", {"confirmation_present": True, "manual_kill_switch": False}),  # stale
+])
+def test_a_console_without_a_usable_record_says_it_cannot_see_the_switch(tmp_path, clean_env, created_at,
+                                                                      live_gate):
+    _write_cycle(tmp_path, status="HELD", created_at=created_at, live_gate=live_gate)
+    row = _kill_row(live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW)))
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and live_readiness.OUT_OF_SCOPE_DETAIL in row
+    assert "clear" not in row and live_readiness.MANUAL_KILL_SECONDARY in row
+
+
+def test_a_console_whose_trading_process_recorded_a_closed_gate_points_at_no_missing_banner(tmp_path,
+                                                                                         clean_env):
+    """Review of PR6d: a fresh record of a CLOSED gate takes the banner down, and a gate that never
+    opened stamped no switches, so the n/a row pointed at a banner that was not there."""
+    _write_cycle(tmp_path, status=live_route.ROUTE_DISABLED, created_at="2026-07-23T11:55:00Z")
+    text = live_readiness.render_readiness_text(live_readiness.build_readiness(root=tmp_path, now=NOW))
+    row = _kill_row(text)
+    assert "CANNOT SEE THE LIVE-TRADING ENVIRONMENT" not in text
+    assert row.startswith(f"[{live_readiness.OUT_OF_SCOPE_MARK}]") and "banner" not in row
+    assert "recorded its gate closed" in row and live_readiness.MANUAL_KILL_SECONDARY in row
+
+
+def test_the_trading_process_shows_its_own_switch_as_the_secondary_control():
+    opted = {"checks": [{"check": "live_trading_opt_in", "ok": True, "detail": "real"}]}
+    for ok, detail, mark in ((True, "clear", "PASS"), (False, "MVP_LIVE_MANUAL_KILL_SWITCH is engaged", "FAIL")):
+        got = live_readiness._manual_kill_row({"check": "manual_kill_switch", "ok": ok, "detail": detail}, opted)
+        assert got == (mark, f"{detail} ({live_readiness.MANUAL_KILL_SECONDARY})")

@@ -16,7 +16,7 @@ takes identical parameters and identical signing and **creates nothing**. No fil
 order, nothing to cancel.
 
 **The request is not re-written here.** It is built through the same
-``live_leg.build_bracket_intent`` → ``live_execution.build_order_request`` the money path uses,
+``live_leg.build_bracket_intent`` → ``order_request.build_order_request`` the money path uses,
 so what is validated is what would be sent. A hand-rolled dict would test a request the runtime
 does not make, which is worse than not testing at all — it would produce a confident wrong
 answer. Only the inputs (symbol, side, prices, quantity) come from the command line, and

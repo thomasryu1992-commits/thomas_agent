@@ -2,17 +2,19 @@
 
 Thomas approved #690 §5-1 on 2026-08-11; the SOURCE of forward evidence was revised on
 2026-08-29. The OBSERVATION tier accumulates forward evidence in each lineage's own
-per-strategy virtual stream (``forward_book`` — seeded from the lineage's mint, advanced
-every cycle, settled by the paper kernel's own math on the same intent-net basis). It used
+per-strategy virtual stream (``forward_book`` — seeded from the row that selected the lineage,
+advanced every cycle, settled by the paper kernel's own math on the same intent-net basis). It used
 to accumulate in the routed paper book, whose one-position-per-context slot made N
 co-located strategies split one evidence stream N ways — a queue, not a test. This module
 is deliberately store-agnostic either way; it judges whatever rows the arming door hands
 it, and the rule that lets a lineage reach that door is unchanged: the backtest holdout's
 own thresholds (``MIN_HOLDOUT_TRADES``, ``CONFIDENCE_Z``, the ``_periods_confirm`` slice test
 at ``t_critical_95``), the same slice width the holdout derives (tail/10 of the calendar span
-the timeframe replays: 30 days at 4h and at 1d), applied to outcomes settled AFTER the lineage
-was minted — which by construction were not available to fit against (A2's reuse contamination
-cannot occur).
+the timeframe replays: 30 days at 4h and at 1d), applied to outcomes opened AFTER the row that
+selected the lineage was made (``selection_cutoff``) — which by construction were available
+neither to fit against nor to select on (A2's reuse contamination cannot occur). Until
+2026-09-23 this sentence said "minted", and the seeder started a re-scored lineage at its first
+mint, so bars inside the re-score's own holdout were counted as forward evidence.
 
 **One threshold IS minted here, and it is the exception that has to be stated.** #741 (Thomas
 2026-08-21) gave 1d its own trade floor, ``MIN_FORWARD_TRADES_1D``, because at ~0.03 trades a
@@ -43,11 +45,12 @@ from __future__ import annotations
 
 import math
 import statistics
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from .. import timeutil
 from ..errors import ToolError
-from .feedback import net_result_r
+from .outcome_math import net_result_r
 from .lifecycle import outcome_attribution_key
 from .robustness import CONFIDENCE_Z, MIN_HOLDOUT_PERIODS, MIN_HOLDOUT_TRADES, t_critical_95
 
@@ -178,18 +181,57 @@ def lineage_keys(record: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(keys)
 
 
+def _instant(value: Any) -> datetime | None:
+    try:
+        return timeutil.parse_iso(str(value or ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def selection_cutoff(record: Mapping[str, Any]) -> datetime | None:
+    """The moment the evidence that selected this row stopped: its own ``created_at_utc``.
+
+    **Not the lineage's first mint.** A spec is frozen at its first mint, so every later bar
+    is out of sample for the spec's PARAMETERS — but a re-score (``mvp_rescore``) replays the
+    frozen spec on a snapshot taken at re-score time and appends a new row with a new
+    ``candidate_id``, and its holdout is the most recent tail of that snapshot. For a lineage
+    selected on that row, every bar between the first mint and the re-score sat inside the
+    holdout that admitted it. Counting those bars again here would confirm a lineage on the
+    evidence it was chosen on. Measured 2026-09-23: 31 of the live book's 141 forward rows
+    had opened before the row that selected their lineage, all under 2026-08-24 re-scores.
+
+    The promotion door resolves a candidate to the LATEST row of its id, so this is that
+    row's time — a re-append of the same evidence only moves the cutoff later, the refusing
+    direction. None when the row cannot say when it was made: then nothing counts.
+
+    A lineage a forward cohort held starts later still, at its promotion (option A, Thomas
+    2026-09-23): the cohort period was the evidence it was promoted on. That start is applied
+    where its forward rows are seeded (``scripts/seed_forward_book``), not here — this store
+    never holds a cohort row, and a cohort member's live rows begin at the promotion anyway."""
+    return _instant(record.get("created_at_utc"))
+
+
 def forward_outcomes_for(
     record: Mapping[str, Any], outcomes: Iterable[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    """This lineage's CLOSED forward outcomes, in store order."""
+    """This lineage's CLOSED forward outcomes that OPENED after its selection, in store order.
+
+    Opened, not settled: an entry taken on a bar the selecting snapshot held was decided on
+    selection data, whenever it closed. A row that cannot place its own open is not
+    evidence (the ``judge_forward`` rule for a row that cannot place itself in time)."""
     keys = lineage_keys(record)
-    if not keys:
+    cutoff = selection_cutoff(record)
+    if not keys or cutoff is None:
         return []
-    return [
-        o for o in outcomes
-        if isinstance(o, Mapping) and o.get("outcome_closed") is True
-        and outcome_attribution_key(o) in keys
-    ]
+    kept: list[Mapping[str, Any]] = []
+    for o in outcomes:
+        if not (isinstance(o, Mapping) and o.get("outcome_closed") is True
+                and outcome_attribution_key(o) in keys):
+            continue
+        opened = _instant(o.get("opened_at_utc"))
+        if opened is not None and opened >= cutoff:
+            kept.append(o)
+    return kept
 
 
 def judge_forward(
@@ -269,22 +311,22 @@ def assert_live_tier_confirmed(
     """Every lineage armed LIVE is confirmed somewhere unseen — holdout or forward.
 
     The condition #648 disarmed the pool for, as a door instead of a migration: a backtest
-    holdout CONFIRMED (recomputed, `pool.candidate_quality`) passes, a FORWARD_CONFIRMED
-    record passes, and everything else refuses with both statuses named. ``observed_lineages``
-    — how many lines were under observation when this judgment ran — is stamped into the
-    refusal text so the ask Thomas reads carries the attempt count a first confirmation
-    must be read against.
+    holdout CONFIRMED (recomputed, `candidate_ranking.candidate_quality`) passes, a
+    FORWARD_CONFIRMED record passes, and everything else refuses with both statuses named.
+    ``observed_lineages`` — how many lines were under observation when this judgment ran — is
+    stamped into the refusal text so the ask Thomas reads carries the attempt count a first
+    confirmation must be read against.
 
     Raises ``CANDIDATE_UNCONFIRMED_FOR_LIVE``.
     """
-    from . import pool  # local: pool is heavy and imports widely
+    from . import candidate_ranking  # local, as the `pool` import it replaced: the gate's import graph is unchanged
 
     from .robustness import HOLDOUT_CONFIRMED
 
     outcome_rows = list(outcomes)
     unconfirmed: list[str] = []
     for record in records:
-        quality = pool.candidate_quality(record)
+        quality = candidate_ranking.candidate_quality(record)
         if quality["holdout_status"] == HOLDOUT_CONFIRMED:
             continue
         forward = judge_forward(record, outcome_rows)

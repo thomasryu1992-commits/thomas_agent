@@ -28,6 +28,25 @@ v2.3 (2026-09-14, sequence 2 P02): the reads whose numbers must not travel witho
 the reply's structured `data` as one `[data]` line after the board. Until now the shim dropped
 `data` on the floor and the model re-parsed prose (the 2026-09-13 review: `ready` read as
 "live trading is on" with zero armed strategies). Capped, so a large view cannot crowd the reply.
+
+v2.11 (2026-09-19): `trading_readiness` defined `live_entry_possible` as armed > 0 AND gate open
+AND not stale, and `readiness_data` had since added the execution stage (crypto PR1b) and the
+venue contract (PR4b), so a `false` was explained without either. The description now names the
+four `[data]` fields the value is computed from, not `checks` rows: the `venue_contract` row also
+fails on a budget symbol the PASS does not cover, and rows such as `trading_armed` refuse entries
+without being part of the value. A list can go stale again, so a runtime test
+(`test_live_entry_possible_is_the_four_fields_the_read_shim_names`) fails when a fifth joins.
+
+v2.12 (2026-09-19): the runtime computes `live_entry_possible` from the readiness state (crypto
+PR5a): named components, each true, false or null, and the value is their three-valued AND,
+with `readiness.blocking` and `readiness.unknown` naming what refuses and what cannot be seen. The
+fifth condition 2.11 guarded against arrived with several more — the kill and the disarm, the
+breakers, the account, the last cycle — so the description names those lists instead of their
+members, and a component that joins needs no new sentence. The runtime test is now
+`test_live_entry_possible_is_what_the_read_shim_says_it_is`. The board's text (PR5b) opens and
+closes with `LIVE ENTRY POSSIBLE`, names this container's verdict `THIS PROCESS:`, and marks its
+env rows n/a wherever no fresh record says the gate was closed — so "env rows always FAIL here"
+went with it.
 """
 
 from __future__ import annotations
@@ -66,13 +85,15 @@ def trading_status() -> str:
 @mcp.tool()
 def trading_readiness() -> str:
     """Live-trading readiness board — call it fresh every time. Every gate between this machine
-    and a live order, today's realized P&L against the limit. Rendered in YOUR container: env
-    rows always FAIL here; read the conclusion from `live_gate_recorded` and
-    `live_armed_strategies`, and never say live trading is disabled because of an env row.
-    The `[data]` line keeps four things apart — say which one you mean: `infrastructure_ready`
-    (this process's checks), `live_armed_strategies.armed`, `recorded_gate` (with `stale`), and
-    `live_entry_possible` (armed > 0 AND gate open AND not stale; `null` = unknown). `ready`
-    alone never means "live trading is on"."""
+    and a live order, today's realized P&L against the limit. Rendered in YOUR container: its
+    env rows read n/a or FAIL here, so never say live trading is disabled because of one.
+    Whether a live entry can open is `live_entry_possible` in the `[data]` line (the board's
+    first and last `LIVE ENTRY POSSIBLE` lines say the same), and nothing else: `true` only when
+    every entry of `readiness.components` is ok; if `false`, quote each entry of
+    `readiness.blocking` (component:reason); if `null`, some fact cannot be seen from here —
+    quote `readiness.unknown`. Quote those lists, not the `checks` rows. `infrastructure_ready`
+    and the board's `THIS PROCESS:` line are only this container's checks, and `ready` alone
+    never means "live trading is on"."""
     return _ask("crypto_readiness", with_data=True)
 
 

@@ -43,12 +43,12 @@ from . import (
     account,
     candle_archive,
     cost,
-    cycle,
     dashboard,
     digest,
     distribution_gate,
     factory,
     features,
+    feed_assembly,
     feedback,
     forward_book,
     forward_confirmation,
@@ -62,12 +62,15 @@ from . import (
     market_data,
     null_control,
     paper,
-    pool,
+    pool_admission,
+    pre_order_gate,
     probe,
+    promotion_backlog,
     proposer,
     robustness,
     strategy,
     testnet_execution,
+    trade_plan,
 )
 
 # --- provenance: how this number came to be what it is ----------------------------------------
@@ -231,29 +234,29 @@ TUNABLES: tuple[Tunable, ...] = (
             "age the market price an autonomous entry is checked against may have at the decision",
             "a venue whose closed 1m candles routinely arrive more than a minute late, or an entry "
             "path slow enough that a price read at its start is often near the bound"),
-    Tunable("MAX_ACCOUNT_AGE_SECONDS", live_order.MAX_ACCOUNT_AGE_SECONDS,
-            "crypto/live_order.py", OPERATOR,
+    Tunable("MAX_ACCOUNT_AGE_SECONDS", pre_order_gate.MAX_ACCOUNT_AGE_SECONDS,
+            "crypto/pre_order_gate.py", OPERATOR,
             "decision 18: the account an entry is judged on may be at most a minute old; a pass "
             "settles, protects and prices between the read and the decision, normally in seconds. "
             "pre_order_gate.MAX_SNAPSHOT_AGE_SECONDS is this value, bounding the gate-to-send wait, "
             "and so is live_entry.MAX_ORDER_BOOK_AGE_SECONDS, bounding the book's age (decision 29)",
             "an entry pass whose ordinary read-to-decision time approaches a minute (fires measured "
             "a median 26 s for thirteen contexts), or a gate-to-send path that takes seconds"),
-    Tunable("FUNDING_MAX_AGE_HOURS", cycle.FUNDING_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("FUNDING_MAX_AGE_HOURS", feed_assembly.FUNDING_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): two settlement periods; the funding reading a bar "
             "carries, measured from the bar's open",
             "a venue changing its settlement interval, or a funding family whose edge needs a "
             "fresher reading than two periods"),
-    Tunable("DAILY_SERIES_MAX_AGE_HOURS", cycle.DAILY_SERIES_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("DAILY_SERIES_MAX_AGE_HOURS", feed_assembly.DAILY_SERIES_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): two days for the daily liquidation and open-interest "
             "series, whose forming day is dropped, so a sound reading is up to about 48 hours old "
             "at an intraday bar",
             "the vendor publishing the closed day late enough to refuse the first bars after "
             "midnight, or intraday series replacing the daily ones"),
-    Tunable("POSITIONING_MAX_AGE_HOURS", cycle.POSITIONING_MAX_AGE_HOURS,
-            "crypto/cycle.py", OPERATOR,
+    Tunable("POSITIONING_MAX_AGE_HOURS", feed_assembly.POSITIONING_MAX_AGE_HOURS,
+            "crypto/feed_assembly.py", OPERATOR,
             "Thomas decision 28 (2026-09-17): three hours for the positioning readings this runtime "
             "accumulates hourly; a sound pair is at most 2.5 hours old at a 15m bar, so one "
             "missed accumulation late in the hour can hold a 15m context for a bar",
@@ -280,10 +283,12 @@ TUNABLES: tuple[Tunable, ...] = (
             "a backtest window short enough that 30 is a binding constraint"),
 
     # --- the promotion door and the ladder ---------------------------------------------------
-    Tunable("MAX_ROUTABLE_STRATEGIES", pool.MAX_ROUTABLE_STRATEGIES, "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_STRATEGIES", pool_admission.MAX_ROUTABLE_STRATEGIES, "crypto/pool_admission.py",
+            OPERATOR,
             "pool sizing cap: the grid-implied sum of the per-context caps (5 * (2+2+1+1))",
             "the symbol set or a per-context cap changing"),
-    Tunable("MAX_ROUTABLE_PER_CONTEXT", pool.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_PER_CONTEXT", pool_admission.MAX_ROUTABLE_PER_CONTEXT, "crypto/pool_admission.py",
+            OPERATOR,
             "Thomas 2026-09-02: slow contexts (4h/1d) hold two, on the condition that both agree "
             "on direction (`POOL_CONTEXT_DIRECTION_SPLIT`). The exclusive slot of 2026-08-24 "
             "bought judgeability, which the shadow book and #807's per-lineage forward stream "
@@ -292,8 +297,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "pooled minting: 13/14 then 4/4 entry-bar passers refused on the cap alone",
             "the router resolving an unbacked opposing pair on slow bars (then the condition "
             "can go), or the slow tiers' outcome rate changing"),
-    Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool.MAX_ROUTABLE_PER_CONTEXT_FAST,
-            "crypto/pool.py", OPERATOR,
+    Tunable("MAX_ROUTABLE_PER_CONTEXT_FAST", pool_admission.MAX_ROUTABLE_PER_CONTEXT_FAST,
+            "crypto/pool_admission.py", OPERATOR,
             "Thomas 2026-08-24: fast contexts (15m/1h) hold two — the window refills in weeks "
             "even split, and the shadow book keeps the benched lineage judgeable",
             "the fast timeframes' outcome rate, or the supporting-shadow book, changing shape"),
@@ -302,8 +307,8 @@ TUNABLES: tuple[Tunable, ...] = (
             "realized trades before the router ranks on measured expectancy instead of "
             "champion_score; reuses HEALTHY_TRADES_PER_PARAMETER's noise floor",
             "the noise-floor argument in `feedback.py` changing"),
-    Tunable("PROMOTION_BACKLOG_ALERT_THRESHOLD", pool.PROMOTION_BACKLOG_ALERT_THRESHOLD,
-            "crypto/pool.py", OPERATOR,
+    Tunable("PROMOTION_BACKLOG_ALERT_THRESHOLD", promotion_backlog.PROMOTION_BACKLOG_ALERT_THRESHOLD,
+            "crypto/promotion_backlog.py", OPERATOR,
             "how many promotable lineages may wait before the board says so; speaks, refuses nothing",
             "the board being ignored, or the door stopping being manual"),
     Tunable("FORWARD_NO_SIGNAL_DAYS", forward_book.FORWARD_NO_SIGNAL_DAYS,
@@ -322,21 +327,22 @@ TUNABLES: tuple[Tunable, ...] = (
             "Thomas 2026-08-21: 1d trades ~0.03/day so MIN_HOLDOUT_TRADES=25 takes ~25 months; "
             "10 closes is the t-test minimum that still prices dispersion honestly",
             "a 1d strategy reaching forward confirmation or the inflation table re-measured at 1d"),
-    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool.OBSERVATION_MIN_BACKTEST_CLOSED,
-            "crypto/pool.py", MEASURED,
+    Tunable("OBSERVATION_MIN_BACKTEST_CLOSED", pool_admission.OBSERVATION_MIN_BACKTEST_CLOSED,
+            "crypto/pool_admission.py", MEASURED,
             "where the store's own expectancy-vs-sample table stops being inflated "
             "(<20 closes +0.114R, 50-199 -0.003R); below it a positive pick is the lottery",
             "the inflation table re-measured on a store with a different mint geometry"),
-    Tunable("OBSERVATION_FAMILY_CAP", pool.OBSERVATION_FAMILY_CAP,
-            "crypto/pool.py", OPERATOR,
+    Tunable("OBSERVATION_FAMILY_CAP", pool_admission.OBSERVATION_FAMILY_CAP,
+            "crypto/pool_admission.py", OPERATOR,
             "Thomas 5-3 (2026-08-11): a third sibling's forward record is correlated with the "
             "first two, not independent — F1 has no correlation control to price it",
             "correlation control landing (F1), which would price diversity instead of capping it"),
-    Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool.LIFECYCLE_MIN_WINDOW_TRADES, "crypto/pool.py",
+    Tunable("LIFECYCLE_MIN_WINDOW_TRADES", pool_admission.LIFECYCLE_MIN_WINDOW_TRADES,
+            "crypto/pool_admission.py",
             DERIVED, "`lifecycle.DEFAULT_WINDOWS[0]`, restated; a test pins the two equal",
             "the ladder's smallest window moving"),
-    Tunable("MAX_DAYS_TO_LIFECYCLE_WINDOW", pool.MAX_DAYS_TO_LIFECYCLE_WINDOW, "crypto/pool.py",
-            OPERATOR,
+    Tunable("MAX_DAYS_TO_LIFECYCLE_WINDOW", promotion_backlog.MAX_DAYS_TO_LIFECYCLE_WINDOW,
+            "crypto/promotion_backlog.py", OPERATOR,
             "the slowest horizon the operator actually promoted at (five lineages, 2026-07-31)",
             "another promotion round at a different horizon — decide again, do not re-derive"),
     Tunable("LIVE_CANDIDATE_MIN_SAMPLE", feedback.LIVE_CANDIDATE_MIN_SAMPLE, "crypto/feedback.py",
@@ -404,11 +410,11 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("PROBE_LIQUIDATION_ADMIT_FRACTION", factory.PROBE_LIQUIDATION_ADMIT_FRACTION,
             "crypto/factory.py", MEASURED,
             "the probe's width is capped at what the median bar can carry past "
-            "`paper.stop_is_beyond_liquidation`: calibrated on the first harvest "
+            "`trade_plan.stop_is_beyond_liquidation`: calibrated on the first harvest "
             "(2026-08-31), where 4h probes at 2.62/2.96 closed 119/139 trades despite heavy "
             "refusal while 1d probes at 2.68/2.99 closed 2/1 — 0.7 would have forbidden both "
             "4h rows, 0.5 keeps them and drops 1d",
-            "the 1d tier becoming judgeable at all, which needs `paper.ASSUMED_LEVERAGE` "
+            "the 1d tier becoming judgeable at all, which needs `trade_plan.ASSUMED_LEVERAGE` "
             "revisited (at 20x the 1d admissible width is 0.46-0.94, under the generation "
             "space's own floor) — a money-path decision, not a search one"),
     Tunable("_EXIT_PROBE_SLOTS", factory._EXIT_PROBE_SLOTS, "crypto/factory.py", MEASURED,
@@ -429,19 +435,19 @@ TUNABLES: tuple[Tunable, ...] = (
             "the daily loss breaker moving — which is itself INHERITED and never re-decided"),
     Tunable("MAX_POSITIONS_PER_SYMBOL", paper.MAX_POSITIONS_PER_SYMBOL, "crypto/paper.py", DERIVED,
             "the per-symbol share of the concurrency cap above", "the cap above moving"),
-    Tunable("DEFAULT_MAX_HOLD_BARS", paper.DEFAULT_MAX_HOLD_BARS, "crypto/paper.py", INHERITED,
+    Tunable("DEFAULT_MAX_HOLD_BARS", trade_plan.DEFAULT_MAX_HOLD_BARS, "crypto/trade_plan.py", INHERITED,
             "the time exit a spec gets when it declares none",
             "the measured median hold, which is 5-27% of this on every timeframe"),
-    Tunable("MIN_VOL_SIZE_MULTIPLIER", paper.MIN_VOL_SIZE_MULTIPLIER, "crypto/paper.py", OPERATOR,
+    Tunable("MIN_VOL_SIZE_MULTIPLIER", trade_plan.MIN_VOL_SIZE_MULTIPLIER, "crypto/trade_plan.py", OPERATOR,
             "a floor on volatility down-scaling; below it the venue refuses the entry anyway",
             "the venue's minimum quantity or notional changing"),
-    Tunable("MIN_REGIME_TRADES_TO_EXCLUDE", paper.MIN_REGIME_TRADES_TO_EXCLUDE, "crypto/paper.py",
+    Tunable("MIN_REGIME_TRADES_TO_EXCLUDE", trade_plan.MIN_REGIME_TRADES_TO_EXCLUDE, "crypto/trade_plan.py",
             OPERATOR,
             "a per-regime sign read off three trades is the overfitting hazard wired into routing",
             "a measured relationship between per-regime sample size and forward sign"),
 
     # --- liquidation guard: stop-beyond-liquidation refusal ----------------------------------
-    Tunable("ASSUMED_LEVERAGE", paper.ASSUMED_LEVERAGE, "crypto/paper.py", MEASURED,
+    Tunable("ASSUMED_LEVERAGE", trade_plan.ASSUMED_LEVERAGE, "crypto/trade_plan.py", MEASURED,
             "what the account is actually set to, read off /fapi/v2/account on 2026-09-02: "
             "every traded symbol at 5x, and 880 of the 884 the venue lists. It was 20 — the "
             "venue's default, never a chosen posture — which refused 98.4% of the 1d tier's "
@@ -459,7 +465,7 @@ TUNABLES: tuple[Tunable, ...] = (
             "being wrong HIGH only refuses a good one",
             "a decision about what a DEGRADED account read deserves; it is deliberately not "
             "coupled to `ASSUMED_LEVERAGE`, so lowering that one must not drag this down"),
-    Tunable("MAINTENANCE_MARGIN_RATE", paper.MAINTENANCE_MARGIN_RATE, "crypto/paper.py", VENUE,
+    Tunable("MAINTENANCE_MARGIN_RATE", trade_plan.MAINTENANCE_MARGIN_RATE, "crypto/trade_plan.py", VENUE,
             "Binance USDM tier-1 MMR (0.4%); lowest tier is permissive for the guard",
             "trading positions large enough to cross into tier-2 (> $50K notional)"),
 

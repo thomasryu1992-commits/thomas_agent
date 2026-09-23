@@ -1,7 +1,7 @@
 """Stop-slippage probe — buys the measurement sample without arming a strategy.
 
 Thomas approved ``docs/proposals/STOP_SLIPPAGE_PROBE_V0.1.md`` §5 as proposed on
-2026-08-11. The stop-slippage series (`live_pnl.stop_slippage_observations`) grows only
+2026-08-11. The stop-slippage series (`live_ledger.stop_slippage_observations`) grows only
 on live stop closes, live resumption sits behind the forward-confirmation gate, and the
 confirmation clock is 34-69 weeks — so the cost model's one unmeasured constant
 (`cost.DEFAULT_STOP_SLIPPAGE_BPS`) could not be measured without arming an unconfirmed
@@ -61,7 +61,8 @@ from ..filelock import locked
 from ..intake import build_task
 from ..paths import repo_root as _repo_root
 from ..permission import build_slippage_probe_permission_decision
-from .live_pnl import state_dir, stop_slippage_observations
+from .live_ledger import stop_slippage_observations
+from .state import state_dir
 from .live_sizing import SymbolFilters, round_price_to_tick
 
 PROBE_ACTION_TYPE = "crypto.probe.stop_slippage_batch"
@@ -159,6 +160,9 @@ PROBE_DAILY_LOSS_BREAKER = "PROBE_DAILY_LOSS_BREAKER"
 PROBE_BRACKET_BREAKER = "PROBE_BRACKET_BREAKER"
 # The API error breaker is tripped (PR2d-1): nothing is sent until an operator clears it.
 PROBE_API_BREAKER = "PROBE_API_BREAKER"
+# The venue contract sentinel's last decided verification does not back this probe (PR4b, Thomas
+# decision 46): none, damaged, another contract version, a FAIL, stale, or silent on the symbol.
+PROBE_VENUE_CONTRACT = "PROBE_VENUE_CONTRACT"
 PROBE_RISK_GUARD_BLOCKED = "PROBE_RISK_GUARD_BLOCKED"
 PROBE_GUARD_REFUSED = "PROBE_GUARD_REFUSED"
 PROBE_FILTERS_UNAVAILABLE = "PROBE_FILTERS_UNAVAILABLE"
@@ -698,16 +702,20 @@ def gate_probe_order(
     # The order book the probe read just before this gate (PR2d-3, decision 29), or None when the
     # read failed. No default: the probe crosses the book like any entry.
     order_book: Mapping[str, Any] | None,
+    # The venue contract as the gate's re-read found it (PR4b, decision 46; `venue_contract.entry_fact`).
+    # No default, and None refuses: a probe is a mainnet entry and is decided on the autonomous rule.
+    venue_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """The pre-order gate for one probe. Pure — every fact is an argument.
 
     Re-derives what ``--fire`` refused on, from the facts it read: the plan and its cell, the
-    account (readable, and read at most ``live_order.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
+    account (readable, and read at most ``pre_order_gate.MAX_ACCOUNT_AGE_SECONDS`` before ``clock``),
     the symbol being free, the four breakers, the order book (fresh, a spread short of the
     dislocation bound, deep enough to fill the order at no more than the cost model's slippage,
     PR2d-3), the notional the approval priced, and the order
     itself — rebuilt from the plan's own stop width and judged by the live guard again in canary
-    mode. The intent about to be sent must be the rebuilt one."""
+    mode, and the venue contract sentinel's PASS, as an autonomous entry needs it (PR4b). The intent
+    about to be sent must be the rebuilt one."""
     from .execution_stage import PURPOSE_PROBE
     from .live_entry import (
         MAX_ENTRY_SLIPPAGE_BPS, MAX_ENTRY_SPREAD_BPS, MAX_ORDER_BOOK_AGE_SECONDS, order_book_fresh,
@@ -720,11 +728,13 @@ def gate_probe_order(
     from .live_position import entry_allowed
     from .pre_order_gate import check, evaluate_pre_order_gate, intent_fingerprint
     from .state import VENUE_MAINNET
+    from .venue_contract import ENTRY_FACT_FIELDS, entry_refusal as venue_contract_refusal
 
     params = plan.get("params") if isinstance(plan.get("params"), Mapping) else {}
     cells = plan.get("cells") if isinstance(plan.get("cells"), list) else []
     cell = cells[cell_index] if isinstance(cell_index, int) and 0 <= cell_index < len(cells) else None
     symbol = str(intent.get("symbol") or "")
+    contract_refusal = venue_contract_refusal(venue_contract, symbol=symbol, at=clock)
     checks = [
         check("probe_plan_active", plan.get("status") == PLAN_ACTIVE, plan.get("status")),
         check("probe_cell_open_for_this_order",
@@ -746,6 +756,8 @@ def gate_probe_order(
               {key: breaker.get(key) for key in ("consecutive", "limit")}),
         check("api_breaker_clear", api_breaker.get("tripped") is False,
               {key: api_breaker.get(key) for key in ("consecutive", "limit", "tripped_class")}),
+        # Judged at this gate's clock, for this symbol: the autonomous door's rule (PR4b).
+        check("venue_contract_verified", contract_refusal is None, contract_refusal),
         check("risk_guard_allows", bool(risk_verdict.get("allow_new_position")),
               list(risk_verdict.get("problems") or [])),
     ]
@@ -807,6 +819,10 @@ def gate_probe_order(
         "runtime_active": guard_kwargs.get("runtime_active"),
         "account_collected_at": account_collected_at,
         "clock": clock,
+        # Which verification backed the probe (PR4b). Its per-check answers are not sealed; the
+        # record keeps them only until the next decided run overwrites it.
+        "venue_contract": ({field: venue_contract.get(field) for field in ("recorded", "error", *ENTRY_FACT_FIELDS)}
+                           if isinstance(venue_contract, Mapping) else None),
     }
     return evaluate_pre_order_gate(
         intent, purpose=PURPOSE_PROBE, venue=VENUE_MAINNET, checks=checks,
@@ -986,7 +1002,7 @@ def decision_readiness(observations: list[Mapping[str, Any]]) -> dict[str, Any]:
     (`stop_slippage_observations` over the whole ledger) — the probe buys rows for that
     series, it does not own a private one. Reports only; nothing here rewrites
     `cost.DEFAULT_STOP_SLIPPAGE_BPS` (a held PR owns that constant)."""
-    from . import cost  # local: cost imports live_pnl labels; keep this module light to import
+    from . import cost  # local, as when cost imported live_pnl's labels (vocabulary's since PR7b-2)
 
     values = sorted(
         float(o["stop_slippage_bps"]) for o in observations

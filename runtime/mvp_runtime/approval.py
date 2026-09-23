@@ -49,7 +49,9 @@ from .control import command_verb
 from .errors import ApprovalBlocked
 from .filelock import locked
 from .paths import repo_root as _repo_root
+from .socket_door import ASSISTANT_ACTOR
 from .permission import (
+    EMERGENCY_CLOSE_TARGET_PREFIX,
     EXECUTION_STAGE_TARGET_PREFIX,
     LIVE_OUTCOME_CORRECTION_ACTION_TYPE,
     MEMORY_PROMOTION_ACTION_TYPE,
@@ -310,13 +312,18 @@ def validate_spendable_approval(
 
 @contextmanager
 def spend_lock(approval_store: Any, approval_id: str) -> Iterator[None]:
-    """The single-use compare-and-set both spend surfaces share.
+    """The single-use compare-and-set every spend surface shares.
 
     One cross-process exclusion (the operator loop and ``docker exec`` CLIs share these
     stores) in which the stored status is re-read — the loser of a concurrent spend refuses
     ``ALREADY_CONSUMED`` — and the caller appends its CONSUMED record. Spend-first ordering
     stays the caller's job and its argument stays at the call site: a grant spent before the
     action runs fails to the safe direction (spent-but-unrun; ask Thomas again).
+
+    Anything a winning spend changes must be read inside the block, after this re-read. A
+    loser that reads it before the lock can see the winner's effects first and refuse under
+    another code: the memory-promotion spend looked its candidate up early and refused the
+    loser CANDIDATE_GONE (found 2026-09-18; the fix sat unmerged and it recurred 2026-09-21).
     """
     with locked(approval_store.root / ".consume.lock",
                 code="APPROVAL_WRITE_FAILED", label="the approval store"):
@@ -499,6 +506,9 @@ def format_request(approval: Mapping[str, Any]) -> str:
     # runtime; a demotion is the reversible direction and needs no ask at all.
     execution_stage = target_ref.startswith(EXECUTION_STAGE_TARGET_PREFIX)
     live_stage = execution_stage and target_ref.split(":")[-1].startswith("LIVE_")
+    # The operator's emergency close (crypto PR6c). Spent by the operator's --confirm, never by the
+    # runtime; unlike every ask above, what it does cannot be undone.
+    emergency_close = target_ref.startswith(EMERGENCY_CLOSE_TARGET_PREFIX)
     # What undoes this decision, named per kind. Until 2026-09-19 the memory promotion's answer was
     # the fall-through, so every ask not named before it rendered as permanent because "validated
     # memory는 지속됩니다": the paper-tier pool promotion, probe batch and registration asks their
@@ -517,6 +527,15 @@ def format_request(approval: Mapping[str, Any]) -> str:
     elif execution_stage:
         reversibility = ("되돌릴 수 있는가: 예 — 단계 강등은 승인 없이 즉시 적용됩니다(--demote), "
                          "청산은 어느 단계에서도 막히지 않습니다")
+    elif emergency_close:
+        # The close is the decision, so the answer leads with no. Nothing is sent until the
+        # operator's --confirm spends the grant, and the halt it was asked under must still hold
+        # then; once a close is sent, the P&L it realises is final, and the HARD halt stays until a
+        # re-arming /resume, which is Thomas's.
+        reversibility = ("되돌릴 수 있는가: 아니오 — 청산 주문이 나가면 시장가로 확정된 손익은 되돌릴 수 없습니다. "
+                         "소비(--confirm) 전에는 아무것도 나가지 않으며(15분 뒤 만료, 그 사이 HARD 정지를 바꾸면 "
+                         "무효), 다시 진입하려면 HARD 정지를 푸는 재개(/resume, Thomas)와 정상 진입 경로를 "
+                         "처음부터 거쳐야 합니다")
     elif arms_pool_live:
         reversibility = ("되돌릴 수 있는가: 예 — 무장 해제(scripts/disarm_live_strategies.py)는 승인 없이 즉시 "
                          "적용되고, 이미 열린 포지션의 청산·보호는 무장과 무관하게 계속됩니다")
@@ -556,11 +575,30 @@ def format_request(approval: Mapping[str, Any]) -> str:
     ]
     if snapshot.get("content_sha256"):
         lines.append(f"내용 해시: {snapshot['content_sha256']}")
+    if emergency_close:
+        # Who asked, and in whose words (crypto PR6e review). The assistant can mint this ask
+        # through the switch door, and without these two lines it reached Thomas looking exactly
+        # like one he minted himself. Its reason is the assistant's own text: shown as untrusted,
+        # because the assistant reads the web and cannot tell an injected request from his.
+        params = snapshot.get("normalized_parameters") or {}
+        requester = str(params.get("requested_by") or "—")
+        if requester == ASSISTANT_ACTOR:
+            lines += [
+                f"요청자: 어시스턴트({ASSISTANT_ACTOR}) — Thomas나 운영자가 만든 요청이 아닙니다",
+                f"어시스턴트가 적은 사유(검증되지 않은 입력): {params.get('reason') or '—'}",
+            ]
+        else:
+            lines += [
+                f"요청자: {requester} (운영자 요청, scripts/emergency_close.py --request)",
+                f"요청자가 적은 사유: {params.get('reason') or '—'}",
+            ]
     lines += [
         f"요청 이유: {'; '.join(permdec_reasons) if permdec_reasons else '—'}",
         f"주요 위험: {'; '.join(approval.get('_risk_reasons', [])) or '—'}",
         ("예상 비용: 실주문이 다시 나갈 수 있게 되므로 그 이후의 손익이 곧 비용입니다"
          if arms_live else
+         "예상 비용: 시장가 청산의 수수료·슬리피지, 그리고 청산으로 확정되는 각 포지션의 손익"
+         if emergency_close else
          "예상 비용: 이 단계에서 진입 문이 실주문을 낼 수 있게 되므로(PR1b부터 강제) 그 이후의 손익이 곧 비용입니다"
          if live_stage else "예상 비용: 없음"),
         reversibility,
@@ -580,6 +618,15 @@ def format_request(approval: Mapping[str, Any]) -> str:
         lines += [
             "이 승인은 이 계획 버전의 이 요청(해시)에만 묶입니다. 계획이 바뀌거나 단계가 바뀌면 이 승인은",
             "APPROVAL_STALE로 거부되고 새 요청이 올라옵니다. 거절하면 단계는 멈추고 워크플로는 결정을 기다립니다.",
+        ]
+    elif emergency_close:
+        lines += [
+            "승인 후 운영자가 scheduler 컨테이너에서 `scripts/emergency_close.py --confirm --approval-id <id>`로",
+            "1회 소비해야 청산 주문이 나갑니다. 요청 이후 HARD 정지 상태가 바뀌면(해제·완화·다시 걸기)",
+            "EMERGENCY_CLOSE_HALT_CHANGED로, kill·pause 중이면 그 정지 코드로 거부되고 새 요청이 필요합니다.",
+            "거래소 계좌는 소모 직전에 한 번 읽고, 포지션마다 정지 상태와 장부를 다시 확인합니다. 장부에서",
+            "사라졌거나 수량·방향이 목록과 다르거나 거래소와 어긋나면 그 포지션은 건너뛰고 보고합니다(크기를",
+            "바꿔 보내지 않음). 장부에 없는 거래소 포지션은 건드리지 않고 보고서에 이름만 적습니다.",
         ]
     elif execution_stage:
         lines += [

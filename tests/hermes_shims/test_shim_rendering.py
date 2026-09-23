@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import thomas_door_client as door
 import read_bridge_mcp as read_shim
 import dispatch_bridge_mcp as dispatch_shim
@@ -140,6 +142,160 @@ def test_switch_enable_carries_a_request_id_and_disable_does_not(monkeypatch):
     assert seen[0][0]["command"] == "disable" and seen[0][1] == {"request_id": None}
     assert seen[1][0] == {"command": "enable", "reason": "why", "domain": "crypto"} and seen[1][1]["request_id"].startswith("hermes-")
     assert seen[2][0] == {"command": "enable", "reason": "why", "domain": "crypto", "scope": "runtime"} and seen[2][1]["request_id"] == "hermes-2"
+
+
+def test_switch_tools_are_status_the_two_stops_the_halt_the_two_starts_and_the_close_ask():
+    assert set(switch_shim.mcp.tools) == {"trading_switch_status", "stop_trading", "pause_trading", "halt_trading",
+                                          "start_trading", "resume_runtime_only", "request_emergency_close"}
+
+
+def test_the_emergency_close_request_sends_its_shape_under_a_request_id(monkeypatch):
+    """Shim 2.14 (decision 49: the assistant only asks). A request_id, because the ask is minted, and a
+    retry must not mint a second one."""
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((p, kw)) or _answer("switch", {"ok": True, "reply": ""}))
+    switch_shim.request_emergency_close("거래소 장애"); switch_shim.request_emergency_close("r", request_id="hermes-7")
+    assert seen[0][0] == {"command": "emergency_close", "reason": "거래소 장애", "domain": "crypto"}
+    assert seen[0][1]["request_id"].startswith("hermes-") and seen[1][1]["request_id"] == "hermes-7"
+
+
+_CLOSE_ASK = {"approval_id": "approval_e", "expires_at": "2026-09-19T12:15:00Z", "approve_with": "/approve approval_e",
+              "confirm_with": "docker exec -u 10001 thomas-scheduler python -m scripts.emergency_close --confirm "
+                              "--approval-id approval_e",
+              "positions": [{"position_id": "live-btc", "symbol": "BTCUSDT", "direction": "LONG", "quantity": "0.002"}]}
+
+
+def test_the_emergency_close_ask_says_nothing_closed_and_names_two_steps_neither_the_models():
+    frame = {"ok": False, "reason_code": "APPROVAL_REQUIRED", "reason": "r", "action": "emergency_close",
+             "halt": "the HARD halt placed by tg-1 at T", **_CLOSE_ASK}
+    text = switch_shim._render(_answer("switch", frame), payload={"command": "emergency_close"},
+                               retry_tool="request_emergency_close", request_id="hermes-1")
+    assert text.startswith("NOT DONE — nothing has been closed and no order was sent")
+    assert switch_shim.CONTROL_BOT_ID in text and "/approve approval_e" in text
+    assert "--confirm --approval-id approval_e" in text and "the OPERATOR runs" in text
+    assert "You cannot approve it and you cannot confirm it" in text and "Never say positions are closing" in text
+    assert "BTCUSDT LONG 0.002" in text and "the HARD halt placed by tg-1 at T" in text
+    # Not the re-arm ask's text: no scope, no restart, no spend by the model.
+    assert "scope" not in text and "restart trading" not in text and "WITH that approval id" not in text
+
+
+def test_a_replayed_emergency_close_ask_answers_from_the_record_without_a_scope():
+    text = switch_shim._render(_answer("switch", {"ok": True, "replayed": True, "data": dict(_CLOSE_ASK)}),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-1")
+    assert text.startswith("NOT DONE (REPLAYED)") and "approval_e" in text and "scope" not in text
+    assert "request_emergency_close again with a NEW request_id" in text and "DONE:" not in text.replace("NOT DONE", "")
+    # The record is up to 24 hours old: it can say what that call did, never that nothing closed since
+    # (review of #916). Re-asking is Thomas's to want, not the expiry's.
+    assert "this call sent nothing" in text and "Nothing has been closed" not in text
+    assert "no order was sent" not in text and "Thomas still wants the close" in text
+    assert "request id  : hermes-1" in text
+
+
+def test_the_emergency_close_ask_names_the_request_id_to_retry_with():
+    frame = {"ok": False, "reason_code": "APPROVAL_REQUIRED", "reason": "r", "action": "emergency_close", **_CLOSE_ASK}
+    text = switch_shim._render(_answer("switch", frame), payload={"command": "emergency_close"},
+                               retry_tool="request_emergency_close", request_id="hermes-1")
+    assert "request id  : hermes-1" in text and "Ask again only if Thomas still wants the close" in text
+
+
+@pytest.mark.parametrize("failure", [door.TIMEOUT_AFTER_SEND, door.EMPTY_REPLY, door.UNPARSEABLE])
+def test_an_emergency_close_frame_sent_without_an_answer_is_unconfirmed_and_names_the_id(failure):
+    """M1: the door can mint the ask after the client stops waiting. "Nothing was changed" and the
+    Telegram advice were both false here, and the model, never shown its id, retried under a new one."""
+    text = switch_shim._render(_answer("switch", failure=failure, sent=True, detail="timed out"),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-9")
+    assert text.startswith("UNCONFIRMED:") and "MAY HAVE BEEN MINTED" in text
+    assert 'request_id="hermes-9"' in text and "Do NOT call again under a new id" in text
+    assert "Nothing was changed" not in text and "Telegram" not in text
+    assert "scripts.emergency_close --show" in text
+
+
+@pytest.mark.parametrize("failure", [door.NOT_SENT, door.NO_SOCKET])
+def test_an_emergency_close_frame_that_never_left_minted_nothing_and_points_to_the_operator(failure):
+    text = switch_shim._render(_answer("switch", failure=failure, detail="refused"),
+                               payload={"command": "emergency_close"}, retry_tool="request_emergency_close",
+                               request_id="hermes-9")
+    assert text.startswith("UNAVAILABLE:") and "No ask was minted" in text
+    assert "scripts.emergency_close --request" in text and "Telegram" not in text
+
+
+def test_an_emergency_close_refusal_is_a_refusal():
+    text = switch_shim._render(
+        _answer("switch", {"ok": False, "reason_code": "CONTROL_VERB_NOT_GRANTED", "reason": "not granted"}),
+        payload={"command": "emergency_close"}, retry_tool="request_emergency_close", request_id="hermes-1")
+    assert text.startswith("REFUSED [CONTROL_VERB_NOT_GRANTED]") and "Nothing was changed" in text
+
+
+def test_the_halt_sends_soft_or_hard_and_no_request_id(monkeypatch):
+    """Shim 2.13: the door has carried `disable mode=soft|hard` since PR6a; no tool sent it."""
+    seen = []
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append((p, kw)) or _answer("switch", {"ok": True, "reply": ""}))
+    switch_shim.halt_trading("why"); switch_shim.halt_trading("why", hard=True)
+    assert [p for p, _kw in seen] == [{"command": "disable", "mode": "soft", "reason": "why", "domain": "crypto"},
+                                      {"command": "disable", "mode": "hard", "reason": "why", "domain": "crypto"}]
+    assert all(kw == {"request_id": None} for _p, kw in seen)
+
+
+def _disable(mode, frame):
+    return switch_shim._render(_answer("switch", {"ok": True, "reply": "runtime says", "action": "halt_trading",
+                                                  "actor": "assistant_bridge", "domain": "crypto", **frame}),
+                               payload={"command": "disable", "mode": mode}, retry_tool="start_trading", request_id=None)
+
+
+def test_a_halt_on_an_active_runtime_says_positions_are_still_managed():
+    """F11 (review of PR6a): the stop's note — "dropped the scheduler's due cycles ... NOT being settled" —
+    was rendered for every disable, and is false for a halt, which leaves the runtime ACTIVE."""
+    text = _disable("hard", {"mode": "ACTIVE", "changed": True})
+    assert "runtime stays ACTIVE" in text and "settled, protected, time-exited and reconciled" in text
+    assert "NOT being settled" not in text and "due cycles" not in text and "runtime says" in text
+
+
+def test_a_halt_on_a_stopped_runtime_says_the_stop_stays_and_the_halt_is_recorded_under_it():
+    text = _disable("soft", {"mode": "KILLED", "changed": True})
+    assert "still KILLED" in text and "cannot release a stop" in text and "recorded under the stop" in text
+    assert "NOT being settled" in text and "runtime stays ACTIVE" not in text
+
+
+def test_a_halt_that_changed_nothing_claims_nothing():
+    """Refused to loosen, already at that level, or the state moved while it was applied: the reply says
+    which, and the shim must not claim entries are halted."""
+    text = _disable("soft", {"mode": "ACTIVE", "changed": False})
+    assert "Nothing changed" in text and "trading_switch_status" in text
+    assert "New live entries are refused" not in text and "recorded under the stop" not in text
+
+
+def test_kill_and_pause_keep_the_stop_note():
+    for mode in ("kill", "pause"):
+        text = _disable(mode, {"mode": "KILLED" if mode == "kill" else "PAUSED", "changed": True})
+        assert "dropped the scheduler's due cycles" in text and "runtime stays ACTIVE" not in text
+
+
+def test_the_halt_notes_carry_the_sentences_the_model_must_repeat():
+    """Review of #915: the branch was pinned, the sentences were not. Each one below is a claim the model
+    relays to Thomas, and each is true only in its own branch."""
+    hard = _disable("hard", {"mode": "ACTIVE", "changed": True})
+    soft = _disable("soft", {"mode": "ACTIVE", "changed": True})
+    assert "under the HARD halt" in hard and "At HARD the order adapter also refuses every order" in hard
+    assert "under the SOFT halt" in soft and "At HARD" not in soft
+    for text in (hard, soft):
+        assert "resume_runtime_only keeps it" in text and "needs Thomas's start_trading approval" in text
+    under = _disable("hard", {"mode": "PAUSED", "changed": True})
+    assert "resume_runtime_only comes back to that halt, not to live entries" in under
+    assert "The HARD halt is recorded under the stop" in under and "keeps it" not in under
+
+
+@pytest.mark.parametrize("runtime_mode", ["ACTIVE", "KILLED", "PAUSED"])
+def test_a_disable_that_changed_nothing_opens_with_not_changed_and_warns_under_a_stop(runtime_mode):
+    """Review of #915: a no-op opened with "DONE: halt_trading applied", and on a stopped runtime said
+    nothing about positions going unmanaged."""
+    for mode in ("soft", "hard", "pause"):
+        text = _disable(mode, {"mode": runtime_mode, "changed": False})
+        assert text.startswith("NOT CHANGED: halt_trading left crypto as it was") and "applied" not in text
+        assert "positions keep being settled" not in text and "recorded under the stop" not in text
+        assert ("NOT being settled" in text) is (runtime_mode != "ACTIVE")
+        assert text.endswith("Runtime reply: runtime says")
 
 
 # --- knowledge ----------------------------------------------------------------------------

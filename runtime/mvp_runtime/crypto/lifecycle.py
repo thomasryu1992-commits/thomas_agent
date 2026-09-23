@@ -18,7 +18,7 @@ asymmetry:
 - **Judged on NET R.** The thresholds are stated in R and have always been read as "below
   this the strategy loses money", but their input — paper ``result_R`` — is cost-free by
   construction, so before 2026-07-30 nothing here could see a strategy whose gross edge was
-  smaller than its fees. ``compute_metrics`` now converts through ``feedback.net_result_r``
+  smaller than its fees. ``compute_metrics`` now converts through ``outcome_math.net_result_r``
   (fees, slippage and carry — the same three terms the performance report reads); the
   threshold numbers are unchanged because it is their meaning that was broken, not their value.
 - Only outcomes ATTRIBUTED to a strategy feed its windows, and attribution is by
@@ -44,9 +44,9 @@ from typing import Any, Mapping, Sequence
 from runtime.read_only_kernel import integrity
 
 from ..errors import ToolError
-from . import feedback
+from . import outcome_math
 # Moved to the leaf (PR3b-1) so the router can key on a lineage without importing this module,
-# which imports `feedback`, which imports `paper`. Re-exported: its callers import it from here.
+# which then imported `feedback`, which imports `paper`. Re-exported: its callers import it from here.
 from .candidate_identity import entry_attribution_keys as _entry_attribution_keys
 from .candidate_identity import own_attribution_keys as _own_attribution_keys
 from .candidate_identity import predecessor_keys as _predecessor_keys
@@ -65,7 +65,7 @@ def outcome_judged_r(outcome: Mapping[str, Any]) -> tuple[float, bool]:
     ``warn_expectancy_r = 0.0`` only means "losing money" if the number it compares has paid
     for the round trip. Paper R has not (``cost.py``), so until 2026-07-30 the whole ladder
     graded a gross figure against net rungs and a strategy at +0.02R gross / −0.30R net could
-    never be demoted at all. ``feedback.net_result_r`` supplies the conversion — fees and
+    never be demoted at all. ``outcome_math.net_result_r`` supplies the conversion — fees and
     slippage through ``cost.outcome_net_r``, plus the carry that function cannot derive on its
     own (funding over ``holding_candles × timeframe``) — so the ladder judges the same figure
     the performance report prints, and a row that is already net of fees and slippage
@@ -74,11 +74,11 @@ def outcome_judged_r(outcome: Mapping[str, Any]) -> tuple[float, bool]:
 
     A row it cannot price keeps ``result_R`` rather than being dropped: excluding it would
     shrink the rolling window, and a window that never fills escalates nothing — the same
-    "no verdict is reachable" failure `pool.days_to_lifecycle_window` exists to surface.
+    "no verdict is reachable" failure `promotion_backlog.days_to_lifecycle_window` exists to surface.
     The second element of the tuple is what makes the compromise legible instead of silent;
     :func:`compute_metrics` counts both populations onto the metrics.
     """
-    net = feedback.net_result_r(outcome)
+    net = outcome_math.net_result_r(outcome)
     if net is None:
         return float(outcome.get("result_R") or 0.0), False
     return float(net), True

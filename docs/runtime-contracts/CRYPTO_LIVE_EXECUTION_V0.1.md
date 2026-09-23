@@ -184,6 +184,119 @@ so its answer cannot drift from what the code enforces. It exits 0 only when eve
 passes, and it **cannot report READY while no order path exists** — a row of green ticks that
 implied otherwise would be the most dangerous output this repository could produce.
 
+**Whether a live entry can open is not READY** (crypto PR5a). READY and the exit code answer for
+the process that runs the board, and a console built without the live-trading environment is never
+READY. The structured view's `live_entry_possible` answers for the machine: the three-valued AND of
+eleven named components — installed, stage, gate, runtime control, armed count, venue, risk, account,
+whether the pipeline is still firing, market data, reconciliation. Each is true; false where an entry
+door refuses on it; or null where the reading process cannot see it. `readiness.blocking` and
+`readiness.unknown` name each false and null one with its reason. A process without the environment
+reads the trading process's own records, dated: its last fire's cycle records (the gate and its two
+switches, data health, account reads, legs refused whole, incidents, the live allowance) and its
+account snapshot. Two judgements are coarser than a door, and say so: a refusal the last fire
+recorded per context counts when half or more of its contexts were refused (the pipeline's stall
+rule), and no fire within three of the pipeline schedule's intervals — or no enabled schedule — is
+false (`trading_cycle_recent`), because nothing runs to enter.
+The text board opens and closes with that answer (`LIVE ENTRY POSSIBLE: YES / NO / UNKNOWN`,
+PR5b; the last line is one line however long) and prints this process's own verdict as
+`THIS PROCESS: READY / NOT READY`. A NO decided only by the stall rule says a minority of contexts
+may still enter. Where the process cannot see the live-trading environment, its env rows read `n/a`
+rather than FAIL unless a fresh record of the trading process says the gate was closed, and so does
+the loss breaker's NO DATA SOURCE where the process reads no account.
+
+## The venue contract sentinel (crypto PR4a/4b, Thomas decisions 43-46)
+
+Every check before an order used to point at this runtime's own model of the venue. On 2026-08-02
+they all passed while the venue refused both protective stops, because conditional order types had
+moved to the Algo API — a fact that lives only at the venue. `crypto/venue_contract.py` asks the
+venue itself.
+
+- **When:** the pipeline fire (the risk lane, which holds the venue keys) asks after its cycles and
+  after the account refresh — about hourly (every 55 minutes, so every fourth fire), and on every fire
+  while the decided record is a FAIL — only while live trading is opted in and a valid budget names
+  the symbols. Its line joins the fire's status line.
+- **What it may use** (decision 43): a public GET, a signed GET, and `POST /fapi/v1/order/test`,
+  which creates no order. No order or cancel verb is imported (pinned), and the literal validator path
+  is pinned. Every client id it sends starts `TAI_VC_`. Its calls go to the raw adapter, not to the
+  one the API breaker records.
+- **It backs off:** the first answer that says the venue could not be asked (the breaker's own test:
+  a rate limit or ban, a 5xx, a transport failure, a key or clock refusal) stops the run, and a fire
+  whose market data was already rate limited is not run. Each call starts only with its full 4 s
+  timeout inside a 30 s budget, beyond what the last three judged reads keep back, so a venue that
+  answers within its timeouts always reaches a decision (the timeout bounds each socket operation;
+  DNS is not bounded by it).
+- **Judged checks** (each expectation measured at this venue), all of which must pass:
+  - the traded symbols' `exchangeInfo` listing (per-symbol problems are recorded, so a door can tell
+    one symbol's break from the venue's);
+  - the 2026-08-03 diagnostic stop, sent to `/order/test` in its frozen pre-migration shape, must
+    still be refused with -4120 (an answer that means "could not ask" is never a verdict);
+  - one-way position mode (`GET /fapi/v1/positionSide/dual`);
+  - configured leverage at most the backtests' 5x (decision 45), read from the account snapshot this
+    lane refreshes every 15 minutes, and judged only on a snapshot at most 45 minutes old;
+  - the entry test left no order: the entry test's own id, asked of the order API afterwards, names
+    nothing (a filled order rests nowhere, so only its id can find it). The id asked for is one that
+    could name an order (PR4b-2): the first symbol whose entry test the venue accepted, else the first
+    left unanswered (no answer of the venue's, or a 5xx). A request skipped, refused by the venue or
+    refused by the builder before it left created nothing; none of those is asked for;
+  - nothing the sentinel sent is resting.
+- **Observed checks** are recorded and never judged until the host's answers are known: the
+  runtime's MARKET entry and a reduce-only take-profit LIMIT twice the `PERCENT_PRICE` band away
+  at `/order/test`, and the answer to an algo id no order carries.
+- **What it cannot show** is written into every record (`not_verified`): an algo order's
+  placement (no validator exists; the signed testnet cycle is that evidence), the codes only a
+  real order or cancel produces, and account state, which `/order/test` does not judge.
+- **Records:** `venue_contract.json` holds the last decided verification (PASS or FAIL,
+  self-hashed, schema `venue_contract_verification.v0.1`); `venue_contract_refresh.json` the last
+  attempt. A run that could not decide moves only the attempt; a violation is written as FAIL at
+  once. A PASS is usable for six hours, only under this code's `CONTRACT_VERSION`, and only for the
+  symbols it covered (decision 44).
+- **Not stage evidence** (decision 3).
+- **Enforced (PR4b, decision 46):** a mainnet autonomous entry and a probe are decided on a usable
+  PASS for their symbol — this code's `CONTRACT_VERSION`, at most six hours old at the moment of the
+  decision (`clock`), dated no more than five minutes ahead, naming the symbol. The rule is one pure
+  function (`venue_contract.entry_refusal`) that the autonomous decision's door
+  (`venue_contract_verified`), the probe's gate and the board's `venue_contract` row all call; which
+  symbols a verification covers is one more (`venue_contract.covers`), shared by the judge, the row
+  and the refresh cadence. Each way it can refuse has its own code, so the refusal says what to do:
+
+  | Code | Means | Operator |
+  |---|---|---|
+  | `LIVE_ENTRY_VENUE_CONTRACT_MISSING` | nothing decided yet | wait for the pipeline fire, or `--run` |
+  | `LIVE_ENTRY_VENUE_CONTRACT_UNREADABLE` | the record fails its hash, schema or parse | find out who changed it |
+  | `LIVE_ENTRY_VENUE_CONTRACT_VERSION` | verified under another contract version | the next fire re-verifies (asked sooner, like a FAIL) |
+  | `LIVE_ENTRY_VENUE_CONTRACT_NOT_PASS` | the venue contradicted an assumption | read `--show`; re-asked every fire |
+  | `LIVE_ENTRY_VENUE_CONTRACT_STALE` | older than six hours at the decision | the sentinel has not been answered |
+  | `LIVE_ENTRY_VENUE_CONTRACT_SYMBOL_NOT_COVERED` | the PASS did not name this symbol | the next fire verifies the budget's symbols (asked sooner) |
+
+  The autonomous leg reads it once beside the breakers and again in the gate's re-read; the gate
+  judges the re-read unless the first read already refused, so an entry needs both reads usable. The
+  probe refuses early (`PROBE_VENUE_CONTRACT`) — a record on this machine, so before any signed call
+  or API-breaker count; after the cell is chosen, so a probe in flight is named first — and its gate
+  judges the re-read. The pre-order snapshot
+  seals which verification backed the order (`facts.venue_contract`: the judged fields and the
+  record's hash; the per-check answers stay only in the record, until the next decided run replaces
+  it). "Asked sooner" is the cadence a FAIL already had: while the decided record refuses entries the
+  next ask can let through (a FAIL, another contract version, a budget symbol it does not name), every
+  fire asks; a run that decides nothing keeps the hour (decision 44). A FAIL anywhere blocks
+  every symbol; narrowing that to the symbols a FAIL names is a relaxation for Thomas to decide, not a
+  default. **Closing, protecting and settling never read it**, and neither does the testnet door: the
+  signed testnet cycle is itself a venue answer, with real orders.
+- **The operator is told on the edge (PR4b-2).** The doors refuse on the record quietly, so after
+  its own ask the pipeline fire compares what the doors would answer about the record (usable, or
+  the refusal's code) with what the operator was last told, and sends one message when it moved:
+  a PASS turning FAIL (with the failed checks), a FAIL that now names other checks, a PASS going
+  stale, a damaged record, a FAIL recovering, and a first report when there is no mark or it cannot
+  be read. Nothing while it holds. The told reading (`venue_contract_notice.json`) moves only once
+  the operator channel took the message. One it did not take is kept on the mark as undelivered and
+  said with the next message, even when the reading has returned by then (the breaker watch's missed
+  transitions). A message sent but not marked is sent again at every fire until the mark can be
+  written: loud, never silent. A transport failure is on the fire's status line and never stops the
+  fire; each socket operation of the send is bounded by the channel's 30 s timeout, after every
+  trading step of the fire. The reading is the record's alone: a budget symbol the record does not
+  name is on the board and asked sooner, and is not a notice.
+- **Not stopped by** the PAPER stage or the manual kill switch env — it places nothing; the scheduler's
+  own kill/pause stops the fire it rides. Revoking it is unsetting `MVP_LIVE_TRADING` and restarting.
+
 ## Operator go-live checklist
 
 Real money. Work top to bottom on one machine. Every step is Thomas's; **Claude does not run
@@ -343,8 +456,10 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
 `docs/BUILD_HISTORY.md`.
 
 **Gate 4 — verify the gate before any autonomous run**
-- [ ] `python -m runtime.mvp_runtime.crypto.live_readiness` reports READY. A refusal names
-      exactly what is missing; fix it rather than working around it.
+- [ ] `docker exec thomas-scheduler python -m runtime.mvp_runtime.crypto.live_readiness` reports
+      `THIS PROCESS: READY` and ends `LIVE ENTRY POSSIBLE: YES`. Either refusal names exactly what
+      is missing (`blocked by` names the component and its reason); fix it rather than working
+      around it.
 
 **Gate 5 — first supervised cycles**
 - [ ] Watch the first entries and closes live. Confirm each entry reconciles and each position
@@ -358,6 +473,89 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
   only new entries (autonomous and probe) are refused, until `/resume`. From a PAUSED or
   KILLED runtime the operator's `/halt_trading` moves it straight to that state. **Policy 1.5.1
   grants the verb (2026-09-17); an image older than that policy refuses it by name.**
+  **Two levels (Thomas decision 47, 2026-09-19):** `halt_trading` alone, or `halt_trading soft`, is
+  the SOFT halt; `halt_trading hard` (`/halt_trading hard <reason>`, switch door `disable mode=hard`,
+  which the assistant sends with `halt_trading(reason, hard=True)` from Hermes shim 2.13)
+  is the HARD halt. Both keep the runtime ACTIVE and refuse new entries. HARD is the tighter one:
+  tightening SOFT to HARD needs nothing, and only the authenticated operator (local console,
+  Telegram) loosens HARD to SOFT; `/resume` clears either. `/kill` and `/pause` keep their meaning
+  and carry the level, so a resume that does not re-arm (the assistant's approved runtime-only
+  resume) comes back to the halt that was in effect. The level is a field beside `mode`
+  (`halt_level`), recorded on every control event (`resulting_halt_level`) and recovered from the
+  ledger when the state file is lost; a corrupt file still reads KILLED (decision 48), with a HARD
+  halt under it. **Under an operator's stop, the assistant's `disable mode=soft|hard` records the
+  halt (PR6d)**, since that door cannot release a stop: a resume that does not re-arm then comes
+  back to the halt, not to a bare disarm. It only tightens, and the stop keeps who placed it and
+  when, which the next resume ask names; who recorded the halt is noted in the reason and on the
+  event. A stop derived by failing closed is left as it is. Over Telegram a halt waits for a
+  running analysis to finish: the mid-run peek acts on `/kill` and `/pause` only (PR6d tried the
+  halt, and its review found the next poll replays it with release rights against a state later
+  messages have moved). A halt that names no level (`/halt_trading <reason>`, or the console command in the
+  incident notices) keeps the level in effect, so only an explicit `soft` loosens HARD. The level
+  is the argument's first word, so a Telegram reason that itself begins with `soft` or `hard` is
+  read as the level; the reply names every change of level. **Rollback is
+  read-safe, not write-safe:** an image from before halt levels ignores the field and reads either
+  level as the soft halt, but its next control write (a `/stop`, a kill, a resume) drops the level,
+  so after rolling forward again check the `halt:` line in `/status` and place HARD again if it was
+  in effect. `/status` shows a `halt:` line, and the readiness board names the component
+  `runtime_control (SOFT_HALT)` or `(HARD_HALT)`, apart from `TRADING_DISARMED`, a disarm nobody
+  named. The policy's comment on the grant still describes the soft halt alone: it is a byte of the
+  fingerprinted policy, so it changes with the next policy bump Thomas applies.
+  **Where each level acts (PR6b):** SOFT refuses the entry where it is decided
+  (`ControlState.trading_allowed`, read by the leg and the probe). HARD also refuses at the order
+  adapter itself — mainnet and the signed testnet alike — every order that is neither `reduceOnly`
+  nor `closePosition`, whoever sends it (`live_execution.control_refusal`, code `ORDER_HALTED`). A
+  PAUSED or KILLED runtime refuses the same orders there, and so does a control state that cannot
+  be read. Exits and protection are never refused at the adapter, and it does not even read the
+  control state for one. `/order/test` validation and cancels are not refused. The refusal sends
+  nothing, the API error breaker does not count it, and the entry leg gives back the symbol it
+  reserved. The signed testnet rehearsal runs under SOFT, as before, and stops under HARD.
+- **Emergency close (PR6c, Thomas decision 49, 2026-09-19):** closes every position this machine
+  has booked, at market and reduceOnly, on one single-use approval. `scripts/emergency_close.py`,
+  run by the operator in the scheduler container:
+  1. `--request` stores the ask. It is refused unless the HARD halt is in effect with the runtime
+     ACTIVE and something is booked. It binds that halt (the switch door's `stop_ref`) and every
+     booked position by id, symbol, side and a decimal quantity.
+  2. Thomas answers on the control channel. The ask is announced there and never mirrored, and
+     RUNTIME_GOVERNANCE caps it at 15 minutes.
+  3. `--confirm` spends it once. Before the spend, it refuses with nothing sent and the approval
+     left APPROVED on any of: another halt (a kill or pause refuses under its own code), a closed
+     gate, no confirmation phrase, nothing still booked, an unreadable account, or no approved
+     position that would be closed now. The expiry and the halt are checked again inside the spend
+     lock, on a fresh clock.
+  4. The account is read once, just before the spend. Each position is then judged again just
+     before its close, against that read and a fresh read of the halt and the book. It is skipped,
+     never resized, when the halt moved (the rest are not attempted), when the book no longer holds
+     it or holds another side or quantity, or when the venue had closed it or disagreed with the
+     book. A venue position the book does not hold is never touched, and neither is a position
+     booked after the ask; the report names both, so the operator knows they are there.
+  5. The report is COMPLETE when no approved position is left open as far as the runtime knows:
+     each was closed, or was already gone. Otherwise it is INCOMPLETE and the command exits BLOCKED.
+     It is kept on the record ledger (`crypto_emergency_close`) under the approval id, and names
+     every order it sent: client and venue ids, the reconcile status and what filled.
+
+  The close is `live_leg.execute_live_exit` with close reason `emergency_close`, the leg every
+  runtime exit uses: brackets are withdrawn only after a confirmed close and the outcome is
+  recorded. **Every order that reached the venue is audited** under the purpose `emergency_close`,
+  closed or not, and a failure to audit never stops a close. The halt is not cleared. Under HARD
+  the adapter refuses anything that is not reduceOnly (PR6b), so the path cannot add exposure.
+
+  **Racing the scheduler.** The scheduler keeps managing positions under HARD, and the two do not
+  share a lock. It may close a position first, which shows here as a skip or as a reduceOnly order
+  the venue rejects on a flat position. The reverse also happens. A scheduler pass that read the book
+  before the close may see the withdrawn legs as unprotected and send its own close, which the venue
+  rejects on the flat position: that fire reports an incident. Or it may write the position back
+  after its slow venue read. The next fire's reconciliation settles both. Neither can open anything.
+
+  **A limit of the halt binding.** A HARD halt recovered from the ledger after the state file was
+  lost derives the same `stop_ref` each time. An ask made under such a state could therefore be
+  spent under a later one that was recovered the same way. It is still ACTIVE under a HARD halt.
+
+  **The assistant can only ask (PR6e).** The switch door's `emergency_close` (Hermes shim 2.14,
+  `request_emergency_close`) mints the same ask with the assistant as the requester, and refuses by
+  name (`CONTROL_VERB_NOT_GRANTED`) until policy 1.5.2 lists it under
+  `control_channel.assistant_switch.verbs`. It never spends: an `approval_id` beside it is refused,
+  and the spend stays the operator's `--confirm` in the scheduler container.
 - **Stop everything:** the operator console `kill` (or `pause`). It writes control state and lands
   on the running service at its next fire — but it does **not** leave closes running. Corrected
   2026-09-15 (execution-authority audit, verified): `kill_blocks` also carries
@@ -370,6 +568,10 @@ entry is refused until Thomas registers a rung** (`EXECUTION_STAGE_V0.1.md`). Th
 - **Softer halt, next restart:** set `MVP_LIVE_MANUAL_KILL_SWITCH=true` and restart the
   scheduler. Refuses entries; the runtime stays ACTIVE, so closes and management continue. Reach
   for the soft halt above first — it lands on the *running* service, this one waits for a restart.
+  **It is the secondary control (Thomas decision 50, 2026-09-19); the control store is the primary
+  one.** The readiness board says so on the row. A board that cannot see the scheduler's environment
+  shows the switch as the trading process last recorded it, or n/a; until PR6d it read "clear" off
+  its own empty environment.
   History worth keeping, because this bullet was false for longer than anyone would guess: until
   2026-09-07 `docker-compose.yml` forwarded this variable to no service, so setting it in `.env`
   and restarting halted nothing on the scheduler the autonomous entry path runs on, and the

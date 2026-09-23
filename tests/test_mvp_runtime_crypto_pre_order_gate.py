@@ -543,7 +543,9 @@ def test_a_tampered_row_fails_the_verified_read_and_the_board(tmp_path):
     with pytest.raises(ToolError) as refused:
         g.read_snapshots(tmp_path)
     assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
-    assert g.snapshots_status(tmp_path) == {"readable": False, "error": g.RISK_SNAPSHOT_STORE_TAMPERED,
+    # The record no longer proves itself, and the entry path's append still takes rows (review of #906).
+    assert g.snapshots_status(tmp_path) == {"readable": False, "appendable": True,
+                                            "error": g.RISK_SNAPSHOT_STORE_TAMPERED,
                                             "count": None, "last_created_at": None}
 
 
@@ -566,6 +568,9 @@ def test_an_edit_the_schema_still_accepts_fails_the_seal_on_read(tmp_path, edit)
         g.read_snapshots(tmp_path)
     assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
     assert g.snapshots_status(tmp_path)["error"] == g.RISK_SNAPSHOT_STORE_TAMPERED
+    # A row that fails its seal refuses the verified read, not the append (review of #906).
+    assert g.snapshots_status(tmp_path)["appendable"] is True
+    _store(tmp_path).append(_snapshot_with_facts({"n": 9}, candle_time="2026-09-17T08:00:00Z"))
 
 
 def test_an_unreadable_store_refuses_the_append(tmp_path):
@@ -614,7 +619,7 @@ def test_the_selector_is_the_live_switch(tmp_path, monkeypatch):
 
 def test_a_machine_with_no_orders_reads_an_empty_record(tmp_path):
     assert g.read_snapshots(tmp_path) == []
-    assert g.snapshots_status(tmp_path) == {"readable": True, "error": None, "count": 0,
+    assert g.snapshots_status(tmp_path) == {"readable": True, "appendable": True, "error": None, "count": 0,
                                             "last_created_at": None}
 
 
@@ -917,6 +922,7 @@ def test_a_damaged_row_refuses_the_store_and_the_read(tmp_path, damage):
             attempt()
         assert refused.value.reason_code == g.RISK_SNAPSHOT_STORE_TAMPERED
     assert g.snapshots_status(tmp_path)["error"] == g.RISK_SNAPSHOT_STORE_TAMPERED
+    assert g.snapshots_status(tmp_path)["appendable"] is False       # the append refuses it too
 
 
 def test_blank_lines_carry_nothing(tmp_path):
@@ -939,8 +945,10 @@ def test_a_store_that_cannot_write_is_a_typed_refusal(tmp_path, monkeypatch):
 
 def test_the_board_never_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "read_snapshots", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    assert g.snapshots_status(tmp_path) == {"readable": False, "error": "RuntimeError", "count": None,
-                                            "last_created_at": None}
+    assert g.snapshots_status(tmp_path) == {"readable": False, "appendable": True, "error": "RuntimeError",
+                                            "count": None, "last_created_at": None}
+    monkeypatch.setattr(g, "_read_rows", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert g.snapshots_status(tmp_path)["appendable"] is False
 
 
 # --- the decision's age at the send (PR2c-1, Thomas decision 24) ---------------------------------

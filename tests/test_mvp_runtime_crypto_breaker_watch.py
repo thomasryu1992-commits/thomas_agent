@@ -95,6 +95,21 @@ def test_it_reports_the_same_verdict_the_live_leg_would_act_on(tmp_path):
     assert state["problems"] == direct["problems"] == ["daily_loss_limit_breached"]
 
 
+def test_the_verdict_a_second_reader_gets_is_the_watchs_own(tmp_path):
+    """PR5a: the readiness board judges C4 through `live_risk_verdict`, the composition `evaluate`
+    reports — one composition, so the board and the watch cannot describe different doors."""
+    _seed(tmp_path, _outcome(0.5))
+    assert breaker_watch.live_risk_verdict(tmp_path, now=NOW)["allow_new_position"] is True
+    _seed(tmp_path, _outcome(-1.2), _outcome(-1.2))          # -2.4R today, daily limit -2.0
+    verdict = breaker_watch.live_risk_verdict(tmp_path, now=NOW)
+    state = breaker_watch.evaluate(tmp_path, now=NOW)
+    assert verdict["allow_new_position"] is state["live_entry_open"] is False
+    assert verdict["problems"] == state["problems"] == ["daily_loss_limit_breached"]
+    risk_limits.limits_path(tmp_path).write_text("{not json", encoding="utf-8")
+    with pytest.raises(ToolError):
+        breaker_watch.live_risk_verdict(tmp_path, now=NOW)
+
+
 def test_an_unusable_limits_record_propagates_rather_than_reading_as_normal(tmp_path):
     """The cycle refuses entries in this state; a watch must not report it as merely clear."""
     _seed(tmp_path, _outcome(0.5))
@@ -213,8 +228,18 @@ def test_every_headline_names_the_live_leg_and_never_claims_the_runtime_is_stopp
         assert "new positions refused" not in text and "new positions allowed" not in text
     # The door now moves with the breaker, so the releasing cycle reports an OPEN door. That is
     # the sentence an operator acts on, and it is the one this file exists to keep honest.
-    assert "DOOR     : live entries OPEN" in opened
-    assert "DOOR     : live entries REFUSED" in closed
+    assert "DOOR     : live entries OPEN at the loss breakers" in opened
+    assert "DOOR     : live entries REFUSED at the loss breakers" in closed
+    # ...and it is this watch's door only (crypto PR5b). "Real orders can now be placed" was sent
+    # from a machine at PAPER with nothing armed; the answer to that is the readiness board's.
+    for text in (first, closed, changed, opened):
+        assert "real orders can now be placed" not in text
+        assert "LIVE ENTRY POSSIBLE on `crypto readiness`" in text
+        door = [line for line in text.splitlines() if line.startswith(("  DOOR", "  entry", "      "))]
+        assert door and all(len(line) <= 80 for line in door), door
+    assert opened.splitlines()[0] == "CRYPTO LIVE ENTRY OPEN - the loss breakers no longer refuse live entries"
+    # Both doors, pinned whole: "real orders refused again" named the system's answer too (review of #907).
+    assert closed.splitlines()[0] == "CRYPTO LIVE ENTRY CLOSED - the loss breakers refuse live entries again"
 
 
 def test_the_render_separates_the_judged_rows_from_the_ones_that_are_not(tmp_path):

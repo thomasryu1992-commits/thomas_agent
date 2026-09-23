@@ -31,8 +31,11 @@ provenance. Nothing ever legitimately writes a foreign row HERE — this store f
 door that arms real money — so a row that is not this book's, or cannot prove it is,
 fails the read rather than passing around the hash check.
 
-**Seeding.** A spec is frozen at mint, so every bar that closed after it is genuine
-out-of-sample data for the lineage. :func:`walk_seed_span` replays those bars through the
+**Seeding.** Every bar that closed after the row that SELECTED a lineage was made is
+out-of-sample data for it — for its parameters, frozen at the first mint, and for the choice,
+made on that row's evidence (``forward_confirmation.selection_cutoff``; a re-scored lineage's
+first mint is earlier than its selection, and the bars between sit inside the re-score's own
+holdout). :func:`walk_seed_span` replays those bars through the
 SAME transition the live cycle runs, stamping HISTORICAL times into the rows — slices
 spread across real calendar, ids are deterministic, and re-seeding is idempotent through
 the settlement-id dedup every append runs. The walk stops at the live stream's
@@ -59,10 +62,8 @@ from .. import jsonl, timeutil
 from ..errors import ToolError
 from ..filelock import locked
 from .market_data import TIMEFRAMES
-from .paper import (
+from .trade_plan import (
     COOLDOWN_BARS_AFTER_STOPLOSS,
-    OCCUPYING_STATUSES,
-    STATUS_ENTRY_CANDIDATE,
     build_entry_plan,
     build_outcome_record,
     entry_cost_refusal,
@@ -70,9 +71,10 @@ from .paper import (
     position_max_hold,
     regime_admits,
     settle_trade_plan,
-    state_dir,
     stop_beyond_liquidation_refusal,
 )
+from .vocabulary import OCCUPYING_STATUSES, STATUS_ENTRY_CANDIDATE
+from .state import state_dir
 from .distribution_gate import distribution_admits
 from .strategy import StrategySpec, evaluate_spec
 from .strategy_artifact import ARTIFACT_SHA256_FIELD
@@ -212,28 +214,39 @@ def read_forward_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     only its own provenance because imported rows legitimately exist there under an
     audited batch; nothing legitimately writes a foreign row HERE, and this store feeds
     the LIVE arming door — so an unrecognized row is treated as tampering, not as a
-    vintage to wave through."""
-    path = _outcomes_path(root)
+    vintage to wave through. That includes the forward cohort's rows
+    (``forward_cohort.COHORT_PROVENANCE``): they live in their own file and must never
+    count here, where they would be a second writer into arming evidence."""
+    return read_sealed_rows(_outcomes_path(root), provenance=FORWARD_PROVENANCE,
+                            label="forward outcomes")
+
+
+def read_sealed_rows(path: Path, *, provenance: str, label: str) -> list[dict[str, Any]]:
+    """The strict reader behind :func:`read_forward_outcomes`, for a store with one writer.
+
+    Shared with the forward cohort's store, whose rows are settled by the same transition
+    and must satisfy the same three properties — own provenance, true self-hash, unique
+    settlement ids — in a file of their own."""
     rows: list[dict[str, Any]] = []
     seen_settlements: set[str] = set()
     for lineno, record in jsonl.iter_numbered(
-        path, read_code=FORWARD_HISTORY_UNREADABLE, label="forward outcomes", exc_type=ToolError,
+        path, read_code=FORWARD_HISTORY_UNREADABLE, label=label, exc_type=ToolError,
     ):
         if not isinstance(record, dict):
             continue
-        if record.get("provenance") != FORWARD_PROVENANCE:
+        if record.get("provenance") != provenance:
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} carries a provenance this store "
+                            f"{label} line {lineno} carries a provenance this store "
                             "never writes")
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} fails its self-hash")
+                            f"{label} line {lineno} fails its self-hash")
         settlement_id = record.get("settlement_id")
         if not (isinstance(settlement_id, str) and settlement_id):
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} carries no settlement id")
+                            f"{label} line {lineno} carries no settlement id")
         if settlement_id in seen_settlements:
             raise ToolError(FORWARD_HISTORY_DUPLICATE,
                             f"duplicate settlement_id: {settlement_id}")
@@ -250,13 +263,19 @@ def _append_outcomes(records: list[dict[str, Any]], *, root: Path | None) -> Non
     property is what makes re-seeding idempotent: historical timestamps make seeded ids
     deterministic, so a second seed of the same span re-mints the same settlement ids and
     they are all skipped here."""
+    append_sealed_rows(records, path=_outcomes_path(root), read=lambda: read_forward_outcomes(root))
+
+
+def append_sealed_rows(
+    records: list[dict[str, Any]], *, path: Path, read: Callable[[], list[dict[str, Any]]],
+) -> None:
+    """The dedup-under-lock append behind :func:`_append_outcomes`; ``read`` is the store's
+    own verified reader, so a damaged store refuses the append instead of growing."""
     if not records:
         return
-    path = _outcomes_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with locked(path.with_suffix(".lock"), code=FORWARD_STORE_LOCKED, label="forward outcomes"):
-        recorded = {r.get("settlement_id") for r in read_forward_outcomes(root)
-                    if r.get("settlement_id")}
+    with locked(path.with_suffix(".lock"), code=FORWARD_STORE_LOCKED, label=path.stem):
+        recorded = {r.get("settlement_id") for r in read() if r.get("settlement_id")}
         fresh = [r for r in records if r.get("settlement_id") not in recorded]
         if not fresh:
             return

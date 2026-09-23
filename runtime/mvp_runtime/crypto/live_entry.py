@@ -105,6 +105,7 @@ from .live_sizing import RISK_PER_TRADE_FRACTION, SymbolFilters, round_price_to_
 from . import pre_order_gate
 from .execution_stage import PURPOSE_AUTONOMOUS
 from .state import VENUE_MAINNET
+from .venue_contract import ENTRY_CONTRACT_CODES, ENTRY_FACT_FIELDS, entry_refusal as venue_contract_refusal
 
 LIVE_ENTRY_VERSION = "live_entry.v0.1"
 
@@ -280,7 +281,7 @@ def price_bracket(
     }, None
 
 
-# What to assume when the venue cannot be asked. **Deliberately NOT `paper.ASSUMED_LEVERAGE`,
+# What to assume when the venue cannot be asked. **Deliberately NOT `trade_plan.ASSUMED_LEVERAGE`,
 # and the split is the point:** that constant answers "what is this account set to" and is
 # maintained against a verified reading, while this one answers "what should I assume when I
 # cannot check" — and the two have opposite failure costs. Being wrong LOW here lets through a
@@ -445,10 +446,14 @@ def plan_live_entry(
     # required fact, like the bracket streak: a door that forgets it opens the one this closes.
     # Only an explicit False is clear.
     api_breaker_tripped: bool,
+    # PR4b (Thomas decision 46): the venue contract sentinel's last decided verification, as
+    # `venue_contract.entry_fact` read it. No default, and None refuses: an entry is decided only on
+    # a PASS that says the venue still honours what this runtime assumes about it.
+    venue_contract: Mapping[str, Any] | None,
     # PR2d-3: the order book the spread and the market impact are judged on, as the leg read it
     # (`market_data` stamps its `received_at`). No default, and None refuses.
     order_book: Mapping[str, Any] | None,
-    # PR2d-2: the optional data this context was judged on (`cycle.optional_data_health`): the
+    # PR2d-2: the optional data this context was judged on (`feed_assembly.optional_data_health`): the
     # legs' degrade codes this cycle, the feeds past their age, and the legs missing from the bar.
     # No default; None, or an account of another bar than `entry_bar_time`, refuses.
     optional_data: Mapping[str, Any] | None,
@@ -562,6 +567,17 @@ def plan_live_entry(
     if api_breaker_tripped is not False:
         reasons.append(API_BREAKER_REFUSED)
         detail["api_breaker_tripped"] = api_breaker_tripped
+
+    # 2c-4. The venue contract (PR4b, Thomas decision 46). Every door above and below judges this
+    # runtime's own model of the venue; on 2026-08-02 all of them passed while the venue refused
+    # both protective stops, because conditional orders had moved to the Algo API. The sentinel
+    # asks the venue (`crypto/venue_contract.py`); an entry is decided on its PASS: this code's
+    # contract version, at most six hours old at ``clock``, covering this symbol. Missing, damaged,
+    # FAIL, stale or silent on the symbol refuses — one reason code for each.
+    contract_refusal = venue_contract_refusal(venue_contract, symbol=symbol, at=clock)
+    if contract_refusal is not None:
+        reasons.append(contract_refusal["reason_code"])
+        detail["venue_contract"] = contract_refusal
 
     # 2c-3. The optional data (PR2d-2, Thomas decision 28). A leg that failed this cycle leaves its
     # columns None, so a strategy reading it can neither fire nor veto — two strategies on this
@@ -854,7 +870,7 @@ GUARD_REREAD_FIELDS = (
     "submitted_today", "daily_loss_breached",
 )
 REREAD_FIELDS = (*GUARD_REREAD_FIELDS, "live_routable_strategy_ids", "bracket_failures_consecutive",
-                 "api_breaker_tripped")
+                 "api_breaker_tripped", "venue_contract")
 _RISK_LIMITS_IDENTITY = ("source", "limits_id", "record_sha256")
 # The caps a `LiveOrderLimits` carries; the stricter of two reads is the lower of each.
 _CAP_FIELDS = ("max_order_notional_usdt", "absolute_max_notional_usdt", "max_daily_order_count",
@@ -921,8 +937,9 @@ def narrow_entry_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> di
 
     :func:`narrow_guard_facts`, and: the live tier is what both reads share; the bracket breaker is
     the higher of the two; a risk-limits problem the re-read found turns the verdict into a
-    refusal. The gate re-derives the decision on the result, so an order sized on the first read
-    that these facts would size differently fails its `intent_matches_decision`."""
+    refusal; the venue contract is the fresh read unless the first one already refused (PR4b), so
+    the entry needs both. The gate re-derives the decision on the result, so an order sized on the
+    first read that these facts would size differently fails its `intent_matches_decision`."""
     kw = narrow_guard_facts(first, fresh)
     first_ids, fresh_ids = first.get("live_routable_strategy_ids"), fresh["live_routable_strategy_ids"]
     kw["live_routable_strategy_ids"] = (
@@ -934,6 +951,12 @@ def narrow_entry_facts(first: Mapping[str, Any], fresh: Mapping[str, Any]) -> di
     # this entry too, and a read that says nothing is not a clear one.
     kw["api_breaker_tripped"] = not (first.get("api_breaker_tripped") is False
                                      and fresh.get("api_breaker_tripped") is False)
+    # Judged at the decision's own ``clock``, which the gate re-derives at too: a verification that
+    # went stale, FAIL or missing since the first read refuses there; one that refused here stays.
+    first_contract = first.get("venue_contract")
+    held = venue_contract_refusal(first_contract, symbol=str(first.get("symbol") or ""),
+                                  at=str(first.get("clock") or ""))
+    kw["venue_contract"] = first_contract if held is not None else fresh.get("venue_contract")
     problem = fresh.get("risk_limits_problem")
     if problem:
         verdict = dict(first["verdict"]) if isinstance(first.get("verdict"), Mapping) else {}
@@ -950,6 +973,7 @@ ENTRY_DOORS: tuple[tuple[str, frozenset[str]], ...] = (
     ("risk_verdict_allows", frozenset({VERDICT_REFUSED})),
     ("bracket_breaker_clear", frozenset({BRACKET_BREAKER_REFUSED})),
     ("api_breaker_clear", frozenset({API_BREAKER_REFUSED})),
+    ("venue_contract_verified", ENTRY_CONTRACT_CODES),
     ("optional_data_healthy", frozenset({OPTIONAL_DATA_DEGRADED, OPTIONAL_DATA_STALE,
                                          OPTIONAL_DATA_MISSING, OPTIONAL_DATA_UNKNOWN})),
     ("entry_bar_open", frozenset({BAR_UNKNOWN, BAR_ALREADY_ENTERED, MARKS_UNKNOWN, STOP_LOSS_COOLDOWN})),
@@ -1035,6 +1059,7 @@ def gate_live_entry(
     context = entry_context_key(kw.get("symbol"), plan_timeframe)
     reconciliation = kw.get("reconciliation") if isinstance(kw.get("reconciliation"), Mapping) else {}
     filters = kw.get("filters")
+    contract = kw.get("venue_contract")
     facts = {
         "equity_usdt": kw.get("equity_usdt"),
         # The spread the decision derived from its book (PR2d-3 review).
@@ -1046,6 +1071,10 @@ def gate_live_entry(
         "budget_registered": kw.get("budget_registered"),
         "bracket_failures_consecutive": kw.get("bracket_failures_consecutive"),
         "api_breaker_tripped": kw.get("api_breaker_tripped"),
+        # PR4b: which verification backed the order. Its per-check answers are not sealed; the record
+        # keeps them only until the next decided run overwrites it.
+        "venue_contract": ({field: contract.get(field) for field in ("recorded", "error", *ENTRY_FACT_FIELDS)}
+                           if isinstance(contract, Mapping) else None),
         # PR2d-2: the optional data the context was judged on, as the decision read it.
         "optional_data": kw.get("optional_data"),
         "allowed_symbols": list(kw.get("allowed_symbols") or ()),

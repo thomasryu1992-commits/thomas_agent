@@ -47,8 +47,14 @@ from ..paths import repo_root as _repo_root
 from ..safety_gate import Authorization
 from ..schema_cache import validate_against_schema
 from .execution_stage import PURPOSE_AUTONOMOUS, PURPOSE_PROBE, PURPOSE_TESTNET
-from .live_order import MAX_ACCOUNT_AGE_SECONDS, enrich_order_identity
+from .order_identity import enrich_order_identity
 from .state import VENUE_MAINNET, VENUE_TESTNET, venue_state_dir
+
+# How old the account read an entry is judged on may be when the entry is judged (Thomas decisions
+# 18 and 24, PR2c-1). A door reads the account once, then settles, protects and prices before it
+# decides — normally seconds, with no bound: each venue call in between may take its own timeout.
+# Past a minute the balance and the exposure the caps are judged on may no longer be the account's.
+MAX_ACCOUNT_AGE_SECONDS = 60
 
 GATE_ID = "pre_order_gate.v1"
 SNAPSHOT_VERSION = "pre_order_risk_snapshot.v0.1"
@@ -104,7 +110,7 @@ INTENT_BOUND_FIELDS = (
     "idempotency_key", "client_order_id", "order_intent_id",
     "symbol", "direction", "side", "order_type_exchange",
     "quantity", "order_notional_usdt", "reduce_only", "connectivity_test",
-    # Every other field `live_execution.build_order_request` turns into the venue request. None of
+    # Every other field `order_request.build_order_request` turns into the venue request. None of
     # them is set on a MARKET entry today; bound anyway, so a snapshot sealed for one request can
     # never authorize a different one.
     "close_position", "stop_price", "working_type", "price", "time_in_force",
@@ -745,14 +751,25 @@ def find_snapshot(sha: str, root: Path | None = None, *, venue: str = VENUE_MAIN
 
 def snapshots_status(root: Path | None = None, *, venue: str = VENUE_MAINNET) -> dict[str, Any]:
     """The board's view: how many orders left under a recorded snapshot, and whether the record
-    still proves itself. Never raises."""
+    still proves itself. Never raises.
+
+    ``appendable`` is whether the store would take another row, which is what an entry needs: the
+    append refuses on a line it cannot parse (:func:`_read_rows`), and not on a row that fails its seal
+    or the schema, which only a verified read refuses (review of #906)."""
+    try:
+        _read_rows(snapshot_path(root, venue=venue))
+        appendable = True
+    except Exception:  # noqa: BLE001 — the board reports, it never fails
+        appendable = False
     try:
         rows = read_snapshots(root, venue=venue)
     except Exception as exc:  # noqa: BLE001 — the board reports, it never fails
-        return {"readable": False, "error": getattr(exc, "reason_code", type(exc).__name__),
+        return {"readable": False, "appendable": appendable,
+                "error": getattr(exc, "reason_code", type(exc).__name__),
                 "count": None, "last_created_at": None}
     return {
         "readable": True,
+        "appendable": True,
         "error": None,
         "count": len(rows),
         "last_created_at": rows[-1].get("created_at") if rows else None,
@@ -769,6 +786,7 @@ __all__ = [
     "INTENT_BOUND_FIELDS",
     "LINEAGE_FIELDS",
     "LIVE_ARM_VERIFIED_FIELD",
+    "MAX_ACCOUNT_AGE_SECONDS",
     "MAX_SNAPSHOT_AGE_SECONDS",
     "PR2B_GATE_CHECK_IDS",
     "PRE_ARTIFACT_LINEAGE_FIELDS",

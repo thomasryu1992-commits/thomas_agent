@@ -2,7 +2,7 @@
 
 Thomas's 2026-07-28 decision stands: the live entry is a MARKET order, and the maker leg this
 repo ships is the take-profit exit only. What blocked even *asking* whether a limit entry is
-worth its ~6 bps was that nothing could score one honestly: ``paper.build_entry_plan`` enters
+worth its ~6 bps was that nothing could score one honestly: ``trade_plan.build_entry_plan`` enters
 at the row's close, so nothing rests, and OHLCV alone cannot tell a touch from a fill. This
 module is that missing instrument, built while the question stays closed — precondition (4)
 (an aligned family earning a confirmed candidate) is what re-opens it, and as of 2026-08-10

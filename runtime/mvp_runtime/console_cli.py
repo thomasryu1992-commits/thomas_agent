@@ -9,6 +9,7 @@ ledger, so a `kill` issued here immediately blocks the loop's next task.
     python -m runtime.mvp_runtime.console_cli status
     python -m runtime.mvp_runtime.console_cli pause  --reason "investigating a bad run"
     python -m runtime.mvp_runtime.console_cli halt_trading --reason "entries off, keep managing"
+    python -m runtime.mvp_runtime.console_cli halt_trading hard --reason "only exits from here"
     python -m runtime.mvp_runtime.console_cli kill   --reason "halt now"
     python -m runtime.mvp_runtime.console_cli resume --reason "cleared"
     python -m runtime.mvp_runtime.console_cli stop <task_id>
@@ -44,7 +45,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("command", choices=sorted(control.COMMANDS), help="the console command to apply")
     parser.add_argument("task_id", nargs="?", default=None,
-                        help="task id (required for 'stop'); event count (optional for 'audit')")
+                        help="task id (required for 'stop'); event count (optional for 'audit'); "
+                             "'soft' or 'hard' for 'halt_trading' (none keeps the level in effect, "
+                             "else soft)")
     parser.add_argument("--reason", default="", help="operator reason recorded in the control event")
     return parser.parse_args(argv)
 

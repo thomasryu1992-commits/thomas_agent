@@ -14,9 +14,11 @@ t is never given the benefit of the doubt.
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
+from runtime.mvp_runtime.crypto import candidate_ranking
 from runtime.mvp_runtime.crypto.pool import (
     attempt_context_key,
     pooled_context_keys,
@@ -269,3 +271,79 @@ def test_a_store_with_no_cohort_counts_exactly_as_before():
     counts = attempts_by_context(rows)
     assert counts[(("BTCUSDT",), "1h")] == 4
     assert counts[(("BTCUSDT",), "4h")] == 1  # the mismatched row stayed on its stored key
+
+
+# --- the listing prints the count the ranking used -----------------------------
+
+_MEASURED = {"stdev": 1.4, "closed": 400}  # a spread, so each row prints `t=…/z(n=…)`
+
+
+def _listed(rows, monkeypatch, capsys):
+    """Run `promote_strategy_candidates --list` over ``rows``: {candidate_id: printed n}."""
+    from scripts import promote_strategy_candidates as prom
+
+    monkeypatch.setattr(prom.pool_store, "read_candidates", lambda root: [dict(r) for r in rows])
+    assert prom.main(["--list"]) == 0
+    ids = {r["candidate_id"] for r in rows}
+    printed = {}
+    for line in capsys.readouterr().out.splitlines():
+        cid = line.split(" ", 1)[0]
+        if cid in ids:
+            match = re.search(r"\(n=(\d+)\)", line)
+            printed[cid] = int(match.group(1)) if match else None
+    return printed
+
+
+def _ranked_on(rows, monkeypatch):
+    """The count `rank_candidates` handed `candidate_quality` for each row — observed inside the
+    ranking, not recomputed with the helpers the listing calls, which would share its mistake."""
+    used = {}
+    real = candidate_ranking.candidate_quality
+
+    def spy(record, *, attempts=None):
+        used[record["candidate_id"]] = attempts
+        return real(record, attempts=attempts)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(candidate_ranking, "candidate_quality", spy)
+        candidate_ranking.rank_candidates([dict(r) for r in rows])
+    return used
+
+
+def test_the_listing_prints_the_count_the_mismatched_row_was_ranked_on(monkeypatch, capsys):
+    """`--list` looked each row's count up by its STORED key while the ranking used the
+    evidence-aware one, so an F9 topup row printed its single-symbol context's count beside a
+    position its cohort's count decided. Two pooled rows and mis_1 charge the cohort (3);
+    single_1 alone charges BTCUSDT 4h (1). The old listing printed n=1 for mis_1."""
+    rows = [
+        {**row, "strategy_id": "S001"} for row in (
+            _pooled("pooled_1", **_MEASURED),
+            _pooled("pooled_2", **_MEASURED),
+            _mislabelled("mis_1", **_MEASURED),
+            _candidate("single_1", timeframe="4h", **_MEASURED),
+        )
+    ]
+    printed = _listed(rows, monkeypatch, capsys)
+    assert printed["mis_1"] == 3
+    assert printed["single_1"] == 1, "a row the correction does not move prints what it did"
+    assert printed == _ranked_on(rows, monkeypatch)
+
+
+def test_the_listing_counts_the_rows_the_ranking_kept(monkeypatch, capsys):
+    """The population half. The ranking collapses re-appends latest-wins; counting the raw store
+    keeps each lineage's FIRST row. mis_2 is stored single-scored and re-appended pooled-scored —
+    no row on the 2026-09-21 store differs that way, but nothing refuses one — and the ranking
+    judges the re-append: the cohort holds pooled_1, mis_1 and mis_2, so every row was ranked on
+    n=3. A first-wins count prints 2 (the evidence-aware key alone) or no n at all (the stored
+    key)."""
+    rows = [
+        {**row, "strategy_id": "S001"} for row in (
+            _pooled("pooled_1", **_MEASURED),
+            _mislabelled("mis_1", **_MEASURED),
+            _candidate("mis_2", timeframe="4h", **_MEASURED),
+            _mislabelled("mis_2", **_MEASURED),
+        )
+    ]
+    printed = _listed(rows, monkeypatch, capsys)
+    assert printed == {"pooled_1": 3, "mis_1": 3, "mis_2": 3}
+    assert printed == _ranked_on(rows, monkeypatch)

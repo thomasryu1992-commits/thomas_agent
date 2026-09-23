@@ -28,7 +28,7 @@ with ``scripts/register_live_trading_budget.py``. It is deliberately the *record
   that re-registers with the old script, cannot bring a lapsed budget back into force.
 
 A read is *verified*: a tampered or unparseable budget raises rather than resolving, because
-every reader of a risk limit is a risk decision (the ``live_pnl`` verified-read posture).
+every reader of a risk limit is a risk decision (the ``live_ledger`` verified-read posture).
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ from runtime.read_only_kernel.schema_validation import RuntimeSchemaError
 from ..errors import ToolError
 from ..paths import repo_root as _repo_root
 from ..schema_cache import validate_against_schema
-from .live_pnl import state_dir
 from .state import VENUE_MAINNET, venue_state_dir
 
 LIVE_BUDGET_SCHEMA_VERSION = "live_trading_budget.v0.1"
@@ -271,25 +270,6 @@ def budget_status(root: Path | None = None, *, now: str, venue: str = VENUE_MAIN
         "valid_until": valid_until,
         "record_sha256": record["record_sha256"],
     }
-
-
-def limits_from_budget(record: Mapping[str, Any]) -> Any:
-    """A ``LiveOrderLimits`` carrying the registered caps (for a later guard-rewiring increment).
-
-    Maps the five registered caps (a legacy record's ``min_clean_canary_orders`` is not one of
-    them and is never indexed); ``confirmation`` and ``manual_kill_switch`` are deliberately
-    left at their defaults — they are operator env state (a phrase and a halt), not
-    budget-registered caps, so a budget can never carry the confirmation that proves intent."""
-    from .live_order import LiveOrderLimits
-
-    caps = record["caps"]
-    return LiveOrderLimits(
-        max_order_notional_usdt=float(caps["max_order_notional_usdt"]),
-        absolute_max_notional_usdt=float(caps["absolute_max_notional_usdt"]),
-        max_daily_order_count=int(caps["max_daily_order_count"]),
-        max_open_notional_usdt=float(caps["max_open_notional_usdt"]),
-        daily_loss_limit_usdt=float(caps["daily_loss_limit_usdt"]),
-    )
 
 
 def write_registered_budget(record: Mapping[str, Any], *, root: Path | None = None,
