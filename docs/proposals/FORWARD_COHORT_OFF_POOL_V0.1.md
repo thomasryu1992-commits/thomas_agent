@@ -1,9 +1,11 @@
-# Forward evidence off the pool: a frozen cohort — awaiting a Thomas decision
+# Forward evidence off the pool: a frozen cohort — decided: Phase 1, option A
 
-**Status 2026-09-23: designed, nothing built.** Two decisions are asked (the end of this file).
-Phase 1 below is observation-only and changes no door; Phase 2 is the question of what its
-evidence may do, and that one reopens the 2026-08-30 multiple-testing stance
-(`FORWARD_SLICE_WIDTH_FOR_FORWARD_V0.1.md`, "Reopens when").
+**Decision: Thomas 2026-09-23.** Build Phase 1 (Decision 1: yes), and cohort evidence is a
+screen only (Decision 2: option A). No family cap in Phase 1, as suggested below. Implemented in
+#948 (`crypto/forward_cohort.py`, `scripts/forward_cohort.py`); the scheduled fire and the board
+section follow. Phase 1 changes no door; option A keeps the 2026-08-30 multiple-testing stance
+(`FORWARD_SLICE_WIDTH_FOR_FORWARD_V0.1.md`) intact, because no cohort evidence reaches the
+LIVE door.
 
 ## The problem
 
@@ -129,7 +131,7 @@ proposal does not touch it); the trade floors (25; 10 at
 forward slice width; the OBSERVATION entry bar, family and size caps; the pool; the arming ask;
 the execution stage.
 
-## Decision 1 — build Phase 1?
+## Decision 1 — build Phase 1? **Decided: yes (Thomas 2026-09-23).**
 
 Recommended: yes. It is observation-only, and every option below needs it.
 
@@ -139,7 +141,7 @@ question. The collapse to one member per (family, scope, timeframe) already remo
 the cap would further hold a family to two contexts. Suggested: no cap in Phase 1 (display
 only), revisit under Phase 2.
 
-## Decision 2 — what may cohort evidence do? (Phase 2)
+## Decision 2 — what may cohort evidence do? (Phase 2) **Decided: A (Thomas 2026-09-23).**
 
 Today one lineage's forward confirmation is judged alone, with `observed_lineages`
 informational — Thomas 2026-08-30, deliberately, with 18 clocks. At 120 it is a different
