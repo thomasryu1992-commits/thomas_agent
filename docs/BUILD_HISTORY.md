@@ -24,6 +24,33 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort, Phase 1 under option A** (`crypto/forward_cohort.py`, `scripts/forward_cohort.py`,
+  2026-09-23; design `docs/proposals/FORWARD_COHORT_OFF_POOL_V0.1.md`, decided by Thomas the same day).
+  - **Why:** `forward_book` advances only occupying pool entries, so forward clocks equal occupied
+    slots — 15 — while 115 lineages clear the OBSERVATION entry bar on today's store (read-only
+    dry freeze: 17 selection contexts, the largest K 23, the five-symbol 1d scope).
+  - **What it is:** a frozen, sealed `forward_cohort.v1` record whose membership is the door's own
+    chain minus the slot terms (derivation, cost basis, depth, the entry bar; one member per
+    family + scope + timeframe; no rule the pool routes; no lineage the forward book ever settled a
+    row for). A walker advances each member-context through `forward_book.replay_entry_bar` from its
+    selecting row (#945's cutoff), keeping an open position across runs, into its own store under
+    provenance `mvp_forward_cohort`. A report runs `judge_forward` over those rows. Display only.
+  - **Option A in code:** `forward_book.read_forward_outcomes` refuses a cohort row as tampering,
+    and `seed_forward_book` starts a lineage a cohort held at its `promoted_at` (not seeded without
+    one), because the cohort period was the evidence it was promoted on.
+  - **Two parity traps closed:** the synthesized entry carries `admission_evidence` (both entry doors
+    fail open without it), and its `strategy_id` is the member's `candidate_id`, since candidate rows
+    share template ids and `position_id` hashes the id — siblings on one bar would otherwise share a
+    settlement id and one would be dropped by the dedup.
+  - **Also:** the forward book's strict reader and dedup append are parameterized by path and
+    provenance (`read_sealed_rows`, `append_sealed_rows`) so the cohort store reuses them; the money
+    store's behavior is unchanged. `MAX_WALK_BARS` is recorded as mechanics (the venue's page window).
+  - **Not in this PR:** the scheduled fire and the board section (next PR), the null arm, any door.
+    Nothing is frozen or walked until an operator runs `scripts.forward_cohort freeze --apply`.
+  - **Tests:** 20 in `test_mvp_runtime_crypto_forward_cohort.py`; six mutants (no admission
+    evidence, template id as position identity, no start cutoff, no seeder guard, dropped boundary
+    position, no pool-clock exclusion) are each caught.
+
 - **Forward evidence starts at the row that selected a lineage, not at its first mint**
   (`forward_confirmation.selection_cutoff`, `scripts/seed_forward_book.py`, 2026-09-23).
   - **The defect:** the seeder started every lineage at the earliest `created_at_utc` among rows sharing
