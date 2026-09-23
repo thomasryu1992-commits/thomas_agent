@@ -110,7 +110,7 @@ INTENT_BOUND_FIELDS = (
     "idempotency_key", "client_order_id", "order_intent_id",
     "symbol", "direction", "side", "order_type_exchange",
     "quantity", "order_notional_usdt", "reduce_only", "connectivity_test",
-    # Every other field `live_execution.build_order_request` turns into the venue request. None of
+    # Every other field `order_request.build_order_request` turns into the venue request. None of
     # them is set on a MARKET entry today; bound anyway, so a snapshot sealed for one request can
     # never authorize a different one.
     "close_position", "stop_price", "working_type", "price", "time_in_force",

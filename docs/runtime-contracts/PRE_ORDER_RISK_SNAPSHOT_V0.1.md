@@ -142,14 +142,14 @@ degrades rather than blocks. For money that is wrong in two ways:
 - **A feed that stopped updating keeps its last reading.** The as-of join carries it forward with no
   age limit.
 
-The cycle judges the context (`cycle.optional_data_health`). The door `optional_data_healthy`
+The cycle judges the context (`feed_assembly.optional_data_health`, re-exported by `cycle`). The door `optional_data_healthy`
 refuses the whole context, whatever the plan reads:
 
 | Refuses when | Code |
 |---|---|
 | any optional leg degraded this cycle: funding, mark, index, premium index, liquidations, open interest, the higher timeframe, the reference symbol, the cross-section | `LIVE_ENTRY_OPTIONAL_DATA_DEGRADED` |
 | a feed's reading at the bar is older than its bound: funding 16 hours, the daily liquidation and open-interest series 48 hours, positioning 3 hours | `LIVE_ENTRY_OPTIONAL_DATA_STALE` |
-| a leg the snapshot carries put no reading on the decision bar (`cycle.OPTIONAL_LEG_COLUMNS`): an answer that came back empty without a degrade code, or a same-grid series that stops a bar short | `LIVE_ENTRY_OPTIONAL_DATA_MISSING` |
+| a leg the snapshot carries put no reading on the decision bar (`feed_assembly.OPTIONAL_LEG_COLUMNS`): an answer that came back empty without a degrade code, or a same-grid series that stops a bar short | `LIVE_ENTRY_OPTIONAL_DATA_MISSING` |
 | no readable account of it, or an account of another bar than the one decided on | `LIVE_ENTRY_OPTIONAL_DATA_UNKNOWN` |
 
 - **The age is measured from the bar's open**, the instant the as-of join keys on, not from `clock`.
@@ -200,7 +200,7 @@ The gate adds these to the door's checks:
 `approved` is true only when every check passed.
 
 **What the snapshot binds of the order** (`INTENT_BOUND_FIELDS`, hashed into `intent_fingerprint`):
-the order's identity, every field `live_execution.build_order_request` turns into the venue request,
+the order's identity, every field `order_request.build_order_request` turns into the venue request,
 the prices and the lineage, the artifact included (`pre_order_intent.v2`, PR3a-2). A structural test
 keeps the request fields and the bound fields in step. The artifact is not in the order's venue
 identity: the same bar under another artifact is the same order, so a pool re-stamped between two

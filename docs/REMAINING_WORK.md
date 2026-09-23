@@ -988,7 +988,7 @@ scopes at different levels, so nothing was owed to it.
       was meant to improve. There is no partial-coverage escape: depth is global, not per family.
 
       **So the only path is to become the retainer, and that store now exists**
-      (`crypto/oi_store.py`, wired into `cycle.attach_feeds`): seeded from the days the vendor
+      (`crypto/oi_store.py`, wired into `feed_assembly.attach_feeds`): seeded from the days the vendor
       still has, appended every cycle thereafter, keyed `(symbol, hour)` with latest-wins so a
       re-fetch is idempotent and a gap shorter than the vendor's window self-heals on the next
       read. The vendor request is throttled to **once per symbol per hour** inside the store, so
@@ -3117,7 +3117,7 @@ It also lifts F7's ceiling directly, since the ceiling is per frame: 5 symbols t
 ~115 without touching the hold at all.
 
 **The fetch objection is backwards — the data is already bought and thrown away.**
-`cycle.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
+`feed_assembly.attach_cross_section` reads every `CROSS_SECTION_UNIVERSE` peer at
 `factory_candle_target(timeframe)` depth so the `xs_*` families can be ranked, and the factory
 branch of `scheduler.py` calls it **without a `PeerCandleCache`** — the only one ever constructed
 is at `cycle.py:1135`, in the trading fan-out. So a factory fire pages **5 peers × replay depth ×

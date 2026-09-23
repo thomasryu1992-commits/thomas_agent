@@ -33,13 +33,14 @@ in the container as uid 10001, in module form::
 
 The mint date is the EARLIEST ``created_at_utc`` across candidate-store rows sharing the
 lineage's rule hash — a re-score re-measures an unchanged spec, so the original mint is
-the honest start of its out-of-sample span.
+the honest start of its out-of-sample span. The store is read through
+``pool.read_candidates``, so a tampered or unreadable store refuses the run (``EXIT_BLOCKED``)
+before anything is fetched or written.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -53,11 +54,10 @@ from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError, ToolError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
 from runtime.mvp_runtime.crypto import forward_book, market_data, pool as pool_store  # noqa: E402
-from runtime.mvp_runtime.crypto.cycle import attach_mining_legs  # noqa: E402
+from runtime.mvp_runtime.crypto.feed_assembly import attach_mining_legs  # noqa: E402
 from runtime.mvp_runtime.crypto.factory import build_replay_frame  # noqa: E402
 from runtime.mvp_runtime.crypto.lifecycle import outcome_attribution_key  # noqa: E402
 from runtime.mvp_runtime.crypto.paper import OCCUPYING_STATUSES  # noqa: E402
-from runtime.mvp_runtime.crypto.state import state_dir  # noqa: E402
 from runtime.mvp_runtime.crypto.strategy import StrategySpec  # noqa: E402
 
 # Enough pre-mint bars that every indicator the entry rules can read is warm by the first
@@ -70,18 +70,15 @@ _MIN_SEED_BARS = 30
 
 
 def _first_seen_by_hash(root: Path) -> dict[str, str]:
+    """Earliest ``created_at_utc`` per rule hash, read through the store's VERIFIED reader.
+
+    This date is where a lineage's forward clock starts, and a backdated one passes in-sample
+    bars off as out-of-sample evidence. So a row that fails its self-hash raises
+    ``CANDIDATES_TAMPERED`` and a line that does not parse raises ``CANDIDATES_UNREADABLE``,
+    as they do for every other reader of the store — the private reader this replaced trusted
+    the first and skipped the second. Neither is caught here: :func:`main` refuses the run."""
     first: dict[str, str] = {}
-    path = state_dir(root) / "strategy_candidates.jsonl"
-    if not path.is_file():
-        return first
-    for line in path.open(encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
+    for row in pool_store.read_candidates(root):
         h = row.get("strategy_rule_hash")
         c = str(row.get("created_at_utc") or "")
         if isinstance(h, str) and h and c and (h not in first or c < first[h]):
@@ -225,7 +222,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.strategy_ids:
         wanted = set(args.strategy_ids)
         occupying = [e for e in occupying if str(e.get("strategy_id")) in wanted]
-    first_seen = _first_seen_by_hash(root)
+    # The whole run, dry or not, and before anything is fetched or written: a tampered row's
+    # own rule hash is one of the fields that cannot be trusted, so the refusal cannot be
+    # narrowed to the lineages it seems to name, and falling back to `promoted_at` would be
+    # guessing a mint for a store known to be wrong.
+    try:
+        first_seen = _first_seen_by_hash(root)
+    except MvpRuntimeError as exc:
+        print(f"BLOCKED {exc.reason_code}: {exc.reason}", file=sys.stderr)
+        return EXIT_BLOCKED
     collector = market_data.select_market_data_collector(now=now, root=root)
 
     apply = bool(args.apply and not args.list)

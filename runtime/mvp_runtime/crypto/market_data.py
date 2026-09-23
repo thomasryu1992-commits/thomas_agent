@@ -340,7 +340,7 @@ FUNDING_PAGE_LIMIT = 1000  # what we ASK for per /fapi/v1/fundingRate call
 # BTCUSDT, varying this constant alone: 4 pages → 2,000 events (667 d), 8 → 4,000 (1,333 d),
 # 12 → 6,000 (2,000 d). Linear at 500 a page, so the depth is ours to choose, and 4 bought 1.8
 # years rather than 3.6. 8 covers `FACTORY_DEPTH_DAYS` below with head-room, and the whole walk
-# measured 0.7 s against the 10 s `cycle.attach_feeds` allows it.
+# measured 0.7 s against the 10 s `feed_assembly.attach_feeds` allows it.
 FUNDING_MAX_PAGES = 8
 # ≥ 3 events/day × FACTORY_DEPTH_DAYS, with head-room: 1,000 d × 3 = 3,000, asked as 3,200
 # (1,067 d). The RECORD count is what binds the fetch — `FUNDING_MAX_PAGES` only has to be large
@@ -1829,7 +1829,7 @@ class PerSymbolFeedCache:
 
     Both Coinalyze series are **per-symbol**: `liquidation_history` and
     `open_interest_history` take a symbol and a day count and nothing else. But
-    `cycle.attach_feeds` runs once per (symbol, TIMEFRAME), so the shipped 20-context
+    `feed_assembly.attach_feeds` runs once per (symbol, TIMEFRAME), so the shipped 20-context
     fan-out asked for each symbol's series **four times** — 40 requests to read 10.
     Downstream that redundancy was invisible: the series is aligned onto each timeframe's
     candles after the fetch, so four identical responses produced four correct frames.
@@ -1905,11 +1905,11 @@ class PeerCandleCache:
     door — the **context legs**, which read *other symbols'* candles alongside the one the
     cycle is trading. Two legs need that today and they overlap heavily:
 
-    - the reference leg (``cycle.attach_reference``) always reads :data:`REFERENCE_SYMBOL`,
+    - the reference leg (``feed_assembly.attach_reference``) always reads :data:`REFERENCE_SYMBOL`,
       so across a fan-out the only thing that varies is the timeframe — yet it runs per
       (symbol, timeframe), asking for **four** distinct BTC series sixteen times on a
       5×4 grid;
-    - the cross-sectional leg (``cycle.attach_cross_section``) reads every member of
+    - the cross-sectional leg (``feed_assembly.attach_cross_section``) reads every member of
       :data:`CROSS_SECTION_UNIVERSE` except the traded symbol, which is the same overlap
       multiplied: without a cache, six members × four timeframes × five contexts is 120 asks
       for 24 answers.
