@@ -24,6 +24,27 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The patch-reach census moves into the repository** (crypto PR7, 2026-09-23).
+  - **Why:** when a function moves out of a module, it reads the new module's globals from then on, and
+    a test's patch on the old home stops reaching it without failing anything. Patch counts cannot tell:
+    `pool.load_active_pool` was patched 83 times, and no function in `pool` that reads it ever ran under
+    that patch. PR7e-7 to PR7e-11 measured this with a scratch plugin kept outside the repository. In
+    PR7e-8 it caught a readiness test whose patch no longer reached `live_arm_unsound` but still passed.
+  - **`scripts/ops/patch_reach.py` (new)** is that plugin, loaded only with `-p scripts.ops.patch_reach`.
+    It takes the modules to watch as options instead of hard-coding `pool`: `--patch-reach-old`,
+    `--patch-reach-new` (can be repeated) and `--patch-reach-out`. For every call of a top-level function
+    in a watched module, it writes which of the names the function reads are patched at that moment:
+    `own` when the patch is in the function's own module, and `missed` when the function moved and only
+    its old home is patched with an object its new module does not hold. It also writes, for each
+    watched function, how many tests called it, including those called by none.
+  - **It cannot change what it observes:** it listens to `sys.monitoring` events on the watched code
+    objects and replaces nothing. Under it, the full suite passes as it does without it. Loaded without
+    its options, or with its monitoring tool id taken, it stops the run instead of measuring nothing.
+  - **Proof:** a fake split in `tests/test_ops_patch_reach.py`, where only the patch cut off by the move
+    is a miss and a test that patches both homes with one object is not. On main, watching `pool` and
+    `promotion_backlog`, the plugin writes the same hits and call counts as the scratch plugin did for
+    PR7e-11.
+
 - **The backlog leaves the pool, the last of its roles** (crypto PR7e-11, 2026-09-22).
   - **What moved:** `promotion_backlog.py` (decision, new) takes the 6 definitions of the promotion
     backlog: `promotable_backlog`, which applies the door's own chain to the candidate store and reports
