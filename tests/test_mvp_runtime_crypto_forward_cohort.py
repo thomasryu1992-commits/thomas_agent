@@ -378,3 +378,85 @@ def test_a_damaged_cohort_store_refuses_the_seed(tmp_path, monkeypatch, capsys):
     assert seeder.main(["--list"]) == seeder.EXIT_BLOCKED
     assert "BLOCKED FORWARD_COHORT_UNREADABLE" in capsys.readouterr().err
     assert seeded == []
+
+
+# --- (6) the scheduled walk and the board (the second PR) -----------------------------------
+
+def _cohort_schedule():
+    from runtime.mvp_runtime import scheduler
+    return scheduler.Schedule(
+        schedule_id="schedule_forward_cohort_test", kind=scheduler.KIND_FORWARD_COHORT,
+        request="", interval_seconds=86400, enabled=True, created_by="test",
+        created_at=NOW, next_run_at=NOW,
+    )
+
+
+def _fire(tmp_path, monkeypatch, frame_for):
+    from runtime.mvp_runtime import scheduler
+    monkeypatch.setattr(fco, "collector_frames", lambda root, *, now: frame_for)
+    return scheduler._execute(
+        _cohort_schedule(), now=NOW, ledger=None, working_memory=None,
+        programization=None, repo_root=tmp_path, executor=lambda **_: {},
+    )
+
+
+def test_the_kind_is_maintenance_and_beyond_any_delegation():
+    from runtime.mvp_runtime import schedule_delegation, scheduler
+    kind = scheduler.KIND_FORWARD_COHORT
+    assert kind in scheduler.KINDS and kind in scheduler.MAINTENANCE_KINDS
+    assert kind not in scheduler.RISK_KINDS
+    assert kind in schedule_delegation.FINANCIAL_KINDS
+
+
+def test_a_fire_walks_every_frozen_cohort_and_reports_one_line(tmp_path, monkeypatch):
+    _install_cohort(tmp_path, _record("cand_a"))
+    status = _fire(tmp_path, monkeypatch, lambda s, t, b: _frame(range(1, 8), stop_on={5}))
+    assert status.startswith("forward_cohort members=1 contexts=1 walked=1")
+    assert "settled=1" in status
+    assert len(fco.read_cohort_outcomes(tmp_path)) == 1
+
+
+def test_a_fire_before_any_freeze_is_a_quiet_line(tmp_path, monkeypatch):
+    status = _fire(tmp_path, monkeypatch, lambda s, t, b: pytest.fail("nothing to fetch"))
+    assert status.startswith("forward_cohort members=0 contexts=0 walked=0")
+
+
+def test_a_fire_in_which_every_context_failed_fails(tmp_path, monkeypatch):
+    from runtime.mvp_runtime import scheduler
+    from runtime.mvp_runtime.errors import ToolBlocked
+    _install_cohort(tmp_path, _record("cand_a"))
+
+    def down(symbol, timeframe, bars):
+        raise ToolBlocked("TOOL_ERROR", "venue down")
+
+    with pytest.raises(scheduler.SchedulerBlocked) as exc:
+        _fire(tmp_path, monkeypatch, down)
+    assert exc.value.reason_code == "FORWARD_COHORT_WALK_FAILED"
+    assert "BTCUSDT 1d: TOOL_ERROR" in str(exc.value)
+
+
+def test_the_board_shows_the_cohort_and_says_it_opens_no_door(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    assert build_status(tmp_path, now=NOW)["forward_cohort"] is None
+    assert "forward 코호트" not in render_status_text(build_status(tmp_path, now=NOW))
+
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", family="other"))
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    status = build_status(tmp_path, now=NOW)
+    board = status["forward_cohort"]
+    assert board["members"] == 2 and board["with_rows"] == 2 and board["at_floor"] == 0
+    assert board["status_counts"] == {"FORWARD_INSUFFICIENT": 2}
+    assert board["last_walk_utc"] == NOW
+    text = render_status_text(status)
+    assert "forward 코호트 2계보 · 기록 2 · 문턱 도달 0 · CONFIRMED 0 (선별 전용" in text
+    assert "상위 cand_a 1d n=1" in text
+
+
+def test_an_unreadable_cohort_store_is_a_board_warning(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import build_status
+    path = fco._cohorts_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json\n", encoding="utf-8")
+    status = build_status(tmp_path, now=NOW)
+    assert status["forward_cohort"] is None
+    assert "forward cohort store unreadable (FORWARD_COHORT_UNREADABLE)" in status["warnings"]
