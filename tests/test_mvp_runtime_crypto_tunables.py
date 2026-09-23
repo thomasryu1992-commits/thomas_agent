@@ -69,6 +69,7 @@ MECHANICS: dict[str, str] = {
     "ABLATION_MIN_CONDITIONS": "structural: a proper subset needs k >= 2; not a chosen level",
     "DERIVATIVE_HISTORY_DAYS": "how much history to fetch; bounded by the venue, not chosen",
     "MAX_CANDLES": "fetch ceiling — a page budget, and the depth premise is FACTORY_DEPTH_DAYS",
+    "MAX_WALK_BARS": "forward cohort fetch ceiling: the venue's one-page window, not a chosen depth",
     "DERIVATIVE_MAX_PAGES": "page budget bounding one collection's egress",
     "FUNDING_MAX_PAGES": "page budget bounding one collection's egress",
     "POSITIONING_MAX_PAGES": "page budget bounding one collection's egress",

@@ -214,28 +214,39 @@ def read_forward_outcomes(root: Path | None = None) -> list[dict[str, Any]]:
     only its own provenance because imported rows legitimately exist there under an
     audited batch; nothing legitimately writes a foreign row HERE, and this store feeds
     the LIVE arming door — so an unrecognized row is treated as tampering, not as a
-    vintage to wave through."""
-    path = _outcomes_path(root)
+    vintage to wave through. That includes the forward cohort's rows
+    (``forward_cohort.COHORT_PROVENANCE``): they live in their own file and must never
+    count here, where they would be a second writer into arming evidence."""
+    return read_sealed_rows(_outcomes_path(root), provenance=FORWARD_PROVENANCE,
+                            label="forward outcomes")
+
+
+def read_sealed_rows(path: Path, *, provenance: str, label: str) -> list[dict[str, Any]]:
+    """The strict reader behind :func:`read_forward_outcomes`, for a store with one writer.
+
+    Shared with the forward cohort's store, whose rows are settled by the same transition
+    and must satisfy the same three properties — own provenance, true self-hash, unique
+    settlement ids — in a file of their own."""
     rows: list[dict[str, Any]] = []
     seen_settlements: set[str] = set()
     for lineno, record in jsonl.iter_numbered(
-        path, read_code=FORWARD_HISTORY_UNREADABLE, label="forward outcomes", exc_type=ToolError,
+        path, read_code=FORWARD_HISTORY_UNREADABLE, label=label, exc_type=ToolError,
     ):
         if not isinstance(record, dict):
             continue
-        if record.get("provenance") != FORWARD_PROVENANCE:
+        if record.get("provenance") != provenance:
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} carries a provenance this store "
+                            f"{label} line {lineno} carries a provenance this store "
                             "never writes")
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} fails its self-hash")
+                            f"{label} line {lineno} fails its self-hash")
         settlement_id = record.get("settlement_id")
         if not (isinstance(settlement_id, str) and settlement_id):
             raise ToolError(FORWARD_HISTORY_TAMPERED,
-                            f"forward outcomes line {lineno} carries no settlement id")
+                            f"{label} line {lineno} carries no settlement id")
         if settlement_id in seen_settlements:
             raise ToolError(FORWARD_HISTORY_DUPLICATE,
                             f"duplicate settlement_id: {settlement_id}")
@@ -252,13 +263,19 @@ def _append_outcomes(records: list[dict[str, Any]], *, root: Path | None) -> Non
     property is what makes re-seeding idempotent: historical timestamps make seeded ids
     deterministic, so a second seed of the same span re-mints the same settlement ids and
     they are all skipped here."""
+    append_sealed_rows(records, path=_outcomes_path(root), read=lambda: read_forward_outcomes(root))
+
+
+def append_sealed_rows(
+    records: list[dict[str, Any]], *, path: Path, read: Callable[[], list[dict[str, Any]]],
+) -> None:
+    """The dedup-under-lock append behind :func:`_append_outcomes`; ``read`` is the store's
+    own verified reader, so a damaged store refuses the append instead of growing."""
     if not records:
         return
-    path = _outcomes_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with locked(path.with_suffix(".lock"), code=FORWARD_STORE_LOCKED, label="forward outcomes"):
-        recorded = {r.get("settlement_id") for r in read_forward_outcomes(root)
-                    if r.get("settlement_id")}
+    with locked(path.with_suffix(".lock"), code=FORWARD_STORE_LOCKED, label=path.stem):
+        recorded = {r.get("settlement_id") for r in read() if r.get("settlement_id")}
         fresh = [r for r in records if r.get("settlement_id") not in recorded]
         if not fresh:
             return
