@@ -153,10 +153,71 @@ def opens_total(state: Mapping[str, Any]) -> int:
 
 
 def _parse_book(raw: Any) -> dict[str, Any]:
+    """The book as this version wrote it, every entry checked, or ``FORWARD_BOOK_UNVERIFIABLE``.
+
+    The rows this book settles feed the LIVE door (``forward_confirmation``), and the book decides
+    where each lineage's live stream resumes: a replay skips bars at or before an entry's
+    ``last_seen_candle``. So an entry is checked, not trusted (2026-09-23, the same change the
+    forward cohort's book got in #954): its key is its own ``(lineage, symbol, timeframe)``, its
+    lineage is one the judge can attribute (``cand:`` or ``gen:``, never ``sid:``), its timeframe is
+    one the market data knows, and its candle marks parse and run forward. An entry that is not a
+    mapping is refused rather than dropped: dropped, the lineage would start a fresh live stream
+    and re-open bars the settlement dedup cannot catch."""
     if not isinstance(raw, Mapping) or not isinstance(raw.get("entries"), Mapping):
         raise ToolError(FORWARD_BOOK_UNVERIFIABLE, "forward book is not a book-shaped mapping")
+    if raw.get("forward_book_version") != FORWARD_BOOK_VERSION:
+        raise ToolError(FORWARD_BOOK_UNVERIFIABLE,
+                        f"forward book carries version {raw.get('forward_book_version')!r}, "
+                        f"not {FORWARD_BOOK_VERSION!r}")
     return {"forward_book_version": FORWARD_BOOK_VERSION,
-            "entries": {str(k): dict(v) for k, v in raw["entries"].items() if isinstance(v, Mapping)}}
+            "entries": {str(k): _checked_entry(str(k), v) for k, v in raw["entries"].items()}}
+
+
+def _checked_entry(key: str, value: Any) -> dict[str, Any]:
+    """One entry of the book, or FORWARD_BOOK_UNVERIFIABLE naming what is wrong with it."""
+    def invalid(why: str) -> ToolError:
+        return ToolError(FORWARD_BOOK_UNVERIFIABLE, f"forward book entry {key!r}: {why}")
+
+    if not isinstance(value, Mapping):
+        raise invalid("is not a mapping")
+    entry = dict(value)
+    lineage, symbol, timeframe = entry.get("lineage"), entry.get("symbol"), entry.get("timeframe")
+    if not (isinstance(lineage, str) and lineage.startswith(("cand:", "gen:"))
+            and len(lineage.split(":", 1)[1]) > 0):
+        raise invalid(f"lineage {lineage!r} is not one the forward judge attributes")
+    if timeframe not in TIMEFRAMES:
+        raise invalid(f"timeframe {timeframe!r} is not one the market data knows")
+    if not (isinstance(symbol, str) and symbol) or key != book_key(lineage, symbol, timeframe):
+        raise invalid("its key is not its own (lineage, symbol, timeframe)")
+    marks = {}
+    for field in ("first_seen_candle", "last_seen_candle"):
+        mark = entry.get(field)
+        if mark is None:
+            continue
+        try:
+            marks[field] = timeutil.parse_iso(str(mark))
+        except (ValueError, TypeError):
+            raise invalid(f"{field} {mark!r} does not parse") from None
+    if len(marks) == 2 and marks["first_seen_candle"] > marks["last_seen_candle"]:
+        raise invalid("first_seen_candle is after last_seen_candle")
+    if "last_seen_candle" in marks and "first_seen_candle" not in marks:
+        raise invalid("has a last_seen_candle but no first_seen_candle")
+    return entry
+
+
+def _assert_marks_run_forward(before: Mapping[str, Any], after: Mapping[str, Any]) -> None:
+    """Refuse to write a book in which a lineage-context still held has its last seen candle moved
+    back or cleared: the replay would then re-open bars it already settled. An entry that is gone
+    is the cycle winding down a context the pool no longer routes, which is allowed."""
+    for key, old_mark in before.items():
+        new = after.get(key)
+        if old_mark is None or new is None:
+            continue
+        new_mark = new.get("last_seen_candle")
+        if new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark)):
+            raise ToolError(FORWARD_BOOK_UNVERIFIABLE,
+                            f"forward book entry {key!r}: last_seen_candle would move from {old_mark} "
+                            f"to {new_mark}; nothing was written")
 
 
 def load_book(root: Path | None = None) -> dict[str, Any]:
@@ -201,7 +262,9 @@ def mutate_book(root: Path | None, now: str, fn: Callable[[dict[str, Any]], Any]
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path.with_suffix(".lock"), code=FORWARD_STORE_LOCKED, label="forward book"):
         book = load_book(root)
+        marks_before = {key: entry.get("last_seen_candle") for key, entry in book["entries"].items()}
         result = fn(book)
+        _assert_marks_run_forward(marks_before, book["entries"])
         _write_book(book, root=root, now=now)
     return result
 
