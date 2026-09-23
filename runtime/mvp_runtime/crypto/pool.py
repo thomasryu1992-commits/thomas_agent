@@ -134,7 +134,7 @@ from .pool_transitions import LIFECYCLE_DECISION_STALE, apply_status_decisions, 
 # `pool.<name>`. The private `_lineage_key` is not imported: nothing here calls it.
 from .promotion_backlog import (  # noqa: F401
     BACKLOG_REFUSAL_AXES, MAX_DAYS_TO_LIFECYCLE_WINDOW, PROMOTION_BACKLOG_ALERT_THRESHOLD,
-    days_to_lifecycle_window, promotable_backlog,
+    days_to_lifecycle_window, promotable_backlog, refusal_axis,
 )
 from .strategy import StrategySpec
 # `admission_evidence` is re-exported: the promotion door, the signal probe and every replay read it

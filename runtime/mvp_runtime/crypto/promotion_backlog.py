@@ -159,6 +159,99 @@ def _lineage_key(spec: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def refusal_axis(
+    record: Mapping[str, Any],
+    *,
+    attempts: Mapping[Any, int],
+    pooled_keys: Any,
+    active_hashes: set[Any],
+    seen_lineages: set[tuple[Any, ...]],
+) -> str | None:
+    """The first of :data:`BACKLOG_REFUSAL_AXES` that drops ``record``, or None if the door would
+    take it today. The one judgment :func:`promotable_backlog` applies to each row, factored out
+    (2026-09-23) so that the strategy funnel (`strategy_funnel`) reports the same chain rather
+    than a second copy of it. Called in `rank_candidates` order with one ``seen_lineages`` set per
+    pass: a lineage it passes is added to that set, so a later sibling re-mint is charged to
+    ``lineage_already_counted``."""
+    if record.get("strategy_rule_hash") in active_hashes:
+        return "already_active"
+    # Before every evidence axis, because this is not an evidence question. A row whose
+    # derivation the pool does not take cannot become promotable by scoring better, so
+    # charging it to `cost_basis` or `verdict` would advertise a failure an operator could
+    # act on. Present here rather than left for later on the rule the depth axis below
+    # states: the chain has to name every axis the door refuses on, and that one was
+    # missing for exactly one merge because it was added at the door first and counted
+    # second. Zero on today's store — see `pool_admission.assert_promotable_derivation` for why the axis
+    # exists before the rows it refuses do.
+    if ("derivation_type" in record
+            and record.get("derivation_type") not in PROMOTABLE_DERIVATION_TYPES):
+        return "derivation"
+    # The door's other axis about the row rather than its evidence
+    # (`pool_admission.assert_promotable_record_stamp`), counted here on the same rule: a row
+    # the ask will refuse must not be advertised. Zero on today's store, where the 41
+    # unstamped rows are all `already_active`.
+    if record.get(RECORD_STAMP_FIELD) is None:
+        return "unstamped"
+    quality = candidate_quality(
+        record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
+    )
+    if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
+        return "cost_basis"
+    # The same rule for the other axis the door refuses on. It was missing here for seven
+    # minutes' worth of merge ordering — the depth gate landed just after this counter —
+    # and the omission is the exact failure the line above is written to prevent: a row the
+    # ask will refuse must not be advertised as work an operator could do. Latent when
+    # found (no row passed every other filter AND failed this one) but not hypothetical:
+    # the store holds 41 rows the depth gate refuses, and one of them becoming ROBUST is a
+    # matter of time rather than of possibility.
+    if quality["evidence_depth_rank"] not in PROMOTABLE_EVIDENCE_DEPTH_RANKS:
+        return "evidence_depth"
+    # One condition in the original, split into buckets, and the HOLDOUT is asked first —
+    # which is the opposite of the order the condition was written in, for a reason worth
+    # stating. `candidate_quality` recomputes the verdict THROUGH the holdout state
+    # (`classify_verdict` returns ROBUST only when it is CONFIRMED), so asking the verdict
+    # first charges every forward failure to `verdict` and the holdout bucket becomes
+    # unreachable — a breakdown that reports the collapse it was built to expose.
+    #
+    # The bucket key is the holdout's own status rather than a flat `holdout`, because the
+    # three are different findings and the store currently holds all three: INSUFFICIENT is
+    # "the tail cannot be judged" (too few trades, or minted before `stdev_r` existed),
+    # CONTRADICTED is "judged, and it lost", UNCONFIRMED is "never evaluated". Reporting one
+    # number over them would say attrition where the record says something specific.
+    holdout_state = quality["holdout_status"]
+    if holdout_state != HOLDOUT_CONFIRMED:
+        key = f"holdout_{str(holdout_state).lower()}"
+        # An unrecognised status is charged to its own axis rather than silently to a known
+        # one: a new holdout state must show up as a bucket nobody has read yet, not as a
+        # count under a label that no longer describes it.
+        return key if key in BACKLOG_REFUSAL_AXES else "holdout_other"
+    # Reached only by a row that DID confirm forward — so this is "survived unseen bars,
+    # still not ROBUST in-sample" (score or trades-per-parameter), plus the one case
+    # `candidate_quality` documents where a record missing its components keeps a stale
+    # stored verdict.
+    if quality["verdict"] != ROBUST:
+        return "verdict"
+    expectancy = quality["expectancy_at_current_costs"]
+    if not isinstance(expectancy, (int, float)) or expectancy <= 0:
+        return "expectancy"
+    lineage = _lineage_key(record.get("strategy_spec") or {})
+    if lineage in seen_lineages:
+        return "lineage_already_counted"
+    seen_lineages.add(lineage)
+    # Last, and only after everything the door itself checks: can the runtime ever JUDGE
+    # this? Every filter above asks whether the backtest is believable; none asked whether
+    # a forward verdict is reachable. `route_entries` picks one strategy per context, so
+    # promoting a slow lineage does not add trades — it splits the same trades across more
+    # lineages, which is how a pool of 89 reached a state where no lineage had 13 trades and
+    # nothing was eligible for any lifecycle rule. Deferred rather than dropped: the ids
+    # come back so the board can say how many are waiting on a faster timeframe rather than
+    # on an operator.
+    days = days_to_lifecycle_window(record)
+    if days is None or days > MAX_DAYS_TO_LIFECYCLE_WINDOW:
+        return "unjudgeable"
+    return None
+
+
 def promotable_backlog(
     root: Path | None = None,
     *,
@@ -249,94 +342,15 @@ def promotable_backlog(
     judged = 0
     for record in rank_candidates(list(records)):
         judged += 1
-        if record.get("strategy_rule_hash") in active_hashes:
-            refused["already_active"] += 1
-            continue
-        # Before every evidence axis, because this is not an evidence question. A row whose
-        # derivation the pool does not take cannot become promotable by scoring better, so
-        # charging it to `cost_basis` or `verdict` would advertise a failure an operator could
-        # act on. Present here rather than left for later on the rule the depth axis below
-        # states: the chain has to name every axis the door refuses on, and that one was
-        # missing for exactly one merge because it was added at the door first and counted
-        # second. Zero on today's store — see `pool_admission.assert_promotable_derivation` for why the axis
-        # exists before the rows it refuses do.
-        if ("derivation_type" in record
-                and record.get("derivation_type") not in PROMOTABLE_DERIVATION_TYPES):
-            refused["derivation"] += 1
-            continue
-        # The door's other axis about the row rather than its evidence
-        # (`pool_admission.assert_promotable_record_stamp`), counted here on the same rule: a row
-        # the ask will refuse must not be advertised. Zero on today's store, where the 41
-        # unstamped rows are all `already_active`.
-        if record.get(RECORD_STAMP_FIELD) is None:
-            refused["unstamped"] += 1
-            continue
-        quality = candidate_quality(
-            record, attempts=attempts.get(attempt_context_key(record, pooled_keys=pooled_keys))
-        )
-        if quality["cost_basis_rank"] not in PROMOTABLE_COST_BASIS_RANKS:
-            refused["cost_basis"] += 1
-            continue
-        # The same rule for the other axis the door refuses on. It was missing here for seven
-        # minutes' worth of merge ordering — the depth gate landed just after this counter —
-        # and the omission is the exact failure the line above is written to prevent: a row the
-        # ask will refuse must not be advertised as work an operator could do. Latent when
-        # found (no row passed every other filter AND failed this one) but not hypothetical:
-        # the store holds 41 rows the depth gate refuses, and one of them becoming ROBUST is a
-        # matter of time rather than of possibility.
-        if quality["evidence_depth_rank"] not in PROMOTABLE_EVIDENCE_DEPTH_RANKS:
-            refused["evidence_depth"] += 1
-            continue
-        # One condition in the original, split into buckets, and the HOLDOUT is asked first —
-        # which is the opposite of the order the condition was written in, for a reason worth
-        # stating. `candidate_quality` recomputes the verdict THROUGH the holdout state
-        # (`classify_verdict` returns ROBUST only when it is CONFIRMED), so asking the verdict
-        # first charges every forward failure to `verdict` and the holdout bucket becomes
-        # unreachable — a breakdown that reports the collapse it was built to expose.
-        #
-        # The bucket key is the holdout's own status rather than a flat `holdout`, because the
-        # three are different findings and the store currently holds all three: INSUFFICIENT is
-        # "the tail cannot be judged" (too few trades, or minted before `stdev_r` existed),
-        # CONTRADICTED is "judged, and it lost", UNCONFIRMED is "never evaluated". Reporting one
-        # number over them would say attrition where the record says something specific.
-        holdout_state = quality["holdout_status"]
-        if holdout_state != HOLDOUT_CONFIRMED:
-            key = f"holdout_{str(holdout_state).lower()}"
-            # An unrecognised status is charged to its own axis rather than silently to a known
-            # one: a new holdout state must show up as a bucket nobody has read yet, not as a
-            # count under a label that no longer describes it.
-            refused[key if key in refused else "holdout_other"] += 1
-            continue
-        # Reached only by a row that DID confirm forward — so this is "survived unseen bars,
-        # still not ROBUST in-sample" (score or trades-per-parameter), plus the one case
-        # `candidate_quality` documents where a record missing its components keeps a stale
-        # stored verdict.
-        if quality["verdict"] != ROBUST:
-            refused["verdict"] += 1
-            continue
-        expectancy = quality["expectancy_at_current_costs"]
-        if not isinstance(expectancy, (int, float)) or expectancy <= 0:
-            refused["expectancy"] += 1
-            continue
-        lineage = _lineage_key(record.get("strategy_spec") or {})
-        if lineage in seen_lineages:
-            refused["lineage_already_counted"] += 1
-            continue
-        seen_lineages.add(lineage)
-        # Last, and only after everything the door itself checks: can the runtime ever JUDGE
-        # this? Every filter above asks whether the backtest is believable; none asked whether
-        # a forward verdict is reachable. `route_entries` picks one strategy per context, so
-        # promoting a slow lineage does not add trades — it splits the same trades across more
-        # lineages, which is how a pool of 89 reached a state where no lineage had 13 trades and
-        # nothing was eligible for any lifecycle rule. Deferred rather than dropped: the ids
-        # come back so the board can say how many are waiting on a faster timeframe rather than
-        # on an operator.
-        days = days_to_lifecycle_window(record)
-        if days is None or days > MAX_DAYS_TO_LIFECYCLE_WINDOW:
+        axis = refusal_axis(record, attempts=attempts, pooled_keys=pooled_keys,
+                            active_hashes=active_hashes, seen_lineages=seen_lineages)
+        if axis == "unjudgeable":
             deferred.append({"candidate_id": candidate_id(record),
-                             "days_to_lifecycle_window": days})
-            continue
-        candidate_ids.append(candidate_id(record))
+                             "days_to_lifecycle_window": days_to_lifecycle_window(record)})
+        elif axis is not None:
+            refused[axis] += 1
+        else:
+            candidate_ids.append(candidate_id(record))
 
     refused["unjudgeable"] = len(deferred)
     return {
