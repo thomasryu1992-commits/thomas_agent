@@ -238,7 +238,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `CANDIDATE_NOT_RETIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/consumption.py` | 238 | `consume_approval` | `—` |
 | `CANDIDATE_REQUIRES_REVIEW` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 508 | `create_program_candidate` | `latest.get('review_status') != 'UNDER_REVIEW'` |
 | `CANDIDATE_SEMANTIC_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/pool_admission.py` | 310 | `assert_no_semantic_duplicates` | `—` |
-| `CANDIDATE_UNCONFIRMED_FOR_LIVE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_confirmation.py` | 300 | `assert_live_tier_confirmed` | `—` |
+| `CANDIDATE_UNCONFIRMED_FOR_LIVE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_confirmation.py` | 337 | `assert_live_tier_confirmed` | `—` |
 | `CANDIDATE_UNHASHED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 167 | `_resolve_identity` | `not (isinstance(c.get('strategy_rule_hash'), str) and c['strategy_rule_hash'])` |
 | `CANDIDATE_VERSION_MISMATCH` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 288 | `select_candidate_role` | `version is not None and role.get('version') != version` |
 | `CAPABILITY_EXCEEDS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 75 | `build_role_assignment` | `not set(required_capabilities).issubset(capabilities)` |
@@ -388,13 +388,13 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FINGERPRINT_UNCOMPUTABLE` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 659 | `_spend` | `—` |
 | `FLAG_NOT_ENABLED` | `SafetyGateBlocked` | `runtime/mvp_runtime/safety_gate.py` | 131 | `assert_authorization` | `missing` |
 | `FORWARDED_MESSAGE` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 243 | `verify_control_channel` | `message.is_forwarded` |
-| `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 154 | `_parse_book` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
-| `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 171 | `load_book` | `—` |
-| `FORWARD_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 237 | `read_forward_outcomes` | `settlement_id in seen_settlements` |
-| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 224 | `read_forward_outcomes` | `record.get('provenance') != FORWARD_PROVENANCE` |
-| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 230 | `read_forward_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 234 | `read_forward_outcomes` | `not (isinstance(settlement_id, str) and settlement_id)` |
-| `FORWARD_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 218 | `read_forward_outcomes` | `—` |
+| `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 157 | `_parse_book` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
+| `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 174 | `load_book` | `—` |
+| `FORWARD_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 240 | `read_forward_outcomes` | `settlement_id in seen_settlements` |
+| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 227 | `read_forward_outcomes` | `record.get('provenance') != FORWARD_PROVENANCE` |
+| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 233 | `read_forward_outcomes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 237 | `read_forward_outcomes` | `not (isinstance(settlement_id, str) and settlement_id)` |
+| `FORWARD_HISTORY_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 221 | `read_forward_outcomes` | `—` |
 | `FRONTDESK_ROLE_HASH_MISMATCH` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 188 | `_require_active_role` | `actual != expected` |
 | `FRONTDESK_ROLE_INACTIVE` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 165 | `_require_active_role` | `entry.get('status') != 'active'` |
 | `FRONTDESK_ROLE_MISCONFIGURED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 174 | `_require_active_role` | `entry.get('routable') is not False` |
