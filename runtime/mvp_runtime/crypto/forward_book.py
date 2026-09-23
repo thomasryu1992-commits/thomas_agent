@@ -31,8 +31,11 @@ provenance. Nothing ever legitimately writes a foreign row HERE — this store f
 door that arms real money — so a row that is not this book's, or cannot prove it is,
 fails the read rather than passing around the hash check.
 
-**Seeding.** A spec is frozen at mint, so every bar that closed after it is genuine
-out-of-sample data for the lineage. :func:`walk_seed_span` replays those bars through the
+**Seeding.** Every bar that closed after the row that SELECTED a lineage was made is
+out-of-sample data for it — for its parameters, frozen at the first mint, and for the choice,
+made on that row's evidence (``forward_confirmation.selection_cutoff``; a re-scored lineage's
+first mint is earlier than its selection, and the bars between sit inside the re-score's own
+holdout). :func:`walk_seed_span` replays those bars through the
 SAME transition the live cycle runs, stamping HISTORICAL times into the rows — slices
 spread across real calendar, ids are deterministic, and re-seeding is idempotent through
 the settlement-id dedup every append runs. The walk stops at the live stream's

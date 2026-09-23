@@ -24,6 +24,36 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **Forward evidence starts at the row that selected a lineage, not at its first mint**
+  (`forward_confirmation.selection_cutoff`, `scripts/seed_forward_book.py`, 2026-09-23).
+  - **The defect:** the seeder started every lineage at the earliest `created_at_utc` among rows sharing
+    its rule hash, on the argument that a re-score re-measures an unchanged spec. That holds for the
+    spec's parameters and fails for the choice. A `mvp_rescore` row replays the frozen spec on a snapshot
+    taken at re-score time, and its holdout is that snapshot's tail. A lineage promoted on its re-score
+    row was admitted on the bars between the first mint and the re-score, and the seed counted those same
+    bars again as forward evidence. Measured on the live book: **31 of 141 forward rows** opened before
+    the row that selected their lineage, all under the 2026-08-24 re-scores. The two best forward
+    records carried the most (`cand_c80d741fa05422d8be68` 8 of 17, `cand_0ab780971198521358ff` 6 of 13).
+    No lineage had reached the trade floor, so no arming read them.
+  - **What changed, two halves:**
+    - The seeder keys the start by the `candidate_id` the pool entry names (`_selection_times`, latest
+      `created_at_utc` per id, the row the promotion door resolves to). An entry whose row the store
+      lacks starts at `promoted_at`, which is later than any selection.
+    - The judge's input (`forward_outcomes_for`) keeps only rows that OPENED at or after the record's own
+      `created_at_utc`. The rows already written stay in the append-only store and stop counting. A
+      record with no readable time, or a row with no readable open, counts nothing: the INSUFFICIENT
+      side, like every branch of the judge that cannot be computed.
+  - **Opened, not settled:** an entry taken on a bar the selecting snapshot held was decided on
+    selection data, however late it closed.
+  - **Effect on the live book, read-only:** 141 rows → 110; the 31 dropped are exactly the measured ones,
+    across seven re-scored lineages; every verdict stays FORWARD_INSUFFICIENT. It only narrows what the
+    arming door counts.
+  - **Tests:** the cutoff drops the pre-selection rows of a record that otherwise confirms; open vs
+    settle at the boundary; unplaceable opens; a timeless record confirmed by nothing and refused at the
+    gate; the start keyed by id rather than hash; a re-scored lineage seeding from its re-score; the
+    `promoted_at` fallback. Mutants that drop the cutoff (3 failures) or restore the earliest-row start
+    (2 failures) are caught.
+
 - **The patch-reach census moves into the repository** (crypto PR7, 2026-09-23).
   - **Why:** when a function moves out of a module, it reads the new module's globals from then on, and
     a test's patch on the old home stops reaching it without failing anything. Patch counts cannot tell:

@@ -112,7 +112,8 @@ def test_open_then_stop_settles_a_row_the_forward_judge_can_spend(tmp_path):
         row["gross_result_R"] - row["fee_cost_r"] - row["slippage_cost_r"])
     assert net_result_r(row) is not None
 
-    record = {"candidate_id": "cand_forwardbook0001", "strategy_spec": {"timeframe": "1d"}}
+    record = {"candidate_id": "cand_forwardbook0001", "created_at_utc": "2026-08-01T00:00:00Z",
+              "strategy_spec": {"timeframe": "1d"}}
     assert len(fc.forward_outcomes_for(record, rows)) == 1
     verdict = fc.judge_forward(record, rows)
     assert verdict["closed_count"] == 1 and verdict["priceable_count"] == 1
@@ -386,7 +387,7 @@ def _confirming_rows(candidate_id, n=10):
         day = 1 + i * 35  # ~10 distinct 30-day slices across ten months
         row = {"outcome_closed": True, "candidate_id": candidate_id,
                "result_R": 1.0 + 0.01 * (i % 3), "r_basis": "intent_net_of_costs",
-               "created_at_utc": (timeutil_day(day)),
+               "created_at_utc": (timeutil_day(day)), "opened_at_utc": timeutil_day(day),
                "outcome_id": f"out_seedgate{i:04d}", "settlement_id": f"settle_seedgate{i:04d}"}
         rows.append(fb._finalize_row(row, seeded=True))
     return rows
@@ -400,7 +401,7 @@ def timeutil_day(day_offset):
 
 def test_forward_store_rows_confirm_a_live_promotion_through_the_gate(tmp_path):
     record = {"candidate_id": "cand_gate0001", "strategy_id": "S9",
-              "strategy_spec": {"timeframe": "1d"}}
+              "created_at_utc": "2025-12-01T00:00:00Z", "strategy_spec": {"timeframe": "1d"}}
     fb._append_outcomes(_confirming_rows("cand_gate0001"), root=tmp_path)
     g = promotion._GateInput(candidates=[record], keep_active=True, live_tier="LIVE",
                              entries=[], store_root=tmp_path, occupying=[],
@@ -529,28 +530,38 @@ def test_a_lineage_that_only_ever_fired_in_the_seed_span_is_not_called_signal_le
 MINT = "2026-07-01T00:00:00Z"
 
 
-def test_the_mint_is_the_earliest_row_of_each_rule_hash_as_before(tmp_path):
-    """The verified read changes what a DAMAGED store does and nothing else. On an intact one
-    the map is the one the script's private reader gave: the earliest ``created_at_utc`` per
-    rule hash whatever the file order, rows lacking either field ignored, and rows from
-    before the store stamped hashes still counted — they carry nothing to verify."""
+RESCORED = "2026-08-10T00:00:00Z"
+
+
+def test_the_seed_start_is_keyed_by_candidate_id_not_by_rule_hash(tmp_path):
+    """A re-score shares its source's rule hash and carries its own id, and the hash is what
+    made the first mint look like the start (2026-09-23: 31 of 141 live forward rows opened
+    inside the re-score holdout that admitted their lineage). Keyed by id, each row answers for
+    itself; a re-append of one id resolves to its LATEST time, the row the promotion door
+    resolves to; rows without a time are ignored, and rows from before the store stamped
+    hashes still count under their derived id — they carry nothing to verify."""
     import scripts.seed_forward_book as seeder
+    from runtime.mvp_runtime.crypto.candidate_identity import candidate_id
     path = pool_store.candidates_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    legacy = {"strategy_id": "S0", "strategy_rule_hash": "rh_legacy",
+    legacy = {"strategy_id": "S0", "generation_id": "GEN-1", "strategy_rule_hash": "rh_legacy",
               "created_at_utc": "2026-05-01T00:00:00Z"}
     path.write_text(json.dumps(legacy) + "\n\n", encoding="utf-8")  # unstamped, then a blank
     pool_store.append_candidates([
-        {"strategy_id": "S1", "strategy_rule_hash": "rh_a", "created_at_utc": "2026-07-10T00:00:00Z"},
-        {"strategy_id": "S1", "strategy_rule_hash": "rh_a", "created_at_utc": MINT},  # later line
-        {"strategy_id": "S2", "strategy_rule_hash": "rh_b", "created_at_utc": "2026-07-05T00:00:00Z"},
-        {"strategy_id": "S3", "created_at_utc": "2026-04-01T00:00:00Z"},
-        {"strategy_id": "S4", "strategy_rule_hash": "", "created_at_utc": "2026-04-01T00:00:00Z"},
-        {"strategy_id": "S5", "strategy_rule_hash": "rh_c"},
+        {"candidate_id": "cand_source", "strategy_id": "S1", "strategy_rule_hash": "rh_a",
+         "created_at_utc": MINT},
+        {"candidate_id": "cand_rescore", "strategy_id": "S1", "strategy_rule_hash": "rh_a",
+         "created_at_utc": "2026-08-09T00:00:00Z"},
+        {"candidate_id": "cand_rescore", "strategy_id": "S1", "strategy_rule_hash": "rh_a",
+         "created_at_utc": RESCORED},  # the same evidence appended again, later
+        {"candidate_id": "cand_timeless", "strategy_id": "S5", "strategy_rule_hash": "rh_c"},
     ], root=tmp_path)
-    assert seeder._first_seen_by_hash(tmp_path) == {
-        "rh_legacy": "2026-05-01T00:00:00Z", "rh_a": MINT, "rh_b": "2026-07-05T00:00:00Z"}
-    assert seeder._first_seen_by_hash(tmp_path / "elsewhere") == {}  # no store, no mints
+    assert seeder._selection_times(tmp_path) == {
+        candidate_id(legacy): "2026-05-01T00:00:00Z",
+        "cand_source": MINT,
+        "cand_rescore": RESCORED,
+    }
+    assert seeder._selection_times(tmp_path / "elsewhere") == {}  # no store, no starts
 
 
 def _seeder_on(tmp_path, monkeypatch):
@@ -580,14 +591,30 @@ def _seeder_on(tmp_path, monkeypatch):
     return seeder, reached, spec.strategy_rule_hash
 
 
-def test_an_intact_store_hands_the_seed_its_verified_mint(tmp_path, monkeypatch):
+def test_a_rescored_lineage_seeds_from_its_rescore_not_its_first_mint(tmp_path, monkeypatch):
+    """The defect, end to end: the pool entry names the re-score row; the source row of the
+    same rule hash is older. The walk starts where the selecting evidence stopped."""
     seeder, reached, rule_hash = _seeder_on(tmp_path, monkeypatch)
     pool_store.append_candidates([
-        {"strategy_id": "S1", "strategy_rule_hash": rule_hash, "created_at_utc": "2026-07-10T00:00:00Z"},
-        {"strategy_id": "S1", "strategy_rule_hash": rule_hash, "created_at_utc": MINT},
+        {"candidate_id": "cand_forwardbook_source", "strategy_id": "S1",
+         "strategy_rule_hash": rule_hash, "created_at_utc": MINT},
+        {"candidate_id": "cand_forwardbook0001", "strategy_id": "S1",
+         "strategy_rule_hash": rule_hash, "created_at_utc": RESCORED},
     ], root=tmp_path)
     assert seeder.main(["--list"]) == seeder.EXIT_OK
-    assert reached == {"collector": 1, "seeded": [("BTCUSDT", MINT, False)]}  # not promoted_at
+    assert reached == {"collector": 1, "seeded": [("BTCUSDT", RESCORED, False)]}
+
+
+def test_an_entry_whose_row_the_store_lacks_starts_at_its_promotion(tmp_path, monkeypatch):
+    """Later than any selection, so the walk can only cover fewer bars than the judge would
+    count — never a bar the selecting evidence held."""
+    seeder, reached, rule_hash = _seeder_on(tmp_path, monkeypatch)
+    pool_store.append_candidates([
+        {"candidate_id": "cand_someone_else", "strategy_id": "S1",
+         "strategy_rule_hash": rule_hash, "created_at_utc": MINT},
+    ], root=tmp_path)
+    assert seeder.main(["--list"]) == seeder.EXIT_OK
+    assert reached == {"collector": 1, "seeded": [("BTCUSDT", "2026-08-20T00:00:00Z", False)]}
 
 
 @pytest.mark.parametrize("damage, code", [("backdated", "CANDIDATES_TAMPERED"),
