@@ -36,7 +36,7 @@ def test_pool_re_exports_every_public_name_as_the_same_object():
     public = [name for name in _definitions() if not name.startswith("_")]
     assert sorted(public) == ["BACKLOG_REFUSAL_AXES", "MAX_DAYS_TO_LIFECYCLE_WINDOW",
                               "PROMOTION_BACKLOG_ALERT_THRESHOLD", "days_to_lifecycle_window",
-                              "promotable_backlog"]
+                              "promotable_backlog", "refusal_axis"]
     assert [name for name in public if getattr(pool, name, None) is not getattr(promotion_backlog, name)] == []
 
 
