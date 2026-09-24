@@ -92,6 +92,16 @@ MAX_UNREVIEWED_BACKLOG = 12       # ~3 full fires' worth of accepted families
 BACKLOG_WINDOW_DAYS = 30
 
 
+def _scored_on_another_timeframe(record: Mapping[str, Any], proposal: Mapping[str, Any]) -> bool:
+    """An acceptance recorded before :func:`evaluate_proposal` refused it: the spec names one
+    timeframe and the record was scored on another. Both must be present to say so — a row
+    that does not carry them keeps counting (absence is not evidence of the defect)."""
+    spec = proposal.get("spec")
+    spec_timeframe = spec.get("timeframe") if isinstance(spec, Mapping) else None
+    scored = record.get("timeframe")
+    return isinstance(spec_timeframe, str) and isinstance(scored, str) and spec_timeframe != scored
+
+
 def count_unreviewed_backlog(
     record_rows: Iterable[Mapping[str, Any]],
     installed_families: Sequence[str],
@@ -106,7 +116,9 @@ def count_unreviewed_backlog(
     adding to faster than Thomas can work it. Deduped by family (re-proposing the same one
     is not a bigger backlog), windowed by ``created_at`` so an unreviewed proposal ages out
     (the tap reopens without an install), and blind to rejected proposals (they were never a
-    review burden). ``record_rows`` are ledger rows as ``LedgerStore.iter_records`` yields
+    review burden) — including an acceptance recorded on another timeframe's bars, which the
+    evaluator now rejects: the ledger keeps the original verdict, the count reads it by
+    today's rule rather than holding the tap shut on it. ``record_rows`` are ledger rows as ``LedgerStore.iter_records`` yields
     them (a single pass — the ledger is never materialized for a count) (``{"kind", "record"}``); a malformed row is skipped, never fatal — a backlog count
     must not itself fail closed and stop the scheduler."""
     from .. import timeutil
@@ -125,6 +137,8 @@ def count_unreviewed_backlog(
             continue
         for proposal in record.get("proposals") or []:
             if not isinstance(proposal, Mapping) or not proposal.get("accepted"):
+                continue
+            if _scored_on_another_timeframe(record, proposal):
                 continue
             family = proposal.get("family")
             if isinstance(family, str) and family and family not in installed:
@@ -353,6 +367,19 @@ def evaluate_proposal(
         verdict["reject_reason"] = f"parse: {exc}"
         return verdict
 
+    # The replay reads the SNAPSHOT's bars and nothing compares them to the spec's timeframe, so a
+    # 4h proposal scored on the 1h frame ran its exits in 1h bars (`max_holding_bars=48` = 2 days,
+    # not 8) and was recorded as accepted. Measured 2026-09-24: 19 of the 39 accepted families were
+    # scored that way (`docs/proposals/HYPOTHESIS_TRIAL_V0.1.md` §1, D-0). Refused rather than
+    # re-collected at the spec's timeframe — that multiplies the fire's requests and is option C's
+    # to decide. A frame that names no timeframe is refused too: nothing could be compared.
+    scored_timeframe = snapshot.get("timeframe")
+    if spec.timeframe != scored_timeframe:
+        verdict["reject_reason"] = "timeframe"
+        verdict["spec_timeframe"] = spec.timeframe
+        verdict["scored_timeframe"] = scored_timeframe
+        return verdict
+
     validation = factory.validate_strategy(spec)
     if not validation.get("approved_for_backtest"):
         block_reasons = list(validation.get("block_reasons") or [])
@@ -527,6 +554,9 @@ def format_proposal_report(record: Mapping[str, Any]) -> str:
             detail = str(proposal.get("reject_reason"))
             if proposal.get("block_reasons"):
                 detail = f"{detail} {proposal['block_reasons']}"
+            if proposal.get("reject_reason") == "timeframe":
+                detail = (f"{detail} — spec is {proposal.get('spec_timeframe')}, "
+                          f"the frame is {proposal.get('scored_timeframe')}")
             if proposal.get("unknown_features"):
                 detail = f"{detail} — no such feature: {', '.join(proposal['unknown_features'])}"
             lines.append(f"REJECTED {proposal.get('family')}: {detail}")

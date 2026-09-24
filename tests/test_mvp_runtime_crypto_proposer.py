@@ -227,6 +227,33 @@ def test_an_unparseable_proposal_is_rejected_not_raised(row, snapshot):
     assert verdict["reject_reason"].startswith("parse:")
 
 
+def test_a_proposal_for_another_timeframe_is_rejected_not_scored_on_these_bars(snapshot):
+    # D-0 (HYPOTHESIS_TRIAL_V0.1 §1): a 4h spec on the 1h frame ran its exits in 1h bars and
+    # was recorded as accepted. The same proposal on its own timeframe is still accepted.
+    verdict = proposer.evaluate_proposal(_valid_proposal(timeframe="4h"), snapshot, index=1)
+    assert verdict["accepted"] is False
+    assert verdict["reject_reason"] == "timeframe"
+    assert (verdict["spec_timeframe"], verdict["scored_timeframe"]) == ("4h", "1h")
+    assert "closed_count" not in verdict  # never backtested
+    assert proposer.evaluate_proposal(_valid_proposal(), snapshot, index=1)["accepted"] is True
+
+
+def test_a_frame_naming_no_timeframe_accepts_nothing(snapshot):
+    frame = {k: v for k, v in snapshot.items() if k != "timeframe"}
+    verdict = proposer.evaluate_proposal(_valid_proposal(), frame, index=1)
+    assert verdict["accepted"] is False
+    assert verdict["reject_reason"] == "timeframe"
+
+
+def test_the_review_sheet_names_both_timeframes(snapshot):
+    record = proposer.assemble_proposal_record(
+        snapshot, generation={"raw": [_valid_proposal(timeframe="1d")]}, focus=None, now=NOW,
+    )
+    assert record["accepted_count"] == 0
+    assert "REJECTED rsi_pullback_test: timeframe — spec is 1d, the frame is 1h" in (
+        proposer.format_proposal_report(record))
+
+
 def test_evaluation_is_deterministic(row, snapshot):
     a = proposer.evaluate_proposal(_valid_proposal(), snapshot, index=1)
     b = proposer.evaluate_proposal(_valid_proposal(), snapshot, index=1)
@@ -371,6 +398,24 @@ def test_backlog_windows_out_old_proposals():
         _proposal_row(["fresh"], created_at="2026-07-24T00:00:00Z"),
     ]
     assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-25T00:00:00Z") == 1
+
+
+def test_backlog_drops_an_acceptance_recorded_on_another_timeframe():
+    # Ledger rows written before D-0 keep their verdict; the count reads them by today's rule.
+    row = _proposal_row(["own", "other"])
+    row["record"]["timeframe"] = "1h"
+    row["record"]["proposals"][0]["spec"] = {"timeframe": "1h"}
+    row["record"]["proposals"][1]["spec"] = {"timeframe": "4h"}
+    assert proposer.count_unreviewed_backlog([row], [], now="2026-07-24T01:00:00Z") == 1
+
+
+def test_backlog_keeps_counting_a_row_that_cannot_show_the_mismatch():
+    # No record timeframe, or no spec: absence is not evidence of the defect.
+    bare = _proposal_row(["no_record_tf"])
+    bare["record"]["proposals"][0]["spec"] = {"timeframe": "4h"}
+    no_spec = _proposal_row(["no_spec"])
+    no_spec["record"]["timeframe"] = "1h"
+    assert proposer.count_unreviewed_backlog([bare, no_spec], [], now="2026-07-24T01:00:00Z") == 2
 
 
 def test_backlog_skips_malformed_rows_without_crashing():
