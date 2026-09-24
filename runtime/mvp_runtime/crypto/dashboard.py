@@ -520,9 +520,20 @@ _GATE_UNDECIDED = "판단 불가"
 # (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
 
 
-# The judge status a forward-cohort leader carries on the board. CONTRADICTED is absent on
-# purpose: such a member is never a leader.
-_COHORT_STATUS_MARKS = {"FORWARD_CONFIRMED": "[확정]", "FORWARD_INSUFFICIENT": "[판정 전]"}
+# The maturity a forward-cohort leader carries on the board (2026-09-23). CONTRADICTED is absent on
+# purpose: such a member is never a leader. An EXPLORATORY leader shows how far below its floor it
+# is, so a three-trade lineage does not read as one waiting on a verdict.
+_COHORT_MATURITY_WORDS = {"EXPLORATORY": "탐색", "MATURE": "성숙", "CONFIRMED": "확정", "CONTRADICTED": "반박",
+                          "UNRESOLVED": "미해석"}
+
+
+def _cohort_mark(leader: dict[str, Any]) -> str:
+    maturity = str(leader.get("maturity"))
+    if maturity == "EXPLORATORY":
+        return f"[탐색 {leader.get('priceable_count')}/{leader.get('trade_floor')}]"
+    if maturity == "MATURE":
+        return "[성숙·판정 전]"
+    return f"[{_COHORT_MATURITY_WORDS.get(maturity, maturity)}]"
 
 
 def _r(value: Any, digits: int = 2, *, signed: bool = True) -> str:
@@ -859,11 +870,12 @@ def render_status_text(status: dict[str, Any]) -> str:
         )
     cohort = status.get("forward_cohort") or {}
     if cohort.get("members"):
-        counts = cohort.get("status_counts") or {}
+        maturity = cohort.get("maturity_counts") or {}
         lines.append(
             f"       forward 코호트 {cohort['members']}계보 · 기록 {cohort.get('with_rows')} · "
-            f"문턱 도달 {cohort.get('at_floor')} · CONFIRMED {counts.get('FORWARD_CONFIRMED', 0)} "
-            f"(선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
+            + " · ".join(f"{_COHORT_MATURITY_WORDS[m]} {maturity.get(m, 0)}"
+                         for m in ("EXPLORATORY", "MATURE", "CONFIRMED", "CONTRADICTED"))
+            + f" (선별 전용, 마지막 워크 {_stamp(cohort.get('last_walk_utc')) or '없음'})"
         )
         # Never a CONTRADICTED member (board_summary drops them); ranked by the lower bound, whose
         # spread is floored at the cohort's pooled spread (σ≥), and each carries its judge
@@ -873,7 +885,7 @@ def render_status_text(status: dict[str, Any]) -> str:
             lines.append(f"         상위(σ≥{_r(cohort.get('spread_floor_r'), signed=False)}R) " + " · ".join(
                 f"{m['candidate_id']} {m.get('timeframe')} n={m.get('priceable_count')} "
                 f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
-                f"{_COHORT_STATUS_MARKS.get(str(m.get('status')), m.get('status'))}"
+                f"{_cohort_mark(m)}"
                 for m in leaders))
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):

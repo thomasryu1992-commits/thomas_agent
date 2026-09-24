@@ -24,6 +24,28 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The cohort board says how far each member's record has got** (`forward_cohort.maturity_of`,
+  2026-09-23; item PR-LIVE-8 of an external follow-up plan, maturity half). Display only.
+  - **Why:** the judge's `FORWARD_INSUFFICIENT` covers two cases, and the board printed both as
+    "판정 전":
+    - a member still short of its timeframe's trade floor;
+    - a member past the floor whose record still cannot be judged.
+    On 2026-09-23 all three leaders were first cases (n=4/10, 6/10, 3/25), and the board read like
+    lineages waiting on a verdict.
+  - **Maturity:** `CONFIRMED` / `CONTRADICTED` when the judge has a verdict. Otherwise `MATURE` at or
+    past `min_forward_trades(timeframe)`, else `EXPLORATORY`. `UNRESOLVED` when the member's candidate
+    row is gone.
+  - **Where it goes:** `cohort_report` carries it with `trade_floor` on every member line.
+    `board_summary` adds `maturity_counts` and puts the maturity on each leader.
+  - **What the board shows:**
+    - The cohort line reads 탐색 · 성숙 · 확정 · 반박 in place of "문턱 도달 · CONFIRMED".
+    - A leader is marked `[탐색 n/floor]`, `[성숙·판정 전]` or `[확정]`.
+  - **Unchanged:** the leaders' ranking (#950/#951), the judge, and every door. Nothing reads maturity
+    to decide.
+  - **Live store:** 111 EXPLORATORY and 4 CONTRADICTED of 115; all three leaders EXPLORATORY.
+  - **Not in this change:** splitting the board into four maturity sections. The board is read on a
+    phone, and the marks carry the distinction on one line.
+
 - **The strategy funnel: where lineages stop, split by timeframe, family and direction**
   (`crypto/strategy_funnel.py`, `scripts/strategy_funnel.py`, 2026-09-23; item PR-LIVE-2 of an external
   follow-up plan). Report only.

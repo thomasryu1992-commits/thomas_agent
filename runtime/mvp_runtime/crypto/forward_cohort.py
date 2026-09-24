@@ -69,7 +69,10 @@ from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
 from .candidate_ranking import candidate_quality, rank_candidates
-from .forward_confirmation import forward_outcomes_for, judge_forward, selection_cutoff
+from .forward_confirmation import (
+    FORWARD_CONFIRMED, FORWARD_CONTRADICTED, forward_outcomes_for, judge_forward, min_forward_trades,
+    selection_cutoff,
+)
 from .market_data import TIMEFRAMES
 from .outcome_math import net_result_r
 from .pool_admission import (
@@ -102,6 +105,18 @@ FORWARD_COHORT_TAMPERED = "FORWARD_COHORT_TAMPERED"
 FORWARD_COHORT_EMPTY = "FORWARD_COHORT_EMPTY"
 FORWARD_COHORT_LOCKED = "FORWARD_COHORT_LOCKED"
 FORWARD_COHORT_POSITIONS_INVALID = "FORWARD_COHORT_POSITIONS_INVALID"
+
+# How far a member's forward record has got, for the reader (2026-09-23; item PR-LIVE-8 of an external
+# follow-up plan). The judge's INSUFFICIENT covers both a member still short of its timeframe's trade
+# floor and one past it whose record still cannot be judged; the board read both as "판정 전", and a
+# three-trade leader looked like a lineage waiting on a verdict. Display only: nothing reads it to decide.
+MATURITY_EXPLORATORY = "EXPLORATORY"      # below its trade floor: the numbers are a first look
+MATURITY_MATURE = "MATURE"                # at or past the floor, and the judge has not confirmed it
+MATURITY_CONFIRMED = "CONFIRMED"          # FORWARD_CONFIRMED
+MATURITY_CONTRADICTED = "CONTRADICTED"    # FORWARD_CONTRADICTED
+MATURITY_UNRESOLVED = "UNRESOLVED"        # the member's candidate row cannot be found
+MATURITIES = (MATURITY_EXPLORATORY, MATURITY_MATURE, MATURITY_CONFIRMED, MATURITY_CONTRADICTED,
+              MATURITY_UNRESOLVED)
 
 # Pre-cutoff bars fetched so every indicator is warm by the first counted bar — the seeder's
 # figure, for the seeder's reason (the deepest consumer is a 100-bar percentile window).
@@ -612,6 +627,20 @@ def trade_bounds(nets: Sequence[float], *, spread_floor: float | None) -> dict[s
     return {"trade_mean_r": None if mean is None else round(mean, 6), "trade_lower_bound_r": bound}
 
 
+def maturity_of(member: Mapping[str, Any]) -> str:
+    """One member line's maturity: the judge's verdict when it has one, else where its priced rows
+    stand against its timeframe's trade floor (:func:`forward_confirmation.min_forward_trades`)."""
+    status = member.get("status")
+    if status == FORWARD_CONFIRMED:
+        return MATURITY_CONFIRMED
+    if status == FORWARD_CONTRADICTED:
+        return MATURITY_CONTRADICTED
+    if "priceable_count" not in member:
+        return MATURITY_UNRESOLVED
+    floor = min_forward_trades(member.get("timeframe"))
+    return MATURITY_MATURE if int(member.get("priceable_count") or 0) >= floor else MATURITY_EXPLORATORY
+
+
 def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
     """Per cohort, each member's forward numbers over the cohort's own rows. Reads only.
 
@@ -640,9 +669,10 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
         lines = []
         for member, judged, nets in members:
             if judged is None:
-                lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED"})
+                lines.append({"candidate_id": member.get("candidate_id"), "status": "UNRESOLVED",
+                              "maturity": MATURITY_UNRESOLVED})
                 continue
-            lines.append({
+            line = {
                 "candidate_id": member.get("candidate_id"),
                 "strategy_family": member.get("strategy_family"),
                 "timeframe": member.get("timeframe"),
@@ -651,7 +681,10 @@ def cohort_report(root: Path | None = None) -> list[dict[str, Any]]:
                 **judge_forward(judged, rows),
                 **trade_bounds(nets, spread_floor=floor),
                 "trade_spread_floor_r": floor,
-            })
+                "trade_floor": min_forward_trades(member.get("timeframe")),
+            }
+            line["maturity"] = maturity_of(line)
+            lines.append(line)
         report.append({
             "cohort_id": cohort.get("cohort_id"), "frozen_at_utc": cohort.get("frozen_at_utc"),
             "cohort_size": cohort.get("cohort_size"), "members": lines,
@@ -705,8 +738,12 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
         "at_floor": sum(1 for m in members
                         if (m.get("priceable_count") or 0) >= min_forward_trades(m.get("timeframe"))),
         "status_counts": dict(sorted(status_counts.items())),
-        "leaders": [{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
-                                           "trade_mean_r", "trade_lower_bound_r", "status")}
+        "maturity_counts": {maturity: n for maturity in MATURITIES
+                            if (n := sum(1 for m in members if (m.get("maturity") or maturity_of(m)) == maturity))},
+        "leaders": [{**{k: m.get(k) for k in ("candidate_id", "timeframe", "priceable_count",
+                                              "trade_mean_r", "trade_lower_bound_r", "status")},
+                     "maturity": m.get("maturity") or maturity_of(m),
+                     "trade_floor": min_forward_trades(m.get("timeframe"))}
                     for m in ranked[:3]],
         "spread_floor_r": next((m.get("trade_spread_floor_r") for m in members
                                 if "trade_spread_floor_r" in m), None),

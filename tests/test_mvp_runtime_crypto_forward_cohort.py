@@ -487,9 +487,10 @@ def test_the_board_shows_the_cohort_and_says_it_opens_no_door(tmp_path):
     assert board["status_counts"] == {"FORWARD_INSUFFICIENT": 2}
     assert board["last_walk_utc"] == NOW
     text = render_status_text(status)
-    assert "forward 코호트 2계보 · 기록 2 · 문턱 도달 0 · CONFIRMED 0 (선별 전용" in text
+    assert "forward 코호트 2계보 · 기록 2 · 탐색 2 · 성숙 0 · 확정 0 · 반박 0 (선별 전용" in text
+    assert board["maturity_counts"] == {"EXPLORATORY": 2}
     assert "상위(σ≥" in text and "R) cand_a 1d n=1 평균 " in text
-    assert "하한 ?R [판정 전] · cand_b 1d n=1" in text  # n=1 each: no bound, so by id
+    assert "하한 ?R [탐색 1/10] · cand_b 1d n=1" in text  # n=1 each: no bound, so by id
 
 
 def _board_of(monkeypatch, *members):
@@ -515,7 +516,7 @@ def test_a_contradicted_member_with_the_most_rows_is_never_a_leader(monkeypatch)
     assert [m["candidate_id"] for m in board["leaders"]] == ["young"]
     assert board["status_counts"] == {"FORWARD_CONTRADICTED": 2, "FORWARD_INSUFFICIENT": 1}
     text = render_status_text({"forward_cohort": board})
-    assert "상위(σ≥1.20R) young 4h n=3 평균 +0.40R 하한 +0.10R [판정 전]" in text
+    assert "상위(σ≥1.20R) young 4h n=3 평균 +0.40R 하한 +0.10R [탐색 3/25]" in text
     assert "short_a" not in text and "short_b" not in text
 
 
@@ -634,3 +635,47 @@ def test_a_walk_that_would_move_a_mark_back_writes_nothing(tmp_path, monkeypatch
     assert exc.value.reason_code == fco.FORWARD_COHORT_POSITIONS_INVALID
     assert path.read_text(encoding="utf-8") == before
     assert fco.read_cohort_outcomes(tmp_path) == []
+
+
+# --- maturity: how far a member's record has got (2026-09-23) -------------------------------------
+
+@pytest.mark.parametrize("status,n,timeframe,maturity", [
+    ("FORWARD_INSUFFICIENT", 3, "4h", fco.MATURITY_EXPLORATORY),
+    ("FORWARD_INSUFFICIENT", 25, "4h", fco.MATURITY_MATURE),   # at its floor, still not judgeable
+    ("FORWARD_INSUFFICIENT", 10, "1d", fco.MATURITY_MATURE),   # 1d has its own, lower floor
+    ("FORWARD_INSUFFICIENT", 9, "1d", fco.MATURITY_EXPLORATORY),
+    ("FORWARD_CONFIRMED", 30, "4h", fco.MATURITY_CONFIRMED),
+    ("FORWARD_CONTRADICTED", 40, "4h", fco.MATURITY_CONTRADICTED),
+])
+def test_maturity_is_the_verdict_when_there_is_one_else_the_trade_floor(status, n, timeframe, maturity):
+    assert fco.maturity_of(_line("m", status, n, timeframe=timeframe)) == maturity
+
+
+def test_a_member_whose_row_is_gone_is_unresolved_not_exploratory():
+    assert fco.maturity_of({"candidate_id": "gone", "status": "UNRESOLVED"}) == fco.MATURITY_UNRESOLVED
+
+
+def test_the_board_counts_maturity_and_marks_a_mature_leader_apart_from_an_exploratory_one(monkeypatch):
+    """Both are FORWARD_INSUFFICIENT; the board used to print both as "판정 전"."""
+    from runtime.mvp_runtime.crypto.dashboard import render_status_text
+    board = _board_of(
+        monkeypatch,
+        _line("seasoned", "FORWARD_INSUFFICIENT", 30, mean=0.2, bound=0.05),
+        _line("young", "FORWARD_INSUFFICIENT", 3, mean=0.4, bound=0.01),
+        _line("refuted", "FORWARD_CONTRADICTED", 40, mean=-0.3, bound=-0.6),
+    )
+    assert board["maturity_counts"] == {"EXPLORATORY": 1, "MATURE": 1, "CONTRADICTED": 1}
+    assert [(m["candidate_id"], m["maturity"]) for m in board["leaders"]] == [
+        ("seasoned", "MATURE"), ("young", "EXPLORATORY")]
+    text = render_status_text({"forward_cohort": {**board, "members": 3, "with_rows": 3}})
+    assert "탐색 1 · 성숙 1 · 확정 0 · 반박 1 (선별 전용" in text
+    assert "seasoned 4h n=30 평균 +0.20R 하한 +0.05R [성숙·판정 전]" in text
+    assert "young 4h n=3 평균 +0.40R 하한 +0.01R [탐색 3/25]" in text
+
+
+def test_the_report_carries_each_members_maturity(tmp_path):
+    _install_cohort(tmp_path, _record("cand_a"))
+    _walk(tmp_path, _frame(range(1, 8), stop_on={5}))
+    (cohort,) = fco.cohort_report(tmp_path)
+    (member,) = cohort["members"]
+    assert member["maturity"] == fco.MATURITY_EXPLORATORY and member["trade_floor"] == 10
