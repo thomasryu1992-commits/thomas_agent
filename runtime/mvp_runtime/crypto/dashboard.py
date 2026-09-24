@@ -34,7 +34,7 @@ from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
     account, counterfactual, digest, feedback, forward_cohort, lifecycle, oi_store, orderbook_store,
-    paper, pool, positioning_store,
+    paper, pool, positioning_store, strategy_funnel,
 )
 # "Can this sample tell the sign of its own edge" is one question with one answer in this
 # runtime. `robustness` owns the multiplier because it is the module that judges whether an
@@ -186,6 +186,12 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
             f"승격 대기 {backlog['count']}건 (임계 {backlog['threshold']}) — "
             f"scripts/promote_strategy_candidates.py --list"
         )
+    # The strategy funnel (2026-09-24): the backlog's own chain, split by timeframe and direction.
+    # The backlog line says how many are waiting and, at zero, why; it cannot say WHERE the loss is.
+    try:
+        funnel = strategy_funnel.pool_funnel(pool.read_candidates(root), active)
+    except MvpRuntimeError:
+        funnel = None  # the backlog above has already warned about an unreadable store
     # The forward cohort (option A, Thomas 2026-09-23): evidence for lineages the pool does not
     # hold, which an operator may choose a promotion from. A field, not a warning — it opens no
     # door and asks for nothing — except when its store cannot be read.
@@ -357,6 +363,8 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # threshold can see the queue shrink instead of only learning when it crosses back.
         "promotion_backlog": backlog,
         "forward_cohort": cohort_board,
+        "strategy_funnel": ({facet: strategy_funnel.past_holdout(funnel, facet) for facet in ("timeframe", "direction")}
+                            if funnel else None),
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
         # because the strategies it would re-base are in it.
         "open_interest_1h": oi_1h,
@@ -518,6 +526,10 @@ _GATE_EARNING = "이익"
 # returned. A gate here is not "fine" — it is unmeasured, which is a different instruction.
 _GATE_UNDECIDED = "판단 불가"
 # (The grant-expiry warning lived here until 2026-08-10 — grants retired, nothing expires.)
+
+
+# Timeframes shortest first on the funnel line; anything else after them, by name.
+_TIMEFRAME_ORDER = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
 
 
 # The maturity a forward-cohort leader carries on the board (2026-09-23). CONTRADICTED is absent on
@@ -868,6 +880,17 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"       판정 불가 보류 {len(deferred)} "
             f"({backlog.get('max_days_to_lifecycle_window')}일 내 lifecycle 창 미달)"
         )
+    # Where the store's lineages stop, split (2026-09-24): lineages past the holdout over those not
+    # already in the pool, per timeframe and per direction. The backlog line above says how many
+    # are waiting; this says whether the search is short of candidates or they fail validation.
+    # Full breakdown: `python -m scripts.strategy_funnel`.
+    funnel = status.get("strategy_funnel") or {}
+    for facet, label in (("timeframe", "tf"), ("direction", "방향")):
+        cells = funnel.get(facet) or {}
+        if cells:
+            lines.append(f"       퍼널 {label}별 holdout 통과/계보 " + " · ".join(
+                f"{value} {passed}/{judged}" for value, (passed, judged) in sorted(
+                    cells.items(), key=lambda kv: (_TIMEFRAME_ORDER.get(kv[0], 99), kv[0]))))
     cohort = status.get("forward_cohort") or {}
     if cohort.get("members"):
         maturity = cohort.get("maturity_counts") or {}

@@ -81,6 +81,22 @@ def pool_funnel(records: Sequence[Mapping[str, Any]], active_pool: Mapping[str, 
     return {"rows": len(rows), "lineages": len(ranked), "outcomes": outcomes, "stages": stages, "by": by}
 
 
+# The backlog axes a lineage has passed the holdout by: anything charged after the holdout axes,
+# or promotable. The daily board's funnel lines count these against the lineages not already in the
+# pool, per timeframe and per direction (2026-09-24).
+PAST_HOLDOUT = (*BACKLOG_REFUSAL_AXES[BACKLOG_REFUSAL_AXES.index("holdout_other") + 1:], PROMOTABLE)
+
+
+def past_holdout(funnel: Mapping[str, Any], facet: str) -> dict[str, tuple[int, int]]:
+    """Per value of ``facet``: (lineages past the holdout, lineages not already in the pool)."""
+    out = {}
+    for value, cells in (funnel.get("by", {}).get(facet) or {}).items():
+        judged = sum(cells.values()) - cells.get("already_active", 0)
+        if judged:
+            out[value] = (sum(cells.get(axis, 0) for axis in PAST_HOLDOUT), judged)
+    return out
+
+
 def forward_funnel(root: Path | None, records: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Every frozen cohort member: priced rows, the trade floor, the judge's status. None before
     any cohort is frozen."""

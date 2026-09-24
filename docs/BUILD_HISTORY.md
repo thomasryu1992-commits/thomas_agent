@@ -24,6 +24,22 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The daily board carries the strategy funnel in two lines** (`dashboard`, `strategy_funnel.past_holdout`,
+  2026-09-24). Display only.
+  - **Why:** with a backlog of 1 under the threshold of 5, the board printed "승격 대기 1 (알림 임계 5)"
+    and nothing about where the other 3,000-odd lineages stop. The full refusal breakdown only prints
+    at a count of zero.
+  - **Two lines:** per timeframe and per direction, lineages past the holdout over lineages not
+    already in the pool.
+    - "Past the holdout" means charged to an axis after `holdout_other`, or promotable: the backlog's
+      own chain, through `strategy_funnel.pool_funnel`.
+    - The full breakdown stays in `python -m scripts.strategy_funnel`.
+  - **Cost:** the board reads the candidate store once more for the funnel. On the live store the
+    build went from 3.4 s to 4.4 s.
+  - **An unreadable store:** the funnel is left out; the backlog line has already warned.
+  - **Live store:** `15m 0/334 · 1h 0/994 · 4h 6/1120 · 1d 0/580`, and `long 3/1478 · short 3/1550`.
+    Every lineage past the holdout today is a 4h one.
+
 - **The cohort board says how far each member's record has got** (`forward_cohort.maturity_of`,
   2026-09-23; item PR-LIVE-8 of an external follow-up plan, maturity half). Display only.
   - **Why:** the judge's `FORWARD_INSUFFICIENT` covers two cases, and the board printed both as
