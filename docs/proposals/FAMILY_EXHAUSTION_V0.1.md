@@ -113,12 +113,16 @@ A는 기각한다.
 
 ## 4. OI 신호를 읽을 때 주의
 
-- OI 컬럼은 이력이 짧다. `oi_store`는 시드 84일이고 08-15 기준 커버가 100일이다. OI family의
-  확정은 짧은 기간, 아마 한 국면 안의 증거일 수 있다.
+- **독립 증거는 7이 아니라 3계보다.** 계보 키(family, 심볼 범위, tf)로 묶으면 3개이고, 나머지
+  4행은 형제다. 4h holdout은 이동 창의 마지막 30%(심볼당 1,800봉, 약 300일)라, 며칠 간격으로
+  민팅된 형제는 같은 holdout 구간을 거의 다 공유한다.
+- OI 이력 자체는 짧지 않다. factory는 거래소 이력(`market_data.DERIVATIVE_HISTORY_DAYS = 1020`일)을
+  받아 4h 1,000일 창을 덮는다(`_oi_feed_reaches`: 4h·1h 참, 1d 거짓). 수집 저장소 `oi_store`의
+  짧은 시드와는 별개다.
 - 같은 OI 계열이라도 `oi_unwind_long`, `oi_squeeze_short`는 30일 동안 각 12행에서 0이다.
   신호는 "OI family"가 아니라 두 family, 한 방향 조합, 4h에 있다.
-- 확정 7행 중 일부는 이미 forward cohort 멤버다(예: `cand_9ac4de0fd54d1661132b`,
-  `oi_squeeze_long` 4h). cohort와 그 null 쌍둥이가 이 신호의 forward 검증을 맡는다.
+- 3계보는 모두 이미 forward cohort 멤버다. 계보마다 한 명씩이며, 형제 4행은 계보당 한 명
+  규칙으로 빠졌다. cohort와 그 null 쌍둥이가 이 신호의 forward 검증을 맡는다.
 
 ## 5. 결정 항목 (Thomas)
 
