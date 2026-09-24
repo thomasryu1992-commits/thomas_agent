@@ -812,6 +812,22 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
     }
 
 
+def memoized_frames(frame_for: Any) -> Any:
+    """``frame_for`` that fetches each context once per fire: a later call for the same context and
+    no more bars reuses the frame (the null arm walks the members' contexts after them)."""
+    cache: dict[tuple[str, str], tuple[int, Any]] = {}
+
+    def fetch(symbol: str, timeframe: str, bars: int) -> Any:
+        held = cache.get((symbol, timeframe))
+        if held is not None and held[0] >= bars:
+            return held[1]
+        frame = frame_for(symbol, timeframe, bars)
+        cache[(symbol, timeframe)] = (bars, frame)
+        return frame
+
+    return fetch
+
+
 def status_line(summary: Mapping[str, Any]) -> str:
     """One walk, as the scheduler's status column carries it."""
     line = ("forward_cohort members=%s contexts=%s walked=%s opened=%s settled=%s" % (
