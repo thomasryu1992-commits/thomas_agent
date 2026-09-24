@@ -1396,16 +1396,24 @@ def _execute(
         # book, no candidates, no orders. A context that fails costs that context (named in the
         # status line); a walk in which EVERY context failed fails the fire, so the failure
         # notifier says so once instead of a quiet line saying nothing moved.
-        from .crypto import forward_cohort
+        from .crypto import forward_cohort, forward_cohort_null
 
-        summary = forward_cohort.run_cohort_walk(
-            repo_root, now=now, frame_for=forward_cohort.collector_frames(repo_root, now=now))
+        frame_for = forward_cohort.memoized_frames(forward_cohort.collector_frames(repo_root, now=now))
+        summary = forward_cohort.run_cohort_walk(repo_root, now=now, frame_for=frame_for)
         if summary["contexts"] and not summary["walked"]:
             raise SchedulerBlocked(
                 "FORWARD_COHORT_WALK_FAILED",
                 "no cohort context could be fetched: " + "; ".join(summary["failed"]),
             )
-        return forward_cohort.status_line(summary)
+        line = forward_cohort.status_line(summary)
+        # The null arm (2026-09-24) walks after the members, on the frames they fetched; its twins sit
+        # in the same contexts. It measures the judge and moves nothing, so its failure is named on
+        # the line and never fails the fire.
+        try:
+            nulls = forward_cohort_null.run_null_walk(repo_root, now=now, frame_for=frame_for)
+        except MvpRuntimeError as exc:
+            return f"{line} | nulls failed={exc.reason_code}"
+        return f"{line} | {forward_cohort_null.status_line(nulls)}" if nulls["members"] else line
     if schedule.kind == KIND_DISPATCH_SPEND:
         # §6-3's alert rides the failure-transition notifier the way the data review's stall
         # does: past the threshold this fire FAILS, the operator gets the transition message,

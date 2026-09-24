@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Operator tool: the forward cohort (``crypto/forward_cohort.py``; Phase 1, option A).
 
-Three subcommands, each dry unless it says otherwise:
+Four subcommands, each dry unless it says otherwise:
 
 - ``freeze`` lists the lineages a cohort frozen now would hold, with the attempt counts per
   context; ``--apply`` appends the sealed record. Membership never changes after that.
 - ``walk`` advances every member-context to the newest closed bar through the venue collector;
   ``--apply`` writes the rows and the walker state. Without it the walk is computed and
   reported and nothing is written.
+- ``freeze-nulls`` lists the null arm each frozen cohort without one would get: a coin-flip twin
+  per member (``crypto/forward_cohort_null.py``); ``--apply`` appends the sealed record. ``walk``
+  walks the twins after the members, into the null arm's own stores.
 - ``report`` prints each member's forward numbers over its cohort rows. Reads only.
 
 Nothing here reaches the pool, the arming door or an order: cohort rows live in their own
@@ -16,6 +19,7 @@ as uid 10001, in module form::
 
     docker exec thomas-scheduler python -m scripts.forward_cohort freeze
     docker exec thomas-scheduler python -m scripts.forward_cohort freeze --apply
+    docker exec thomas-scheduler python -m scripts.forward_cohort freeze-nulls --apply
     docker exec thomas-scheduler python -m scripts.forward_cohort walk --apply
     docker exec thomas-scheduler python -m scripts.forward_cohort report
 
@@ -37,7 +41,7 @@ from runtime.mvp_runtime import timeutil  # noqa: E402
 from runtime.mvp_runtime.cli_common import EXIT_BLOCKED, EXIT_OK  # noqa: E402
 from runtime.mvp_runtime.errors import MvpRuntimeError  # noqa: E402
 from runtime.mvp_runtime.state_guard import assert_not_foreign_root_run  # noqa: E402
-from runtime.mvp_runtime.crypto import forward_cohort  # noqa: E402
+from runtime.mvp_runtime.crypto import forward_cohort, forward_cohort_null  # noqa: E402
 
 
 def _freeze(root: Path, now: str, apply: bool) -> int:
@@ -56,13 +60,29 @@ def _freeze(root: Path, now: str, apply: bool) -> int:
     return EXIT_OK
 
 
+def _freeze_nulls(root: Path, now: str, apply: bool) -> int:
+    records = forward_cohort_null.freeze_nulls(root, now=now, apply=apply)
+    if not records:
+        print("every frozen cohort already has its null arm")
+        return EXIT_OK
+    for record in records:
+        print(f"{record['cohort_id']}: {record['null_size']} twin(s), rate rule: {record['rate_rule']}")
+        for skip in record["skipped"]:
+            print(f"  skipped {skip['parent_candidate_id']}: {skip['reason']}")
+    print("FROZEN" if apply else "DRY RUN — nothing frozen. Re-run with --apply.")
+    return EXIT_OK
+
+
 def _walk(root: Path, now: str, apply: bool) -> int:
-    summary = forward_cohort.run_cohort_walk(
-        root, now=now, frame_for=forward_cohort.collector_frames(root, now=now), persist=apply)
+    frame_for = forward_cohort.memoized_frames(forward_cohort.collector_frames(root, now=now))
+    summary = forward_cohort.run_cohort_walk(root, now=now, frame_for=frame_for, persist=apply)
     print(f"members={summary['members']} contexts={summary['contexts']} walked={summary['walked']} "
           f"opened={summary['opened']} settled={summary['settled']}")
     for line in summary["failed"]:
         print(f"  FAILED {line}")
+    nulls = forward_cohort_null.run_null_walk(root, now=now, frame_for=frame_for, persist=apply)
+    if nulls["members"]:
+        print(forward_cohort_null.status_line(nulls))
     if not apply:
         print("DRY RUN — nothing written. Re-run with --apply.")
     return EXIT_OK
@@ -85,7 +105,7 @@ def _report(root: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="forward_cohort", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("freeze", "walk"):
+    for name in ("freeze", "freeze-nulls", "walk"):
         p = sub.add_parser(name)
         p.add_argument("--apply", action="store_true", help="write; without it nothing is written")
     sub.add_parser("report")
@@ -101,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "freeze":
             return _freeze(ROOT, now, args.apply)
+        if args.command == "freeze-nulls":
+            return _freeze_nulls(ROOT, now, args.apply)
         if args.command == "walk":
             return _walk(ROOT, now, args.apply)
         return _report(ROOT)

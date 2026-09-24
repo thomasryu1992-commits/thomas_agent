@@ -24,6 +24,45 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward cohort gets a null arm: a coin-flip twin per member, walked beside it**
+  (`crypto/forward_cohort_null.py`, 2026-09-24; item 7 of the cohort design, Thomas's choice B). Its
+  records, walk and stores only; the judge's rate over it is reported in a follow-up.
+  - **Why:** option A was chosen partly because nobody had measured how often the forward judge
+    confirms a lineage whose entry carries no information. A twin that keeps its parent's exits,
+    risk, direction and admission evidence, but enters on a coin, answers that per timeframe, through
+    the same judge on the same bars.
+  - **A companion record, not a change to the cohort:**
+    - A cohort's membership never changes after freeze, so each cohort gets one sealed
+      `forward_cohort_nulls.v1` record, frozen once (`scripts/forward_cohort freeze-nulls`).
+    - Each twin carries its null spec (`null_control._null_spec`), seed, rate and its parent's
+      admission evidence.
+    - A null spec can never be in the candidate store: its feature is outside
+      `factory.NUMERIC_FEATURES`.
+  - **Choice B over A:** A (nulls in the next cohort only) would start measuring whenever someone
+    next froze a cohort. B twins the frozen cohort now, on each parent's selection time. A twin has no
+    selection to be biased by, so sharing its parent's clock gives both arms the same bars.
+  - **The coin:** SHA-256 of the twin's seed and the bar's open time. It is deterministic per bar, not
+    per walk, so a re-walk settles nothing new.
+  - **The rate is a recorded judgement:** the parent's backtest trade rate, `closed_count /
+    bars_replayed`. It paces the twin's trades like the parent's, where a matched signal rate would
+    double them (`null_control`'s own note).
+  - **Isolation:** the null arm has its own positions book, outcomes store (provenance
+    `mvp_forward_cohort_null`) and ids (`null_<parent>`). `member_candidate_ids`, `cohort_report`, the
+    pooled spread and the board's leaders never see a twin. Twins walk copies of the rows, so the real
+    members' outcomes are unchanged beside them (tested).
+  - **The walker:** the cohort walker's body became `walk_track(track, …)` (a `WalkTrack` names plan,
+    spec, entry, rows, book, store and provenance). The real cohort's `COHORT_TRACK` is unchanged in
+    behaviour; the cohort suites pass as before.
+  - **The fire:** the scheduled cohort fire walks the twins after the members, on the frames the
+    members fetched (`memoized_frames`), so twins cost replays, not fetches.
+    - Walker replays go from about 120 to about 240 a day.
+    - A null-arm failure is named on the status line and never fails the fire.
+  - **Codes:** a damaged null record is `FORWARD_COHORT_NULLS_UNREADABLE` / `_TAMPERED`, its own codes so an
+    operator can tell it from a damaged cohort. The null positions book shares the cohort's loader and
+    codes.
+  - **Live store, dry run:** 115 twins, none skipped. Median rates are 0.056 at 1d, 0.032 at 4h and
+    0.009 at 1h. Nothing is written until an operator runs `freeze-nulls --apply`.
+
 - **The strategy funnel's forward half counts maturity** (`strategy_funnel.forward_funnel`, 2026-09-24).
   - **What it adds:** the member maturity #957 put on every cohort report line (`forward_cohort.maturity_of`)
     is now counted in the forward funnel. It is split by timeframe, family and direction, and printed as

@@ -57,9 +57,10 @@ import json
 import math
 import os
 import statistics
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from runtime.read_only_kernel import integrity
 
@@ -324,10 +325,10 @@ def _fresh_state(lineage: str, symbol: str, timeframe: str, strategy_id: Any, no
     }
 
 
-def _finalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
+def _finalize_row(row: Mapping[str, Any], provenance: str = COHORT_PROVENANCE) -> dict[str, Any]:
     """Re-stamp a paper-kernel outcome row as this store's, and make the hash true again."""
     out = dict(row)
-    out["provenance"] = COHORT_PROVENANCE
+    out["provenance"] = provenance
     out.pop("record_sha256", None)
     out["record_sha256"] = integrity.sha256_record(out)
     return out
@@ -343,6 +344,7 @@ def advance_member(
     symbol: str,
     timeframe: str,
     start: str,
+    provenance: str = COHORT_PROVENANCE,
 ) -> list[dict[str, Any]]:
     """Advance one member-context over the bars it has not seen, from ``start`` on.
 
@@ -360,7 +362,7 @@ def advance_member(
             state, entry, spec, row, candle, row.get("close"),
             symbol=symbol, timeframe=timeframe, now=bar_now)
         if outcome is not None:
-            settled.append(_finalize_row(outcome))
+            settled.append(_finalize_row(outcome, provenance))
     return settled
 
 
@@ -380,26 +382,32 @@ def load_positions(root: Path | None = None) -> dict[str, Any]:
     candidate a frozen cohort holds, the timeframe is one the market data knows, and its candle
     marks parse and run forward. A malformed entry is refused rather than dropped, since dropping
     it would restart that member from its selection and re-open trades already settled."""
-    path = _positions_path(root)
+    return load_book_at(_positions_path(root), members=lambda: member_candidate_ids(root),
+                        label="forward cohort positions")
+
+
+def load_book_at(path: Path, *, members: Callable[[], frozenset[str]], label: str) -> dict[str, Any]:
+    """A walker's positions book at ``path``, checked as :func:`load_positions` describes; ``members``
+    names the walk ids its lineages may hold. Shared with the null arm (`forward_cohort_null`)."""
     if not path.is_file():
         return {"entries": {}}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise ToolError(FORWARD_COHORT_UNREADABLE, f"forward cohort positions unreadable: {exc}") from exc
+        raise ToolError(FORWARD_COHORT_UNREADABLE, f"{label} unreadable: {exc}") from exc
     if not isinstance(raw, Mapping) or not isinstance(raw.get("entries"), Mapping):
-        raise ToolError(FORWARD_COHORT_UNREADABLE, "forward cohort positions are not a book-shaped mapping")
+        raise ToolError(FORWARD_COHORT_UNREADABLE, f"{label} are not a book-shaped mapping")
     if raw.get("forward_cohort_positions_version") != POSITIONS_VERSION:
         raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
-                        f"forward cohort positions carry version "
+                        f"{label} carry version "
                         f"{raw.get('forward_cohort_positions_version')!r}, not {POSITIONS_VERSION!r}")
     entries = {str(key): _checked_entry(str(key), value) for key, value in raw["entries"].items()}
-    members = member_candidate_ids(root) if entries else frozenset()
+    held = members() if entries else frozenset()
     strangers = sorted(key for key, entry in entries.items()
-                       if entry["lineage"].removeprefix("cand:") not in members)
+                       if entry["lineage"].removeprefix("cand:") not in held)
     if strangers:
         raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
-                        f"forward cohort positions walk lineages no frozen cohort holds: {', '.join(strangers[:5])}"
+                        f"{label} walk lineages no frozen cohort holds: {', '.join(strangers[:5])}"
                         + (f" and {len(strangers) - 5} more" if len(strangers) > 5 else ""))
     return {"entries": entries}
 
@@ -451,7 +459,10 @@ def _assert_marks_run_forward(before: Mapping[str, Any], after: Mapping[str, Any
 
 
 def _write_positions(book: Mapping[str, Any], *, root: Path | None, now: str) -> None:
-    path = _positions_path(root)
+    _write_book_at(_positions_path(root), book, now=now)
+
+
+def _write_book_at(path: Path, book: Mapping[str, Any], *, now: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"forward_cohort_positions_version": POSITIONS_VERSION,
                                "updated_at_utc": now, "entries": book["entries"]},
@@ -495,6 +506,28 @@ def bars_to_fetch(starts: Iterable[str], *, timeframe: str, now: str) -> int | N
     return max(1, min(MAX_WALK_BARS, int(span) + 2 + WARMUP_BARS))
 
 
+@dataclass(frozen=True)
+class WalkTrack:
+    """What one walker walks: the real cohort's members, or the null arm's twins
+    (`forward_cohort_null`). Same frames, same per-bar transition, same sealed-row append; each
+    track has its own plan, entries, positions book and outcomes store.
+
+    ``plan(root)`` is ``{(symbol, timeframe): [(member, record), ...]}``, where ``member`` carries
+    the walk id as ``candidate_id`` and the clock start as ``selected_at_utc``, and ``record`` is
+    what ``spec_of`` / ``entry_of`` / ``rows_of`` read."""
+
+    plan: Callable[[Path | None], dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]]]
+    spec_of: Callable[[Mapping[str, Any], Mapping[str, Any]], StrategySpec]
+    entry_of: Callable[[Mapping[str, Any], Mapping[str, Any]], dict[str, Any]]
+    rows_of: Callable[[Mapping[str, Any], Sequence[Any], Sequence[Any]], Sequence[Any]]
+    book_path: Callable[[Path | None], Path]
+    load_book: Callable[[Path | None], dict[str, Any]]
+    outcomes_path: Callable[[Path | None], Path]
+    read_outcomes: Callable[[Path | None], list[dict[str, Any]]]
+    provenance: str
+    label: str
+
+
 def run_cohort_walk(
     root: Path | None = None,
     *,
@@ -510,9 +543,21 @@ def run_cohort_walk(
     context alone and is named in ``failed``. The frames are fetched OUTSIDE the positions lock
     and the state is re-read under it, so a concurrent run can only have moved
     ``last_seen_candle`` forward, which the replay then skips."""
-    plan = walk_plan(root)
+    return walk_track(COHORT_TRACK, root, now=now, frame_for=frame_for, persist=persist)
+
+
+def walk_track(
+    track: WalkTrack,
+    root: Path | None = None,
+    *,
+    now: str,
+    frame_for: Any,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """The walk :func:`run_cohort_walk` describes, over one track."""
+    plan = track.plan(root)
     try:
-        before = load_positions(root)["entries"]
+        before = track.load_book(root)["entries"]
     except ToolError:
         before = {}
     frames: dict[tuple[str, str], tuple[Sequence[Any], Sequence[Any]]] = {}
@@ -540,40 +585,56 @@ def run_cohort_walk(
         for (symbol, timeframe), (rows, candles) in frames.items():
             for member, record in plan[(symbol, timeframe)]:
                 try:
-                    spec = StrategySpec.from_dict(record["strategy_spec"])
+                    spec = track.spec_of(member, record)
                 except Exception:
                     continue
-                entry = synthesize_entry(record)
+                entry = track.entry_of(member, record)
                 lineage = f"cand:{member['candidate_id']}"
                 key = forward_book.book_key(lineage, symbol, timeframe)
                 state = entries.setdefault(
                     key, _fresh_state(lineage, symbol, timeframe, entry["strategy_id"], now))
                 opens_before = int(state.get("opens_count") or 0)
                 settled_rows.extend(advance_member(
-                    state, entry, spec, rows, candles, symbol=symbol, timeframe=timeframe,
-                    start=member["selected_at_utc"]))
+                    state, entry, spec, track.rows_of(member, rows, candles), candles,
+                    symbol=symbol, timeframe=timeframe, start=member["selected_at_utc"],
+                    provenance=track.provenance))
                 opened += int(state.get("opens_count") or 0) - opens_before
 
     if persist:
-        path = _positions_path(root)
+        path = track.book_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with locked(path.with_suffix(".lock"), code=FORWARD_COHORT_LOCKED, label="forward cohort positions"):
-            book = load_positions(root)
+        with locked(path.with_suffix(".lock"), code=FORWARD_COHORT_LOCKED, label=track.label):
+            book = track.load_book(root)
             marks_before = {key: {"last_seen_candle": entry.get("last_seen_candle")}
                             for key, entry in book["entries"].items()}
             _advance(book)
             _assert_marks_run_forward(marks_before, book["entries"])
             forward_book.append_sealed_rows(
-                settled_rows, path=_outcomes_path(root), read=lambda: read_cohort_outcomes(root))
-            _write_positions(book, root=root, now=now)
+                settled_rows, path=track.outcomes_path(root), read=lambda: track.read_outcomes(root))
+            _write_book_at(path, book, now=now)
     else:
-        _advance(load_positions(root))
+        _advance(track.load_book(root))
     return {
         "contexts": len(plan), "walked": len(frames), "failed": failed,
         "members": len({m["candidate_id"] for ms in plan.values() for m, _ in ms}),
         "opened": opened, "settled": len(settled_rows),
     }
 
+
+
+# The real cohort's track: members resolved through the candidate store, walked as they are.
+COHORT_TRACK = WalkTrack(
+    plan=lambda root: walk_plan(root),
+    spec_of=lambda member, record: StrategySpec.from_dict(record["strategy_spec"]),
+    entry_of=lambda member, record: synthesize_entry(record),
+    rows_of=lambda member, rows, candles: rows,
+    book_path=lambda root: _positions_path(root),
+    load_book=lambda root: load_positions(root),
+    outcomes_path=lambda root: _outcomes_path(root),
+    read_outcomes=lambda root: read_cohort_outcomes(root),
+    provenance=COHORT_PROVENANCE,
+    label="forward cohort positions",
+)
 
 # --- the report -------------------------------------------------------------------------------
 
@@ -749,6 +810,22 @@ def board_summary(root: Path | None = None) -> dict[str, Any] | None:
                                 if "trade_spread_floor_r" in m), None),
         "last_walk_utc": last_walk,
     }
+
+
+def memoized_frames(frame_for: Any) -> Any:
+    """``frame_for`` that fetches each context once per fire: a later call for the same context and
+    no more bars reuses the frame (the null arm walks the members' contexts after them)."""
+    cache: dict[tuple[str, str], tuple[int, Any]] = {}
+
+    def fetch(symbol: str, timeframe: str, bars: int) -> Any:
+        held = cache.get((symbol, timeframe))
+        if held is not None and held[0] >= bars:
+            return held[1]
+        frame = frame_for(symbol, timeframe, bars)
+        cache[(symbol, timeframe)] = (bars, frame)
+        return frame
+
+    return fetch
 
 
 def status_line(summary: Mapping[str, Any]) -> str:

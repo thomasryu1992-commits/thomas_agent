@@ -114,7 +114,10 @@ spec replays per day.
   the same bar at the same price would mint one `settlement_id`, and the append-side dedup would
   silently drop the second lineage's row. The walker keys identity on `candidate_id`.
 
-**7. A null arm, optional but cheap.** `null_control` already builds mint-anchored random-entry
+**7. A null arm, optional but cheap.** *Built 2026-09-24 (Thomas: choice B), as a companion
+record rather than inside the cohort: `crypto/forward_cohort_null.py`, one coin-flip twin per
+member of each frozen cohort, on its parent's clock, walked after the members into stores of its
+own. The judge's rate over the twins is reported in a follow-up.* `null_control` already builds mint-anchored random-entry
 controls through the same exits. Freezing N of them into the cohort measures the forward
 judge's false-confirmation rate directly — the number the 2026-08-30 decision said nobody had
 tuned a correction against.

@@ -136,7 +136,7 @@ LAYER: dict[str, str] = {
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
     "pool_transitions": "decision", "pool_admission": "decision", "promotion_backlog": "decision",
-    "forward_cohort": "decision",
+    "forward_cohort": "decision", "forward_cohort_null": "decision",
     # risk: what may be risked
     "guards": "risk", "risk_limits": "risk", "live_budget": "risk", "live_allowance": "risk",
     "pre_order_gate": "risk", "breaker_watch": "risk", "live_sizing": "risk",
