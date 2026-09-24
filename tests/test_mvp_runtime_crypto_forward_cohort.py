@@ -690,3 +690,76 @@ def test_an_underpowered_member_reads_mature_and_may_lead():
     line = {"status": FORWARD_UNDERPOWERED, "priceable_count": 10, "timeframe": "1d"}
     assert fco.maturity_of(line) == fco.MATURITY_MATURE
     assert fco.maturity_of({**line, "status": FORWARD_CONTRADICTED}) == fco.MATURITY_CONTRADICTED
+
+
+# --- first-verdict stamps (2026-09-24, SEQUENTIAL_FORWARD_TEST_V0.1 decision Q2) ------------------
+
+def _report_saying(status):
+    return lambda root=None: [{"members": [{"candidate_id": "cand_a", "status": status}]}]
+
+
+def test_a_verdict_is_stamped_the_first_walk_it_is_seen_and_kept_when_it_changes(tmp_path, monkeypatch):
+    _install_cohort(tmp_path, _record("cand_a"))
+    monkeypatch.setattr(fco, "cohort_report", _report_saying("FORWARD_CONFIRMED"))
+    first = _walk(tmp_path, _frame(range(1, 5)), now=_day(4))
+    assert first["first_confirmed"] == 1 and "first_confirmed=1" in fco.status_line(first)
+    # the judge reads otherwise a day later: the stamp is a look that already happened
+    monkeypatch.setattr(fco, "cohort_report", _report_saying("FORWARD_CONTRADICTED"))
+    second = _walk(tmp_path, _frame(range(1, 6)), now=_day(5))
+    assert second["first_confirmed"] == 0 and second["first_contradicted"] == 1
+    assert fco.load_positions(tmp_path)["verdicts"] == {
+        "cand_a": {"first_confirmed_at_utc": _day(4), "first_contradicted_at_utc": _day(5)}}
+    # and a third look at the same verdict stamps nothing new
+    third = _walk(tmp_path, _frame(range(1, 7)), now=_day(6))
+    assert third["first_contradicted"] == 0
+    assert fco.load_positions(tmp_path)["verdicts"]["cand_a"]["first_contradicted_at_utc"] == _day(5)
+
+
+def test_a_judge_that_cannot_read_its_stores_costs_the_stamps_never_the_walk(tmp_path, monkeypatch):
+    _install_cohort(tmp_path, _record("cand_a"))
+
+    def refuse(root=None):
+        raise ToolError("CANDIDATE_STORE_UNREADABLE", "gone")
+
+    monkeypatch.setattr(fco, "cohort_report", refuse)
+    summary = _walk(tmp_path, _frame(range(1, 8), stop_on={5}), now=_day(7))
+    assert summary["settled"] == 1 and summary["verdicts_failed"] == "CANDIDATE_STORE_UNREADABLE"
+    assert "verdicts_failed=CANDIDATE_STORE_UNREADABLE" in fco.status_line(summary)
+    book = fco.load_positions(tmp_path)
+    (entry,) = book["entries"].values()
+    assert entry["last_seen_candle"] is not None and book["verdicts"] == {}
+
+
+def test_nothing_is_stamped_on_a_dry_walk(tmp_path, monkeypatch):
+    _install_cohort(tmp_path, _record("cand_a"))
+    monkeypatch.setattr(fco, "cohort_report", _report_saying("FORWARD_CONFIRMED"))
+    _walk(tmp_path, _frame(range(1, 5)), now=_day(4), persist=False)
+    assert not fco._positions_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("verdicts, why", [
+    (["cand_a"], "not a mapping"),
+    ({"cand_a": {"first_confirmed_at_utc": "yesterday"}}, "does not parse"),
+    ({"cand_a": {"first_seen_at_utc": "2026-07-04T00:00:00Z"}}, "not only"),
+    ({"cand_nobody": {"first_confirmed_at_utc": "2026-07-04T00:00:00Z"}}, "no frozen cohort holds"),
+])
+def test_a_first_verdict_map_that_is_not_the_walks_own_is_refused(tmp_path, verdicts, why):
+    exc = _refused_after(tmp_path, lambda raw: raw.__setitem__("verdicts", verdicts))
+    assert why in str(exc)
+
+
+def test_a_book_that_would_move_or_drop_a_stamp_is_refused():
+    before = {"cand_a": {"first_confirmed_at_utc": "2026-07-04T00:00:00Z"}}
+    for after in ({}, {"cand_a": {"first_confirmed_at_utc": "2026-07-05T00:00:00Z"}}):
+        with pytest.raises(ToolError) as exc:
+            fco._assert_verdicts_kept(before, after)
+        assert exc.value.reason_code == fco.FORWARD_COHORT_POSITIONS_INVALID
+    fco._assert_verdicts_kept(before, {"cand_a": {**before["cand_a"], "first_contradicted_at_utc": "x"}})
+
+
+def test_only_confirmed_and_contradicted_are_stamped():
+    history, newly = fco.record_first_verdicts(
+        {}, [("a", "FORWARD_UNDERPOWERED"), ("b", "FORWARD_INSUFFICIENT"), ("c", "UNRESOLVED"),
+             (None, "FORWARD_CONFIRMED"), ("d", "FORWARD_CONFIRMED")], now="t")
+    assert history == {"d": {"first_confirmed_at_utc": "t"}}
+    assert newly == {"first_confirmed_at_utc": 1, "first_contradicted_at_utc": 0}

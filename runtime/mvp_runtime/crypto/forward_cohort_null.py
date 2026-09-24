@@ -47,8 +47,8 @@ from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
 from .forward_cohort import (
-    FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack, cohort_report, load_book_at,
-    maturity_of, read_cohorts, walk_track,
+    FIRST_VERDICT_FIELDS, FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack,
+    cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts, walk_track,
 )
 from .forward_confirmation import FORWARD_UNDERPOWERED, judge_forward, min_forward_trades
 from .null_control import NULL_FEATURE, _null_spec
@@ -259,6 +259,7 @@ NULL_TRACK = WalkTrack(
     read_outcomes=lambda root: read_null_outcomes(root),
     provenance=NULL_PROVENANCE,
     label="forward cohort null positions",
+    verdicts=lambda root: ((line.get("null_id"), line.get("status")) for line in null_report(root)),
 )
 
 
@@ -271,7 +272,7 @@ def status_line(summary: Mapping[str, Any]) -> str:
     line = ("nulls members=%s walked=%s opened=%s settled=%s" % (
         summary.get("members"), summary.get("walked"), summary.get("opened"), summary.get("settled")))
     failed = summary.get("failed") or []
-    return line + (f" failed={len(failed)}" if failed else "")
+    return line + (f" failed={len(failed)}" if failed else "") + first_verdict_suffix(summary)
 
 
 # --- the report: the judge's rate over the twins, beside the members' (2026-09-24, PR 2) -----------
@@ -299,15 +300,30 @@ def null_report(root: Path | None = None) -> list[dict[str, Any]]:
     return lines
 
 
-def arm_counts(lines: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+def arm_counts(
+    lines: Sequence[Mapping[str, Any]],
+    history: Mapping[str, Mapping[str, str]] | None = None,
+    *,
+    id_key: str = "candidate_id",
+) -> dict[str, dict[str, int]]:
     """Per timeframe: lineages, with priced rows, at the trade floor, confirmed, contradicted, and
     underpowered (at the floor, leaning with the edge, unresolved — MATURE in the maturity, counted
-    apart so the comparison shows where the records the 2026-09-24 split moved went)."""
+    apart so the comparison shows where the records the 2026-09-24 split moved went).
+
+    With ``history`` (the walk's first-verdict map, keyed by ``line[id_key]``), also how many were
+    EVER confirmed or contradicted at a walk: today's counts are one look, and a lineage the judge
+    confirmed last week may read otherwise today (`SEQUENTIAL_FORWARD_TEST_V0.1.md`)."""
     out: dict[str, dict[str, int]] = {}
+    ever = {"ever_confirmed": FIRST_VERDICT_FIELDS["FORWARD_CONFIRMED"],
+            "ever_contradicted": FIRST_VERDICT_FIELDS["FORWARD_CONTRADICTED"]}
     for line in lines:
         cell = out.setdefault(str(line.get("timeframe") or "?"), {
             "members": 0, "with_rows": 0, "at_floor": 0, "confirmed": 0, "contradicted": 0,
-            "underpowered": 0})
+            "underpowered": 0, **({key: 0 for key in ever} if history is not None else {})})
+        if history is not None:
+            stamps = history.get(str(line.get(id_key))) or {}
+            for key, field in ever.items():
+                cell[key] += field in stamps
         priced = int(line.get("priceable_count") or 0)
         cell["members"] += 1
         cell["with_rows"] += priced > 0
@@ -326,4 +342,5 @@ def arm_comparison(root: Path | None = None) -> dict[str, Any] | None:
     if not read_null_records(root):
         return None
     members = [m for cohort in cohort_report(root) for m in cohort["members"]]
-    return {"real": arm_counts(members), "null": arm_counts(null_report(root))}
+    return {"real": arm_counts(members, load_positions(root)["verdicts"]),
+            "null": arm_counts(null_report(root), load_null_positions(root)["verdicts"], id_key="null_id")}
