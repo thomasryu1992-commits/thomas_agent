@@ -244,7 +244,8 @@ def test_the_comparison_is_per_timeframe_and_absent_before_a_null_arm(tmp_path):
     comparison = fcn.arm_comparison(tmp_path)
     assert set(comparison["null"]) == {"1d", "1h"} == set(comparison["real"])
     assert comparison["null"]["1h"] == {"members": 1, "with_rows": 0, "at_floor": 0,
-                                        "confirmed": 0, "contradicted": 0, "underpowered": 0}
+                                        "confirmed": 0, "contradicted": 0, "underpowered": 0,
+                                        "ever_confirmed": 0, "ever_contradicted": 0}
 
 
 def test_the_board_prints_the_null_line_beside_the_members(tmp_path):
@@ -254,7 +255,8 @@ def test_the_board_prints_the_null_line_beside_the_members(tmp_path):
     _freeze(tmp_path)
     status = build_status(tmp_path, now=NOW)
     assert status["forward_cohort_null"]["null"]["1d"]["members"] == 1
-    assert "       null 대조(확정·반박/계보, 실제 vs null) 1d 0·0/1 vs 0·0/1 (null 기록 0계보)" in render_status_text(status)
+    assert ("       null 대조(확정·반박/계보, 실제 vs null) 1d 0·0/1 vs 0·0/1 (null 기록 0계보)"
+            " · 누적 확정·반박 실제 0·0 vs null 0·0") in render_status_text(status)
 
 
 def test_an_unreadable_null_arm_is_a_board_warning_not_a_broken_board(tmp_path):
@@ -277,3 +279,29 @@ def test_the_funnel_counts_the_twins_as_it_counts_the_members(tmp_path):
     assert counts["maturity:EXPLORATORY"] == 1
     assert "NULL ARM - a coin-flip twin per member, judged the same way (a null CONFIRMED is the judge " \
            "passing noise)" in strategy_funnel.render_text(funnel)
+
+
+# --- first-verdict stamps on the twins (2026-09-24, SEQUENTIAL_FORWARD_TEST_V0.1 decision Q2) -------
+
+def test_a_twin_is_stamped_the_first_walk_the_judge_confirms_it_and_the_board_counts_it_ever(
+        tmp_path, monkeypatch):
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    _install_cohort(tmp_path, _record("cand_a"))
+    _freeze(tmp_path)
+    (twin_id,) = fcn.null_ids(tmp_path)
+    real_report = fcn.null_report
+    monkeypatch.setattr(fcn, "null_report", lambda root=None: [
+        {**line, "status": "FORWARD_CONFIRMED"} for line in real_report(root)])
+    summary = _null_walk(tmp_path, _frame(range(1, 5)), now=_day(4))
+    assert summary["first_confirmed"] == 1 and "first_confirmed=1" in fcn.status_line(summary)
+    monkeypatch.setattr(fcn, "null_report", real_report)  # today's look no longer confirms it
+    assert fcn.load_null_positions(tmp_path)["verdicts"] == {twin_id: {"first_confirmed_at_utc": _day(4)}}
+    comparison = fcn.arm_comparison(tmp_path)
+    assert comparison["null"]["1d"]["confirmed"] == 0 and comparison["null"]["1d"]["ever_confirmed"] == 1
+    assert "누적 확정·반박 실제 0·0 vs null 1·0" in render_status_text(build_status(tmp_path, now=_day(4)))
+
+
+def test_arm_counts_without_a_history_carry_no_ever_counts():
+    (cell,) = fcn.arm_counts([{"timeframe": "4h", "candidate_id": "x", "status": "FORWARD_CONFIRMED",
+                               "priceable_count": 30}]).values()
+    assert "ever_confirmed" not in cell and cell["confirmed"] == 1

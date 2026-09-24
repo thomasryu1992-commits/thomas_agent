@@ -44,27 +44,19 @@ core thin while lanes grow, stated as rules:
 - **Safety flags are OFF, enforced in code — and the environment is the gate.** Enabling a
   `model_invocation` / `network_access` capability needs Thomas approval + a versioned
   governance update + audit; a passing test is never an approval for the next capability.
-  Since **Thomas 2026-08-10**, every gated capability opens on its **environment opt-in
-  alone**: selection goes through `safety_gate.select_env_gated(...)` (or its `_chain` /
-  `_optional` variants), which constructs the capable implementation only behind the opt-in
-  and hands it its `Authorization`; every egress re-check re-reads the env var. The
-  per-machine grant records and their 30-day renewal are **retired** — on capabilities meant
-  to run indefinitely the renewal bought too little: live trading left grants first
-  (2026-07-28; an expiry could block the CLOSE path and trap an open position), the candle
-  archive (2026-08-04) and the Naver lane (2026-08-09) followed (a renewal gap is a silent
-  hole in a long-running collection), and 2026-08-10 retired the rest on the same ledger.
-  **What that gives up, on the record:** the second factor, the expiry, the per-machine
-  audited scope/authority record, and file-deletion revocation — revoking a capability now
-  means unsetting the var and **restarting the container**. What it does not give up: an
-  unset/unknown value still selects the inert default, and an unknown or duplicate chain
-  member still fails the whole chain closed.
-  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` enforces both
-  directions — zero callers of the retired grant selectors, and an exact enumeration of the
-  env-gated call sites, so a new capability still cannot ship ungoverned. Every opt-in var is
-  stripped per-test in `tests/conftest.py` (`_GATE_ENV_VARS`), floor-checked by
-  `test_the_suite_isolates_every_gate_opt_in_env_var`. Leftover
-  `safety_flag_activations/*.json` files are inert (delete freely, as uid 10001). Mechanics:
-  `runtime/mvp_runtime/safety_gate.py`.
+  Every gated capability opens on its **environment opt-in alone** (Thomas 2026-08-10):
+  selection goes through `safety_gate.select_env_gated(...)` (or its `_chain` / `_optional`
+  variants), which constructs the capable implementation only behind the opt-in and hands it
+  its `Authorization`; every egress re-check re-reads the env var. Revoking a capability means
+  unsetting the var and **restarting the container**. An unset/unknown value selects the inert
+  default, and an unknown or duplicate chain member fails the whole chain closed.
+  `test_the_env_only_gate_has_exactly_the_capabilities_thomas_named` pins both directions — zero
+  callers of the retired grant selectors, and an exact enumeration of the env-gated call sites —
+  so a new capability cannot ship ungoverned. Every opt-in var is stripped per-test in
+  `tests/conftest.py` (`_GATE_ENV_VARS`), floor-checked by
+  `test_the_suite_isolates_every_gate_opt_in_env_var`. Leftover `safety_flag_activations/*.json`
+  files are inert (delete freely, as uid 10001). Mechanics: `runtime/mvp_runtime/safety_gate.py`;
+  why the per-machine grants were retired and what that gave up: `docs/BUILD_HISTORY.md`.
 - **Claude does not touch the live money path.** The crypto stack can place a real order.
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
@@ -75,89 +67,14 @@ core thin while lanes grow, stated as rules:
   dies on `ModuleNotFoundError: No module named 'runtime'` for every script that does not patch
   `sys.path` itself. `state_guard` refuses the dangerous case at the door but does not
   self-heal — `chown -R 10001:10001` is the fix.
-- **Tag the running image BEFORE `docker compose build`, never after.** The build reassigns
-  `thomas-agent-runtime:latest`, and once it has, the image the containers are *still running
-  on* is gone from the image store — not dangling, not tagged. `docker tag <old-id> …` then
-  fails with `No such image` and there is no image left to roll back to. The tag convention
-  already existed (`rollback-pre-366`); what was never written down is that it only works
-  beforehand, while `latest` still points at the running image:
-  `docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>`.
-  Measured 2026-08-01 on the #416 deploy, where it was skipped and the rollback point was lost.
-  **`latest` is what you can tag; the RUNNING image is what you need — check they are the same
-  rather than assuming it.** `docker inspect thomas-scheduler --format '{{.Image}}'` against
-  `docker images thomas-agent-runtime`. A concurrent session that builds without deploying
-  leaves `latest` ahead of what is running, and tagging it then names the **new** image as the
-  rollback point — a tag that reads like a safety net and is not one. Hit 2026-08-02; it cost
-  nothing only because the previous deploy's tag still held the real image. When they differ,
-  tag **from that existing tag** (`docker tag …:rollback-pre-<prev> …:rollback-pre-<PR#>`),
-  never from the raw image id, which is exactly the reference that stops resolving.
-  The fallback is `git checkout <commit> && docker compose build && docker compose up -d` —
-  reproducible, and the reason this is a lost minute rather than a lost deploy, but it needs a
-  clean tree and takes minutes where a tag takes seconds.
-- **Build to a candidate tag, verify it, then promote `latest`.** Everything above is about
-  surviving a build that overwrites `latest`; this avoids the overwrite. `docker compose build`
-  and a bare `docker build -t …:latest` both reassign the tag the running containers were
-  started from, which is what opens the window the rule above closes by hand. Building to a
-  name of its own does not:
-
-  ```
-  docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>   # still first
-  docker build -t thomas-agent-runtime:candidate-<PR#> <clean-worktree>
-  docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
-  docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
-  docker compose up -d
-  ```
-
-  `latest` keeps pointing at the running image for the whole build, the candidate is provable
-  before anything restarts, and promotion is one atomic retag. Used for every deploy on
-  2026-08-08/09. Never assert by the commit the worktree was on: what a build actually
-  contains is the question, and a `git log` that says the merge landed does not answer it.
 - **Assert what the fix DOES, not how it is spelled — and a failed assertion is where the
-  investigation starts, never where it ends.** The obvious check is an identifier: `hasattr`,
-  a constant's value, a substring of `inspect.getsource`. Identifiers move. Measured twice in
-  one audit on 2026-08-09, both false alarms on merged-and-deployed work:
-
-  - a check for `attach_cross_section` in `scheduler.py` reported the #601 fix missing, after
-    #621 extracted the five legs into `cycle.attach_mining_legs`;
-  - `PROMOTION_HASH_VERSION == "strategy_promotion.v3"` reported #649 missing, after #648
-    bumped it to v4 while keeping #649's field.
-
-  Prefer calling the thing over matching a name — *"the reactivation set changes the hash"*,
-  *"this column is supplied on the frame"*, *"the helper attaches all five legs"* — because a
-  property survives the rename that breaks a grep. Where only a name will do, expect it to rot.
-
-  **The rule that matters is the second half.** Both checks above were wrong in the direction
-  that produces a confident false report, and reporting either as a regression would have been
-  the only damage done that day. Read the code before calling a deploy incomplete: a MISS means
-  *the check and the tree disagree*, and the check is the newer of the two.
-- **Build from a clean `origin/main` worktree, and never `compose up --build`.** The compose
-  build context is `/root/thomas_agent`, the primary checkout — which on a busy day is on
-  another session's branch with uncommitted work in it. `--build` ships that. Measured
-  repeatedly on 2026-08-08/09: the primary checkout sat on a foreign feature branch with
-  modified `live_leg.py` for most of the day. `git worktree add <tmp> origin/main --detach`,
-  build from there, remove it after. Cheap, and it is the only way to say what the image
-  contains.
-- **You are not the only session deploying. Re-read the host, never your own notes.** A
-  concurrent session redeploys everything, not just its own slice. Measured 2026-08-09: a deploy
-  finished at 07:56 and by 07:59 the containers had been recreated by someone else — a different
-  running image, and two `rollback-pre-*` tags this session had not created. A state recorded
-  minutes ago is not evidence. So the running-vs-`latest` check above is not a formality at the
-  start of a deploy — it is a **re-read immediately before the promote**, because the window
-  between build and promote is exactly where the other session lands. A `rollback-pre-<N>` tag
-  you did not create is the signal that it already has.
-- **A one-off script does not need a deploy.** To run newly merged code against live state
-  without restarting anything, build to a throwaway tag and run it with the scheduler's own
-  mounts and user — `latest` untouched, so no other session's `compose up -d` picks it up:
-
-  ```
-  docker run --rm --user thomas -w /app \
-    -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
-    --entrypoint python thomas-agent-runtime:tool-<PR#> -m scripts.<script> --list
-  ```
-
-  Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from
-  here, and back up any file the script rewrites first. Used 2026-08-09 to dedupe the shadow
-  book while the live window kept trading.
+  investigation starts, never where it ends.** A check by identifier (`hasattr`, a constant's
+  value, a substring of `inspect.getsource`) rots when the code is refactored: a check for
+  `attach_cross_section` in `scheduler.py` once reported a merged fix missing after the legs had
+  moved into `cycle.attach_mining_legs`. Prefer calling the thing — *"the helper attaches all
+  five legs"* — because a property survives the rename that breaks a grep. Read the code before
+  calling a deploy incomplete: a MISS means *the check and the tree disagree*, and the check is
+  the newer of the two.
 - **Never commit** `CURRENT_CORE_RELEASE.yaml`, `THOMAS_CORE/activations/`,
   `THOMAS_CORE/approvals/`, `.runtime_governance_state/**` — per-machine runtime state.
 - **No direct `main` commits.** Branch → PR → gates → merge. Enforced by
@@ -168,22 +85,72 @@ core thin while lanes grow, stated as rules:
   first (`cd <worktree> && git commit …`), because it cannot see which tree those land in
   and guessing denied every legitimate worktree commit while the primary checkout rested
   on `main`.
-- **Five required checks on `main` since 2026-09-04** (PR3 of the Hermes sequence, Thomas
-  decision Q14): the two Active Architecture Gates, `MVP runtime pytest (ubuntu-latest)`,
-  `MVP runtime pytest (windows-latest)`, and `Docker build + fail-closed smoke`. Until then only
-  the two one-minute gates were required, so auto-merge could land a branch with a red pytest or
-  a compose file the smoke rejects. Auto-merge now waits for all five (~7–8 minutes); `strict`
-  stays on, so a branch that falls behind `main` re-runs after `update-branch`. Push follow-up
-  commits BEFORE enabling auto-merge, or disable it first — a green head merges as soon as the
-  five are green, and a later push arrives on a merged PR.
-- **The assistant is the ninth compose service, not part of the runtime image** (PR5, 2026-09-04).
-  `hermes` in `docker-compose.yml` is image-only (`hermes-agent`, built from `/root/hermes-trial/hermes-agent`
-  out of band); the candidate-tag flow above never rebuilds or retags it, and `up -d` recreates it only
-  when its own service block changed. Its boundary — bridge-only mount, three `.env` values, no
-  `depends_on` — is pinned in `tests/test_deployment_env_passthrough.py`; changing that block is a
-  governance change, not a deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`).
+- **Five required checks on `main`** (Thomas decision Q14): the two Active Architecture Gates,
+  `MVP runtime pytest (ubuntu-latest)`, `MVP runtime pytest (windows-latest)`, and
+  `Docker build + fail-closed smoke`. Auto-merge waits for all five (~7–8 minutes); `strict` is
+  on, so a branch that falls behind `main` re-runs after `update-branch`. Push follow-up commits
+  BEFORE enabling auto-merge, or disable it first — a green head merges as soon as the five are
+  green, and a later push arrives on a merged PR.
+- **The assistant is the ninth compose service, not part of the runtime image.**
+  `hermes` in `docker-compose.yml` is image-only (`hermes-agent`, built from
+  `/root/hermes-trial/hermes-agent` out of band); the deploy procedure below never rebuilds or
+  retags it, and `up -d` recreates it only when its own service block changed. Its boundary —
+  bridge-only mount, three `.env` values, no `depends_on` — is pinned in
+  `tests/test_deployment_env_passthrough.py`; changing that block is a governance change, not a
+  deploy detail (`docs/HERMES_ORCHESTRATOR_ARCHITECTURE_V0.2.md`).
 - Match existing style: `from __future__ import annotations`, type hints, no import-time
   side effects.
+
+## Deploying
+
+Several sessions build and deploy from this host at once, and the compose build context is the
+primary checkout (`/root/thomas_agent`), which is often on another session's branch with
+uncommitted work in it. The procedure exists so that every deploy ships exactly `origin/main` and
+leaves a rollback point that really is the image that was running. These rules carry the same
+standing as the guardrails above:
+
+```
+docker inspect thomas-scheduler --format '{{.Image}}'    # the RUNNING image …
+docker images thomas-agent-runtime                        # … must be what `latest` points at
+docker tag thomas-agent-runtime:latest thomas-agent-runtime:rollback-pre-<PR#>
+git worktree add <tmp> origin/main --detach
+docker build -t thomas-agent-runtime:candidate-<PR#> <tmp>
+docker run --rm --entrypoint python thomas-agent-runtime:candidate-<PR#> -c "<assert the fix>"
+#   … repeat the running-vs-latest check here, immediately before the promote …
+docker tag thomas-agent-runtime:candidate-<PR#> thomas-agent-runtime:latest
+docker compose up -d
+git worktree remove <tmp>
+```
+
+- **Tag the rollback point before any build.** A build that targets `latest`
+  (`docker compose build`, `docker build -t …:latest`) removes the running image from the image
+  store — not dangling, gone — and then there is nothing left to tag. Building to
+  `candidate-<PR#>` keeps `latest` on the running image until the one-step promote.
+- **Tag the running image, not whatever `latest` happens to be.** A concurrent session that built
+  without deploying leaves `latest` ahead of what is running, and tagging it names the *new* image
+  as the rollback point — a tag that reads like a safety net and is not one. When the two differ,
+  tag from the previous rollback tag (`docker tag …:rollback-pre-<prev> …:rollback-pre-<PR#>`),
+  never from the raw image id, which is exactly the reference that stops resolving.
+- **Re-read the host immediately before the promote, never your own notes.** A concurrent session
+  redeploys everything, not just its own slice, and the window between build and promote is where
+  it lands. A `rollback-pre-<N>` tag you did not create is the signal that it already has.
+- **Never `compose up --build`** — it builds the primary checkout, whatever is in it. Judge what an
+  image contains by asserting against the image, never by the commit a worktree was on.
+- If the rollback point is lost anyway, rebuild the previous commit to a candidate tag from a clean
+  worktree and promote that: minutes instead of seconds, but reproducible.
+
+**A one-off script does not need a deploy.** To run newly merged code against live state without
+restarting anything, build to a throwaway tag and run it with the scheduler's own mounts and
+user — `latest` untouched, so no other session's `compose up -d` picks it up:
+
+```
+docker run --rm --user thomas -w /app \
+  -v /root/thomas_agent/.runtime_governance_state:/app/.runtime_governance_state:rw \
+  --entrypoint python thomas-agent-runtime:tool-<PR#> -m scripts.<script> --list
+```
+
+Read the user and mounts off `docker inspect thomas-scheduler` rather than copying them from here,
+and back up any file the script rewrites first.
 
 ## Commands
 
@@ -235,7 +202,7 @@ MVP use case = "analyze this business idea"; MVP role = `general.specialist`; th
 is a new module reusing kernel parts, not a kernel extension. Provider = free hosted APIs
 behind the Safety-Flag Gate as an **ordered failover chain**
 (`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
-prepended Thomas 2026-07-24 — 8bde1f9, 4da8118; grants retired Thomas 2026-08-10, the env
+prepended Thomas 2026-07-24; grants retired Thomas 2026-08-10, the env
 names the chain): a chain with an unknown or duplicate member fails closed **entirely**
 (never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
 member's own retry) — never on timeout or 4xx.

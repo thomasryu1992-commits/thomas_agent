@@ -42,6 +42,13 @@ def _quiet_policy_check(monkeypatch):
         "checked_at": "2026-09-04T13:00:00Z", "policy_ref": policy_fingerprint.POLICY_REL,
         "sha256": "c" * 64, "policy_version": "1.5.0", "recorded": True,
     })
+    # The judgement-rule check beside it (RESEARCH_EPOCH_V0.1, 2026-09-24) records under the same
+    # directory for the same reason; neutralized the same way.
+    from runtime.mvp_runtime.crypto import judgement_fingerprint
+    monkeypatch.setattr(judgement_fingerprint, "check_and_record", lambda *a, **k: {
+        "status": policy_fingerprint.UNCHANGED, "checked_at": "2026-09-04T13:00:00Z",
+        **judgement_fingerprint.judgement_fingerprint(), "recorded": True,
+    })
 
 
 def _msg(**overrides):
@@ -316,3 +323,29 @@ def test_the_suite_never_reaches_the_checkouts_own_workflow_store(monkeypatch):
 
     assert WorkflowStore.default().path.parents[2] != repo_root()
     assert WorkflowStore.default(readonly=True).path.parents[2] != repo_root()
+
+
+def test_the_operator_announces_a_judgement_rule_change_once(tmp_path, monkeypatch, capsys):
+    """RESEARCH_EPOCH_V0.1 (Thomas 2026-09-24): the crypto judgement rules are checked beside the
+    policy and a change is announced to the control channel, once."""
+    import runtime.mvp_runtime.operator_cli as cli  # noqa: F401 — the module whose startup is under test
+    from runtime.mvp_runtime import policy_fingerprint
+    from runtime.mvp_runtime.crypto import judgement_fingerprint
+    from runtime.mvp_runtime.store import LedgerStore
+
+    state = tmp_path / ".runtime_governance_state"
+    state.mkdir(exist_ok=True)
+    (state / "operator_registration.json").write_text(
+        '{"operator_id": "tg-1", "chat_id": "chat-1", "approver": "Thomas"}', encoding="utf-8")
+    now = judgement_fingerprint.judgement_fingerprint()
+    monkeypatch.setattr(judgement_fingerprint, "check_and_record", lambda *a, **k: {
+        "status": policy_fingerprint.CHANGED, "checked_at": "2026-09-24T13:00:00Z", **now,
+        "previous_sha256": "sha256:" + "a" * 64, "recorded": True})
+    ch = MockOperatorChannel()
+
+    assert main([], channel=ch, registration=REG, provider=MockProvider(),
+                store=LedgerStore(tmp_path), repo_root=tmp_path) == 0
+
+    assert len(ch.sent) == 1 and ch.sent[0][0] == "chat-1"
+    assert "판정 규칙" in ch.sent[0][1] and now["short"] in ch.sent[0][1] and "aaaaaaaaaaaa" in ch.sent[0][1]
+    assert f"JUDGEMENT RULES CHANGED: aaaaaaaaaaaa -> {now['short']}" in capsys.readouterr().err
