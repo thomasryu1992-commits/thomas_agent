@@ -57,6 +57,9 @@ Append a new entry when a milestone ships, in the same PR.
     members fetched (`memoized_frames`), so twins cost replays, not fetches.
     - Walker replays go from about 120 to about 240 a day.
     - A null-arm failure is named on the status line and never fails the fire.
+  - **Codes:** a damaged null record is `FORWARD_COHORT_NULLS_UNREADABLE` / `_TAMPERED`, its own codes so an
+    operator can tell it from a damaged cohort. The null positions book shares the cohort's loader and
+    codes.
   - **Live store, dry run:** 115 twins, none skipped. Median rates are 0.056 at 1d, 0.032 at 4h and
     0.009 at 1h. Nothing is written until an operator runs `freeze-nulls --apply`.
 

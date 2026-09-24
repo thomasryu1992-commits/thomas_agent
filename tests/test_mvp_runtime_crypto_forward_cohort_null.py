@@ -77,7 +77,7 @@ def test_an_edited_null_record_is_refused(tmp_path):
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
     with pytest.raises(ToolError) as exc:
         fcn.read_null_records(tmp_path)
-    assert exc.value.reason_code == fco.FORWARD_COHORT_TAMPERED
+    assert exc.value.reason_code == fcn.FORWARD_COHORT_NULLS_TAMPERED
 
 
 # --- the coin -----------------------------------------------------------------------------------

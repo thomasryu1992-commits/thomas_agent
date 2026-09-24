@@ -46,10 +46,7 @@ from ..errors import ToolError
 from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
-from .forward_cohort import (
-    FORWARD_COHORT_LOCKED, FORWARD_COHORT_TAMPERED, FORWARD_COHORT_UNREADABLE, WalkTrack, load_book_at,
-    read_cohorts, walk_track,
-)
+from .forward_cohort import FORWARD_COHORT_LOCKED, WalkTrack, load_book_at, read_cohorts, walk_track
 from .null_control import NULL_FEATURE, _null_spec
 from .pool_state import read_candidates
 from .state import state_dir
@@ -63,6 +60,11 @@ NULL_OUTCOMES_FILENAME = "forward_cohort_null_outcomes.jsonl"
 NULL_PROVENANCE = "mvp_forward_cohort_null"
 NULL_ID_PREFIX = "null_"
 RATE_RULE = "parent backtest closed_count / bars_replayed"
+
+# The null records' own codes, so an operator can tell a damaged null arm from a damaged cohort. The
+# null positions book shares the cohort's loader and its codes (`forward_cohort.load_book_at`).
+FORWARD_COHORT_NULLS_UNREADABLE = "FORWARD_COHORT_NULLS_UNREADABLE"
+FORWARD_COHORT_NULLS_TAMPERED = "FORWARD_COHORT_NULLS_TAMPERED"
 
 
 def _nulls_path(root: Path | None) -> Path:
@@ -155,16 +157,16 @@ def read_null_records(root: Path | None = None) -> list[dict[str, Any]]:
     """Every frozen null arm, verified like the cohorts: sealed ``forward_cohort_nulls.v1`` records."""
     records: list[dict[str, Any]] = []
     for lineno, record in jsonl.iter_numbered(
-        _nulls_path(root), read_code=FORWARD_COHORT_UNREADABLE, label="forward cohort nulls",
+        _nulls_path(root), read_code=FORWARD_COHORT_NULLS_UNREADABLE, label="forward cohort nulls",
         exc_type=ToolError,
     ):
         if not isinstance(record, dict) or record.get("forward_cohort_nulls_version") != NULLS_VERSION:
-            raise ToolError(FORWARD_COHORT_TAMPERED,
+            raise ToolError(FORWARD_COHORT_NULLS_TAMPERED,
                             f"forward cohort nulls line {lineno} is not a {NULLS_VERSION} record")
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
-            raise ToolError(FORWARD_COHORT_TAMPERED, f"forward cohort nulls line {lineno} fails its self-hash")
+            raise ToolError(FORWARD_COHORT_NULLS_TAMPERED, f"forward cohort nulls line {lineno} fails its self-hash")
         records.append(record)
     return records
 
