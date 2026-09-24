@@ -560,6 +560,21 @@ def _arm(cell: dict[str, Any] | None) -> str:
     return f"{cell.get('confirmed', 0)}·{cell.get('contradicted', 0)}/{cell.get('members', 0)}"
 
 
+def _ever_tail(real: dict[str, Any], null: dict[str, Any]) -> str:
+    """The null line's tail: how many were EVER confirmed·contradicted at a walk, both arms. The cells
+    before it are today's look; this is every look since the walk began stamping (2026-09-24), which
+    is the rate repeated reading inflates (`SEQUENTIAL_FORWARD_TEST_V0.1.md`). Absent before then."""
+    def ever(arm: dict[str, Any]) -> str | None:
+        if not any("ever_confirmed" in cell for cell in arm.values()):
+            return None
+        return (f"{sum(c.get('ever_confirmed', 0) for c in arm.values())}·"
+                f"{sum(c.get('ever_contradicted', 0) for c in arm.values())}")
+    real_ever, null_ever = ever(real), ever(null)
+    if real_ever is None and null_ever is None:
+        return ""
+    return f" · 누적 확정·반박 실제 {real_ever or '-'} vs null {null_ever or '-'}"
+
+
 def _cohort_mark(leader: dict[str, Any]) -> str:
     maturity = str(leader.get("maturity"))
     if maturity == "EXPLORATORY":
@@ -942,7 +957,8 @@ def render_status_text(status: dict[str, Any]) -> str:
             f"{tf} {_arm(real.get(tf))} vs {_arm(null.get(tf))}"
             for tf in sorted(set(real) | set(null), key=lambda t: (_TIMEFRAME_ORDER.get(t, 99), t)))
             # Until the twins have rows, 0·0 on the null side is "nothing yet", not "nothing passed".
-            + f" (null 기록 {sum(c.get('with_rows', 0) for c in null.values())}계보)")
+            + f" (null 기록 {sum(c.get('with_rows', 0) for c in null.values())}계보)"
+            + _ever_tail(real, null))
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"

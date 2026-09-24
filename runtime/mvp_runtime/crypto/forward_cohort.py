@@ -395,7 +395,7 @@ def load_book_at(path: Path, *, members: Callable[[], frozenset[str]], label: st
     """A walker's positions book at ``path``, checked as :func:`load_positions` describes; ``members``
     names the walk ids its lineages may hold. Shared with the null arm (`forward_cohort_null`)."""
     if not path.is_file():
-        return {"entries": {}}
+        return {"entries": {}, "verdicts": {}}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -407,14 +407,86 @@ def load_book_at(path: Path, *, members: Callable[[], frozenset[str]], label: st
                         f"{label} carry version "
                         f"{raw.get('forward_cohort_positions_version')!r}, not {POSITIONS_VERSION!r}")
     entries = {str(key): _checked_entry(str(key), value) for key, value in raw["entries"].items()}
-    held = members() if entries else frozenset()
-    strangers = sorted(key for key, entry in entries.items()
-                       if entry["lineage"].removeprefix("cand:") not in held)
+    verdicts = _checked_verdicts(raw.get("verdicts"), label=label)
+    held = members() if entries or verdicts else frozenset()
+    strangers = sorted([key for key, entry in entries.items()
+                        if entry["lineage"].removeprefix("cand:") not in held]
+                       + [key for key in verdicts if key not in held])
     if strangers:
         raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
                         f"{label} walk lineages no frozen cohort holds: {', '.join(strangers[:5])}"
                         + (f" and {len(strangers) - 5} more" if len(strangers) > 5 else ""))
-    return {"entries": entries}
+    return {"entries": entries, "verdicts": verdicts}
+
+
+# The first time the walk saw the judge return each verdict, per walk id (2026-09-24,
+# `docs/proposals/SEQUENTIAL_FORWARD_TEST_V0.1.md` §결정 Q2). The judge is re-read on a growing
+# record every day and its verdict can change, so today's status alone cannot say whether a lineage
+# was EVER confirmed — the repeated-look rate the proposal measured (4h: 1.6% at one look, 5.1% over
+# a year of looks). Stamped at walk time, so the resolution is the walk's cadence; never moved or
+# erased once written (`_assert_verdicts_kept`). Kept in the positions book it describes, under the
+# same lock, rather than a store of its own.
+FIRST_VERDICT_FIELDS: dict[str, str] = {
+    FORWARD_CONFIRMED: "first_confirmed_at_utc",
+    FORWARD_CONTRADICTED: "first_contradicted_at_utc",
+}
+
+
+def _checked_verdicts(value: Any, *, label: str) -> dict[str, dict[str, str]]:
+    """The book's first-verdict map, or FORWARD_COHORT_POSITIONS_INVALID naming what is wrong.
+    Absent is empty — every book written before 2026-09-24."""
+    if value is None:
+        return {}
+
+    def invalid(why: str) -> ToolError:
+        return ToolError(FORWARD_COHORT_POSITIONS_INVALID, f"{label} first verdicts: {why}")
+
+    if not isinstance(value, Mapping):
+        raise invalid("are not a mapping")
+    fields = set(FIRST_VERDICT_FIELDS.values())
+    out: dict[str, dict[str, str]] = {}
+    for walk_id, stamps in value.items():
+        if not (isinstance(walk_id, str) and walk_id):
+            raise invalid(f"walk id {walk_id!r} is not a non-empty string")
+        if not isinstance(stamps, Mapping) or not set(stamps) <= fields:
+            raise invalid(f"{walk_id!r} holds {sorted(stamps) if isinstance(stamps, Mapping) else stamps!r}, "
+                          f"not only {sorted(fields)}")
+        for field, stamp in stamps.items():
+            try:
+                timeutil.parse_iso(str(stamp))
+            except (ValueError, TypeError):
+                raise invalid(f"{walk_id!r} {field} {stamp!r} does not parse") from None
+        out[walk_id] = {str(k): str(v) for k, v in stamps.items()}
+    return out
+
+
+def record_first_verdicts(
+    history: Mapping[str, Mapping[str, str]], statuses: Iterable[tuple[Any, Any]], *, now: str,
+) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+    """``history`` with ``now`` stamped on every verdict a walk id reaches for the first time, and how
+    many were new per field. A verdict already stamped keeps its first time. Pure."""
+    out = {walk_id: dict(stamps) for walk_id, stamps in history.items()}
+    newly = {field: 0 for field in FIRST_VERDICT_FIELDS.values()}
+    for walk_id, status in statuses:
+        field = FIRST_VERDICT_FIELDS.get(str(status))
+        if field is None or not walk_id:
+            continue
+        stamps = out.setdefault(str(walk_id), {})
+        if field not in stamps:
+            stamps[field] = now
+            newly[field] += 1
+    return out, newly
+
+
+def _assert_verdicts_kept(before: Mapping[str, Mapping[str, str]], after: Mapping[str, Mapping[str, str]]) -> None:
+    """Refuse to write a book that moved or dropped a first-verdict stamp: the stamp is the evidence
+    of a look that already happened, and a later look cannot un-happen it."""
+    for walk_id, stamps in before.items():
+        for field, stamp in stamps.items():
+            if (after.get(walk_id) or {}).get(field) != stamp:
+                raise ToolError(FORWARD_COHORT_POSITIONS_INVALID,
+                                f"forward cohort first verdict {walk_id!r} {field} would move from "
+                                f"{stamp} to {(after.get(walk_id) or {}).get(field)}; nothing was written")
 
 
 def _checked_entry(key: str, value: Any) -> dict[str, Any]:
@@ -469,9 +541,11 @@ def _write_positions(book: Mapping[str, Any], *, root: Path | None, now: str) ->
 
 def _write_book_at(path: Path, book: Mapping[str, Any], *, now: str) -> None:
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"forward_cohort_positions_version": POSITIONS_VERSION,
-                               "updated_at_utc": now, "entries": book["entries"]},
-                              ensure_ascii=False, indent=1), encoding="utf-8")
+    body: dict[str, Any] = {"forward_cohort_positions_version": POSITIONS_VERSION,
+                            "updated_at_utc": now, "entries": book["entries"]}
+    if book.get("verdicts"):
+        body["verdicts"] = book["verdicts"]
+    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -531,6 +605,9 @@ class WalkTrack:
     read_outcomes: Callable[[Path | None], list[dict[str, Any]]]
     provenance: str
     label: str
+    # ``(walk id, judge status)`` for every lineage of the track, read from its stores as the report
+    # reads them; stamped into the book's first-verdict map after each persisted walk. None: no map.
+    verdicts: Callable[[Path | None], Iterable[tuple[Any, Any]]] | None = None
 
 
 def run_cohort_walk(
@@ -583,6 +660,8 @@ def walk_track(
 
     settled_rows: list[dict[str, Any]] = []
     opened = 0
+    newly = {field: 0 for field in FIRST_VERDICT_FIELDS.values()}
+    verdicts_failed: str | None = None
 
     def _advance(book: dict[str, Any]) -> None:
         nonlocal opened
@@ -616,6 +695,18 @@ def walk_track(
             _assert_marks_run_forward(marks_before, book["entries"])
             forward_book.append_sealed_rows(
                 settled_rows, path=track.outcomes_path(root), read=lambda: track.read_outcomes(root))
+            if track.verdicts is not None:
+                # After the rows are sealed, so the judge reads what this walk settled. A judge that
+                # cannot read its stores costs the stamps, never the walk: the rows are already
+                # appended, and failing here would leave the marks behind them, re-opening trades.
+                history = book.get("verdicts") or {}
+                try:
+                    statuses = list(track.verdicts(root))
+                except MvpRuntimeError as exc:
+                    verdicts_failed = str(getattr(exc, "reason_code", type(exc).__name__))
+                else:
+                    book["verdicts"], newly = record_first_verdicts(history, statuses, now=now)
+                    _assert_verdicts_kept(history, book["verdicts"])
             _write_book_at(path, book, now=now)
     else:
         _advance(track.load_book(root))
@@ -623,6 +714,9 @@ def walk_track(
         "contexts": len(plan), "walked": len(frames), "failed": failed,
         "members": len({m["candidate_id"] for ms in plan.values() for m, _ in ms}),
         "opened": opened, "settled": len(settled_rows),
+        "first_confirmed": newly["first_confirmed_at_utc"],
+        "first_contradicted": newly["first_contradicted_at_utc"],
+        "verdicts_failed": verdicts_failed,
     }
 
 
@@ -639,6 +733,8 @@ COHORT_TRACK = WalkTrack(
     read_outcomes=lambda root: read_cohort_outcomes(root),
     provenance=COHORT_PROVENANCE,
     label="forward cohort positions",
+    verdicts=lambda root: ((m.get("candidate_id"), m.get("status"))
+                           for cohort in cohort_report(root) for m in cohort["members"]),
 )
 
 # --- the report -------------------------------------------------------------------------------
@@ -845,7 +941,19 @@ def status_line(summary: Mapping[str, Any]) -> str:
     failed = summary.get("failed") or []
     if failed:
         line += " failed=" + ";".join(failed)
-    return line
+    return line + first_verdict_suffix(summary)
+
+
+def first_verdict_suffix(summary: Mapping[str, Any]) -> str:
+    """The status-line tail for this walk's first-verdict stamps: silent when nothing is new."""
+    tail = ""
+    if summary.get("first_confirmed"):
+        tail += f" first_confirmed={summary['first_confirmed']}"
+    if summary.get("first_contradicted"):
+        tail += f" first_contradicted={summary['first_contradicted']}"
+    if summary.get("verdicts_failed"):
+        tail += f" verdicts_failed={summary['verdicts_failed']}"
+    return tail
 
 
 # --- the collector-backed frame ---------------------------------------------------------------
