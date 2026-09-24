@@ -46,7 +46,11 @@ from ..errors import ToolError
 from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
-from .forward_cohort import FORWARD_COHORT_LOCKED, WalkTrack, load_book_at, read_cohorts, walk_track
+from .forward_cohort import (
+    FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack, cohort_report, load_book_at,
+    maturity_of, read_cohorts, walk_track,
+)
+from .forward_confirmation import judge_forward, min_forward_trades
 from .null_control import NULL_FEATURE, _null_spec
 from .pool_state import read_candidates
 from .state import state_dir
@@ -268,3 +272,54 @@ def status_line(summary: Mapping[str, Any]) -> str:
         summary.get("members"), summary.get("walked"), summary.get("opened"), summary.get("settled")))
     failed = summary.get("failed") or []
     return line + (f" failed={len(failed)}" if failed else "")
+
+
+# --- the report: the judge's rate over the twins, beside the members' (2026-09-24, PR 2) -----------
+
+def null_report(root: Path | None = None) -> list[dict[str, Any]]:
+    """Every twin's forward numbers over its own rows: the judge's verdict and the maturity, exactly
+    as `forward_cohort.cohort_report` gives a member's. The twin is judged as a record whose
+    ``candidate_id`` is its null id, whose ``created_at_utc`` is its parent's selection time, and
+    whose spec is its null spec (for the timeframe's floor and slice width). Reads only."""
+    rows = read_null_outcomes(root)
+    lines: list[dict[str, Any]] = []
+    for record in read_null_records(root):
+        for twin in record.get("members") or []:
+            judged = {"candidate_id": twin.get("null_id"), "created_at_utc": twin.get("selected_at_utc"),
+                      "strategy_spec": twin.get("null_spec") or {}}
+            line = {
+                "null_id": twin.get("null_id"), "parent_candidate_id": twin.get("parent_candidate_id"),
+                "cohort_id": record.get("cohort_id"), "timeframe": twin.get("timeframe"),
+                "direction": (twin.get("null_spec") or {}).get("direction"),
+                **judge_forward(judged, rows),
+                "trade_floor": min_forward_trades(twin.get("timeframe")),
+            }
+            line["maturity"] = maturity_of(line)
+            lines.append(line)
+    return lines
+
+
+def arm_counts(lines: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per timeframe: lineages, with priced rows, at the trade floor, confirmed, contradicted."""
+    out: dict[str, dict[str, int]] = {}
+    for line in lines:
+        cell = out.setdefault(str(line.get("timeframe") or "?"), {
+            "members": 0, "with_rows": 0, "at_floor": 0, "confirmed": 0, "contradicted": 0})
+        priced = int(line.get("priceable_count") or 0)
+        cell["members"] += 1
+        cell["with_rows"] += priced > 0
+        cell["at_floor"] += priced >= min_forward_trades(line.get("timeframe"))
+        maturity = line.get("maturity") or maturity_of(line)
+        cell["confirmed"] += maturity == MATURITY_CONFIRMED
+        cell["contradicted"] += maturity == MATURITY_CONTRADICTED
+    return out
+
+
+def arm_comparison(root: Path | None = None) -> dict[str, Any] | None:
+    """The members' and the twins' judge outcomes side by side, per timeframe; None before any null
+    arm is frozen. Per timeframe, never pooled: `null_control` measured the null's own baseline at
+    -0.127R at 1h against -0.035R at 1d, so one pooled rate would mix three different questions."""
+    if not read_null_records(root):
+        return None
+    members = [m for cohort in cohort_report(root) for m in cohort["members"]]
+    return {"real": arm_counts(members), "null": arm_counts(null_report(root))}

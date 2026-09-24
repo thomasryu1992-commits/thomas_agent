@@ -106,7 +106,7 @@ def test_the_script_reads_only_and_prints_json(tmp_path, capsys):
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert script.main(["--json"], root=tmp_path) == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"pool", "forward"} and out["forward"] is None
+    assert set(out) == {"pool", "forward", "null"} and out["forward"] is None and out["null"] is None
     assert out["pool"]["lineages"] == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 

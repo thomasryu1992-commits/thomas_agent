@@ -33,6 +33,7 @@ from .candidate_identity import candidate_id
 from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_candidates
 from .forward_confirmation import min_forward_trades
 from .forward_cohort import MATURITIES, cohort_report, maturity_of
+from .forward_cohort_null import null_report, read_null_records
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import BACKLOG_REFUSAL_AXES, _lineage_key, refusal_axis
 
@@ -105,11 +106,28 @@ def forward_funnel(root: Path | None, records: Iterable[Mapping[str, Any]]) -> d
     if not report:
         return None
     specs = {candidate_id(record): record.get("strategy_spec") for record in records}
+    counts, by = _member_counts([m for cohort in report for m in cohort["members"]],
+                                lambda member: specs.get(str(member.get("candidate_id"))))
+    return {"cohorts": len(report), "counts": counts, "by": by}
+
+
+def null_funnel(root: Path | None) -> dict[str, Any] | None:
+    """The null arm's twins counted exactly as :func:`forward_funnel` counts members; None before any
+    null arm is frozen (2026-09-24)."""
+    records = read_null_records(root)
+    if not records:
+        return None
+    specs = {str(t.get("null_id")): t.get("null_spec") for r in records for t in r.get("members") or []}
+    counts, by = _member_counts(null_report(root), lambda line: specs.get(str(line.get("null_id"))))
+    return {"null_arms": len(records), "counts": counts, "by": by}
+
+
+def _member_counts(lines: Iterable[Mapping[str, Any]], spec_of: Any) -> tuple[dict[str, int], dict[str, Any]]:
     counts: dict[str, int] = {}
     by: dict[str, dict[str, dict[str, int]]] = {}
-    for member in (m for cohort in report for m in cohort["members"]):
+    for member in lines:
         priced = int(member.get("priceable_count") or 0)
-        facets = facets_of(specs.get(str(member.get("candidate_id"))))
+        facets = facets_of(spec_of(member))
         reached = ["members"]
         if priced > 0:
             reached.append("with_outcomes")
@@ -122,13 +140,14 @@ def forward_funnel(root: Path | None, records: Iterable[Mapping[str, Any]]) -> d
         for key in reached:
             counts[key] = counts.get(key, 0) + 1
             _count(by, facets, key)
-    return {"cohorts": len(report), "counts": counts, "by": by}
+    return counts, by
 
 
 def strategy_funnel(root: Path | None = None) -> dict[str, Any]:
     """Both funnels over one read of the candidate store."""
     records = read_candidates(root)
-    return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records)}
+    return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records),
+            "null": null_funnel(root)}
 
 
 def render_text(funnel: Mapping[str, Any]) -> list[str]:
@@ -148,14 +167,23 @@ def render_text(funnel: Mapping[str, Any]) -> list[str]:
     if forward is None:
         lines.append("  no cohort frozen yet")
         return lines
-    counts = forward["counts"]
+    lines += _render_forward(forward)
+    null = funnel.get("null")
+    if null is not None:
+        lines += ["", "NULL ARM - a coin-flip twin per member, judged the same way (a null CONFIRMED is "
+                      "the judge passing noise)"]
+        lines += _render_forward(null)
+    return lines
+
+
+def _render_forward(section: Mapping[str, Any]) -> list[str]:
+    counts = section["counts"]
     statuses = sorted(k for k in counts if k.startswith("status:"))
     maturities = [f"maturity:{m}" for m in MATURITIES if counts.get(f"maturity:{m}")]
-    lines.append("  " + "  ".join(f"{stage} {counts.get(stage, 0)}" for stage in FORWARD_STAGES))
-    lines.append("  " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in statuses))
-    lines.append("  maturity: " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in maturities))
-    lines += _render_breakdown(forward["by"], order=(*FORWARD_STAGES, *statuses, *maturities))
-    return lines
+    lines = ["  " + "  ".join(f"{stage} {counts.get(stage, 0)}" for stage in FORWARD_STAGES),
+             "  " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in statuses),
+             "  maturity: " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in maturities)]
+    return lines + _render_breakdown(section["by"], order=(*FORWARD_STAGES, *statuses, *maturities))
 
 
 def _render_breakdown(by: Mapping[str, Mapping[str, Mapping[str, int]]], *, order: Sequence[str]) -> list[str]:
