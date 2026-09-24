@@ -16,8 +16,9 @@ can have forward outcomes, so the two are reported side by side rather than as o
   :func:`promotion_backlog.refusal_axis` itself, or counted ``promotable``. Its totals therefore
   equal the backlog's ``refused`` and ``count`` by construction;
 - the **forward funnel** follows every frozen cohort member through `forward_cohort.cohort_report`:
-  a member with priced rows, then one at its timeframe's trade floor (`min_forward_trades`), and
-  the judge's status. Its status counts equal the board's.
+  a member with priced rows, then one at its timeframe's trade floor (`min_forward_trades`), the
+  judge's status, and the member's maturity (`forward_cohort.maturity_of`, 2026-09-24). Its status
+  and maturity counts equal the board's.
 
 The vocabulary is the repo's: the backlog's axes and the judge's statuses. Nothing here refuses,
 ranks or decides anything.
@@ -31,7 +32,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from .candidate_identity import candidate_id
 from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_candidates
 from .forward_confirmation import min_forward_trades
-from .forward_cohort import cohort_report
+from .forward_cohort import MATURITIES, cohort_report, maturity_of
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import BACKLOG_REFUSAL_AXES, _lineage_key, refusal_axis
 
@@ -115,6 +116,9 @@ def forward_funnel(root: Path | None, records: Iterable[Mapping[str, Any]]) -> d
         if priced >= min_forward_trades(member.get("timeframe") or facets["timeframe"]):
             reached.append("at_trade_floor")
         reached.append(f"status:{member.get('status')}")
+        # How far the record has got (#957): the judge's verdict, else where it stands against its
+        # trade floor. Carried on every report line; recomputed only for a line that predates it.
+        reached.append(f"maturity:{member.get('maturity') or maturity_of(member)}")
         for key in reached:
             counts[key] = counts.get(key, 0) + 1
             _count(by, facets, key)
@@ -146,9 +150,11 @@ def render_text(funnel: Mapping[str, Any]) -> list[str]:
         return lines
     counts = forward["counts"]
     statuses = sorted(k for k in counts if k.startswith("status:"))
+    maturities = [f"maturity:{m}" for m in MATURITIES if counts.get(f"maturity:{m}")]
     lines.append("  " + "  ".join(f"{stage} {counts.get(stage, 0)}" for stage in FORWARD_STAGES))
     lines.append("  " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in statuses))
-    lines += _render_breakdown(forward["by"], order=(*FORWARD_STAGES, *statuses))
+    lines.append("  maturity: " + "  ".join(f"{k.split(':', 1)[1]} {counts[k]}" for k in maturities))
+    lines += _render_breakdown(forward["by"], order=(*FORWARD_STAGES, *statuses, *maturities))
     return lines
 
 

@@ -73,6 +73,12 @@ def test_the_forward_funnel_agrees_with_the_board(tmp_path):
     board = fco.board_summary(tmp_path)
     statuses = {key.split(":", 1)[1]: n for key, n in funnel["counts"].items() if key.startswith("status:")}
     assert statuses == board["status_counts"]
+    maturities = {key.split(":", 1)[1]: n for key, n in funnel["counts"].items() if key.startswith("maturity:")}
+    assert maturities == board["maturity_counts"] == {"EXPLORATORY": 2}
+    assert sum(maturities.values()) == funnel["counts"]["members"]
+    rows, active = _store()
+    lines = strategy_funnel.render_text({"pool": strategy_funnel.pool_funnel(rows, active), "forward": funnel})
+    assert "  maturity: EXPLORATORY 2" in lines
     assert funnel["counts"]["members"] == 2
     assert funnel["counts"]["members"] >= funnel["counts"].get("with_outcomes", 0) >= funnel["counts"].get("at_trade_floor", 0)
 

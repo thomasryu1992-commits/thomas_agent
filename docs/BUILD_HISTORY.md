@@ -24,6 +24,14 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The strategy funnel's forward half counts maturity** (`strategy_funnel.forward_funnel`, 2026-09-24).
+  - **What it adds:** the member maturity #957 put on every cohort report line (`forward_cohort.maturity_of`)
+    is now counted in the forward funnel. It is split by timeframe, family and direction, and printed as
+    one `maturity:` line. Its totals equal the board's `maturity_counts`.
+  - **Live store:** 111 EXPLORATORY and 4 CONTRADICTED of 115. Every 1h and 1d member is EXPLORATORY. The
+    only members past their floor are the four 4h CONTRADICTED ones.
+  - **Display only:** the board is unchanged, since it already prints maturity on the cohort line.
+
 - **The daily board carries the strategy funnel in two lines** (`dashboard`, `strategy_funnel.past_holdout`,
   2026-09-24). Display only.
   - **Why:** with a backlog of 1 under the threshold of 5, the board printed "승격 대기 1 (알림 임계 5)"
