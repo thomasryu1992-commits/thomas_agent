@@ -1,6 +1,6 @@
 # 제안: 가설 트라이얼(`hypothesis_trial`) — §I 결정 요청의 갱신 (DRAFT v0.1)
 
-**상태:** DRAFT — 결정 요청. 코드 변경 없음. Thomas 결정 대기.
+**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 새 설계가 아니다. 외부 "Crypto Live Trading Follow-up Fix Plan" §10~13(Hypothesis Trial
 Layer)은 `docs/REMAINING_WORK.md` §I2(2026-08-05, "trial rotation slots", `trial_family`)와 같은
 안이고, §I는 08-05부터 결정을 기다리고 있다. 이 문서는 그 결정에 필요한 것 중 **08-05 이후에
@@ -149,3 +149,13 @@ forward cohort 115명 전원 탐색 단계, null 대조 `4h 반박 실제 4 vs n
 연구 에포크(§30~31)는 각자 제안서가 필요하다. 다만 생성기가 없으면 트라이얼 층의 입력은
 지금의 proposer뿐이고, 그 입력의 상태가 §1이다. 에포크는 트라이얼이 늘리는 다중 검정을 묶는
 장치라, A를 고르면 함께 봐야 한다.
+
+## 결정 (Thomas 2026-09-24, 권고대로)
+
+- **Q1 경로: C.** 트라이얼 행 + 별도 forward 트랙 + null 쌍둥이. A(선언형 family), B(코드 PR), D(보류)는 채택하지 않는다.
+- **Q2:** C에서는 해당 없음. 선언형 family는 만들지 않는다.
+- **Q3 트라이얼 forward: (a) 별도 트랙.** 동결된 cohort와 그 null 대조는 바꾸지 않는다.
+- **Q4 이름: `hypothesis_trial`.**
+- **Q5 졸업:** 새 문턱은 없다. `TEMPLATES` 설치는 Thomas PR이며 기존 holdout CONFIRMED를 요구한다. forward와 null 대조는 참고로만 읽고, 자동 승격은 없다.
+- **Q6 상한: 동시 트라이얼 4.** 백로그 상한은 트라이얼 편입을 검토로 세는 방식으로 바꾸는 것을 구현 PR에서 정한다.
+- 선행 조건 D-0은 #963으로 머지·배포했다.
