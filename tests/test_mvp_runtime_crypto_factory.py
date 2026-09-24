@@ -2242,16 +2242,36 @@ def test_a_fire_that_never_allocated_fusion_draws_no_shortfall():
     assert result["accepted_count"] == result["requested_count"] == 4
 
 
-def test_the_shortfall_draw_stays_on_this_fires_own_rotation_slice(tmp_path):
-    """`_rotation_offset` is `(step + phase) * count`, so `count` is what fixes WHICH families
-    a fire mints. Asking for the shortfall directly would land the draw on the slice belonging
-    to some other fire and leave this one's families half-explored — so the draw passes `count`
-    and `rotation_index` unchanged and keeps only the shortfall of what comes back."""
+def test_the_shortfall_draw_takes_the_next_rotation_slice(tmp_path):
+    """Thomas 2026-09-24 (EXPLORATION_BUDGET_V0.1, option b): the batch mints slice 2k of the
+    context's cursor and the shortfall draw slice 2k+1, so what fusion hands back buys breadth —
+    families this fire's batch did not draw — instead of a denser pass over the same ones."""
     control, result = _declined_fusion_runs(tmp_path)
     this_slice = {c["strategy_spec"]["strategy_family"] for c in control["candidates"]}
     assert result["fused_count"] == 0 and len(result["candidates"]) > len(control["candidates"])
     assert this_slice, "the control fire must actually mint something to compare against"
-    assert {c["strategy_spec"]["strategy_family"] for c in result["candidates"]} <= this_slice
+    drawn = {c["strategy_spec"]["strategy_family"] for c in result["candidates"]}
+    assert drawn - this_slice, "the shortfall must reach families outside this fire's own slice"
+    assert this_slice <= drawn  # the batch itself is unchanged
+
+
+def test_two_slices_a_fire_tile_the_library_in_half_the_fires():
+    """The coverage property `test_the_rotation_phase_preserves_library_coverage` pins, at the
+    step the fire now takes: slices 2k and 2k+1 per fire, so `ceil(total / (2 * count))` fires
+    reach every family, for any phase."""
+    count = 4
+    for symbol, timeframe in (("BTCUSDT", "1h"), ("SOLUSDT", "4h"), ("ETHUSDT", "1d")):
+        templates = templates_for_timeframe(timeframe, symbol=symbol)
+        total = len(templates)
+        phase = factory.context_rotation_phase(symbol, timeframe, count=count, total=total)
+        seen = set()
+        for fire in range(-(-total // (2 * count))):
+            for step in (2 * fire, 2 * fire + 1):
+                offset = factory._rotation_offset("GEN-999", 0, count, total, rotation_index=step, phase=phase)
+                seen.update(templates[(offset + i) % total].family for i in range(count))
+        assert seen == {t.family for t in templates}, (
+            f"{symbol} {timeframe}: unreachable in one half-length pass: "
+            f"{sorted({t.family for t in templates} - seen)}")
 
 
 def test_the_shortfall_draw_is_reproducible_from_the_recorded_window(tmp_path):

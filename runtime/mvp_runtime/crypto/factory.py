@@ -4890,12 +4890,15 @@ def run_factory(
         scope=scope,
     )
     # Counted from the store this function was already given — the rotation steps on
-    # THIS context's fire count, not on the global generation number. Hoisted out of the call
-    # below because the shortfall draw after fusion has to pass the SAME cursor: see there for
-    # why it re-draws this fire's slice rather than stepping to the next one.
+    # THIS context's fire count, not on the global generation number. A fire spans TWO slices
+    # (Thomas 2026-09-24, EXPLORATION_BUDGET_V0.1 decision Q2, option b): the batch takes slice
+    # 2k and the shortfall draw after fusion takes slice 2k+1, so the cursor steps two slices per
+    # fire and a pass over the library takes half the fires it did. See the shortfall draw.
     rotation_index = context_rotation_index(
         existing_candidates, symbol=symbol, timeframe=timeframe, scope=scope,
     )
+    batch_slice = None if rotation_index is None else 2 * rotation_index
+    topup_slice = None if rotation_index is None else 2 * rotation_index + 1
     batch = generate_batch(
         generation_id, seed=seed, count=count,
         symbol=symbol,
@@ -4904,7 +4907,7 @@ def run_factory(
         known_rule_hashes=known_hashes,
         positioning_eligible=positioning_eligible,
         venue=venue,
-        rotation_index=rotation_index,
+        rotation_index=batch_slice,
         symbol_scope=scope,
         # Derived from the candles this fire will be SCORED on, so the probe's width and the
         # evidence that judges it come from the same bars. Pooled mints take the most binding
@@ -5095,20 +5098,15 @@ def run_factory(
     # which `docs/REMAINING_WORK.md` F1 carries the numbers for and deliberately does not
     # take: that one cuts good fusions with bad, and this one cannot cut any.
     #
-    # **The same rotation slice drawn denser, not the next one.** `_rotation_offset` is
-    # `(step + phase) * count`, so `count` is what fixes WHICH families a fire mints — asking
-    # for the shortfall directly would land on the slice belonging to some other fire and
-    # leave this one's families half-explored. So `count` and `rotation_index` are passed
-    # unchanged and only the first `topup_requested` of the draw are kept; the cursor is
-    # untouched, and the next fire steps exactly one slice as it always did. What the extra
-    # draws buy is a denser sample of the space this fire was already in — half around each
-    # family's elite centre, half around its base — which is `elite_base_params`' own argument
-    # applied to a budget that was being discarded.
-    #
-    # Spending the shortfall on the NEXT slice instead would buy breadth rather than depth, and
-    # `context_rotation_phase` names breadth-per-fire as the scarce thing — but that is a change
-    # to the rotation, which decides what the factory explores, and it belongs in a diff that
-    # argues for it. This one recovers a discarded budget and touches nothing else.
+    # **The NEXT rotation slice, not the same one drawn denser (Thomas 2026-09-24).** Until then the
+    # shortfall re-drew this fire's slice — "breadth rather than depth ... belongs in a diff that
+    # argues for it" — and `EXPLORATION_BUDGET_V0.1.md` was that argument: measured over 30 days the
+    # shortfall was 340 of 372 fusion slots (46% of every mint), and breadth costs nothing the
+    # 2026-08-06 record counts (same volume), while family-level evidence (#965) is what is scarce.
+    # So the batch takes slice 2k and this draw slice 2k+1 of the context's cursor k. The draw asks
+    # for a whole slice (`count`) and keeps its first `topup_requested`, so when fusion takes some
+    # of its pairs the tail of slice 2k+1 is not drawn this pass — on the day this landed fusion
+    # took 8.6% of its slots — and waits for the next pass rather than displacing another slice.
     #
     # A distinct seed, because the same one reproduces the batch: the next eight hex digits of
     # the window hash the first eight already seeded, so it stays derived from the recorded
@@ -5116,8 +5114,8 @@ def run_factory(
     # so a collision is refused rather than stored twice.
     #
     # Rows carry `derivation_type: seeded_template` whichever draw they came from, because
-    # that is what they are — same function, same slice, same space, a different draw of the
-    # rng. What is worth telling apart is FIRES, and `seeded_topup_count` records that.
+    # that is what they are — same function, same space, the next slice of the same rotation.
+    # What is worth telling apart is FIRES, and `seeded_topup_count` records that.
     #
     # **Judge it over generations, not days** (the `#420` error, and this is a mint-time
     # change — where that error was made). What it has to move is the count of rows a fire
@@ -5139,7 +5137,7 @@ def run_factory(
             known_rule_hashes=frozenset(fire_hashes),
             positioning_eligible=positioning_eligible,
             venue=venue,
-            rotation_index=rotation_index,
+            rotation_index=topup_slice,
             symbol_scope=scope,
         )
         kept = topup["specs"][:topup_requested]
