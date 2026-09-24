@@ -21,9 +21,13 @@ mint, so bars inside the re-score's own holdout were counted as forward evidence
 day the holdout's 25 is a horizon nothing reaches. Every other constant is still imported from
 the judge it mirrors, and ``min_forward_trades`` is the one place the exception lives.
 
-The refusal side is symmetric on purpose (a confirmation must be able to fail):
-``FORWARD_CONTRADICTED`` — enough priceable closes and the net edge does not clear its own
-dispersion — excludes the lineage from this path exactly as a CONTRADICTED holdout does.
+The refusal side is symmetric on purpose (a confirmation must be able to fail): at the trade
+floor, a net edge that does not clear its own dispersion refuses the lineage from this path, and
+it splits on the sign of the mean exactly as the holdout does (#783, and Thomas 2026-09-24 for this
+judge — ``docs/proposals/FORWARD_UNDERPOWERED_V0.1.md``, option A). ``FORWARD_CONTRADICTED`` is a
+record that leaned AGAINST the edge (mean at or below zero); ``FORWARD_UNDERPOWERED`` is one that
+leaned WITH it and could not resolve the lean from zero. Both refuse at the LIVE door, which takes
+only ``FORWARD_CONFIRMED``; the split changes what the words mean, never what arms.
 
 What is deliberately NOT here:
 
@@ -55,7 +59,8 @@ from .lifecycle import outcome_attribution_key
 from .robustness import CONFIDENCE_Z, MIN_HOLDOUT_PERIODS, MIN_HOLDOUT_TRADES, t_critical_95
 
 FORWARD_CONFIRMED = "FORWARD_CONFIRMED"        # unseen forward record shows an edge clearing its noise
-FORWARD_CONTRADICTED = "FORWARD_CONTRADICTED"  # enough forward closes, and the edge does not clear it
+FORWARD_CONTRADICTED = "FORWARD_CONTRADICTED"  # at the floor, and the record leaned AGAINST the edge
+FORWARD_UNDERPOWERED = "FORWARD_UNDERPOWERED"  # at the floor, leaning WITH the edge, not resolved from zero
 FORWARD_INSUFFICIENT = "FORWARD_INSUFFICIENT"  # the record cannot be judged (too few, no spread, thin slices)
 
 # 1d trades ~0.03/day (backtest average); at MIN_HOLDOUT_TRADES=25 forward confirmation
@@ -273,7 +278,13 @@ def judge_forward(
         return verdict(FORWARD_INSUFFICIENT)
     mean = statistics.mean(nets)
     if mean - CONFIDENCE_Z * spread / math.sqrt(len(nets)) <= 0:
-        return verdict(FORWARD_CONTRADICTED, mean_net_r=round(mean, 6))
+        # The holdout's split (`robustness.holdout_status`), on the sign of a number the verdict
+        # already carries — no new threshold. Measured the day it landed (2026-09-24): a 1d lineage
+        # at +0.198R over its 10-trade floor, interval [-0.62, +1.01]R, read CONTRADICTED beside four
+        # 4h shorts that really measured negative. Returned before the slice test for the holdout's
+        # reason: the slice interval is wider, so neither branch below could confirm it.
+        status = FORWARD_UNDERPOWERED if mean > 0 else FORWARD_CONTRADICTED
+        return verdict(status, mean_net_r=round(mean, 6))
 
     width = forward_slice_width_days(str(spec.get("timeframe") or ""))
     if width is None:

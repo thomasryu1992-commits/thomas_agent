@@ -97,6 +97,43 @@ def test_a_negative_forward_record_contradicts():
     assert fc.judge_forward(_record(), rows)["status"] == fc.FORWARD_CONTRADICTED
 
 
+def _leaning_rows(signs, *, win=2.0, loss=-1.0):
+    """One trade per 14-day slice from 2026-01-01, a win or a loss per sign: a record whose mean
+    and interval are set by the mix, spread far enough apart to be judged."""
+    from datetime import timedelta
+    from runtime.mvp_runtime import timeutil
+    t0 = timeutil.parse_iso("2026-01-01T00:00:00Z")
+    return [_outcome(timeutil.format_iso(t0 + timedelta(days=15 * i + 0.5)), win if up else loss)
+            for i, up in enumerate(signs)]
+
+
+def test_a_record_leaning_with_the_edge_it_cannot_resolve_is_underpowered_not_contradicted():
+    """The 2026-09-24 split (option A): the holdout's rule, on the mean's sign. Five wins of +2R
+    and five losses of -1R over the 1d floor: mean +0.5R, interval about [-0.48, +1.48]R."""
+    rows = _leaning_rows([True, False] * 5)
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["priceable_count"] == 10
+    assert verdict["mean_net_r"] == pytest.approx(0.5)
+    assert verdict["status"] == fc.FORWARD_UNDERPOWERED
+
+
+def test_a_record_at_or_below_zero_that_cannot_clear_still_contradicts():
+    rows = _leaning_rows([True, False, False] * 3 + [False], win=2.0, loss=-1.0)  # mean -0.1R
+    verdict = fc.judge_forward(_record(timeframe="1d"), rows)
+    assert verdict["mean_net_r"] < 0 and verdict["status"] == fc.FORWARD_CONTRADICTED
+    flat = _leaning_rows([True, False, False] * 4)  # 4 x +2R, 8 x -1R: mean exactly 0
+    assert fc.judge_forward(_record(timeframe="1d"), flat)["status"] == fc.FORWARD_CONTRADICTED
+
+
+def test_an_underpowered_forward_record_cannot_arm_live():
+    """The split changes a word, never the door: LIVE takes FORWARD_CONFIRMED and nothing else."""
+    with pytest.raises(ToolError) as exc:
+        fc.assert_live_tier_confirmed([_record(timeframe="1d")], outcomes=_leaning_rows([True, False] * 5),
+                                      observed_lineages=1)
+    assert exc.value.reason_code == "CANDIDATE_UNCONFIRMED_FOR_LIVE"
+    assert "forward=FORWARD_UNDERPOWERED" in str(exc.value)
+
+
 def test_a_thin_forward_record_is_insufficient_not_a_pass():
     rows = _spread_outcomes(slices=4, per_slice=3)  # 12 closes
     assert fc.judge_forward(_record(), rows)["status"] == fc.FORWARD_INSUFFICIENT

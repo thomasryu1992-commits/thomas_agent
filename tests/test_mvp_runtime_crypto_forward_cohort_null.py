@@ -244,7 +244,7 @@ def test_the_comparison_is_per_timeframe_and_absent_before_a_null_arm(tmp_path):
     comparison = fcn.arm_comparison(tmp_path)
     assert set(comparison["null"]) == {"1d", "1h"} == set(comparison["real"])
     assert comparison["null"]["1h"] == {"members": 1, "with_rows": 0, "at_floor": 0,
-                                        "confirmed": 0, "contradicted": 0}
+                                        "confirmed": 0, "contradicted": 0, "underpowered": 0}
 
 
 def test_the_board_prints_the_null_line_beside_the_members(tmp_path):
