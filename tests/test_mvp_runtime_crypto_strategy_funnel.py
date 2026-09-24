@@ -106,7 +106,9 @@ def test_the_script_reads_only_and_prints_json(tmp_path, capsys):
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert script.main(["--json"], root=tmp_path) == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"pool", "forward", "null"} and out["forward"] is None and out["null"] is None
+    assert set(out) == {"pool", "forward", "null", "independent_bets"}
+    assert out["forward"] is None and out["null"] is None
+    assert out["independent_bets"] == {"cohort": None, "twins": None, "pool_forward": None}
     assert out["pool"]["lineages"] == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
@@ -157,3 +159,17 @@ def test_the_board_status_carries_the_funnel_from_the_store(tmp_path):
     status = build_status(tmp_path, now="2026-07-20T00:00:00Z")
     assert set(status["strategy_funnel"]) == {"timeframe", "direction"}
     assert sum(judged for _, judged in status["strategy_funnel"]["timeframe"].values()) == 1
+
+
+def test_the_text_reports_independent_bets_per_record_set():
+    census = {"lineages": 3, "days": 10, "first_day": "2026-09-01", "last_day": "2026-09-10",
+              "effective_bets": 1.2, "baseline_effective_bets": 2.6, "mean_corr_same_direction": 0.8,
+              "mean_corr_opposite_direction": None, "by_direction": {"LONG": {"lineages": 3, "effective_bets": 1.2}},
+              "top_same_direction_pairs": [{"a": "x", "b": "y", "corr": 0.9}]}
+    rows, _ = _store()
+    lines = strategy_funnel.render_text({"pool": strategy_funnel.pool_funnel(rows, {}), "forward": {
+        "counts": {}, "by": {}}, "independent_bets": {"cohort": census, "twins": None, "pool_forward": None}})
+    text = "\n".join(lines)
+    assert "INDEPENDENT BETS" in text
+    assert "cohort        3 lineages -> 1.2 bets (baseline 2.6; 2026-09-01..2026-09-10, 10d)" in text
+    assert "most alike: x~y 0.9" in text and "twins         under two lineages with enough rows" in text

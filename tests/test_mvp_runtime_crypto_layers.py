@@ -132,6 +132,7 @@ LAYER: dict[str, str] = {
     "data_review": "strategy", "forward_book": "strategy", "forward_confirmation": "strategy",
     "lifecycle": "strategy", "distribution_gate": "strategy", "limit_entry": "strategy",
     "outcome_math": "strategy", "trade_plan": "strategy", "candidate_ranking": "strategy",
+    "independence": "strategy",
     # decision: which strategies run, and the paper positions they open
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
