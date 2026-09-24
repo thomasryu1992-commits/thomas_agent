@@ -50,7 +50,7 @@ from .forward_cohort import (
     FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack, cohort_report, load_book_at,
     maturity_of, read_cohorts, walk_track,
 )
-from .forward_confirmation import judge_forward, min_forward_trades
+from .forward_confirmation import FORWARD_UNDERPOWERED, judge_forward, min_forward_trades
 from .null_control import NULL_FEATURE, _null_spec
 from .pool_state import read_candidates
 from .state import state_dir
@@ -300,11 +300,14 @@ def null_report(root: Path | None = None) -> list[dict[str, Any]]:
 
 
 def arm_counts(lines: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
-    """Per timeframe: lineages, with priced rows, at the trade floor, confirmed, contradicted."""
+    """Per timeframe: lineages, with priced rows, at the trade floor, confirmed, contradicted, and
+    underpowered (at the floor, leaning with the edge, unresolved — MATURE in the maturity, counted
+    apart so the comparison shows where the records the 2026-09-24 split moved went)."""
     out: dict[str, dict[str, int]] = {}
     for line in lines:
         cell = out.setdefault(str(line.get("timeframe") or "?"), {
-            "members": 0, "with_rows": 0, "at_floor": 0, "confirmed": 0, "contradicted": 0})
+            "members": 0, "with_rows": 0, "at_floor": 0, "confirmed": 0, "contradicted": 0,
+            "underpowered": 0})
         priced = int(line.get("priceable_count") or 0)
         cell["members"] += 1
         cell["with_rows"] += priced > 0
@@ -312,6 +315,7 @@ def arm_counts(lines: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
         maturity = line.get("maturity") or maturity_of(line)
         cell["confirmed"] += maturity == MATURITY_CONFIRMED
         cell["contradicted"] += maturity == MATURITY_CONTRADICTED
+        cell["underpowered"] += line.get("status") == FORWARD_UNDERPOWERED
     return out
 
 

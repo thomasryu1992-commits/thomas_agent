@@ -679,3 +679,14 @@ def test_the_report_carries_each_members_maturity(tmp_path):
     (cohort,) = fco.cohort_report(tmp_path)
     (member,) = cohort["members"]
     assert member["maturity"] == fco.MATURITY_EXPLORATORY and member["trade_floor"] == 10
+
+
+def test_an_underpowered_member_reads_mature_and_may_lead():
+    """At its floor, leaning with the edge, unresolved: MATURE, not 반박 — and the leader filter
+    drops only CONTRADICTED, so it ranks on its own lower bound."""
+    from runtime.mvp_runtime.crypto.forward_confirmation import (
+        FORWARD_CONTRADICTED, FORWARD_UNDERPOWERED,
+    )
+    line = {"status": FORWARD_UNDERPOWERED, "priceable_count": 10, "timeframe": "1d"}
+    assert fco.maturity_of(line) == fco.MATURITY_MATURE
+    assert fco.maturity_of({**line, "status": FORWARD_CONTRADICTED}) == fco.MATURITY_CONTRADICTED

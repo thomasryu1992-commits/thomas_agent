@@ -112,7 +112,8 @@ FORWARD_COHORT_POSITIONS_INVALID = "FORWARD_COHORT_POSITIONS_INVALID"
 # floor and one past it whose record still cannot be judged; the board read both as "판정 전", and a
 # three-trade leader looked like a lineage waiting on a verdict. Display only: nothing reads it to decide.
 MATURITY_EXPLORATORY = "EXPLORATORY"      # below its trade floor: the numbers are a first look
-MATURITY_MATURE = "MATURE"                # at or past the floor, and the judge has not confirmed it
+MATURITY_MATURE = "MATURE"                # at or past the floor, neither confirmed nor refuted —
+                                          # FORWARD_INSUFFICIENT there, or FORWARD_UNDERPOWERED (2026-09-24)
 MATURITY_CONFIRMED = "CONFIRMED"          # FORWARD_CONFIRMED
 MATURITY_CONTRADICTED = "CONTRADICTED"    # FORWARD_CONTRADICTED
 MATURITY_UNRESOLVED = "UNRESOLVED"        # the member's candidate row cannot be found
@@ -690,7 +691,11 @@ def trade_bounds(nets: Sequence[float], *, spread_floor: float | None) -> dict[s
 
 def maturity_of(member: Mapping[str, Any]) -> str:
     """One member line's maturity: the judge's verdict when it has one, else where its priced rows
-    stand against its timeframe's trade floor (:func:`forward_confirmation.min_forward_trades`)."""
+    stand against its timeframe's trade floor (:func:`forward_confirmation.min_forward_trades`).
+
+    ``FORWARD_UNDERPOWERED`` is not a verdict here: a record at its floor that leaned WITH the edge
+    and could not resolve it reads MATURE, so 반박 counts only records that leaned against it, and
+    such a member stays eligible to lead (ranked on its own lower bound like any other)."""
     status = member.get("status")
     if status == FORWARD_CONFIRMED:
         return MATURITY_CONFIRMED

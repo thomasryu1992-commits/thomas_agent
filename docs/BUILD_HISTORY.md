@@ -24,6 +24,24 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The forward judge splits CONTRADICTED on the sign, as the holdout does** (`forward_confirmation`,
+  2026-09-24; decided by Thomas the same day, option A of `docs/proposals/FORWARD_UNDERPOWERED_V0.1.md`).
+  - **The defect:** `judge_forward` read every record at its trade floor whose interval failed to
+    clear zero as `FORWARD_CONTRADICTED` — one label for "measured against the edge" and "leaned with
+    it, unresolved", the defect #783 fixed for the holdout. The first scheduled cohort walk showed it:
+    a 1d lineage at +0.198R over its 10-trade floor (interval [-0.62, +1.01]R) read 반박 beside four
+    4h shorts that really measured negative, and fell out of the leaders an operator may promote from.
+  - **What changed:** `FORWARD_UNDERPOWERED` when the mean is positive, `FORWARD_CONTRADICTED` when it
+    is at or below zero — no new threshold. The LIVE door is untouched: it takes only
+    `FORWARD_CONFIRMED`, and a test pins that UNDERPOWERED cannot arm. The cohort reads UNDERPOWERED
+    as MATURE (so 반박 means "leaned against" again, and the member may lead on its own lower bound),
+    and the null arm's per-timeframe counts gain an `underpowered` column.
+  - **Effect on the live store, read-only:** one member and one coin-flip twin move from CONTRADICTED
+    to UNDERPOWERED. Nothing stores the forward status, so nothing is migrated.
+  - **Tests:** a positive-mean floor record reads UNDERPOWERED and cannot arm; negative and exactly-zero
+    means still read CONTRADICTED; the cohort's maturity. Always-contradicted and zero-as-underpowered
+    mutants are caught.
+
 - **The null arm is read beside the members: the judge's outcomes per timeframe, real vs null**
   (`forward_cohort_null.null_report` / `arm_comparison`, the board, the funnel; 2026-09-24, PR 2 of the
   null arm). Display only.
