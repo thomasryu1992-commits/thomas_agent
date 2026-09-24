@@ -24,6 +24,26 @@ Append a new entry when a milestone ships, in the same PR.
 
 ## Delivered
 
+- **The null arm is read beside the members: the judge's outcomes per timeframe, real vs null**
+  (`forward_cohort_null.null_report` / `arm_comparison`, the board, the funnel; 2026-09-24, PR 2 of the
+  null arm). Display only.
+  - **What it adds:**
+    - `null_report` judges every twin like `cohort_report` judges a member: its null id, its parent's
+      selection time, and its null spec for the floor and the slices.
+    - `arm_comparison` counts both arms per timeframe: members, with rows, at the floor, confirmed,
+      contradicted.
+    - Per timeframe, never pooled. `null_control` measured the null's own baseline at -0.127R at 1h
+      and -0.035R at 1d.
+  - **Board:** one line under the cohort, `null 대조(확정·반박/계보, 실제 vs null) 1h … · 4h … · 1d …`,
+    ending with how many twins have any rows, so that "nothing yet" reads apart from "nothing passed".
+    An unreadable null arm is a board warning.
+  - **Funnel:** a NULL ARM section, counted by the same helper as the members' forward section.
+  - **The proof it can measure anything:** a twin whose rows are a consistent, spread edge is
+    FORWARD_CONFIRMED and is counted as a null confirmation. A rate that can only ever be zero would
+    measure nothing.
+  - **Live store** (twins frozen 04:17Z, no twin rows yet): `1h 0·0/19 vs 0·0/19 · 4h 0·4/48 vs 0·0/48 ·
+    1d 0·0/48 vs 0·0/48 (null 기록 0계보)`. The board build goes from 4.4 s to 4.8 s.
+
 - **The forward cohort gets a null arm: a coin-flip twin per member, walked beside it**
   (`crypto/forward_cohort_null.py`, 2026-09-24; item 7 of the cohort design, Thomas's choice B). Its
   records, walk and stores only; the judge's rate over it is reported in a follow-up.

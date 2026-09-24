@@ -33,7 +33,8 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
-    account, counterfactual, digest, feedback, forward_cohort, lifecycle, oi_store, orderbook_store,
+    account, counterfactual, digest, feedback, forward_cohort, forward_cohort_null, lifecycle, oi_store,
+    orderbook_store,
     paper, pool, positioning_store, strategy_funnel,
 )
 # "Can this sample tell the sign of its own edge" is one question with one answer in this
@@ -200,6 +201,14 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         cohort_board = None
         warnings.append(f"forward cohort store unreadable ({exc.reason_code})")
+    # The null arm (2026-09-24): the judge's outcomes over coin-flip twins beside the members', per
+    # timeframe. It opens no door; the line is how an operator reads whether "confirmed" means more
+    # than chance would give.
+    try:
+        null_arm = forward_cohort_null.arm_comparison(root)
+    except MvpRuntimeError as exc:
+        null_arm = None
+        warnings.append(f"forward cohort null arm unreadable ({exc.reason_code})")
 
     # Imported inside the function, the way `live_route` reaches the same module: the
     # operator package pulls in the whole console/pipeline tree, and the board is imported
@@ -363,6 +372,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         # threshold can see the queue shrink instead of only learning when it crosses back.
         "promotion_backlog": backlog,
         "forward_cohort": cohort_board,
+        "forward_cohort_null": null_arm,
         "strategy_funnel": ({facet: strategy_funnel.past_holdout(funnel, facet) for facet in ("timeframe", "direction")}
                             if funnel else None),
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
@@ -537,6 +547,13 @@ _TIMEFRAME_ORDER = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
 # is, so a three-trade lineage does not read as one waiting on a verdict.
 _COHORT_MATURITY_WORDS = {"EXPLORATORY": "탐색", "MATURE": "성숙", "CONFIRMED": "확정", "CONTRADICTED": "반박",
                           "UNRESOLVED": "미해석"}
+
+
+def _arm(cell: dict[str, Any] | None) -> str:
+    """One arm's cell on the null line: confirmed·contradicted/lineages, or '-' when absent."""
+    if not cell:
+        return "-"
+    return f"{cell.get('confirmed', 0)}·{cell.get('contradicted', 0)}/{cell.get('members', 0)}"
 
 
 def _cohort_mark(leader: dict[str, Any]) -> str:
@@ -910,6 +927,16 @@ def render_status_text(status: dict[str, Any]) -> str:
                 f"평균 {_r(m.get('trade_mean_r'))}R 하한 {_r(m.get('trade_lower_bound_r'))}R "
                 f"{_cohort_mark(m)}"
                 for m in leaders))
+    # Real members against their coin-flip twins, per timeframe: confirmed·contradicted / lineages.
+    # The comparison is the reading; a null CONFIRMED is the judge passing noise.
+    null_arm = status.get("forward_cohort_null") or {}
+    real, null = null_arm.get("real") or {}, null_arm.get("null") or {}
+    if null:
+        lines.append("       null 대조(확정·반박/계보, 실제 vs null) " + " · ".join(
+            f"{tf} {_arm(real.get(tf))} vs {_arm(null.get(tf))}"
+            for tf in sorted(set(real) | set(null), key=lambda t: (_TIMEFRAME_ORDER.get(t, 99), t)))
+            # Until the twins have rows, 0·0 on the null side is "nothing yet", not "nothing passed".
+            + f" (null 기록 {sum(c.get('with_rows', 0) for c in null.values())}계보)")
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"
