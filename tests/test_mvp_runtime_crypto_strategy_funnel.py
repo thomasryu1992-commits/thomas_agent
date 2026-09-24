@@ -113,3 +113,41 @@ def test_a_damaged_store_refuses_the_run(tmp_path, capsys):
     path.write_text('{"candidate_id": "x", "record_sha256": "sha256:wrong"}\n', encoding="utf-8")
     assert script.main([], root=tmp_path) != 0
     assert "CANDIDATES_TAMPERED" in capsys.readouterr().err
+
+
+# --- the daily board's funnel lines (2026-09-24) -------------------------------------------------
+
+def test_past_holdout_counts_lineages_beyond_the_holdout_over_those_not_in_the_pool():
+    rows, active = _store()
+    funnel = strategy_funnel.pool_funnel(rows, active)
+    # 15m: ok (promotable), fragile (verdict), sibling (lineage_already_counted) passed the holdout;
+    # contradicted and bare did not; member is in the pool and not counted at all.
+    assert strategy_funnel.past_holdout(funnel, "timeframe") == {"15m": (3, 5), "1h": (0, 1)}
+    assert set(strategy_funnel.PAST_HOLDOUT) == {"verdict", "expectancy", "lineage_already_counted",
+                                                 "unjudgeable", strategy_funnel.PROMOTABLE}
+
+
+def test_the_board_prints_the_funnel_shortest_timeframe_first():
+    from runtime.mvp_runtime.crypto.dashboard import render_status_text
+    text = render_status_text({"strategy_funnel": {
+        "timeframe": {"1d": (0, 580), "15m": (0, 334), "4h": (6, 1120), "1h": (0, 994)},
+        "direction": {"short": (3, 1550), "long": (3, 1478)},
+    }})
+    assert "       퍼널 tf별 holdout 통과/계보 15m 0/334 · 1h 0/994 · 4h 6/1120 · 1d 0/580" in text
+    assert "       퍼널 방향별 holdout 통과/계보 long 3/1478 · short 3/1550" in text
+
+
+def test_no_funnel_prints_no_funnel_line():
+    from runtime.mvp_runtime.crypto.dashboard import render_status_text
+    assert "퍼널" not in render_status_text({"strategy_funnel": None})
+
+
+def test_the_board_status_carries_the_funnel_from_the_store(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import build_status
+    rows, _ = _store()
+    pool.install_active_pool({"active_strategies": []}, root=tmp_path)
+    pool.append_candidates([{k: v for k, v in r.items() if k not in ("record_sha256", "candidate_id")}
+                            for r in rows[:1]], root=tmp_path)
+    status = build_status(tmp_path, now="2026-07-20T00:00:00Z")
+    assert set(status["strategy_funnel"]) == {"timeframe", "direction"}
+    assert sum(judged for _, judged in status["strategy_funnel"]["timeframe"].values()) == 1
