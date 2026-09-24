@@ -1,6 +1,6 @@
 # 제안: 순차 검정 — "조기 판정"이 아니라 "반복해서 읽는 고정 판정"의 오류율 (DRAFT v0.1)
 
-**상태:** DRAFT — 결정 요청. 코드 변경 없음. Thomas 결정 대기.
+**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §26~29(Sequential Early Reject,
 Sequential Confirmation Research, "매일 p < 0.05 반복 금지 → Confidence Sequence·SPRT")에 대한
 답이다. 계획서는 순차 검정을 **forward 판정을 빠르게 하는 장치**로 제안했다. 실측한 거래 빈도에서
@@ -162,3 +162,11 @@ optional stopping을 얼마나 허용할지다.
   시뮬레이션 손익의 표준편차(1.41R)가 Hoeffding 폭(1.5R)에 가까워 이득은 작다.
 - 시뮬레이션 스크립트(`seq_sim.py`, `cs_sim.py`, `persist_sim.py`)는 저장소에 넣지 않았다.
   `judge_forward`를 그대로 부르고 손익 함수만 바꿔 끼운다. 재현이 필요하면 스크립트를 함께 싣는다.
+
+## 결정 (Thomas 2026-09-24, 권고대로)
+
+- **Q1:** 계획서의 "조기 기각·조기 확정" 전제는 **기각**한다.
+- **Q2: A를 한다.** walk가 멤버와 쌍둥이의 첫 CONFIRMED·첫 CONTRADICTED 시각을 기록하고, 보드에 누적 확정을 표시하고, LIVE 요청문에 반복 판정 문구를 넣는다.
+- **Q3:** B(문에서 조이기)는 PAPER 단계를 벗어날 때, 또는 쌍둥이 누적 확정이 사전 추정(4h 약 5%/년)을 넘을 때 다시 묻는다.
+- **Q4:** B1과 B2 중 선택은 그때 한다.
+- C(연구 전용 라벨)와 D(끈끈한 조기 기각)는 하지 않는다.
