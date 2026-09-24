@@ -34,6 +34,7 @@ from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_ca
 from .forward_confirmation import min_forward_trades
 from .forward_cohort import MATURITIES, cohort_report, maturity_of
 from .forward_cohort_null import null_report, read_null_records
+from .judgement_fingerprint import judgement_fingerprint
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import BACKLOG_REFUSAL_AXES, _lineage_key, refusal_axis
 
@@ -147,13 +148,15 @@ def strategy_funnel(root: Path | None = None) -> dict[str, Any]:
     """Both funnels over one read of the candidate store."""
     records = read_candidates(root)
     return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records),
-            "null": null_funnel(root)}
+            "null": null_funnel(root), "judgement_rules": judgement_fingerprint()}
 
 
 def render_text(funnel: Mapping[str, Any]) -> list[str]:
     """ASCII lines for the operator's terminal. Reports only; nothing here is a verdict."""
     pool = funnel["pool"]
-    lines = ["=== strategy funnel (read-only; decides nothing) ===",
+    rules = funnel.get("judgement_rules") or {}
+    lines = ["=== strategy funnel (read-only; decides nothing) ==="
+             + (f" judgement rules {rules['short']}" if rules.get("short") else ""),
              f"store rows {pool['rows']} | lineages judged {pool['lineages']} "
              f"(re-appends collapsed, as promotable_backlog counts)", "",
              "POOL DOOR - first axis that drops each lineage (promotable_backlog's chain)"]

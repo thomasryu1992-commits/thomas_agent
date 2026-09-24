@@ -394,19 +394,19 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 179 | `invalid` | `—` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 218 | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 235 | `load_book` | `—` |
-| `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 289 | `freeze_cohort` | `not members` |
+| `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 293 | `freeze_cohort` | `not members` |
 | `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 168 | `read_null_records` | `not isinstance(record, dict) or record.get('forward_cohort_nulls_version') != NULLS_VERSION` |
 | `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 173 | `read_null_records` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `FORWARD_COHORT_NULLS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 163 | `read_null_records` | `—` |
-| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 402 | `load_book_at` | `raw.get('forward_cohort_positions_version') != POSITIONS_VERSION` |
-| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 410 | `load_book_at` | `strangers` |
-| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 419 | `invalid` | `—` |
-| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 457 | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |
-| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 167 | `read_cohorts` | `not isinstance(record, dict) or record.get('forward_cohort_version') != FORWARD_COHORT_VERSION` |
-| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 172 | `read_cohorts` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 162 | `read_cohorts` | `—` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 398 | `load_book_at` | `—` |
-| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 400 | `load_book_at` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 406 | `load_book_at` | `raw.get('forward_cohort_positions_version') != POSITIONS_VERSION` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 414 | `load_book_at` | `strangers` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 423 | `invalid` | `—` |
+| `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 461 | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |
+| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 168 | `read_cohorts` | `not isinstance(record, dict) or record.get('forward_cohort_version') != FORWARD_COHORT_VERSION` |
+| `FORWARD_COHORT_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 173 | `read_cohorts` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 163 | `read_cohorts` | `—` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 402 | `load_book_at` | `—` |
+| `FORWARD_COHORT_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 404 | `load_book_at` | `not isinstance(raw, Mapping) or not isinstance(raw.get('entries'), Mapping)` |
 | `FORWARD_COHORT_WALK_FAILED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1404 | `_execute` | `summary['contexts'] and (not summary['walked'])` |
 | `FORWARD_HISTORY_DUPLICATE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 314 | `read_sealed_rows` | `settlement_id in seen_settlements` |
 | `FORWARD_HISTORY_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 301 | `read_sealed_rows` | `record.get('provenance') != provenance` |
