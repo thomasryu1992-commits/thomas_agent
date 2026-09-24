@@ -74,6 +74,7 @@ from .forward_confirmation import (
     FORWARD_CONFIRMED, FORWARD_CONTRADICTED, forward_outcomes_for, judge_forward, min_forward_trades,
     selection_cutoff,
 )
+from .judgement_fingerprint import judgement_fingerprint, judgement_rules
 from .market_data import TIMEFRAMES
 from .outcome_math import net_result_r
 from .pool_admission import (
@@ -260,6 +261,9 @@ def build_cohort_record(members: Sequence[Mapping[str, Any]], *, now: str) -> di
             "promotable_evidence_depth_ranks": sorted(PROMOTABLE_EVIDENCE_DEPTH_RANKS),
             "one_member_per": "strategy_family + symbol_scope + timeframe",
         },
+        # The judgement rules this cohort was frozen under, values included, so a reader after a
+        # threshold change can still judge it by them (RESEARCH_EPOCH_V0.1, decided 2026-09-24).
+        "judgement_rules": {**judgement_fingerprint(), "rules": judgement_rules()},
         "cohort_size": len(members),
         "context_sizes": dict(sorted(context_sizes.items())),
         "members": [dict(m) for m in members],

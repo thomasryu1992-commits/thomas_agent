@@ -41,6 +41,7 @@ from . import (
 # runtime. `robustness` owns the multiplier because it is the module that judges whether an
 # edge is real — the holdout gate draws the same interval over a candidate's unseen tail that
 # this board draws over settled paper outcomes. Restating 1.96 here is how the two drift.
+from .judgement_fingerprint import judgement_fingerprint
 from .robustness import CONFIDENCE_Z
 
 
@@ -373,6 +374,9 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "promotion_backlog": backlog,
         "forward_cohort": cohort_board,
         "forward_cohort_null": null_arm,
+        # Which judgement rules every verdict on this board was read under (2026-09-24,
+        # RESEARCH_EPOCH_V0.1 option A): a threshold change re-grades the store at once.
+        "judgement_rules": judgement_fingerprint(),
         "strategy_funnel": ({facet: strategy_funnel.past_holdout(funnel, facet) for facet in ("timeframe", "direction")}
                             if funnel else None),
         # Depth being accumulated toward an hourly OI feature source. Reported next to the pool
@@ -806,7 +810,9 @@ def render_status_text(status: dict[str, Any]) -> str:
     Same data as before, reordered so the decisions surface: the judgement first, the
     evidence under it, and the parts that are only noise until they are not (grants)
     collapsed to one line."""
-    lines = [f"=== crypto dashboard === {_stamp(status.get('created_at'))}", ""]
+    rules = status.get("judgement_rules") or {}
+    lines = [f"=== crypto dashboard === {_stamp(status.get('created_at'))}"
+             + (f" · 판정 규칙 {rules['short']}" if rules.get("short") else ""), ""]
     lines += _headline(status)
     lines.append("")
 

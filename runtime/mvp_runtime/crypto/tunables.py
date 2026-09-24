@@ -53,6 +53,7 @@ from . import (
     forward_book,
     forward_confirmation,
     guards,
+    independence,
     live_allowance,
     live_entry,
     live_order,
@@ -528,6 +529,10 @@ TUNABLES: tuple[Tunable, ...] = (
     Tunable("MIN_POST_MINT_TRADES", null_control.MIN_POST_MINT_TRADES, "crypto/null_control.py",
             DERIVED, "the same independence argument on the other axis: a long window can be thin",
             "moves with `MIN_POST_MINT_DAYS`; neither alone makes a window judgeable"),
+    Tunable("MIN_ROWS_PER_LINEAGE", independence.MIN_ROWS_PER_LINEAGE, "crypto/independence.py",
+            MEASURED, "the census PORTFOLIO_INDEPENDENCE_V0.1 was decided on (2026-09-24): under five "
+            "closes a daily series is almost all zeros and correlates by noise",
+            "a record set where five leaves most lineages out, or a re-measurement at another floor"),
 
     # --- decided here, with the argument in the code beside each ------------------------------
     Tunable("MAX_PROPOSALS_PER_RUN", proposer.MAX_PROPOSALS_PER_RUN, "crypto/proposer.py",

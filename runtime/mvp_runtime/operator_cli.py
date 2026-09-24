@@ -179,6 +179,17 @@ def main(
             notify_operator(channel, policy_fingerprint.change_notice(policy_check), repo_root=repo_root)
         except MvpRuntimeError as exc:
             sys.stderr.write(f"OPERATOR: policy change not announced ({exc.reason_code})\n")
+    # The same question for the crypto lane's judgement rules (RESEARCH_EPOCH_V0.1, Thomas
+    # 2026-09-24): baked into the image like the policy, so a change is a deploy, announced once.
+    # Imported here, not at module level: the core import graph loads no domain module.
+    from .crypto import judgement_fingerprint
+    rules_check = judgement_fingerprint.check_and_record(now=timeutil.utc_now_iso(), root=repo_root)
+    sys.stderr.write(judgement_fingerprint.banner(rules_check))
+    if rules_check["status"] == judgement_fingerprint.CHANGED:
+        try:
+            notify_operator(channel, judgement_fingerprint.change_notice(rules_check), repo_root=repo_root)
+        except MvpRuntimeError as exc:
+            sys.stderr.write(f"OPERATOR: judgement-rule change not announced ({exc.reason_code})\n")
     working_memory = working_memory if working_memory is not None else WorkingMemoryStore.default(repo_root)
     programization = ProgramizationStore.default(repo_root)
     control_store = control_store if control_store is not None else ControlStore.default(repo_root)

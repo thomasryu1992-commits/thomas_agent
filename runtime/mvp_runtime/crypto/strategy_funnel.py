@@ -32,8 +32,11 @@ from typing import Any, Iterable, Mapping, Sequence
 from .candidate_identity import candidate_id
 from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_candidates
 from .forward_confirmation import min_forward_trades
-from .forward_cohort import MATURITIES, cohort_report, maturity_of
-from .forward_cohort_null import null_report, read_null_records
+from . import forward_book
+from .forward_cohort import MATURITIES, cohort_report, maturity_of, read_cohort_outcomes
+from .forward_cohort_null import null_report, read_null_outcomes, read_null_records
+from .independence import MIN_ROWS_PER_LINEAGE, independence
+from .judgement_fingerprint import judgement_fingerprint
 from .pool_state import load_active_pool, read_candidates
 from .promotion_backlog import BACKLOG_REFUSAL_AXES, _lineage_key, refusal_axis
 
@@ -147,13 +150,27 @@ def strategy_funnel(root: Path | None = None) -> dict[str, Any]:
     """Both funnels over one read of the candidate store."""
     records = read_candidates(root)
     return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records),
-            "null": null_funnel(root)}
+            "null": null_funnel(root), "independent_bets": independent_bets(root),
+            "judgement_rules": judgement_fingerprint()}
+
+
+def independent_bets(root: Path | None) -> dict[str, Any]:
+    """How many independent bets each forward record set is (`independence`, 2026-09-24,
+    PORTFOLIO_INDEPENDENCE_V0.1 decision Q1): the cohort, its null twins and the pool's own forward
+    book. Script-only — the board reads `pool_funnel`, and the shuffled baseline is not free."""
+    return {
+        "cohort": independence(read_cohort_outcomes(root)),
+        "twins": independence(read_null_outcomes(root)) if read_null_records(root) else None,
+        "pool_forward": independence(forward_book.read_forward_outcomes(root)),
+    }
 
 
 def render_text(funnel: Mapping[str, Any]) -> list[str]:
     """ASCII lines for the operator's terminal. Reports only; nothing here is a verdict."""
     pool = funnel["pool"]
-    lines = ["=== strategy funnel (read-only; decides nothing) ===",
+    rules = funnel.get("judgement_rules") or {}
+    lines = ["=== strategy funnel (read-only; decides nothing) ==="
+             + (f" judgement rules {rules['short']}" if rules.get("short") else ""),
              f"store rows {pool['rows']} | lineages judged {pool['lineages']} "
              f"(re-appends collapsed, as promotable_backlog counts)", "",
              "POOL DOOR - first axis that drops each lineage (promotable_backlog's chain)"]
@@ -173,6 +190,28 @@ def render_text(funnel: Mapping[str, Any]) -> list[str]:
         lines += ["", "NULL ARM - a coin-flip twin per member, judged the same way (a null CONFIRMED is "
                       "the judge passing noise)"]
         lines += _render_forward(null)
+    bets = funnel.get("independent_bets")
+    if bets:
+        lines += ["", f"INDEPENDENT BETS - daily net R per lineage (>={MIN_ROWS_PER_LINEAGE} closed rows); "
+                      "N_eff = n^2/||C||^2 against a shuffled-days baseline (well under it = dependence)"]
+        for name in ("cohort", "twins", "pool_forward"):
+            lines += _render_bets(name, bets.get(name))
+    return lines
+
+
+def _render_bets(name: str, census: Mapping[str, Any] | None) -> list[str]:
+    if not census:
+        return [f"  {name:<13} under two lineages with enough rows"]
+    sides = "  ".join(f"{side} {cell['lineages']}->{cell['effective_bets']}"
+                      for side, cell in census["by_direction"].items())
+    lines = [f"  {name:<13} {census['lineages']} lineages -> {census['effective_bets']} bets "
+             f"(baseline {census['baseline_effective_bets']}; {census['first_day']}..{census['last_day']}, "
+             f"{census['days']}d)",
+             f"  {'':<13} corr same dir {census['mean_corr_same_direction']} / opposite "
+             f"{census['mean_corr_opposite_direction']} | {sides}"]
+    top = census.get("top_same_direction_pairs") or []
+    if top:
+        lines.append(f"  {'':<13} most alike: " + ", ".join(f"{p['a']}~{p['b']} {p['corr']}" for p in top))
     return lines
 
 
