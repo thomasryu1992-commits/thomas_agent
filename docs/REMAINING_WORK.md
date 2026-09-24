@@ -4632,6 +4632,14 @@ depth there.
 
 ## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
 
+> **Status 2026-09-24: the decision request is restated in
+> [`docs/proposals/HYPOTHESIS_TRIAL_V0.1.md`](proposals/HYPOTHESIS_TRIAL_V0.1.md)** — the external
+> plan's `hypothesis_trial` is this section's I2. It adds what changed since 08-05 (the forward
+> cohort accrues per-spec evidence; the null arm is the baseline I3 lacked; the cohort seeder applies
+> the same derivation allowlist, so a trial row is excluded from forward too), a smaller option C,
+> and the measured proposer: 39 accepted families, 0 installed, 39/39 FRAGILE, 33 with zero trades,
+> 19 scored on 1h bars while their spec names another timeframe; skipped every day since 09-11.
+
 > **Status 2026-08-06: the one prerequisite this section named is closed (#545), so what remains
 > is the judgement alone.** The quarantine that I2 called *"the one piece that is not optional"* —
 > the promotion door refusing an unrecognised `derivation_type` — exists and is fail-closed by
