@@ -520,11 +520,11 @@ def test_the_backlog_does_not_count_what_the_derivation_gate_refuses():
     minutes later. A row whose derivation the pool does not take cannot become promotable by
     scoring better, so advertising it would be worse than advertising a fixable failure.
 
-    Refuses nothing on today's real store — every derivation minted so far is promotable —
-    which is exactly why the axis has to be pinned by a fixture instead of by the store."""
+    Pinned on ``hypothesis_trial``, the one derivation the store admits and the door refuses,
+    by a fixture: the axis stood before the first such row was minted."""
     result = _backlog([
         _candidate("cand_seeded", derivation="seeded_template"),
-        _candidate("cand_trial", family="breakout", derivation="trial_family"),
+        _candidate("cand_trial", family="breakout", derivation="hypothesis_trial"),
     ])
     assert result["candidate_ids"] == ["cand_seeded"]
     assert result["refused"]["derivation"] == 1

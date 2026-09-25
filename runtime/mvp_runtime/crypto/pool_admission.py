@@ -1079,12 +1079,12 @@ def assert_promotable_derivation(records: list[Mapping[str, Any]]) -> None:
     that DOES name a derivation and names one outside
     :data:`PROMOTABLE_DERIVATION_TYPES`.
 
-    **Today this refuses nothing**, because every derivation the store admits is also
-    promotable. It is written now so that ceasing to be true takes an explicit edit at this
-    door rather than an addition somewhere else: a quarantine is only load-bearing if it is
-    already standing before the first row it must stop is minted, and the alternative — adding
-    it in the same increment that starts minting them — is the shape of change that has
-    historically been merged with one of its two halves missing.
+    It refuses ``hypothesis_trial`` — the one derivation the store admits and the pool does
+    not take (`pool_state.DERIVATION_TYPES`) — and it stood before the first such row was
+    minted: a quarantine is only load-bearing if it is already standing before the first row
+    it must stop, and the alternative — adding it in the same increment that starts minting
+    them — is the shape of change that has historically been merged with one of its two
+    halves missing.
 
     Raises `CANDIDATE_DERIVATION_NOT_PROMOTABLE`, naming every offending candidate."""
     refused = [
