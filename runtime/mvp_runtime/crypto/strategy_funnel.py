@@ -35,6 +35,7 @@ from .forward_confirmation import min_forward_trades
 from . import forward_book
 from .forward_cohort import MATURITIES, cohort_report, maturity_of, read_cohort_outcomes
 from .forward_cohort_null import null_report, read_null_outcomes, read_null_records
+from .forward_trial import read_trial_null_outcomes, read_trial_outcomes, trial_report, trial_twin
 from .independence import MIN_ROWS_PER_LINEAGE, independence
 from .judgement_fingerprint import judgement_fingerprint
 from .pool_state import load_active_pool, read_candidates
@@ -125,6 +126,36 @@ def null_funnel(root: Path | None) -> dict[str, Any] | None:
     return {"null_arms": len(records), "counts": counts, "by": by}
 
 
+def trial_funnel(records: Iterable[Mapping[str, Any]], root: Path | None) -> dict[str, Any] | None:
+    """The hypothesis trials and their twins, counted as :func:`forward_funnel` counts members, plus
+    one line per trial; None before any trial is minted (HYPOTHESIS_TRIAL_V0.1, option C)."""
+    report = trial_report(root)
+    if not report:
+        return None
+    by_id = {candidate_id(record): record for record in records}
+    counts, by = _member_counts(report, lambda line: (by_id.get(str(line["candidate_id"])) or {}).get(
+        "strategy_spec"))
+    twin_specs = {}
+    for line in report:
+        twin = trial_twin(by_id.get(str(line["candidate_id"])) or {}) if line.get("twin") else None
+        if twin is not None:
+            twin_specs[twin["null_id"]] = twin["null_spec"]
+    twin_counts, twin_by = _member_counts(
+        [line["twin"] for line in report if line.get("twin")],
+        lambda twin: twin_specs.get(str(twin.get("null_id"))))
+    return {
+        "counts": counts, "by": by,
+        "twins": {"counts": twin_counts, "by": twin_by},
+        "lines": [{k: line.get(k) for k in (
+            "candidate_id", "strategy_family", "timeframe", "direction", "minted_at_utc",
+            "holdout_status", "priceable_count", "mean_net_r", "status", "maturity", "close")}
+            | {"proposal_id": (line.get("trial_source") or {}).get("proposal_id"),
+               "twin": None if not line.get("twin") else {k: line["twin"].get(k) for k in (
+                   "priceable_count", "mean_net_r", "status", "maturity")}}
+            for line in report],
+    }
+
+
 def _member_counts(lines: Iterable[Mapping[str, Any]], spec_of: Any) -> tuple[dict[str, int], dict[str, Any]]:
     counts: dict[str, int] = {}
     by: dict[str, dict[str, dict[str, int]]] = {}
@@ -150,7 +181,8 @@ def strategy_funnel(root: Path | None = None) -> dict[str, Any]:
     """Both funnels over one read of the candidate store."""
     records = read_candidates(root)
     return {"pool": pool_funnel(records, load_active_pool(root)), "forward": forward_funnel(root, records),
-            "null": null_funnel(root), "independent_bets": independent_bets(root),
+            "null": null_funnel(root), "trials": trial_funnel(records, root),
+            "independent_bets": independent_bets(root),
             "judgement_rules": judgement_fingerprint()}
 
 
@@ -162,6 +194,8 @@ def independent_bets(root: Path | None) -> dict[str, Any]:
         "cohort": independence(read_cohort_outcomes(root)),
         "twins": independence(read_null_outcomes(root)) if read_null_records(root) else None,
         "pool_forward": independence(forward_book.read_forward_outcomes(root)),
+        "trials": independence(read_trial_outcomes(root)),
+        "trial_twins": independence(read_trial_null_outcomes(root)),
     }
 
 
@@ -183,19 +217,42 @@ def render_text(funnel: Mapping[str, Any]) -> list[str]:
     lines += ["", "FORWARD COHORT - every frozen member (option A: this opens no door)"]
     if forward is None:
         lines.append("  no cohort frozen yet")
-        return lines
+        return lines + _render_trials(funnel.get("trials"))
     lines += _render_forward(forward)
     null = funnel.get("null")
     if null is not None:
         lines += ["", "NULL ARM - a coin-flip twin per member, judged the same way (a null CONFIRMED is "
                       "the judge passing noise)"]
         lines += _render_forward(null)
+    lines += _render_trials(funnel.get("trials"))
     bets = funnel.get("independent_bets")
     if bets:
         lines += ["", f"INDEPENDENT BETS - daily net R per lineage (>={MIN_ROWS_PER_LINEAGE} closed rows); "
                       "N_eff = n^2/||C||^2 against a shuffled-days baseline (well under it = dependence)"]
-        for name in ("cohort", "twins", "pool_forward"):
+        for name in ("cohort", "twins", "pool_forward", "trials", "trial_twins"):
             lines += _render_bets(name, bets.get(name))
+    return lines
+
+
+def _render_trials(trials: Mapping[str, Any] | None) -> list[str]:
+    """The TRIALS section: one line per trial beside its twin, then the counts both arms reach."""
+    if not trials:
+        return []
+    lines = ["", "HYPOTHESIS TRIALS - proposer hypotheses scored at depth, walked beside a coin-flip "
+                 "twin (research: this opens no door; graduation is a TEMPLATES PR)"]
+    for t in trials["lines"]:
+        twin = t.get("twin") or {}
+        close = t.get("close")
+        state = f"closed {close['decision']} {str(close.get('closed_at_utc'))[:10]}" if close else "open"
+        mean, twin_mean = t.get("mean_net_r"), twin.get("mean_net_r")
+        lines.append(
+            f"  {t['candidate_id']} {t.get('timeframe')} {t.get('strategy_family')} [{state}] "
+            f"holdout {t.get('holdout_status')} | n={t.get('priceable_count') or 0} "
+            f"mean {'-' if mean is None else f'{mean:+.3f}'}R {t.get('status')} "
+            f"vs twin n={twin.get('priceable_count') or 0} "
+            f"mean {'-' if twin_mean is None else f'{twin_mean:+.3f}'}R {twin.get('status')}")
+    lines += ["  trials:"] + _render_forward(trials)
+    lines += ["  twins:"] + _render_forward(trials["twins"])
     return lines
 
 

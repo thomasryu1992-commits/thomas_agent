@@ -193,7 +193,7 @@ def test_the_fire_level_skips_refuse_no_proposal(case):
     elif case == "not_cohort":
         cohort = None
     else:
-        existing = [{"derivation_type": "hypothesis_trial",
+        existing = [{"candidate_id": f"cand_open_{i}", "derivation_type": "hypothesis_trial",
                      "trial_source": {"strategy_rule_hash": f"h{i}"}}
                     for i in range(factory.MAX_OPEN_TRIALS)]
     result = _run(snapshot, cohort, trials=trials, existing=existing)

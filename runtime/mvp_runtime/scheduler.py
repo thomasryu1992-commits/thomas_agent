@@ -1711,10 +1711,18 @@ def _execute(
         # scored across the cohort and that fire has one leg. An unreadable ledger degrades to an
         # empty queue: trials are research, and a factory fire must not fail on them.
         trial_proposals = None
+        closed_trials: frozenset[str] = frozenset()
         if cohort:
             from .crypto import factory as crypto_factory
+            from .crypto import forward_trial
             from .crypto import proposer as crypto_proposer
 
+            # Thomas's closes free slots. Unreadable reads as none closed: fewer free slots, the
+            # safe direction for a cap.
+            try:
+                closed_trials = forward_trial.closed_trial_ids(repo_root)
+            except MvpRuntimeError:
+                closed_trials = frozenset()
             trial_proposals = []
             if ledger is not None:
                 window_start = timeutil.plus_minutes(
@@ -1742,6 +1750,7 @@ def _execute(
                 positioning_eligible=positioning_eligible,
                 cohort_snapshots=cohort or None,
                 trial_proposals=trial_proposals,
+                closed_trial_ids=closed_trials,
             ),
             run_id=run_id, schedule=schedule, repo_root=repo_root, now=now,
         )
