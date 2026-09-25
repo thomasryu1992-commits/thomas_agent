@@ -395,9 +395,9 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 218 | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | 235 | `load_book` | `—` |
 | `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 293 | `freeze_cohort` | `not members` |
-| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 168 | `read_null_records` | `not isinstance(record, dict) or record.get('forward_cohort_nulls_version') != NULLS_VERSION` |
-| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 173 | `read_null_records` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `FORWARD_COHORT_NULLS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 163 | `read_null_records` | `—` |
+| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 198 | `read_null_records` | `not isinstance(record, dict) or record.get('forward_cohort_nulls_version') not in NULLS_VERSIONS` |
+| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 203 | `read_null_records` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `FORWARD_COHORT_NULLS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | 193 | `read_null_records` | `—` |
 | `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 406 | `load_book_at` | `raw.get('forward_cohort_positions_version') != POSITIONS_VERSION` |
 | `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 416 | `load_book_at` | `strangers` |
 | `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | 442 | `invalid` | `—` |
@@ -423,15 +423,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | 184 | `_require_active_role` | `—` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | 857 | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
 | `HOST_NOT_ALLOWED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | 252 | `__init__` | `host not in ALLOWED_ACCOUNT_HOSTS` |
-| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 201 | `close_trial` | `line.get('close') is not None` |
-| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 224 | `close_trial` | `candidate in closed_trial_ids(root)` |
-| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 165 | `read_trial_closes` | `not isinstance(record, dict) or record.get('hypothesis_trial_close_version') != TRIAL_CLOSE_VER…` |
-| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 170 | `read_trial_closes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
-| `HYPOTHESIS_TRIAL_CLOSES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 160 | `read_trial_closes` | `—` |
-| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 193 | `close_trial` | `decision not in CLOSE_DECISIONS` |
-| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 195 | `close_trial` | `not reason.strip()` |
-| `HYPOTHESIS_TRIAL_NOT_GRADUABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 204 | `close_trial` | `decision == CLOSE_GRADUATE and line.get('holdout_status') != GRADUATION_HOLDOUT_STATUS` |
-| `HYPOTHESIS_TRIAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 199 | `close_trial` | `line is None` |
+| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 193 | `close_trial` | `line.get('close') is not None` |
+| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 216 | `close_trial` | `candidate in closed_trial_ids(root)` |
+| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 157 | `read_trial_closes` | `not isinstance(record, dict) or record.get('hypothesis_trial_close_version') != TRIAL_CLOSE_VER…` |
+| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 162 | `read_trial_closes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `HYPOTHESIS_TRIAL_CLOSES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 152 | `read_trial_closes` | `—` |
+| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 185 | `close_trial` | `decision not in CLOSE_DECISIONS` |
+| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 187 | `close_trial` | `not reason.strip()` |
+| `HYPOTHESIS_TRIAL_NOT_GRADUABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 196 | `close_trial` | `decision == CLOSE_GRADUATE and line.get('holdout_status') != GRADUATION_HOLDOUT_STATUS` |
+| `HYPOTHESIS_TRIAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | 191 | `close_trial` | `line is None` |
 | `IDEATION_INPUTS_REQUIRED` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | 443 | `run_content_ideation` | `not seeds and (not target_override)` |
 | `IDEATION_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | 573 | `_apply_job` | `not isinstance(inputs, dict) or not str(inputs.get('seeds') or '').strip()` |
 | `IDEMPOTENCY_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | 316 | `apply_dispatch` | `request_id is not None and ledger is None` |

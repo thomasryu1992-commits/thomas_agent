@@ -50,7 +50,7 @@ from .forward_cohort import (
     FORWARD_COHORT_LOCKED, WalkTrack, first_verdict_suffix, load_book_at, maturity_of,
     synthesize_entry, walk_track,
 )
-from .forward_cohort_null import arm_counts, null_entry, null_id, null_rows
+from .forward_cohort_null import arm_counts, null_entry, null_id, null_rows, trade_rate
 from .forward_confirmation import judge_forward, min_forward_trades
 from .null_control import _null_spec
 from .pool_state import read_candidates
@@ -115,16 +115,8 @@ def trial_rows(root: Path | None = None) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
-def per_leg_trade_rate(record: Mapping[str, Any]) -> float | None:
-    """The trial's backtest trades per bar ON EACH LEG, or None when the row cannot say. See the
-    module docstring for why the pooled count is divided by the legs."""
-    evidence = record.get("backtest_evidence") or {}
-    closed, bars = evidence.get("closed_count"), evidence.get("bars_replayed")
-    legs = evidence.get("symbols_replayed") or 1
-    for value in (closed, bars, legs):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-            return None
-    return min(1.0, float(closed) / (float(bars) * float(legs)))
+# One authority for the per-leg pace: the null arm's own, since its v2 (2026-09-25).
+per_leg_trade_rate = trade_rate
 
 
 def trial_twin(record: Mapping[str, Any]) -> dict[str, Any] | None:
