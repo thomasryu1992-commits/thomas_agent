@@ -1120,6 +1120,7 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
 
 def delegate_proposal_generation(
     *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     """Run the family proposer's model call in the pipeline worker and return its output.
 
@@ -1140,7 +1141,8 @@ def delegate_proposal_generation(
     reply = socket_door.call_door(
         pipeline_worker.socket_path(repo_root),
         {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
-         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus},
+         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus,
+                             **({"timeframe": timeframe} if timeframe is not None else {})},
          "reason": "scheduler:crypto_propose"},
         deadline_seconds=WORKER_DEADLINE_SECONDS,
     )
@@ -1855,8 +1857,11 @@ def _execute(
         # beside the market frame they are computed from. What crosses is the family list and
         # the focus — `build_proposal_prompt` never read the snapshot, which is why this
         # needed neither a second market-data path nor a serialized frame.
+        # The frame's timeframe, so the model is asked only for proposals this fire can score
+        # (`evaluate_proposal` refuses any other since D-0).
         generation = delegate_proposal_generation(
             existing_families=installed, focus=focus, repo_root=repo_root,
+            timeframe=snapshot.get("timeframe"),
         )
         record = crypto_proposer.assemble_proposal_record(
             snapshot, generation=generation, focus=focus, now=now,
