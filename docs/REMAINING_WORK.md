@@ -4646,7 +4646,7 @@ depth there.
 > `TEMPLATES` stays a Thomas PR on the existing holdout gate. Record:
 > [`HYPOTHESIS_TRIAL_V0.1.md`](proposals/HYPOTHESIS_TRIAL_V0.1.md) §결정.
 >
-> **Implemented 2026-09-25 (#977–#980):** quarantine, minting inside cohort factory fires, the
+> **Implemented 2026-09-25 (#977, #978, #979, #981):** quarantine, minting inside cohort factory fires, the
 > forward track with per-leg-paced null twins (`crypto/forward_trial.py`), the board line, the funnel
 > section and Thomas's `scripts/hypothesis_trial.py close`. First trial minted 2026-09-25 08:53Z.
 > Details: that proposal's `## 구현`.
