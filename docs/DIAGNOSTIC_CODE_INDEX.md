@@ -119,32 +119,32 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `AMBIGUOUS_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 333 | `select_role` | `len(candidates) > 1` |
 | `ANNOUNCE_POINTER_PERSIST_FAILED` | `OperatorBlocked` | `runtime/mvp_runtime/operator.py` | 1024 | `record_announced` | `—` |
 | `APPROVALS_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | 148 | `read_approval_status` | `approval_store is None` |
-| `APPROVAL_ARTIFACT_UNSIGNED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 656 | `verify_promotion_approval` | `unsigned` |
+| `APPROVAL_ARTIFACT_UNSIGNED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 719 | `verify_promotion_approval` | `unsigned` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 909 | `verify_probe_approval` | `snapshot.get('content_sha256') != probe_content_sha256(params)` |
-| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 642 | `verify_promotion_approval` | `snapshot.get('content_sha256') != content_sha256_of(candidates, keep_active=keep_active, live_t…` |
+| `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 705 | `verify_promotion_approval` | `snapshot.get('content_sha256') != content_sha256_of(candidates, keep_active=keep_active, live_t…` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 174 | `verify_retirement_approval` | `snapshot.get('content_sha256') != retirement_content_sha256(checked)` |
 | `APPROVAL_CONTENT_MISMATCH` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 229 | `verify_registration_approval` | `snapshot.get('content_sha256') != expected` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 284 | `validate_spendable_approval` | `is_expired(approval_rec, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 363 | `record_decision` | `is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 867 | `apply_command` | `approval.get('status') == STATUS_PENDING and is_expired(approval, now=now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 901 | `verify_probe_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
-| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 615 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
+| `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 678 | `verify_promotion_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 165 | `verify_retirement_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 222 | `verify_registration_approval` | `not isinstance(expires_at, str) or timeutil.parse_iso(expires_at) <= timeutil.parse_iso(now)` |
 | `APPROVAL_EXPIRED` | `ControlBlocked` | `runtime/mvp_runtime/switch_bridge.py` | 643 | `_spend` | `approval_mod.is_expired(record, now=now)` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 895 | `verify_probe_approval` | `approval is None` |
-| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 609 | `verify_promotion_approval` | `approval is None` |
+| `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 672 | `verify_promotion_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 159 | `verify_retirement_approval` | `approval is None` |
 | `APPROVAL_MISSING` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 216 | `verify_registration_approval` | `approval is None` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 898 | `verify_probe_approval` | `status != 'APPROVED'` |
-| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 612 | `verify_promotion_approval` | `status != 'APPROVED'` |
+| `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 675 | `verify_promotion_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 162 | `verify_retirement_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_APPROVED` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 219 | `verify_registration_approval` | `status != 'APPROVED'` |
 | `APPROVAL_NOT_BOUND` | `WorkflowBlocked` | `runtime/mvp_runtime/workflow_store.py` | 981 | `approve_step` | `s['approval_id'] != approval_id or s['approval_plan_version'] != int(plan_version) or int(curre…` |
 | `APPROVAL_NOT_CONSUMED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 801 | `build_approval_consumption_audit` | `approval.get('status') != 'CONSUMED'` |
 | `APPROVAL_NOT_CONSUMED` | `AuditError` | `runtime/mvp_runtime/audit.py` | 856 | `build_trial_consumption_audit` | `approval.get('status') != 'CONSUMED'` |
 | `APPROVAL_NOT_FOUND` | `ControlBlocked` | `runtime/mvp_runtime/store_reads.py` | 157 | `read_approval_status` | `record is None` |
-| `APPROVAL_OUTSIDE_ARM_WINDOW` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 628 | `verify_promotion_approval` | `answered is None or expires is None or (not answered <= timeutil.parse_iso(now) < expires)` |
+| `APPROVAL_OUTSIDE_ARM_WINDOW` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 691 | `verify_promotion_approval` | `answered is None or expires is None or (not answered <= timeutil.parse_iso(now) < expires)` |
 | `APPROVAL_READ_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 71 | `read_all` | `—` |
 | `APPROVAL_READ_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 115 | `get_permission_decision` | `—` |
 | `APPROVAL_SCHEMA_INVALID` | `ApprovalBlocked` | `runtime/mvp_runtime/approval.py` | 131 | `_validate` | `—` |
@@ -155,7 +155,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 65 | `append` | `—` |
 | `APPROVAL_WRITE_FAILED` | `PersistenceError` | `runtime/mvp_runtime/approval_store.py` | 107 | `append_permission_decision` | `—` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/probe.py` | 904 | `verify_probe_approval` | `snapshot.get('action_type') != PROBE_ACTION_TYPE` |
-| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 619 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
+| `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/promotion.py` | 682 | `verify_promotion_approval` | `snapshot.get('action_type') != PROMOTION_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/crypto/retirement.py` | 169 | `verify_retirement_approval` | `snapshot.get('action_type') != RETIREMENT_ACTION_TYPE` |
 | `APPROVAL_WRONG_ACTION` | `ApprovalBlocked` | `runtime/mvp_runtime/registration.py` | 225 | `verify_registration_approval` | `snapshot.get('action_type') != REGISTRATION_ACTION_TYPE` |
 | `ARCHIVE_ALL_BOOKS_DEGRADED` | `SchedulerBlocked` | `runtime/mvp_runtime/scheduler.py` | 1936 | `_execute` | `summary['books'] and summary['degraded'] == summary['books']` |
@@ -440,10 +440,10 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_CONTENT` | `ToolBlocked` | `runtime/mvp_runtime/workspace.py` | 211 | `_require_content` | `not isinstance(content, str)` |
 | `INVALID_CONTENT_HASH` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1386 | `build_workflow_step_permission_decision` | `not (isinstance(request_sha256, str) and request_sha256.startswith('sha256:'))` |
 | `INVALID_CORE_CANDIDATE` | `MemoryBlocked` | `runtime/mvp_runtime/memory.py` | 489 | `decide_core_candidate` | `not (isinstance(candidate_id, str) and candidate_id)` |
-| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1830 | `build_live_outcome_correction_permission_decision` | `not (isinstance(corrects_outcome_id, str) and corrects_outcome_id)` |
-| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1832 | `build_live_outcome_correction_permission_decision` | `not (isinstance(corrects_record_sha256, str) and corrects_record_sha256)` |
-| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1834 | `build_live_outcome_correction_permission_decision` | `disposition not in ('VOID', 'SUPERSEDE')` |
-| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1836 | `build_live_outcome_correction_permission_decision` | `not (isinstance(reason, str) and reason.strip())` |
+| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1835 | `build_live_outcome_correction_permission_decision` | `not (isinstance(corrects_outcome_id, str) and corrects_outcome_id)` |
+| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1837 | `build_live_outcome_correction_permission_decision` | `not (isinstance(corrects_record_sha256, str) and corrects_record_sha256)` |
+| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1839 | `build_live_outcome_correction_permission_decision` | `disposition not in ('VOID', 'SUPERSEDE')` |
+| `INVALID_CORRECTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1841 | `build_live_outcome_correction_permission_decision` | `not (isinstance(reason, str) and reason.strip())` |
 | `INVALID_DERIVATIVE_KIND` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 686 | `derivative_price_klines` | `kind not in DERIVATIVE_KLINE_PATHS` |
 | `INVALID_DERIVATIVE_KIND` | `ToolError` | `runtime/mvp_runtime/crypto/market_data.py` | 1304 | `derivative_price_klines` | `kind not in DERIVATIVE_KLINE_PATHS` |
 | `INVALID_DOMAIN` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1001 | `build_trading_switch_permission_decision` | `not (isinstance(domain, str) and domain.strip())` |
@@ -479,18 +479,18 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `INVALID_PROBE_BATCH` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1460 | `build_slippage_probe_permission_decision` | `not (isinstance(batch_id, str) and batch_id)` |
 | `INVALID_PROBE_BATCH` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1462 | `build_slippage_probe_permission_decision` | `not (isinstance(content_sha256, str) and content_sha256.startswith('sha256:'))` |
 | `INVALID_PROBE_BATCH` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1465 | `build_slippage_probe_permission_decision` | `not symbols` |
-| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1722 | `build_strategy_promotion_permission_decision` | `not candidate_ids or not all((isinstance(c, str) and c for c in candidate_ids))` |
-| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1724 | `build_strategy_promotion_permission_decision` | `len(strategy_ids) != len(candidate_ids) or not all((isinstance(s, str) and s for s in strategy_…` |
-| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1726 | `build_strategy_promotion_permission_decision` | `len(rule_hashes) != len(candidate_ids) or not all((isinstance(h, str) and h for h in rule_hashe…` |
-| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1729 | `build_strategy_promotion_permission_decision` | `isinstance(artifact_sha256s, (str, bytes)) or len(artifact_sha256s) != len(candidate_ids) or (n…` |
-| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1731 | `build_strategy_promotion_permission_decision` | `live_tier not in (STRATEGY_POOL_TIER_OBSERVATION, STRATEGY_POOL_TIER_LIVE)` |
+| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1726 | `build_strategy_promotion_permission_decision` | `not candidate_ids or not all((isinstance(c, str) and c for c in candidate_ids))` |
+| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1728 | `build_strategy_promotion_permission_decision` | `len(strategy_ids) != len(candidate_ids) or not all((isinstance(s, str) and s for s in strategy_…` |
+| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1730 | `build_strategy_promotion_permission_decision` | `len(rule_hashes) != len(candidate_ids) or not all((isinstance(h, str) and h for h in rule_hashe…` |
+| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1733 | `build_strategy_promotion_permission_decision` | `isinstance(artifact_sha256s, (str, bytes)) or len(artifact_sha256s) != len(candidate_ids) or (n…` |
+| `INVALID_PROMOTION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1735 | `build_strategy_promotion_permission_decision` | `live_tier not in (STRATEGY_POOL_TIER_OBSERVATION, STRATEGY_POOL_TIER_LIVE)` |
 | `INVALID_REGISTRATION` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1642 | `build_program_registration_permission_decision` | `not (isinstance(definition_sha256, str) and definition_sha256.startswith('sha256:'))` |
 | `INVALID_REQUESTER_TYPE` | `TaskIntakeBlocked` | `runtime/mvp_runtime/intake.py` | 173 | `build_task` | `requester_type not in _ALLOWED_REQUESTER_TYPES` |
 | `INVALID_REQUIRED_LEVEL` | `PlannerBlocked` | `runtime/mvp_runtime/planner.py` | 310 | `select_role` | `required_rank is None` |
-| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1906 | `build_strategy_retirement_permission_decision` | `not strategy_ids or not all((isinstance(s, str) and s for s in strategy_ids))` |
-| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1908 | `build_strategy_retirement_permission_decision` | `len(candidate_ids) != len(strategy_ids)` |
-| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1910 | `build_strategy_retirement_permission_decision` | `len(rule_hashes) != len(strategy_ids) or not all((isinstance(h, str) and h for h in rule_hashes…` |
-| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1912 | `build_strategy_retirement_permission_decision` | `not (isinstance(reason, str) and reason.strip())` |
+| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1911 | `build_strategy_retirement_permission_decision` | `not strategy_ids or not all((isinstance(s, str) and s for s in strategy_ids))` |
+| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1913 | `build_strategy_retirement_permission_decision` | `len(candidate_ids) != len(strategy_ids)` |
+| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1915 | `build_strategy_retirement_permission_decision` | `len(rule_hashes) != len(strategy_ids) or not all((isinstance(h, str) and h for h in rule_hashes…` |
+| `INVALID_RETIREMENT` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1917 | `build_strategy_retirement_permission_decision` | `not (isinstance(reason, str) and reason.strip())` |
 | `INVALID_REVIEW_TRANSITION` | `ProgramizationBlocked` | `runtime/mvp_runtime/programization.py` | 414 | `transition_review` | `to_status not in _REVIEW_TRANSITIONS.get(from_status, set())` |
 | `INVALID_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/assignment.py` | 69 | `build_role_assignment` | `not isinstance(role, Mapping) or not role.get('role_id') or (not role.get('version')) or (not r…` |
 | `INVALID_ROLE` | `PlannerBlocked` | `runtime/mvp_runtime/permission.py` | 1573 | `build_trial_permission_decision` | `not (isinstance(role_id, str) and role_id and isinstance(role_version, str) and role_version)` |

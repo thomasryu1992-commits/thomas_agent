@@ -1810,3 +1810,70 @@ _CASES = _approval_cases()
 @pytest.mark.parametrize("approval,entry,problem", list(_CASES.values()), ids=list(_CASES))
 def test_an_approval_that_does_not_back_the_arm_is_named(approval, entry, problem):
     assert _arm_problem(approval, **entry) == problem
+
+
+# --- what a LIVE ask says beside its gates (Thomas 2026-09-25) ---------------------------------
+
+def test_live_context_notes_ride_the_live_ask_only_and_are_never_signed(monkeypatch):
+    import json
+    import unittest.mock as mock
+
+    from runtime.mvp_runtime import permission
+
+    captured = {}
+
+    def fake_build(bound, **kw):
+        captured.update(kw)
+        return {"ok": True}
+
+    common = dict(candidate_ids=["cand_a"], strategy_ids=["S1"], rule_hashes=["sha256:r"],
+                  artifact_sha256s=["sha256:x"], keep_active=False, content_sha256="sha256:c", now=NOW,
+                  live_context_notes=["Judgement rules abc: read under these."])
+    with mock.patch.object(permission, "build_permission_decision", fake_build):
+        permission.build_strategy_promotion_permission_decision({}, live_tier="LIVE", **common)
+        assert captured["action"].risk_reason.endswith(" Judgement rules abc: read under these.")
+        assert "Judgement" not in json.dumps(captured["action"].normalized_parameters)
+        permission.build_strategy_promotion_permission_decision({}, live_tier="OBSERVATION", **common)
+        assert "Judgement rules abc" not in captured["action"].risk_reason
+
+
+def _forward_row(cid, day, r):
+    stamp = f"2026-09-{day:02d}T00:00:00Z"
+    return {"candidate_id": cid, "created_at_utc": stamp, "opened_at_utc": stamp, "result_R": r,
+            "outcome_closed": True, "direction": "LONG"}
+
+
+def test_the_live_context_names_the_rules_the_repeated_look_and_the_closest_armed_lineage(monkeypatch):
+    from runtime.mvp_runtime.crypto.judgement_fingerprint import judgement_fingerprint
+
+    pattern = {1: 1.0, 3: -1.0, 4: 2.0, 7: -1.0, 9: 1.5, 12: -0.5}
+    rows = ([_forward_row("cand_armed", d, r) for d, r in pattern.items()]
+            + [_forward_row("cand_new", d, r) for d, r in pattern.items()])
+    monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes", lambda root=None: rows)
+    monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": [
+        {"strategy_id": "S9", "candidate_id": "cand_armed", "live_tier": "LIVE", "status": "PAPER_ACTIVE"}]})
+    notes = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
+    assert judgement_fingerprint()["short"] in notes[0]
+    assert "5% a year" in notes[1] and "1.6%" in notes[1]
+    assert "1 lineage(s) already armed" in notes[2]
+    assert "closest armed: cand_new~S9 +1.00" in notes[2] and "1.0 independent bets" in notes[2]
+
+
+def test_with_nothing_armed_the_ask_says_so_and_names_what_is_too_short_to_measure(monkeypatch):
+    monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes",
+                        lambda root=None: [_forward_row("cand_new", 1, 1.0)])
+    monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": []})
+    (_, _, line) = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
+    assert line.startswith("No lineage is armed LIVE yet") and "not measured: cand_new" in line
+
+
+def test_a_forward_store_it_cannot_read_costs_the_note_never_the_ask(monkeypatch):
+    from runtime.mvp_runtime.errors import ToolError
+
+    def refuse(root=None):
+        raise ToolError("FORWARD_BOOK_UNVERIFIABLE", "gone")
+
+    monkeypatch.setattr(promotion_mod.forward_book, "read_forward_outcomes", refuse)
+    monkeypatch.setattr(promotion_mod.pool_store, "load_active_pool", lambda root=None: {"active_strategies": []})
+    notes = promotion_mod._live_context_notes([{"candidate_id": "cand_new"}], root=None, store_root=None)
+    assert notes[-1] == "Forward correlation with the armed lineages is unavailable (FORWARD_BOOK_UNVERIFIABLE)."
