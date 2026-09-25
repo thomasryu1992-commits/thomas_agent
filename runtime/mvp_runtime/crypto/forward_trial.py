@@ -38,7 +38,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .factory import is_trial
 from .forward_cohort import (
-    WalkTrack, first_verdict_suffix, load_book_at, maturity_of, synthesize_entry, walk_track,
+    WalkTrack, first_verdict_suffix, load_book_at, maturity_of, synthesize_entry, unparseable_suffix,
+    walk_track,
 )
 from .forward_cohort_null import null_entry, null_id, null_rows
 from .forward_confirmation import judge_forward, min_forward_trades
@@ -226,11 +227,11 @@ def status_line(summary: Mapping[str, Any]) -> str:
         trials.get("members"), trials.get("walked"), trials.get("opened"), trials.get("settled"))
     if trials.get("failed"):
         line += f" failed={len(trials['failed'])}"
-    line += first_verdict_suffix(trials)
+    line += unparseable_suffix(trials) + first_verdict_suffix(trials)
     line += " nulls opened=%s settled=%s" % (nulls.get("opened"), nulls.get("settled"))
     if nulls.get("failed"):
         line += f" failed={len(nulls['failed'])}"
-    return line
+    return line + unparseable_suffix(nulls)
 
 
 # --- the report ----------------------------------------------------------------------------------
