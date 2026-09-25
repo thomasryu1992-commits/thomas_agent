@@ -2706,6 +2706,11 @@ def context_rotation_index(
             continue
         if not _matches_context(spec, symbol=symbol, timeframe=timeframe, scope=scope):
             continue
+        # A trial is not a step of any rotation. It carries the fire's generation id, but it is
+        # scoped to the whole cohort, so at 1h the single-symbol contexts match it by membership
+        # and would count a BTC fire's id as their own step.
+        if is_trial(record):
+            continue
         for value in (record.get("generation_id"), spec.get("generation_id")):
             if isinstance(value, str) and value:
                 seen.add(value)
@@ -4817,6 +4822,221 @@ def next_generation_id(existing: list[Mapping[str, Any]]) -> str:
 POOLED_TIMEFRAMES = frozenset({"4h", "1d"})
 
 
+# --- hypothesis trials (docs/proposals/HYPOTHESIS_TRIAL_V0.1.md, option C) --------------------
+#
+# A proposer acceptance was judged on 120 bars of one symbol, which says nothing (§1 of the
+# proposal: 39 accepted, all FRAGILE, 33 with no trade). A trial re-scores ONE accepted proposal
+# the way the factory scores its own mints — its own timeframe, factory depth, every leg of the
+# cohort fire, the ablation lattice, the pooled replay — and stores it once as a
+# `hypothesis_trial` row: held for forward evidence, refused by the promotion door
+# (`pool_admission.PROMOTABLE_DERIVATION_TYPES`) and barred from parenting
+# (:data:`BREEDING_DERIVATION_TYPES`). No parameter search: the proposal is one point, and a
+# trial is a question about that point, not a new search context.
+#
+# Pooled at 1h too, although :data:`POOLED_TIMEFRAMES` keeps the factory's own 1h mints
+# single-symbol. That reason is the live book's direction capacity, and a trial never reaches
+# the live book (Thomas 2026-09-25, as recommended).
+TRIAL_DERIVATION = "hypothesis_trial"
+TRIAL_PROVENANCE = "mvp_hypothesis_trial"
+# Where a trial row names the proposal it came from. The proposal's OWN rule hash is the identity
+# — the trial's hash differs, because widening `symbol_scope` to the cohort is inside the rule
+# fingerprint — so this is what "has this proposal been screened" is keyed on.
+TRIAL_SOURCE_FIELD = "trial_source"
+# Concurrent trials (Thomas 2026-09-24, HYPOTHESIS_TRIAL_V0.1 Q6: 4, as §I2 proposed). Open means
+# minted; closing one is the operator's later `close`, so until that lands the cap is a total.
+MAX_OPEN_TRIALS = 4
+# Proposals one fire may screen before it stops. A refusal costs a lattice and a pooled replay, and
+# the queue holds every accepted proposal in the backlog window — bounded so a queue of
+# zero-trade proposals cannot turn one fire into nine replays.
+MAX_TRIAL_SCREENS_PER_FIRE = 3
+# `strategy_id` restarts per generation and the seeded, fused and topup draws number S001..; a
+# trial takes its own prefix so `(generation_id, strategy_id)` can never name two rules.
+TRIAL_STRATEGY_ID_PREFIX = "T"
+
+
+def is_trial(record: Mapping[str, Any]) -> bool:
+    """Is this stored row a hypothesis trial rather than a factory mint?"""
+    return record.get("derivation_type") == TRIAL_DERIVATION
+
+
+def trial_source_hashes(records: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """The proposal rule hashes the store already holds a trial for."""
+    hashes: set[str] = set()
+    for record in records:
+        if not is_trial(record):
+            continue
+        source = record.get(TRIAL_SOURCE_FIELD)
+        value = source.get("strategy_rule_hash") if isinstance(source, Mapping) else None
+        if isinstance(value, str) and value:
+            hashes.add(value)
+    return frozenset(hashes)
+
+
+def trial_spec_dict(
+    proposal_spec: Mapping[str, Any], *, scope: Sequence[str], generation_id: str,
+    strategy_id: str, venue: str,
+) -> dict[str, Any]:
+    """The proposal's spec as the trial it becomes: the cohort's scope, this fire's lineage.
+
+    The stored ``strategy_rule_hash`` is DROPPED, not carried: it is the single-symbol spec's,
+    and ``StrategySpec.from_dict`` refuses a hash that does not match the rules it is parsed
+    with ("tampered or stale") — which the widened scope guarantees. The parse recomputes it."""
+    spec = {k: v for k, v in proposal_spec.items() if k != "strategy_rule_hash"}
+    spec.update(
+        strategy_id=strategy_id,
+        generation_id=generation_id,
+        symbol_scope=sorted({str(s) for s in scope}),
+        created_by=TRIAL_PROVENANCE,
+        venue=venue,
+    )
+    return spec
+
+
+def _screen_trials(
+    proposals: Sequence[Mapping[str, Any]], *,
+    legs: Sequence[Mapping[str, Any]],
+    frames_for_legs: Callable[[], Sequence[ReplayFrame]],
+    open_trials: int,
+    fire_hashes: set[str],
+    generation_id: str,
+    venue: str,
+    now: str,
+) -> dict[str, Any]:
+    """Screen proposals in order and mint the FIRST that survives. Pure.
+
+    Returns the fire's trial block: ``status``, what was ``minted`` (0 or 1 rows, under
+    ``rows``), what was ``refused`` and why. Refusals are per proposal and permanent — the caller
+    records them, and a refused proposal is not screened again (a refusal is a review). The skips
+    (``not_cohort``, ``cap``, an empty queue) are about the FIRE and say nothing about any
+    proposal, so they refuse nothing.
+
+    Iterating rather than taking the head: one zero-trade proposal at the front of the queue
+    would otherwise hold it shut forever."""
+    block: dict[str, Any] = {"open_before": open_trials, "rows": [], "minted": [], "refused": [],
+                             "ablated": 0, "luck_filtered": 0}
+    if not proposals:
+        return {**block, "status": "empty"}
+    if len(legs) < 2:
+        return {**block, "status": "skipped:not_cohort"}
+    if open_trials >= MAX_OPEN_TRIALS:
+        return {**block, "status": "skipped:cap"}
+
+    scope = sorted({str(leg.get("symbol") or "") for leg in legs} - {""})
+    evidence_sha = integrity.sha256_record({"candles": [leg.get("candles") or [] for leg in legs]})
+    installed = {t.family for t in TEMPLATES}
+    stats = {"lattices": 0, "luck_filtered": 0}
+    frames: Sequence[ReplayFrame] | None = None
+
+    for index, proposal in enumerate(proposals[:MAX_TRIAL_SCREENS_PER_FIRE], start=1):
+        source = {
+            "proposal_id": proposal.get("proposal_id"),
+            "family": proposal.get("family"),
+            "strategy_rule_hash": proposal.get("strategy_rule_hash"),
+            "proposed_at": proposal.get("proposed_at"),
+        }
+
+        def _refuse(reason: str, **detail: Any) -> None:
+            block["refused"].append({**source, "reason": reason, **detail})
+
+        try:
+            spec = StrategySpec.from_dict(trial_spec_dict(
+                proposal.get("spec") or {}, scope=scope, generation_id=generation_id,
+                strategy_id=f"{TRIAL_STRATEGY_ID_PREFIX}{index:03d}", venue=venue,
+            ))
+        except SpecParseError as exc:
+            _refuse("parse", detail=str(exc))
+            continue
+        # Not a new hypothesis: a family the rotation already mints, or one it retired. The
+        # rotation is where those are searched; a trial of one would be a single point of a
+        # search that has already been run at depth.
+        family_parts = spec.strategy_family.split("+")
+        if spec.strategy_family in installed or any(p in RETIRED_FAMILIES for p in family_parts):
+            _refuse("known_family")
+            continue
+        verdict = validate_strategy(spec)
+        if not verdict["approved_for_backtest"]:
+            _refuse("validator", block_reasons=list(verdict["block_reasons"]))
+            continue
+        if spec.strategy_rule_hash in fire_hashes:
+            _refuse("duplicate_rule_hash")
+            continue
+        if frames is None:
+            # Built on first need: at 1h the fire's own frames are the primary's alone
+            # (`POOLED_TIMEFRAMES`), so the other legs' frames are extra work a fire with no
+            # screenable proposal never pays. Outside the per-proposal guard below: a frame that
+            # cannot be built is the fire's data, not any proposal's fault.
+            frames = frames_for_legs()
+        starved = sorted({f for fr in frames for f in unsuppliable_features(spec, fr.rows)})
+        if starved:
+            _refuse("unsuppliable_feature", features=starved)
+            continue
+        # A proposal is model-written, and this runs inside the fire that mints the rotation. A
+        # spec that breaks the scorer is refused by name (permanently — it would break it again)
+        # rather than failing the fire and losing the rotation's rows with it.
+        try:
+            spec, ablation, refusal = _lattice_winner(
+                spec, frames, seen_hashes=fire_hashes, stats=stats)
+            evidence = None if refusal is not None else backtest_spec_pooled(spec, [], frames=frames)
+        except Exception as exc:  # noqa: BLE001 — named in the refusal, never swallowed silently
+            _refuse("scoring_error", detail=f"{type(exc).__name__}: {exc}")
+            continue
+        if refusal is not None:
+            _refuse(refusal)
+            continue
+        if not evidence["closed_count"]:
+            _refuse("no_trades")
+            continue
+        if ablation is not None:
+            evidence["ablation"] = ablation
+        record = {
+            "strategy_id": spec.strategy_id,
+            "strategy_rule_hash": spec.strategy_rule_hash,
+            "generation_id": generation_id,
+            "status": "BACKTESTED",
+            "champion_score": evidence["champion_score"],
+            "strategy_spec": spec.to_dict(),
+            "backtest_evidence": evidence,
+            "evidence_input_sha256": evidence_sha,
+            "provenance": TRIAL_PROVENANCE,
+            "derivation_type": TRIAL_DERIVATION,
+            "parent_candidate_ids": [],
+            # No `mint_params`: nothing was drawn, and `_best_mint_params` would otherwise read a
+            # proposal's point as a search centre for a template family it does not belong to.
+            TRIAL_SOURCE_FIELD: source,
+            "created_at_utc": now,
+        }
+        record["candidate_id"] = derive_candidate_id(record)
+        fire_hashes.add(spec.strategy_rule_hash)
+        block["rows"].append(record)
+        block["minted"].append({**source, "candidate_id": record["candidate_id"],
+                                "strategy_family": spec.strategy_family})
+        break
+
+    block["ablated"] = stats["lattices"]
+    block["luck_filtered"] = stats["luck_filtered"]
+    if block["minted"]:
+        block["status"] = "minted"
+    elif block["refused"]:
+        block["status"] = "refused"
+    else:
+        block["status"] = "empty"
+    return block
+
+
+def trial_status(block: Mapping[str, Any] | None) -> str | None:
+    """The fire's trial outcome in one token, for the scheduler's status line."""
+    if not isinstance(block, Mapping):
+        return None
+    status = str(block.get("status") or "")
+    refused = len(block.get("refused") or [])
+    if status == "minted":
+        family = (block.get("minted") or [{}])[0].get("strategy_family")
+        return f"minted:{family}" + (f",refused:{refused}" if refused else "")
+    if status == "refused":
+        return f"refused:{refused}"
+    return status
+
+
 def run_factory(
     snapshot: Mapping[str, Any],
     *,
@@ -4827,8 +5047,16 @@ def run_factory(
     fusion_pairs: int = 0,
     positioning_eligible: bool = False,
     cohort_snapshots: Sequence[Mapping[str, Any]] | None = None,
+    trial_proposals: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
+
+    ``trial_proposals`` (default None — not asked, no ``trial`` block) is the caller's queue of
+    accepted proposals not yet screened, oldest first; the fire screens them after its own
+    mints and stores at most one as a ``hypothesis_trial`` row (:func:`_screen_trials`). They are
+    scored across the snapshot and EVERY cohort leg whatever the timeframe — see
+    :data:`TRIAL_DERIVATION` — and are not counted in ``requested_count``/``accepted_count``,
+    which describe the rotation.
 
     ``positioning_eligible`` is the caller's measurement of whether the positioning store covers
     the replay window; it reaches :func:`templates_for_timeframe` unchanged. Kept as a parameter
@@ -5168,6 +5396,24 @@ def run_factory(
         topup_rejected = topup["rejected"]
         _score_draw(kept, topup["params"])
 
+    # After every rotation draw, so a trial never takes a hash the rotation would have minted and
+    # the fire's own rows are exactly what they were without it.
+    trial = None
+    if trial_proposals is not None:
+        trial_legs = [snapshot, *(s for s in (cohort_snapshots or ()) if s is not snapshot)]
+        trial = _screen_trials(
+            trial_proposals,
+            legs=trial_legs,
+            frames_for_legs=lambda: frames if pooled else [
+                frame, *(build_replay_frame(leg) for leg in trial_legs[1:])],
+            open_trials=len(trial_source_hashes(existing_candidates)),
+            fire_hashes=fire_hashes,
+            generation_id=generation_id,
+            venue=venue,
+            now=now,
+        )
+    trial_rows = trial.pop("rows") if trial is not None else []
+
     return {
         "factory_version": "crypto_factory.v0.1",
         "generation_id": generation_id,
@@ -5193,7 +5439,7 @@ def run_factory(
         # separate key rather than merged into `batch["rejected"]`, because that list is the
         # generator's own record and this refusal happens after it, with facts it cannot see.
         "rejected": [*batch["rejected"], *topup_rejected, *starved_specs, *ablation_refused],
-        "candidates": [*candidates, *fused],
+        "candidates": [*candidates, *fused, *trial_rows],
         "fused_count": len(fused),
         # What the ablation lattice did this fire — seeded and fused hypotheses together,
         # since `_fuse_batch` shares the counter. `ablated_count` is lattices RUN;
@@ -5214,4 +5460,7 @@ def run_factory(
         "fusion_skipped": fusion_skipped,
         "evidence_input_sha256": candles_sha,
         "created_at": now,
+        # Absent when the caller did not ask. Its `minted`/`refused` entries name the proposal
+        # (`trial_source`), and are what the next fire and the proposer's backlog read back.
+        **({"trial": trial} if trial is not None else {}),
     }

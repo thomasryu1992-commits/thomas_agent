@@ -1240,6 +1240,10 @@ def _execute(
             # is the error the first run of this measurement made.
             if float((record.get("backtest_evidence") or {}).get("expectancy") or 0.0) <= 0:
                 continue
+            # The factory's selection is what this measures. A hypothesis trial was not selected
+            # by it, and it carries its own null twin on its own track.
+            if crypto_factory.is_trial(record):
+                continue
             eligible.append((record, spec_dict))
 
         # Skip the collection only when the calendar PROVES the answer for every eligible
@@ -1680,16 +1684,44 @@ def _execute(
         if run_id is None:
             raise SchedulerBlocked("FACTORY_RUN_ID_MISSING",
                                    "a factory fire needs its schedule_run_id to spool")
+        existing_candidates = crypto_pool.read_candidates(repo_root)
+        # Hypothesis trials (HYPOTHESIS_TRIAL_V0.1, option C): a COHORT fire also screens the
+        # proposer's unscreened acceptances for its timeframe. Read here for the reason the store
+        # is — the child is pure. A single-symbol fire is not asked (None), because a trial is
+        # scored across the cohort and that fire has one leg. An unreadable ledger degrades to an
+        # empty queue: trials are research, and a factory fire must not fail on them.
+        trial_proposals = None
+        if cohort:
+            from .crypto import factory as crypto_factory
+            from .crypto import proposer as crypto_proposer
+
+            trial_proposals = []
+            if ledger is not None:
+                window_start = timeutil.plus_minutes(
+                    now, -abs(crypto_proposer.BACKLOG_WINDOW_DAYS) * 24 * 60)
+                try:
+                    trial_proposals = crypto_proposer.pending_trial_proposals(
+                        ledger.iter_records_with_archive(
+                            appended_since=window_start,
+                            kinds=[crypto_proposer.PROPOSAL_LEDGER_KIND,
+                                   crypto_proposer.FACTORY_LEDGER_KIND],
+                        ),
+                        timeframe=timeframe, now=now,
+                        exclude_rule_hashes=crypto_factory.trial_source_hashes(existing_candidates),
+                    )
+                except MvpRuntimeError:
+                    trial_proposals = []
         return _spawn_factory_child(
             run_factory,
             (snapshot,),
             dict(
                 active_pool=crypto_pool.load_active_pool(repo_root),
-                existing_candidates=crypto_pool.read_candidates(repo_root),
+                existing_candidates=existing_candidates,
                 now=now,
                 fusion_pairs=FACTORY_FUSION_PAIRS,
                 positioning_eligible=positioning_eligible,
                 cohort_snapshots=cohort or None,
+                trial_proposals=trial_proposals,
             ),
             run_id=run_id, schedule=schedule, repo_root=repo_root, now=now,
         )
@@ -2175,12 +2207,18 @@ def _factory_status_line(result: Mapping[str, Any]) -> str:
     # fires and the denominator alone cannot say which. `ablated=`/`luck_filtered=` because
     # the lattice multiplies replays per hypothesis with no cadence change: this line is
     # where that spend and its yield are legible per fire.
+    # `trial=` only on a fire that was asked to screen (a cohort fire): minted:<family>,
+    # refused:<n>, empty, or skipped:cap / skipped:not_cohort.
+    from .crypto.factory import trial_status
+
+    trial = trial_status(result.get("trial"))
     return (f"generated={result['accepted_count']}/{result['requested_count']} "
             f"fused={result.get('fused_count', 0)} "
             f"topup={result.get('seeded_topup_count', 0)} "
             f"ablated={result.get('ablated_count', 0)} "
             f"luck_filtered={result.get('luck_filtered_count', 0)} "
-            f"gen={result['generation_id']}")
+            + (f"trial={trial} " if trial is not None else "")
+            + f"gen={result['generation_id']}")
 
 
 def _finish_factory_occurrence(
