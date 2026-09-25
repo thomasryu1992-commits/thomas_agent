@@ -443,6 +443,67 @@ def predicted_pool_entries(
     return predicted
 
 
+def _live_context_notes(
+    candidates: Sequence[Mapping[str, Any]], *, root: Path | None, store_root: Path | None,
+) -> list[str]:
+    """What a LIVE ask says beside its gates, for Thomas to read before arming (Thomas 2026-09-24/25:
+    SEQUENTIAL_FORWARD_TEST_V0.1 Q2, RESEARCH_EPOCH_V0.1 A, PORTFOLIO_INDEPENDENCE_V0.1 Q2). Display
+    only — never signed, never a refusal: which judgement rules produced the confirmation, that a
+    forward confirmation is a fixed test re-read every day, and how the candidates' forward record
+    moves with the lineages already armed. A store it cannot read costs the note, never the ask."""
+    from . import independence
+    from .candidate_identity import outcome_attribution_key
+    from .judgement_fingerprint import judgement_fingerprint
+
+    notes = [
+        f"Judgement rules {judgement_fingerprint()['short']}: a confirmation is read under these "
+        "thresholds, and a change to them re-grades every verdict (RESEARCH_EPOCH_V0.1).",
+        "A FORWARD_CONFIRMED is a fixed-sample test re-read on a growing record every day: at 4h about "
+        "5% a year of zero-edge lineages read CONFIRMED at some look, against 1.6% at one "
+        "(SEQUENTIAL_FORWARD_TEST_V0.1; a holdout CONFIRMED is one look).",
+    ]
+    try:
+        armed = [e for e in (pool_store.load_active_pool(root).get("active_strategies") or [])
+                 if e.get("live_tier") == "LIVE" and e.get("status") in pool_store.OCCUPYING_STATUSES]
+        lineages: dict[str, frozenset[str]] = {}
+        for entry in armed:
+            lineages[f"armed:{entry.get('strategy_id')}"] = forward_confirmation.lineage_keys(entry)
+        for record in candidates:
+            lineages[f"new:{record.get('candidate_id')}"] = forward_confirmation.lineage_keys(record)
+        rows = []
+        for row in forward_book.read_forward_outcomes(store_root):
+            key = outcome_attribution_key(row)
+            for label, keys in lineages.items():
+                if key in keys:
+                    rows.append({**row, "_lineage": label})
+        data = independence.daily_series(rows, id_key="_lineage")
+        ids = data["ids"]
+        short = [label.split(":", 1)[1] for label in lineages
+                 if label not in ids]
+        if not armed:
+            line = "No lineage is armed LIVE yet, so there is nothing to correlate against"
+        else:
+            line = f"{len(armed)} lineage(s) already armed"
+        if len(ids) >= 2:
+            matrix = independence.correlation_matrix(data["series"])
+            new = [i for i, label in enumerate(ids) if label.startswith("new:")]
+            old = [i for i, label in enumerate(ids) if label.startswith("armed:")]
+            closest = [
+                f"{ids[i].split(':', 1)[1]}~{ids[j].split(':', 1)[1]} {matrix[i][j]:+.2f}"
+                for i in new for j in [max(old, key=lambda k: matrix[i][k])] if old
+            ]
+            line += (f"; forward daily-R correlation, closest armed: {', '.join(closest)}" if closest else "")
+            line += (f"; the {len(ids)} measurable lineages are "
+                     f"{independence.effective_bets(matrix):.1f} independent bets")
+        if short:
+            line += (f"; under {independence.MIN_ROWS_PER_LINEAGE} forward rows, not measured: "
+                     + ", ".join(sorted(short)))
+        notes.append(line + " (PORTFOLIO_INDEPENDENCE_V0.1).")
+    except MvpRuntimeError as exc:
+        notes.append(f"Forward correlation with the armed lineages is unavailable ({exc.reason_code}).")
+    return notes
+
+
 def _reactivation_notes(found: Sequence[Mapping[str, Any]]) -> list[str]:
     """What an ask says returns, in words Thomas can check against the pool: display ids, candidate
     ids, statuses and why each replaced entry had been retired (review of PR3c-2). Display only —
@@ -559,6 +620,8 @@ def request_promotion(
         keep_active=keep_active, live_tier=live_tier, content_sha256=content, now=now, repo_root=root,
         reactivated=reactivated,
         reactivation_notes=_reactivation_notes(pool_store.silent_reactivations(predicted, root=store_root)),
+        live_context_notes=(_live_context_notes(candidates, root=root, store_root=store_root)
+                            if live_tier == "LIVE" else ()),
     )
     approval_request = approval_mod.build_approval_request(
         permission_decision, now=now, ttl_minutes=ttl_minutes, repo_root=root,

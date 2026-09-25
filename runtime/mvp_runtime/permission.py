@@ -1705,6 +1705,10 @@ def build_strategy_promotion_permission_decision(
     # The same returns in words (display ids, statuses, why each was retired), for the risk reason
     # only: what Thomas reads, never what is signed.
     reactivation_notes: Sequence[str] = (),
+    # What a LIVE ask adds for Thomas to read before arming (2026-09-25): the judgement rules, the
+    # repeated-look caveat, the forward correlation with lineages already armed. Display only,
+    # like the notes above: never signed, and ignored at the OBSERVATION tier.
+    live_context_notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build the APPROVAL_REQUIRED PermissionDecision asking Thomas to promote
     strategy candidates into the active pool (Crypto Pipeline C8b).
@@ -1765,6 +1769,7 @@ def build_strategy_promotion_permission_decision(
             "and its phrase, a valid registered budget and its symbol allowlist, both kill "
             "switches, the loss and bracket breakers) — this approval removes the last one that is "
             "Thomas's alone. Disarming needs no approval and applies at once."
+            + ("".join(f" {note}" for note in live_context_notes) if live_context_notes else "")
             if arms_live else
             "Changes what the runtime paper-trades; requires explicit Thomas approval per policy. "
             "OBSERVATION occupies a routing slot and papers: it cannot open a real position."

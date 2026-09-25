@@ -70,6 +70,11 @@ def correlation(a: Sequence[float], b: Sequence[float]) -> float:
     return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (sa * sb)
 
 
+def correlation_matrix(series: Sequence[Sequence[float]]) -> list[list[float]]:
+    """Pairwise :func:`correlation` of every series, 1.0 on the diagonal."""
+    return _matrix(series)
+
+
 def _matrix(series: Sequence[Sequence[float]]) -> list[list[float]]:
     n = len(series)
     m = [[1.0] * n for _ in range(n)]
