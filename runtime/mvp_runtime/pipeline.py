@@ -186,6 +186,8 @@ _DELIVERABLE_KEYS = frozenset(key for key, _ in _DELIVERABLE_SECTIONS)
 # of the generic loop so `general.specialist` output does not change by a byte
 # (tests/test_mvp_runtime_role_rendering.py pins it).
 _ANALYSIS_NATIVE_KEYS = frozenset({"key_findings", "perspectives", "evidence_quality", "unresolved_questions"})
+# Top-level agent_output lists rendered before the recommendation they bear on.
+_GROUNDING_SECTIONS = (("risks", "## Risks"), ("assumptions", "## Assumptions"))
 # Where the humanised key would collide or mislead. The research role's `sources` are what the
 # model says it relied on; `## Sources` below is the search hits the worker actually fed it.
 _ROLE_KEY_HEADINGS = {"sources": "Cited sources"}
@@ -284,9 +286,21 @@ def render_response(
         if body:
             heading = _ROLE_KEY_HEADINGS.get(key, str(key).replace("_", " ").capitalize())
             lines += [f"## {heading}", *body, ""]
+    # Risks and assumptions are what the recommendation rests on, so they are read BEFORE it —
+    # the same reason perspectives are. Until 2026-09-25 all three of these lived in the ledger
+    # alone: validation even REVISEs a NEGATIVE perspective with no stated risk, and the risk it
+    # insisted on was then never shown to the reader (system review B4). Each renders only when
+    # present, so an output without them reads exactly as before.
+    for key, heading in _GROUNDING_SECTIONS:
+        items = [str(item).strip() for item in (agent_output.get(key) or []) if str(item).strip()]
+        if items:
+            lines += [heading, *[f"- {item}" for item in items], ""]
     rec = agent_output.get("recommendation")
     if rec:
         lines += ["## Recommendation", f"{rec['action']} — {rec['reason']}", ""]
+    next_actions = [str(a).strip() for a in (agent_output.get("next_actions") or []) if str(a).strip()]
+    if next_actions:
+        lines += ["## Next actions", *[f"- {a}" for a in next_actions], ""]
     if agent_output.get("uncertainty"):
         lines += ["## Uncertainty", *[f"- {u}" for u in agent_output["uncertainty"]], ""]
     if search_hits:
@@ -1039,7 +1053,8 @@ def run_task(
         # R5: retrieve prior working-memory candidates as context (opt-in; read-only, scoped).
         # A corrupt store fails closed here (BLOCK), like the ledger.
         memory_entries = (
-            retrieve_working_memory(plan["role_assignment"], working_memory, now=now)
+            retrieve_working_memory(plan["role_assignment"], working_memory, now=now,
+                                    query=raw_request)
             if working_memory is not None else []
         )
         records["memory_retrieved"] = memory_entries
