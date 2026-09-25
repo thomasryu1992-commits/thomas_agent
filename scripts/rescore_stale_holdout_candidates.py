@@ -207,6 +207,13 @@ def rescore_record(
         "rescore_reason": RESCORE_REASON,
         "created_at_utc": now,
     }
+    # The lineage is carried, not re-derived. A re-score is built from the spec rather than
+    # copied from the row, and a row with no `derivation_type` reads as legacy — which every
+    # quarantine (the promotion door, the backlog axis, the cohort seeder, `factory.may_breed`)
+    # passes. Dropping the field would turn a re-scored `hypothesis_trial` into a promotable row.
+    for field in ("derivation_type", "parent_candidate_ids"):
+        if field in source:
+            record[field] = source[field]
     record["candidate_id"] = pool_store.derive_candidate_id(record)
     return record
 

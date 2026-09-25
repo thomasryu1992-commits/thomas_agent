@@ -191,3 +191,36 @@ def test_the_axis_is_counted_in_the_backlog_breakdown():
     """Pinned here as well as in the backlog suite, because the pairing is the actual rule:
     a door axis that the counter does not know about advertises work that BLOCKS."""
     assert "derivation" in pool.BACKLOG_REFUSAL_AXES
+
+
+@pytest.mark.parametrize("lineage", [
+    {"derivation_type": "hypothesis_trial", "parent_candidate_ids": []},
+    {"derivation_type": "crossover", "parent_candidate_ids": ["cand_a", "cand_b"]},
+    {},
+])
+def test_a_re_score_keeps_the_lineage_of_the_row_it_re_measured(monkeypatch, lineage):
+    """`scripts/rescore_stale_holdout_candidates.py` builds its row from the spec, not by copying
+    the source row. Before this it dropped `derivation_type`, and a row without one reads as
+    legacy — so a re-scored trial would have walked through every quarantine above. A legacy
+    source stays legacy: the re-score must not invent a derivation either."""
+    from scripts import rescore_stale_holdout_candidates as rescore
+
+    class _Spec:
+        @staticmethod
+        def from_dict(d):
+            return _Spec()
+
+        def to_dict(self):
+            return {"strategy_family": "proposed_x"}
+
+    monkeypatch.setattr(rescore, "StrategySpec", _Spec)
+    monkeypatch.setattr(rescore, "unsuppliable_features", lambda spec, rows: [])
+    monkeypatch.setattr(rescore, "backtest_spec",
+                        lambda spec, snapshot, frame: {"champion_score": 0.1, "closed_count": 5})
+    source = {"candidate_id": "cand_src", "strategy_id": "S001", "strategy_rule_hash": "h",
+              "generation_id": "GEN-001", "strategy_spec": {"strategy_family": "proposed_x"},
+              **lineage}
+    row = rescore.rescore_record(source, {"candles": []}, frame=type("F", (), {"rows": []})(),
+                                 now="2026-09-25T00:00:00Z")
+    for field in ("derivation_type", "parent_candidate_ids"):
+        assert row.get(field, "absent") == lineage.get(field, "absent")
