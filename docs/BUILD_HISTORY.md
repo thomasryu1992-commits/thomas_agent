@@ -18,7 +18,10 @@ value is in the reasoning, not the headline. Read it when you need to know *why*
 way it is before changing it; a surprising amount of what looks like an odd choice is a recorded
 decision with a failure behind it.
 
-Append a new entry when a milestone ships, in the same PR.
+**Since 2026-09-25 this file takes no new entries.** A delivered increment's entry is its own file
+in [`docs/history/`](history/README.md), added in the same PR. Every PR used to insert here at the
+same spot, and two PRs in flight together conflicted on it. This file is the archive up to that
+date: read it for anything older, and `ls -r docs/history/` for anything newer.
 
 ---
 
