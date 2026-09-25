@@ -262,7 +262,7 @@ def test_membership_is_the_bar_one_per_lineage_and_no_routed_rule():
     below = _record("cand_below", family="thin", closed=20)
     routed = _record("cand_routed", family="routed")
     timeless = _record("cand_timeless", family="timeless", created=None)
-    trial = {**_record("cand_trial", family="trial"), "derivation_type": "trial_family"}
+    trial = {**_record("cand_trial", family="trial"), "derivation_type": "hypothesis_trial"}
     pool = _pool({"status": "PAPER_ACTIVE", "strategy_rule_hash": routed["strategy_rule_hash"]})
     members = fco.eligible_members([ok, sibling, below, routed, timeless, trial], pool)
     ids = [m["candidate_id"] for m in members]

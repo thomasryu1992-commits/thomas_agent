@@ -13,15 +13,17 @@ shape of change this repo has historically merged with one half missing (the evi
 axis reached `promotable_backlog` seven minutes after it reached the door), and a quarantine
 is worth nothing on the day it is late.
 
-So every test below asserts on a fixture rather than on the store: today the gate refuses
-nothing, because every derivation the store admits is also promotable.
+That design became `docs/proposals/HYPOTHESIS_TRIAL_V0.1.md` (option C), and its derivation is
+``hypothesis_trial``: admitted by the store, refused by the door, and barred from parenting a
+child the door would take (`factory.BREEDING_DERIVATION_TYPES`). The tests below assert on
+fixtures, because the quarantine has to stand before the first trial row is minted.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from runtime.mvp_runtime.crypto import pool
+from runtime.mvp_runtime.crypto import factory, pool
 from runtime.mvp_runtime.crypto.pool import (
     DERIVATION_TYPES,
     PROMOTABLE_DERIVATION_TYPES,
@@ -53,10 +55,12 @@ def test_a_row_that_names_no_derivation_passes_as_legacy():
     assert_promotable_derivation([_record("cand_legacy")])
 
 
-def test_a_derivation_the_pool_does_not_take_is_refused():
-    """The case the door exists for, stated with the name §I2 proposes."""
+@pytest.mark.parametrize("derivation", ["hypothesis_trial", "trial_family"])
+def test_a_derivation_the_pool_does_not_take_is_refused(derivation):
+    """The case the door exists for: the trial derivation the store admits, and a name the store
+    does not know at all (a row that reached the door without passing the append door)."""
     with pytest.raises(ToolError) as exc:
-        assert_promotable_derivation([_record("cand_trial", "trial_family")])
+        assert_promotable_derivation([_record("cand_trial", derivation)])
     assert exc.value.reason_code == "CANDIDATE_DERIVATION_NOT_PROMOTABLE"
 
 
@@ -65,11 +69,11 @@ def test_the_refusal_names_the_rows_and_the_escape():
     with pytest.raises(ToolError) as exc:
         assert_promotable_derivation([
             _record("cand_fine", "seeded_template"),
-            _record("cand_trial", "trial_family"),
+            _record("cand_trial", "hypothesis_trial"),
         ])
     assert "cand_trial" in exc.value.reason
     assert "cand_fine" not in exc.value.reason
-    assert "trial_family" in exc.value.reason
+    assert "hypothesis_trial" in exc.value.reason
     assert "--allow-quarantined-derivation" in exc.value.reason
 
 
@@ -85,16 +89,56 @@ def test_an_explicit_null_derivation_is_refused_rather_than_read_as_legacy():
 
 def test_widening_the_store_does_not_widen_the_door():
     """**This test is the whole mechanism.** `PROMOTABLE_DERIVATION_TYPES` is written as its
-    own literal rather than as an alias of `DERIVATION_TYPES`, so that adding `trial_family`
+    own literal rather than as an alias of `DERIVATION_TYPES`, so that adding a trial derivation
     to the closed set the append door validates does not silently make it promotable.
 
     The third assertion is the one that fires: it pins the STORE's set, so the commit that
     widens it lands here and has to state, in its own diff, whether the new derivation may
     trade. That is a deliberate ~30 seconds of friction on exactly the change that must not
-    happen by accident."""
+    happen by accident — and it fired once, on the commit that added ``hypothesis_trial``,
+    which answers here: it may not."""
     assert PROMOTABLE_DERIVATION_TYPES <= DERIVATION_TYPES
     assert PROMOTABLE_DERIVATION_TYPES == {"seeded_template", "crossover", "mutation"}
-    assert DERIVATION_TYPES == {"seeded_template", "crossover", "mutation"}
+    assert DERIVATION_TYPES == {"seeded_template", "crossover", "mutation", "hypothesis_trial"}
+    assert "hypothesis_trial" not in PROMOTABLE_DERIVATION_TYPES
+
+
+def test_what_may_breed_is_what_may_be_promoted():
+    """A fused child is written as ``crossover``, which the door takes, so a row the door refuses
+    must not parent one — or the trial would reach the live pool a generation later. The factory
+    keeps its own literal (it sits below the door's layer); this is where the two meet."""
+    assert factory.BREEDING_DERIVATION_TYPES == PROMOTABLE_DERIVATION_TYPES
+    assert factory.BREEDING_DERIVATION_TYPES is not PROMOTABLE_DERIVATION_TYPES
+
+
+def test_a_trial_row_never_parents_however_well_it_scored():
+    """Everything else about the row would qualify it: a score, a parseable spec, a judgeable
+    holdout that did not lose. The derivation alone keeps it out."""
+    spec = {"strategy_family": "proposed_x", "symbol_scope": ["BTCUSDT"], "timeframe": "1h"}
+    evidence = {"holdout": {"closed_count": 60, "expectancy": 0.3}}
+    seeded = {"candidate_id": "cand_seeded", "strategy_rule_hash": "h1", "champion_score": 0.5,
+              "strategy_spec": spec, "backtest_evidence": evidence,
+              "derivation_type": "seeded_template"}
+    trial = {**seeded, "candidate_id": "cand_trial", "strategy_rule_hash": "h2",
+             "champion_score": 0.99, "derivation_type": "hypothesis_trial"}
+    legacy = {k: v for k, v in seeded.items() if k != "derivation_type"}
+    legacy.update(candidate_id="cand_legacy", strategy_rule_hash="h3")
+    null = {**seeded, "candidate_id": "cand_null", "strategy_rule_hash": "h4", "derivation_type": None}
+    ranked = [r["candidate_id"] for r in factory.rank_fusion_parents([seeded, trial, legacy, null])]
+    assert sorted(ranked) == ["cand_legacy", "cand_seeded"]
+
+
+def test_the_store_admits_a_trial_row_with_no_parents_and_only_so():
+    """Fresh like a seeded row: a trial is a hypothesis, not a child of stored evidence."""
+    from runtime.mvp_runtime.crypto.pool_state import validate_candidate_lineage
+
+    validate_candidate_lineage({"derivation_type": "hypothesis_trial", "parent_candidate_ids": []},
+                               frozenset())
+    with pytest.raises(ToolError) as exc:
+        validate_candidate_lineage(
+            {"derivation_type": "hypothesis_trial", "parent_candidate_ids": ["cand_p"]},
+            frozenset({"cand_p"}))
+    assert exc.value.reason_code == "CANDIDATE_LINEAGE_INVALID"
 
 
 def test_the_two_sets_are_not_the_same_object():

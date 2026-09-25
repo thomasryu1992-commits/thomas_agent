@@ -53,8 +53,16 @@ CANDIDATES_FILENAME = "strategy_candidates.jsonl"
 # (no parents); the parented types name how a fused/derived child was produced.
 # The factory ops that MINT parented candidates are a separate increment — the
 # store admits them so the schema is one authority, not per-writer convention.
-DERIVATION_TYPES = frozenset({"seeded_template", "crossover", "mutation"})
-_PARENT_COUNT_RULES = {"seeded_template": (0, 0), "mutation": (1, 1), "crossover": (2, None)}
+# ``hypothesis_trial`` is a proposer hypothesis scored and held for forward
+# evidence (docs/proposals/HYPOTHESIS_TRIAL_V0.1.md, option C): fresh like a
+# seeded row, so no parents, and admitted HERE only — the live pool's door keeps
+# its own literal (`pool_admission.PROMOTABLE_DERIVATION_TYPES`) and does not
+# take it, and the factory's breeding set (`factory.BREEDING_DERIVATION_TYPES`)
+# does not let it parent a child that door would take.
+DERIVATION_TYPES = frozenset({"seeded_template", "crossover", "mutation", "hypothesis_trial"})
+_PARENT_COUNT_RULES = {
+    "seeded_template": (0, 0), "mutation": (1, 1), "crossover": (2, None), "hypothesis_trial": (0, 0),
+}
 
 
 def validate_candidate_lineage(record: Mapping[str, Any], known_ids: frozenset[str]) -> None:

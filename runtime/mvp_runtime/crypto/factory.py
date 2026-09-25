@@ -4323,6 +4323,26 @@ def carries_retired_family(record: Mapping[str, Any]) -> bool:
     return any(part in RETIRED_FAMILIES for part in family.split("+"))
 
 
+# Which derivations may PARENT a child. An allowlist of its own rather than "anything the store
+# admits", for the reason `pool_admission.PROMOTABLE_DERIVATION_TYPES` is one: a child is written
+# as ``crossover``, which the promotion door takes, so a row the door refuses that could still
+# parent would reach the live pool one generation later under a derivation nobody quarantined.
+# ``hypothesis_trial`` (`pool_state.DERIVATION_TYPES`) is the row this stops. Its own literal
+# because this layer cannot import the door's; `tests/test_mvp_runtime_crypto_promotable_derivation.py`
+# pins the two equal, so widening one without the other fails there.
+BREEDING_DERIVATION_TYPES = frozenset({"seeded_template", "crossover", "mutation"})
+
+
+def may_breed(record: Mapping[str, Any]) -> bool:
+    """Is this row's derivation one a child may cite as a parent?
+
+    Absence passes — the legacy rule the door applies, since hundreds of stored rows predate the
+    field. A row that names a derivation outside :data:`BREEDING_DERIVATION_TYPES`, including an
+    explicit null, may not."""
+    return ("derivation_type" not in record
+            or record.get("derivation_type") in BREEDING_DERIVATION_TYPES)
+
+
 # --- the holdout has to reach parent SELECTION, not just the child's own gate -----------------
 #
 # `champion_score` is what ranks the breeding pool, and it is `robustness.score_robustness` —
@@ -4472,6 +4492,9 @@ def rank_fusion_parents(
         if not isinstance(record.get("strategy_spec"), Mapping):
             continue
         if carries_retired_family(record):
+            continue
+        # A quarantined derivation may not breed a promotable child (`may_breed`).
+        if not may_breed(record):
             continue
         # Applied BEFORE the latest-wins collapse below, so a lineage is judged on the row being
         # considered rather than on whichever of its re-scores happened to carry a holdout.
