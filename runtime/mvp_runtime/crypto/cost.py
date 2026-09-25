@@ -99,6 +99,13 @@ DEFAULT_SLIPPAGE_BPS = 3.0
 # The slippage the STOP leg pays, split from the general figure — and since 2026-08-11, a
 # different number: the seam's first re-pricing.
 #
+# **Current value (since 2026-08-21): 1.4, MEASURED** — the stop-slippage probe's sample (n=10,
+# median 1.07 bps, upper quartile 1.60; Thomas chose 1.4 as the round figure; provenance row in
+# `tunables`). That replaced the 12.0 interim the paragraphs below describe, which are the
+# history of how the seam got here, not the current figure. The probe's fills were LONG entries
+# on three majors at a fixed 25 bps stop; the two strategy stops (23.5, 0.0) remain the only
+# measurements on strategy-shaped fills.
+#
 # A stop-market is not the same execution as an entry: the entry crosses a book that was not
 # moving against it in particular, while a triggered stop chases the exact move that fired it.
 # The first two live stops are the whole measured sample, and they are why the seam exists
@@ -341,8 +348,9 @@ def apply_cost_model(
       and `settle_trade_plan` already returns the target price itself as the exit — so this is
       the branch where the model and the venue finally agree.
     - a stop exit (``vocabulary.STOP_EXIT_REASONS``) leaves at market and pays taker plus the
-      STOP leg's own slippage (``stop_slippage_bps``) — a DEARER rate since the 2026-08-11
-      interim re-pricing; see ``DEFAULT_STOP_SLIPPAGE_BPS``.
+      STOP leg's own slippage (``stop_slippage_bps``) — its own rate since the 2026-08-11
+      split (the 12.0 interim; the probe's measured 1.4 since 2026-08-21); see
+      ``DEFAULT_STOP_SLIPPAGE_BPS``.
     - a KNOWN general market exit (``GENERAL_EXIT_REASONS``, i.e. the time exit) pays taker
       plus general adverse slippage, unchanged.
     - an UNRECOGNIZED reason prices as a stop. While the two rates were equal this branch
@@ -640,15 +648,15 @@ VENUE_COST_DECLARATIONS: dict[str, VenueCostDeclaration] = {
         taker_fee_bps=DEFAULT_TAKER_FEE_BPS,
         slippage_bps=DEFAULT_SLIPPAGE_BPS,
         maker_fee_bps=DEFAULT_MAKER_FEE_BPS,
-        # Explicit rather than the its-own-general fallback: the 12.0 interim IS a Binance
-        # figure (the mean of this account's two measured stop fills), so it belongs on this
-        # declaration — the fallback rule exists for venues with no stop measurement at all.
+        # Explicit rather than the its-own-general fallback: the stop rate IS a Binance figure
+        # (this account's stop-slippage probe, 2026-08-21), so it belongs on this declaration —
+        # the fallback rule exists for venues with no stop measurement at all.
         stop_slippage_bps=DEFAULT_STOP_SLIPPAGE_BPS,
         funding_bps_per_interval=DEFAULT_FUNDING_BPS_PER_INTERVAL,
         funding_intervals_per_day=FUNDING_INTERVALS_PER_DAY,
         funding_multiplier=1.0,
         note="taker measured on this account 2026-07-26; maker is the published rate; stop "
-             "slippage is the 2026-08-11 interim (mean of the two measured stop fills).",
+             "slippage measured by the stop-slippage probe 2026-08-21 (n=10).",
     ),
     # Measured against the venue 2026-08-04 (`EQUITY_PERP_S1_MEASUREMENTS_V0.1.md`), public
     # read-only endpoints. Two fields are real numbers and three are holes, and the holes are

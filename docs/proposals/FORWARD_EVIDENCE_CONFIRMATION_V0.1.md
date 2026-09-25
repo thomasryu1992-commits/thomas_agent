@@ -1,5 +1,10 @@
 # 제안: Forward Paper 증거가 무장 문에 닿으려면 인정 규칙이 필요하다 (DRAFT v0.1)
 
+**상태 (2026-09-25 정정):** §5-1·§5-2 결정됨(Thomas 2026-08-11)·구현됨 — §5-1은
+`crypto/forward_confirmation.py`(docstring이 "Thomas approved #690 §5-1 on 2026-08-11"로 인용), §5-2는
+`crypto/pool_admission.py`(주석이 "Thomas's 5-2 decision (2026-08-11)"로 인용). forward 증거의 출처는
+2026-08-29에 per-strategy forward book으로 개정됐다. §5-3의 결정 기록은 코드에서 찾지 못했다. 아래
+원래 상태 줄은 작성 당시의 것이다.
 **상태:** DRAFT — 설계 선행(구현 아님). 코드 변경 없음. 정책 활성화 없음. Thomas 결정 대기.
 **성격:** 게이트 완화가 아니다. **같은 문턱을 다른(더 오염되지 않은) 데이터에 적용하는 규칙**을
 새로 정의하는 제안이며, 무장은 지금처럼 운영자 승인 문(R9 ask → `/approve`)에 남는다.

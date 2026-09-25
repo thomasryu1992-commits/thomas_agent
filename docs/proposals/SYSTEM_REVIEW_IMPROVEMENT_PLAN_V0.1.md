@@ -366,7 +366,9 @@
 - `docker-compose.yml:80`에는 "체인 멤버마다 마운트된 grant가 필요하다"는 주석이 남아 있다. grant는
   08-10에 폐지됐다.
 - `deferred/control_channel/BOUNDARY.md:18`은 "Kill Switch state is not mutated"라고 적었지만,
-  `control.py`는 kill/resume을 수행한다.
+  `control.py`는 kill/resume을 수행한다. *(2026-09-25 구현 중 재확인: 이 문장은 deferred 계약
+  가족 자체의 경계를 말하고, 라이브 `control.py`는 그 가족을 쓰지 않는 별도 구현이다. 틀린 문장이
+  아니라 오해의 소지가 있는 문장이므로 단계 0에서 고치지 않고 D7에 남겼다.)*
 - 설계: 문장을 고친다(S). `deferred/`를 `historical/`로 동결할지는 G2 선례를 따라 §5 D7에서 결정한다.
 
 **D8. 가장 느린 테스트 3개 파일이 전체 시간의 약 32%를 쓴다.** 중간 · [확인]
