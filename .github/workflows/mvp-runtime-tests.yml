@@ -41,7 +41,7 @@ jobs:
           cache-dependency-path: requirements-validation.lock
 
       - name: Install dependencies
-        run: python -m pip install -r requirements-validation.lock pytest
+        run: python -m pip install -r requirements-validation.lock pytest pytest-xdist
 
       - name: Activate an ephemeral Core for the test run
         shell: bash
@@ -50,8 +50,13 @@ jobs:
           git config user.name "Thomas Agent CI"
           python scripts/ci_activate_core_for_tests.py
 
+      # Parallel across the runner's cores (system review 1-7, 2026-09-25). This job is the longest
+      # required check — ~6 min on ubuntu, ~12 min on windows — and every PR waits on it, again
+      # after each update-branch under strict mode. Measured locally on 4 cores: 8m09s serial,
+      # 1m55s with `-n 4`, same pass count. Order dependence that parallel runs could mask is
+      # still caught: the nightly Full validation workflow runs the suite serially on both OSes.
       - name: Run MVP runtime test suite
-        run: python -m pytest tests/ -q --junitxml=junit.xml
+        run: python -m pytest tests/ -q -n auto --junitxml=junit.xml
 
       # A skipped test and a passing test are the same character in `pytest -q`. If the
       # Core activation above ever stops taking effect, ~208 tests skip and the run stays
