@@ -162,6 +162,29 @@ def test_retrieve_capped_and_recent(tmp_path):
     assert [e["candidate_id"] for e in got] == ["memcand_6", "memcand_7", "memcand_8"]  # 3 most recent
 
 
+def test_retrieve_with_a_query_serves_only_what_is_relevant(tmp_path):
+    """The prompt heads these "Relevant prior working memory"; until 2026-09-25 they were the five
+    newest on any topic — a dental-SaaS request was handed a pet-food run's findings. With the
+    request as the query, a candidate is served only when it shares two content terms with it."""
+    store = WorkingMemoryStore(tmp_path / "wm")
+    store.append([
+        _entry("memcand_pet", "반려동물 사료 정기구독은 물류비가 마진을 좌우한다", created_at="2026-07-16T09:00:00Z"),
+        _entry("memcand_dental", "치과 예약 SaaS는 노쇼 감소가 핵심 가치다", created_at="2026-07-16T10:00:00Z"),
+        _entry("memcand_one_word", "사료 가격", created_at="2026-07-16T11:00:00Z"),
+    ])
+    got = retrieve_working_memory(_readable_assignment(), store,
+                                  query="이 사업 아이디어를 분석해줘: 반려동물 사료 정기구독을 시작")
+    assert [e["candidate_id"] for e in got] == ["memcand_pet"]      # one shared word is not a topic
+    none = retrieve_working_memory(_readable_assignment(), store, query="이 사업 아이디어를 분석해줘: 헬스장")
+    assert none == []                                                # nothing relevant serves nothing
+
+
+def test_the_boilerplate_and_particles_do_not_make_a_match():
+    from runtime.mvp_runtime.memory import relevance_terms
+    assert relevance_terms("이 사업 아이디어를 분석해줘: 구독을") == {"구독"}
+    assert relevance_terms("The idea is to analyze logistics") == {"logistics"}
+
+
 # --- VALIDATED-memory retrieval (the read leg of the promotion loop) --------
 
 
