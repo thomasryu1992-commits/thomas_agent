@@ -217,3 +217,154 @@ def test_a_broken_twin_book_is_named_as_the_twins_and_the_trials_still_walk(tmp_
     assert "trial_nulls failed=FORWARD_COHORT_UNREADABLE" in status
     assert "trials failed" not in status and " | trials members=1 " in status
     assert ftr.read_trial_outcomes(tmp_path)
+
+
+# --- closing a trial (PR4) -----------------------------------------------------------------------
+
+LATER = "2026-07-25T00:00:00Z"
+
+
+def _confirmed_trial(cid):
+    record = _eager_trial(cid)
+    # A holdout the judge reads as CONFIRMED: deep and clearly positive (`robustness.holdout_status`).
+    record["backtest_evidence"]["holdout"] = {
+        "closed_count": 200, "expectancy": 0.5, "stdev_r": 1.0,
+        "period_r": [9.0, 11.0, 10.0, 10.5, 9.5, 10.0, 11.0, 9.0, 10.0, 10.0],
+        "period_trades": [20] * 10}
+    return record
+
+
+def test_a_retire_is_sealed_and_stops_both_walks(tmp_path):
+    _store(tmp_path, _eager_trial("cand_t"))
+    _walk(tmp_path, _frame(range(1, 8)))
+    marks = {k: e["last_seen_candle"] for k, e in ftr.load_trial_positions(tmp_path)["entries"].items()}
+    record = ftr.close_trial(tmp_path, "cand_t", decision="retire", reason="holdout contradicted",
+                             now=NOW, apply=True)
+    assert record["forward_at_close"]["holdout_status"] == "INSUFFICIENT"
+    assert ftr.closed_trial_ids(tmp_path) == {"cand_t"}
+    assert ftr.trial_walk_plan(tmp_path) == {} and ftr.trial_null_walk_plan(tmp_path) == {}
+    after = _walk(tmp_path, FRAME, now=LATER)
+    assert after["trials"]["members"] == 0 and after["nulls"]["members"] == 0
+    # The book still loads (the closed trial's entries stay) and its marks did not move.
+    book = ftr.load_trial_positions(tmp_path)["entries"]
+    assert {k: e["last_seen_candle"] for k, e in book.items()} == marks
+    (line,) = ftr.trial_report(tmp_path)
+    assert line["close"]["decision"] == "retire"
+
+
+def test_a_dry_close_writes_nothing(tmp_path):
+    _store(tmp_path, _eager_trial("cand_t"))
+    ftr.close_trial(tmp_path, "cand_t", decision="retire", reason="r", now=NOW)
+    assert not ftr._closes_path(tmp_path).exists()
+    assert ftr.closed_trial_ids(tmp_path) == frozenset()
+
+
+def test_graduation_needs_the_trials_own_holdout_confirmed(tmp_path):
+    """Q5: no new threshold — the install gate is the existing holdout one, and a close must not
+    promise an install that gate would refuse."""
+    _store(tmp_path, _eager_trial("cand_t"), _confirmed_trial("cand_c"))
+    with pytest.raises(ToolError) as exc:
+        ftr.close_trial(tmp_path, "cand_t", decision="graduate", reason="looks good", now=NOW, apply=True)
+    assert exc.value.reason_code == ftr.HYPOTHESIS_TRIAL_NOT_GRADUABLE
+    record = ftr.close_trial(tmp_path, "cand_c", decision="graduate", reason="install", now=NOW, apply=True)
+    assert record["decision"] == "graduate"
+    assert ftr.closed_trial_ids(tmp_path) == {"cand_c"}
+
+
+@pytest.mark.parametrize("case,code", [
+    ("unknown", "HYPOTHESIS_TRIAL_UNKNOWN"), ("twice", "HYPOTHESIS_TRIAL_ALREADY_CLOSED"),
+    ("no_reason", "HYPOTHESIS_TRIAL_CLOSE_INVALID"), ("bad_decision", "HYPOTHESIS_TRIAL_CLOSE_INVALID"),
+])
+def test_a_close_refuses_what_it_cannot_honestly_record(tmp_path, case, code):
+    _store(tmp_path, _eager_trial("cand_t"), _record("cand_f", family="other"))
+    kwargs = {"decision": "retire", "reason": "r", "now": NOW, "apply": True}
+    target = "cand_t"
+    if case == "unknown":
+        target = "cand_f"
+    elif case == "twice":
+        ftr.close_trial(tmp_path, "cand_t", **kwargs)
+    elif case == "no_reason":
+        kwargs["reason"] = "  "
+    else:
+        kwargs["decision"] = "promote"
+    with pytest.raises(ToolError) as exc:
+        ftr.close_trial(tmp_path, target, **kwargs)
+    assert exc.value.reason_code == code
+
+
+def test_an_edited_close_is_refused(tmp_path):
+    _store(tmp_path, _eager_trial("cand_t"))
+    ftr.close_trial(tmp_path, "cand_t", decision="retire", reason="r", now=NOW, apply=True)
+    path = ftr._closes_path(tmp_path)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["decision"] = "graduate"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    with pytest.raises(ToolError) as exc:
+        ftr.read_trial_closes(tmp_path)
+    assert exc.value.reason_code == ftr.HYPOTHESIS_TRIAL_CLOSES_TAMPERED
+
+
+def test_a_close_frees_the_slot_but_never_re_queues_the_proposal(tmp_path):
+    from runtime.mvp_runtime.crypto import factory
+    trials = [_eager_trial(f"cand_{i}") for i in range(factory.MAX_OPEN_TRIALS)]
+    _store(tmp_path, *trials)
+    rows = pool_state.read_candidates(tmp_path)
+    assert factory.open_trial_count(rows) == factory.MAX_OPEN_TRIALS
+    ftr.close_trial(tmp_path, "cand_0", decision="retire", reason="r", now=NOW, apply=True)
+    assert factory.open_trial_count(rows, ftr.closed_trial_ids(tmp_path)) == factory.MAX_OPEN_TRIALS - 1
+    assert "src-cand_0" in factory.trial_source_hashes(rows)
+
+
+# --- the board and the funnel (PR4) ---------------------------------------------------------------
+
+def test_the_board_summary_counts_open_closed_and_both_arms_per_timeframe(tmp_path):
+    _store(tmp_path, _eager_trial("cand_t"), _eager_trial("cand_u", family="other"))
+    _walk(tmp_path, FRAME)
+    ftr.close_trial(tmp_path, "cand_u", decision="retire", reason="r", now=NOW, apply=True)
+    board = ftr.board_summary(tmp_path)
+    assert (board["trials"], board["open"], board["closed"], board["cap"]) == (2, 1, 1, 4)
+    assert set(board["real"]) == {"1d"} and set(board["null"]) == {"1d"}, "twins filed under their timeframe"
+    assert board["real"]["1d"]["members"] == 2 and board["null"]["1d"]["members"] == 2
+    assert ftr.board_summary(tmp_path / "empty") is None
+
+
+def test_the_board_prints_the_trial_line(tmp_path):
+    from runtime.mvp_runtime.crypto.dashboard import build_status, render_status_text
+    _store(tmp_path, _eager_trial("cand_t"))
+    _walk(tmp_path, FRAME)
+    status = build_status(tmp_path, now=NOW)
+    assert status["hypothesis_trials"]["open"] == 1
+    text = render_status_text(status)
+    assert "트라이얼 열림 1/4 · 종료 0 · 기록 1 · 확정·반박/계보 1d " in text
+    assert "hypothesis_trials" in build_status(tmp_path / "empty", now=NOW)
+    assert build_status(tmp_path / "empty", now=NOW)["hypothesis_trials"] is None
+
+
+def test_the_funnel_has_a_trials_section(tmp_path, capsys):
+    from scripts import strategy_funnel as script
+    _store(tmp_path, _eager_trial("cand_t"))
+    _walk(tmp_path, FRAME)
+    assert script.main([], root=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "HYPOTHESIS TRIALS" in out
+    assert "cand_t 1d breakout [open] holdout INSUFFICIENT" in out
+    assert script.main(["--json"], root=tmp_path) == 0
+    funnel = json.loads(capsys.readouterr().out)
+    assert funnel["trials"]["lines"][0]["candidate_id"] == "cand_t"
+    assert funnel["trials"]["twins"]["counts"]["members"] == 1
+
+
+# --- the operator script (PR4) --------------------------------------------------------------------
+
+def test_the_script_lists_and_closes_only_with_apply(tmp_path, capsys):
+    from scripts import hypothesis_trial as script
+    _store(tmp_path, _eager_trial("cand_t"))
+    assert script.main(["list"], root=tmp_path) == 0
+    assert "1 open of 4 slots" in capsys.readouterr().out
+    assert script.main(["close", "cand_t", "--retire", "--reason", "r"], root=tmp_path) == 0
+    assert "DRY RUN" in capsys.readouterr().out and not ftr._closes_path(tmp_path).exists()
+    assert script.main(["close", "cand_t", "--graduate", "--reason", "r", "--apply"], root=tmp_path) == 2
+    assert "HYPOTHESIS_TRIAL_NOT_GRADUABLE" in capsys.readouterr().err
+    assert ftr.closed_trial_ids(tmp_path) == frozenset()
+    assert script.main(["close", "cand_t", "--retire", "--reason", "r", "--apply"], root=tmp_path) == 0
+    assert ftr.closed_trial_ids(tmp_path) == {"cand_t"}

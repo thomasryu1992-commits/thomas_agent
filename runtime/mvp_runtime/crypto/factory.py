@@ -4872,6 +4872,14 @@ def trial_source_hashes(records: Sequence[Mapping[str, Any]]) -> frozenset[str]:
     return frozenset(hashes)
 
 
+def open_trial_count(records: Sequence[Mapping[str, Any]], closed_ids: frozenset[str] | set[str] = frozenset()) -> int:
+    """Trials holding a slot under :data:`MAX_OPEN_TRIALS`: minted and not closed by Thomas.
+
+    A closed trial frees its slot but its proposal stays screened — :func:`trial_source_hashes`
+    still names it, so closing never re-queues the proposal it came from."""
+    return len({candidate_id(r) for r in records if is_trial(r)} - set(closed_ids))
+
+
 def trial_spec_dict(
     proposal_spec: Mapping[str, Any], *, scope: Sequence[str], generation_id: str,
     strategy_id: str, venue: str,
@@ -5048,6 +5056,7 @@ def run_factory(
     positioning_eligible: bool = False,
     cohort_snapshots: Sequence[Mapping[str, Any]] | None = None,
     trial_proposals: Sequence[Mapping[str, Any]] | None = None,
+    closed_trial_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """One factory run: generate → backtest → candidate records. Pure (no I/O).
 
@@ -5056,7 +5065,9 @@ def run_factory(
     mints and stores at most one as a ``hypothesis_trial`` row (:func:`_screen_trials`). They are
     scored across the snapshot and EVERY cohort leg whatever the timeframe — see
     :data:`TRIAL_DERIVATION` — and are not counted in ``requested_count``/``accepted_count``,
-    which describe the rotation.
+    which describe the rotation. ``closed_trial_ids`` are the trials Thomas closed
+    (`forward_trial.read_trial_closes`, read by the caller — this function is pure); they no longer
+    hold a slot.
 
     ``positioning_eligible`` is the caller's measurement of whether the positioning store covers
     the replay window; it reaches :func:`templates_for_timeframe` unchanged. Kept as a parameter
@@ -5406,7 +5417,7 @@ def run_factory(
             legs=trial_legs,
             frames_for_legs=lambda: frames if pooled else [
                 frame, *(build_replay_frame(leg) for leg in trial_legs[1:])],
-            open_trials=len(trial_source_hashes(existing_candidates)),
+            open_trials=open_trial_count(existing_candidates, closed_trial_ids),
             fire_hashes=fire_hashes,
             generation_id=generation_id,
             venue=venue,

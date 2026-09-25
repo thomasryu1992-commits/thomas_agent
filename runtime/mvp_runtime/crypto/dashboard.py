@@ -33,7 +33,7 @@ from ..errors import MvpRuntimeError
 from ..paths import repo_root as _repo_root
 from ..store import LEDGER_REL, RECORDS_FILE
 from . import (
-    account, counterfactual, digest, feedback, forward_cohort, forward_cohort_null, lifecycle, oi_store,
+    account, counterfactual, digest, feedback, forward_cohort, forward_cohort_null, forward_trial, lifecycle, oi_store,
     orderbook_store,
     paper, pool, positioning_store, strategy_funnel,
 )
@@ -210,6 +210,13 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
     except MvpRuntimeError as exc:
         null_arm = None
         warnings.append(f"forward cohort null arm unreadable ({exc.reason_code})")
+    # The hypothesis trials (HYPOTHESIS_TRIAL_V0.1, option C): open against the cap, and their
+    # judge outcomes beside their coin-flip twins'. Research; it opens no door.
+    try:
+        trials_board = forward_trial.board_summary(root)
+    except MvpRuntimeError as exc:
+        trials_board = None
+        warnings.append(f"hypothesis trial stores unreadable ({exc.reason_code})")
 
     # Imported inside the function, the way `live_route` reaches the same module: the
     # operator package pulls in the whole console/pipeline tree, and the board is imported
@@ -374,6 +381,7 @@ def build_status(root: Path | None = None, *, now: str | None = None, cycles: in
         "promotion_backlog": backlog,
         "forward_cohort": cohort_board,
         "forward_cohort_null": null_arm,
+        "hypothesis_trials": trials_board,
         # Which judgement rules every verdict on this board was read under (2026-09-24,
         # RESEARCH_EPOCH_V0.1 option A): a threshold change re-grades the store at once.
         "judgement_rules": judgement_fingerprint(),
@@ -959,6 +967,16 @@ def render_status_text(status: dict[str, Any]) -> str:
             # Until the twins have rows, 0·0 on the null side is "nothing yet", not "nothing passed".
             + f" (null 기록 {sum(c.get('with_rows', 0) for c in null.values())}계보)"
             + _ever_tail(real, null))
+    # The trials against the cap, then the null line's cells for trials vs their twins.
+    trials = status.get("hypothesis_trials") or {}
+    if trials.get("trials"):
+        t_real, t_null = trials.get("real") or {}, trials.get("null") or {}
+        lines.append(
+            f"       트라이얼 열림 {trials.get('open')}/{trials.get('cap')} · 종료 {trials.get('closed')} · "
+            f"기록 {trials.get('with_rows')} · 확정·반박/계보 " + " · ".join(
+                f"{tf} {_arm(t_real.get(tf))} vs null {_arm(t_null.get(tf))}"
+                for tf in sorted(set(t_real) | set(t_null), key=lambda t: (_TIMEFRAME_ORDER.get(t, 99), t)))
+            + _ever_tail(t_real, t_null))
     oi_1h = status.get("open_interest_1h") or {}
     if oi_1h.get("symbols"):
         state = "적격" if oi_1h.get("eligible") else "축적 중"
