@@ -60,7 +60,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .forward_cohort import (
     FIRST_VERDICT_FIELDS, FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack,
-    cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts, walk_track,
+    cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts,
+    unparseable_suffix, walk_track,
 )
 from .forward_confirmation import FORWARD_UNDERPOWERED, judge_forward, min_forward_trades
 from .null_control import NULL_FEATURE, _null_spec
@@ -326,7 +327,8 @@ def status_line(summary: Mapping[str, Any]) -> str:
     line = ("nulls members=%s walked=%s opened=%s settled=%s" % (
         summary.get("members"), summary.get("walked"), summary.get("opened"), summary.get("settled")))
     failed = summary.get("failed") or []
-    return line + (f" failed={len(failed)}" if failed else "") + first_verdict_suffix(summary)
+    return (line + (f" failed={len(failed)}" if failed else "") + unparseable_suffix(summary)
+            + first_verdict_suffix(summary))
 
 
 # --- the report: the judge's rate over the twins, beside the members' (2026-09-24, PR 2) -----------

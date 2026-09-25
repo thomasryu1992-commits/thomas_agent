@@ -14,6 +14,7 @@ URL or key).
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -385,6 +386,16 @@ def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: i
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
             raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+        except (OSError, http.client.HTTPException):
+            # A connection that dies after the request went out — RemoteDisconnected,
+            # ConnectionResetError, IncompleteRead — is raised by getresponse()/read()
+            # directly, not wrapped in URLError. Every caller catches ProviderError only, so
+            # an untyped one ended the run with no BLOCK record and no audit trail.
+            raise ProviderError(
+                "PROVIDER_TRANSPORT", "hosted provider connection failed before the response completed"
+            ) from None
+        except UnicodeDecodeError:
+            raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
     return raw, int((time.monotonic() - started) * 1000), retries
 
 

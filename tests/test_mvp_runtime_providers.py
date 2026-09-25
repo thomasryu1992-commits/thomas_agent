@@ -8,6 +8,7 @@ directly (unit-testing the HTTP path) and exercise the gate wiring separately.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 
@@ -759,6 +760,36 @@ def test_the_single_retry_budget_is_shared_with_the_throttle(monkeypatch):
         GoogleAIStudioProvider(authorization=_AUTH).generate(
             "analyze", max_output_tokens=8000, timeout_seconds=30)
     assert "(json_validate_failed) after 1 retry" in exc.value.reason
+
+
+@pytest.mark.parametrize("outcome", [
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ConnectionResetError(104, "Connection reset by peer"),
+    http.client.IncompleteRead(b"{\"cand"),
+])
+def test_a_connection_that_dies_mid_response_is_typed_not_raw(monkeypatch, outcome):
+    """urllib raises these from getresponse()/read() directly, not wrapped in URLError.
+    Every caller catches ProviderError only, so a raw one ended the run with no BLOCK
+    record — and in triage, which is designed to degrade, killed the whole run instead."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [outcome])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert sleeps == []
+
+
+def test_a_body_that_is_not_utf8_is_malformed_not_raw(monkeypatch):
+    monkeypatch.setenv(API_ENV, "k")
+    class _BinaryResp(_FakeResp):
+        def __init__(self):
+            self._payload = b"\xff\xfe\xfa"
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: _BinaryResp())
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"
 
 
 def test_first_try_success_records_zero_retries(monkeypatch):

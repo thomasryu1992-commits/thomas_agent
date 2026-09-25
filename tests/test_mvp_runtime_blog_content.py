@@ -189,6 +189,47 @@ def test_no_eligible_keyword_is_an_outcome_not_a_fallback():
     assert keyword is None
 
 
+def test_a_keyword_already_drafted_is_read_off_the_ledger_archives_included(tmp_path):
+    """The weekly schedule never passed ``already_written``, so the exclusion above was dead and
+    every fire could re-draft last week's keyword. The ledger's packages are the record of what
+    was drafted — and packages are records, which rotate, so the archive counts too."""
+    from runtime.mvp_runtime import retention
+    from runtime.mvp_runtime.store import RECORDS_FILE, LedgerStore
+
+    ledger = LedgerStore(tmp_path / "ledger")
+    package = _package()
+    ledger.append_records(package["package_id"], {blog_content.PACKAGE_RECORD_KIND: package})
+    for index in range(5):
+        ledger.append_records(f"other{index}", {"crypto_cycle": {"n": index}})
+    retention.rotate_file(ledger, RECORDS_FILE, keep_rows=2, now=NOW)
+
+    assert blog_content.written_keywords(ledger) == ["미리캔버스 포스터"]
+    assert blog_content.written_keywords(None) == []
+
+
+def test_the_weekly_run_does_not_redraft_a_keyword_the_ledger_already_holds(tmp_path, monkeypatch):
+    """End of the wiring: with last week's package on the ledger, the brief's only winnable
+    keyword is excluded and the fire reports that none qualifies instead of drafting it twice."""
+    from runtime.mvp_runtime.errors import ToolError
+    from runtime.mvp_runtime.store import LedgerStore
+
+    ledger = LedgerStore(tmp_path / "ledger")
+    package = _package()
+    ledger.append_records(package["package_id"], {blog_content.PACKAGE_RECORD_KIND: package})
+    kinds_run: list[str] = []
+
+    def fake_run(kind, request, **kwargs):
+        kinds_run.append(kind)
+        return {"records": {"keyword_research": _brief()}}
+
+    monkeypatch.setattr(blog_content, "_run", fake_run)
+    with pytest.raises(ToolError) as exc:
+        blog_content.run_content_ideation({"seeds": "미리캔버스 포스터, 포스터 만들기"},
+                                          ledger=ledger, now=NOW, repo_root=tmp_path)
+    assert exc.value.reason_code == blog_content.NO_ELIGIBLE_KEYWORD
+    assert kinds_run == ["research"]            # no content draft was asked for
+
+
 # --- the operator's override -------------------------------------------------
 
 def test_the_schedule_request_carries_seeds_and_an_optional_target():

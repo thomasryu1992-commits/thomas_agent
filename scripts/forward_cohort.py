@@ -94,6 +94,8 @@ def _walk(root: Path, now: str, apply: bool) -> int:
           f"opened={summary['opened']} settled={summary['settled']}")
     for line in summary["failed"]:
         print(f"  FAILED {line}")
+    for candidate in summary["unparseable"]:
+        print(f"  UNPARSEABLE {candidate} (spec did not parse; not walked)")
     nulls = forward_cohort_null.run_null_walk(root, now=now, frame_for=frame_for, persist=apply)
     if nulls["members"]:
         print(forward_cohort_null.status_line(nulls))

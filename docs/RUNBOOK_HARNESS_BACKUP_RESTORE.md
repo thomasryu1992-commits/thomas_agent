@@ -142,6 +142,7 @@ existed, the nine healthchecks reported to nobody: `restart: unless-stopped` doe
 | stuck `starting` | `starting` is normal for the first 15–180 s after a deploy; past 15 minutes the probe has never passed |
 | crash loop | `RestartCount` rose on the *same* container id. A manual `docker restart` does not touch that counter and `up -d` resets it with a new id |
 | OOM kill | `.State.OOMKilled` — three services carry `mem_limit` and this host runs with ~1.5 GiB free |
+| disk nearly full | `df -P` on the filesystems holding `.runtime_governance_state` and `/root/backups`, at or past **90%** used (`HEALTH_WATCH_DISK_MAX_USED_PCT`), said once per mount. Added 2026-09-25: ledger archives are never deleted and every daily backup tars the whole history, so the disk only fills, and a full one stops every ledger append. Needs no docker, so it still reports when the daemon does not answer. **Takes effect only after the `install` line above is re-run on the host.** |
 
 Two rules keep it from becoming noise, which is how a watch dies. A state must be **seen twice**
 before it is sent — counted per problem, and not required to be consecutive: an intermittent probe

@@ -77,8 +77,9 @@ services:
       # a run is not good enough; without this nothing acts on that verdict.
       - --revise
     environment:
-      # Model provider(s) — ordered failover chain; every member needs its own
-      # mounted safety-flag grant or the whole chain fails closed at startup.
+      # Model provider(s) — ordered failover chain. Naming a member IS its opt-in (the env-only
+      # gate, Thomas 2026-08-10; per-machine grants are retired); an unknown or duplicate member
+      # fails the whole chain closed at startup.
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}

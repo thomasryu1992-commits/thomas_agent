@@ -289,6 +289,34 @@ def test_a_full_queue_is_refused_rather_than_dropped(tmp_path):
     assert exc.value.reason_code == "QUEUE_FULL"
 
 
+def test_a_submission_that_lands_between_the_count_and_the_append_cannot_overfill(tmp_path, monkeypatch):
+    """Two submitters each seeing ``limit - 1`` waiting must not both get in. Simulated by a
+    second writer that appends while this enqueue is building its entry: the count taken
+    under the append's own lock sees it, so this one is refused and the queue holds exactly
+    the limit."""
+    store = _registry(tmp_path)
+    for index in range(QUEUE_DEPTH_LIMIT - 1):
+        store.submit(build_entry(request_text=f"작업 {index}", origin="TELEGRAM",
+                                 requester_id="tg-12345", now=f"2026-07-25T09:00:{index:02d}Z",
+                                 status=QUEUED))
+    real_build = task_registry.build_entry
+    raced = []
+
+    def build_while_another_writer_lands(**kwargs):
+        if not raced:
+            raced.append(True)
+            store.submit(real_build(request_text="다른 창구의 작업", origin="TELEGRAM",
+                                    requester_id="tg-12345", now="2026-07-25T09:00:59Z",
+                                    status=QUEUED))
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(task_registry, "build_entry", build_while_another_writer_lands)
+    with pytest.raises(TaskRegistryBlocked) as exc:
+        enqueue(store, request_text="하나 더", origin="TELEGRAM", requester_id="tg-12345", now=NOW)
+    assert exc.value.reason_code == "QUEUE_FULL"
+    assert store.queued_count() == QUEUE_DEPTH_LIMIT
+
+
 def test_a_failed_enqueue_refuses_instead_of_silently_dropping(tmp_path, monkeypatch):
     """Unlike the bookkeeping seam, the queue is the execution path: a swallowed failure
     would lose a request Thomas believes is running."""
@@ -296,8 +324,8 @@ def test_a_failed_enqueue_refuses_instead_of_silently_dropping(tmp_path, monkeyp
     _stub_run(monkeypatch, calls)
     store = _registry(tmp_path)
     monkeypatch.setattr(
-        TaskRegistryStore, "submit",
-        lambda self, entry: (_ for _ in ()).throw(TaskRegistryBlocked("REGISTRY_WRITE_FAILED", "디스크 오류")),
+        TaskRegistryStore, "_append",
+        lambda self, entries: (_ for _ in ()).throw(TaskRegistryBlocked("REGISTRY_WRITE_FAILED", "디스크 오류")),
     )
 
     reply = handle_operator_message(_msg("분석해줘: 아이디어"), registration=REG,
