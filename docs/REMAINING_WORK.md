@@ -4647,6 +4647,11 @@ depth there.
 > track with null twins; no declarative family (I2) and no code-PR path (I4). Graduation into
 > `TEMPLATES` stays a Thomas PR on the existing holdout gate. Record:
 > [`HYPOTHESIS_TRIAL_V0.1.md`](proposals/HYPOTHESIS_TRIAL_V0.1.md) §결정.
+>
+> **Implemented 2026-09-25 (#977, #978, #979, #981):** quarantine, minting inside cohort factory fires, the
+> forward track with per-leg-paced null twins (`crypto/forward_trial.py`), the board line, the funnel
+> section and Thomas's `scripts/hypothesis_trial.py close`. First trial minted 2026-09-25 08:53Z.
+> Details: that proposal's `## 구현`.
 
 > **Status 2026-08-06: the one prerequisite this section named is closed (#545), so what remains
 > is the judgement alone.** The quarantine that I2 called *"the one piece that is not optional"* —

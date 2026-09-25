@@ -31,17 +31,26 @@ the twin trade once per leg for every trade the parent made across all of them.
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from runtime.read_only_kernel import integrity
+
+from .. import jsonl
+from ..errors import ToolError
+from ..filelock import locked
 from . import forward_book
 from .candidate_identity import candidate_id
+from .candidate_ranking import candidate_quality
 from .factory import is_trial
+from .factory import MAX_OPEN_TRIALS
 from .forward_cohort import (
-    WalkTrack, first_verdict_suffix, load_book_at, maturity_of, synthesize_entry, unparseable_suffix,
-    walk_track,
+    FORWARD_COHORT_LOCKED, WalkTrack, first_verdict_suffix, load_book_at, maturity_of,
+    synthesize_entry, unparseable_suffix, walk_track,
 )
-from .forward_cohort_null import null_entry, null_id, null_rows
+from .forward_cohort_null import arm_counts, null_entry, null_id, null_rows
 from .forward_confirmation import judge_forward, min_forward_trades
 from .null_control import _null_spec
 from .pool_state import read_candidates
@@ -56,6 +65,25 @@ TRIAL_NULL_OUTCOMES_FILENAME = "forward_trial_null_outcomes.jsonl"
 TRIAL_PROVENANCE = "mvp_forward_trial"
 TRIAL_NULL_PROVENANCE = "mvp_forward_trial_null"
 TRIAL_SEED_PREFIX = "trial|"
+
+# Thomas's close of a trial (PR4). The candidate store is append-only and self-hashed, so a trial
+# row cannot be marked closed; this is its own sealed store, read like the null arm's records.
+# Not a ledger kind: the ledger rotates, and the factory's cap reads these forever.
+TRIAL_CLOSES_FILENAME = "hypothesis_trial_closes.jsonl"
+TRIAL_CLOSE_VERSION = "hypothesis_trial_close.v1"
+CLOSE_GRADUATE = "graduate"
+CLOSE_RETIRE = "retire"
+CLOSE_DECISIONS = (CLOSE_GRADUATE, CLOSE_RETIRE)
+# The holdout status a graduation needs (HYPOTHESIS_TRIAL_V0.1 Q5: no new threshold; installing a
+# family into `factory.TEMPLATES` is a Thomas PR on the existing holdout gate).
+GRADUATION_HOLDOUT_STATUS = "CONFIRMED"
+
+HYPOTHESIS_TRIAL_CLOSES_UNREADABLE = "HYPOTHESIS_TRIAL_CLOSES_UNREADABLE"
+HYPOTHESIS_TRIAL_CLOSES_TAMPERED = "HYPOTHESIS_TRIAL_CLOSES_TAMPERED"
+HYPOTHESIS_TRIAL_UNKNOWN = "HYPOTHESIS_TRIAL_UNKNOWN"
+HYPOTHESIS_TRIAL_ALREADY_CLOSED = "HYPOTHESIS_TRIAL_ALREADY_CLOSED"
+HYPOTHESIS_TRIAL_NOT_GRADUABLE = "HYPOTHESIS_TRIAL_NOT_GRADUABLE"
+HYPOTHESIS_TRIAL_CLOSE_INVALID = "HYPOTHESIS_TRIAL_CLOSE_INVALID"
 
 
 def _positions_path(root: Path | None) -> Path:
@@ -72,6 +100,10 @@ def _null_positions_path(root: Path | None) -> Path:
 
 def _null_outcomes_path(root: Path | None) -> Path:
     return state_dir(root) / TRIAL_NULL_OUTCOMES_FILENAME
+
+
+def _closes_path(root: Path | None) -> Path:
+    return state_dir(root) / TRIAL_CLOSES_FILENAME
 
 
 def trial_rows(root: Path | None = None) -> list[dict[str, Any]]:
@@ -120,12 +152,92 @@ def trial_twin(record: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+# --- closing a trial (Thomas) --------------------------------------------------------------------
+
+def read_trial_closes(root: Path | None = None) -> list[dict[str, Any]]:
+    """Every close, verified: a ``hypothesis_trial_close.v1`` record whose self-hash holds."""
+    records: list[dict[str, Any]] = []
+    for lineno, record in jsonl.iter_numbered(
+        _closes_path(root), read_code=HYPOTHESIS_TRIAL_CLOSES_UNREADABLE,
+        label="hypothesis trial closes", exc_type=ToolError,
+    ):
+        if not isinstance(record, dict) or record.get("hypothesis_trial_close_version") != TRIAL_CLOSE_VERSION:
+            raise ToolError(HYPOTHESIS_TRIAL_CLOSES_TAMPERED,
+                            f"hypothesis trial closes line {lineno} is not a {TRIAL_CLOSE_VERSION} record")
+        stored = record.get("record_sha256")
+        body = {k: v for k, v in record.items() if k != "record_sha256"}
+        if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
+            raise ToolError(HYPOTHESIS_TRIAL_CLOSES_TAMPERED,
+                            f"hypothesis trial closes line {lineno} fails its self-hash")
+        records.append(record)
+    return records
+
+
+def closed_trial_ids(root: Path | None = None) -> frozenset[str]:
+    return frozenset(str(r.get("candidate_id")) for r in read_trial_closes(root))
+
+
+def close_trial(
+    root: Path | None, candidate: str, *, decision: str, reason: str, now: str, apply: bool = False,
+) -> dict[str, Any]:
+    """Thomas's close of one trial: graduated (he will install it into ``factory.TEMPLATES`` by PR)
+    or retired. Frees its slot under :data:`factory.MAX_OPEN_TRIALS`, stops its walk and its twin's,
+    and seals the forward record as it stood — the evidence the decision was taken on. Appended
+    only with ``apply``.
+
+    Refuses: an id that is not a trial, one already closed, an empty reason, and a graduation of a
+    trial whose own holdout is not CONFIRMED (Q5 — the install gate is the existing one; a close
+    cannot promise an install that gate would refuse). The proposal it came from stays screened:
+    closing frees a slot, it never re-queues the proposal."""
+    if decision not in CLOSE_DECISIONS:
+        raise ToolError(HYPOTHESIS_TRIAL_CLOSE_INVALID, f"decision must be one of {CLOSE_DECISIONS}")
+    if not reason.strip():
+        raise ToolError(HYPOTHESIS_TRIAL_CLOSE_INVALID, "a close needs a reason")
+    lines = {line["candidate_id"]: line for line in trial_report(root)}
+    line = lines.get(candidate)
+    if line is None:
+        raise ToolError(HYPOTHESIS_TRIAL_UNKNOWN, f"{candidate} is not a hypothesis trial in the store")
+    if line.get("close") is not None:
+        raise ToolError(HYPOTHESIS_TRIAL_ALREADY_CLOSED,
+                        f"{candidate} was closed ({line['close']['decision']}) at {line['close']['closed_at_utc']}")
+    if decision == CLOSE_GRADUATE and line.get("holdout_status") != GRADUATION_HOLDOUT_STATUS:
+        raise ToolError(HYPOTHESIS_TRIAL_NOT_GRADUABLE,
+                        f"{candidate}'s holdout is {line.get('holdout_status')}; installing a family "
+                        f"needs {GRADUATION_HOLDOUT_STATUS} (Q5). Retire it, or leave it open.")
+    body = {
+        "hypothesis_trial_close_version": TRIAL_CLOSE_VERSION,
+        "candidate_id": candidate,
+        "decision": decision,
+        "reason": reason.strip(),
+        "closed_at_utc": now,
+        "forward_at_close": {k: line.get(k) for k in (
+            "status", "maturity", "priceable_count", "mean_net_r", "holdout_status")},
+        "twin_at_close": None if not line.get("twin") else {
+            k: line["twin"].get(k) for k in ("status", "maturity", "priceable_count", "mean_net_r")},
+    }
+    record = {**body, "record_sha256": integrity.sha256_record(body)}
+    if apply:
+        path = _closes_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with locked(path.with_suffix(".lock"), code=FORWARD_COHORT_LOCKED, label="hypothesis trial closes"):
+            if candidate in closed_trial_ids(root):
+                raise ToolError(HYPOTHESIS_TRIAL_ALREADY_CLOSED, f"{candidate} was closed concurrently")
+            with open(path, "a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+    return record
+
+
 # --- the two tracks ------------------------------------------------------------------------------
 
 def trial_walk_plan(root: Path | None = None) -> dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]]:
     """Every trial-context, grouped by ``(symbol, timeframe)``, clocked from the mint."""
     plan: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    closed = closed_trial_ids(root)
     for record in trial_rows(root):
+        if candidate_id(record) in closed:
+            continue  # closed by Thomas: its record stops where he closed it
         spec = record.get("strategy_spec") or {}
         walk = {"candidate_id": candidate_id(record), "selected_at_utc": record.get("created_at_utc")}
         for symbol in spec.get("symbol_scope") or []:
@@ -136,7 +248,10 @@ def trial_walk_plan(root: Path | None = None) -> dict[tuple[str, str], list[tupl
 def trial_null_walk_plan(root: Path | None = None) -> dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]]:
     """Every twin-context, the null arm's plan shape over the trials' twins."""
     plan: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    closed = closed_trial_ids(root)
     for record in trial_rows(root):
+        if candidate_id(record) in closed:
+            continue
         twin = trial_twin(record)
         if twin is None:
             continue
@@ -148,6 +263,8 @@ def trial_null_walk_plan(root: Path | None = None) -> dict[tuple[str, str], list
 
 
 def load_trial_positions(root: Path | None = None) -> dict[str, Any]:
+    # Every trial ever minted, closed ones included: a closed trial's book entries stay (its marks
+    # are where its record stopped), and `load_book_at` refuses entries for ids it is not given.
     return load_book_at(_positions_path(root),
                         members=lambda: frozenset(candidate_id(r) for r in trial_rows(root)),
                         label="forward trial positions")
@@ -248,6 +365,7 @@ def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
     judge's status on the trial alone opens nothing."""
     rows = read_trial_outcomes(root)
     null_rows_ = read_trial_null_outcomes(root)
+    closes = {str(c["candidate_id"]): c for c in read_trial_closes(root)}
     lines: list[dict[str, Any]] = []
     for record in trial_rows(root):
         spec = record.get("strategy_spec") or {}
@@ -261,16 +379,23 @@ def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
             "trial_source": dict(record.get("trial_source") or {}),
             **judge_forward(_judged(cid, record.get("created_at_utc"), spec), rows),
             "trade_floor": min_forward_trades(spec.get("timeframe")),
+            # Recomputed from the holdout block by the one reader allowed to (`candidate_quality`),
+            # never lifted off the stored robustness label.
+            "holdout_status": candidate_quality(record)["holdout_status"],
         }
         line["maturity"] = maturity_of(line)
+        close = closes.get(cid)
+        line["close"] = None if close is None else {
+            k: close.get(k) for k in ("decision", "reason", "closed_at_utc")}
         twin = trial_twin(record)
         if twin is not None:
             twin_line = {
                 "null_id": twin["null_id"], "signal_rate": twin["signal_rate"],
+                "timeframe": twin["timeframe"],
                 **judge_forward(_judged(twin["null_id"], twin["selected_at_utc"], twin["null_spec"]),
                                 null_rows_),
             }
-            twin_line["maturity"] = maturity_of({**twin_line, "timeframe": twin["timeframe"]})
+            twin_line["maturity"] = maturity_of(twin_line)
             line["twin"] = twin_line
         else:
             line["twin"] = None
@@ -278,7 +403,32 @@ def trial_report(root: Path | None = None) -> list[dict[str, Any]]:
     return lines
 
 
+def board_summary(root: Path | None = None) -> dict[str, Any] | None:
+    """What the daily board shows of the trials; None before any trial is minted. Reads only.
+
+    Open against the cap and closed; then per timeframe the null line's cells — confirmed ·
+    contradicted / lineages, today's look and every look since the walk began stamping — for the
+    trials and for their twins (`forward_cohort_null.arm_counts`, the same counter)."""
+    lines = trial_report(root)
+    if not lines:
+        return None
+    twins = [line["twin"] for line in lines if line.get("twin")]
+    return {
+        "trials": len(lines),
+        "open": sum(1 for line in lines if line.get("close") is None),
+        "closed": sum(1 for line in lines if line.get("close") is not None),
+        "cap": MAX_OPEN_TRIALS,
+        "with_rows": sum(1 for line in lines if (line.get("priceable_count") or 0) > 0),
+        "real": arm_counts(lines, load_trial_positions(root)["verdicts"]),
+        "null": arm_counts(twins, load_trial_null_positions(root)["verdicts"], id_key="null_id"),
+    }
+
+
 __all__ = [
+    "board_summary",
+    "close_trial",
+    "closed_trial_ids",
+    "read_trial_closes",
     "TRIAL_NULL_TRACK",
     "TRIAL_TRACK",
     "per_leg_trade_rate",

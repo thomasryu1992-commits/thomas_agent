@@ -4,7 +4,7 @@ Regenerate with `python scripts/build_diagnostic_code_index.py`. `tests/test_dia
 
 Answers the question `REMAINING_WORK.md` §G3 says an operator actually asks: **a code came out of the runtime — where is it raised, and what test is it behind?** The `condition` column is the guarding `if`, unparsed from the source, so it cannot drift from what the code does the way a written description would.
 
-- **626** distinct codes across **1216** raise sites
+- **632** distinct codes across **1225** raise sites
 - **23** exception classes carry them
 - **75** codes are raised from more than one module (see below)
 - **134** raise sites build their code at runtime rather than from a literal and are not indexable; they are counted rather than guessed at
@@ -423,6 +423,15 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FRONTDESK_ROLE_UNRESOLVED` | `OperatorBlocked` | `runtime/mvp_runtime/frontdesk.py` | `_require_active_role` | `len(entries) != 1` |
 | `GUARD_NOT_APPROVED` | `SubmitRefused` | `runtime/mvp_runtime/crypto/live_execution.py` | `submit_and_reconcile` | `not (isinstance(guard_verdict, Mapping) and guard_verdict.get('approved') is True)` |
 | `HOST_NOT_ALLOWED` | `ToolBlocked` | `runtime/mvp_runtime/crypto/account.py` | `__init__` | `host not in ALLOWED_ACCOUNT_HOSTS` |
+| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `candidate in closed_trial_ids(root)` |
+| `HYPOTHESIS_TRIAL_ALREADY_CLOSED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `line.get('close') is not None` |
+| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `read_trial_closes` | `not isinstance(record, dict) or record.get('hypothesis_trial_close_version') != TRIAL_CLOSE_VER…` |
+| `HYPOTHESIS_TRIAL_CLOSES_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `read_trial_closes` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
+| `HYPOTHESIS_TRIAL_CLOSES_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `read_trial_closes` | `—` |
+| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `decision not in CLOSE_DECISIONS` |
+| `HYPOTHESIS_TRIAL_CLOSE_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `not reason.strip()` |
+| `HYPOTHESIS_TRIAL_NOT_GRADUABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `decision == CLOSE_GRADUATE and line.get('holdout_status') != GRADUATION_HOLDOUT_STATUS` |
+| `HYPOTHESIS_TRIAL_UNKNOWN` | `ToolError` | `runtime/mvp_runtime/crypto/forward_trial.py` | `close_trial` | `line is None` |
 | `IDEATION_INPUTS_REQUIRED` | `ToolError` | `runtime/mvp_runtime/blog_content.py` | `run_content_ideation` | `not seeds and (not target_override)` |
 | `IDEATION_INPUTS_REQUIRED` | `ControlBlocked` | `runtime/mvp_runtime/pipeline_worker.py` | `_apply_job` | `not isinstance(inputs, dict) or not str(inputs.get('seeds') or '').strip()` |
 | `IDEMPOTENCY_UNAVAILABLE` | `ControlBlocked` | `runtime/mvp_runtime/dispatch_bridge.py` | `apply_dispatch` | `request_id is not None and ledger is None` |
