@@ -1400,7 +1400,7 @@ def _execute(
         # book, no candidates, no orders. A context that fails costs that context (named in the
         # status line); a walk in which EVERY context failed fails the fire, so the failure
         # notifier says so once instead of a quiet line saying nothing moved.
-        from .crypto import forward_cohort, forward_cohort_null
+        from .crypto import forward_cohort, forward_cohort_null, forward_trial
 
         frame_for = forward_cohort.memoized_frames(forward_cohort.collector_frames(repo_root, now=now))
         summary = forward_cohort.run_cohort_walk(repo_root, now=now, frame_for=frame_for)
@@ -1413,11 +1413,31 @@ def _execute(
         # The null arm (2026-09-24) walks after the members, on the frames they fetched; its twins sit
         # in the same contexts. It measures the judge and moves nothing, so its failure is named on
         # the line and never fails the fire.
+        parts = [line]
         try:
             nulls = forward_cohort_null.run_null_walk(repo_root, now=now, frame_for=frame_for)
         except MvpRuntimeError as exc:
-            return f"{line} | nulls failed={exc.reason_code}"
-        return f"{line} | {forward_cohort_null.status_line(nulls)}" if nulls["members"] else line
+            parts.append(f"nulls failed={exc.reason_code}")
+        else:
+            if nulls["members"]:
+                parts.append(forward_cohort_null.status_line(nulls))
+        # The hypothesis trials and their twins (HYPOTHESIS_TRIAL_V0.1, option C, PR3) walk last,
+        # on the same memoized frames. Research like the null arm: a failure is named on the line
+        # and never fails the fire, and the cohort's walk above never waits on them.
+        # Two guards, so a damaged twin book is named as the twins' and never as the trials'.
+        trials = nulls_of_trials = None
+        try:
+            trials = forward_trial.walk_trials(repo_root, now=now, frame_for=frame_for)
+        except MvpRuntimeError as exc:
+            parts.append(f"trials failed={exc.reason_code}")
+        try:
+            nulls_of_trials = forward_trial.walk_trial_nulls(repo_root, now=now, frame_for=frame_for)
+        except MvpRuntimeError as exc:
+            parts.append(f"trial_nulls failed={exc.reason_code}")
+        if trials is not None and trials["members"]:
+            parts.append(forward_trial.status_line(
+                {"trials": trials, "nulls": nulls_of_trials or {}}))
+        return " | ".join(parts)
     if schedule.kind == KIND_DISPATCH_SPEND:
         # §6-3's alert rides the failure-transition notifier the way the data review's stall
         # does: past the threshold this fire FAILS, the operator gets the transition message,

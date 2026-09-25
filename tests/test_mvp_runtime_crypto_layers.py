@@ -137,7 +137,7 @@ LAYER: dict[str, str] = {
     "paper": "decision", "pool": "decision", "routing_marks": "decision", "cooldown": "decision",
     "promotion": "decision", "retirement": "decision", "pool_state": "decision", "live_tier": "decision",
     "pool_transitions": "decision", "pool_admission": "decision", "promotion_backlog": "decision",
-    "forward_cohort": "decision", "forward_cohort_null": "decision",
+    "forward_cohort": "decision", "forward_cohort_null": "decision", "forward_trial": "decision",
     # the judgement-rule fingerprint reads the promotion door's thresholds, so it sits with the door
     "judgement_fingerprint": "decision",
     # risk: what may be risked
