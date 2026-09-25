@@ -34,7 +34,7 @@ from .candidate_ranking import attempts_by_context, pooled_context_keys, rank_ca
 from .forward_confirmation import min_forward_trades
 from . import forward_book
 from .forward_cohort import MATURITIES, cohort_report, maturity_of, read_cohort_outcomes
-from .forward_cohort_null import null_report, read_null_outcomes, read_null_records
+from .forward_cohort_null import active_null_ids, active_null_records, null_report, read_null_outcomes
 from .forward_trial import read_trial_null_outcomes, read_trial_outcomes, trial_report, trial_twin
 from .independence import MIN_ROWS_PER_LINEAGE, independence
 from .judgement_fingerprint import judgement_fingerprint
@@ -118,7 +118,7 @@ def forward_funnel(root: Path | None, records: Iterable[Mapping[str, Any]]) -> d
 def null_funnel(root: Path | None) -> dict[str, Any] | None:
     """The null arm's twins counted exactly as :func:`forward_funnel` counts members; None before any
     null arm is frozen (2026-09-24)."""
-    records = read_null_records(root)
+    records = active_null_records(root)
     if not records:
         return None
     specs = {str(t.get("null_id")): t.get("null_spec") for r in records for t in r.get("members") or []}
@@ -192,11 +192,21 @@ def independent_bets(root: Path | None) -> dict[str, Any]:
     book. Script-only — the board reads `pool_funnel`, and the shuffled baseline is not free."""
     return {
         "cohort": independence(read_cohort_outcomes(root)),
-        "twins": independence(read_null_outcomes(root)) if read_null_records(root) else None,
+        # The active arm's rows only: a superseded arm's rows stay in the store but are not this
+        # arm's population (`forward_cohort_null.active_null_records`).
+        "twins": _active_twin_bets(root),
         "pool_forward": independence(forward_book.read_forward_outcomes(root)),
         "trials": independence(read_trial_outcomes(root)),
         "trial_twins": independence(read_trial_null_outcomes(root)),
     }
+
+
+def _active_twin_bets(root: Path | None) -> dict[str, Any] | None:
+    ids = active_null_ids(root)
+    if not ids:
+        return None
+    return independence([row for row in read_null_outcomes(root)
+                         if str(row.get("candidate_id")) in ids])
 
 
 def render_text(funnel: Mapping[str, Any]) -> list[str]:

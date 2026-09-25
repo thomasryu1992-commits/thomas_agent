@@ -395,7 +395,7 @@ Not automatically a defect — `APPROVAL_EXPIRED` meaning one thing in seven mod
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `invalid` | `—` |
 | `FORWARD_BOOK_UNVERIFIABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_book.py` | `load_book` | `—` |
 | `FORWARD_COHORT_EMPTY` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | `freeze_cohort` | `not members` |
-| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | `read_null_records` | `not isinstance(record, dict) or record.get('forward_cohort_nulls_version') != NULLS_VERSION` |
+| `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | `read_null_records` | `not isinstance(record, dict) or record.get('forward_cohort_nulls_version') not in NULLS_VERSIONS` |
 | `FORWARD_COHORT_NULLS_TAMPERED` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | `read_null_records` | `not isinstance(stored, str) or integrity.sha256_record(body) != stored` |
 | `FORWARD_COHORT_NULLS_UNREADABLE` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort_null.py` | `read_null_records` | `—` |
 | `FORWARD_COHORT_POSITIONS_INVALID` | `ToolError` | `runtime/mvp_runtime/crypto/forward_cohort.py` | `_assert_marks_run_forward` | `new_mark is None or timeutil.parse_iso(str(new_mark)) < timeutil.parse_iso(str(old_mark))` |

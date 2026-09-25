@@ -8,9 +8,12 @@ Four subcommands, each dry unless it says otherwise:
 - ``walk`` advances every member-context to the newest closed bar through the venue collector;
   ``--apply`` writes the rows and the walker state. Without it the walk is computed and
   reported and nothing is written.
-- ``freeze-nulls`` lists the null arm each frozen cohort without one would get: a coin-flip twin
-  per member (``crypto/forward_cohort_null.py``); ``--apply`` appends the sealed record. ``walk``
-  walks the twins after the members, into the null arm's own stores.
+- ``freeze-nulls`` lists the null arm each frozen cohort without a CURRENT-version one would get: a
+  coin-flip twin per member (``crypto/forward_cohort_null.py``); ``--apply`` appends the sealed
+  record. A cohort whose arm predates the current version (v1, paced by the pooled trade count over
+  one leg's bars) gets a v2 that names it and says how many twins' rates changed; the v1 record and
+  its rows stay, unwalked. ``walk`` walks the active twins after the members, into the null arm's
+  own stores.
 - ``report`` prints each member's forward numbers over its cohort rows. Reads only.
 
 Nothing here reaches the pool, the arming door or an order: cohort rows live in their own
@@ -65,8 +68,19 @@ def _freeze_nulls(root: Path, now: str, apply: bool) -> int:
     if not records:
         print("every frozen cohort already has its null arm")
         return EXIT_OK
+    superseded = {r["record_sha256"]: r for r in forward_cohort_null.read_null_records(root)}
     for record in records:
         print(f"{record['cohort_id']}: {record['null_size']} twin(s), rate rule: {record['rate_rule']}")
+        old = superseded.get((record.get("supersedes") or {}).get("record_sha256"))
+        if old is not None:
+            before = {t["parent_candidate_id"]: t["signal_rate"] for t in old["members"]}
+            changed = [t for t in record["members"]
+                       if before.get(t["parent_candidate_id"]) != t["signal_rate"]]
+            print(f"  supersedes {old['forward_cohort_nulls_version']} ({old['rate_rule']}): "
+                  f"{len(changed)} twin rate(s) change, {record['null_size'] - len(changed)} unchanged")
+            for twin in changed[:5]:
+                print(f"    {twin['parent_candidate_id']} {twin['timeframe']} "
+                      f"{before.get(twin['parent_candidate_id'])} -> {twin['signal_rate']}")
         for skip in record["skipped"]:
             print(f"  skipped {skip['parent_candidate_id']}: {skip['reason']}")
     print("FROZEN" if apply else "DRY RUN — nothing frozen. Re-run with --apply.")
