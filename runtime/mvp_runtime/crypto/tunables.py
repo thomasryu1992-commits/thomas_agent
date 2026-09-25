@@ -395,6 +395,11 @@ TUNABLES: tuple[Tunable, ...] = (
             "crypto/factory.py", MEASURED,
             "0 of 22 mints at 8 conditions produced a judgeable holdout; the band yields nothing",
             "a mint at 8 conditions reaching `MIN_HOLDOUT_TRADES` — needs a longer replay window"),
+    Tunable("MAX_OPEN_TRIALS", factory.MAX_OPEN_TRIALS, "crypto/factory.py", OPERATOR,
+            "Thomas 2026-09-24, HYPOTHESIS_TRIAL_V0.1 Q6 as recommended: 4 concurrent trials, "
+            "the §I2 figure",
+            "the trial track's forward record showing a trial beats its null — then the "
+            "question becomes install, not how many to hold"),
     Tunable("ABLATION_MAX_CONDITIONS", factory.ABLATION_MAX_CONDITIONS, "crypto/factory.py",
             OPERATOR,
             "Thomas 2026-08-12, FACTORY_ABLATION_V0.1 §3-1 as proposed: hypotheses of up to "

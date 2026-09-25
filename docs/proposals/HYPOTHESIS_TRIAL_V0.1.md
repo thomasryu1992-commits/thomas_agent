@@ -159,3 +159,9 @@ forward cohort 115명 전원 탐색 단계, null 대조 `4h 반박 실제 4 vs n
 - **Q5 졸업:** 새 문턱은 없다. `TEMPLATES` 설치는 Thomas PR이며 기존 holdout CONFIRMED를 요구한다. forward와 null 대조는 참고로만 읽고, 자동 승격은 없다.
 - **Q6 상한: 동시 트라이얼 4.** 백로그 상한은 트라이얼 편입을 검토로 세는 방식으로 바꾸는 것을 구현 PR에서 정한다.
 - 선행 조건 D-0은 #963으로 머지·배포했다.
+
+## 구현 (Thomas 2026-09-25, 권고대로)
+
+- PR1 #977: 스토어가 `hypothesis_trial`을 받고, 승격 문·backlog·코호트·교배 부모·재채점이 거부하거나 태그를 보존한다.
+- PR2: 코호트 factory 발화가 자기 타임프레임의 미검토 채택 제안을 오래된 순으로 최대 `MAX_TRIAL_SCREENS_PER_FIRE`(3)개 심사하고, 처음 통과한 하나를 트라이얼 행으로 민팅한다(5심볼 풀드, 1h 포함, 동시 상한 `MAX_OPEN_TRIALS` 4). 민팅이든 거부든 심사된 제안은 backlog에서 빠진다. 거부 사유: `parse`·`known_family`(설치·은퇴 family)·`validator`·`duplicate_rule_hash`·`unsuppliable_feature`·ablation 거부·`no_trades`. 트라이얼은 rotation 커서와 null_control 측정에서 빠지고, 채점한 풀드 컨텍스트의 attempts에는 계산된다.
+- 남음: PR3(트라이얼 forward 트랙 + null 쌍둥이), PR4(보드·퍼널 줄, Thomas `close`).

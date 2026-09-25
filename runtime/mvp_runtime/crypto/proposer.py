@@ -102,6 +102,97 @@ def _scored_on_another_timeframe(record: Mapping[str, Any], proposal: Mapping[st
     return isinstance(spec_timeframe, str) and isinstance(scored, str) and spec_timeframe != scored
 
 
+# The factory's record kind, read here for one field: the `trial` block a cohort fire writes when
+# it screens proposals (`factory._screen_trials`).
+FACTORY_LEDGER_KIND = "crypto_factory"
+
+
+def _screened_proposal_hashes(record: Mapping[str, Any]) -> set[str]:
+    """The proposal rule hashes one factory record screened — minted or refused.
+
+    Both, because either is a review: a minted proposal is now a trial with its own forward
+    record, and a refused one was scored at depth and failed a named check. The fire's skips
+    (``cap``, ``not_cohort``) list neither and so screen nothing."""
+    trial = record.get("trial")
+    if not isinstance(trial, Mapping):
+        return set()
+    hashes: set[str] = set()
+    for entry in [*(trial.get("minted") or []), *(trial.get("refused") or [])]:
+        value = entry.get("strategy_rule_hash") if isinstance(entry, Mapping) else None
+        if isinstance(value, str) and value:
+            hashes.add(value)
+    return hashes
+
+
+def _in_window_acceptances(record_rows: Iterable[Mapping[str, Any]], *, cutoff: str):
+    """One pass over ledger rows: the in-window acceptances by today's rule, and every proposal
+    hash a factory fire has screened. Split out because the backlog and the trial queue ask the
+    same two questions of the same stream."""
+    accepted: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    screened: set[str] = set()
+    for row in record_rows:
+        if not isinstance(row, Mapping):
+            continue
+        record = row.get("record")
+        if not isinstance(record, Mapping):
+            continue
+        if row.get("kind") == FACTORY_LEDGER_KIND:
+            screened |= _screened_proposal_hashes(record)
+            continue
+        if row.get("kind") != PROPOSAL_LEDGER_KIND:
+            continue
+        created = record.get("created_at")
+        if not (isinstance(created, str) and created >= cutoff):
+            continue
+        for proposal in record.get("proposals") or []:
+            if not isinstance(proposal, Mapping) or not proposal.get("accepted"):
+                continue
+            if _scored_on_another_timeframe(record, proposal):
+                continue
+            accepted.append((record, proposal))
+    return accepted, screened
+
+
+def pending_trial_proposals(
+    record_rows: Iterable[Mapping[str, Any]],
+    *,
+    timeframe: str,
+    now: str,
+    exclude_rule_hashes: Iterable[str] = (),
+    window_days: int = BACKLOG_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """The accepted proposals a ``timeframe`` cohort fire may screen as trials, oldest first.
+
+    The backlog's population (same window, same acceptance rule — an acceptance scored on
+    another timeframe's bars is not one) narrowed to the fire's timeframe, minus every proposal a
+    factory fire already screened and ``exclude_rule_hashes`` (the store's trial sources — a
+    trial row outlives the window its screening record was read in). Keyed on the proposal's
+    own rule hash; one without a hash cannot be tracked and is not offered. Deduplicated, first
+    sighting wins, so a family re-proposed with the same rules is screened once."""
+    from .. import timeutil
+
+    cutoff = timeutil.plus_minutes(now, -abs(int(window_days)) * 24 * 60)
+    accepted, screened = _in_window_acceptances(record_rows, cutoff=cutoff)
+    skip = screened | {h for h in exclude_rule_hashes if isinstance(h, str)}
+    queue: list[dict[str, Any]] = []
+    for record, proposal in sorted(accepted, key=lambda pair: str(pair[0].get("created_at"))):
+        spec = proposal.get("spec")
+        rule_hash = proposal.get("strategy_rule_hash")
+        if not isinstance(spec, Mapping) or spec.get("timeframe") != timeframe:
+            continue
+        if not isinstance(rule_hash, str) or not rule_hash or rule_hash in skip:
+            continue
+        skip.add(rule_hash)
+        queue.append({
+            "proposal_id": record.get("proposal_id"),
+            "family": proposal.get("family"),
+            "strategy_rule_hash": rule_hash,
+            "proposed_at": record.get("created_at"),
+            "spec": dict(spec),
+        })
+    return queue
+
+
 def count_unreviewed_backlog(
     record_rows: Iterable[Mapping[str, Any]],
     installed_families: Sequence[str],
@@ -120,29 +211,26 @@ def count_unreviewed_backlog(
     evaluator now rejects: the ledger keeps the original verdict, the count reads it by
     today's rule rather than holding the tap shut on it. ``record_rows`` are ledger rows as ``LedgerStore.iter_records`` yields
     them (a single pass — the ledger is never materialized for a count) (``{"kind", "record"}``); a malformed row is skipped, never fatal — a backlog count
-    must not itself fail closed and stop the scheduler."""
+    must not itself fail closed and stop the scheduler.
+
+    **A proposal a factory fire screened as a trial is reviewed** (Thomas 2026-09-25,
+    HYPOTHESIS_TRIAL_V0.1 Q6), minted or refused: the screen scored it at depth, which is the
+    review an install was the only form of before. So a family counts only while one of its
+    in-window acceptances is still unscreened — and the tap reopens as the trial fires work the
+    queue, rather than only as the window ages it out."""
     from .. import timeutil
 
     cutoff = timeutil.plus_minutes(now, -abs(int(window_days)) * 24 * 60)
     installed = {f for f in installed_families if isinstance(f, str)}
+    accepted, screened = _in_window_acceptances(record_rows, cutoff=cutoff)
     pending: set[str] = set()
-    for row in record_rows:
-        if not isinstance(row, Mapping) or row.get("kind") != PROPOSAL_LEDGER_KIND:
+    for _record, proposal in accepted:
+        family = proposal.get("family")
+        if not (isinstance(family, str) and family and family not in installed):
             continue
-        record = row.get("record")
-        if not isinstance(record, Mapping):
+        if proposal.get("strategy_rule_hash") in screened:
             continue
-        created = record.get("created_at")
-        if not (isinstance(created, str) and created >= cutoff):
-            continue
-        for proposal in record.get("proposals") or []:
-            if not isinstance(proposal, Mapping) or not proposal.get("accepted"):
-                continue
-            if _scored_on_another_timeframe(record, proposal):
-                continue
-            family = proposal.get("family")
-            if isinstance(family, str) and family and family not in installed:
-                pending.add(family)
+        pending.add(family)
     return len(pending)
 
 
@@ -577,6 +665,7 @@ def format_proposal_report(record: Mapping[str, Any]) -> str:
 
 __all__ = [
     "PROPOSAL_RECORD_TYPE",
+    "pending_trial_proposals",
     "build_proposal_prompt",
     "evaluate_proposal",
     "format_proposal_report",
