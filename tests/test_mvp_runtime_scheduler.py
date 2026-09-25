@@ -1456,6 +1456,23 @@ def test_a_proposer_fire_sends_the_family_list_and_never_the_frame(monkeypatch):
     assert out == {"raw": [], "invocation": None, "degraded": None}
 
 
+def test_a_proposer_fire_names_the_frames_timeframe_and_only_when_it_has_one(monkeypatch):
+    """The timeframe NAME crosses (so the prompt allows only what this fire scores), the frame
+    never does."""
+    from runtime.mvp_runtime import scheduler as sched
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"],
+            "generation": {"raw": [], "invocation": None, "degraded": None}},
+    )
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None, timeframe="1h")
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None)
+    assert sent[0]["proposal_inputs"]["timeframe"] == "1h"
+    assert "timeframe" not in sent[1]["proposal_inputs"]
+
+
 @pytest.mark.parametrize("reply", [
     {"ok": False, "reason_code": "KILLED", "reason": "halted"},
     {"ok": True, "job": "crypto_propose"},

@@ -536,10 +536,33 @@ def test_the_proposer_job_needs_no_market_frame(tmp_path):
     assert "snapshot" not in str(frame)
 
 
+def test_the_proposer_job_asks_only_for_the_callers_timeframe(tmp_path):
+    """The scheduler scores on one frame and `evaluate_proposal` refuses any other timeframe
+    (D-0), so the prompt must not offer the rest (measured 2026-09-25: 15m and 4h specs in
+    successful 1h fires)."""
+    from runtime.mvp_runtime.crypto import proposer
+    prompts: list[str] = []
+
+    class _Spy(proposer.MockProposerProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    out = pipeline_worker.apply_work(
+        {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
+         "proposal_inputs": {"existing_families": [], "focus": None, "timeframe": "4h"}},
+        control_store=ControlStore(tmp_path), providers={"validator_provider": _Spy()},
+    )
+    assert out["ok"] is True
+    assert '- timeframe must be "4h"' in prompts[0]
+    assert "timeframe must be one of" not in prompts[0]
+
+
 @pytest.mark.parametrize("inputs", [
     None, "not an object", {"existing_families": "trend_break"},
     {"existing_families": [1, 2]}, {"existing_families": ["x"] * 201},
     {"existing_families": [], "focus": 42},
+    {"existing_families": [], "timeframe": "2h"}, {"existing_families": [], "timeframe": 1},
 ])
 def test_malformed_proposal_inputs_are_refused(tmp_path, inputs):
     frame = {"job": pipeline_worker.JOB_CRYPTO_PROPOSE}

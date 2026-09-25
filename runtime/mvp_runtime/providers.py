@@ -17,6 +17,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -298,6 +299,41 @@ _RETRYABLE_HTTP = frozenset({429, 503})
 _MAX_RETRIES = 1
 _RETRY_BACKOFF_SECONDS = 5
 
+# The one 4xx that is "not this time" rather than "no": Groq's JSON mode validates the model's
+# output and answers HTTP 400 ``json_validate_failed`` when the model wrote malformed JSON. The
+# request was fine and the next sample usually is too — measured 2026-09-25 on the proposer's
+# own prompt, about 1 call in 6 on `openai/gpt-oss-120b`, the rest parsing cleanly; that one-in-
+# six cost the whole day's proposer fire, since a 4xx was never retried. Retried once, within the
+# same single-retry budget as 429/503 and without the backoff (nothing is throttling us). Still
+# TRANSPORT, not UNAVAILABLE, when it persists: a failover chain must not read it as "not now".
+_RETRYABLE_ERROR_CODES = frozenset({"json_validate_failed"})
+# How much of an error body is read to find its code. The body can carry the model's failed
+# output (`failed_generation`), which is never echoed — only the code is.
+_ERROR_BODY_READ_LIMIT = 65536
+_ERROR_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+
+
+def _error_code(exc: urllib.error.HTTPError) -> str | None:
+    """The vendor's machine-readable error code from an HTTP error body, or None.
+
+    OpenAI-compatible vendors (Groq, OpenRouter) put a string in ``error.code``; Google puts an
+    integer there and the name in ``error.status``. Only a short identifier-shaped string is
+    returned — never the message, which can quote the prompt, nor ``failed_generation``. Reading
+    the body is best-effort: an unreadable one is simply no code."""
+    try:
+        raw = exc.read(_ERROR_BODY_READ_LIMIT)
+        data = json.loads(raw.decode("utf-8", "replace")) if raw else None
+    except Exception:  # noqa: BLE001 — a code is diagnostic; its absence must not mask the status
+        return None
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return None
+    for key in ("code", "status"):
+        value = error.get(key)
+        if isinstance(value, str) and _ERROR_CODE_RE.match(value):
+            return value
+    return None
+
 # Sent on every hosted call. urllib's default ("Python-urllib/3.12") trips Cloudflare's
 # bot rules in front of api.groq.com — observed live 2026-07-21 as HTTP 403 "error code:
 # 1010" — so an honest, stable product identifier goes on both adapters. This is
@@ -332,13 +368,20 @@ def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: i
                 retries += 1
                 time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
+            code = None if exc.code in _RETRYABLE_HTTP else _error_code(exc)
+            if code in _RETRYABLE_ERROR_CODES and retries < _MAX_RETRIES:
+                retries += 1
+                continue
             suffix = f" after {retries} retry" if retries else ""
+            # The vendor's error code rides the reason: "HTTP 400" alone made a malformed-JSON
+            # sample, a decommissioned model (#790) and an empty model slug (#801) one string.
+            named = f" ({code})" if code else ""
             if exc.code in _RETRYABLE_HTTP:
                 raise ProviderError(
                     "PROVIDER_UNAVAILABLE", f"hosted provider returned HTTP {exc.code}{suffix}"
                 ) from None
             raise ProviderError(
-                "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{suffix}"
+                "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{named}{suffix}"
             ) from None
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
