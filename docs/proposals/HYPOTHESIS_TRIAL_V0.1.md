@@ -164,4 +164,5 @@ forward cohort 115명 전원 탐색 단계, null 대조 `4h 반박 실제 4 vs n
 
 - PR1 #977: 스토어가 `hypothesis_trial`을 받고, 승격 문·backlog·코호트·교배 부모·재채점이 거부하거나 태그를 보존한다.
 - PR2: 코호트 factory 발화가 자기 타임프레임의 미검토 채택 제안을 오래된 순으로 최대 `MAX_TRIAL_SCREENS_PER_FIRE`(3)개 심사하고, 처음 통과한 하나를 트라이얼 행으로 민팅한다(5심볼 풀드, 1h 포함, 동시 상한 `MAX_OPEN_TRIALS` 4). 민팅이든 거부든 심사된 제안은 backlog에서 빠진다. 거부 사유: `parse`·`known_family`(설치·은퇴 family)·`validator`·`duplicate_rule_hash`·`unsuppliable_feature`·ablation 거부·`no_trades`. 트라이얼은 rotation 커서와 null_control 측정에서 빠지고, 채점한 풀드 컨텍스트의 attempts에는 계산된다.
-- 남음: PR3(트라이얼 forward 트랙 + null 쌍둥이), PR4(보드·퍼널 줄, Thomas `close`).
+- PR3: 트라이얼과 그 동전 쌍둥이를 cohort walker(`forward_cohort.walk_track`)로 민팅 시각부터 걷는다(`crypto/forward_trial.py`). 각자 positions·outcomes 저장소(`mvp_forward_trial`, `mvp_forward_trial_null`)를 가져 cohort·null arm·forward book과 섞이지 않는다. 멤버십은 후보 저장소의 트라이얼 행이고 쌍둥이는 봉인된 행의 순수 함수라 별도 동결 기록이 없다. 쌍둥이 속도는 레그당(`closed_count / (bars_replayed × symbols_replayed)`). 매일 forward_cohort 발화에서 cohort·null arm 다음에 걷고, 실패는 줄에 이름만 남기고 발화를 실패시키지 않는다.
+- 남음: PR4(보드·퍼널 줄, Thomas `close`).
