@@ -335,8 +335,15 @@ def build_proposal_prompt(
     focus: str | None = None,
     count: int = MAX_PROPOSALS_PER_RUN,
     venue: str = market_data.BINANCE_FUTURES,
+    timeframe: str | None = None,
 ) -> str:
     """The proposal prompt: the real vocabulary, the real families, the real bounds.
+
+    ``timeframe`` is the frame the proposals will be scored on. Given, it is the ONLY timeframe
+    the prompt allows: `evaluate_proposal` refuses a spec whose timeframe is not the frame's
+    (D-0, #963), so offering the model every allowed timeframe invited proposals that were paid
+    for and then discarded — measured 2026-09-25, successful 1h fires still carried 15m and 4h
+    specs. Absent keeps the open list, for a caller that has no frame yet.
 
     The feature list comes from the validator's own vocabulary rather than a
     written-down copy, so the model is asked for exactly what a spec is allowed to name
@@ -354,6 +361,12 @@ def build_proposal_prompt(
         f"\nFocus this proposal on: {focus}. Prefer features related to that focus.\n"
         if focus else "\n"
     )
+    timeframe_rule = (
+        f"- timeframe must be \"{timeframe}\" — the bars your proposals are scored on; any other "
+        "timeframe is discarded\n"
+        if timeframe else f"- timeframe must be one of {sorted(ALLOWED_TIMEFRAMES)}\n"
+    )
+    example_timeframe = timeframe or "1h"
     return (
         "You are proposing new crypto trading strategy FAMILIES for a backtesting "
         "factory. Each proposal is a declarative rule set — you are not writing code.\n"
@@ -361,7 +374,7 @@ def build_proposal_prompt(
         f"\nAvailable features (use ONLY these names, exactly):\n{features}\n"
         f"\nFamilies that already exist (propose something genuinely different):\n{families}\n"
         "\nHard constraints — a proposal violating any of these is discarded:\n"
-        f"- timeframe must be one of {sorted(ALLOWED_TIMEFRAMES)}\n"
+        f"{timeframe_rule}"
         "- direction is \"long\" or \"short\"\n"
         "- target_atr / stop_atr must be >= 1.0 (reward:risk)\n"
         "- stop_atr in [0.3, 5.0]; target_atr in [0.5, 10.0]; max_holding_bars in [1, 500]\n"
@@ -377,7 +390,8 @@ def build_proposal_prompt(
         "\nReply with ONLY a JSON object of this shape:\n"
         '{"summary": "<one line>", "key_findings": [], "facts": [], '
         '"proposals": [{"family": "<snake_case_name>", "rationale": "<one sentence: what '
-        'market behaviour this exploits>", "direction": "long", "timeframe": "1h", '
+        'market behaviour this exploits>", "direction": "long", '
+        f'"timeframe": "{example_timeframe}", '
         '"entry_rules": {"operator": "AND", "conditions": [...]}, '
         '"exit_rules": {"stop_model": "atr", "stop_atr": 1.2, "target_atr": 3.0, '
         '"max_holding_bars": 24}}]}\n'
@@ -518,7 +532,7 @@ def propose_strategy_families(
     """
     generation = generate_proposals(
         provider=provider, existing_families=existing_families, focus=focus,
-        count=count, venue=venue,
+        count=count, venue=venue, timeframe=snapshot.get("timeframe"),
     )
     return assemble_proposal_record(snapshot, generation=generation, focus=focus, now=now)
 
@@ -530,20 +544,23 @@ def generate_proposals(
     focus: str | None = None,
     count: int = MAX_PROPOSALS_PER_RUN,
     venue: str = market_data.BINANCE_FUTURES,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     """The model half: ask for families, parse what came back. **Touches no snapshot.**
 
     Split out so the model call can run somewhere other than the process that judges its
     answer (`docs/proposals/CREDENTIAL_PLANE_SEPARATION_PHASE2_V0.1.md`, D6). That the split
     is this clean is a property of the prompt, not a refactor: ``build_proposal_prompt`` takes
-    family names, a focus, a count and a venue — it has never read the market frame. The frame
-    is used only by ``evaluate_proposal`` below, which invokes no model.
+    family names, a focus, a count, a venue and the frame's timeframe NAME — it has never read
+    the market frame. The frame is used only by ``evaluate_proposal`` below, which invokes no
+    model.
 
     Returns the three things the record needs from the call and nothing else, so what crosses
     a socket is a handful of strings each way rather than a 5-leg market snapshot.
     """
     prompt = build_proposal_prompt(
-        existing_families=existing_families, focus=focus, count=count, venue=venue
+        existing_families=existing_families, focus=focus, count=count, venue=venue,
+        timeframe=timeframe,
     )
 
     degraded: str | None = None

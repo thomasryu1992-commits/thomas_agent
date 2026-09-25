@@ -426,3 +426,29 @@ def test_backlog_skips_malformed_rows_without_crashing():
         _proposal_row(["real"]),
     ]
     assert proposer.count_unreviewed_backlog(rows, [], now="2026-07-24T01:00:00Z") == 1
+
+
+# --- the prompt names the frame's timeframe (2026-09-25) -------------------------------------
+
+def test_the_prompt_allows_only_the_frames_timeframe_when_it_has_one():
+    from runtime.mvp_runtime.crypto import proposer
+    bound = proposer.build_proposal_prompt(existing_families=[], timeframe="1h")
+    assert '- timeframe must be "1h"' in bound and '"timeframe": "1h"' in bound
+    assert "timeframe must be one of" not in bound
+    open_ = proposer.build_proposal_prompt(existing_families=[])
+    assert "- timeframe must be one of" in open_
+
+
+def test_the_cli_path_binds_the_prompt_to_the_snapshots_timeframe():
+    from runtime.mvp_runtime.crypto import proposer
+    prompts: list[str] = []
+
+    class _Spy(proposer.MockProposerProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    proposer.propose_strategy_families({"symbol": "BTCUSDT", "timeframe": "4h", "candles": []},
+                                       provider=_Spy(), now="2026-09-25T00:00:00Z",
+                                       existing_families=[])
+    assert '- timeframe must be "4h"' in prompts[0]
