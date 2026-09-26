@@ -13,6 +13,12 @@ What is deliberately NOT here: any schedule mutation (the scheduler CLI keeps ``
 ``enable`` / ``disable`` / ``remove``), and the approval record's body — the read door's rule
 is that ``approvals/`` is never exposed raw, so ``approval_status`` renders a summary and
 never the action snapshot or the fingerprint.
+
+``lane_digest`` (review D8, 2026-09-26) is the one read here that is not a store the console
+never rendered but a fold over the run ledger: the per-lane counts ``scripts.lane_digest`` prints,
+so the assistant can hand Thomas the weekly lane evidence the lane-removal rule reads. It is
+carried dormant — the read door refuses it until the committed policy lists it
+(``read_bridge.POLICY_GATED_READS``).
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import approval, heartbeat, scheduler, timeutil
+from . import approval, heartbeat, lane_digest, scheduler, timeutil
 from .approval_store import ApprovalStore
 from .control import parse_count_arg, with_note
 from .errors import ControlBlocked, MvpRuntimeError
@@ -31,9 +37,16 @@ SCHEDULES = "SCHEDULES"
 SCHEDULER_EVENTS = "SCHEDULER_EVENTS"
 HEARTBEAT = "HEARTBEAT"
 APPROVAL_STATUS = "APPROVAL_STATUS"
+LANE_DIGEST = "LANE_DIGEST"
 
 DEFAULT_EVENTS = 20
 MAX_EVENTS = 100
+# A week is the digest's cadence; a month is the widest window this door scans. The scan holds the
+# record ledger's append lock for its length (``iter_records_with_archive``), and the assistant can
+# call it whenever it likes, so the ceiling bounds what one call can cost a writer. The 60-day D8
+# verdict reads the CLI (``scripts.lane_digest --days 60``), which runs where Thomas runs it.
+DEFAULT_DIGEST_DAYS = 7
+MAX_DIGEST_DAYS = 31
 _STATUS_CHARS = 60
 
 # The loops that write a heartbeat in the shipped deployment (docker-compose.yml): one
@@ -192,3 +205,21 @@ def read_approval_status(
              + (f" (기록상 {recorded})" if effective != recorded else "")
              + (f" — 만료 {expires_at}{remaining}" if expires_at else ""))
     return {"reply": reply, "action": "APPROVAL_STATUS_READ", "data": data}
+
+
+def read_lane_digest(ledger: LedgerStore | None, argument: str | None, *, now: str) -> dict[str, Any]:
+    """What each lane did over the last N days (default 7, at most 31) — ``lane_digest.render``'s
+    text and the fold itself as ``data``. Reads the run records, archives included, so a week that
+    rotation has moved out of the active file still counts. Changes nothing."""
+    if ledger is None or not hasattr(ledger, "iter_records_with_archive"):
+        raise ControlBlocked("RUN_LEDGER_UNAVAILABLE", "this door was opened without the run ledger")
+    days, note = parse_count_arg(
+        argument, default=DEFAULT_DIGEST_DAYS, maximum=MAX_DIGEST_DAYS, usage="lane_digest [일수]",
+    )
+    since = timeutil.plus_minutes(now, -days * 24 * 60)
+    digest = lane_digest.lane_digest(ledger, since=since, until=now)
+    return {
+        "reply": with_note(lane_digest.render(digest, since=since, until=now), note),
+        "action": "LANE_DIGEST_READ",
+        "data": {"since": since, "until": now, "days": days, "lanes": digest, "as_of": now},
+    }

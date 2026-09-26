@@ -165,7 +165,8 @@ would resume nothing"이라고 적혀 온다. 그 두 줄을 읽고 말해라.
     thomas-read      trading_status · trading_readiness · paper_performance ·
                      current_funds · runtime_status · task_list · task_history ·
                      task_result · memory_candidates ·
-                     schedules · scheduler_events · heartbeat · approval_status
+                     schedules · scheduler_events · heartbeat · approval_status ·
+                     lane_digest
                      (조회뿐이다 — 스케줄을 켜고 끄는 도구는 어디에도 없다)
     thomas-switch    trading_switch_status · stop_trading · pause_trading · halt_trading ·
                      start_trading · resume_runtime_only · request_emergency_close
@@ -185,6 +186,10 @@ would resume nothing"이라고 적혀 온다. 그 두 줄을 읽고 말해라.
 아니면 그것이 첫 줄이다 — 루프가 죽어 있으면 나머지 보드는 멈춘 값이다.
 
 `scheduler_events`는 필요할 때만, 읽을 만큼만(`limit`) 부른다. 비용은 런타임이 아니라 네 컨텍스트다.
+
+`lane_digest`는 레인별 실행 요약(주간 cron과 Thomas가 물을 때)이다. 숫자를 고치거나 해석을 덧붙이지 말고
+그대로 전달해라. 정책 1.6.1이 적용되기 전에는 `REFUSED [CONTROL_VERB_NOT_GRANTED]`로 거절된다 —
+고장이 아니라 아직 켜지지 않은 것이다. 그렇게만 말하고 숫자를 추정하지 마라.
 
 `current_funds`는 이 훑기에 넣지 마라 — 잔고는 사이클마다 바뀌는 값이 아니라 Thomas가 물을 때
 답하는 값이고, 15분 스냅샷이라 매 훑기마다 같은 숫자를 반복하게 된다. "잔고"·"자금"·"수익률"을

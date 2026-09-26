@@ -13,8 +13,15 @@ def _control_channel():
 
 
 def test_the_policy_verbs_and_the_read_doors_inventory_are_the_same_set_both_ways():
+    """Every verb the policy names is served, and every served verb the policy does not name is one the
+    door carries dormant — refused by name until the policy lists it (``POLICY_GATED_READS``, the switch
+    door's pattern). Before policy 1.6.1 that is ``lane_digest``; after it, the difference is empty."""
     verbs = set(_control_channel()["assistant_read"]["verbs"])
-    assert verbs == set(read_bridge.READ_VERB_AUTHORITY) == set(read_bridge._READS)
+    served = set(read_bridge._READS)
+    assert served == set(read_bridge.READ_VERB_AUTHORITY)
+    assert verbs <= served
+    assert served - verbs <= read_bridge.POLICY_GATED_READS
+    assert read_bridge.POLICY_GATED_READS <= served
 
 
 def test_the_clause_grants_nothing_and_the_mirror_is_a_sink():

@@ -19,12 +19,38 @@ def _answer(name, frame=None, failure=None, sent=False, detail=""):
 
 # --- read ---------------------------------------------------------------------------------
 
-def test_read_tools_are_the_thirteen_read_verbs_and_nothing_mutating():
+def test_read_tools_are_the_fourteen_read_verbs_and_nothing_mutating():
     assert set(read_shim.mcp.tools) == {
         "trading_status", "trading_readiness", "paper_performance", "runtime_status", "task_list",
         "task_history", "task_result", "current_funds", "memory_candidates",
-        "schedules", "scheduler_events", "heartbeat", "approval_status",
+        "schedules", "scheduler_events", "heartbeat", "approval_status", "lane_digest",
     }
+
+
+def test_every_read_tool_names_a_verb_the_read_door_serves():
+    """The shim cannot call a verb the door does not carry: each tool's command is in `_READS`."""
+    from runtime.mvp_runtime import read_bridge
+
+    seen = []
+    original = door.ask
+    door.ask = lambda d, p, **kw: seen.append(p["command"]) or _answer("read", {"ok": True, "reply": "r"})
+    try:
+        for name, tool in read_shim.mcp.tools.items():
+            tool("x") if name in ("task_result", "approval_status") else tool()
+    finally:
+        door.ask = original
+    assert set(seen) <= set(read_bridge._READS) and len(seen) == len(read_shim.mcp.tools)
+
+
+def test_lane_digest_forwards_the_window_and_relays_the_dormant_refusal(monkeypatch):
+    seen = []
+    refusal = {"ok": False, "reason_code": "CONTROL_VERB_NOT_GRANTED", "reason": "not granted"}
+    monkeypatch.setattr(door, "ask", lambda d, p, **kw: seen.append(p) or _answer("read", refusal))
+    out = read_shim.lane_digest("30")
+    assert seen == [{"command": "lane_digest", "argument": "30"}]
+    assert out.startswith("REFUSED [CONTROL_VERB_NOT_GRANTED]") and "SNAPSHOT" not in out
+    read_shim.lane_digest()
+    assert seen[1] == {"command": "lane_digest"}
 
 
 def test_read_stamps_a_success_and_renders_a_refusal_plainly():
