@@ -177,12 +177,20 @@ def test_working_memory_accumulates_and_feeds_back(tmp_path):
     assert first["records"]["memory_retrieved"] == []
     assert wm.read_all()  # candidates were accumulated
 
-    # Second run: retrieves the first run's candidates and records them as working_memory evidence.
-    second = run_task(REQUEST, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
+    # Second run on a related request (it shares terms with the mock's stored findings — retrieval
+    # is by relevance since 2026-09-25): retrieves the first run's candidates and records them as
+    # working_memory evidence.
+    related = REQUEST + " — recurring revenue, fulfilment logistics"
+    second = run_task(related, provider=MockProvider(), working_memory=wm, now="2026-07-16T10:00:00Z")
     assert second["status"] == "COMPLETED"
     assert second["records"]["memory_retrieved"]  # prior candidates surfaced as context
     ev_types = {e["type"] for e in second["records"]["agent_output"]["evidence"]}
     assert "working_memory" in ev_types
+
+    # An unrelated request is handed none of them, rather than the newest five on any topic.
+    unrelated = run_task("이 사업 아이디어를 분석해줘: 치과 예약 SaaS", provider=MockProvider(),
+                         working_memory=wm, now="2026-07-16T11:00:00Z")
+    assert unrelated["records"]["memory_retrieved"] == []
 
 
 @requires_local_core

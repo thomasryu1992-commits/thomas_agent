@@ -138,3 +138,23 @@ def test_a_mapping_valued_key_renders_as_key_value_lines():
     assert "- model: subscription" in rendered
     assert "- arpu: 12" in rendered
     assert "- risks: churn, CAC" in rendered
+
+
+def test_risks_assumptions_and_next_actions_reach_the_reader():
+    """They lived in the ledger alone (system review B4, 2026-09-25): validation REVISEs a NEGATIVE
+    perspective with no stated risk, and the risk it insisted on was then never shown. Risks and
+    assumptions render before the recommendation they bear on; next actions after it."""
+    output = {
+        "goal": "Evaluate the idea.", "summary": "A summary.",
+        "recommendation": {"action": "Validate first.", "reason": "CAC dominates."},
+        "risks": ["Thin margins."], "assumptions": ["Demand was not verified."],
+        "next_actions": ["Run a paid test."], "uncertainty": ["Demand unproven."],
+        "role_specific_output": {"key_findings": ["A finding."]},
+    }
+    rendered = render_response(output)
+    for section in ("## Risks\n- Thin margins.", "## Assumptions\n- Demand was not verified.",
+                    "## Next actions\n- Run a paid test."):
+        assert section in rendered
+    assert (rendered.index("## Risks") < rendered.index("## Assumptions")
+            < rendered.index("## Recommendation") < rendered.index("## Next actions")
+            < rendered.index("## Uncertainty"))

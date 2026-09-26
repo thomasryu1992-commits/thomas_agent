@@ -89,3 +89,53 @@ def test_secret_bearing_key_blocks():
     out = deepcopy(out)
     out["role_specific_output"]["api_key"] = "leaked"
     assert _validate(out, task, assignment)["validation"]["result"] == "BLOCK"
+
+
+# --- grounding: a cited source must be one the run issued (system review B3, 2026-09-25) --------
+
+def _grounding_check(vr):
+    return next(c for c in vr["validation"]["checks"] if c["check_id"] == "evidence_grounding")
+
+
+@requires_local_core
+def test_a_fact_citing_a_source_the_run_never_issued_revises():
+    """The check was vacuous: a fact with no refs defaults to `model:analysis`, which is always in
+    the evidence, so any output with one fact passed. A citation number the prompt never issued is
+    a fabricated source."""
+    out, task, assignment = _output_and_plan()
+    out = deepcopy(out)
+    out["facts"] = [{"statement": "Market size is 3조원.", "evidence_refs": ["[S7]"]}]
+    vr = _validate(out, task, assignment)
+    assert vr["validation"]["result"] == "REVISE"
+    assert "[S7]" in _grounding_check(vr)["notes"]
+
+
+@requires_local_core
+def test_a_fact_citing_an_issued_source_passes_and_the_ratio_is_recorded():
+    out, task, assignment = _output_and_plan()
+    out = deepcopy(out)
+    out["evidence"] = [*out["evidence"], {"ref": "search:tavily:1", "type": "web_search",
+                                          "url": "https://example.invalid", "title": "t"}]
+    out["facts"] = [{"statement": "A cited fact.", "evidence_refs": ["[S1]"]},
+                    {"statement": "A reasoned fact.", "evidence_refs": ["model:analysis"]}]
+    vr = _validate(out, task, assignment)
+    check = _grounding_check(vr)
+    assert check["result"] == "PASS"
+    assert "1/2 cite a retrieved source" in check["notes"]
+
+
+def test_the_census_resolves_markers_against_what_was_issued():
+    from runtime.mvp_runtime.validation import grounding_census
+    evidence = [{"ref": "model:analysis"}, {"ref": "search:tavily:1"}, {"ref": "search:tavily:2"},
+                {"ref": "keyword:naver:1"}, {"ref": "working_memory:memcand_x"}]
+    facts = [
+        {"evidence_refs": ["S2"]},                       # bare marker resolves
+        {"evidence_refs": ["[K1]"]},
+        {"evidence_refs": ["working_memory:memcand_x"]},  # verbatim ref resolves
+        {"evidence_refs": ["model:analysis"]},           # resolves, but is not a retrieved source
+        {"evidence_refs": ["[S3]", "[K4]"]},             # numbers never issued
+        {"evidence_refs": ["industry report"]},          # free text: neither sourced nor fabricated
+    ]
+    sourced, fabricated = grounding_census(facts, evidence)
+    assert sourced == 3
+    assert fabricated == {"[S3]", "[K4]"}

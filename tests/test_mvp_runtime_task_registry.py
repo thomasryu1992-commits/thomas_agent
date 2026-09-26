@@ -372,3 +372,32 @@ def test_an_attempt_id_belongs_to_a_workflow_row_and_a_workflow_row_names_one():
     with pytest.raises(TaskRegistryBlocked) as exc:
         _entry(origin="WORKFLOW", requester_id="assistant_bridge")
     assert exc.value.reason_code == "MISSING_REQUESTER"
+
+
+# --- incremental reads (system review 1-4, 2026-09-25) -------------------------------------------
+# The registry folds only the rows appended since its last read. Two properties make that safe:
+# the fold always equals a fresh full read, including rows another process appended; and a row
+# that fails validation is refused on every read, as a full read refused it.
+
+def test_the_incremental_fold_matches_a_fresh_read_across_two_writers(tmp_path):
+    operator, door = _store(tmp_path), _store(tmp_path)       # two long-lived "processes"
+    for index in range(12):
+        writer = operator if index % 2 else door
+        entry = writer.submit(_entry(request_text=f"작업 {index}", now=f"2026-07-25T09:00:{index:02d}Z"))
+        if index % 3 == 0:
+            writer.transition(entry.registry_entry_id, RUNNING, now=LATER)
+        # Each long-lived reader agrees with a store that has never read before.
+        assert operator.latest() == door.latest() == _store(tmp_path).latest()
+
+
+def test_a_row_that_fails_validation_is_refused_on_every_read(tmp_path):
+    store = _store(tmp_path)
+    store.submit(_entry())
+    assert store.latest()
+    good = json.loads(store.path.read_text(encoding="utf-8").splitlines()[0])
+    bad = {**good, "registry_entry_id": "treg_broken", "status": "NOT_A_STATUS"}
+    with store.path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(bad) + "\n")
+    for _ in range(2):
+        with pytest.raises(TaskRegistryBlocked):
+            store.latest()
