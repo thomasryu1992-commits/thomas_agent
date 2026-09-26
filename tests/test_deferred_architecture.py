@@ -58,6 +58,15 @@ class DeferredArchitectureTests(unittest.TestCase):
             self.assertIn("Canonical deferred authority", text)
             self.assertIn("No activation authority", text)
 
+    def test_the_design_is_frozen_at_its_2026_09_26_size(self):
+        """System review D7 (Thomas 2026-09-26): the deferred design is frozen, not retired. The family
+        set is already pinned above; this pins how many contracts each family carries, so new capability
+        design cannot grow here without the change naming the decision that reopens it. The gate that
+        reads these stays (deferred/README.md says why)."""
+        sizes = {name: len(family["contracts"]) for name, family in self.manifest["families"].items()}
+        self.assertEqual(sizes, {"runtime_entry": 11, "executor": 10, "operations": 8,
+                                 "control_channel": 4, "sandbox": 2})
+
     def test_deferred_gate_has_one_harness(self):
         self.assertEqual(
             DEFERRED_CHECKS,

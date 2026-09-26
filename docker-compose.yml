@@ -83,8 +83,8 @@ services:
       MVP_HOSTED_PROVIDER: ${MVP_HOSTED_PROVIDER:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
-      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Needs its
-      # own `openrouter` mounted grant like every provider (the env var alone fails closed).
+      # OpenRouter: one OpenAI-compatible gateway fronting many vendors' models. Naming it in
+      # MVP_HOSTED_PROVIDER is its whole opt-in, like every provider (the env-only gate above).
       # MVP_OPENROUTER_MODEL names the exact model slug — a gateway fronts hundreds, so the
       # runtime must be told which; an unset/stale slug is a 4xx (PROVIDER_TRANSPORT).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -108,13 +108,14 @@ services:
       MVP_VALIDATOR_PROVIDER: ${MVP_VALIDATOR_PROVIDER:-}
       # F2 conversational front desk (operator service ONLY — the scheduler holds no
       # conversation). Unset = the deterministic channel, exactly as before. Set = plain
-      # text becomes a conversation turn; needs its own mounted grant AND the role active
-      # in the registry, or startup fails closed rather than quietly staying deterministic.
+      # text becomes a conversation turn; the env var is the opt-in (env-only gate, 2026-08-10)
+      # and the role must be active in the registry, or startup fails closed rather than quietly
+      # staying deterministic.
       MVP_FRONTDESK_PROVIDER: ${MVP_FRONTDESK_PROVIDER:-}
       # Read-only web search (optional).
       MVP_SEARCH_TOOL: ${MVP_SEARCH_TOOL:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # The real Telegram transport additionally needs its mounted grant.
+      # MVP_OPERATOR_CHANNEL=telegram is the real transport's whole opt-in (env-only gate).
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # The assistant's bot token, SEND-ONLY (2026-09-04, PR11, decision Q1-b): switch-door
@@ -220,7 +221,7 @@ services:
       # not here — in this container the brief silently degrades to Mock rows.
       # The weekly ideation schedule (blog lane Phase 3, unbuilt) executes via the worker.
       # Outbound-only: lets the tick loop TELL Thomas when a schedule fails, recovers,
-      # or was left overdue while this service was down. Same `telegram` grant and the
+      # or was left overdue while this service was down. Same `telegram` opt-in and the
       # same registered chat as the operator service — the scheduler never reads
       # inbound messages, so this adds notification, not a second command door.
       #
@@ -244,8 +245,8 @@ services:
       # exactly as before.
       MVP_OPERATOR_CHANNEL: ${MVP_OPERATOR_CHANNEL:-}
       TELEGRAM_BOT_TOKEN: ${HERMES_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-}}
-      # Crypto pipeline gates (scheduler-only): the env var alone fails closed —
-      # each real backend also needs its mounted safety-flag grant.
+      # Crypto pipeline gates (scheduler-only): each var is its backend's whole opt-in (the
+      # env-only gate, Thomas 2026-08-10; the per-machine safety-flag grants are retired).
       MVP_MARKET_DATA: ${MVP_MARKET_DATA:-}
       MVP_PAPER_TRADING: ${MVP_PAPER_TRADING:-}
       MVP_LIQUIDATION_FEED: ${MVP_LIQUIDATION_FEED:-}
@@ -512,8 +513,8 @@ services:
   # The dispatch door's engine (docs/proposals/CREDENTIAL_PLANE_SEPARATION_V0.1.md). This is
   # the process that runs `pipeline.run_task` for the four P3 kinds, so it is where the
   # credential env lives: the model provider chain, the search key, and the Naver lane's
-  # variables. Each provider still needs its mounted safety-flag grant (via the state volume) —
-  # the env var alone fails closed. Deliberately absent: everything from the money path — no
+  # variables. Each provider's env var is its whole opt-in (the env-only gate, Thomas 2026-08-10;
+  # no mounted grant behind it). Deliberately absent: everything from the money path — no
   # BINANCE_*, no MVP_LIVE_*, no venue or order key; the kinds this worker runs never reach it,
   # and `test_deployment_env_passthrough` pins that per variable. NB: OPENROUTER_API_KEY is
   # shared with the operator's assistant, so assistant-dispatched spend rides the same

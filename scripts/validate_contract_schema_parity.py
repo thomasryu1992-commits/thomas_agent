@@ -331,8 +331,8 @@ def main() -> int:
     print(
         "Checked Task, Core Binding, Role Assignment, Agent Output, "
         "Permission Decision, Action Approval, Tool Request, Program Request, "
-        "Execution Request, Execution Result, Validation Result, Audit Event, "
-        "and Role Definition contract parity"
+        "Validation Result, Audit Event, and Role Definition contract parity "
+        "(Execution Request/Result and the other deferred families: the Deferred Gate)"
     )
     return 0
 
