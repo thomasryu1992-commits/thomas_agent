@@ -230,12 +230,15 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
     delivery = kinds.get("delivery")
     unverified = (delivery.get("reasons") if isinstance(delivery, dict)
                   and delivery.get("verification") == "DELIVERED_UNVERIFIED" else None)
+    invocation = kinds.get("invocation")
+    failovers = invocation.get("failovers") if isinstance(invocation, dict) else None
     try:
         return render_response(
             agent_output,
             independently_validated=isinstance(kinds.get("independent_validation_result"), dict),
             search_hits=hits if isinstance(hits, list) else None,
             unverified=[str(r) for r in unverified] if isinstance(unverified, list) else None,
+            failovers=failovers if isinstance(failovers, list) else None,
         )
     except (KeyError, TypeError, ValueError):
         # The ledger row is not shaped like an agent output (hand-edited, or an older

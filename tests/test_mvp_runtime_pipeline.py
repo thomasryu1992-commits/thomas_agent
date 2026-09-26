@@ -634,3 +634,47 @@ def test_result_re_renders_the_same_banner_from_the_ledger():
             return iter([{"kind": kind, "trace_id": "t", "record": r["records"][kind]}
                          for kind in ("agent_output", "tool_use", "delivery")])
     assert render_result(SimpleNamespace(trace_id="t"), _Ledger()) == r["final_response"]
+
+
+# --- review D1: a failover is recorded and named where it is read -------------------------------
+
+class _KeylessMember:
+    """A chain member whose key is missing — the configuration fault wider failover must not hide."""
+    model_id = model_version = "openrouter"
+    network_egress = False
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        raise ProviderError("NO_API_KEY", "environment variable OPENROUTER_API_KEY is not set")
+
+
+@requires_local_core
+def test_a_failover_is_recorded_on_the_invocation_and_named_in_the_reply():
+    """Thomas adopted wider failover (2026-09-26) on one condition: the reason is kept and surfaced.
+    The answer comes from the member that worked; the reply and the ledger both say who was skipped."""
+    from types import SimpleNamespace
+
+    from runtime.mvp_runtime.providers import FailoverProvider
+    from runtime.mvp_runtime.registry_console import render_result
+
+    r = run_task(REQUEST, provider=FailoverProvider([_KeylessMember(), MockProvider()]), now=NOW)
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    invocation = r["records"]["invocation"]
+    assert invocation["model_id"] == "mock.analysis"
+    assert invocation["failovers"] == [{
+        "member": "openrouter", "kind": "configuration", "reason_code": "NO_API_KEY",
+        "reason": "environment variable OPENROUTER_API_KEY is not set",
+    }]
+    line = "_Failover: openrouter skipped (configuration: environment variable OPENROUTER_API_KEY is not set)._"
+    assert line in r["final_response"]
+
+    # `/result` re-renders from the ledger and must say the same thing.
+    class _Ledger:
+        def iter_records(self, trace_id=None):
+            return iter([{"kind": kind, "trace_id": "t", "record": r["records"][kind]}
+                         for kind in ("agent_output", "invocation", "tool_use")])
+    assert line in render_result(SimpleNamespace(trace_id="t"), _Ledger())
+
+    # A first member that answers leaves both exactly as they were.
+    plain = run_task(REQUEST, provider=MockProvider(), now=NOW)
+    assert "failovers" not in plain["records"]["invocation"]
+    assert "_Failover" not in plain["final_response"]

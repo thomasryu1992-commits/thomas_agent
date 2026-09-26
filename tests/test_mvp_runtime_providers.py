@@ -241,18 +241,139 @@ def test_failover_switches_only_on_unavailable(monkeypatch):
     assert primary.calls == 1 and fallback.calls == 1
 
 
-@pytest.mark.parametrize("code", ["PROVIDER_TRANSPORT", "MALFORMED_RESPONSE", "NO_API_KEY"])
-def test_failover_does_not_switch_on_non_unavailable_failures(code):
-    """A timeout already ate the runtime budget and a 4xx/parse failure will not change
-    with a different vendor — those propagate immediately."""
+# Review D1 (Thomas 2026-09-26): a failure that belongs to ONE member moves the chain on. Each case
+# is the typed error the adapters actually raise (see the `data` the HTTP helper attaches below).
+_MEMBER_FAULTS = [
+    (ProviderError("PROVIDER_UNAVAILABLE", "HTTP 503 after 1 retry", data={"http_status": 503}), "unavailable"),
+    (ProviderError("NO_API_KEY", "environment variable GROQ_API_KEY is not set"), "configuration"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 401", data={"http_status": 401, "error_code": None}), "configuration"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 403", data={"http_status": 403, "error_code": None}), "configuration"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 404 (model_decommissioned)",
+                   data={"http_status": 404, "error_code": "model_decommissioned"}), "configuration"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 500", data={"http_status": 500, "error_code": None}), "server"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 502", data={"http_status": 502, "error_code": None}), "server"),
+    (ProviderError("PROVIDER_TRANSPORT", "request failed or timed out", data={"transport": "request"}), "transport"),
+    (ProviderError("PROVIDER_TRANSPORT", "connection failed", data={"transport": "connection"}), "transport"),
+    (ProviderError("PROVIDER_TRANSPORT", "HTTP 400 (json_validate_failed) after 1 retry",
+                   data={"http_status": 400, "error_code": "json_validate_failed"}), "malformed"),
+    (ProviderError("MALFORMED_RESPONSE", "unparseable response"), "malformed"),
+]
+
+
+@pytest.mark.parametrize("error,kind", _MEMBER_FAULTS, ids=lambda v: getattr(v, "reason", v))
+def test_failover_switches_on_a_failure_that_belongs_to_the_member(error, kind):
+    """The two outages this repository recorded were a decommissioned slug (HTTP 404, every path
+    down, 2026-08-29) and an empty slug (nine silent days): one member's configuration, which the
+    next vendor does not share. The answer names who served it AND who was skipped, and why."""
     from runtime.mvp_runtime.providers import FailoverProvider
 
-    primary = _StubProvider("google_ai_studio", ProviderError(code, "nope"))
+    primary = _StubProvider("openrouter", error)
+    fallback = _StubProvider("groq", _result("groq"))
+    result = FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert result.model_id == "groq" and fallback.calls == 1
+    assert [(f["member"], f["kind"], f["reason_code"]) for f in result.failovers] == [
+        ("openrouter", kind, error.reason_code)]
+    assert result.failovers[0]["reason"] == error.reason
+
+
+@pytest.mark.parametrize("error", [
+    ProviderError("PROVIDER_TRANSPORT", "HTTP 400", data={"http_status": 400, "error_code": None}),
+    ProviderError("PROVIDER_TRANSPORT", "HTTP 413", data={"http_status": 413, "error_code": None}),
+    ProviderError("PROVIDER_TRANSPORT", "HTTP 422", data={"http_status": 422, "error_code": "bad_request"}),
+    ProviderError("PROVIDER_TRANSPORT", "an untyped transport failure"),   # no data: not attributable
+    ProviderError("ROLE_BINDING_UNSUPPORTED", "cannot bind"),
+], ids=lambda e: e.reason)
+def test_failover_does_not_switch_on_a_request_shaped_failure(error):
+    """A request every vendor would refuse the same way propagates at once — trying the next member
+    only spends the budget on the same "no"."""
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    primary = _StubProvider("openrouter", error)
     fallback = _StubProvider("groq", _result("groq"))
     with pytest.raises(ProviderError) as exc:
-        FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=30)
-    assert exc.value.reason_code == code
-    assert fallback.calls == 0                    # never consulted
+        FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert exc.value is error
+    assert fallback.calls == 0
+
+
+def test_a_safety_gate_refusal_is_never_failed_over():
+    """An unauthorized egress is not "try the next one" — it is not a ProviderError at all."""
+    from runtime.mvp_runtime.errors import SafetyGateBlocked
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    primary = _StubProvider("openrouter", SafetyGateBlocked("NOT_AUTHORIZED", "no"))
+    fallback = _StubProvider("groq", _result("groq"))
+    with pytest.raises(SafetyGateBlocked):
+        FailoverProvider([primary, fallback]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert fallback.calls == 0
+
+
+def test_a_first_member_that_answers_carries_no_failover_record():
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    result = FailoverProvider([_StubProvider("openrouter", _result("openrouter")),
+                               _StubProvider("groq", _result("groq"))]).generate(
+        "p", max_output_tokens=100, timeout_seconds=120)
+    assert result.model_id == "openrouter" and result.failovers == ()
+
+
+class _TimedStub(_StubProvider):
+    """Records the timeout each member was handed."""
+
+    def __init__(self, model_id, outcome):
+        super().__init__(model_id, outcome)
+        self.timeouts = []
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        self.timeouts.append(timeout_seconds)
+        return super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+
+
+def test_each_member_but_the_last_gets_a_share_of_the_budget_and_the_last_gets_the_rest():
+    """A hung first member used to be handed the whole 120 s, leaving the chain nothing."""
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    hung = ProviderError("PROVIDER_TRANSPORT", "timed out", data={"transport": "request"})
+    a, b = _TimedStub("openrouter", hung), _TimedStub("google_ai_studio", hung)
+    c = _TimedStub("groq", _result("groq"))
+    FailoverProvider([a, b, c]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert a.timeouts == [40] and b.timeouts == [40]
+    assert 100 <= c.timeouts[0] <= 120            # whatever is left (the stubs take no time)
+
+    d, e = _TimedStub("openrouter", hung), _TimedStub("groq", _result("groq"))
+    FailoverProvider([d, e]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert d.timeouts == [45]                     # capped, never more than the per-member ceiling
+
+
+def test_the_chain_stops_when_the_budget_is_spent(monkeypatch):
+    from runtime.mvp_runtime import providers
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    ticks = [0.0, 0.0, 118.0]                     # deadline set, member 1 starts, member 2 would start
+
+    def clock():
+        return ticks.pop(0) if len(ticks) > 1 else ticks[0]
+    monkeypatch.setattr(providers.time, "monotonic", clock)
+    hung = ProviderError("PROVIDER_TRANSPORT", "timed out", data={"transport": "request"})
+    first, second = _StubProvider("openrouter", hung), _StubProvider("groq", _result("groq"))
+    with pytest.raises(ProviderError) as exc:
+        FailoverProvider([first, second]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert second.calls == 0
+    assert exc.value.reason_code == "PROVIDER_CHAIN_EXHAUSTED"
+    assert [f["kind"] for f in exc.value.data["failovers"]] == ["transport", "not_tried"]
+
+
+def test_a_chain_that_failed_for_mixed_reasons_says_so_rather_than_unavailable():
+    """"Every provider is unavailable" would be a lie about a chain whose first member has no key."""
+    from runtime.mvp_runtime.providers import FailoverProvider
+
+    a = _StubProvider("openrouter", ProviderError("NO_API_KEY", "environment variable OPENROUTER_API_KEY is not set"))
+    b = _StubProvider("groq", ProviderError("PROVIDER_UNAVAILABLE", "HTTP 429 after 1 retry", data={"http_status": 429}))
+    with pytest.raises(ProviderError) as exc:
+        FailoverProvider([a, b]).generate("p", max_output_tokens=100, timeout_seconds=120)
+    assert exc.value.reason_code == "PROVIDER_CHAIN_EXHAUSTED"
+    assert "openrouter: environment variable OPENROUTER_API_KEY is not set" in exc.value.reason
+    assert "groq: HTTP 429" in exc.value.reason
 
 
 def test_failover_exhausted_is_typed_and_names_the_chain_outcome():
@@ -692,6 +813,22 @@ def test_non_transient_failures_are_not_retried(monkeypatch, outcome):
             "analyze", max_output_tokens=8000, timeout_seconds=30)
     assert exc.value.reason_code == "PROVIDER_TRANSPORT"
     assert sleeps == []                              # no backoff, no second attempt
+
+
+@pytest.mark.parametrize("outcome,kind", [
+    (_http_error(401), "configuration"), (_http_error(404), "configuration"),
+    (_http_error(500), "server"), (_http_error(400), None), (TimeoutError("hang"), "transport"),
+])
+def test_the_http_helper_types_a_failure_the_chain_can_read(monkeypatch, outcome, kind):
+    """What a chain decides on is carried on the error itself — the status, not a parsed message."""
+    from runtime.mvp_runtime.providers import failover_kind
+
+    monkeypatch.setenv(API_ENV, "k")
+    _patch_urlopen_sequence(monkeypatch, [outcome])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert failover_kind(exc.value) == kind
 
 
 def _http_error_body(code: int, body: dict) -> urllib.error.HTTPError:

@@ -13,8 +13,11 @@ records into one row per lane (the role the run was assigned):
   not as delivered or revise. A run with neither result stopped before validation — **stopped**;
 * **revised** — runs that took the one governed regeneration (a ``revision`` record);
 * **non-PASS checks** — which automatic checks withheld the analyses, by check id;
-* **models** — which model answered the specialist call, by ``model_id``. A chain member other than
-  the first answering is what a failover looks like from here;
+* **models** — which model answered the specialist call, by ``model_id``;
+* **failovers** — the chain members the specialist call failed over past, by member and kind
+  (``providers.failover_kind``, review D1). A ``configuration`` failover is a key or model slug that
+  is wrong on that member, and it is flagged: wider failover was adopted on the condition that a
+  broken member cannot hide behind the one that answered;
 * **latency p50 / p95** — the specialist invocation's own ``latency_ms``. The run's wall clock is
   not recorded anywhere (``budgets.py``), so this is the model call, not what Thomas waited.
 
@@ -66,7 +69,7 @@ def fold_runs(rows: Iterable[Mapping[str, Any]], *, since: str, until: str | Non
         lane = str((kinds.get("role_assignment") or {}).get("role_id") or "unassigned")
         digest = lanes.setdefault(lane, {
             "runs": 0, "delivered": 0, "unverified": 0, "revise": 0, "block": 0, "stopped": 0, "revised": 0,
-            "non_pass_checks": Counter(), "models": Counter(),
+            "non_pass_checks": Counter(), "models": Counter(), "failovers": Counter(),
         })
         digest["runs"] += 1
         results = [
@@ -90,12 +93,16 @@ def fold_runs(rows: Iterable[Mapping[str, Any]], *, since: str, until: str | Non
         invocation = kinds.get("invocation") or {}
         if invocation.get("model_id"):
             digest["models"][str(invocation["model_id"])] += 1
+        for failover in invocation.get("failovers") or []:
+            if isinstance(failover, Mapping):
+                digest["failovers"][f"{failover.get('member', '?')} {failover.get('kind', '?')}"] += 1
         if isinstance(invocation.get("latency_ms"), int):
             latencies[lane].append(invocation["latency_ms"])
 
     for lane, digest in lanes.items():
         digest["non_pass_checks"] = dict(digest["non_pass_checks"].most_common())
         digest["models"] = dict(digest["models"].most_common())
+        digest["failovers"] = dict(digest["failovers"].most_common())
         digest["latency_ms_p50"] = _percentile(latencies[lane], 0.5)
         digest["latency_ms_p95"] = _percentile(latencies[lane], 0.95)
     return dict(sorted(lanes.items()))
@@ -123,6 +130,10 @@ def render(digest: Mapping[str, Mapping[str, Any]], *, since: str, until: str | 
             lines.append("  보류 사유: " + ", ".join(f"{k} {v}" for k, v in d["non_pass_checks"].items()))
         if d["models"]:
             lines.append("  응답 모델: " + ", ".join(f"{k} {v}" for k, v in d["models"].items()))
+        if d.get("failovers"):
+            flag = (" — 설정 오류 의심: 해당 멤버의 키·모델명 확인"
+                    if any(k.endswith(" configuration") for k in d["failovers"]) else "")
+            lines.append("  페일오버: " + ", ".join(f"{k} {v}" for k, v in d["failovers"].items()) + flag)
         if d["latency_ms_p50"] is not None:
             lines.append(f"  모델 지연 p50 {d['latency_ms_p50']} ms · p95 {d['latency_ms_p95']} ms")
         lines.append("")

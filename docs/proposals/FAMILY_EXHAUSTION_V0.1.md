@@ -1,7 +1,7 @@
 # 제안: family 소진(`SEARCH_EXHAUSTED`) — 상태가 아니라 측정으로 (DRAFT v0.1)
 
-**상태:** PARTIALLY DECIDED 2026-09-24 — Q1 B·Q2·Q3 결정. Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)은
-아직 없다. 1h 스케줄이 BTCUSDT만 민팅하는 것(§6)이 의도인지 Thomas 확인 대기.
+**상태:** DECIDED 2026-09-26 — Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family
+소진 절(30일 CONFIRMED·마지막 CONFIRMED)과 1h 5심볼 민팅(심볼별 스케줄, 풀링 아님).
 **참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §20~21(Family Exhaustion)에 대한 답이다.
 계획서의 규칙을 운영 저장소에 그대로 대 보면 **rotation family 44개 중 42개가 소진으로
@@ -163,3 +163,10 @@ A는 기각한다.
 - **Q1 경로: B + C를 §18로.** 자동 `SEARCH_EXHAUSTED` 상태(A)는 기각한다. 퍼널에 family 절을 읽기 전용으로 추가하고, 은퇴는 지금처럼 `RETIRED_FAMILIES` 코드 변경으로 한다. 예산 가중(C)은 `EXPLORATION_BUDGET_V0.1.md`에서 결정했다(보류).
 - **Q2:** 8개 목록은 **검토 목록으로만** 두고 은퇴하지 않는다.
 - **Q3 1h 예산:** 유지한다. **확인 대기:** 1h 5심볼 스케줄이 `POOLED_TIMEFRAMES` 때문에 BTCUSDT만 민팅하는 것(§6)이 08-24 "1h 라우팅 슬롯 9개 공급" 의도와 맞는지 Thomas 확인이 필요하다. 코드 변경은 확인 뒤에 한다.
+
+## 확인 (Thomas 2026-09-26)
+
+- **§6 / Q3의 확인 대기:** 08-24 "1h 라우팅 슬롯 9개 공급"의 의도는 5심볼 전부였다. 1h는 5심볼 모두에서 민팅하되
+  풀링하지 않고, 코호트 스케줄 하나를 단일 심볼 스케줄 다섯 개로 나눈다(시스템 점검 D4). 1h를 풀링하지 않는 이유는
+  F9 그대로다: 풀링된 행은 5심볼 범위라 기존 전략과 겹쳐 승격이 막히고(`POOL_CONTEXT_CAP_EXCEEDED`), 방향 조절이
+  컨텍스트 단위에서 타임프레임 단위로 줄어든다.

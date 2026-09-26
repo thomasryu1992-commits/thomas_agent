@@ -11,12 +11,16 @@ SINCE = "2026-09-18T00:00:00Z"
 
 
 def _run(trace, *, role="general.specialist", received="2026-09-20T09:00:00Z", result="PASS",
-         independent=None, revised=False, model="openrouter/x", latency=1000, failing=(), unverified=False):
+         independent=None, revised=False, model="openrouter/x", latency=1000, failing=(), unverified=False,
+         failovers=None):
     checks = [{"check_id": c, "result": "REVISE"} for c in failing]
+    invocation = {"model_id": model, "latency_ms": latency}
+    if failovers is not None:
+        invocation["failovers"] = failovers
     rows = [
         {"kind": "task", "trace_id": trace, "record": {"request": {"received_at": received}}},
         {"kind": "role_assignment", "trace_id": trace, "record": {"role_id": role}},
-        {"kind": "invocation", "trace_id": trace, "record": {"model_id": model, "latency_ms": latency}},
+        {"kind": "invocation", "trace_id": trace, "record": invocation},
     ]
     if result is not None:
         rows.append({"kind": "validation_result", "trace_id": trace,
@@ -63,6 +67,23 @@ def test_a_run_delivered_unverified_is_counted_apart_from_delivered_and_withheld
     analyst = lane_digest.fold_runs(rows, since=SINCE)["general.specialist"]
     assert (analyst["delivered"], analyst["unverified"], analyst["revise"]) == (1, 2, 1)
     assert "미검증 전달 2" in lane_digest.render({"general.specialist": analyst}, since=SINCE)
+
+
+def test_failovers_are_counted_by_member_and_kind_and_a_configuration_fault_is_flagged():
+    """Review D1's condition: a member whose key or slug is wrong must not hide behind the member
+    that answered. The weekly digest is where that shows up without anyone reading the ledger."""
+    keyless = {"member": "openrouter", "kind": "configuration", "reason_code": "NO_API_KEY", "reason": "x"}
+    busy = {"member": "openrouter", "kind": "unavailable", "reason_code": "PROVIDER_UNAVAILABLE", "reason": "y"}
+    rows = [*_run("t1", model="groq", failovers=[keyless]), *_run("t2", model="groq", failovers=[keyless]),
+            *_run("t3", model="google_ai_studio", failovers=[busy]), *_run("t4")]
+    analyst = lane_digest.fold_runs(rows, since=SINCE)["general.specialist"]
+    assert analyst["failovers"] == {"openrouter configuration": 2, "openrouter unavailable": 1}
+    rendered = lane_digest.render({"general.specialist": analyst}, since=SINCE)
+    assert "페일오버: openrouter configuration 2, openrouter unavailable 1 — 설정 오류 의심" in rendered
+
+    quiet = lane_digest.fold_runs([*_run("t5", failovers=[busy])], since=SINCE)
+    assert "설정 오류 의심" not in lane_digest.render(quiet, since=SINCE)
+    assert "페일오버" not in lane_digest.render(lane_digest.fold_runs(_run("t6"), since=SINCE), since=SINCE)
 
 
 def test_an_empty_window_says_so():

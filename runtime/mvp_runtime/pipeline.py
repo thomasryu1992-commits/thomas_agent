@@ -306,6 +306,7 @@ def render_response(
     independently_validated: bool = False,
     search_hits: list[dict[str, Any]] | None = None,
     unverified: list[str] | None = None,
+    failovers: list[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render a human-readable final response from a validated Agent Output.
 
@@ -329,7 +330,11 @@ def render_response(
 
     ``unverified`` (review D2) puts a banner at the TOP naming why the analysis did not pass — the
     first thing read, not a footnote — and a footer that does not claim a validation it failed.
-    Absent, the reply is byte-identical to before."""
+
+    ``failovers`` (the specialist invocation's, review D1) adds one line above the footer naming
+    each chain member the answer failed over past and why. It is the condition Thomas attached to
+    wider failover: a member whose key is wrong must not be hidden by the member that answered.
+    Either absent or empty, the reply is byte-identical to before."""
     rso = agent_output.get("role_specific_output", {})
     lines = []
     if unverified:
@@ -401,6 +406,11 @@ def render_response(
             for index, hit in enumerate(search_hits, start=1)
         ]
         lines.append("")
+    moved_past = [f for f in (failovers or []) if isinstance(f, Mapping)]
+    if moved_past:
+        lines.append("_Failover: " + "; ".join(
+            f"{f.get('member', '?')} skipped ({f.get('kind', '?')}: {f.get('reason', '')})"
+            for f in moved_past) + "._")
     if unverified:
         lines.append("_Read-only analysis; delivered UNVERIFIED — it did not pass validation (see the banner)._")
     else:
@@ -1264,6 +1274,7 @@ def run_task(
                     agent_output,
                     independently_validated=independent_validation_result is not None,
                     search_hits=search_hits,
+                    failovers=invocation.get("failovers"),
                 ),
                 writer=writer if writer is not None else DryRunWriter(),
                 now=now, root=repo_root,
@@ -1379,6 +1390,7 @@ def run_task(
             independently_validated=independent_validation_result is not None,
             search_hits=search_hits,
             unverified=unverified,
+            failovers=invocation.get("failovers"),
         )
     else:
         # Validation withheld delivery; the trail already concludes BLOCKED. Persist best-effort.
