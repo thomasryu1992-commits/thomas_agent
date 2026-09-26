@@ -11,7 +11,7 @@ SINCE = "2026-09-18T00:00:00Z"
 
 
 def _run(trace, *, role="general.specialist", received="2026-09-20T09:00:00Z", result="PASS",
-         independent=None, revised=False, model="openrouter/x", latency=1000, failing=()):
+         independent=None, revised=False, model="openrouter/x", latency=1000, failing=(), unverified=False):
     checks = [{"check_id": c, "result": "REVISE"} for c in failing]
     rows = [
         {"kind": "task", "trace_id": trace, "record": {"request": {"received_at": received}}},
@@ -26,6 +26,9 @@ def _run(trace, *, role="general.specialist", received="2026-09-20T09:00:00Z", r
                      "record": {"validation": {"result": independent}}})
     if revised:
         rows.append({"kind": "revision", "trace_id": trace, "record": {}})
+    if unverified:
+        rows.append({"kind": "delivery", "trace_id": trace,
+                     "record": {"verification": "DELIVERED_UNVERIFIED", "reasons": ["x"]}})
     return rows
 
 
@@ -50,6 +53,16 @@ def test_outcomes_are_folded_per_lane_with_the_stricter_verdict_final():
     rendered = lane_digest.render(digest, since=SINCE)
     assert rendered.index("[general.specialist]") < rendered.index("[content.general]")
     assert "보류 사유: evidence_grounding 1" in rendered
+
+
+def test_a_run_delivered_unverified_is_counted_apart_from_delivered_and_withheld():
+    """Review D2: a REVISE business analysis is delivered under a banner, and a PASS whose reviewer
+    was down is delivered unverified. Neither is "delivered" (verified) nor "withheld"."""
+    rows = [*_run("t1"), *_run("t2", result="REVISE", unverified=True),
+            *_run("t3", result="PASS", unverified=True), *_run("t4", result="REVISE")]
+    analyst = lane_digest.fold_runs(rows, since=SINCE)["general.specialist"]
+    assert (analyst["delivered"], analyst["unverified"], analyst["revise"]) == (1, 2, 1)
+    assert "미검증 전달 2" in lane_digest.render({"general.specialist": analyst}, since=SINCE)
 
 
 def test_an_empty_window_says_so():

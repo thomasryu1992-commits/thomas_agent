@@ -62,8 +62,13 @@ specialist, else the specialist's provider).
    goal, the original request, and the output under review — never the specialist's prompt,
    search context, or memory context (review starts from goal/input/result, per §3.4).
 4. Verdict merge: the **stricter** of the automatic and independent results decides delivery
-   (`stricter_rule_wins`). Only PASS delivers; REVISE/BLOCK withhold, with the validator's
-   findings and actionable revision requests in the block reasons.
+   (`stricter_rule_wins`). PASS delivers; BLOCK withholds, with the validator's findings and
+   actionable revision requests in the block reasons. REVISE withholds too — **except** in the
+   business-analysis lane (`general.specialist`) since review D2 (Thomas 2026-09-26): there a
+   REVISE is delivered under an "unverified" banner naming its reasons, unless the output cites a
+   source the run never issued (`validation.grounding_census`), which still withholds. The run
+   concludes COMPLETED with `DELIVERED_UNVERIFIED` on the chain and a `delivery` ledger row; the
+   controlled write, working memory and programization stay PASS-only.
 5. Everything is recorded and audited: the independent `validation_result.v0.1`
    (`validator_type: ROLE`, `validation_mode: INDEPENDENT`), the validator's model call
    (its own MODEL_INVOKED event), and a second VALIDATION_COMPLETED event in the hash chain.
@@ -78,7 +83,12 @@ the original output (`mutates_subject: false`) and its verdict grants nothing
 
 ## Fail-closed directions
 
-- Provider/transport failure → no review happened → the run BLOCKs (`PROVIDER_ERROR`).
+- Provider/transport failure → no review happened → the run BLOCKs (`PROVIDER_ERROR`) — except
+  in the business-analysis lane on a task whose risk level did not mandate the review
+  (`INDEPENDENT_RISK_LEVELS`), where the automatically-validated analysis is delivered unverified
+  and the outage is its own audit event (`INDEPENDENT_VALIDATION_FAILED`, review D2). A truncated
+  review (`RESPONSE_TRUNCATED`) is treated the same way; every other reviewer failure (budget,
+  independence, binding) still BLOCKs.
 - A response with no usable PASS/REVISE/BLOCK verdict → **BLOCK verdict** (per the role:
   insufficient evidence is a BLOCK, never a skipped validation or a silent PASS).
 - The validator is skipped only when the automatic checks already BLOCK — the outcome is

@@ -6,7 +6,8 @@ measurement, so a prompt or model change could degrade every reply with nothing 
 each item of ``scripts/eval/business_ideas_v0.1.yaml`` through the governed pipeline and scores
 the result on floors that need no second model:
 
-* **outcome** — delivered (validation PASS) or withheld, and by which checks;
+* **outcome** — validation PASS or not, and by which checks (since review D2 a non-PASS business
+  analysis is usually delivered under an "unverified" banner rather than withheld — ``unverified``);
 * **sections** — risks, assumptions and next actions are non-empty;
 * **themes** — the share of the item's expected themes any phrase of which appears in the analysis.
 
@@ -74,6 +75,7 @@ def score(item: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
         "id": item["id"],
         "status": result.get("status"),
         "validation": validation.get("result"),
+        "unverified": bool(result.get("unverified")),
         "withheld_by": [c.get("check_id") for c in validation.get("checks") or []
                         if isinstance(c, Mapping) and c.get("result") != "PASS"],
         "sections_present": [s for s in _SECTIONS if output.get(s)],

@@ -225,6 +225,8 @@ def build_pipeline_audit(
     programization_pattern: Mapping[str, Any] | None = None,
     programization_triggered: bool = False,
     revision: Mapping[str, Any] | None = None,
+    unverified: Sequence[str] | None = None,
+    reviewer_outage: Mapping[str, Any] | None = None,
     genesis_previous_hash: str | None = None,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -256,6 +258,11 @@ def build_pipeline_audit(
     R8: when a controlled write ran (``write_use``), a WORKSPACE_WRITE event records it —
     the durable half of the EXECUTE_AND_REPORT obligation, referencing its
     WORKSPACE_REVERSIBLE_WRITE PermissionDecision.
+
+    Review D2: a run delivered unverified (``unverified``, the reasons the reply's banner shows)
+    concludes COMPLETED with ``DELIVERED_UNVERIFIED`` beside ``FINAL_COMPLETED`` — delivered, and on
+    the chain as not having passed. A reviewer whose provider failed (``reviewer_outage``) is its own
+    event: the review the task planned did not happen, and the chain says so rather than going quiet.
     """
     root = repo_root if repo_root is not None else _repo_root()
     tid = task["identity"]["task_id"]
@@ -265,7 +272,7 @@ def build_pipeline_audit(
         # state — a second encoding here could desynchronize the ledger from reality.
         result = stricter_result(result, independent_validation_result["validation"]["result"])
     validation_outcome = AUDIT_OUTCOME[validation_result["validation"]["result"]]
-    final_state = "COMPLETED" if result == "PASS" else "BLOCKED"
+    final_state = "COMPLETED" if result == "PASS" or unverified else "BLOCKED"
 
     task_fp = _fingerprint(task, "task")
     perm_fp = _fingerprint(permission_decision, "permission_decision")
@@ -400,7 +407,8 @@ def build_pipeline_audit(
     # M3: when the one allowed revision ran, the final MODEL_INVOKED above is the REVISED
     # call; this event keeps the FIRST (rejected) call on the chain and records the give-up
     # decision. REVISION_ATTEMPTED always; REVISION_EXHAUSTED when the revised output still
-    # did not PASS (which the FINAL state below then records as BLOCKED). The first call's
+    # did not PASS (which the FINAL state below then records as BLOCKED — or, for a business
+    # analysis delivered unverified under review D2, as COMPLETED with DELIVERED_UNVERIFIED). The first call's
     # own fingerprint is the payload, so its spend is auditable though its output was
     # superseded and never delivered.
     if revision is not None and revision.get("attempted"):
@@ -492,6 +500,20 @@ def build_pipeline_audit(
             related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
         ))
 
+    # Review D2: the planned independent review did not happen because its provider failed.
+    if reviewer_outage is not None:
+        steps.append(dict(
+            event_type="OTHER",
+            actor=_actor("system", "mvp.pipeline"),
+            subject_type="AGENT_OUTPUT", subject_id=agent_output["agent_output_id"],
+            subject_ref=output_ref, subject_fingerprint=output_fp,
+            summary=(f"Independent validation did not complete: {reviewer_outage.get('reason_code')} — "
+                     "the analysis was not reviewed."),
+            outcome="RECORDED",
+            reason_codes=["INDEPENDENT_VALIDATION_FAILED", str(reviewer_outage.get("reason_code"))],
+            related_record_refs=[output_ref], evidence_refs=[output_ref], payload_sha256=output_fp,
+        ))
+
     # R8: the controlled write is the runtime's first EXECUTE_AND_REPORT action — this
     # event is the "report" half's durable record. OTHER-typed with the subtype in
     # reason_codes (audit_event.v0.1 has no write type), following MODEL_INVOKED/TOOL_USED.
@@ -554,8 +576,9 @@ def build_pipeline_audit(
         actor=_actor("thomas_prime", "thomas.prime"),
         subject_type="TASK", subject_id=tid,
         subject_ref=f"in_memory:task:{tid}", subject_fingerprint=task_fp,
-        summary=f"Task run concluded: {final_state}.",
-        outcome="RECORDED" if result == "PASS" else "BLOCKED", reason_codes=[f"FINAL_{final_state}"],
+        summary=f"Task run concluded: {final_state}" + (" (delivered unverified)." if unverified else "."),
+        outcome="RECORDED" if final_state == "COMPLETED" else "BLOCKED",
+        reason_codes=[f"FINAL_{final_state}"] + (["DELIVERED_UNVERIFIED"] if unverified else []),
         related_record_refs=[f"in_memory:{validation_result['validation_result_id']}"],
         evidence_refs=[f"in_memory:task:{tid}"], payload_sha256=None,
     ))
