@@ -1,6 +1,6 @@
 schema_version: thomas_governance_policy.v1
 policy_id: thomas.governance.policy
-policy_version: 1.6.0
+policy_version: 1.6.1
 status: ACTIVE_POLICY_SOURCE
 owner: Thomas
 authoritative: true
@@ -339,7 +339,8 @@ control_channel:
   # The assistant's read lane (door API v2, 2026-09-04). Named for the reason 1.4.0 named the
   # switch: with dispatch and switch described, a policy-only reader concludes those are the
   # assistant's lanes — and misses the one that reads the approvals store. The verb list is
-  # CLOSED and pinned by test to read_bridge.READ_VERB_AUTHORITY <-> _READS (both directions).
+  # CLOSED and pinned by test: every verb here is served (read_bridge._READS), and a served verb
+  # missing here is one the door carries dormant and refuses by name (POLICY_GATED_READS).
   # No verb here changes anything; schedule enable/disable/remove live in scheduler_cli and,
   # within assistant_schedule's delegated scope only, the dispatch door's
   # schedule.propose_change (1.6.0); the approval read is a summary and never the record.
@@ -362,6 +363,9 @@ control_channel:
       - scheduler_events
       - heartbeat
       - approval_status                   # v2: summary only; approvals/ records are never exposed
+      - lane_digest                       # 1.6.1, review D8 (Thomas 2026-09-26): per-lane run
+                                          # counts over the run ledger, never a record — the
+                                          # weekly lane evidence the assistant relays
     mutation_allowed: false
     approval_status_exposes:              # never the action snapshot, never the fingerprint
       - approval_id
