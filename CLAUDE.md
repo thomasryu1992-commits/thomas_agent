@@ -194,7 +194,7 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 | Contracts + their closed schemas | `docs/runtime-contracts/`, `schemas/` |
 | Roles (routable: `general.specialist` P3, `validation.independent` P2) | `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` |
 | Active core (schema v0.4, `thomas_approved`) | `THOMAS_CORE/MVP_ACTIVE_CORE.yaml` |
-| **Why** an increment is shaped that way — read before "fixing" something odd | `docs/BUILD_HISTORY.md` |
+| **Why** an increment is shaped that way — read before "fixing" something odd | `docs/history/` (one file per increment, since 2026-09-25; add yours in the PR) and `docs/BUILD_HISTORY.md` (the archive before that) |
 | What is left to build | `docs/REMAINING_WORK.md` |
 | Which proposals wait on a Thomas decision, and which decisions wait on a build | `docs/proposals/STATUS.md` — generated from each proposal's `**상태:**` line by `scripts/build_proposal_status.py`; change the line, never the page |
 | What is actually live **on this machine** | `python -m runtime.mvp_runtime.crypto.live_readiness` |

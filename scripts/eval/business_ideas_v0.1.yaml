@@ -1,0 +1,154 @@
+# Business-analysis evaluation set v0.1 (system review B3, 2026-09-25).
+#
+# Twenty-four ideas across sectors, each with the THEMES a competent analysis of it cannot leave
+# out. A theme is met when any of its phrases appears in the analysis (summary, findings, risks,
+# assumptions, recommendation, next actions, perspectives). That is a floor, not a grade: it catches
+# an analysis that never mentions the obvious binding constraint, and it cannot tell a good paragraph
+# from a bad one. Judging prose would need a second model call — a new use of model_invocation that
+# needs Thomas's approval — so it is deliberately not here.
+#
+# Change an item only with a reason in the commit: the set is only a regression baseline while it
+# stays the same set. Add items as v0.2 rather than editing these.
+schema: business_analysis_eval.v0.1
+items:
+  - id: BA01
+    request: "이 사업 아이디어를 분석해줘: 1인 가구 대상 반찬 정기구독 배송"
+    themes:
+      - {name: 배송·물류비, any_of: ["배송비", "물류", "콜드체인", "냉장", "배송"]}
+      - {name: 이탈률, any_of: ["이탈", "해지", "유지율", "retention", "churn"]}
+      - {name: 식품 위생, any_of: ["위생", "식품안전", "유통기한", "HACCP"]}
+  - id: BA02
+    request: "이 사업 아이디어를 분석해줘: 동네 헬스장 전용 회원관리 SaaS"
+    themes:
+      - {name: 영업·고객획득, any_of: ["영업", "고객 획득", "CAC", "마케팅"]}
+      - {name: 지불 의사, any_of: ["지불", "가격", "요금", "구독료"]}
+      - {name: 경쟁 제품, any_of: ["경쟁", "대체", "기존 솔루션"]}
+  - id: BA03
+    request: "이 사업 아이디어를 분석해줘: 반려견 산책 대행 매칭 앱"
+    themes:
+      - {name: 신뢰·안전, any_of: ["신뢰", "안전", "사고", "보험"]}
+      - {name: 양면 시장, any_of: ["공급", "산책러", "매칭", "양면", "수요와 공급"]}
+      - {name: 단가·수수료, any_of: ["수수료", "단가", "가격"]}
+  - id: BA04
+    request: "이 사업 아이디어를 분석해줘: 중고 명품 가방 정품 감정 및 위탁판매"
+    themes:
+      - {name: 감정 신뢰도, any_of: ["감정", "진품", "가품", "위조"]}
+      - {name: 재고·자본, any_of: ["재고", "자본", "현금흐름", "위탁"]}
+      - {name: 책임·법적 리스크, any_of: ["책임", "법적", "분쟁", "환불"]}
+  - id: BA05
+    request: "이 사업 아이디어를 분석해줘: 소상공인용 AI 리뷰 답글 자동 작성 서비스"
+    themes:
+      - {name: 품질·브랜드 리스크, any_of: ["품질", "부적절", "브랜드", "오답", "리스크"]}
+      - {name: 플랫폼 정책, any_of: ["플랫폼", "정책", "API", "약관"]}
+      - {name: 지불 의사, any_of: ["지불", "가격", "요금", "구독"]}
+  - id: BA06
+    request: "이 사업 아이디어를 분석해줘: 캠핑장 예약 통합 플랫폼"
+    themes:
+      - {name: 공급 확보, any_of: ["캠핑장 확보", "공급", "제휴", "입점"]}
+      - {name: 계절성, any_of: ["계절", "성수기", "비수기"]}
+      - {name: 경쟁 플랫폼, any_of: ["경쟁", "기존 플랫폼", "대형"]}
+  - id: BA07
+    request: "이 사업 아이디어를 분석해줘: 고령층 대상 스마트폰 사용 방문 교육"
+    themes:
+      - {name: 지불 주체, any_of: ["자녀", "지자체", "지불 주체", "보조금", "지원금"]}
+      - {name: 인력·확장성, any_of: ["강사", "인력", "확장", "방문"]}
+  - id: BA08
+    request: "이 사업 아이디어를 분석해줘: 전기차 충전소 옆 무인 카페"
+    themes:
+      - {name: 입지·체류시간, any_of: ["입지", "체류", "대기 시간", "유동"]}
+      - {name: 초기 투자, any_of: ["초기 투자", "설비", "자본", "임대"]}
+      - {name: 충전 수요, any_of: ["충전 수요", "전기차 보급", "이용률"]}
+  - id: BA09
+    request: "이 사업 아이디어를 분석해줘: 대학생 대상 중고 전공서적 거래 앱"
+    themes:
+      - {name: 계절성, any_of: ["학기", "시즌", "계절", "개강"]}
+      - {name: 수익모델, any_of: ["수수료", "수익", "광고"]}
+      - {name: 네트워크 효과, any_of: ["네트워크", "유동성", "매물", "캠퍼스"]}
+  - id: BA10
+    request: "이 사업 아이디어를 분석해줘: 수제 맥주 정기배송 구독"
+    themes:
+      - {name: 주류 규제, any_of: ["주류", "규제", "통신판매", "주세", "법"]}
+      - {name: 배송·파손, any_of: ["배송", "파손", "물류"]}
+      - {name: 이탈률, any_of: ["이탈", "해지", "유지"]}
+  - id: BA11
+    request: "이 사업 아이디어를 분석해줘: 프리랜서 세무 신고 대행 앱"
+    themes:
+      - {name: 자격·규제, any_of: ["세무사", "자격", "규제", "법"]}
+      - {name: 계절성, any_of: ["5월", "신고 기간", "계절", "시즌"]}
+      - {name: 경쟁, any_of: ["경쟁", "삼쩜삼", "홈택스", "기존"]}
+  - id: BA12
+    request: "이 사업 아이디어를 분석해줘: 아파트 단지 공유 공구 대여함"
+    themes:
+      - {name: 분실·파손, any_of: ["분실", "파손", "도난", "관리"]}
+      - {name: 이용 빈도, any_of: ["이용 빈도", "수요", "빈도"]}
+      - {name: 설치 협의, any_of: ["관리사무소", "입주자", "설치", "협의"]}
+  - id: BA13
+    request: "이 사업 아이디어를 분석해줘: 비건 베이커리 온라인 판매"
+    themes:
+      - {name: 시장 규모, any_of: ["시장 규모", "비건 인구", "수요", "틈새"]}
+      - {name: 유통기한·배송, any_of: ["유통기한", "신선", "배송"]}
+      - {name: 원가, any_of: ["원가", "원재료", "마진"]}
+  - id: BA14
+    request: "이 사업 아이디어를 분석해줘: 중소 제조업체 설비 예지보전 IoT 서비스"
+    themes:
+      - {name: 도입 장벽, any_of: ["도입", "초기 비용", "설치", "레거시"]}
+      - {name: 데이터 확보, any_of: ["데이터", "센서", "학습"]}
+      - {name: 긴 영업 주기, any_of: ["영업 주기", "의사결정", "B2B", "영업"]}
+  - id: BA15
+    request: "이 사업 아이디어를 분석해줘: 키즈카페 예약·결제 대행 앱"
+    themes:
+      - {name: 가맹점 확보, any_of: ["입점", "제휴", "가맹", "공급"]}
+      - {name: 수수료 수용성, any_of: ["수수료", "단가"]}
+  - id: BA16
+    request: "이 사업 아이디어를 분석해줘: 온라인 한국어 과외 매칭 (해외 학습자 대상)"
+    themes:
+      - {name: 시차·결제, any_of: ["시차", "결제", "환율", "해외 결제"]}
+      - {name: 튜터 품질, any_of: ["튜터", "강사", "품질", "검증"]}
+      - {name: 경쟁 플랫폼, any_of: ["경쟁", "italki", "프레플리", "기존"]}
+  - id: BA17
+    request: "이 사업 아이디어를 분석해줘: 폐커피박 재활용 화분 제조"
+    themes:
+      - {name: 원료 수거, any_of: ["수거", "원료", "공급", "카페"]}
+      - {name: 단가·수익성, any_of: ["단가", "수익성", "원가", "마진"]}
+      - {name: 판로, any_of: ["판로", "유통", "B2B", "판매처"]}
+  - id: BA18
+    request: "이 사업 아이디어를 분석해줘: 1인 미용실 전용 예약·재고 관리 앱"
+    themes:
+      - {name: 기존 대체재, any_of: ["네이버 예약", "카카오", "대체", "기존"]}
+      - {name: 지불 의사, any_of: ["지불", "요금", "가격", "구독"]}
+  - id: BA19
+    request: "이 사업 아이디어를 분석해줘: 지역 농산물 꾸러미 직거래"
+    themes:
+      - {name: 품질 편차, any_of: ["품질", "편차", "신선"]}
+      - {name: 물류, any_of: ["물류", "배송", "콜드체인"]}
+      - {name: 농가 확보, any_of: ["농가", "공급", "계약"]}
+  - id: BA20
+    request: "이 사업 아이디어를 분석해줘: 반려동물 장례 예약 중개"
+    themes:
+      - {name: 신뢰·감정, any_of: ["신뢰", "감정", "민감"]}
+      - {name: 업체 확보, any_of: ["장례식장", "제휴", "업체", "공급"]}
+      - {name: 규제, any_of: ["규제", "법", "허가", "동물보호"]}
+  - id: BA21
+    request: "이 사업 아이디어를 분석해줘: 직장인 점심 공동구매 배달"
+    themes:
+      - {name: 최소 주문·밀도, any_of: ["최소 주문", "밀도", "주문 수", "규모"]}
+      - {name: 마진, any_of: ["마진", "수수료", "단가"]}
+      - {name: 경쟁 배달앱, any_of: ["배달앱", "배민", "쿠팡이츠", "경쟁"]}
+  - id: BA22
+    request: "이 사업 아이디어를 분석해줘: 인디 게임 현지화 번역 에이전시"
+    themes:
+      - {name: 품질 관리, any_of: ["품질", "검수", "용어"]}
+      - {name: 기계번역 대체, any_of: ["기계번역", "AI 번역", "대체"]}
+      - {name: 영업 채널, any_of: ["영업", "스팀", "퍼블리셔", "채널"]}
+  - id: BA23
+    request: "이 사업 아이디어를 분석해줘: 전통시장 상인용 모바일 주문 플랫폼"
+    themes:
+      - {name: 디지털 적응, any_of: ["디지털", "고령", "교육", "사용성"]}
+      - {name: 배달 인프라, any_of: ["배달", "배송", "물류"]}
+      - {name: 지자체·지원, any_of: ["지자체", "지원", "보조금", "상인회"]}
+  - id: BA24
+    request: "이 사업 아이디어를 분석해줘: 기업용 사내 교육 영상 자동 자막·요약 SaaS"
+    themes:
+      - {name: 보안·데이터, any_of: ["보안", "데이터", "유출", "사내"]}
+      - {name: 정확도, any_of: ["정확도", "오류", "인식률"]}
+      - {name: 대체재, any_of: ["대체", "경쟁", "기존 도구", "무료"]}
