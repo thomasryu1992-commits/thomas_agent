@@ -662,6 +662,10 @@ def walk_track(
     opened = 0
     newly = {field: 0 for field in FIRST_VERDICT_FIELDS.values()}
     verdicts_failed: str | None = None
+    # A member whose spec will not parse is skipped, as before, but COUNTED: a stricter parser
+    # would otherwise shrink a frozen cohort, or unbalance its real and null arms, with nothing
+    # on the line to say so.
+    unparseable: set[str] = set()
 
     def _advance(book: dict[str, Any]) -> None:
         nonlocal opened
@@ -670,7 +674,8 @@ def walk_track(
             for member, record in plan[(symbol, timeframe)]:
                 try:
                     spec = track.spec_of(member, record)
-                except Exception:
+                except Exception:  # noqa: BLE001 — skipped and counted, never silent
+                    unparseable.add(str(member.get("candidate_id")))
                     continue
                 entry = track.entry_of(member, record)
                 lineage = f"cand:{member['candidate_id']}"
@@ -717,6 +722,7 @@ def walk_track(
         "first_confirmed": newly["first_confirmed_at_utc"],
         "first_contradicted": newly["first_contradicted_at_utc"],
         "verdicts_failed": verdicts_failed,
+        "unparseable": sorted(unparseable),
     }
 
 
@@ -941,7 +947,14 @@ def status_line(summary: Mapping[str, Any]) -> str:
     failed = summary.get("failed") or []
     if failed:
         line += " failed=" + ";".join(failed)
-    return line + first_verdict_suffix(summary)
+    return line + unparseable_suffix(summary) + first_verdict_suffix(summary)
+
+
+def unparseable_suffix(summary: Mapping[str, Any]) -> str:
+    """The status-line tail naming how many members this walk skipped because their spec would not
+    parse: silent when none did."""
+    skipped = summary.get("unparseable") or []
+    return f" unparseable={len(skipped)}" if skipped else ""
 
 
 def first_verdict_suffix(summary: Mapping[str, Any]) -> str:

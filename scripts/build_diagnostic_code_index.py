@@ -11,8 +11,9 @@ record types, status values, provenance labels — and reported ~1,188. The code
 *raised* number **far fewer**: this walks every call to a class whose name ends in ``Error``,
 ``Blocked`` or ``Refused`` and takes the literal first positional argument or ``reason_code=``.
 
-For each site it records the module, the line, the exception class, the enclosing function and —
-where the raise sits inside one — the guarding ``if`` condition, unparsed. That last column is
+For each site it records the module, the exception class, the enclosing function and — where the
+raise sits inside one — the guarding ``if`` condition, unparsed. (The line is collected, for the
+tests, but not rendered: a line column made every edit above any raise site a regeneration.) That last column is
 the "why" §G3 asked for: not a description someone wrote and let rot, but the test the code is
 actually behind.
 
@@ -393,12 +394,18 @@ def render(sites: list[Site], skipped: int, messages: int) -> str:
     out.append("")
     out.append("## Every code")
     out.append("")
-    out.append("| code | class | module | line | function | condition |")
-    out.append("|---|---|---|---|---|---|")
+    # No line column. It made the committed file change whenever a line was added ABOVE any raise
+    # site anywhere in the runtime — 24 of 49 merges (2026-09-22..25) carried a regeneration, and
+    # every two PRs in flight together conflicted on it — for a number `grep -n CODE` gives exactly.
+    # Function and condition already locate the site. Rows sort by what is shown, so moving code
+    # within a function never reorders them; the line breaks only ties between identical-looking rows.
+    out.append("| code | class | module | function | condition |")
+    out.append("|---|---|---|---|---|")
     for code in sorted(by_code):
-        for site in sorted(by_code[code], key=lambda s: (s.module, s.line)):
+        for site in sorted(by_code[code], key=lambda s: (s.module, s.function or "",
+                                                          s.condition or "", s.line)):
             out.append(
-                f"| `{code}` | `{site.error_class}` | `{site.module}` | {site.line} "
+                f"| `{code}` | `{site.error_class}` | `{site.module}` "
                 f"| `{_cell(site.function)}` | `{_cell(site.condition)}` |"
             )
     out.append("")

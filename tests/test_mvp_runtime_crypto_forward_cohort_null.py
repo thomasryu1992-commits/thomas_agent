@@ -40,7 +40,7 @@ def test_every_member_gets_one_twin_with_its_parents_clock_and_exits(tmp_path):
     _install_cohort(tmp_path, a)
     (record,) = _freeze(tmp_path)
     (twin,) = record["members"]
-    assert twin["null_id"] == "null_cand_a" and twin["parent_candidate_id"] == "cand_a"
+    assert twin["null_id"] == "null_v2_cand_a" and twin["parent_candidate_id"] == "cand_a"
     assert twin["selected_at_utc"] == a["created_at_utc"]
     assert twin["signal_rate"] == round(60 / expected_replayed_bars("1d"), 6)
     spec = twin["null_spec"]
@@ -56,7 +56,7 @@ def test_a_member_that_cannot_be_twinned_is_named_not_dropped(tmp_path):
     b["backtest_evidence"].pop("bars_replayed")
     _install_cohort(tmp_path, a, b)
     (record,) = fcn.freeze_nulls(tmp_path, now=NOW)
-    assert [t["null_id"] for t in record["members"]] == ["null_cand_a"]
+    assert [t["null_id"] for t in record["members"]] == ["null_v2_cand_a"]
     assert record["skipped"] == [{"parent_candidate_id": "cand_b", "reason": "no_trade_rate"}]
 
 
@@ -98,7 +98,7 @@ def test_a_twin_trades_into_its_own_store_and_never_the_cohorts(tmp_path):
     summary = _null_walk(tmp_path, _frame(range(1, 12), stop_on={5, 9}))
     assert summary["members"] == 1 and summary["settled"] >= 1
     rows = fcn.read_null_outcomes(tmp_path)
-    assert rows and {r["candidate_id"] for r in rows} == {"null_cand_a"}
+    assert rows and {r["candidate_id"] for r in rows} == {"null_v2_cand_a"}
     assert {r["provenance"] for r in rows} == {fcn.NULL_PROVENANCE}
     assert not fco._outcomes_path(tmp_path).exists() and not fco._positions_path(tmp_path).exists()
     assert not fb._outcomes_path(tmp_path).exists()
@@ -134,7 +134,7 @@ def test_nothing_that_reads_the_cohort_sees_a_twin(tmp_path):
     _null_walk(tmp_path, _frame(range(1, 12), stop_on={5, 9}))
     assert fco.member_candidate_ids(tmp_path) == frozenset({"cand_a"})
     assert [m["candidate_id"] for c in fco.cohort_report(tmp_path) for m in c["members"]] == ["cand_a"]
-    assert fcn.null_ids(tmp_path) == frozenset({"null_cand_a"})
+    assert fcn.null_ids(tmp_path) == frozenset({"null_v2_cand_a"})
 
 
 def test_the_null_positions_book_refuses_a_lineage_no_null_arm_holds(tmp_path):
@@ -225,12 +225,12 @@ def test_a_twin_can_be_confirmed_by_the_judge_and_is_counted_as_a_null_confirmat
     from tests.test_mvp_runtime_crypto_forward_confirmation import _spread_outcomes
     _install_cohort(tmp_path, _record("cand_a", created="2025-12-01T00:00:00Z"))
     _freeze(tmp_path)
-    rows = _spread_outcomes(cid="null_cand_a")
+    rows = _spread_outcomes(cid="null_v2_cand_a")
     for index, row in enumerate(rows):
         row["settlement_id"] = f"settle_null_{index}"
     _seal_null_rows(tmp_path, rows)
     (line,) = fcn.null_report(tmp_path)
-    assert line["null_id"] == "null_cand_a" and line["status"] == "FORWARD_CONFIRMED"
+    assert line["null_id"] == "null_v2_cand_a" and line["status"] == "FORWARD_CONFIRMED"
     assert line["maturity"] == fco.MATURITY_CONFIRMED
     comparison = fcn.arm_comparison(tmp_path)
     assert comparison["null"]["1d"]["confirmed"] == 1 and comparison["null"]["1d"]["members"] == 1
@@ -305,3 +305,85 @@ def test_arm_counts_without_a_history_carry_no_ever_counts():
     (cell,) = fcn.arm_counts([{"timeframe": "4h", "candidate_id": "x", "status": "FORWARD_CONFIRMED",
                                "priceable_count": 30}]).values()
     assert "ever_confirmed" not in cell and cell["confirmed"] == 1
+
+
+# --- v2: the per-leg rate, and superseding a sealed v1 arm (2026-09-25) ---------------------------
+
+def _v1_record(tmp_path, *records):
+    """A sealed v1 arm exactly as the live host holds one: v1 ids, the v1 rate rule (pooled count
+    over one leg's bars), no ``supersedes``."""
+    import runtime.read_only_kernel.integrity as integrity
+    (cohort,) = fco.read_cohorts(tmp_path)
+    twins = []
+    for r in records:
+        ev = r["backtest_evidence"]
+        rate = min(1.0, ev["closed_count"] / ev["bars_replayed"])
+        from runtime.mvp_runtime.crypto.null_control import _null_spec
+        from runtime.mvp_runtime.crypto.strategy import StrategySpec
+        from runtime.mvp_runtime.crypto.strategy_artifact import admission_evidence
+        twins.append({
+            "null_id": fcn.null_id(r["candidate_id"]), "parent_candidate_id": r["candidate_id"],
+            "parent_rule_hash": r["strategy_rule_hash"], "selected_at_utc": r["created_at_utc"],
+            "symbol_scope": list(r["strategy_spec"]["symbol_scope"]),
+            "timeframe": r["strategy_spec"]["timeframe"],
+            "strategy_family": r["strategy_spec"]["strategy_family"], "signal_rate": round(rate, 6),
+            "seed": f"{cohort['cohort_id']}|{r['candidate_id']}",
+            "null_spec": _null_spec(StrategySpec.from_dict(r["strategy_spec"]), rate).to_dict(),
+            "admission_evidence": admission_evidence(r)})
+    body = {"forward_cohort_nulls_version": fcn.NULLS_VERSION_V1, "cohort_id": cohort["cohort_id"],
+            "frozen_at_utc": NOW, "rate_rule": fcn.RATE_RULE_V1, "null_size": len(twins),
+            "members": twins, "skipped": []}
+    record = {**body, "record_sha256": integrity.sha256_record(body)}
+    path = fcn._nulls_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    return record
+
+
+def test_a_pooled_parents_twin_is_paced_per_leg():
+    """`closed_count` sums the legs and `bars_replayed` is one leg's; v1 divided the first by the
+    second and paced a five-leg parent's twin five times too fast on every leg."""
+    single = _record("cand_a", closed=60)
+    pooled = _record("cand_b", closed=300)
+    pooled["backtest_evidence"]["symbols_replayed"] = 5
+    assert fcn.trade_rate(pooled) == fcn.trade_rate(single) == 60 / expected_replayed_bars("1d")
+
+
+def test_a_sealed_v1_arm_still_reads_and_a_v2_supersedes_it_once(tmp_path):
+    a = _record("cand_a", closed=300)
+    a["backtest_evidence"]["symbols_replayed"] = 5
+    b = _record("cand_b", family="other")
+    _install_cohort(tmp_path, a, b)
+    v1 = _v1_record(tmp_path, a, b)
+    assert [r["forward_cohort_nulls_version"] for r in fcn.read_null_records(tmp_path)] == [fcn.NULLS_VERSION_V1]
+    (v2,) = _freeze(tmp_path)
+    assert v2["forward_cohort_nulls_version"] == fcn.NULLS_VERSION and v2["rate_rule"] == fcn.RATE_RULE
+    assert v2["supersedes"] == {"version": fcn.NULLS_VERSION_V1, "record_sha256": v1["record_sha256"],
+                                "rate_rule": fcn.RATE_RULE_V1}
+    rates = {t["parent_candidate_id"]: t["signal_rate"] for t in v2["members"]}
+    old = {t["parent_candidate_id"]: t["signal_rate"] for t in v1["members"]}
+    assert rates["cand_a"] == round(old["cand_a"] / 5, 6), "the pooled parent's twin slows by its legs"
+    assert rates["cand_b"] == old["cand_b"], "a one-leg parent's twin is unchanged"
+    assert [t["seed"] for t in v2["members"]] == [t["seed"] for t in v1["members"]]
+    assert fcn.freeze_nulls(tmp_path, now=NOW, apply=True) == []
+    assert [r["forward_cohort_nulls_version"] for r in fcn.active_null_records(tmp_path)] == [fcn.NULLS_VERSION]
+
+
+def test_after_re_freezing_only_v2_walks_and_v1_rows_are_never_priced_into_it(tmp_path):
+    a = _eager("cand_a")
+    _install_cohort(tmp_path, a)
+    _v1_record(tmp_path, a)
+    frame = _frame(range(1, 12), stop_on={5, 9})
+    first = _null_walk(tmp_path, frame)
+    assert first["members"] == 1 and {r["candidate_id"] for r in fcn.read_null_outcomes(tmp_path)} == {"null_cand_a"}
+    _freeze(tmp_path)
+    assert [w["candidate_id"] for ms in fcn.null_walk_plan(tmp_path).values() for w, _ in ms] == ["null_v2_cand_a"]
+    (line,) = fcn.null_report(tmp_path)
+    assert line["null_id"] == "null_v2_cand_a" and line["priceable_count"] == 0
+    # The book still loads with the v1 entries in it, and the v2 twin re-walks from selection once.
+    again = _null_walk(tmp_path, frame)
+    assert again["members"] == 1 and again["settled"] >= 1
+    assert fcn.load_null_positions(tmp_path)["entries"]
+    assert _null_walk(tmp_path, frame)["settled"] == 0
+    ids = {r["candidate_id"] for r in fcn.read_null_outcomes(tmp_path)}
+    assert ids == {"null_cand_a", "null_v2_cand_a"}

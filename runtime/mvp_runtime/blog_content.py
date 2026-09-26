@@ -97,6 +97,7 @@ __all__ = [
     "parse_seeds",
     "run_content_ideation",
     "select_target_keyword",
+    "written_keywords",
 ]
 
 
@@ -161,6 +162,29 @@ def select_target_keyword(
     if best is None:
         return None, reasoning
     return str(best[1].get("keyword")).strip(), reasoning
+
+
+def written_keywords(ledger: Any) -> list[str]:
+    """Every target keyword a package on the ledger was drafted for, archives included.
+
+    What :func:`select_target_keyword` excludes as "already written". The weekly schedule never
+    supplied it, so the rule's exclusion was dead: every fire picked whatever ranked first that
+    week, a keyword drafted last week included. Drafted counts, not only published — a package
+    waiting to be posted is already the week's work for that keyword; ``target=`` still forces
+    one. Archives are read because packages are records, and records rotate."""
+    if ledger is None:
+        return []
+    keywords: set[str] = set()
+    for row in ledger.iter_records_with_archive(kinds=[PACKAGE_RECORD_KIND]):
+        if not isinstance(row, Mapping) or row.get("kind") != PACKAGE_RECORD_KIND:
+            continue
+        record = row.get("record")
+        if not isinstance(record, Mapping):
+            continue
+        keyword = str(record.get("target_keyword") or "").strip()
+        if keyword:
+            keywords.add(keyword)
+    return sorted(keywords)
 
 
 def _keyword_evidence(record: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -476,9 +500,10 @@ def run_content_ideation(
         keyword_record = (research.get("records") or {}).get("keyword_research")
         if target is None:
             metrics = (keyword_record or {}).get("metrics") or []
-            target, reasoning = select_target_keyword(
-                metrics, already_written=inputs.get("already_written") or ()
-            )
+            already_written = inputs.get("already_written")
+            if already_written is None:
+                already_written = written_keywords(ledger)
+            target, reasoning = select_target_keyword(metrics, already_written=already_written)
     if not target:
         raise ToolError(
             NO_ELIGIBLE_KEYWORD,
