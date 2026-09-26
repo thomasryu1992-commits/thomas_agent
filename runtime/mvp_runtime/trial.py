@@ -574,6 +574,7 @@ def run_trial(
         result["final_response"] = header + render_response(
             agent_output,
             independently_validated=independent_validation_result is not None,
+            failovers=invocation.get("failovers"),
         )
     else:
         reasons = list(validation["validation"]["result_reasons"])

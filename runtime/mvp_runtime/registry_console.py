@@ -226,11 +226,14 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
         return None
     tool_use = kinds.get("tool_use")
     hits = tool_use.get("hits") if isinstance(tool_use, dict) else None
+    invocation = kinds.get("invocation")
+    failovers = invocation.get("failovers") if isinstance(invocation, dict) else None
     try:
         return render_response(
             agent_output,
             independently_validated=isinstance(kinds.get("independent_validation_result"), dict),
             search_hits=hits if isinstance(hits, list) else None,
+            failovers=failovers if isinstance(failovers, list) else None,
         )
     except (KeyError, TypeError, ValueError):
         # The ledger row is not shaped like an agent output (hand-edited, or an older
