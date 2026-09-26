@@ -224,6 +224,7 @@ def render_response(
     *,
     independently_validated: bool = False,
     search_hits: list[dict[str, Any]] | None = None,
+    failovers: list[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render a human-readable final response from a validated Agent Output.
 
@@ -243,7 +244,12 @@ def render_response(
     (the worker numbers the hits that way in its prompt), and without this section the
     reader received citations that resolved to nothing. Same order as the prompt, so the
     numbers line up by construction. Mock hits render too — an honest display of what the
-    evidence actually was."""
+    evidence actually was.
+
+    ``failovers`` (the specialist invocation's, review D1) adds one line above the footer naming
+    each chain member the answer failed over past and why. It is the condition Thomas attached to
+    wider failover: a member whose key is wrong must not be hidden by the member that answered.
+    Absent or empty, the reply is byte-identical to before."""
     rso = agent_output.get("role_specific_output", {})
     lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
     # The Role's deliverable IS the reply, rendered FIRST because it is what was asked for; the
@@ -310,6 +316,11 @@ def render_response(
             for index, hit in enumerate(search_hits, start=1)
         ]
         lines.append("")
+    moved_past = [f for f in (failovers or []) if isinstance(f, Mapping)]
+    if moved_past:
+        lines.append("_Failover: " + "; ".join(
+            f"{f.get('member', '?')} skipped ({f.get('kind', '?')}: {f.get('reason', '')})"
+            for f in moved_past) + "._")
     lines.append(
         "_Read-only analysis; automatically validated and independently reviewed (PASS)._"
         if independently_validated else
@@ -1168,6 +1179,7 @@ def run_task(
                     agent_output,
                     independently_validated=independent_validation_result is not None,
                     search_hits=search_hits,
+                    failovers=invocation.get("failovers"),
                 ),
                 writer=writer if writer is not None else DryRunWriter(),
                 now=now, root=repo_root,
@@ -1264,6 +1276,7 @@ def run_task(
             agent_output,
             independently_validated=independent_validation_result is not None,
             search_hits=search_hits,
+            failovers=invocation.get("failovers"),
         )
     else:
         # Validation withheld delivery; the trail already concludes BLOCKED. Persist best-effort.

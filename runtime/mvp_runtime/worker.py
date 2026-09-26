@@ -136,6 +136,10 @@ class ProviderResult:
     # The budget contract allows max_retry_count: 1 and its usage must be recorded — a
     # retried call that reads as first-try would hide provider instability from the ledger.
     retries: int = 0
+    # The chain members this answer failed over past, oldest first, each ``{member, kind,
+    # reason_code, reason}`` (``providers.FailoverProvider``, review D1). Empty for a single
+    # provider and for a chain whose first member answered.
+    failovers: tuple[dict[str, Any], ...] = ()
 
 
 class Provider(Protocol):
@@ -779,4 +783,9 @@ def run_analysis_worker(
             provider, "model_invocation", getattr(provider, "model_id", None) is not None
         )),
     }
+    # Review D1: which chain members this answer failed over past, and why. Only when there were
+    # any, so an invocation served by its first member reads exactly as it always did.
+    failovers = getattr(result, "failovers", ())
+    if failovers:
+        invocation_metadata["failovers"] = [dict(f) for f in failovers]
     return agent_output, invocation_metadata

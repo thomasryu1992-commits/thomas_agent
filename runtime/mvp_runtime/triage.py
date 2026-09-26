@@ -182,6 +182,10 @@ def run_triage(
             "finish_reason": result.finish_reason,
             "network_egress": bool(getattr(provider, "network_egress", False)),
         }
+        # Review D1: the chain members this verdict failed over past, only when there were any.
+        failovers = getattr(result, "failovers", ())
+        if failovers:
+            invocation["failovers"] = [dict(f) for f in failovers]
 
     seed = {
         "task_id": identity.get("task_id"),

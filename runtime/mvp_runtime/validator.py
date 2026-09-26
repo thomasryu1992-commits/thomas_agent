@@ -367,4 +367,9 @@ def run_validation_worker(
         "finish_reason": result.finish_reason,
         "network_egress": bool(getattr(provider, "network_egress", False)),
     }
+    # Review D1: which chain members this answer failed over past, and why. Only when there were
+    # any, so an invocation served by its first member reads exactly as it always did.
+    failovers = getattr(result, "failovers", ())
+    if failovers:
+        invocation["failovers"] = [dict(f) for f in failovers]
     return record, invocation

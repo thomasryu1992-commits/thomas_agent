@@ -21,6 +21,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -227,7 +228,7 @@ GROQ = "groq"
 GROQ_MODEL_ENV = "MVP_GROQ_MODEL"
 # Not "llama-3.3-70b-versatile": Groq decommissioned it for free/developer tiers in August
 # 2026 (notice 2026-06-17) and every request since answers HTTP 404 — PROVIDER_TRANSPORT,
-# no retry, no failover — which took down every path riding this default at once
+# no retry, and (until review D1, 2026-09-26) no failover — which took down every path riding this default at once
 # (independent validator, frontdesk, data review, proposer; measured 2026-08-29, two
 # consecutive weekly DATA_REVIEW fires and a proposer backlog of 11). This slug is Groq's
 # own named migration target for that model.
@@ -251,8 +252,9 @@ OPENROUTER_MODEL_ENV = "MVP_OPENROUTER_MODEL"
 #    so a failover chain switches members instead of failing the run.
 #
 # The default is a free-tier slug. OpenRouter's catalogue changes, so verify it against the
-# account and override with ``MVP_OPENROUTER_MODEL``; an unknown slug is a 4xx, which is
-# PROVIDER_TRANSPORT (deliberately not retried, not failed over).
+# account and override with ``MVP_OPENROUTER_MODEL``; an unknown slug is a 404, which is
+# PROVIDER_TRANSPORT — not retried, and failed over in a chain since review D1 (the slug is this
+# member's configuration, not the request).
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # M2: difficulty-driven model tiers over the same OpenRouter gateway. Each tier is its
@@ -305,7 +307,8 @@ _RETRY_BACKOFF_SECONDS = 5
 # own prompt, about 1 call in 6 on `openai/gpt-oss-120b`, the rest parsing cleanly; that one-in-
 # six cost the whole day's proposer fire, since a 4xx was never retried. Retried once, within the
 # same single-retry budget as 429/503 and without the backoff (nothing is throttling us). Still
-# TRANSPORT, not UNAVAILABLE, when it persists: a failover chain must not read it as "not now".
+# TRANSPORT, not UNAVAILABLE, when it persists; a chain fails over on it (review D1) because it is
+# this member's model writing bad JSON, which another vendor's model need not repeat.
 _RETRYABLE_ERROR_CODES = frozenset({"json_validate_failed"})
 # How much of an error body is read to find its code. The body can carry the model's failed
 # output (`failed_generation`), which is never echoed — only the code is.
@@ -348,12 +351,12 @@ def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: i
     drift between vendors.
 
     - ``PROVIDER_UNAVAILABLE``: 503/429 still failing after the single retry. This is the
-      provider saying "not now" — the failure class a failover chain may switch on.
-    - ``PROVIDER_TRANSPORT``: everything else (4xx, network failure, timeout). "No", not
-      "not now" — switching providers would spend time on an answer that will not change
-      (4xx) or double the worst-case wall clock (timeout already ate max_runtime_seconds).
+      provider saying "not now".
+    - ``PROVIDER_TRANSPORT``: everything else (4xx, 5xx, network failure, timeout).
 
-    Errors name the HTTP status (the server's answer, safe) — never the URL or the key.
+    Neither code decides failover on its own any more: :func:`failover_kind` reads the HTTP status
+    and vendor code carried in the error's ``data`` (review D1). Errors name the HTTP status (the
+    server's answer, safe) — never the URL or the key.
     """
     started = time.monotonic()
     retries = 0
@@ -378,21 +381,25 @@ def _post_json_with_retry(request: urllib.request.Request, *, timeout_seconds: i
             named = f" ({code})" if code else ""
             if exc.code in _RETRYABLE_HTTP:
                 raise ProviderError(
-                    "PROVIDER_UNAVAILABLE", f"hosted provider returned HTTP {exc.code}{suffix}"
+                    "PROVIDER_UNAVAILABLE", f"hosted provider returned HTTP {exc.code}{suffix}",
+                    data={"http_status": exc.code},
                 ) from None
             raise ProviderError(
-                "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{named}{suffix}"
+                "PROVIDER_TRANSPORT", f"hosted provider returned HTTP {exc.code}{named}{suffix}",
+                data={"http_status": exc.code, "error_code": code},
             ) from None
         except (TimeoutError, urllib.error.URLError):
             # Deliberately generic — never echo the URL or key.
-            raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out") from None
+            raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out",
+                                data={"transport": "request"}) from None
         except (OSError, http.client.HTTPException):
             # A connection that dies after the request went out — RemoteDisconnected,
             # ConnectionResetError, IncompleteRead — is raised by getresponse()/read()
             # directly, not wrapped in URLError. Every caller catches ProviderError only, so
             # an untyped one ended the run with no BLOCK record and no audit trail.
             raise ProviderError(
-                "PROVIDER_TRANSPORT", "hosted provider connection failed before the response completed"
+                "PROVIDER_TRANSPORT", "hosted provider connection failed before the response completed",
+                data={"transport": "connection"},
             ) from None
         except UnicodeDecodeError:
             raise ProviderError("MALFORMED_RESPONSE", "hosted provider returned an unparseable response") from None
@@ -412,8 +419,8 @@ def select_provider(*, now: str | None = None, root: Path | None = None) -> Prov
     The env var also accepts an ordered, comma-separated **failover chain**
     (``MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq``): a chain with an unknown
     or duplicate member fails closed entirely (it never silently shrinks), and at run
-    time the next member is tried only when the previous one is UNAVAILABLE (503/429
-    even after its own retry) — never on a timeout or a 4xx.
+    time the next member is tried when the previous one failed for a reason of its own —
+    see :func:`failover_kind` (review D1, Thomas 2026-09-26) — never on a request-shaped 4xx.
 
     The gate ordering lives in ``safety_gate.select_env_gated_chain``, shared semantics
     with the validator and frontdesk chains. Model names are read inside the gated
@@ -910,20 +917,79 @@ class OpenRouterHeavyProvider(OpenRouterProvider):
     _DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL_HEAVY
 
 
+# --- which failures move a chain to its next member (review D1, Thomas 2026-09-26) -------------
+#
+# Until 2026-09-26 a chain switched on PROVIDER_UNAVAILABLE (429/503) alone: "a 4xx will not change
+# with a different vendor". That holds for a request-shaped 4xx and not for the failures this
+# repository actually recorded — Groq's decommissioned slug (HTTP 404, every path down at once,
+# 2026-08-29) and an empty model slug (nine silent days). Those belong to ONE member: its key, its
+# slug, its server, its model's output. The next vendor answers them differently, so the chain moves
+# on — and records why, so a broken key cannot hide behind a working fallback.
+#
+# What does NOT move the chain: a request-shaped 4xx (400, 413, 422, …), which every vendor will
+# refuse the same way, and anything that is not a ProviderError (the Safety-Flag Gate's refusal
+# above all — an unauthorized egress is never "try the next one").
+FAILOVER_CONFIGURATION = "configuration"   # no key, 401/403/404: this member's setup is wrong
+FAILOVER_UNAVAILABLE = "unavailable"       # 429/503 after the member's own retry: "not now"
+FAILOVER_SERVER = "server"                 # any other 5xx
+FAILOVER_TRANSPORT = "transport"           # timeout, refused or dropped connection
+FAILOVER_MALFORMED = "malformed"           # the member's model answered in an unusable shape
+_CONFIGURATION_STATUSES = frozenset({401, 403, 404})
+
+# Each member but the last gets an equal share of the call's budget, capped at this — so a hung
+# first member cannot eat the whole ``max_runtime_seconds`` (120 s) and leave nothing for the rest.
+# The three-member analysis chain gets 40 s per member; the last member always gets whatever is left.
+FAILOVER_MEMBER_TIMEOUT_SECONDS = 45
+# Below this, trying another member is a request that cannot finish; the chain stops instead.
+_FAILOVER_MIN_MEMBER_SECONDS = 5
+# How much of a failed member's reason is kept on the record. The reasons are the adapters' own
+# typed messages (an HTTP status and vendor code, an env var NAME) — never a URL, key or prompt.
+_FAILOVER_REASON_LIMIT = 200
+
+
+def failover_kind(exc: BaseException) -> str | None:
+    """Why a chain may move past a member that raised ``exc`` — one of the ``FAILOVER_*`` kinds —
+    or ``None`` when it must not (the error propagates as it did before D1)."""
+    if not isinstance(exc, ProviderError):
+        return None
+    data = exc.data if isinstance(exc.data, Mapping) else {}
+    status = data.get("http_status")
+    if exc.reason_code == "PROVIDER_UNAVAILABLE":
+        return FAILOVER_UNAVAILABLE
+    if exc.reason_code == "NO_API_KEY":
+        return FAILOVER_CONFIGURATION
+    if exc.reason_code == "MALFORMED_RESPONSE":
+        return FAILOVER_MALFORMED
+    if exc.reason_code != "PROVIDER_TRANSPORT":
+        return None
+    if isinstance(status, int):
+        if status in _CONFIGURATION_STATUSES:
+            return FAILOVER_CONFIGURATION
+        if status >= 500:
+            return FAILOVER_SERVER
+        if data.get("error_code") in _RETRYABLE_ERROR_CODES:
+            return FAILOVER_MALFORMED
+        return None
+    if data.get("transport"):
+        return FAILOVER_TRANSPORT
+    return None
+
+
 class FailoverProvider:
     """Ordered failover across gate-authorized providers.
 
     Composition only — every member was already built from its own
     :class:`safety_gate.Authorization` by ``select_env_gated_chain``, so this class holds no
-    authority of its own and adds none. The next member is tried on exactly ONE failure
-    class: ``PROVIDER_UNAVAILABLE`` (503/429 persisting through the member's own retry —
-    the provider saying "not now", the failure class observed live 2026-07-20). A timeout
-    already consumed the full ``max_runtime_seconds`` and a 4xx/parse failure will not
-    change with a different vendor's answer, so those propagate immediately.
+    authority of its own and adds none. The next member is tried when the previous one failed for
+    a reason of its OWN (:func:`failover_kind`: configuration, unavailable, server, transport,
+    malformed — review D1, Thomas 2026-09-26); a request-shaped failure propagates at once. Each
+    member but the last is capped at :data:`FAILOVER_MEMBER_TIMEOUT_SECONDS` so the chain fits the
+    call's ``timeout_seconds``.
 
     The returned :class:`ProviderResult` carries the SERVING member's ``model_id``/
-    ``model_version``, so the invocation record and audit trail always name who actually
-    answered — a failover that reads as the primary would hide instability from the ledger.
+    ``model_version`` and, in ``failovers``, every member it moved past and why — a failover that
+    reads as the primary would hide instability from the ledger, and a failover whose reason is
+    not kept would hide a broken key behind a working fallback.
     """
 
     network_egress = True  # every member is a network provider by construction
@@ -955,18 +1021,44 @@ class FailoverProvider:
         return FailoverProvider(bound)
 
     def generate(self, prompt: str, *, max_output_tokens: int, timeout_seconds: int) -> ProviderResult:
-        last: ProviderError | None = None
-        for provider in self._providers:
+        deadline = time.monotonic() + float(timeout_seconds)
+        per_member = max(_FAILOVER_MIN_MEMBER_SECONDS,
+                         min(FAILOVER_MEMBER_TIMEOUT_SECONDS, int(timeout_seconds) // len(self._providers)))
+        failovers: list[dict[str, Any]] = []
+        for index, provider in enumerate(self._providers):
+            member = str(getattr(provider, "model_id", "?"))
+            remaining = deadline - time.monotonic()
+            if remaining < _FAILOVER_MIN_MEMBER_SECONDS:
+                failovers.append({"member": member, "kind": "not_tried",
+                                  "reason_code": "BUDGET_EXHAUSTED",
+                                  "reason": "the call's time budget ran out before this member"})
+                break
+            is_last = index == len(self._providers) - 1
+            member_timeout = int(remaining) if is_last else int(min(remaining, per_member))
             try:
-                return provider.generate(
-                    prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds
+                result = provider.generate(
+                    prompt, max_output_tokens=max_output_tokens, timeout_seconds=max(1, member_timeout)
                 )
             except ProviderError as exc:
-                if exc.reason_code != "PROVIDER_UNAVAILABLE":
+                kind = failover_kind(exc)
+                if kind is None:
                     raise
-                last = exc
-        # Every member said "not now". Typed, and it names the whole chain's outcome.
+                failovers.append({"member": member, "kind": kind, "reason_code": exc.reason_code,
+                                  "reason": str(exc.reason)[:_FAILOVER_REASON_LIMIT]})
+                continue
+            return replace(result, failovers=tuple(failovers)) if failovers else result
+        # Every member failed for a reason of its own. The all-"not now" case keeps the code and
+        # wording it always had; anything else names each member's reason, because "unavailable"
+        # would be a lie about a chain whose first member has no key.
+        summary = "; ".join(f"{f['member']}: {f['reason']}" for f in failovers)
+        if all(f["kind"] == FAILOVER_UNAVAILABLE for f in failovers):
+            raise ProviderError(
+                "PROVIDER_UNAVAILABLE",
+                f"every provider in the failover chain is unavailable (last: {failovers[-1]['reason']})",
+                data={"failovers": failovers},
+            ) from None
         raise ProviderError(
-            "PROVIDER_UNAVAILABLE",
-            f"every provider in the failover chain is unavailable (last: {last.reason})",
+            "PROVIDER_CHAIN_EXHAUSTED",
+            f"every provider in the failover chain failed ({summary})",
+            data={"failovers": failovers},
         ) from None

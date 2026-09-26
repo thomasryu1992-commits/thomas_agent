@@ -208,8 +208,12 @@ behind the Safety-Flag Gate as an **ordered failover chain**
 (`MVP_HOSTED_PROVIDER=openrouter,google_ai_studio,groq`; Thomas 2026-07-20; openrouter
 prepended Thomas 2026-07-24; grants retired Thomas 2026-08-10, the env
 names the chain): a chain with an unknown or duplicate member fails closed **entirely**
-(never silently shrinks), and failover fires only on PROVIDER_UNAVAILABLE (503/429 after the
-member's own retry) — never on timeout or 4xx.
+(never silently shrinks). Failover fires on a failure that belongs to the member — 429/503 after
+its own retry, a missing key, 401/403/404, 5xx, a timeout or dropped connection, a malformed answer
+(Thomas 2026-09-26, review D1; `providers.failover_kind`) — never on a request-shaped 4xx or a gate
+refusal. Each member but the last gets a share of the call's budget, and every failover is kept on
+the invocation record and named in the reply, so a broken key cannot hide behind the member that
+answered.
 
 **Determinism (MVP definition)** = pipeline determinism + recorded replay, not model-output
 byte-equality. Deterministic ids come from `integrity.short_id` over a seed.
