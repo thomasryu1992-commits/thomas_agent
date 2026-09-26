@@ -222,6 +222,30 @@ def test_a_context_that_fails_to_fetch_costs_that_context_alone(tmp_path):
     assert [r["candidate_id"] for r in fco.read_cohort_outcomes(tmp_path)] == ["cand_a"]
 
 
+def test_a_member_whose_spec_will_not_parse_is_skipped_and_counted(tmp_path):
+    """Skipped, as before — one bad spec must not stop the walk of the rest — but counted and
+    on the status line. Silently skipping let a stricter parser shrink a frozen cohort, or
+    unbalance its real and null arms, with nothing anywhere saying so."""
+    import dataclasses
+
+    _install_cohort(tmp_path, _record("cand_a"), _record("cand_b", family="breakout_twin", adx=21.0))
+    real_spec_of = fco.COHORT_TRACK.spec_of
+
+    def spec_of(member, record):
+        if member["candidate_id"] == "cand_b":
+            raise ValueError("a field this parser no longer accepts")
+        return real_spec_of(member, record)
+
+    track = dataclasses.replace(fco.COHORT_TRACK, spec_of=spec_of)
+    summary = fco.walk_track(track, tmp_path, now=NOW,
+                             frame_for=lambda s, t, b: _frame(range(1, 8), stop_on={5}))
+    assert summary["members"] == 2 and summary["unparseable"] == ["cand_b"]
+    assert [r["candidate_id"] for r in fco.read_cohort_outcomes(tmp_path)] == ["cand_a"]
+    assert "unparseable=1" in fco.status_line(summary)
+    clean = _walk(tmp_path, _frame(range(1, 8), stop_on={5}), persist=False)
+    assert clean["unparseable"] == [] and "unparseable" not in fco.status_line(clean)
+
+
 def test_a_dry_walk_writes_nothing(tmp_path):
     _install_cohort(tmp_path, _record("cand_a"))
     summary = _walk(tmp_path, _frame(range(1, 8), stop_on={5}), persist=False)

@@ -99,11 +99,15 @@ def test_count_is_clamped_to_the_per_run_maximum(ledger, monkeypatch, capsys):
 
 
 def test_candles_are_clamped_to_the_window_maximum(ledger, monkeypatch, capsys):
+    """What is pinned is the limit the CLI ASKS for. The collection itself runs on a small
+    frame: evaluating a proposal over the full clamped window proved nothing more and made this
+    one of the slowest tests in the suite (35-47 s)."""
     seen = {}
     real = proposer_cli.collect_market_data
     monkeypatch.setattr(
         proposer_cli, "collect_market_data",
-        lambda symbol, timeframe, **kw: seen.update(kw) or real(symbol, timeframe, **kw),
+        lambda symbol, timeframe, **kw: seen.update(kw) or real(symbol, timeframe,
+                                                                **{**kw, "limit": 200}),
     )
     assert proposer_cli.main(["--candles", "999999", "--no-ledger", "--count", "1"]) == EXIT_OK
     assert seen["limit"] == proposer_cli.MAX_CANDLES

@@ -20,10 +20,22 @@ be biased by, so starting where the parent starts gives the two arms the same ba
 deterministic per bar, a SHA-256 of the twin's seed and the bar's open time, so a re-walk over the
 same bars re-draws the same coins and settles nothing new.
 
-**The rate is a recorded judgement:** the parent's backtest trade rate, ``closed_count /
-bars_replayed``. That paces the twin's trades like its parent's, so it reaches the trade floor at
-about the same time. `null_control` notes that a coin flip at a matched SIGNAL rate completes about
-twice the trades, because a real entry's signals cluster; matching the trade rate avoids that.
+**The rate is a recorded judgement:** the parent's backtest trade rate PER LEG, ``closed_count /
+(bars_replayed x symbols_replayed)``. That paces the twin's trades like its parent's on each leg it
+walks, so it reaches the trade floor at about the same time. `null_control` notes that a coin flip at
+a matched SIGNAL rate completes about twice the trades, because a real entry's signals cluster;
+matching the trade rate avoids that.
+
+**Why there is a v2 (2026-09-25).** v1 used ``closed_count / bars_replayed``. A pooled parent's
+``closed_count`` sums every leg while ``bars_replayed`` is one leg's (the shallowest), so its twin
+traded each leg at about five times the parent's pace — 51 of the first cohort's 115 twins (pooled
+1d 23 and 4h 18, and ten F9 rows whose single-symbol spec carries five-leg evidence). They reached the
+trade floor sooner and got more judge looks, so the board's "real vs null" comparison was not at the
+members' pace at 4h and 1d (1h had no pooled parent). v1 records are sealed and stay readable;
+``freeze_nulls`` adds a v2 record that names the v1 it supersedes, with the SAME seeds, so a v2 twin
+is its v1 twin at the corrected threshold. v2 twins have their own walk ids (``null_v2_<parent>``):
+the v1 rows and book marks stay under the v1 ids and are never priced into a v2 twin. Only the
+latest version of each cohort's arm is walked and reported (:func:`active_null_records`).
 
 **Isolation.** The null arm has its own positions book and its own outcomes store (provenance
 ``mvp_forward_cohort_null``). Nothing that reads the cohort reads it: not `member_candidate_ids`
@@ -48,7 +60,8 @@ from . import forward_book
 from .candidate_identity import candidate_id
 from .forward_cohort import (
     FIRST_VERDICT_FIELDS, FORWARD_COHORT_LOCKED, MATURITY_CONFIRMED, MATURITY_CONTRADICTED, WalkTrack,
-    cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts, walk_track,
+    cohort_report, first_verdict_suffix, load_book_at, load_positions, maturity_of, read_cohorts,
+    unparseable_suffix, walk_track,
 )
 from .forward_confirmation import FORWARD_UNDERPOWERED, judge_forward, min_forward_trades
 from .null_control import NULL_FEATURE, _null_spec
@@ -58,12 +71,17 @@ from .strategy import StrategySpec
 from .strategy_artifact import admission_evidence
 
 NULLS_FILENAME = "forward_cohort_nulls.jsonl"
-NULLS_VERSION = "forward_cohort_nulls.v1"
+NULLS_VERSION_V1 = "forward_cohort_nulls.v1"
+NULLS_VERSION = "forward_cohort_nulls.v2"
+# Oldest first: a cohort's ACTIVE arm is its record of the latest version here.
+NULLS_VERSIONS = (NULLS_VERSION_V1, NULLS_VERSION)
 NULL_POSITIONS_FILENAME = "forward_cohort_null_positions.json"
 NULL_OUTCOMES_FILENAME = "forward_cohort_null_outcomes.jsonl"
 NULL_PROVENANCE = "mvp_forward_cohort_null"
 NULL_ID_PREFIX = "null_"
-RATE_RULE = "parent backtest closed_count / bars_replayed"
+NULL_ID_PREFIX_V2 = "null_v2_"
+RATE_RULE_V1 = "parent backtest closed_count / bars_replayed"
+RATE_RULE = "parent backtest closed_count / (bars_replayed x symbols_replayed)"
 
 # The null records' own codes, so an operator can tell a damaged null arm from a damaged cohort. The
 # null positions book shares the cohort's loader and its codes (`forward_cohort.load_book_at`).
@@ -83,20 +101,28 @@ def _null_outcomes_path(root: Path | None) -> Path:
     return state_dir(root) / NULL_OUTCOMES_FILENAME
 
 
-def null_id(parent_candidate_id: str) -> str:
-    """A twin's walk id: never a candidate id, so its rows can never be attributed to a lineage."""
-    return f"{NULL_ID_PREFIX}{parent_candidate_id}"
+def null_id(parent_candidate_id: str, *, version: str = NULLS_VERSION_V1) -> str:
+    """A twin's walk id: never a candidate id, so its rows can never be attributed to a lineage.
+
+    Per version, because a re-frozen arm must not inherit the rows its predecessor settled. The
+    default is the v1 shape, which the hypothesis trials' twins also use in stores of their own."""
+    prefix = NULL_ID_PREFIX_V2 if version == NULLS_VERSION else NULL_ID_PREFIX
+    return f"{prefix}{parent_candidate_id}"
 
 
 def trade_rate(record: Mapping[str, Any]) -> float | None:
-    """The parent's backtest trades per bar, or None when the row cannot say."""
+    """The parent's backtest trades per bar on EACH LEG, or None when the row cannot say.
+
+    ``closed_count`` is pooled over ``symbols_replayed`` legs and ``bars_replayed`` is one leg's, so
+    the per-leg pace divides by both (see the module docstring's v2 note). Absent
+    ``symbols_replayed`` is one leg — every row minted before pooling."""
     evidence = record.get("backtest_evidence") or {}
     closed, bars = evidence.get("closed_count"), evidence.get("bars_replayed")
-    if isinstance(closed, bool) or isinstance(bars, bool):
-        return None
-    if not isinstance(closed, (int, float)) or not isinstance(bars, (int, float)) or closed <= 0 or bars <= 0:
-        return None
-    return min(1.0, float(closed) / float(bars))
+    legs = evidence.get("symbols_replayed") or 1
+    for value in (closed, bars, legs):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return None
+    return min(1.0, float(closed) / (float(bars) * float(legs)))
 
 
 def coin(seed: str, open_time: Any) -> float:
@@ -107,7 +133,7 @@ def coin(seed: str, open_time: Any) -> float:
 
 
 def build_null_record(cohort: Mapping[str, Any], latest: Mapping[str, Mapping[str, Any]], *,
-                      now: str) -> dict[str, Any]:
+                      now: str, supersedes: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One twin per member of ``cohort``, from each member's frozen row as the store holds it now.
     A member whose row is gone, changed its rule hash, or cannot give a rate is listed in ``skipped``
     with the reason, never silently dropped. Pure."""
@@ -133,7 +159,7 @@ def build_null_record(cohort: Mapping[str, Any], latest: Mapping[str, Mapping[st
             skipped.append({"parent_candidate_id": parent, "reason": f"null_unbuildable: {type(exc).__name__}"})
             continue
         twins.append({
-            "null_id": null_id(parent),
+            "null_id": null_id(parent, version=NULLS_VERSION),
             "parent_candidate_id": parent,
             "parent_rule_hash": member.get("strategy_rule_hash"),
             "selected_at_utc": member.get("selected_at_utc"),
@@ -154,6 +180,11 @@ def build_null_record(cohort: Mapping[str, Any], latest: Mapping[str, Mapping[st
         "members": twins,
         "skipped": skipped,
     }
+    if supersedes is not None:
+        # The chain, so the record itself says which arm it replaces and why the ids moved.
+        body["supersedes"] = {"version": supersedes.get("forward_cohort_nulls_version"),
+                              "record_sha256": supersedes.get("record_sha256"),
+                              "rate_rule": supersedes.get("rate_rule")}
     return {**body, "record_sha256": integrity.sha256_record(body)}
 
 
@@ -164,9 +195,9 @@ def read_null_records(root: Path | None = None) -> list[dict[str, Any]]:
         _nulls_path(root), read_code=FORWARD_COHORT_NULLS_UNREADABLE, label="forward cohort nulls",
         exc_type=ToolError,
     ):
-        if not isinstance(record, dict) or record.get("forward_cohort_nulls_version") != NULLS_VERSION:
+        if not isinstance(record, dict) or record.get("forward_cohort_nulls_version") not in NULLS_VERSIONS:
             raise ToolError(FORWARD_COHORT_NULLS_TAMPERED,
-                            f"forward cohort nulls line {lineno} is not a {NULLS_VERSION} record")
+                            f"forward cohort nulls line {lineno} is not one of {NULLS_VERSIONS}")
         stored = record.get("record_sha256")
         body = {k: v for k, v in record.items() if k != "record_sha256"}
         if not isinstance(stored, str) or integrity.sha256_record(body) != stored:
@@ -175,22 +206,46 @@ def read_null_records(root: Path | None = None) -> list[dict[str, Any]]:
     return records
 
 
+def active_null_records(root: Path | None = None) -> list[dict[str, Any]]:
+    """Each cohort's arm at its latest version — the one walked, reported and compared."""
+    active: dict[str, dict[str, Any]] = {}
+    for record in read_null_records(root):
+        cohort = str(record.get("cohort_id"))
+        held = active.get(cohort)
+        rank = NULLS_VERSIONS.index(record["forward_cohort_nulls_version"])
+        if held is None or rank >= NULLS_VERSIONS.index(held["forward_cohort_nulls_version"]):
+            active[cohort] = record
+    return list(active.values())
+
+
+def active_null_ids(root: Path | None = None) -> frozenset[str]:
+    return frozenset(str(t["null_id"]) for r in active_null_records(root) for t in r.get("members") or [])
+
+
 def null_ids(root: Path | None = None) -> frozenset[str]:
+    """Every twin id of every version — the positions book's members. A superseded twin's entries
+    stay in the book (its marks are where its walk stopped), and `load_book_at` refuses ids it
+    is not given."""
     return frozenset(str(t["null_id"]) for r in read_null_records(root) for t in r.get("members") or [])
 
 
 def freeze_nulls(root: Path | None = None, *, now: str, apply: bool = False) -> list[dict[str, Any]]:
-    """A null arm for every frozen cohort that has none yet; appended only with ``apply``. A cohort's
-    null arm is frozen once: a second freeze for the same cohort builds nothing."""
-    have = {str(r.get("cohort_id")) for r in read_null_records(root)}
+    """A current-version null arm for every frozen cohort that has none; appended only with
+    ``apply``. Frozen once per version: a cohort whose arm is v1 gets a v2 that names it
+    (``supersedes``), and a cohort that already has a v2 gets nothing."""
+    records = read_null_records(root)
+    have = {str(r.get("cohort_id")) for r in records if r.get("forward_cohort_nulls_version") == NULLS_VERSION}
+    older = {str(r.get("cohort_id")): r for r in active_null_records(root)}
     latest = {candidate_id(record): record for record in read_candidates(root)}
-    built = [build_null_record(cohort, latest, now=now) for cohort in read_cohorts(root)
+    built = [build_null_record(cohort, latest, now=now, supersedes=older.get(str(cohort.get("cohort_id"))))
+             for cohort in read_cohorts(root)
              if str(cohort.get("cohort_id")) not in have]
     if apply and built:
         path = _nulls_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
         with locked(path.with_suffix(".lock"), code=FORWARD_COHORT_LOCKED, label="forward cohort nulls"):
-            present = {str(r.get("cohort_id")) for r in read_null_records(root)}
+            present = {str(r.get("cohort_id")) for r in read_null_records(root)
+                       if r.get("forward_cohort_nulls_version") == NULLS_VERSION}
             with open(path, "a", encoding="utf-8", newline="\n") as handle:
                 for record in built:
                     if record["cohort_id"] in present:
@@ -205,7 +260,7 @@ def null_walk_plan(root: Path | None = None) -> dict[tuple[str, str], list[tuple
     """Every twin-context, grouped by ``(symbol, timeframe)`` like the cohort's plan."""
     plan: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     seen: set[str] = set()
-    for record in read_null_records(root):
+    for record in active_null_records(root):
         for twin in record.get("members") or []:
             nid = str(twin.get("null_id") or "")
             if not nid or nid in seen:
@@ -272,7 +327,8 @@ def status_line(summary: Mapping[str, Any]) -> str:
     line = ("nulls members=%s walked=%s opened=%s settled=%s" % (
         summary.get("members"), summary.get("walked"), summary.get("opened"), summary.get("settled")))
     failed = summary.get("failed") or []
-    return line + (f" failed={len(failed)}" if failed else "") + first_verdict_suffix(summary)
+    return (line + (f" failed={len(failed)}" if failed else "") + unparseable_suffix(summary)
+            + first_verdict_suffix(summary))
 
 
 # --- the report: the judge's rate over the twins, beside the members' (2026-09-24, PR 2) -----------
@@ -284,7 +340,7 @@ def null_report(root: Path | None = None) -> list[dict[str, Any]]:
     whose spec is its null spec (for the timeframe's floor and slice width). Reads only."""
     rows = read_null_outcomes(root)
     lines: list[dict[str, Any]] = []
-    for record in read_null_records(root):
+    for record in active_null_records(root):
         for twin in record.get("members") or []:
             judged = {"candidate_id": twin.get("null_id"), "created_at_utc": twin.get("selected_at_utc"),
                       "strategy_spec": twin.get("null_spec") or {}}

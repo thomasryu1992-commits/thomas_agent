@@ -176,3 +176,18 @@ def test_the_text_reports_independent_bets_per_record_set():
     assert "INDEPENDENT BETS" in text
     assert "cohort        3 lineages -> 1.2 bets (baseline 2.6; 2026-09-01..2026-09-10, 10d)" in text
     assert "most alike: x~y 0.9" in text and "twins         under two lineages with enough rows" in text
+
+
+def test_the_twins_bet_census_reads_only_the_active_arms_rows(monkeypatch):
+    """A superseded arm's rows stay in the store; counting them beside the v2 twins' would mix two
+    populations paced differently (2026-09-25)."""
+    from runtime.mvp_runtime.crypto import strategy_funnel as sf
+    seen = []
+    monkeypatch.setattr(sf, "active_null_ids", lambda root: frozenset({"null_v2_a"}))
+    monkeypatch.setattr(sf, "read_null_outcomes", lambda root: [
+        {"candidate_id": "null_a"}, {"candidate_id": "null_v2_a"}])
+    monkeypatch.setattr(sf, "independence", lambda rows: seen.append(rows) or {"lineages": 0})
+    sf._active_twin_bets(None)
+    assert seen == [[{"candidate_id": "null_v2_a"}]]
+    monkeypatch.setattr(sf, "active_null_ids", lambda root: frozenset())
+    assert sf._active_twin_bets(None) is None

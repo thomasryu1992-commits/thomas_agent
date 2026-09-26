@@ -71,10 +71,25 @@ def _stub_curl(tmp_path: Path, http_code: str) -> Path:
     return stub
 
 
+def _stub_df(tmp_path: Path, used_pct: int, mount: str = "/") -> Path:
+    """A `df -P` that reports every path on one filesystem at ``used_pct``."""
+    stub = tmp_path / "df-stub"
+    stub.write_text(
+        "#!/bin/bash\n"
+        "echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n"
+        f"echo 'overlay 100000000 {used_pct * 1000000} {(100 - used_pct) * 1000000} {used_pct}% {mount}'\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
 def _run(tmp_path: Path, table: dict[str, str | None], *, dry_run: bool = False,
-         confirm_runs: int = 2, delivers: str | None = None) -> subprocess.CompletedProcess[str]:
+         confirm_runs: int = 2, delivers: str | None = None,
+         disk_used_pct: int = 40) -> subprocess.CompletedProcess[str]:
     """`delivers` is the HTTP code a stub curl returns; None means no secret source at all, so
-    `send` records SKIPPED and never reaches the network."""
+    `send` records SKIPPED and never reaches the network. The disk check reads a stub `df` over
+    ``tmp_path`` — never the machine running the suite, whose disks are not the case under test."""
     # A fresh stand-in for the backup watch's log: without it these tests would read the host's
     # real one and start failing a day after it last ran.
     backup_log = tmp_path / "backup-watch.log"
@@ -88,6 +103,8 @@ def _run(tmp_path: Path, table: dict[str, str | None], *, dry_run: bool = False,
         BACKUP_WATCH_LOG=str(backup_log),
         THOMAS_ENV_FILE=str(tmp_path / "absent.env"),
         OPERATOR_REGISTRATION=str(tmp_path / "absent.json"),
+        DF_BIN=str(_stub_df(tmp_path, disk_used_pct)),
+        HEALTH_WATCH_DISK_PATHS=f"{tmp_path} {tmp_path}",
     )
     if delivers is not None:
         env_file = tmp_path / "fake.env"
@@ -120,6 +137,36 @@ def test_nine_healthy_containers_say_nothing(tmp_path):
     result = _run(tmp_path, _all_healthy(), dry_run=True)
     assert result.returncode == 0
     assert "정상" in result.stdout and "⚠️" not in result.stdout
+
+
+@posix_only
+def test_a_nearly_full_disk_is_reported_once_per_mount(tmp_path):
+    """Ledger archives are never deleted and every backup tars the whole history, so the disk only
+    fills — and a full disk stops every ledger append. Two watched paths on one filesystem are
+    one problem, said once."""
+    result = _run(tmp_path, _all_healthy(), dry_run=True, confirm_runs=1, disk_used_pct=95)
+    assert result.returncode == 1
+    assert result.stdout.count("사용률 95%") == 1
+    assert "디스크 / 사용률 95%" in result.stdout
+    assert "정상" not in result.stdout
+
+
+@posix_only
+def test_a_disk_below_the_threshold_and_a_full_one_with_docker_down(tmp_path):
+    """Below the threshold says nothing. A full disk is one of the ways a daemon stops answering,
+    so the check must not depend on docker — it still reports with the daemon down."""
+    quiet = _run(tmp_path, _all_healthy(), dry_run=True, confirm_runs=1, disk_used_pct=89)
+    assert quiet.returncode == 0 and "사용률" not in quiet.stdout
+
+    env = dict(os.environ, DOCKER_STUB_DAEMON_DOWN="1", DOCKER_BIN=str(_stub_docker(tmp_path, {})),
+               HEALTH_WATCH_STATE_DIR=str(tmp_path), HEALTH_WATCH_CONFIRM_RUNS="1",
+               BACKUP_WATCH_LOG=str(_fresh_backup_log(tmp_path)),
+               THOMAS_ENV_FILE=str(tmp_path / "absent.env"),
+               OPERATOR_REGISTRATION=str(tmp_path / "absent.json"),
+               DF_BIN=str(_stub_df(tmp_path, 97)), HEALTH_WATCH_DISK_PATHS=str(tmp_path))
+    down = subprocess.run([str(SCRIPT), "--dry-run"], capture_output=True, text=True, env=env, timeout=60)
+    assert down.returncode == 1
+    assert "docker" in down.stdout and "사용률 97%" in down.stdout
 
 
 @posix_only

@@ -507,6 +507,25 @@ class TaskRegistryStore:
             self._append([entry])
         return entry
 
+    def submit_within_depth(self, entry: RegistryEntry, *, limit: int) -> int:
+        """Record a QUEUED submission unless ``limit`` entries already wait; return the depth it
+        joined behind. Refuses with ``QUEUE_FULL``.
+
+        The count and the append share ONE lock acquisition. Counting under one lock and
+        appending under the next left a window in which two submitters (the operator loop and a
+        door, say) could each see ``limit - 1`` waiting and both append — the ``claim_due``
+        reason again: the decision and the write it licenses belong in the same critical section."""
+        with self._lock():
+            depth = sum(1 for queued in self._latest_locked() if queued.status == QUEUED)
+            if depth >= limit:
+                raise TaskRegistryBlocked(
+                    "QUEUE_FULL",
+                    f"{depth}건이 이미 대기 중입니다 (최대 {limit}) — "
+                    "먼저 처리되기를 기다리거나 /cancel 로 정리해 주세요.",
+                )
+            self._append([entry])
+        return depth
+
     def transition(
         self,
         entry_id: str,
@@ -608,18 +627,11 @@ def enqueue(
     an unbounded queue only converts "the operator typed a lot" into a long unattended
     burst. Refusing at the limit tells him now, when he can still decide what matters.
     """
-    depth = store.queued_count()
-    if depth >= QUEUE_DEPTH_LIMIT:
-        raise TaskRegistryBlocked(
-            "QUEUE_FULL",
-            f"{depth}건이 이미 대기 중입니다 (최대 {QUEUE_DEPTH_LIMIT}) — "
-            "먼저 처리되기를 기다리거나 /cancel 로 정리해 주세요.",
-        )
     entry = build_entry(
         request_text=request_text, origin=origin, requester_id=requester_id,
         now=now, flags=flags, request_kind=request_kind, status=QUEUED,
     )
-    store.submit(entry)
+    depth = store.submit_within_depth(entry, limit=QUEUE_DEPTH_LIMIT)
     return entry, depth + 1
 
 
