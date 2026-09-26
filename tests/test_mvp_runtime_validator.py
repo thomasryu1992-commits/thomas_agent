@@ -634,16 +634,24 @@ def test_explicit_true_still_validates_every_run():
 def test_delivered_footer_tells_the_truth_about_the_review():
     """A delivered response only exists when the merged outcome PASSed, so if the
     reviewer ran, it passed — and the footer must say so. The constant footer used to
-    claim 'not independently verified' on exactly the reviewed-and-passed runs."""
+    claim 'not independently verified' on exactly the reviewed-and-passed runs.
+
+    Read off the footer line itself: since 2026-09-25 the reply renders the analysis's
+    assumptions, and the mock's own assumption says the economics "were not independently
+    verified" — true of the idea, and nothing to do with the review."""
+
+    def footer(result):
+        return result["final_response"].splitlines()[-1]
+
     reviewed = run_task(REQUEST, independent_validation=True, now=NOW)
-    assert "independently reviewed (PASS)" in reviewed["final_response"]
-    assert "not independently verified" not in reviewed["final_response"]
+    assert "independently reviewed (PASS)" in footer(reviewed)
+    assert "not independently verified" not in footer(reviewed)
 
     plain = run_task(REQUEST, now=NOW)
-    assert "not independently verified" in plain["final_response"]
+    assert "not independently verified" in footer(plain)
 
     # Under "auto": the footer follows what actually ran, not the policy flag.
     skipped = run_task(REQUEST, independent_validation="auto", now=NOW)   # mock triage: NORMAL
-    assert "not independently verified" in skipped["final_response"]
+    assert "not independently verified" in footer(skipped)
     marked = run_task(REQUEST, independent_validation="auto", priority="HIGH", now=NOW)
-    assert "independently reviewed (PASS)" in marked["final_response"]
+    assert "independently reviewed (PASS)" in footer(marked)

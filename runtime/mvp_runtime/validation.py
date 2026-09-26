@@ -22,6 +22,7 @@ the user; PASS means the output may be delivered.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -188,13 +189,27 @@ def validate_agent_output(
         "required_sections", "PASS" if sections_ok else "REVISE", [ref], ok_note if sections_ok else fail_note,
     ))
 
-    # 4) Grounding — facts carry evidence and there is at least one evidence entry.
+    # 4) Grounding — facts carry evidence and there is at least one evidence entry, and no fact
+    # cites a source the run never issued. The first half alone was vacuous: a fact with no refs
+    # is defaulted to `model:analysis`, which is always in the evidence, so any output with one
+    # fact passed. A citation marker the prompt never numbered ([S7] with five hits) is a
+    # fabricated source, which is exactly what a grounding check exists to catch. The note says
+    # how many facts rest on a retrieved source, so the ledger carries the ratio run by run.
     facts = agent_output.get("facts") or []
     grounded = bool(agent_output.get("evidence")) and all(f.get("evidence_refs") for f in facts) and bool(facts)
-    checks.append(_check(
-        "evidence_grounding", "PASS" if grounded else "REVISE", [ref],
-        "Facts are grounded in evidence." if grounded else "Insufficient evidence/grounding for the findings.",
-    ))
+    sourced, fabricated = grounding_census(facts, agent_output.get("evidence") or [])
+    if grounded and fabricated:
+        grounding_result = "REVISE"
+        grounding_note = ("A fact cites a source this run never provided: "
+                          + ", ".join(sorted(fabricated)) + ".")
+    elif grounded:
+        grounding_result = "PASS"
+        grounding_note = (f"Facts are grounded in evidence ({sourced}/{len(facts)} cite a "
+                          "retrieved source; the rest rest on the model's own reasoning).")
+    else:
+        grounding_result = "REVISE"
+        grounding_note = "Insufficient evidence/grounding for the findings."
+    checks.append(_check("evidence_grounding", grounding_result, [ref], grounding_note))
 
     # 4b) Perspective separation (Organization Architecture §10.4) — default path only.
     #
@@ -318,3 +333,50 @@ def validate_agent_output(
     except RuntimeSchemaError as exc:
         raise ValidationError("VALIDATION_RESULT_INVALID", str(exc)) from exc
     return record
+
+
+# A citation marker as the prompt numbers it: [S3] for the third search hit, [K2] for the second
+# keyword row. Bare `S3` and a spaced `[S 3]` are the same claim.
+_CITATION_MARKER = re.compile(r"\[?\s*([SK])\s*(\d+)\s*\]?")
+_EVIDENCE_PREFIX_BY_MARKER = {"S": "search:", "K": "keyword:"}
+
+
+def grounding_census(
+    facts: Sequence[Mapping[str, Any]], evidence: Sequence[Mapping[str, Any]]
+) -> tuple[int, set[str]]:
+    """``(facts citing a retrieved source, citation markers that resolve to nothing)``.
+
+    A ref resolves when it is an evidence ref verbatim (``search:tavily:2``, ``working_memory:…``)
+    or a ``[S#]`` / ``[K#]`` marker whose number the run actually issued — the worker numbers
+    search hits and keyword rows in the prompt the same way it numbers their evidence refs.
+    ``model:analysis`` resolves but is not a retrieved source. Any other free-text ref is neither
+    counted as sourced nor called fabricated: it is not a claim about a numbered source."""
+    issued_refs = {str(e.get("ref")) for e in evidence if isinstance(e, Mapping) and e.get("ref")}
+    issued_numbers: dict[str, set[int]] = {"S": set(), "K": set()}
+    for issued in issued_refs:
+        for marker, prefix in _EVIDENCE_PREFIX_BY_MARKER.items():
+            if issued.startswith(prefix):
+                tail = issued.rsplit(":", 1)[-1]
+                if tail.isdigit():
+                    issued_numbers[marker].add(int(tail))
+    sourced = 0
+    fabricated: set[str] = set()
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        has_source = False
+        for raw in fact.get("evidence_refs") or []:
+            text = str(raw).strip()
+            if text in issued_refs:
+                has_source = has_source or text != "model:analysis"
+                continue
+            match = _CITATION_MARKER.fullmatch(text)
+            if match is None:
+                continue
+            marker, number = match.group(1), int(match.group(2))
+            if number in issued_numbers[marker]:
+                has_source = True
+            else:
+                fabricated.add(f"[{marker}{number}]")
+        sourced += int(has_source)
+    return sourced, fabricated

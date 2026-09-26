@@ -17,6 +17,7 @@ requires separate governance.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from runtime.read_only_kernel import integrity
@@ -32,6 +33,23 @@ CANDIDATE_SCOPE = "task_working_memory"
 PREFERRED_TYPE = "reusable_knowledge"
 MAX_CANDIDATES = 5
 MAX_RETRIEVED = 5
+# Retrieval by relevance, not recency (system review B5, 2026-09-25). The prompt heads these entries
+# "Relevant prior working memory", and until this they were simply the five newest candidates on any
+# topic: a dental-SaaS request was handed a pet-food run's findings. A candidate is served only when
+# it shares at least this many content terms with the request; none qualifying serves none, which
+# is the honest answer. Two, not one: a single shared generic word ("market", "시장") is not a topic.
+MIN_SHARED_TERMS = 2
+_TERM = re.compile(r"[0-9a-z\uac00-\ud7a3]+")
+# Korean particles stripped from the END of a Hangul term so "구독을" and "구독" meet. Longest first.
+_JOSA = ("으로", "에서", "에게", "까지", "부터", "을", "를", "이", "가", "은", "는", "의", "에", "로",
+         "과", "와", "도", "만")
+# The intake boilerplate and function words: shared by every request, so they say nothing about topic.
+_STOP_TERMS = frozenset({
+    "사업", "아이디어", "분석해줘", "분석", "해줘", "해주세요", "주세요", "그리고", "대한", "관련",
+    "the", "and", "for", "with", "this", "that", "are", "was", "from", "into", "not", "but",
+    "to", "of", "in", "on", "is", "be", "by", "an", "or", "as", "at", "it", "if", "we", "due",
+    "analyze", "analysis", "idea", "business",
+})
 
 # Working-memory retention (policy §12.4: working memory expires when its task ends). Each
 # candidate is stamped with an ``expires_at``; expired candidates are never returned as context
@@ -255,12 +273,28 @@ def build_learning_event(
     )
 
 
+def relevance_terms(text: Any) -> set[str]:
+    """The content terms of ``text`` for relevance matching: lower-cased words of two or more
+    characters, a trailing Korean particle stripped, boilerplate and function words dropped."""
+    terms: set[str] = set()
+    for word in _TERM.findall(str(text or "").lower()):
+        if "\uac00" <= word[-1] <= "\ud7a3":
+            for josa in _JOSA:
+                if word.endswith(josa) and len(word) - len(josa) >= 2:
+                    word = word[: -len(josa)]
+                    break
+        if len(word) >= 2 and word not in _STOP_TERMS:
+            terms.add(word)
+    return terms
+
+
 def retrieve_working_memory(
     assignment: Mapping[str, Any],
     store: Any,
     *,
     limit: int = MAX_RETRIEVED,
     now: str | None = None,
+    query: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return recent, unexpired ``task_working_memory`` candidates for context, or none.
 
@@ -270,7 +304,11 @@ def retrieve_working_memory(
     (default: current time); most-recent-first, capped at ``limit``. Expired candidates are
     never served as context even before the retention pass deletes them. Never mutates the store
     and never promotes anything. Propagates the store's fail-closed ``PersistenceError`` on a
-    corrupt store (the caller turns it into a BLOCK)."""
+    corrupt store (the caller turns it into a BLOCK).
+
+    With ``query`` (the run's request), only candidates sharing at least ``MIN_SHARED_TERMS``
+    content terms with it are served, most relevant last (ties by recency). Without it, the
+    recency order above — kept for callers that have no request to match."""
     memory_scope = assignment.get("memory_scope", {}) if isinstance(assignment, Mapping) else {}
     readable = set(memory_scope.get("readable_scopes", []))
     prohibited = set(memory_scope.get("prohibited_scopes", []))
@@ -288,9 +326,18 @@ def retrieve_working_memory(
         and e.get("status") == CANDIDATE_STATUS
         and not is_expired(e, stamp)
     ]
+    if limit <= 0:
+        return []
+    if query is not None:
+        wanted = relevance_terms(query)
+        scored = [(len(wanted & relevance_terms(e.get("content"))), e) for e in selected]
+        relevant = [(score, e) for score, e in scored if score >= MIN_SHARED_TERMS]
+        relevant.sort(key=lambda pair: (pair[0], str(pair[1].get("created_at", "")),
+                                        str(pair[1].get("candidate_id", ""))))
+        return [e for _score, e in relevant[-limit:]]
     # Deterministic recency order; take the most recent `limit`.
     selected.sort(key=lambda e: (str(e.get("created_at", "")), str(e.get("candidate_id", ""))))
-    return selected[-limit:] if limit > 0 else []
+    return selected[-limit:]
 
 
 def retrieve_validated_memory(
