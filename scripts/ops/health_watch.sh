@@ -21,6 +21,12 @@
 #                           so a rise is the restart policy acting on a process that died
 #   OOM killed              .State.OOMKilled — this host runs with ~1.5 GiB available and three
 #                           services have mem_limits
+#   disk nearly full        a filesystem holding the runtime's state or the backups is at or past
+#                           DISK_MAX_USED_PCT. The ledger archives are never deleted and every daily
+#                           backup tars the whole history, so the disk only fills; when it is full
+#                           every ledger append fails closed — the runtime stops, correctly, and the
+#                           first sign was the stop. Checked per mount, so two paths on one disk say
+#                           it once
 #   backup watch quiet      backup_watch.sh has not written its log for over a day. The two watches
 #                           are each other's only observer: what notices that a watch has stopped
 #                           cannot be that watch. This one runs every ten minutes, so it is the
@@ -62,6 +68,9 @@ CURL="${CURL_BIN:-curl}"
 CONFIRM_RUNS="${HEALTH_WATCH_CONFIRM_RUNS:-2}"
 BACKUP_WATCH_LOG="${BACKUP_WATCH_LOG:-/root/backups/governance-state/watch.log}"
 BACKUP_WATCH_MAX_AGE_H=26   # backup_watch.sh runs daily at 08:00Z
+DF="${DF_BIN:-df}"
+DISK_PATHS="${HEALTH_WATCH_DISK_PATHS:-/root/thomas_agent/.runtime_governance_state /root/backups}"
+DISK_MAX_USED_PCT="${HEALTH_WATCH_DISK_MAX_USED_PCT:-90}"
 MISS_TOLERANCE=2          # clean runs in a row before a pending problem is forgotten
 STUCK_START_MINUTES=15
 SILENCE_MAX_HOURS=6
@@ -181,6 +190,24 @@ for name in "${SERVICES[@]+"${SERVICES[@]}"}"; do
     *)
       note "$name:health-$health" "$name — 헬스 상태 $health" ;;
   esac
+done
+
+# The disks the state and the backups live on. Like the log check below it needs no docker, so it
+# runs when the daemon cannot be reached — a full disk is one of the ways a daemon stops answering.
+# The key carries the mount with `/` spelled `_`: keys go through `sed "s/^$key=//"`, where a slash
+# would end the expression.
+declare -A DISK_SEEN
+for disk_path in $DISK_PATHS; do
+  [ -e "$disk_path" ] || continue
+  # POSIX output: filesystem, 1024-blocks, used, available, capacity, mounted-on.
+  read -r _fs _blocks _used disk_avail disk_pcent disk_mount < <(timeout 10 "$DF" -P "$disk_path" 2>/dev/null | tail -1)
+  [ -n "${disk_mount:-}" ] || continue
+  [ -n "${DISK_SEEN[$disk_mount]:-}" ] && continue
+  DISK_SEEN["$disk_mount"]=1
+  disk_used=$(number "${disk_pcent%\%}")
+  if [ "$disk_used" -ge "$DISK_MAX_USED_PCT" ]; then
+    note "disk:${disk_mount//\//_}" "디스크 $disk_mount 사용률 ${disk_used}% (남은 공간 $(( $(number "$disk_avail") / 1024 )) MiB) — 가득 차면 원장 쓰기가 전부 멈춥니다 (du -sh /root/backups/* 로 정리 대상 확인)"
+  fi
 done
 
 # The other watch. These two scripts are each other's only observer: cron drops a line, a script is

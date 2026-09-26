@@ -159,12 +159,15 @@ Development and deployment are on one **Linux Docker host**. Run from the repo r
 
 ```
 .venv/bin/python -m pytest tests/ -q
-.venv/bin/python scripts/run_repository_release_gate.py --full --check-only   # what CI runs = real acceptance
+.venv/bin/python scripts/run_repository_release_gate.py --full --check-only   # governance validators; runs no pytest
 docker exec thomas-scheduler python -m runtime.mvp_runtime.cli "이 사업 아이디어를 분석해줘: ..."
 ```
 
 CI is **Python 3.12**; the host venv is 3.14 and only the container has 3.12, so a green local
-`pytest` is a fast signal, not CI parity — the release gate is the real acceptance check. The
+`pytest` is a fast signal, not CI parity. The real acceptance check is the five required checks on
+the PR, pytest on 3.12 among them. The release gate runs the governance validators only (the Active
+Architecture Gate checks run its active scope on every PR, the full gate on gate/CI changes and
+nightly) and no tests, so a green gate says nothing about the suite. The
 CLI writes the ledger, so it goes through the container for the reason in the root-run rule
 above; `pytest` cannot, because the image carries no `tests/` and no pytest.
 
@@ -186,7 +189,7 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 | Question | Owner |
 |---|---|
 | Design direction; expansion criteria + guardrails (§12–16) | `docs/THOMAS_AUTONOMOUS_ORGANIZATION_ARCHITECTURE.md` |
-| Permission / authority / effect model (P0–P6, ALLOW…BLOCK) | `governance/GOVERNANCE_POLICY.yaml` (`runtime_effect.mode: REVIEW_ONLY`) |
+| Permission / authority / effect model (P0–P6, ALLOW…BLOCK) | `governance/GOVERNANCE_POLICY.yaml` (`runtime_effect.mode: REVIEW_ONLY` — what the policy auto-grants, i.e. nothing; **not** whether live trading is on, which is `live_readiness` below) |
 | Source ownership, repo boundaries, canonical Gate entrypoints | `docs/ACTIVE_ARCHITECTURE.md` |
 | Contracts + their closed schemas | `docs/runtime-contracts/`, `schemas/` |
 | Roles (routable: `general.specialist` P3, `validation.independent` P2) | `03_ROLE_CONTRACTS/ROLE_REGISTRY.yaml` |
