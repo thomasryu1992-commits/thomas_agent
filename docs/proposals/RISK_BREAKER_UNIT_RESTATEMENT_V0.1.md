@@ -1,7 +1,7 @@
 # 제안: 손실 브레이커 4개 — 사다리의 의미를 고정하고 단위를 갱신한다 (DRAFT v0.1)
 
-**상태:** DRAFT 2026-08-06 — 결정 (a)–(d) 모두 Thomas 결정 대기. **값은 하나도 바뀌지 않았다**(`crypto/guards.py`).
-날짜는 부모 절의 측정일이다.
+**상태:** PARTIALLY DECIDED 2026-09-26 — (c) 순서 결정: 슬리피지 실측이 먼저다. (a)(b)(d)는 실측 뒤에 정하고, 그때까지
+현재 값을 유지하며 LIVE_AUTONOMOUS로 올리지 않는다(Thomas 2026-09-26, 시스템 점검 D5). **값은 하나도 바뀌지 않았다**.
 **부모:** `docs/REMAINING_WORK.md` §G1 — 이 네 상수를 `INHERITED`(이전 시스템 `config/settings.py`에서
 넘어옴, 이 런타임에서 결정된 적 없음)로 색인하고, 2026-08-06에 자체 기록으로 측정한 절.
 **대상:** `runtime/mvp_runtime/crypto/guards.py` — `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`,
@@ -129,3 +129,9 @@ import statistics; print('stop unit:', abs(statistics.median(stops)))
 - **라이브를 켜거나 끄지 않는다.** 진입 보류 여부는 별개 결정이며 이 문서의 범위가 아니다.
 - **환산율이 옳다고 주장하지 않는다.** 90건 한 런타임 한 베뉴에서 나온 값이고, (c)가 그것이 왜
   아직 움직일 수 있는지 적는다.
+
+## 결정 (Thomas 2026-09-26)
+
+- **(c) 순서:** 슬리피지 실측(시스템 점검 C2)을 먼저 한다. 환산율 1.3576R이 검증되지 않은 3 bps 가정 위에 있기
+  때문이다. (a)(b)(d)는 그 결과로 다시 계산해서 정한다.
+- 그때까지 `crypto/guards.py`의 네 값은 그대로 두고, 실행 단계를 LIVE_AUTONOMOUS로 올리지 않는다.
