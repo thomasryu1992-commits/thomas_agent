@@ -152,10 +152,57 @@ def test_search_tool_error_degrades_the_run_not_blocks():
 
 
 @requires_local_core
-def test_revise_validation_withholds_delivery():
+def test_a_quality_revise_is_delivered_unverified_not_withheld():
+    """Review D2 (Thomas 2026-09-26): a business analysis that REVISEs for a quality reason (here the
+    calibration check — no uncertainty, no assumptions) is delivered under a banner that says it is
+    unverified and why, instead of being withheld with "rewrite your request". It concludes COMPLETED
+    on the chain, marked DELIVERED_UNVERIFIED, with a `delivery` row for `/result`."""
     r = run_task(REQUEST, provider=_OverconfidentProvider(), now=NOW)
+    assert r["status"] == "COMPLETED" and r["delivered"] is True
+    assert r["records"]["validation_result"]["validation"]["result"] == "REVISE"   # the verdict is unchanged
+    assert any("calibration" in reason for reason in r["unverified"])
+    assert r["final_response"].startswith("> **미검증 전달**")
+    assert "calibration" in r["final_response"].split("\n# ", 1)[0]               # named in the banner
+    assert r["final_response"].rstrip().endswith("delivered UNVERIFIED — it did not pass validation (see the banner)._")
+    assert "automatically validated" not in r["final_response"]
+    assert r["records"]["delivery"] == {
+        "verification": "DELIVERED_UNVERIFIED", "validation_outcome": "REVISE",
+        "reasons": r["unverified"], "reviewer_outage": None,
+    }
+    final = r["records"]["audit_trail"][-1]["event"]
+    assert final["reason_codes"] == ["FINAL_COMPLETED", "DELIVERED_UNVERIFIED"]
+    assert final["outcome"] == "RECORDED"
+
+
+class _FabricatingProvider(MockProvider):
+    """Cites a source the run never issued — the one quality REVISE that is a trust problem."""
+
+    def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+        r = super().generate(prompt, max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
+        r.analysis = {**r.analysis, "facts": [
+            {"statement": "The market grows 40% a year.", "evidence_refs": ["[S99]"]}]}
+        return r
+
+
+@requires_local_core
+def test_a_fabricated_citation_is_still_withheld():
+    """D2's exception: an analysis citing [S99] when the run issued three sources is not delivered
+    under any banner — a made-up source is a trust problem, not a quality one."""
+    r = run_task(REQUEST, provider=_FabricatingProvider(), now=NOW)
     assert r["status"] == "BLOCKED" and r["delivered"] is False
     assert r["block"]["reason_code"] == "VALIDATION_REVISE"
+    assert "delivery" not in r["records"] and "unverified" not in r
+
+
+@requires_local_core
+def test_an_unverified_analysis_teaches_the_working_memory_nothing(tmp_path):
+    """Delivered is not validated: working memory accumulates from PASS runs only."""
+    from runtime.mvp_runtime.working_memory import WorkingMemoryStore
+
+    wm = WorkingMemoryStore(tmp_path / "wm")
+    r = run_task(REQUEST, provider=_OverconfidentProvider(), working_memory=wm, now=NOW)
+    assert r["delivered"] is True and r["unverified"]
+    assert wm.read_all() == []
 
 
 @requires_local_core
@@ -444,13 +491,13 @@ def test_write_is_planned_audited_and_reported(workspace_repo):
 
 @requires_local_core
 def test_a_rejected_analysis_never_leaves_an_artifact(workspace_repo):
-    """The safety property that matters most: validation must gate the write, so a run
-    that is not delivered also does not write."""
+    """The safety property that matters most: validation must gate the write, so a run that did not
+    PASS does not write — including one delivered unverified under review D2 (Thomas 2026-09-26:
+    an unverified analysis is not written by `--write-output`)."""
     r = run_task(REQUEST, provider=_OverconfidentProvider(), now=NOW,
                  write_path="reports/rejected.md", writer=_authorized_writer())
-    assert r["status"] == "BLOCKED"
-    assert r["delivered"] is False
-    assert not (workspace_repo / "workspace/reports/rejected.md").exists()
+    assert r["delivered"] is True and r["unverified"]          # read by Thomas, under the banner…
+    assert not (workspace_repo / "workspace/reports/rejected.md").exists()   # …never written
     assert "write" not in r
 
 
@@ -494,20 +541,100 @@ def test_a_revision_that_fails_mid_way_still_records_what_it_produced(tmp_path, 
     from runtime.mvp_runtime.errors import WorkerBlocked
 
     def _boom(*args, **kwargs):
-        raise WorkerBlocked("PROVIDER_ERROR", "re-verify exploded")
+        # Not a provider outage (review D2 delivers past those): a reviewer failure that still blocks.
+        raise WorkerBlocked("TOKEN_BUDGET_EXCEEDED", "re-verify exploded")
 
     monkeypatch.setattr(pipeline_mod, "run_validation_worker", _boom)
     result = run_task(REQUEST, provider=_ReviseThenPassSpecialist(),
                       independent_validation=True, revise=True, now=NOW)
 
     assert result["status"] == "BLOCKED"
-    assert result["block"]["reason_code"] == "PROVIDER_ERROR"
+    assert result["block"]["reason_code"] == "TOKEN_BUDGET_EXCEEDED"
     # The regenerated attempt is on the trail even though the run was withheld...
     assert "agent_output" in result["records"]
     assert "validation_result" in result["records"]
     # ...and `revision` is absent, because the failure happened before that line — the same
     # place the original inline block would have stopped.
     assert "revision" not in result["records"]
+
+# --- review D2: who may be delivered unverified, as plain rules ---------------------------------
+
+def _plan(role="general.specialist", risk="GREEN"):
+    return {"task": {"classification": {"risk_level": risk}}, "role_assignment": {"role_id": role}}
+
+
+_REVISE = {"validation": {"result": "REVISE", "checks": [
+    {"check_id": "required_sections", "result": "PASS", "notes": "ok"},
+    {"check_id": "calibration", "result": "REVISE", "notes": "over-confident"}]}}
+_OUTAGE = {"reason_code": "PROVIDER_ERROR", "message": "validator provider failed"}
+
+
+def test_only_the_business_analyst_on_a_non_mandated_task_is_delivered_unverified():
+    from runtime.mvp_runtime.pipeline import unverified_reasons
+
+    output = {"facts": [], "evidence": []}
+    assert unverified_reasons(_plan(), output, _REVISE, None, outcome="REVISE", reviewer_outage=None) == [
+        "자동 검사 calibration: over-confident"]
+    # Every other lane keeps withholding a REVISE.
+    for role in ("content.general", "research.general", "translation.general"):
+        assert unverified_reasons(_plan(role=role), output, _REVISE, None,
+                                  outcome="REVISE", reviewer_outage=None) is None
+    # A task whose risk level mandated the review is not delivered past a missing review.
+    for risk in ("ORANGE", "RED"):
+        assert unverified_reasons(_plan(risk=risk), output, _REVISE, None,
+                                  outcome="REVISE", reviewer_outage=None) is None
+    # A BLOCK is never delivered, whatever the lane.
+    assert unverified_reasons(_plan(), output, _REVISE, None, outcome="BLOCK", reviewer_outage=None) is None
+    # A PASS with its review is simply verified; a PASS whose review never happened is not.
+    assert unverified_reasons(_plan(), output, _REVISE, None, outcome="PASS", reviewer_outage=None) is None
+    outage = unverified_reasons(_plan(), output, _REVISE, None, outcome="PASS", reviewer_outage=_OUTAGE)
+    assert outage and "PROVIDER_ERROR" in outage[0]
+
+
+def test_a_fabricated_citation_is_never_delivered_under_the_banner():
+    from runtime.mvp_runtime.pipeline import unverified_reasons
+
+    output = {"facts": [{"statement": "x", "evidence_refs": ["[S7]"]}],
+              "evidence": [{"ref": "search:tavily:1"}]}
+    assert unverified_reasons(_plan(), output, _REVISE, None, outcome="REVISE", reviewer_outage=None) is None
+
+
+def test_a_reviewer_outage_blocks_where_the_review_was_mandated_or_the_failure_is_not_an_outage(monkeypatch):
+    import runtime.mvp_runtime.pipeline as pipeline_mod
+    from runtime.mvp_runtime.errors import WorkerBlocked
+
+    def _fail(code):
+        def _raise(*args, **kwargs):
+            raise WorkerBlocked(code, "reviewer failed")
+        return _raise
+
+    plan = {**_plan(), "validator_assignment": {}}
+    monkeypatch.setattr(pipeline_mod, "run_validation_worker", _fail("PROVIDER_ERROR"))
+    assert pipeline_mod._run_reviewer(plan, {}, validator_provider=None, now=NOW, repo_root=None) == (
+        None, None, {"reason_code": "PROVIDER_ERROR", "message": "reviewer failed"})
+    with pytest.raises(WorkerBlocked):
+        pipeline_mod._run_reviewer({**plan, **_plan(risk="ORANGE")}, {},
+                                   validator_provider=None, now=NOW, repo_root=None)
+    monkeypatch.setattr(pipeline_mod, "run_validation_worker", _fail("NO_MODEL_BUDGET"))
+    with pytest.raises(WorkerBlocked):
+        pipeline_mod._run_reviewer(plan, {}, validator_provider=None, now=NOW, repo_root=None)
+
+
+@requires_local_core
+def test_result_re_renders_the_same_banner_from_the_ledger():
+    """`/result` re-renders from the ledger; an unverified run must not come back looking verified."""
+    from types import SimpleNamespace
+
+    from runtime.mvp_runtime.registry_console import render_result
+
+    r = run_task(REQUEST, provider=_OverconfidentProvider(), now=NOW)
+
+    class _Ledger:
+        def iter_records(self, trace_id=None):
+            return iter([{"kind": kind, "trace_id": "t", "record": r["records"][kind]}
+                         for kind in ("agent_output", "tool_use", "delivery")])
+    assert render_result(SimpleNamespace(trace_id="t"), _Ledger()) == r["final_response"]
+
 
 # --- review D1: a failover is recorded and named where it is read -------------------------------
 

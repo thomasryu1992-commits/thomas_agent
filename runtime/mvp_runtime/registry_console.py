@@ -226,6 +226,10 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
         return None
     tool_use = kinds.get("tool_use")
     hits = tool_use.get("hits") if isinstance(tool_use, dict) else None
+    # Review D2: a run delivered unverified carries its banner here too, from its `delivery` row.
+    delivery = kinds.get("delivery")
+    unverified = (delivery.get("reasons") if isinstance(delivery, dict)
+                  and delivery.get("verification") == "DELIVERED_UNVERIFIED" else None)
     invocation = kinds.get("invocation")
     failovers = invocation.get("failovers") if isinstance(invocation, dict) else None
     try:
@@ -233,6 +237,7 @@ def _rerender_from_ledger(entry: RegistryEntry, ledger: Any) -> str | None:
             agent_output,
             independently_validated=isinstance(kinds.get("independent_validation_result"), dict),
             search_hits=hits if isinstance(hits, list) else None,
+            unverified=[str(r) for r in unverified] if isinstance(unverified, list) else None,
             failovers=failovers if isinstance(failovers, list) else None,
         )
     except (KeyError, TypeError, ValueError):

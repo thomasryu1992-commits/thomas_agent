@@ -92,6 +92,9 @@ _RECORD_KINDS = (
     "agent_output", "invocation", "validation_result",
     "independent_validation_result", "validator_invocation", "write_use",
     "revision",
+    # Review D2 (2026-09-26): a run delivered UNVERIFIED rather than withheld, and why. Written only
+    # for such a run, so `/result` — which re-renders from these rows — shows the same banner.
+    "delivery",
     "budget_usage",
     "trial_report",
     "crypto_cycle",

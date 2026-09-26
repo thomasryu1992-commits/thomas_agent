@@ -51,7 +51,7 @@ from .store import LedgerStore
 from . import naver_research
 from .tools import MockSearchTool, SearchTool, degraded_search_record, run_search
 from .triage import MockTriageProvider, VERDICT_HIGH, run_triage
-from .validation import validate_agent_output
+from .validation import INDEPENDENT_RISK_LEVELS, grounding_census, validate_agent_output
 from .validator import MockValidatorProvider, run_validation_worker, stricter_result
 from .planner import DEFAULT_SPECIALIST_ROLE_ID, role_output_spec
 from .worker import (
@@ -63,6 +63,87 @@ from .workspace import DryRunWriter, WorkspaceWriter, run_write
 # R7.1: the selective-validation policy value for ``independent_validation`` — validate
 # only when the task's classification requires it (see independent_validation_required).
 AUTO_VALIDATION = "auto"
+
+# --- review D2 (Thomas 2026-09-26): delivered unverified, not withheld ---------------------------
+#
+# Until 2026-09-26 only a PASS delivered. A REVISE for a quality reason (a missing section, thin
+# grounding, an unstated risk) withheld the whole analysis and told Thomas to rewrite his request,
+# though the defect was the model's; and a reviewer whose PROVIDER failed blocked an analysis that
+# had already passed every automatic check. Neither is a safety reason, and an analysis moves no
+# money. So in the business-analysis lane those runs are now delivered under a banner that says they
+# are unverified and why.
+#
+# What still withholds, unchanged: every BLOCK (lineage, permission or secret — and the reviewer's
+# own BLOCK or unparseable verdict), a citation of a source the run never issued (a fabricated
+# [S#]/[K#], `validation.grounding_census`), every other lane, and a reviewer outage on a task whose
+# risk level made the review a governance mandate (`INDEPENDENT_RISK_LEVELS`). Nothing PASS-only
+# moves: the controlled write, working-memory accumulation and programization counting still require
+# a PASS, so an unverified analysis leaves no artifact and teaches the memory nothing.
+UNVERIFIED_DELIVERY_ROLE_ID = DEFAULT_SPECIALIST_ROLE_ID
+DELIVERED_UNVERIFIED = "DELIVERED_UNVERIFIED"
+# Reviewer failures that mean "no review happened" (the provider did not answer, or answered past
+# its output cap) rather than "governance refused one" (no budget, not independent, not bound).
+_REVIEWER_OUTAGE_CODES = frozenset({"PROVIDER_ERROR", "RESPONSE_TRUNCATED"})
+
+
+def _unverified_delivery_eligible(plan: Mapping[str, Any]) -> bool:
+    """The lane and risk half of D2: the business analyst, on a task no governance rule made the
+    review mandatory for."""
+    task = plan.get("task") or {}
+    return ((plan.get("role_assignment") or {}).get("role_id") == UNVERIFIED_DELIVERY_ROLE_ID
+            and (task.get("classification") or {}).get("risk_level") not in INDEPENDENT_RISK_LEVELS)
+
+
+def _run_reviewer(
+    plan: Mapping[str, Any], agent_output: Mapping[str, Any], *,
+    validator_provider: Provider, now: str, repo_root: Path | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, str] | None]:
+    """The independent review, or — when its provider failed and D2 lets the run through — the
+    outage instead. ``(result, invocation, outage)``; every other reviewer failure raises as before."""
+    try:
+        result, invocation = run_validation_worker(
+            plan["task"], plan["validator_assignment"], agent_output,
+            provider=validator_provider, created_at=now, repo_root=repo_root,
+        )
+    except WorkerBlocked as exc:
+        if exc.reason_code in _REVIEWER_OUTAGE_CODES and _unverified_delivery_eligible(plan):
+            return None, None, {"reason_code": exc.reason_code, "message": str(exc.reason)}
+        raise
+    return result, invocation, None
+
+
+def unverified_reasons(
+    plan: Mapping[str, Any],
+    agent_output: Mapping[str, Any],
+    validation: Mapping[str, Any],
+    independent_validation_result: Mapping[str, Any] | None,
+    *,
+    outcome: str,
+    reviewer_outage: Mapping[str, str] | None,
+) -> list[str] | None:
+    """Why this run is delivered unverified — or ``None`` when it is either verified (PASS with its
+    review, if one was planned) or must stay withheld. See the D2 note above for the rules."""
+    if not _unverified_delivery_eligible(plan):
+        return None
+    reasons: list[str] = []
+    if outcome == "REVISE":
+        _, fabricated = grounding_census(agent_output.get("facts") or [], agent_output.get("evidence") or [])
+        if fabricated:
+            return None
+        for check in validation["validation"].get("checks") or []:
+            if isinstance(check, Mapping) and check.get("result") not in (None, "PASS"):
+                reasons.append(f"자동 검사 {check.get('check_id')}: {check.get('notes')}")
+        if independent_validation_result is not None and \
+                independent_validation_result["validation"]["result"] == "REVISE":
+            reasons += [f"독립 검토: {r}" for r in
+                        independent_validation_result["validation"].get("result_reasons") or []]
+        reasons = reasons or ["검증 결과 REVISE"]
+    elif outcome != "PASS":
+        return None
+    if reviewer_outage is not None:
+        reasons.append(f"독립 검토가 완료되지 않았습니다 — {reviewer_outage['reason_code']}: "
+                       f"{reviewer_outage['message']}")
+    return reasons or None
 
 # The run's steps, named once. Two consumers read these and they must not drift: the
 # programization observer records WHICH steps ran (repetition detection keys on the list), and
@@ -224,6 +305,7 @@ def render_response(
     *,
     independently_validated: bool = False,
     search_hits: list[dict[str, Any]] | None = None,
+    unverified: list[str] | None = None,
     failovers: list[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render a human-readable final response from a validated Agent Output.
@@ -246,12 +328,20 @@ def render_response(
     numbers line up by construction. Mock hits render too — an honest display of what the
     evidence actually was.
 
+    ``unverified`` (review D2) puts a banner at the TOP naming why the analysis did not pass — the
+    first thing read, not a footnote — and a footer that does not claim a validation it failed.
+
     ``failovers`` (the specialist invocation's, review D1) adds one line above the footer naming
     each chain member the answer failed over past and why. It is the condition Thomas attached to
     wider failover: a member whose key is wrong must not be hidden by the member that answered.
-    Absent or empty, the reply is byte-identical to before."""
+    Either absent or empty, the reply is byte-identical to before."""
     rso = agent_output.get("role_specific_output", {})
-    lines = [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
+    lines = []
+    if unverified:
+        lines += ["> **미검증 전달** — 이 분석은 검증을 통과하지 못했지만 보류하지 않고 전달합니다. "
+                  "판단 근거로 쓰기 전에 아래 사유를 확인하세요.",
+                  *[f"> - {reason}" for reason in unverified], ""]
+    lines += [f"# {agent_output.get('goal', 'Analysis')}", "", agent_output.get("summary", ""), ""]
     # The Role's deliverable IS the reply, rendered FIRST because it is what was asked for; the
     # analysis sections that follow are the review of it. Measured twice: a content.general run
     # wrote a complete draft into the ledger while the delivered reply showed only the
@@ -321,11 +411,14 @@ def render_response(
         lines.append("_Failover: " + "; ".join(
             f"{f.get('member', '?')} skipped ({f.get('kind', '?')}: {f.get('reason', '')})"
             for f in moved_past) + "._")
-    lines.append(
-        "_Read-only analysis; automatically validated and independently reviewed (PASS)._"
-        if independently_validated else
-        "_Read-only analysis; automatically validated, not independently verified._"
-    )
+    if unverified:
+        lines.append("_Read-only analysis; delivered UNVERIFIED — it did not pass validation (see the banner)._")
+    else:
+        lines.append(
+            "_Read-only analysis; automatically validated and independently reviewed (PASS)._"
+            if independently_validated else
+            "_Read-only analysis; automatically validated, not independently verified._"
+        )
     return "\n".join(lines).strip()
 
 
@@ -754,6 +847,7 @@ class _RevisionAttempt:
     outcome: str
     revision: dict[str, Any]
     spend: _RevisionSpend
+    reviewer_outage: dict[str, str] | None
     correction: dict[str, Any] | None
     correction_event: dict[str, Any] | None
     correction_error: str | None
@@ -818,14 +912,14 @@ def _revise_once(
         required_role_output_keys=role_output_keys)
     records["validation_result"] = validation
 
-    independent_validation_result = validator_invocation = None
+    independent_validation_result = validator_invocation = reviewer_outage = None
     if validate_run and validation["validation"]["result"] == "PASS":
-        independent_validation_result, validator_invocation = run_validation_worker(
-            plan["task"], plan["validator_assignment"], agent_output,
-            provider=validator_provider, created_at=now, repo_root=repo_root,
+        independent_validation_result, validator_invocation, reviewer_outage = _run_reviewer(
+            plan, agent_output, validator_provider=validator_provider, now=now, repo_root=repo_root,
         )
-        records["independent_validation_result"] = independent_validation_result
-        records["validator_invocation"] = validator_invocation
+        if independent_validation_result is not None:
+            records["independent_validation_result"] = independent_validation_result
+            records["validator_invocation"] = validator_invocation
 
     outcome = validation["validation"]["result"]
     if independent_validation_result is not None:
@@ -847,7 +941,7 @@ def _revise_once(
         agent_output=agent_output, invocation=invocation, validation=validation,
         independent_validation_result=independent_validation_result,
         validator_invocation=validator_invocation, outcome=outcome,
-        revision=revision, spend=spend,
+        revision=revision, spend=spend, reviewer_outage=reviewer_outage,
         correction=correction, correction_event=correction_event,
         correction_error=correction_error,
     )
@@ -1112,15 +1206,15 @@ def run_task(
         # The candidate-role trial deliberately keeps the wider `!= "BLOCK"` condition:
         # there the review is evidence for a later promotion decision, not a delivery gate,
         # and a trial's `independent_result` is worth more than the tokens it costs.
-        independent_validation_result = validator_invocation = None
+        independent_validation_result = validator_invocation = reviewer_outage = None
         if validate_run and validation["validation"]["result"] == "PASS":
             _progress(on_progress, STEP_INDEPENDENT_VALIDATION)
-            independent_validation_result, validator_invocation = run_validation_worker(
-                plan["task"], plan["validator_assignment"], agent_output,
-                provider=validator_provider, created_at=now, repo_root=repo_root,
+            independent_validation_result, validator_invocation, reviewer_outage = _run_reviewer(
+                plan, agent_output, validator_provider=validator_provider, now=now, repo_root=repo_root,
             )
-            records["independent_validation_result"] = independent_validation_result
-            records["validator_invocation"] = validator_invocation
+            if independent_validation_result is not None:
+                records["independent_validation_result"] = independent_validation_result
+                records["validator_invocation"] = validator_invocation
 
         outcome = validation["validation"]["result"]
         if independent_validation_result is not None:
@@ -1159,6 +1253,7 @@ def run_task(
             outcome = attempt.outcome
             revision = attempt.revision
             revision_spend = attempt.spend
+            reviewer_outage = attempt.reviewer_outage
             if attempt.correction_error is not None:
                 result.setdefault("learning_error", attempt.correction_error)
             if attempt.correction is not None:
@@ -1213,6 +1308,20 @@ def run_task(
             records["programization_observation"] = observation
             records["programization_pattern"] = programization_pattern
 
+        # Review D2: deliver unverified rather than withhold, when the rules allow. Recorded as its
+        # own row so `/result`, which re-renders from the ledger, shows the same banner.
+        unverified = unverified_reasons(
+            plan, agent_output, validation, independent_validation_result,
+            outcome=outcome, reviewer_outage=reviewer_outage,
+        )
+        if unverified:
+            records["delivery"] = {
+                "verification": DELIVERED_UNVERIFIED,
+                "validation_outcome": outcome,
+                "reasons": list(unverified),
+                "reviewer_outage": dict(reviewer_outage) if reviewer_outage else None,
+            }
+
         records["budget_usage"] = _record_spend(
             plan["task"].get("execution_budget", {}).get("limits", {}),
             invocation=invocation,
@@ -1239,6 +1348,7 @@ def run_task(
             programization_pattern=programization_pattern,
             programization_triggered=programization_triggered,
             revision=revision,
+            unverified=unverified, reviewer_outage=reviewer_outage,
             genesis_previous_hash=genesis, repo_root=repo_root,
         )
     except MvpRuntimeError as exc:
@@ -1247,7 +1357,7 @@ def run_task(
             now=now, genesis=genesis, store=store, repo_root=repo_root,
         )
 
-    if outcome == "PASS":
+    if outcome == "PASS" or unverified:
         # Fail-closed on persistence: a completed run with no durable audit is not delivered.
         if store is not None:
             try:
@@ -1259,8 +1369,9 @@ def run_task(
         # Accumulate this run's candidates into working memory for later runs. Best-effort:
         # working memory is enrichment, not the audit of record, so a write failure is noted
         # but does not withhold a delivered, durably-audited result. M5a's correction
-        # candidate (if the revision loop minted one) rides the same append.
-        stored, wm_error, learn_error = _persist_learning(
+        # candidate (if the revision loop minted one) rides the same append. PASS-only: an
+        # unverified analysis (review D2) is delivered but teaches the working memory nothing.
+        stored, wm_error, learn_error = (False, None, None) if unverified else _persist_learning(
             working_memory=working_memory, store=store, agent_output=agent_output,
             learning_candidates=learning_candidates, learning_events=learning_events,
         )
@@ -1272,10 +1383,13 @@ def run_task(
             result["learning_candidates"] = learning_candidates
         result["status"] = "COMPLETED"
         result["delivered"] = True
+        if unverified:
+            result["unverified"] = list(unverified)
         result["final_response"] = render_response(
             agent_output,
             independently_validated=independent_validation_result is not None,
             search_hits=search_hits,
+            unverified=unverified,
             failovers=invocation.get("failovers"),
         )
     else:

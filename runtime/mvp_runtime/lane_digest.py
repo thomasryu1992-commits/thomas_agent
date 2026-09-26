@@ -6,10 +6,11 @@ read, and the analysis lane's outcomes lived in the ledger unread. This folds th
 records into one row per lane (the role the run was assigned):
 
 * **runs** — traces with a ``task`` record received in the window;
-* **delivered / revise / block** — the run's final outcome: the stricter of its ``validation_result``
-  and, when the independent reviewer ran, its ``independent_validation_result`` (after a revision,
-  both are the re-verified ones — the pipeline records one of each per run). A run with neither
-  stopped before validation and counts as **stopped**;
+* **delivered / unverified / revise / block** — the run's final outcome: the stricter of its
+  ``validation_result`` and, when the independent reviewer ran, its ``independent_validation_result``
+  (after a revision, both are the re-verified ones — the pipeline records one of each per run). A run
+  with a ``delivery`` row was delivered UNVERIFIED instead of withheld (review D2) and counts there,
+  not as delivered or revise. A run with neither result stopped before validation — **stopped**;
 * **revised** — runs that took the one governed regeneration (a ``revision`` record);
 * **non-PASS checks** — which automatic checks withheld the analyses, by check id;
 * **models** — which model answered the specialist call, by ``model_id``;
@@ -31,7 +32,7 @@ from typing import Any, Iterable, Mapping
 # The record kinds a run's outcome is read from. Everything else in records.jsonl — the crypto
 # lane writes most of it — is skipped by the prescreen before it is parsed.
 DIGEST_KINDS = ("task", "role_assignment", "validation_result", "independent_validation_result",
-                "invocation", "revision")
+                "invocation", "revision", "delivery")
 _SEVERITY = {"PASS": 0, "REVISE": 1, "BLOCK": 2}
 
 
@@ -67,7 +68,7 @@ def fold_runs(rows: Iterable[Mapping[str, Any]], *, since: str, until: str | Non
             continue
         lane = str((kinds.get("role_assignment") or {}).get("role_id") or "unassigned")
         digest = lanes.setdefault(lane, {
-            "runs": 0, "delivered": 0, "revise": 0, "block": 0, "stopped": 0, "revised": 0,
+            "runs": 0, "delivered": 0, "unverified": 0, "revise": 0, "block": 0, "stopped": 0, "revised": 0,
             "non_pass_checks": Counter(), "models": Counter(), "failovers": Counter(),
         })
         digest["runs"] += 1
@@ -80,7 +81,10 @@ def fold_runs(rows: Iterable[Mapping[str, Any]], *, since: str, until: str | Non
             digest["stopped"] += 1
         else:
             final = max(results, key=_SEVERITY.__getitem__)
-            digest[{"PASS": "delivered", "REVISE": "revise", "BLOCK": "block"}[final]] += 1
+            if final != "BLOCK" and "delivery" in kinds:
+                digest["unverified"] += 1
+            else:
+                digest[{"PASS": "delivered", "REVISE": "revise", "BLOCK": "block"}[final]] += 1
             for check in (kinds.get("validation_result") or {}).get("validation", {}).get("checks") or []:
                 if isinstance(check, Mapping) and check.get("result") not in (None, "PASS"):
                     digest["non_pass_checks"][str(check.get("check_id"))] += 1
@@ -119,6 +123,7 @@ def render(digest: Mapping[str, Mapping[str, Any]], *, since: str, until: str | 
     for lane, d in sorted(digest.items(), key=lambda item: -item[1]["runs"]):
         delivered_pct = round(100 * d["delivered"] / d["runs"]) if d["runs"] else 0
         lines.append(f"[{lane}] 실행 {d['runs']} · 전달 {d['delivered']} ({delivered_pct}%) · "
+                     f"미검증 전달 {d.get('unverified', 0)} · "
                      f"보류 REVISE {d['revise']} · BLOCK {d['block']} · 검증 전 중단 {d['stopped']} · "
                      f"재생성 {d['revised']}")
         if d["non_pass_checks"]:

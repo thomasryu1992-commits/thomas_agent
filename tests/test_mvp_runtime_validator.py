@@ -305,12 +305,36 @@ def test_e2e_independent_validation_pass_delivers():
 
 
 @requires_local_core
-def test_e2e_independent_revise_withholds_delivery():
+def test_e2e_independent_revise_is_delivered_unverified_with_the_reviewers_reasons():
+    """Review D2: the reviewer's REVISE no longer withholds a business analysis — it is delivered
+    under the banner, which carries the reviewer's own revision requests."""
     result = run_task(REQUEST, independent_validation=True,
                       validator_provider=FakeVerdictProvider("REVISE"), now=NOW)
-    assert result["status"] == "BLOCKED" and result["delivered"] is False
-    assert result["block"]["reason_code"] == "VALIDATION_REVISE"
-    assert "fix X" in result["block"]["message"]
+    assert result["status"] == "COMPLETED" and result["delivered"] is True
+    assert any(reason.startswith("독립 검토:") and "fix X" in reason for reason in result["unverified"])
+    assert "fix X" in result["final_response"].split("\n# ", 1)[0]
+
+
+@requires_local_core
+def test_e2e_a_reviewer_outage_delivers_unverified_and_is_on_the_chain():
+    """Review D2(a): the reviewer's PROVIDER failed — no review happened. The analysis had passed
+    every automatic check, so it is delivered, marked unverified, and the outage is its own audit
+    event rather than a BLOCK that withheld a passing analysis."""
+    from runtime.mvp_runtime.errors import ProviderError
+
+    class _DownProvider(FakeVerdictProvider):
+        def generate(self, prompt, *, max_output_tokens, timeout_seconds):
+            raise ProviderError("PROVIDER_TRANSPORT", "hosted provider request failed or timed out")
+
+    result = run_task(REQUEST, independent_validation=True, validator_provider=_DownProvider(), now=NOW)
+    assert result["status"] == "COMPLETED" and result["delivered"] is True
+    assert result["records"]["validation_result"]["validation"]["result"] == "PASS"
+    assert "independent_validation_result" not in result["records"]
+    assert result["records"]["delivery"]["reviewer_outage"]["reason_code"] == "PROVIDER_ERROR"
+    assert any("PROVIDER_ERROR" in reason for reason in result["unverified"])
+    codes = [e["event"]["reason_codes"] for e in result["records"]["audit_trail"]]
+    assert ["INDEPENDENT_VALIDATION_FAILED", "PROVIDER_ERROR"] in codes
+    assert codes[-1] == ["FINAL_COMPLETED", "DELIVERED_UNVERIFIED"]
 
 
 @requires_local_core
@@ -352,12 +376,12 @@ def test_automatic_revise_does_not_spend_the_reviewer():
     reviewer = _CountingValidatorProvider("PASS")
     result = run_task(REQUEST, provider=_OverconfidentProvider(), independent_validation=True,
                       validator_provider=reviewer, now=NOW)
-    assert result["status"] == "BLOCKED" and result["delivered"] is False
-    assert result["block"]["reason_code"] == "VALIDATION_REVISE"
+    # Delivered unverified since review D2 — and still without paying for the review.
+    assert result["delivered"] is True and result["unverified"]
     assert reviewer.calls == 0
     assert "independent_validation_result" not in result["records"]
-    # The withheld run still says why: the automatic checks name every failing check.
-    assert "over-confident" in result["block"]["message"]
+    # The run still says why: the automatic checks name every failing check, now in the banner.
+    assert any("over-confident" in reason for reason in result["unverified"])
     # Budget honesty: one model call was spent, and the usage record says one.
     assert result["records"]["budget_usage"]["usage"]["model_calls"] == 1
 
@@ -414,11 +438,12 @@ def test_m3_revision_recovers_a_revise_to_pass():
 
 
 @requires_local_core
-def test_m3_revision_exhausted_blocks_after_exactly_one_try():
+def test_m3_revision_exhausted_after_exactly_one_try_is_delivered_unverified():
     specialist = _AlwaysReviseSpecialist()
     result = run_task(REQUEST, provider=specialist, revise=True, now=NOW)
-    assert result["status"] == "BLOCKED"
-    assert result["block"]["reason_code"] == "VALIDATION_REVISE"
+    # The revised output still REVISEs: since review D2 it is delivered under the banner.
+    assert result["status"] == "COMPLETED" and result["unverified"]
+    assert result["records"]["validation_result"]["validation"]["result"] == "REVISE"
     assert specialist.calls == 2  # hard cap: one regeneration, then give up (not a loop)
     rev = result["records"]["revision"]
     assert rev["attempted"] is True and rev["exhausted"] is True
@@ -431,7 +456,7 @@ def test_m3_revision_exhausted_blocks_after_exactly_one_try():
 def test_m3_off_by_default_does_not_revise():
     specialist = _AlwaysReviseSpecialist()
     result = run_task(REQUEST, provider=specialist, now=NOW)  # revise defaults off
-    assert result["status"] == "BLOCKED"
+    assert result["delivered"] is True and result["unverified"]   # D2: unverified, not withheld
     assert specialist.calls == 1  # no regeneration
     assert "revision" not in result["records"]
     assert result["records"]["budget_usage"]["usage"]["model_calls"] == 1
