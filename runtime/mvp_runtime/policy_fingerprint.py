@@ -44,7 +44,7 @@ POLICY_REL = "governance/GOVERNANCE_POLICY.yaml"
 FINGERPRINTS_REL = ".runtime_governance_state/policy_fingerprints"
 
 # The top-level key, at column 0 — the same literal `validate_permission_approval_contracts.py`
-# pins with `require_doc_tokens("policy_version: 1.6.0")`. Scanned rather than YAML-parsed: this
+# pins with `require_doc_tokens("policy_version: 1.6.1")`. Scanned rather than YAML-parsed: this
 # runs at every service startup and the answer is one line of a 25 KB file. A nested key of the
 # same name cannot be mistaken for it, because a nested one is indented.
 _VERSION_KEY = "policy_version:"
