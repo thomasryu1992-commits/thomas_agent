@@ -15,7 +15,7 @@
 | [CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md](CONVERSATIONAL_ORCHESTRATION_FRONT_V0.1.md) | `PARTIALLY DECIDED` | 2026-07-25 | D1–D3 결정·구현(task registry, frontdesk, provider). D4(standing grant, `approval.v0.3`)는 결정 대기, D5는 D4를 기다린다. |
 | [APPROVAL_CONVERSATION_V0.1.md](APPROVAL_CONVERSATION_V0.1.md) | `DRAFT` | 2026-07-28 | §6의 V1–V4 결정 대기. 결정 기록도, 권고한 옵션 B(승인 명령을 제안하는 턴)의 구현도 없다(2026-09-26 확인). |
 | [CONTROL_LANE_SEPARATION_V0.1.md](CONTROL_LANE_SEPARATION_V0.1.md) | `PARTIALLY DECIDED` | 2026-07-29 | K2′(단계 경계 halt peek)는 결정·구현(`operator.peek_for_halt`). K4(실행 중인 분석 중단)·K5는 결정 대기, K1은 결정 기록이 없다(`docs/BUILD_HISTORY.md`, `docs/REMAINING_WORK.md`). |
-| [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-08-08 | §5 계보별 LIVE 허용치는 구현됐다(`crypto/live_allowance.py`: 연속 2패 또는 누적 −2.0R이면 강등; 결정 인용도 구현일 기록도 찾지 못해 날짜는 작성일이다). 제안한 셋째 기준(예산 1/4)은 빠졌고 그 기록이 없다. §8의 B(복귀 경로)·D(연속손실 브레이커 래치)는 결정 대기. |
+| [EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md](EVALUATION_CANNOT_ACT_PER_STRATEGY_V0.1.md) | `PARTIALLY DECIDED` | 2026-08-08 | §5 계보별 LIVE 허용치는 구현됐다(`crypto/live_allowance.py`: 연속 2패 또는 누적 −2.0R이면 강등; 결정 인용도 구현일 기록도 찾지 못해 날짜는 작성일이다). 제안한 셋째 기준(예산 1/4)은 2026-09-26 폐기로 기록했다(아래 "결정" 절). §8의 B(복귀 경로)·D(연속손실 브레이커 래치)는 결정 대기. |
 | [AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md](AUTOMATIC_SELECTION_NEEDS_A_LIVE_DOOR_V0.1.md) | `PARTIALLY DECIDED` | 2026-08-09 | Part 1(OBSERVATION/LIVE 티어)은 2026-08-09 구현(#648, `crypto/live_tier.py`; 승인 인용은 찾지 못했다). Part 2(관찰 티어 자동 설치)는 결정도 구현도 없다. |
 | [WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md](WALK_FORWARD_TEMPORAL_STABILITY_V0.1.md) | `DRAFT` | 2026-08-12 | PR-2(판정 활성화) 결정 대기. PR-1(기록 전용)은 구현됐고, 결정 근거인 §4 측정 결과는 아직 기록되지 않았다. 날짜는 추정이다(FACTORY_ABLATION 결정 이후 작성). |
 | [TEMPLATE_RSI_DRAW_MASS_V0.1.md](TEMPLATE_RSI_DRAW_MASS_V0.1.md) | `DRAFT` | 2026-08-17 | Thomas 결정 대기. 권고(현상 유지 + §5 재독)의 재독·결정 기록이 없다. |
@@ -32,7 +32,7 @@
 |---|---|---|---|
 | [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) | `DECIDED` | 2026-08-03 | ① 팩터/디스퍼전 재정의 ② 스프레드 v1 제외(2026-08-03), S0 규제 기록(2026-08-04, 잠정). S1은 2026-08-04부터 운영 중이고 S2(a)는 2026-08-09 완료(§8b). S2(b)는 데이터 깊이 때문에 아직 평가할 수 없고 S3–S5는 미착수다(`docs/REMAINING_WORK.md` §H). S3 이후 실주문은 S0의 확정 승격이라는 별도 결정 전에는 열리지 않는다. |
 | [NAVER_BLOG_CONTENT_LANE_V0.1.md](NAVER_BLOG_CONTENT_LANE_V0.1.md) | `DECIDED` | 2026-08-30 | 결정은 모두 내려졌다(A안·network env 2026-08-09; 파일 쓰기, 주간 `content_ideation` 스케줄, MVP 용례 확장, 키워드 규칙, URL 기록 2026-08-30). Phase 1은 구현됐고 남은 구현은 Phase 4 순위 추적이다 (`docs/REMAINING_WORK.md` §J, 이 문서 하단의 체크리스트). |
-| [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)과 1h 5심볼 풀링. |
+| [FAMILY_EXHAUSTION_V0.1.md](FAMILY_EXHAUSTION_V0.1.md) | `DECIDED` | 2026-09-26 | Q1 B·Q2·Q3 결정, §6 확인 완료(1h는 5심볼 모두가 의도). 남은 구현: Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)과 1h 5심볼 민팅(심볼별 스케줄, 풀링 아님). |
 
 ## 구현됨 (21)
 

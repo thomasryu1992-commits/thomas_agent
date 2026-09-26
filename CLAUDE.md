@@ -61,7 +61,7 @@ core thin while lanes grow, stated as rules:
   Claude does not run it, does not handle keys, does not enable live trading.
 - **Crypto research machinery is paused until the first forward-cohort verdict** (Thomas
   2026-09-26, review D3). No new hypothesis, trial or display machinery in `crypto/`. Exempt: bug
-  fixes, the slippage measurement (review C2), 1h pooling (C3), and the PR7 split work. Judgement
+  fixes, the slippage measurement (review C2), 1h mining on all five symbols (C3), and the PR7 split work. Judgement
   rules loosen only at a research-epoch boundary (`RESEARCH_EPOCH_V0.1.md` Q3). Record:
   `docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md`, "결정 (Thomas 2026-09-26)".
 - **Never run state-writing CLIs on the host as root.** Services run as uid 10001 and mount
