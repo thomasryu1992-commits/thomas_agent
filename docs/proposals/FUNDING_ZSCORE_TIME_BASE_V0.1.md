@@ -1,6 +1,7 @@
 # 근거 정리: funding_zscore의 시간 기저 재결정 (DRAFT v0.1)
 
-**상태:** **결정됨 — B안 (Thomas, 2026-08-17).** 같은 날 구현: `features.py`의 funding z가
+**상태:** IMPLEMENTED 2026-08-17 — B안 결정(Thomas), 같은 날 구현(funding z를 event space로).
+**결정 내용:** **B안 (Thomas, 2026-08-17).** 같은 날 구현: `features.py`의 funding z가
 event space로 전환되고, 패리티 테스트가 이 칼럼을 `SOURCE_DEVIATIONS`로 명명하며(픽스처는
 소스 기록 그대로 보존), 교차-타임프레임 불변성과 정산-시점 이동성이 테스트로 고정됐다.
 아래 본문은 결정 당시의 근거 그대로다.

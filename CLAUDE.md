@@ -196,6 +196,7 @@ First-time setup, local Core activation, and end-to-end verification: use the `v
 | Active core (schema v0.4, `thomas_approved`) | `THOMAS_CORE/MVP_ACTIVE_CORE.yaml` |
 | **Why** an increment is shaped that way — read before "fixing" something odd | `docs/history/` (one file per increment, since 2026-09-25; add yours in the PR) and `docs/BUILD_HISTORY.md` (the archive before that) |
 | What is left to build | `docs/REMAINING_WORK.md` |
+| Which proposals wait on a Thomas decision, and which decisions wait on a build | `docs/proposals/STATUS.md` — generated from each proposal's `**상태:**` line by `scripts/build_proposal_status.py`; change the line, never the page |
 | What is actually live **on this machine** | `python -m runtime.mvp_runtime.crypto.live_readiness` |
 | What execution stage this machine is at (crypto) | `python -m scripts.register_execution_stage --show`, run in `thomas-scheduler` (`docs/runtime-contracts/EXECUTION_STAGE_V0.1.md`) |
 

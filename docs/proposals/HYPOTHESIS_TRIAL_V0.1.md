@@ -1,6 +1,8 @@
 # 제안: 가설 트라이얼(`hypothesis_trial`) — §I 결정 요청의 갱신 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
+**상태:** IMPLEMENTED 2026-09-24 — C안 결정, PR1–PR4 구현(#977·#978·#979·#981). 선언형 family는 결정대로 만들지
+않았다.
+**참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 새 설계가 아니다. 외부 "Crypto Live Trading Follow-up Fix Plan" §10~13(Hypothesis Trial
 Layer)은 `docs/REMAINING_WORK.md` §I2(2026-08-05, "trial rotation slots", `trial_family`)와 같은
 안이고, §I는 08-05부터 결정을 기다리고 있다. 이 문서는 그 결정에 필요한 것 중 **08-05 이후에

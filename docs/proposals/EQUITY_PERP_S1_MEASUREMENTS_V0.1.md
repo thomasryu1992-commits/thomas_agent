@@ -1,6 +1,6 @@
 # S1 측정 기록 — 게이트 개방일 / 코호트 가용률 / 수수료 / 아카이브 대조 (2026-08-04~05)
 
-**상태:** 측정 기록. 설계 제안이 아니라 **관측값**이며, 재현 방법을 함께 적는다.
+**상태:** RECORD 2026-08-05 — 2026-08-04~05 측정 기록. 설계 제안이 아니라 **관측값**이며, 재현 방법을 함께 적는다.
 **부모:** [EQUITY_PERP_S1_COLLECTOR_V0.1.md](EQUITY_PERP_S1_COLLECTOR_V0.1.md) §6이 요구한 산출물 3종,
 그리고 적재 개시 후 추가된 (d) 대조 검증.
 **출처:** `POST https://api.hyperliquid.xyz/info` — `candleSnapshot`(`startTime: 0`), `perpDexs`,

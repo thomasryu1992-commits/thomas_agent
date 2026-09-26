@@ -1,6 +1,9 @@
 # 제안: Control Lane 분리 — `/kill`은 언제 런타임 안으로 들어오는가 (DRAFT v0.2)
 
-> **상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
+**상태:** PARTIALLY DECIDED 2026-07-29 — K2′(단계 경계 halt peek)는 결정·구현(`operator.peek_for_halt`).
+K4(실행 중인 분석 중단)·K5는 결정 대기, K1은 결정 기록이 없다(`docs/BUILD_HISTORY.md`, `docs/REMAINING_WORK.md`).
+
+> **작성 당시 상태: DRAFT — 결정을 위한 문서. 어떤 것도 활성화하지 않으며 구현 착수도 아니다.**
 > 요구되는 Thomas 결정은 §6에 있다.
 >
 > **v0.2 (2026-07-29) — v0.1의 사실 오류를 정정하고 권고를 바꿨다.** v0.1은 금융 경로에

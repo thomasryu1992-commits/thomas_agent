@@ -1,5 +1,7 @@
 # The forward judge gets the holdout's UNDERPOWERED split — decided: option A
 
+**Status:** IMPLEMENTED 2026-09-24 — option A (the sign split), built in the same PR as this record (#964).
+
 **Decision: Thomas 2026-09-24 — option A (the sign split), implemented in the same PR as this
 record.** It changes a label and the displays that read it; no door that arms money changes.
 

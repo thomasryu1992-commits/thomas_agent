@@ -1,6 +1,9 @@
 # 제안: 스케줄러 레인 분리 V0.1 — risk kind는 어떤 fire 뒤에도 줄 서지 않는다 (APPROVED v0.2)
 
-> **상태: 승인 — Thomas 2026-08-19, §8의 D1·D2·D3 전부. PR-A 구현: #733.**
+**상태:** IMPLEMENTED 2026-08-19 — §8의 D1–D3 승인(Thomas). PR-A(#733, `--lane`)와 PR-B(scheduler=risk,
+scheduler-maint 신설) 배포. pass budget은 D3대로 유지했고, §7의 14일 수용 측정은 기록되지 않았다.
+
+> **결정: 승인 — Thomas 2026-08-19, §8의 D1·D2·D3 전부. PR-A 구현: #733.**
 >
 > **v0.2 (2026-08-19) — PR-A 감사 결과를 반영하고, v0.1이 몰랐던 지형 하나를 정정한다.**
 > v0.1은 §2에서 "ablation fire 분할은 factory만 고치고, 다음에 길어질 kind마다 같은

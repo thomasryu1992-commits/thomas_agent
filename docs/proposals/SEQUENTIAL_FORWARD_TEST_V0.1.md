@@ -1,6 +1,8 @@
 # 제안: 순차 검정 — "조기 판정"이 아니라 "반복해서 읽는 고정 판정"의 오류율 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
+**상태:** IMPLEMENTED 2026-09-24 — Q1(조기 판정 전제) 기각, Q2 A 구현(#971 첫 판정 시각·보드 누적, #976 LIVE 요청 문구).
+Q3·Q4는 조건부 보류.
+**참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §26~29(Sequential Early Reject,
 Sequential Confirmation Research, "매일 p < 0.05 반복 금지 → Confidence Sequence·SPRT")에 대한
 답이다. 계획서는 순차 검정을 **forward 판정을 빠르게 하는 장치**로 제안했다. 실측한 거래 빈도에서

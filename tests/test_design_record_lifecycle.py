@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -248,3 +249,93 @@ def test_a_module_docstring_never_says_a_live_flag_is_off_while_it_is_on(path):
                     f"this code can do; saying a live flag is off while it is on is the same "
                     f"false safety claim this file already pins in docs/."
                 )
+
+
+# --- (4) the same vocabulary, for proposals -----------------------------------------------
+#
+# The system review (`docs/proposals/SYSTEM_REVIEW_IMPROVEMENT_PLAN_V0.1.md` §2 D3, 2026-09-25)
+# found the failure (1) exists to prevent, one directory over: 16 of 37 proposals said DRAFT or
+# "awaiting a Thomas decision", at least six of them decided and built, and no list anywhere of
+# what actually waited on Thomas. A proposal's vocabulary is about the *decision* rather than the
+# build, so it is its own closed set — kept with its parser and the generated page in
+# `scripts/build_proposal_status.py`, so this test and the page cannot read a line differently.
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import build_proposal_status as proposal_status  # noqa: E402
+
+PROPOSALS = proposal_status.proposal_paths()
+
+
+def test_there_are_proposals_to_check():
+    assert PROPOSALS, "no *_V<n>.md under docs/proposals/"
+
+
+def test_every_file_in_proposals_is_a_proposal_or_the_generated_page():
+    """The glob is what makes a file a proposal. An unversioned proposal would be skipped by it —
+    silently, which is the one way this check could go green while a header rots."""
+    others = sorted(
+        p.name for p in proposal_status.PROPOSALS_DIR.iterdir()
+        if p.is_file() and p not in PROPOSALS and p.name != proposal_status.OUTPUT_NAME
+    )
+    assert not others, f"files in docs/proposals/ that are not versioned proposals: {others}"
+
+
+@pytest.mark.parametrize("path", PROPOSALS, ids=lambda p: p.name)
+def test_a_proposal_opens_with_one_lifecycle_state(path):
+    try:
+        proposal_status.parse(path)
+    except proposal_status.StatusError as exc:
+        pytest.fail(
+            f"{exc}\nA proposal header carries exactly one "
+            f"'**상태:** <STATE> <YYYY-MM-DD> — <summary>' line, STATE one of "
+            f"{proposal_status.STATES}; see scripts/build_proposal_status.py for what each means."
+        )
+
+
+def test_the_parser_refuses_what_it_cannot_read(tmp_path):
+    """The rules above, each shown failing — a parser that accepts anything is a green test that
+    checks nothing."""
+    cases = {
+        "NO_STATUS_V0.1.md": "# t\n\nbody\n",
+        "OLD_WORDING_V0.1.md": "# t\n\n**상태:** DRAFT — no date\n",
+        "UNKNOWN_STATE_V0.1.md": "# t\n\n**상태:** APPROVED 2026-08-01 — built\n",
+        "BAD_DATE_V0.1.md": "# t\n\n**상태:** DECIDED 2026-13-01 — x\n",
+        "TWO_LINES_V0.1.md": "# t\n\n**상태:** DRAFT 2026-08-01 — a\n**상태:** DECIDED 2026-08-02 — b\n",
+        "ORPHAN_V0.1.md": "# t\n\n**상태:** SUPERSEDED 2026-08-01 — see `GONE_V0.2.md`\n",
+        "NAMELESS_V0.1.md": "# t\n\n**상태:** SUPERSEDED 2026-08-01 — replaced\n",
+    }
+    for name, text in cases.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+        with pytest.raises(proposal_status.StatusError):
+            proposal_status.parse(tmp_path / name)
+
+
+def test_the_parser_reads_a_wrapped_line_and_keeps_partially_decided_apart(tmp_path):
+    (tmp_path / "NEXT_V0.2.md").write_text(
+        "# next\n\n**Status:** DRAFT 2026-08-02 — x\n", encoding="utf-8")
+    (tmp_path / "WRAPPED_V0.1.md").write_text(
+        "# 제목\n\n**상태:** PARTIALLY DECIDED 2026-08-10 — D4 채택,\nD5·D6 미결.\n"
+        "**작성:** 2026-08-10\n\n## 1\n\n**상태:** DRAFT 2026-08-01 — body lines are not the header\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "OLD_V0.1.md").write_text(
+        "# old\n\n**상태:** SUPERSEDED 2026-08-03 — `NEXT_V0.2.md`가 대신한다\n", encoding="utf-8")
+    wrapped = proposal_status.parse(tmp_path / "WRAPPED_V0.1.md")
+    assert (wrapped.state, wrapped.date, wrapped.title) == ("PARTIALLY DECIDED", "2026-08-10", "제목")
+    assert wrapped.summary == "D4 채택, D5·D6 미결."
+    assert proposal_status.parse(tmp_path / "OLD_V0.1.md").state == "SUPERSEDED"
+
+    page = proposal_status.build(tmp_path)
+    waiting = page.split("## Thomas 결정 대기", 1)[1].split("\n## ", 1)[0]
+    assert "WRAPPED_V0.1.md" in waiting and "NEXT_V0.2.md" in waiting
+    assert "OLD_V0.1.md" not in waiting
+
+
+def test_the_committed_status_page_matches_the_headers():
+    """The page is the list of open decisions the review found missing. A copy that can go stale
+    is the stale header again, one file up."""
+    committed = (REPO_ROOT / proposal_status.OUTPUT_REL).read_text(encoding="utf-8")
+    assert committed == proposal_status.build(), (
+        f"{proposal_status.OUTPUT_REL} is stale — run `python scripts/build_proposal_status.py`"
+    )
