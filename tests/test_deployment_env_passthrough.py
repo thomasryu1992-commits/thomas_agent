@@ -466,10 +466,11 @@ def test_the_list_covers_the_whole_live_surface():
 def test_the_maintenance_lane_receives_the_candle_archive_switch():
     """The whole gate, so a missing line here is the whole failure.
 
-    Every other selector in this file fails closed twice — the env var AND a mounted grant —
-    so a variable Compose never forwarded still left a second thing visibly absent. The candle
-    archive has no second thing: Thomas moved it to the env-only gate on 2026-08-04 (#496)
-    because a 30-day TTL cannot bound a job that races a rolling window for months. So an
+    Until 2026-08-10 every other selector in this file failed closed twice — the env var AND a
+    mounted grant — so a variable Compose never forwarded still left a second thing visibly
+    absent. The candle archive never had a second thing: Thomas moved it to the env-only gate on
+    2026-08-04 (#496) because a 30-day TTL cannot bound a job that races a rolling window for
+    months, and since 2026-08-10 no selector has one (the grants were retired). So an
     unforwarded name here does not fail closed loudly; it reads as configured on the host and
     archives nothing, while the window it exists to outrun keeps moving.
 
