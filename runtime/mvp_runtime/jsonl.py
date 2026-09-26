@@ -366,6 +366,82 @@ def count_lines(path: Path, *, read_code: str, label: str,
     return total
 
 
+class AppendCursor:
+    """Read an append-only store incrementally: each :meth:`read_new` parses only the rows appended
+    since the last one.
+
+    For a store read again and again as it grows. The task registry is re-read in full by every
+    operator batch; at 10k entries that was 265 ms under its lock, at 30k 820 ms (measured
+    2026-09-25), nearly all of it re-parsing rows that had not changed. Append-only is what makes
+    this sound: bytes before the cursor never change, so they never need parsing again.
+
+    The cursor restarts from the top — and :meth:`read_new` says so, so the caller drops what it
+    built — whenever that premise visibly breaks: the file is gone, it is a different file (device
+    and inode differ, which an atomic ``write_objects`` replace or a restore produces), or it is
+    shorter than the cursor. Parsing is :func:`iter_numbered`'s: the same fail-closed codes, the
+    same wait for a last line still being written, and nothing advances on a failure — a
+    ``read_new`` that raises leaves the cursor where it was.
+
+    Per instance and per process, no shared state: two readers each keep their own cursor, and
+    both see every append because each re-reads from its own offset."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+        self._offset = 0
+        self._lineno = 0
+        self._identity: tuple[int, int] | None = None
+
+    def read_new(
+        self,
+        *,
+        read_code: str,
+        label: str,
+        exc_type: type[MvpRuntimeError] = PersistenceError,
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        """``(restarted, rows appended since the last call)``. ``restarted`` means every row in the
+        file is returned and whatever the caller derived from earlier calls is void."""
+        try:
+            stat = os.stat(self._path)
+        except FileNotFoundError:
+            restarted = self._offset > 0 or self._identity is not None
+            self._offset, self._lineno, self._identity = 0, 0, None
+            return restarted, []
+        except OSError as exc:
+            raise exc_type(read_code, f"could not read {label}: {exc}") from exc
+        identity = (stat.st_dev, stat.st_ino)
+        restarted = self._identity is not None and (identity != self._identity or stat.st_size < self._offset)
+        offset, lineno = (0, 0) if restarted or self._identity is None else (self._offset, self._lineno)
+        rows: list[dict[str, Any]] = []
+        try:
+            with self._path.open("rb") as handle:
+                handle.seek(offset)
+                for line in handle:
+                    lineno += 1
+                    if not line.strip():
+                        offset += len(line)
+                        continue
+                    try:
+                        obj = json.loads(line.decode("utf-8"))
+                    except ValueError as exc:
+                        if not line.endswith(b"\n"):
+                            obj = _finished_tail(handle, line, lineno, read_code=read_code,
+                                                 label=label, exc_type=exc_type)
+                            rows.append(obj)
+                            offset = handle.tell()
+                            break
+                        raise exc_type(
+                            read_code, f"could not read {label}: line {lineno} is not valid JSON"
+                        ) from exc
+                    # A complete object whose newline has not landed is a row, as it is to a full
+                    # read; its newline, when it lands, begins the next read as a blank line.
+                    rows.append(obj)
+                    offset += len(line)
+        except OSError as exc:
+            raise exc_type(read_code, f"could not read {label}: {exc}") from exc
+        self._offset, self._lineno, self._identity = offset, lineno, identity
+        return restarted, rows
+
+
 def write_objects(path: Path, objects: Iterable[Mapping[str, Any]], *, write_code: str, label: str) -> None:
     """Atomically **overwrite** ``path`` with exactly ``objects`` (one JSON line each).
 
