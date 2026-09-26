@@ -1,5 +1,8 @@
 # 제안: Conversational Orchestration Front v0.1 — F1·F2 구현 완료, F3 미착수
 
+**상태:** PARTIALLY DECIDED 2026-07-25 — D1–D3 결정·구현(task registry, frontdesk, provider). D4(standing grant,
+`approval.v0.3`)는 결정 대기, D5는 D4를 기다린다.
+
 > **상태 (2026-07-30 갱신): 더 이상 미착수 제안이 아니다.** §7의 D1–D3는 결정·구현되어
 > 프로덕션에서 가동 중이고, D4(standing grant)만 미결이다. 항목별 현재 상태는 §7의 표에,
 > 구현이 제안을 벗어난 지점은 §7.1에 있다.

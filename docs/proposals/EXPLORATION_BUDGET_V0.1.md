@@ -1,6 +1,8 @@
 # 제안: 탐색 예산 — 계획서의 고정 비율 대신 "fusion이 못 쓴 슬롯"의 용도 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
+**상태:** IMPLEMENTED 2026-09-24 — 권고대로 결정(아래 "결정" 절). Q2 b(폭)는 #975로 구현, Q1(고정 비율)은 기각,
+Q3(OI 가중)은 OI 계보의 forward 판정 뒤 재질문.
+**참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §18~19(Exploration/Exploitation
 Budget: 구조 탐색 40 / 기존 family 최적화 30 / fusion 20 / exit 10, "탐색 예산 > 0")에 대한
 답이다. `FAMILY_EXHAUSTION_V0.1.md`(#965) §3-C가 이 제안으로 넘긴 질문, 곧 "OI 신호에 예산을 더

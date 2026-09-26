@@ -1,6 +1,7 @@
 # 제안: 팩토리에 가설 → 기여도 → 절제 → 파라미터 순서를 넣는다 (DRAFT v0.1)
 
-**상태:** §3 승인 — Thomas 2026-08-12, **제안대로(AS PROPOSED)**: k 상한 3(격자 ≤7); 판정
+**상태:** IMPLEMENTED 2026-08-12 — §3 제안대로 승인(Thomas), `factory.ablate_hypothesis`로 구현.
+**결정 내용:** §3 승인 — Thomas 2026-08-12, **제안대로(AS PROPOSED)**: k 상한 3(격자 ≤7); 판정
 기준은 train 순기대값, full이 최선 진부분집합을 **엄격히** 이겨야 하고 동률은 단순한
 쪽(조건 수 최소); `ablation` derivation 타입은 추가하지 않음(승자는 기존 경로로 등록,
 `backtest_evidence.ablation` 격자 요약 carried); 케이던스 유지(가설 수 감소·가설당 깊이

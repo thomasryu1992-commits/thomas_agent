@@ -1,6 +1,8 @@
 # 제안: 팩토리 발사를 스케줄러 패스 밖의 프로세스로 옮긴다 (DRAFT v0.1)
 
-**상태:** §3 승인 — Thomas 2026-08-17, **제안대로(AS PROPOSED)**: 경계 = 수집은 부모에
+**상태:** IMPLEMENTED 2026-08-17 — §3 제안대로 승인(Thomas), 같은 날 구현(#726): 팩토리 발사를
+fork 자식으로 옮기고 부모가 수거한다. 적용 범위는 `crypto_factory`만.
+**결정 내용:** §3 승인 — Thomas 2026-08-17, **제안대로(AS PROPOSED)**: 경계 = 수집은 부모에
 남고 부모가 유일한 기록자(§3-1), 동시성 1(§3-2), timeout 900s(§3-3 — tunables 등재는 하지
 않음: 그 인덱스는 crypto 레인의 상수이고 이것은 core 스케줄러 정책, `scheduler.py`의
 `FACTORY_CHILD_TIMEOUT_SECONDS`가 소유), 적용 범위 `crypto_factory`만(§3-4). 구현: 같은 날,

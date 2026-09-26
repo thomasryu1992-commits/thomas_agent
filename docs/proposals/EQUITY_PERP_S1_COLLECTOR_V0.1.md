@@ -1,9 +1,9 @@
 # 제안: S1 — Hyperliquid 읽기 전용 수집기 (DRAFT v0.1)
 
-**상태 (2026-09-25 정정):** 구현·운영 중 — `crypto/market_data.py`의 `hyperliquid` 수집기가
+**상태:** IMPLEMENTED 2026-08-04 — 구현·운영 중. `crypto/market_data.py`의 `hyperliquid` 수집기가
 2026-08-04부터 매시간 `candle_archive`로 돈다(`docs/REMAINING_WORK.md` §H, H0에 첫날 결함과 수정).
-아래 원래 상태 줄은 작성 당시의 것이다.
-**상태:** DRAFT — 설계 선행(구현 아님).
+날짜는 가동일이다.
+**원래 상태(작성 당시, 2026-09-25에 위로 정정):** DRAFT — 설계 선행(구현 아님).
 **부모:** [EQUITY_PERP_LANE_V0.1.md](EQUITY_PERP_LANE_V0.1.md) — 레인 전체 설계와 S0–S5 시퀀싱 (#441).
 **범위:** 캔들 수집기 하나. **주문 없음, 계좌 없음, 페이퍼 없음.**
 **선행:** S0(규제 판단 기록)은 여전히 미비준이다. 이 문서는 S0를 대체하지 않으며, S1 착수

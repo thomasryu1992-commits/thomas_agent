@@ -1,6 +1,8 @@
 # 제안: family 소진(`SEARCH_EXHAUSTED`) — 상태가 아니라 측정으로 (DRAFT v0.1)
 
-**상태:** DECIDED 2026-09-24 — Thomas가 권고대로 결정했다(아래 "결정" 절). 이 문서의 나머지는 결정 당시의 근거로 남긴다.
+**상태:** PARTIALLY DECIDED 2026-09-24 — Q1 B·Q2·Q3 결정. Q1 B의 퍼널 family 소진 절(30일 CONFIRMED·마지막 CONFIRMED)은
+아직 없다. 1h 스케줄이 BTCUSDT만 민팅하는 것(§6)이 의도인지 Thomas 확인 대기.
+**참고:** 이 문서의 나머지는 결정 당시의 근거로 남긴다.
 **성격:** 외부 "Crypto Live Trading Follow-up Fix Plan" §20~21(Family Exhaustion)에 대한 답이다.
 계획서의 규칙을 운영 저장소에 그대로 대 보면 **rotation family 44개 중 42개가 소진으로
 찍힌다.** 가리는 신호가 없다는 뜻이라, 소진을 자동 상태로 만드는 대신 이미 있는 두 장치

@@ -1,5 +1,7 @@
 # The forward test gets its own slice width — decided: 14 days (option B)
 
+**Status:** IMPLEMENTED 2026-08-30 — option B (14 days), `forward_confirmation.FORWARD_SLICE_WIDTH_DAYS`.
+
 **Decision: Thomas 2026-08-30.** Implemented as `forward_confirmation.FORWARD_SLICE_WIDTH_DAYS`
 with `forward_slice_width_days = min(holdout width, 14d)`; the holdout's own width derivation
 (and the 2026-08-21 decision inside it) is untouched.

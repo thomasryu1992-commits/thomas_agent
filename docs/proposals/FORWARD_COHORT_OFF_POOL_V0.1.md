@@ -1,5 +1,8 @@
 # Forward evidence off the pool: a frozen cohort — decided: Phase 1, option A
 
+**Status:** IMPLEMENTED 2026-09-23 — Decision 1 (Phase 1) and Decision 2 (option A, screen only); built in #948/#949,
+null arm #960/#961. Option B reopens once the null arm has measured the false-confirmation rate.
+
 **Decision: Thomas 2026-09-23.** Build Phase 1 (Decision 1: yes), and cohort evidence is a
 screen only (Decision 2: option A). No family cap in Phase 1, as suggested below. Implemented in
 #948 (`crypto/forward_cohort.py`, `scripts/forward_cohort.py`); the scheduled fire and the board

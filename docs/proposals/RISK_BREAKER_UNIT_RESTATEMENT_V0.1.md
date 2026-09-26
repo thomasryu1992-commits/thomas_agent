@@ -1,6 +1,7 @@
 # 제안: 손실 브레이커 4개 — 사다리의 의미를 고정하고 단위를 갱신한다 (DRAFT v0.1)
 
-**상태:** DRAFT — Thomas 결정 대기. **값은 하나도 바뀌지 않았다.**
+**상태:** DRAFT 2026-08-06 — 결정 (a)–(d) 모두 Thomas 결정 대기. **값은 하나도 바뀌지 않았다**(`crypto/guards.py`).
+날짜는 부모 절의 측정일이다.
 **부모:** `docs/REMAINING_WORK.md` §G1 — 이 네 상수를 `INHERITED`(이전 시스템 `config/settings.py`에서
 넘어옴, 이 런타임에서 결정된 적 없음)로 색인하고, 2026-08-06에 자체 기록으로 측정한 절.
 **대상:** `runtime/mvp_runtime/crypto/guards.py` — `DAILY_MAX_LOSS_R`, `WEEKLY_MAX_LOSS_R`,

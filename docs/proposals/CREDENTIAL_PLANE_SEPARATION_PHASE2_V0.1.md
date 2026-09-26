@@ -1,6 +1,10 @@
 # 제안: 평면 분리 Phase ② — 스케줄러의 모델 소비자
 
-상태: **D4 채택** (Thomas, 2026-08-10 — "D4 승인, PR-C 진행해줘"). D5·D6은 미결이며, PR-C는
+**상태:** IMPLEMENTED 2026-08-10 — D4 채택·구현(PR-C). 아래 원문은 D5·D6을 미결로 적었지만 둘 다 이후 구현됐다
+(`crypto_data_review`·`crypto_propose`의 모델 호출이 `pipeline-worker`로 위임되어 스케줄러에 모델 자격증명이 없다 —
+`docker-compose.yml` scheduler 블록 주석). D5·D6의 결정 기록은 찾지 못했다(2026-09-26 확인).
+
+원래 상태(작성 당시): **D4 채택** (Thomas, 2026-08-10 — "D4 승인, PR-C 진행해줘"). D5·D6은 미결이며, PR-C는
 둘 중 어느 것도 건드리지 않는다 — `crypto_propose`와 `crypto_data_review`는 이 증분 뒤에도
 스케줄러 안에서 그대로 돌고, `MVP_VALIDATOR_PROVIDER`+`GROQ_API_KEY`도 그대로 남는다.
 작성 2026-08-10, 기준 `main` = `fe1f11a`.

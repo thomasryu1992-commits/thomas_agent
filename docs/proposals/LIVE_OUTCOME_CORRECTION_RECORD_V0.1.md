@@ -5,7 +5,7 @@
 > 아래는 기록으로 남긴다 — v0.2 §2-4가 뒤집는 것이 **여기 §5-1의 반론**이라, 그 반론이 무엇이었고
 > 왜 성립하지 않는지 읽으려면 이 문서가 있어야 한다.
 
-**상태:** SUPERSEDED (2026-08-23) — v0.2 이전의 설계. 구현된 적 없다.
+**상태:** SUPERSEDED 2026-08-23 — `LIVE_OUTCOME_CORRECTION_RECORD_V0.2.md`가 대신한다. 이 설계는 구현된 적 없다.
 **작성 배경:** 2026-08-23. `REMAINING_WORK.md` §C가 *"There is no correction mechanism, and
 building one is the open item"* 으로 남긴 항목. #752가 재발을 막았고 #753이 증거 보드의
 보증을 끊었지만, **둘 다 그 행을 그 자리에 남긴다.**
