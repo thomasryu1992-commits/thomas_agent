@@ -857,7 +857,8 @@ def test_a_frontdesk_failure_degrades_to_the_queue_instead_of_killing_the_channe
         def queued_count(self):
             return 0
 
-        def submit(self, *a, **k):
+        # `enqueue` submits through the depth-checked path (count and append under one lock).
+        def submit_within_depth(self, *a, **k):
             self.enqueued.append((a, k))
             raise PersistenceError("REGISTRY_WRITE_FAILED", "queue unavailable")
 

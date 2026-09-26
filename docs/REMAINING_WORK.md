@@ -4,7 +4,9 @@
 It is committed to git on purpose: per-machine memory does not travel between computers,
 so the durable hand-off lives here. On a fresh machine: `git pull`, then read this file.
 
-Last updated: **2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
+Last updated: **2026-09-25** — §I's heading and its "nothing here is built" line corrected (decided
+2026-09-24, option C; PR1–PR3 built as #977–#979). No other section was re-surveyed. Before that,
+**2026-09-03** — §K added (Hermes orchestrator integration, decided 2026-09-03, documentation-first PR sequence). Before that, **2026-08-29** — the header date had sat at 08-10 while the body took 08-23 and
 08-25 updates, exactly the "a document is a claim about a moved main" pattern this file warns
 about. As of 08-29: §C's correction record is built **and executed** (2026-08-24T14:20Z,
 `live_corr_1710c5ca552d3e88c668` — §C records the row), so the "one unblocked build item" the
@@ -4630,7 +4632,7 @@ depth there.
 
 ---
 
-## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **awaiting a Thomas decision**
+## I. The family proposer asks for a decision on the thinnest evidence in the system — designed 2026-08-05, **decided 2026-09-24 (option C), PR1–PR3 built (#977–#979)**
 
 > **Status 2026-09-24: the decision request is restated in
 > [`docs/proposals/HYPOTHESIS_TRIAL_V0.1.md`](proposals/HYPOTHESIS_TRIAL_V0.1.md)** — the external
@@ -4658,6 +4660,10 @@ depth there.
 > that a declarative family is a second authority for *what a family is*, against the standing
 > one-concept-one-authority guardrail, **which is why this section asks rather than proposes.**
 > Building I2 without that answer would be taking the decision by writing it.
+
+*(2026-09-25: the next sentence was true until 2026-09-24. Option C is now built — the `hypothesis_trial`
+derivation (#977), minted by cohort factory fires (#978), walked forward beside a null twin (#979);
+I2's declarative family and I4's code-PR path stay unbuilt, by that decision.)*
 
 Nothing here is built. It is a design with its costs named, recorded because the alternative is
 that the same reasoning gets re-derived from scratch, and because **the choice it turns on is

@@ -821,6 +821,60 @@ def test_proposer_schedule_skips_when_backlog_full(tmp_path):
     assert store.list()[0].last_status == "skipped_backlog_full:12"
 
 
+def test_the_backlog_scan_parses_only_the_two_kinds_it_counts(tmp_path, monkeypatch):
+    """The scan holds the records lock across 30 days of archives. Unfiltered it parsed every
+    kind — 1,107 ms against 164 ms filtered, measured 2026-09-25 — while a risk-lane append
+    waited behind it. The count must not change; only what is parsed to reach it."""
+    from runtime.mvp_runtime.crypto.proposer import (
+        FACTORY_LEDGER_KIND,
+        PROPOSAL_LEDGER_KIND,
+        PROPOSAL_RECORD_TYPE,
+    )
+    store = ScheduleStore(tmp_path / "sched")
+    ledger = LedgerStore(tmp_path / "ledger")
+    for i in range(12):
+        rec = {"record_type": PROPOSAL_RECORD_TYPE, "created_at": T0,
+               "proposals": [{"family": f"fam_{i}", "accepted": True}]}
+        ledger.append_records(f"p{i}", {PROPOSAL_LEDGER_KIND: rec})
+        ledger.append_records(f"c{i}", {"crypto_cycle": {"created_at": T0, "n": i}})
+    seen: list[str] = []
+    real_iter = ledger.iter_records_with_archive
+
+    def watched(**kwargs):
+        for row in real_iter(**kwargs):
+            seen.append(row["kind"])
+            yield row
+
+    monkeypatch.setattr(ledger, "iter_records_with_archive", watched)
+    _proposer_schedule(store)
+    summary = run_due(store, now=T1, ledger=ledger, repo_root=tmp_path,
+                      control_store=ControlStore(tmp_path))
+    assert summary["results"][0]["status"] == "skipped_backlog_full:12"
+    assert seen and set(seen) <= {PROPOSAL_LEDGER_KIND, FACTORY_LEDGER_KIND}
+
+
+def test_an_unreadable_backlog_proceeds_but_says_so(tmp_path, monkeypatch):
+    """The cap is a courtesy throttle, so an unreadable ledger lets the fire proceed — but
+    a throttle that silently opened read exactly like an empty backlog."""
+    from runtime.mvp_runtime.crypto import proposer
+    from runtime.mvp_runtime.errors import PersistenceError
+
+    _worker_in_process(monkeypatch, tmp_path)
+
+    def unreadable(*_args, **_kwargs):
+        raise PersistenceError("LEDGER_UNREADABLE", "torn line")
+
+    monkeypatch.setattr(proposer, "count_unreviewed_backlog", unreadable)
+    store = ScheduleStore(tmp_path / "sched")
+    ledger = LedgerStore(tmp_path / "ledger")
+    _proposer_schedule(store)
+    summary = run_due(store, now=T1, ledger=ledger, repo_root=tmp_path,
+                      control_store=ControlStore(tmp_path))
+    status = summary["results"][0]["status"]
+    assert status.startswith("proposed=")
+    assert "backlog=0" in status and "backlog_unreadable=LEDGER_UNREADABLE" in status
+
+
 # === pass order and the maintenance budget =========================================
 # `run_due` is one sequential pass, and the next tick cannot begin until it ends — so a long
 # pass delays whatever falls due DURING it, in a later tick. Measured on the live ledger
@@ -1400,6 +1454,23 @@ def test_a_proposer_fire_sends_the_family_list_and_never_the_frame(monkeypatch):
     for forbidden in ("snapshot", "candles", "inventory", "ohlcv"):
         assert forbidden not in str(sent[0]).lower()
     assert out == {"raw": [], "invocation": None, "degraded": None}
+
+
+def test_a_proposer_fire_names_the_frames_timeframe_and_only_when_it_has_one(monkeypatch):
+    """The timeframe NAME crosses (so the prompt allows only what this fire scores), the frame
+    never does."""
+    from runtime.mvp_runtime import scheduler as sched
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        sched.socket_door, "call_door",
+        lambda path, frame, **kw: sent.append(frame) or {
+            "ok": True, "job": frame["job"],
+            "generation": {"raw": [], "invocation": None, "degraded": None}},
+    )
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None, timeframe="1h")
+    sched.delegate_proposal_generation(existing_families=[], focus=None, repo_root=None)
+    assert sent[0]["proposal_inputs"]["timeframe"] == "1h"
+    assert "timeframe" not in sent[1]["proposal_inputs"]
 
 
 @pytest.mark.parametrize("reply", [

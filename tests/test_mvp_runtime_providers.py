@@ -8,6 +8,7 @@ directly (unit-testing the HTTP path) and exercise the gate wiring separately.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 
@@ -691,6 +692,104 @@ def test_non_transient_failures_are_not_retried(monkeypatch, outcome):
             "analyze", max_output_tokens=8000, timeout_seconds=30)
     assert exc.value.reason_code == "PROVIDER_TRANSPORT"
     assert sleeps == []                              # no backoff, no second attempt
+
+
+def _http_error_body(code: int, body: dict) -> urllib.error.HTTPError:
+    import io
+    return urllib.error.HTTPError("https://redacted.invalid", code, "err", {},
+                                  io.BytesIO(json.dumps(body).encode()))
+
+
+_JSON_VALIDATE_FAILED = {"error": {
+    "message": "Failed to generate JSON. Please adjust your prompt.",
+    "type": "invalid_request_error", "code": "json_validate_failed",
+    "failed_generation": '{"summary": "SECRET-MODEL-OUTPUT", "proposals": [}'}}
+
+
+def test_a_malformed_json_sample_is_retried_once_without_backoff(monkeypatch):
+    """Groq's JSON mode answers HTTP 400 `json_validate_failed` when the MODEL wrote malformed
+    JSON — the request was fine and the next sample usually is too (about 1 in 6 on the
+    proposer's prompt, measured 2026-09-25). One retry, no backoff: nothing is throttling us."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(
+        monkeypatch, [_http_error_body(400, _JSON_VALIDATE_FAILED), _gemini_response(_ANALYSIS)])
+    result = GoogleAIStudioProvider(authorization=_AUTH).generate(
+        "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert result.analysis["summary"] == "A concise analysis."
+    assert result.retries == 1 and sleeps == []
+
+
+def test_a_persistent_malformed_sample_fails_as_transport_naming_the_code(monkeypatch):
+    """Still "no" after its one retry: TRANSPORT (a failover chain must not read it as "not
+    now"), with the vendor's code in the reason — and never the model's failed output."""
+    monkeypatch.setenv(API_ENV, "k")
+    _patch_urlopen_sequence(monkeypatch, [_http_error_body(400, _JSON_VALIDATE_FAILED),
+                                          _http_error_body(400, _JSON_VALIDATE_FAILED)])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert exc.value.reason == "hosted provider returned HTTP 400 (json_validate_failed) after 1 retry"
+    assert "SECRET-MODEL-OUTPUT" not in exc.value.reason and "adjust" not in exc.value.reason
+
+
+@pytest.mark.parametrize("body,named", [
+    ({"error": {"code": "model_decommissioned", "message": "gone"}}, "model_decommissioned"),
+    ({"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": "bad"}}, "INVALID_ARGUMENT"),
+    ({"error": {"code": "has spaces and <html>"}}, None),
+    ({"unexpected": True}, None),
+])
+def test_any_other_4xx_names_its_code_and_is_not_retried(monkeypatch, body, named):
+    """"HTTP 400" alone made a malformed sample, a decommissioned model (#790) and an empty model
+    slug (#801) one string. Only an identifier-shaped code is echoed."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [_http_error_body(400, body)])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT" and sleeps == []
+    expected = f"hosted provider returned HTTP 400 ({named})" if named else "hosted provider returned HTTP 400"
+    assert exc.value.reason == expected
+
+
+def test_the_single_retry_budget_is_shared_with_the_throttle(monkeypatch):
+    """A 429 already spent the one retry; a malformed sample after it is not retried again."""
+    monkeypatch.setenv(API_ENV, "k")
+    _patch_urlopen_sequence(monkeypatch, [_http_error(429), _http_error_body(400, _JSON_VALIDATE_FAILED)])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert "(json_validate_failed) after 1 retry" in exc.value.reason
+
+
+@pytest.mark.parametrize("outcome", [
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ConnectionResetError(104, "Connection reset by peer"),
+    http.client.IncompleteRead(b"{\"cand"),
+])
+def test_a_connection_that_dies_mid_response_is_typed_not_raw(monkeypatch, outcome):
+    """urllib raises these from getresponse()/read() directly, not wrapped in URLError.
+    Every caller catches ProviderError only, so a raw one ended the run with no BLOCK
+    record — and in triage, which is designed to degrade, killed the whole run instead."""
+    monkeypatch.setenv(API_ENV, "k")
+    sleeps = _patch_urlopen_sequence(monkeypatch, [outcome])
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "PROVIDER_TRANSPORT"
+    assert sleeps == []
+
+
+def test_a_body_that_is_not_utf8_is_malformed_not_raw(monkeypatch):
+    monkeypatch.setenv(API_ENV, "k")
+    class _BinaryResp(_FakeResp):
+        def __init__(self):
+            self._payload = b"\xff\xfe\xfa"
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: _BinaryResp())
+    with pytest.raises(ProviderError) as exc:
+        GoogleAIStudioProvider(authorization=_AUTH).generate(
+            "analyze", max_output_tokens=8000, timeout_seconds=30)
+    assert exc.value.reason_code == "MALFORMED_RESPONSE"
 
 
 def test_first_try_success_records_zero_retries(monkeypatch):

@@ -1120,6 +1120,7 @@ def format_ideation_sheet(reply: Mapping[str, Any]) -> str:
 
 def delegate_proposal_generation(
     *, existing_families: Sequence[str], focus: str | None, repo_root: Path | None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     """Run the family proposer's model call in the pipeline worker and return its output.
 
@@ -1140,7 +1141,8 @@ def delegate_proposal_generation(
     reply = socket_door.call_door(
         pipeline_worker.socket_path(repo_root),
         {"job": pipeline_worker.JOB_CRYPTO_PROPOSE,
-         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus},
+         "proposal_inputs": {"existing_families": list(existing_families), "focus": focus,
+                             **({"timeframe": timeframe} if timeframe is not None else {})},
          "reason": "scheduler:crypto_propose"},
         deadline_seconds=WORKER_DEADLINE_SECONDS,
     )
@@ -1191,12 +1193,19 @@ def _execute(
                 pass
         summary = retention.rotate_all(ledger, keep_rows=keep, now=now)
         detail = f"rotated={summary['rotated_rows']} keep={keep}"
-        if summary["failures"]:
-            # Reported in the fire's status, not swallowed: a ledger that could not be
-            # rotated is one that keeps growing, and the operator should see which.
-            detail += " failed=" + ",".join(f["filename"] for f in summary["failures"])
         if summary.get("event_error"):
             detail += f" unrecorded={summary['event_error']}"
+        if summary["failures"]:
+            # A FAILED fire, not a fired one carrying "failed=" in its text: a ledger that
+            # could not be rotated keeps growing, and the operator is told only on a failed
+            # transition (`_notify_status_change`). A file left root-owned by a host CLI run
+            # used to grow here unbounded behind a green status. The rows that did move stay
+            # moved, and which files failed is on the retention event `rotate_all` wrote.
+            raise SchedulerBlocked(
+                "ROTATION_PARTIAL",
+                detail + " failed=" + ",".join(
+                    f"{f['filename']}({f['reason_code']})" for f in summary["failures"]),
+            )
         return detail
     if schedule.kind == KIND_NULL_CONTROL:
         # ALLOW-tier read: collects the same fed frame the factory mines, replays each stored
@@ -1786,15 +1795,25 @@ def _execute(
             now, -abs(crypto_proposer.BACKLOG_WINDOW_DAYS) * 24 * 60)
         # A malformed ledger must not stop the scheduler: an unreadable record stream
         # degrades to "backlog unknown = 0" (the fire proceeds) rather than failing closed —
-        # the backlog cap is a courtesy throttle, not a safety gate.
+        # the backlog cap is a courtesy throttle, not a safety gate. It says so on the status
+        # line, though: a throttle that silently opened reads exactly like an empty backlog.
+        #
+        # `kinds=` names the only two kinds `_in_window_acceptances` reads. Unfiltered, this
+        # parsed 30 days of every record kind under the records lock — measured 1,107 ms
+        # against 164 ms filtered, with a concurrent risk-lane append waiting the difference.
+        backlog_note = ""
         try:
             backlog = crypto_proposer.count_unreviewed_backlog(
-                ledger.iter_records_with_archive(appended_since=window_start)
-                if ledger is not None else [],
+                ledger.iter_records_with_archive(
+                    appended_since=window_start,
+                    kinds=[crypto_proposer.PROPOSAL_LEDGER_KIND,
+                           crypto_proposer.FACTORY_LEDGER_KIND],
+                ) if ledger is not None else [],
                 installed, now=now,
             )
-        except MvpRuntimeError:
+        except MvpRuntimeError as exc:
             backlog = 0
+            backlog_note = f" backlog_unreadable={exc.reason_code}"
         if backlog >= crypto_proposer.MAX_UNREVIEWED_BACKLOG:
             return f"skipped_backlog_full:{backlog}"
 
@@ -1855,8 +1874,11 @@ def _execute(
         # beside the market frame they are computed from. What crosses is the family list and
         # the focus — `build_proposal_prompt` never read the snapshot, which is why this
         # needed neither a second market-data path nor a serialized frame.
+        # The frame's timeframe, so the model is asked only for proposals this fire can score
+        # (`evaluate_proposal` refuses any other since D-0).
         generation = delegate_proposal_generation(
             existing_families=installed, focus=focus, repo_root=repo_root,
+            timeframe=snapshot.get("timeframe"),
         )
         record = crypto_proposer.assemble_proposal_record(
             snapshot, generation=generation, focus=focus, now=now,
@@ -1864,7 +1886,7 @@ def _execute(
         if ledger is not None:
             ledger.append_records(record["proposal_id"], {crypto_proposer.PROPOSAL_LEDGER_KIND: record})
         return (f"proposed={record['accepted_count']}/{record['proposed_count']} "
-                f"backlog={backlog} prop={record['proposal_id']}")
+                f"backlog={backlog} prop={record['proposal_id']}{backlog_note}")
     if schedule.kind == KIND_DATA_REVIEW:
         # Loop ① of the three review loops: a periodic, budgeted review of the pipeline's
         # DATA inputs (the M4b proposer posture applied one layer down). Deterministic
